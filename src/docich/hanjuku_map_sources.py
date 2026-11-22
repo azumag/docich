@@ -7,9 +7,11 @@ The approximate 8x model disagrees with existing native measurements and is
 not a calibrated transform. Importing this catalog never populates CASTLES,
 WORLD_MAP_OFFSET, Y_JUMP_OFFSET or HOUSE_VIEW.
 
-Boss names below identify source locations, not parsed in-game labels or
-known occupants. Four chapter-4 sites have random occupants; chapter 9's
-boss moves. No boss position is asserted by this catalog.
+Boss names and flag bboxes below identify source locations, not parsed
+in-game labels or known occupants. They are the same kind of public-map hint
+as SOURCE_CASTLES, never native cells. Four chapter-4 sites have random
+occupants; chapter 9's boss moves. No boss position is asserted by this
+catalog beyond those source pixels.
 """
 
 SOURCE_IMAGE_SIZE = (130, 130)
@@ -96,6 +98,18 @@ SOURCE_BOSS_SITES: dict[int, tuple[str, ...]] = {
     5: ('完熟大魔城',), 6: ('完熟秘密基地',), 7: ('完熟幽霊城',),
     8: ('完熟天守閣',), 9: ('完熟兵器"Ｐ"',), 10: ('ホワイトハウス',),
     11: ('オヴァリウム',), 12: ('完熟神殿',),
+}
+# Boss-site flag bboxes on the same public maps, in SOURCE_BOSS_SITES order.
+# Chapter 4's tuple is 北西/北東/南西/南東. Like SOURCE_CASTLES these are
+# source pixels only; the chart seeds single-site chapters from them and any
+# measured cell still wins. Chapter 9's boss moves, so its flag is only the
+# source map's static marker.
+SOURCE_BOSS_FLAGS: dict[int, tuple[tuple[int, int], ...]] = {
+    1: ((32, 31),), 2: ((66, 23),), 3: ((38, 17),),
+    4: ((18, 15), (110, 15), (16, 111), (112, 113)),
+    5: ((92, 33),), 6: ((102, 19),), 7: ((60, 37),),
+    8: ((78, 65),), 9: ((73, 27),), 10: ((60, 45),),
+    11: ((58, 21),), 12: ((62, 31),),
 }
 RANDOM_BOSS_OCCUPANTS = frozenset({4})
 MOVING_BOSS_CHAPTERS = frozenset({9})

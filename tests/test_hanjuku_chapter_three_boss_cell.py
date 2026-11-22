@@ -31,6 +31,7 @@ from docich.hanjuku.os_layer.readers import (WORLD_FLAG_ENEMY, WORLD_FLAG_OWN, W
                                              _near_colour, world_cursor, world_flags)
 from docich.hanjuku.os_layer.screen import _target_marker, own_camps, parse
 from docich.hanjuku.strategy.orders import BOSS_TARGET_CANCEL_LIMIT, _boss_retry_due
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, plan as _plan_region
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'hanjuku'
 SKULL_VIEW = FIXTURES / 'g1075-ch3-y-view-boss-skull.png'
@@ -131,7 +132,9 @@ def test_the_y_view_with_the_g_over_the_cave_is_the_world_map():
     screen = parse(frame, phase=classify(frame))
     assert screen.kind == 'world_map'
     assert screen.marker is None
-    assert world_cursor(frame) == (138.5, 126.0)
+    # The corner-fill score measures the gold body inside the G box, not the
+    # outline: the centre sits 1-2.5 px inside the measured 131-146/118-134 box.
+    assert world_cursor(frame) == (137.5, 128.5)
 
 
 def test_the_open_boss_jump_over_the_cave_is_steered_not_dropped():
@@ -167,7 +170,7 @@ def cancel_mem(**extra):
 def cancel_once(mem):
     frame = read_png(ENCLOSURE)
     screen = parse(frame, phase=classify(frame))
-    mem['active'] = '3-B1'
+    _plan_region(mem)['active'] = '3-B1'
     for _ in range(TARGET_MISS_LIMIT):
         actions = _unverified_target(screen, mem, BOSS)
     assert actions and actions[0]['buttons'] == ['b']
@@ -190,14 +193,14 @@ def test_the_first_cancel_at_the_new_cell_counts_from_one():
     cancel_once(mem)
     assert mem['target_cancel']['3-B1'] == 1
     assert mem['boss_cancel_cell']['3-B1'] == list(chart.castles(3)['ボス'])
-    assert mem['orders']['3-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['3-B1'] == 'pending'
 
 
 def test_the_cancel_limit_at_the_current_cell_still_fails_the_boss_order():
     mem = cancel_mem()
     for _ in range(BOSS_TARGET_CANCEL_LIMIT):
         cancel_once(mem)
-    assert mem['orders']['3-B1'] == 'failed'
+    assert _plan_region(mem)['orders']['3-B1'] == 'failed'
     assert mem['target_cancel']['3-B1'] == BOSS_TARGET_CANCEL_LIMIT
     assert not _boss_retry_due(BOSS, mem)
 
@@ -231,24 +234,24 @@ def test_a_tent_menu_that_never_opened_gets_a_second_a():
     mem = camp_menu_mem()
     for _ in range(MENU_OPEN_WAIT - 1):
         assert recall_step(mem) == []
-        assert mem['recall']['stage'] == 'menu'
+        assert _flow(mem)['recall']['stage'] == 'menu'
     assert recall_step(mem) == []
-    assert mem['recall']['stage'] == 'to_camp' and mem['recall']['menu_reopens'] == 1
+    assert _flow(mem)['recall']['stage'] == 'to_camp' and _flow(mem)['recall']['menu_reopens'] == 1
     assert 'camp_menu_not_opened' in recorded(mem)
     assert recall_step(mem) == [pad('a')]                          # the cursor is on the tent
-    assert mem['recall']['stage'] == 'menu' and recorded(mem)[-1] == 'camp_enter'
+    assert _flow(mem)['recall']['stage'] == 'menu' and recorded(mem)[-1] == 'camp_enter'
 
 
 def test_the_second_a_is_bounded_per_recall():
     mem = camp_menu_mem(menu_reopens=MENU_REOPEN_LIMIT)
     for _ in range(MENU_OPEN_WAIT):
         recall_step(mem)
-    assert 'recall' not in mem
-    assert mem['recall_skip'] == {'tick': 76200} and recorded(mem)[-1] == 'camp_recall_aborted'
+    assert 'recall' not in _flow(mem)
+    assert _flow(mem)['recall_skip'] == {'tick': 76200} and recorded(mem)[-1] == 'camp_recall_aborted'
 
 
 def test_the_hero_select_route_keeps_waiting_in_the_menu_stage():
     mem = camp_menu_mem(hero=True, steps=0)
     for _ in range(MENU_OPEN_WAIT + 1):
         assert recall_step(mem) == []
-    assert mem['recall']['stage'] == 'menu' and 'menu_reopens' not in mem['recall']
+    assert _flow(mem)['recall']['stage'] == 'menu' and 'menu_reopens' not in _flow(mem)['recall']

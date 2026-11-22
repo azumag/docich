@@ -9,9 +9,11 @@ import fcntl
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import secrets
 import sys
+import threading
 import time
 import uuid
 
@@ -19,9 +21,12 @@ from .corner_catalog import (
     configured_interval_seconds,
     cooldown_seconds,
     load_catalog,
+    prediction_handoff_seconds,
+    prediction_hold_wait_seconds,
     rotation_enabled,
     schedule_mode,
 )
+from . import corner_notice
 from .corner_adapters import (
     make_corner_adapter,
     CornerExecutionCoordinator,
@@ -38,7 +43,33 @@ STOP_REQUEST_DIR = "corner-stop-requests"
 # instead of duplicating the path (#2352).
 LEDGER_FILE = "corner_rotation.json"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
+# A slot runs inside the tick that selected it, so ``last_seen_at`` cannot move
+# while a corner owns the lock. A restart after a corner longer than DAY would
+# then look like downtime and quarantine a slot that never stopped. The slot
+# writes this bounded record while it runs: a restart within
+# HEARTBEAT_FRESH_S resumes, an older record still falls into the quarantine.
+HEARTBEAT_FILE = "corner_rotation_heartbeat.json"
+HEARTBEAT_SCHEMA = 1
+HEARTBEAT_INTERVAL_S = 30.0
+HEARTBEAT_FRESH_S = 180.0
+# The advance notice is spoken once for a slot that just ended; a corner end
+# older than this (a restart, or an improvement lane that ran long) is not
+# "just now" and stays silent on the audio queue.
+NOTICE_SPEAK_WINDOW_S = 1800.0
+NOTICE_SPOKEN_STATUSES = frozenset({"completed", "interrupted", "expired"})
+# A ledger can sit in ``waiting`` with a healthy-looking reason long after its
+# slot was due when a post-corner job never reaches a terminal record
+# (#4333). ``save`` stamps ``reason_since`` when the persisted reason changes;
+# a wait that is BOTH this far past ``next_due_at`` and unchanged for this
+# long is reported as overdue by diagnostics and the WebUI overlay.
+OVERDUE_WAIT_WARN_S = 600.0
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
+# ``stop_manual`` writes a durable stop marker only after observing a live
+# (starting/active/restoring) owner, so a marker whose target state file now
+# reads a terminal status can never be consumed by the run it named. Left in
+# place it would instantly stop the next run on the same file (#4226).
+STOP_REQUEST_TERMINAL_STATUSES = TERMINAL | {"failed"}
+STOP_REQUEST_SWEEP_LIMIT = 64
 
 # Fixed latch taxonomy (#986). The exception text is never persisted: provider
 # or config output can carry credentials or generated content. Diagnostics and
@@ -82,7 +113,22 @@ FAILED_CORNER_REASONS = frozenset({
     # as not restored so it stays fixable (#2187).
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    # A Hanjuku run latched its terminal reason but the corner process that
+    # must tear it down stopped updating its state file: nobody owns the
+    # teardown (#3599). Detection only -- the fences, leases and the hotload
+    # generation gate belong to the absent owner, so the timer must not adopt
+    # the teardown itself.
+    "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
+# A corner state file is rewritten every ~2 s while its manager is alive and
+# the hotload grace plus teardown paths are bounded near a minute, so a file
+# this old while a terminal run is still 'active' means the owner is gone,
+# not merely slow (the observed gap in #3599 was ~30 min).
+TERMINAL_OWNER_STALE_SECONDS = 300.0
 
 # A failed corner *end* can leave the corner's own game on screen, so the
 # shared slot is not free and releasing the reservation would abandon the
@@ -94,6 +140,15 @@ AUTO_RESTORE_ATTEMPT_LIMIT = 3
 AUTO_RESTORE_BACKOFF_SECONDS = (300.0, 900.0, 2700.0)
 AUTO_RESTORE_STATUSES = frozenset({"succeeded", "queued", "failed", "noop", "interrupted",
                                    "completed", "unknown", "none"})
+# A failed switch may park the shared game-switch plane itself in a terminal
+# failure (for example a failed candidate that cannot be cleaned while the
+# base singleton is busy). The timer retries the reviewed coordinator recovery
+# inside this budget; only stable terminal phases are touched, so an in-flight
+# switch is never raced. Exhaustion keeps the latch for the operator.
+AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT = 3
+AUTO_PLANE_RECOVERY_BACKOFF_SECONDS = (300.0, 900.0, 1800.0)
+AUTO_PLANE_RECOVERY_TIMEOUT_S = 120.0
+AUTO_PLANE_RECOVERY_PHASES = frozenset({"failed", "recovery_required"})
 
 
 class RotationError(RuntimeError):
@@ -168,9 +223,37 @@ def clear_rotation_stop_request(g, state_path):
     return True
 
 
+def overdue_wait(state, now, *, warn_after=OVERDUE_WAIT_WARN_S):
+    """Overdue-wait probe for read-only projections of the ledger (#4333).
+
+    A wait is overdue when it is BOTH at least ``warn_after`` seconds past
+    ``next_due_at`` and still on the same ``reason`` it held ``warn_after``
+    seconds ago. Normal waits change reason or dispatch before both hold.
+    Returns ``{"overdue_sec", "reason_age_sec"}`` when overdue, else ``None``.
+    ``reason_since`` is stamped by ``CornerRotationManager.save`` — a ledger
+    written before it existed cannot prove the reason's age and reports
+    ``None`` until the next save stamps it.
+    """
+    if not isinstance(state, dict) or state.get("status") != "waiting":
+        return None
+    if not isinstance(state.get("reason"), str) or not state["reason"]:
+        return None
+    try:
+        due = timestamp(state.get("next_due_at"))
+        since = timestamp(state.get("reason_since"))
+    except (RotationError, ValueError, OverflowError, OSError):
+        return None
+    overdue = now - due
+    age = now - since
+    if overdue < warn_after or age < warn_after:
+        return None
+    return {"overdue_sec": int(overdue), "reason_age_sec": int(age)}
+
+
 class CornerRotationManager:
     def __init__(self, g, *, clock=time.time, sleep=time.sleep, seed=None,
-                 catalog=None, adapter_factory=make_corner_adapter, executor=None):
+                 catalog=None, adapter_factory=make_corner_adapter, executor=None,
+                 prediction_guard=None, prediction_state=None, speech=None):
         self.g, self.clock = g, clock
         self.catalog = tuple(load_catalog(g) if catalog is None else catalog)
         self.adapters = {c.id: adapter_factory(g, c) for c in self.catalog}
@@ -182,8 +265,22 @@ class CornerRotationManager:
         self.cooldown_seconds = cooldown_seconds(g)
         # Fixed interval-mode cadence, or None for the 24h/N target.
         self.configured_interval = configured_interval_seconds(g)
+        self.prediction_hold_wait_seconds = prediction_hold_wait_seconds(g)
+        self.prediction_handoff_seconds = prediction_handoff_seconds(g)
         self.path = Path(g.state_dir) / LEDGER_FILE
         self.lock_path = Path(g.state_dir) / "locks/corner-rotation.lock"
+        # Bounded probe: an in-flight Soren prediction holds the corner
+        # boundary, so the announced start time cannot be promised.
+        # ``prediction_guard`` is the legacy bool injector; ``prediction_state``
+        # returns the richer snapshot (in_flight + remaining_games + worker).
+        self._prediction_guard = prediction_guard
+        self._prediction_state = prediction_state
+        # Delivery is injected so tests never touch the shared audio queue.
+        self._speech = speech
+        # The wait reason most recently seen in this ledger (set by ``load``,
+        # advanced by ``save``). ``save`` compares the state's reason against
+        # it to keep ``reason_since`` at the moment the reason first appeared.
+        self._saved_reason = None
 
     @contextmanager
     def locked(self):
@@ -200,7 +297,128 @@ class CornerRotationManager:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def save(self, state):
+        """Persist the ledger, stamping when the current wait reason began.
+
+        ``reason`` alone cannot separate a healthy wait from a wedge: the same
+        literals also appear during normal drains. ``reason_since`` lets
+        diagnostics and the overlay age one unchanged reason past
+        ``next_due_at`` (#4333).
+        """
+        reason = state.get("reason")
+        since = state.get("reason_since")
+        if reason is None:
+            state["reason_since"] = None
+        elif (reason != self._saved_reason
+                or type(since) not in (int, float) or not math.isfinite(since)):
+            state["reason_since"] = timestamp(self.clock())
+        self._saved_reason = reason
         atomic_write_json(self.path, state)
+
+    @property
+    def heartbeat_path(self):
+        return Path(self.g.state_dir) / HEARTBEAT_FILE
+
+    def _write_heartbeat(self, pending):
+        """Best-effort liveness record for the slot this process is running."""
+        try:
+            atomic_write_json(self.heartbeat_path, {
+                "schema": HEARTBEAT_SCHEMA,
+                "corner": pending.get("corner"),
+                "request_id": pending.get("request_id"),
+                "pid": os.getpid(),
+                "at": self.clock(),
+            })
+        except Exception:
+            return
+
+    @contextmanager
+    def _slot_heartbeat(self, pending):
+        """Keep proving this process is alive while the slot blocks.
+
+        The ledger itself cannot be refreshed here: its lock is held by this
+        same tick. A separate bounded record is enough to tell a parked slot
+        from downtime when the next tick starts after a restart.
+        """
+        stop = threading.Event()
+        self._write_heartbeat(pending)
+
+        def beat():
+            while not stop.wait(HEARTBEAT_INTERVAL_S):
+                self._write_heartbeat(pending)
+
+        thread = threading.Thread(target=beat, name="corner-rotation-heartbeat",
+                                  daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=5.0)
+            try:
+                self.heartbeat_path.unlink()
+            except OSError:
+                pass
+
+    def _heartbeat_proves_parked_slot(self, state, now):
+        """True when this ledger's pending slot was alive just before the gap.
+
+        Only a fresh heartbeat for the exact pending request counts, so a
+        real stop longer than the freshness window still quarantines.
+        """
+        if state.get("status") != "running":
+            return False
+        pending = state.get("pending")
+        if not isinstance(pending, dict):
+            return False
+        try:
+            data = json.loads(self.heartbeat_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            return False
+        if not isinstance(data, dict) or data.get("schema") != HEARTBEAT_SCHEMA:
+            return False
+        if data.get("corner") != pending.get("corner"):
+            return False
+        if data.get("request_id") != pending.get("request_id"):
+            return False
+        at = data.get("at")
+        if type(at) not in (int, float) or isinstance(at, bool):
+            return False
+        age = now - float(at)
+        return 0 <= age <= HEARTBEAT_FRESH_S
+
+    def _last_proven_alive_at(self, state):
+        """Newest timestamp this ledger itself wrote, or ``None``.
+
+        ``last_seen_at`` cannot move while one tick owns a slot longer than
+        the quarantine window, so a gap measured from it alone cannot tell a
+        dead rotation from a live one that was simply busy. The same live
+        process leaves fresh durable rows when the slot resolves
+        (``last_result``, history entries, a re-anchored ``last_slot_at``,
+        reservation timestamps), so the honest "last seen alive" signal is
+        the newest of them. Every field is written by this code with
+        ``self.clock()``; a process that stayed dead writes nothing new, so
+        genuine downtime and forward clock jumps still quarantine.
+        """
+        stamps = [state.get("last_seen_at"), state.get("last_slot_at")]
+        result = state.get("last_result")
+        if isinstance(result, dict):
+            stamps.append(result.get("at"))
+        history = state.get("history")
+        if isinstance(history, list):
+            stamps.extend(
+                row.get("at") for row in history if isinstance(row, dict)
+            )
+        for key in ("pending", "manual_pending"):
+            reservation = state.get(key)
+            if isinstance(reservation, dict):
+                stamps.append(reservation.get("selected_at"))
+        proven = []
+        for value in stamps:
+            try:
+                proven.append(timestamp(value))
+            except Exception:
+                continue
+        return max(proven) if proven else None
 
     def _initial_known_corners(self):
         """Seed the migration ledger from pre-catalog corner state files.
@@ -232,10 +450,15 @@ class CornerRotationManager:
                 continue
             try:
                 raw = json.loads(path.read_text())
-            except (OSError, ValueError) as exc:
-                raise RotationError("legacy corner state requires explicit recovery") from exc
+            except (OSError, ValueError):
+                # A file that cannot be read cannot seed a trustworthy
+                # observer: the retired observer reads the same file and
+                # would only fail closed on every later tick. Skipping it
+                # here lets the migration finish; the durable stop-marker
+                # sweep stays fail-closed on a target it cannot read (#4226).
+                continue
             if not isinstance(raw, dict):
-                raise RotationError("legacy corner state requires explicit recovery")
+                continue
             if fixed_identity is not None:
                 corner_id, game = fixed_identity
                 known.setdefault(corner_id, {"id": corner_id, "adapter": adapter, "game": game})
@@ -255,6 +478,12 @@ class CornerRotationManager:
         return known
 
     def load(self, now):
+        """Load the ledger and remember the reason it last persisted."""
+        state = self._load(now)
+        self._saved_reason = state.get("reason")
+        return state
+
+    def _load(self, now):
         if not self.path.exists():
             if any(raw.get("rotation_request_id") for adapter in self.adapters.values()
                    for raw in adapter.observations()):
@@ -268,8 +497,19 @@ class CornerRotationManager:
             old = Path(self.g.state_dir) / "retro_corner.json"
             if old.exists():
                 legacy = json.loads(old.read_text())
-                if not isinstance(legacy, dict) or legacy.get("schema_version") != 1:
+                if not isinstance(legacy, dict):
                     raise RotationError("legacy state requires explicit recovery")
+                if legacy.get("schema_version") != 1:
+                    # A file left by a run that already ended, carrying no
+                    # rotation payload, has nothing to migrate: the dead
+                    # owner can never finish and no cooldown history exists
+                    # to import (#4226). A live or unproven owner -- or a
+                    # rotation payload in an unknown shape -- still requires
+                    # an explicit recovery.
+                    if (legacy.get("rotation")
+                            or legacy.get("status") not in STOP_REQUEST_TERMINAL_STATUSES):
+                        raise RotationError("legacy state requires explicit recovery")
+                    return state
                 rotation = legacy.get("rotation", {})
                 if not isinstance(rotation, dict):
                     raise RotationError("invalid legacy rotation")
@@ -399,7 +639,8 @@ class CornerRotationManager:
             self._manual_queue_path.unlink()
             return None
 
-    def queue_manual(self, game, *, trigger_at=None, resume_latest=False):
+    def queue_manual(self, game, *, trigger_at=None, resume_latest=False, new_game=False,
+                     resume_from=None):
         """Queue one owner request, optionally with a not-before trigger.
 
         Immediate requests preserve the existing behavior. A future trigger is
@@ -409,6 +650,14 @@ class CornerRotationManager:
         """
         if type(resume_latest) is not bool or (resume_latest and (game != 'hanjuku-hero' or trigger_at is not None)):
             raise RotationError('invalid resume request', reason_code='invalid_value')
+        if resume_from is not None and (
+                game != 'hanjuku-hero' or not isinstance(resume_from, str)
+                or resume_latest or new_game or trigger_at is not None
+                or not resume_from.startswith('g')):
+            raise RotationError('invalid explicit resume request', reason_code='invalid_value')
+        if type(new_game) is not bool or (new_game and (
+                game != 'hanjuku-hero' or resume_latest or trigger_at is not None)):
+            raise RotationError('invalid new game request', reason_code='invalid_value')
         if not rotation_enabled(self.g):
             raise RotationError(
                 "common corner rotation is disabled", reason_code="rotation_disabled"
@@ -480,22 +729,30 @@ class CornerRotationManager:
                 if existing_trigger is not None:
                     existing_trigger = timestamp(existing_trigger)
                 if (queued["corner"] != chosen or existing_trigger != requested_trigger
-                        or bool(queued.get("resume_latest")) != resume_latest):
+                        or bool(queued.get("resume_latest")) != resume_latest
+                        or bool(queued.get("new_game")) != new_game):
                     raise RotationError(
                         "another manual corner or schedule is already queued",
                         reason_code="manual_queue_conflict",
                     )
             else:
                 queued = dict(corner=chosen, selected_at=now, request_id=str(uuid.uuid4()))
+                if new_game:
+                    # Preserve the intent until dispatch, after the current
+                    # program slot ends. Never alter its checkpoint request.
+                    queued['new_game'] = True
                 if requested_trigger is not None:
                     queued["trigger_at"] = requested_trigger
-                if resume_latest:
+                if resume_from is not None:
+                    queued['resume_from'] = resume_from
+                if resume_latest or resume_from is not None:
                     from .hanjuku_resume import prepare, recover_prepared
                     from .config import load_game
-                    queued = recover_prepared(self.g, chosen) or dict(queued, resume_latest=True)
+                    queued = recover_prepared(self.g, chosen) or dict(
+                        queued, resume_latest=resume_latest or resume_from is not None)
                     prepare(self.g, load_game(self.g, game), queued)
                 atomic_write_json(self._manual_queue_path, queued)
-            if resume_latest:
+            if resume_latest or resume_from is not None:
                 from .hanjuku_resume import publish
                 publish(self.g, queued)
             result = {"status": ("scheduled" if requested_trigger is not None
@@ -586,6 +843,206 @@ class CornerRotationManager:
             return {"status": "cancelled", "corner": chosen,
                     "trigger_at": timestamp(request["trigger_at"])}
 
+    @staticmethod
+    def _queued_manual_fingerprint(request):
+        return hashlib.sha256(json.dumps(
+            request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def _queued_manual_reservation(self, state, game):
+        """Validated queued manual reservation, or raise RotationError."""
+        choices = [c.id for c in self.catalog if c.game == game]
+        if len(choices) != 1:
+            raise RotationError(
+                "queued manual corner is unavailable",
+                reason_code="queued_request_missing",
+            )
+        chosen = choices[0]
+        inbox = self._read_manual_queue()
+        queued = state.get("queued_manual")
+        if inbox is not None and queued is not None and inbox != queued:
+            raise RotationError(
+                "conflicting manual queue ownership",
+                reason_code="manual_queue_conflict",
+            )
+        request = queued if isinstance(queued, dict) else inbox
+        if not isinstance(request, dict) or request.get("corner") != chosen:
+            raise RotationError(
+                "queued manual request is not queued",
+                reason_code="queued_request_missing",
+            )
+        request_id = str(uuid.UUID(request["request_id"]))
+        timestamp(request["selected_at"])
+        if request.get("trigger_at") is not None:
+            timestamp(request["trigger_at"])
+        for in_flight in (state.get("pending"), state.get("manual_pending")):
+            if (isinstance(in_flight, dict)
+                    and in_flight.get("request_id") == request_id):
+                raise RotationError(
+                    "queued manual request was already dispatched",
+                    reason_code="already_dispatched",
+                )
+        return chosen, inbox, queued, request, request_id
+
+    def _drop_queued_manual_artifacts(self, request, request_id):
+        """Discard the unclaimed resume artifact for a cancelled reservation."""
+        if request.get("resume_latest") is not True:
+            return None
+        from .adapters.base import AdapterError
+        from .hanjuku_resume import discard_unclaimed
+        try:
+            return discard_unclaimed(self.g, request_id)
+        except AdapterError as exc:
+            raise RotationError(
+                "checkpoint artifact unsafe to discard",
+                reason_code="artifact_unverified",
+            ) from exc
+
+    def cancel_queued_manual(self, game, *, expected=None, apply=False, now=None):
+        """Cancel one manual reservation before its dispatch.
+
+        Covers both the durable inbox record and an imported ``queued_manual``,
+        for immediate and due scheduled requests alike. Once a tick promotes
+        the request to ``pending``/``manual_pending`` the stop/recovery path
+        owns it and this refuses.
+
+        A live corner holds the execution lock for its whole slot, so the
+        promotion path is locked out at the same time: a queued request
+        cannot move while the lock is held. When the lock is busy the request
+        is instead reviewed under the inbox lock and a durable
+        ``queued_manual_cancel`` intent is recorded; the next free tick
+        re-validates the fingerprint and commits the removal, so the feature
+        works exactly while a corner is running.
+        """
+        if apply and not (isinstance(expected, str) and len(expected) == 64
+                          and all(c in "0123456789abcdef" for c in expected)):
+            raise RotationError(
+                "queued manual cancellation requires the reviewed fingerprint",
+                reason_code="expected_reservation_required",
+            )
+        if not rotation_enabled(self.g):
+            raise RotationError(
+                "common corner rotation is disabled", reason_code="rotation_disabled"
+            )
+        with self.locked() as acquired:
+            if acquired:
+                return self._cancel_queued_manual_locked(
+                    game, expected=expected, apply=apply, now=now)
+        return self._queued_manual_cancel_intent(
+            game, expected=expected, apply=apply, now=now)
+
+    def _cancel_queued_manual_locked(self, game, *, expected, apply, now):
+        with self._manual_queue_lock():
+            if now is None:
+                now = timestamp(self.clock())
+            state = self.load(now)
+            if state["status"] == "recovery_required":
+                raise RotationError(
+                    "corner recovery required before queued manual cancellation",
+                    reason_code="recovery_required",
+                )
+            if now < state["last_seen_at"]:
+                raise RotationError("clock regressed", reason_code="clock_regressed")
+            chosen, inbox, queued, request, request_id = \
+                self._queued_manual_reservation(state, game)
+            fingerprint = self._queued_manual_fingerprint(request)
+            location = ("both" if inbox is not None and queued is not None
+                        else "ledger" if queued is not None else "inbox")
+            if not apply:
+                return {"status": "eligible", "corner": chosen,
+                        "location": location, "fingerprint": fingerprint}
+            if fingerprint != expected:
+                raise RotationError(
+                    "queued manual reservation changed since review",
+                    reason_code="reservation_changed",
+                )
+            artifact = self._drop_queued_manual_artifacts(request, request_id)
+            if inbox is not None:
+                self._manual_queue_path.unlink()
+            state["queued_manual"] = None
+            # Retain the cancelled request privately for audit. Cooldown,
+            # history, pauses and every runtime/receipt remain untouched.
+            state["last_queued_manual_cancel"] = {
+                "reservation": request, "at": now,
+                "reason": "owner-cancelled-queued-reservation"}
+            self.save(state)
+            self._clear_notice()
+            result = {"status": "cancelled", "corner": chosen,
+                      "location": location}
+            if artifact is not None:
+                result["resume_artifact"] = artifact
+            return result
+
+    def _queued_manual_cancel_intent(self, game, *, expected, apply, now):
+        """Reviewed cancel intent while a live slot holds the execution lock."""
+        with self._manual_queue_lock():
+            if now is None:
+                now = timestamp(self.clock())
+            state = self.load(now)
+            if state["status"] == "recovery_required":
+                raise RotationError(
+                    "corner recovery required before queued manual cancellation",
+                    reason_code="recovery_required",
+                )
+            if now < state["last_seen_at"]:
+                raise RotationError("clock regressed", reason_code="clock_regressed")
+            chosen, inbox, queued, request, request_id = \
+                self._queued_manual_reservation(state, game)
+            fingerprint = self._queued_manual_fingerprint(request)
+            location = ("both" if inbox is not None and queued is not None
+                        else "ledger" if queued is not None else "inbox")
+            if not apply:
+                return {"status": "eligible", "corner": chosen,
+                        "location": location, "fingerprint": fingerprint,
+                        "via": "intent"}
+            if fingerprint != expected:
+                raise RotationError(
+                    "queued manual reservation changed since review",
+                    reason_code="reservation_changed",
+                )
+            state["queued_manual_cancel"] = {
+                "expected": expected, "request_id": request_id, "at": now,
+                "corner": chosen}
+            self.save(state)
+            return {"status": "cancel_requested", "corner": chosen,
+                    "location": location}
+
+    def _commit_queued_manual_cancel(self, state, intent, now):
+        """Commit (or refuse) a recorded queued-manual cancel intent.
+
+        Runs only in the free-slot tick path, where the execution lock proves
+        no dispatch is in flight and the inbox lock serializes this removal
+        against any concurrent cancel request.
+        """
+        with self._manual_queue_lock():
+            inbox = self._read_manual_queue()
+            queued = state.get("queued_manual")
+            request = queued if isinstance(queued, dict) else inbox
+            outcome = "already_dispatched"
+            artifact = None
+            if (isinstance(request, dict)
+                    and self._queued_manual_fingerprint(request)
+                    == intent.get("expected")):
+                if request.get("resume_latest") is True:
+                    try:
+                        artifact = self._drop_queued_manual_artifacts(
+                            request, intent["request_id"])
+                    except RotationError:
+                        # Unsafe artifact: keep the intent for review rather
+                        # than either cancelling or silently dropping it.
+                        return
+                if inbox is not None:
+                    self._manual_queue_path.unlink()
+                state["queued_manual"] = None
+                outcome = "cancelled"
+            elif isinstance(request, dict):
+                outcome = "reservation_changed"
+            state["queued_manual_cancel"] = None
+            state["last_queued_manual_cancel"] = {
+                "reservation": (request if isinstance(request, dict)
+                                else {"request_id": intent.get("request_id")}),
+                "at": now,
+                "reason": f"owner-cancelled-queued-reservation-{outcome}"}
+
     def _remember_catalog(self, state):
         known = state.setdefault("known_corners", {})
         if not isinstance(known, dict):
@@ -600,6 +1057,117 @@ class CornerRotationManager:
                 known.setdefault(retired_key, previous)
             known[corner.id] = current
 
+    def _sweep_terminal_stop_requests(self):
+        """Invalidate durable stop markers whose target run is already over (#4226).
+
+        A marker is only ever created while its target state file shows a live
+        owner, so a marker whose target now reads a terminal status can never
+        be consumed by the run it named -- and would instantly stop the next
+        run on the same file at its first wait-loop check. The sweep is
+        bounded and best-effort: an unreadable or unproven target keeps its
+        marker (fail closed), and a corrupt marker still names the state file
+        it stops, so it is swept by filename too.
+        """
+        request_dir = Path(self.g.state_dir) / STOP_REQUEST_DIR
+        try:
+            markers = sorted(request_dir.glob("*.json"))[:STOP_REQUEST_SWEEP_LIMIT]
+        except OSError:
+            return
+        for marker in markers:
+            try:
+                raw = json.loads((Path(self.g.state_dir) / marker.name).read_text())
+            except (OSError, ValueError):
+                continue
+            if (not isinstance(raw, dict)
+                    or raw.get("status") not in STOP_REQUEST_TERMINAL_STATUSES):
+                continue
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _sweep_orphaned_auto_restore(state):
+        """Drop a still-pending restore-replay budget once its reservation is gone (#4226).
+
+        The record is only actionable while the exact request it belongs to is
+        still latched as ``pending``/``manual_pending``. A released or
+        committed reservation leaves a record that still reads as a queued
+        retry -- attempts remain and no replay outcome settled it -- behind
+        as a stale diagnostic; a later reservation starts its own budget. A
+        record that already reached its outcome (the replay succeeded, or the
+        bounded attempts were spent) is audit of finished work, not a queued
+        retry, so it stays.
+        """
+        record = state.get("auto_restore")
+        if not isinstance(record, dict):
+            return
+        for key in ("pending", "manual_pending"):
+            owner = state.get(key)
+            if (isinstance(owner, dict)
+                    and owner.get("request_id") == record.get("request_id")):
+                return
+        attempts = record.get("attempts")
+        if (record.get("last_status") == "succeeded"
+                or (type(attempts) is int
+                    and attempts >= AUTO_RESTORE_ATTEMPT_LIMIT)):
+            return
+        state.pop("auto_restore", None)
+
+    def _notice_unowned_terminal(self, state, corner_id, adapter, raw, now):
+        """Flag a Hanjuku terminal whose corner process is gone (#3599).
+
+        The manager that observes a run also tears it down; when that process
+        dies, ``hanjuku_run.json`` keeps its terminal latch while the corner
+        state file stays 'active' forever and every later tick just waits.
+        The timer cannot safely adopt the teardown (fences, leases and the
+        hotload generation gate belong to the absent owner), so it records a
+        bounded anomaly the operator can act on instead.
+        """
+        if (raw.get("status") != "active" or raw.get("game") != "hanjuku-hero"):
+            return
+        reason = raw.get("end_reason")
+        if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+            # The manager may have died before it ever saw the terminal; check
+            # the durable run record itself when a runtime is known.
+            runtime_id = raw.get("bot_runtime_id")
+            if not isinstance(runtime_id, str) or not runtime_id:
+                return
+            try:
+                from .naming import runtime_directory
+                from .retroarch_boundary import read_record
+                record = read_record(
+                    runtime_directory(Path(self.g.state_dir), runtime_id)
+                    / "hanjuku_run.json")
+            except Exception:
+                return
+            reason = record.get("terminal_reason")
+            if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+                return
+        path = getattr(adapter, "state_path", None)
+        if path is None:
+            return
+        path = Path(path)
+        # Both the scheduled and the manual manager write their own file every
+        # observation tick; whichever is newest is the corner's heartbeat.
+        siblings = [path, path.with_name(path.stem + "_manual.json")]
+        try:
+            newest = max(p.stat().st_mtime for p in siblings if p.exists())
+        except ValueError:
+            return
+        except OSError:
+            return
+        if now - newest < TERMINAL_OWNER_STALE_SECONDS:
+            return
+        self._record_failed_corner_once(
+            state,
+            {"corner": corner_id,
+             "request_id": (raw.get("rotation_request_id")
+                            or raw.get("bot_runtime_id") or "unknown")},
+            resolution="recovery-required",
+            error_kind="execution-unverified", now=now,
+            reason_code="terminal-owner-absent")
+
     def _observers(self, state):
         observers = dict(self.adapters)
         known = state.get("known_corners") or {}
@@ -613,6 +1181,11 @@ class CornerRotationManager:
     def _observe(self, state, now):
         """Import manual usage; unknown or orphaned execution blocks selection."""
 
+        # Every dispatch is preceded by this observation pass, so a stale stop
+        # marker or replay budget left by a dead run is invalidated before the
+        # same state file can be reused (#4226).
+        self._sweep_terminal_stop_requests()
+        self._sweep_orphaned_auto_restore(state)
         pending = state.get("pending")
         rows = state.get("released_requests")
         released_requests = rows if isinstance(rows, dict) else {}
@@ -635,8 +1208,68 @@ class CornerRotationManager:
                 status = raw.get("status", "idle")
                 if status not in BUSY | TERMINAL:
                     raise RotationError("unknown adapter state", kind="adapter-state")
+                try:
+                    self._notice_unowned_terminal(state, corner_id, adapter, raw, now)
+                except Exception:
+                    pass
                 own = pending and raw.get("rotation_request_id") == pending["request_id"]
                 if status in BUSY and not own:
+                    if status in {"restoring", "failed"}:
+                        # A crashed finish parks the record at ``restoring``
+                        # (or ``failed`` when the restore switch lost) forever:
+                        # no pending reservation owns it and the legacy
+                        # restoring retry tick is unreachable while rotation is
+                        # enabled. The adapter hook replays the recorded
+                        # restore inside its own bounds; on a refusal it
+                        # records last_error_code and the row simply stays
+                        # busy (fail closed, same as a latch).
+                        hook = ("recover_failed_restore" if status == "restoring"
+                                else "recover_failed")
+                        runner = getattr(adapter, hook, None)
+                        outcome = "no-hook"
+                        if callable(runner):
+                            try:
+                                outcome = runner()
+                            except Exception as exc:
+                                outcome = type(exc).__name__
+                        # The corner's own last_error_code is invisible while
+                        # the drive never fires (e.g. a held state lock), so
+                        # the ledger keeps the last observed outcome too.
+                        result = (outcome if isinstance(outcome, str)
+                                  else getattr(outcome, "status", "unknown"))
+                        drive = {"at": now, "corner": corner_id,
+                                 "result": result}
+                        previous_drive = state.get("last_restoring_drive")
+                        stale = 1
+                        # ``no-hook`` is a failed drive too: an adapter with no
+                        # owner-only recover entry can never retire this row
+                        # itself, so without this the stale proof never reaches
+                        # the slot-release path and the rotation waits forever
+                        # (2026-11-16 production: a failed manual start left a
+                        # ``waiting`` rotation that no operator command owned).
+                        if (status == "failed"
+                                and result in {"noop", "failed", "no-hook"}
+                                and isinstance(previous_drive, dict)
+                                and previous_drive.get("corner") == corner_id
+                                and previous_drive.get("result")
+                                    in {"noop", "failed", "no-hook"}):
+                            stale = int(previous_drive.get("stale", 1)) + 1
+                        drive["stale"] = stale
+                        state["last_restoring_drive"] = drive
+                        # A ``failed`` slot whose own recover keeps refusing or
+                        # failing is dead by evidence: keep it audited but let
+                        # the release proof below free the rotation instead of
+                        # wedging every later corner forever (the skip still
+                        # requires _slot_reusable, so a live remnant stays
+                        # fail-closed).
+                        if status == "failed" and stale >= 2:
+                            self._mark_released_request(
+                                state, corner_id,
+                                raw.get("rotation_request_id"), now)
+                            # The snapshot above was taken before this row;
+                            # re-read it so the same tick can skip the released
+                            # failure instead of waiting one more tick.
+                            released_requests = state.get("released_requests") or {}
                     # A released failure must not keep stopping the rotation,
                     # but only while the shared slot still proves that exact
                     # request left nothing behind (#2187). The proof is
@@ -668,22 +1301,26 @@ class CornerRotationManager:
                         busy = True
                     else:
                         outcome = self._settle_released_failure(adapter, request_id)
-                        if outcome is None:
-                            # The adapter proved the release but cannot retire
-                            # the owner yet (for example its durable stop
-                            # request could not be removed). Keep that shared
-                            # state file out of selection and keep the registry
-                            # row so the same settle is retried until it works.
+                        if outcome is not True and corner_id in self.adapters:
+                            # The owner still holds this shared state file:
+                            # either retirement is proved but deferred (None)
+                            # or no hook can retire it (False, e.g. an adapter
+                            # whose manager never learned the settle). A new
+                            # dispatch on the same file only fails again and
+                            # evicts this request's release evidence from the
+                            # bounded audit (#2354 review, #3682).
                             path = getattr(adapter, "state_path", None)
                             if path is not None:
                                 unretired.add(Path(path))
-                        else:
+                        if outcome is not None:
                             # The same proof also retires the registry row this
                             # corner left behind, so the skip is real at the
                             # shared program slot and not only in this ledger.
                             # Re-running it every tick is what clears a row
                             # written before the release learned to do it,
-                            # without an SSH recovery (#2282).
+                            # without an SSH recovery (#2282). A deferred
+                            # retirement (None) keeps the row until the owner
+                            # is gone.
                             self._release_program_owner(adapter)
                 # Use actual start AND completion; a delayed queued start can
                 # never become eligible 24h after its much earlier selection.
@@ -740,24 +1377,383 @@ class CornerRotationManager:
                 excluded[corner.id] = "adapter-unavailable"
         return result, excluded
 
-    def _cooldown_due_at(self, history, eligible, now):
-        """Return the earliest timestamp at which a cooling corner can recur.
+    def _least_cooled_corner(self, history, eligible, reserved_corner=None):
+        """The eligible corner with the shortest remaining cooldown.
 
-        ``next_due_at`` is the nominal 24/N cadence.  When the cadence gets
-        ahead of the rolling cooldown (for example after downtime or a late
-        completion), every eligible corner can still be excluded even though
-        the nominal slot is overdue.  Keeping the old nominal timestamp makes
-        diagnostics report a permanent overdue slot and causes each tick to
-        reconsider the same impossible selection.  Re-anchor to the first
-        actual cooldown expiry instead.
+        The rolling cooldown is the basic rule, but it must not leave the
+        rotation idle after every eligible corner has been used.  When no
+        corner is past cooldown, the slot goes to the corner whose cooldown
+        ends first, i.e. the least recently used one.  Its last use is the
+        newest history row for that corner (reservation, completion, manual
+        use or failure all count).  ``None`` means no eligible corner has a
+        recorded use.  Ties are broken by corner id so the choice is stable
+        across restarts and does not depend on catalog order.
         """
+
         eligible = set(eligible)
-        deadlines = [
-            row["at"] + self.cooldown_seconds
-            for row in history
-            if row.get("corner") in eligible and row["at"] > now - self.cooldown_seconds
-        ]
-        return min(deadlines) if deadlines else None
+        latest = {}
+        for row in history:
+            corner = row.get("corner")
+            if corner not in eligible or corner == reserved_corner:
+                continue
+            at = row["at"]
+            if corner not in latest or at > latest[corner]:
+                latest[corner] = at
+        if not latest:
+            return None
+        return min(latest, key=lambda corner: (latest[corner], corner))
+
+    # --- advance notice for the next corner ---------------------------------
+    # The next corner is decided before it is due (the same seeded ranking the
+    # dispatcher uses) so the broadcast can promise it.  The published record
+    # is the only thing the broadcast sidebar reads: the seed, the slot and the
+    # request UUIDs never leave this ledger.
+    def _auto_candidates(self, state, eligible, at, reserved_corner):
+        """Eligible auto corners whose rolling cooldown is clear at ``at``."""
+        recent = {
+            row["corner"] for row in state["history"]
+            if row["at"] > at - self.cooldown_seconds
+        }
+        return [c for c in eligible if c not in recent and c != reserved_corner]
+
+    def _rank(self, state, corner):
+        # Seeded independent random ranking is stable across restart and
+        # catalog order, without persisting interpreter RNG state.
+        return hashlib.sha256(
+            f'{state["seed"]}:{state["slot"]}:{corner}'.encode()
+        ).digest()
+
+    def _pick(self, state, candidates):
+        return min(candidates, key=lambda corner: self._rank(state, corner))
+
+    def _planned_notice(self, state, now, eligible, reserved_corner=None):
+        """The already-published corner while it is still a valid candidate.
+
+        An announcement that viewers have seen does not flip because a corner
+        became eligible after it was made; it is re-drawn only when the corner
+        stopped being selectable (paused, cooling at the announced time, or a
+        manual reservation now excludes it).
+        """
+        current = corner_notice.read(self.g)
+        if current is None or current.get("source") != "auto":
+            return None
+        if now - current["updated_at"] > corner_notice.MAX_AGE_SECONDS:
+            # A plan the timer stopped refreshing is not a promise any more.
+            return None
+        due_at = timestamp(current["due_at"])
+        at = max(due_at, now)
+        candidates = self._auto_candidates(state, eligible, at, reserved_corner)
+        if current["corner"] in candidates:
+            return current["corner"], due_at, "auto"
+        if not candidates and self._least_cooled_corner(
+                state["history"], eligible, reserved_corner) == current["corner"]:
+            # The exhausted rotation promised the least-cooled corner; keep
+            # that promise until another corner becomes the least cooled.
+            return current["corner"], due_at, "auto"
+        return None
+
+    def _next_corner_notice(self, state, now, eligible, future_manual=None):
+        """The corner that will start next, decided ahead of its due time.
+
+        The same rules as dispatch: an interval cadence anchors the time, and
+        when every eligible corner is still cooling the least-cooled one is
+        scheduled (instead of idling until its cooldown ends). A scheduled
+        manual reservation is announced when it comes before the next automatic
+        slot. ``None`` means there is nothing to promise (queue mode fires as
+        soon as the slot is free, or no corner is eligible).
+        """
+        manual = None
+        queued = future_manual if isinstance(future_manual, dict) else state.get("queued_manual")
+        if isinstance(queued, dict) and queued.get("trigger_at") is not None:
+            manual = (queued["corner"], timestamp(queued["trigger_at"]), "manual")
+        reserved_corner = manual[0] if manual is not None else None
+        auto = None
+        if self.schedule_mode == "interval" and eligible:
+            auto = self._planned_notice(state, now, eligible, reserved_corner)
+            if auto is None:
+                # Mirror the dispatcher's own anchor: the fixed interval is
+                # measured from the last actual start.
+                due_at = timestamp(state["next_due_at"])
+                if state.get("last_slot_at") is not None:
+                    due_at = (timestamp(state["last_slot_at"])
+                              + self._target_interval(eligible))
+                candidates = self._auto_candidates(
+                    state, eligible, max(due_at, now), reserved_corner
+                )
+                if not candidates:
+                    least_cooled = self._least_cooled_corner(
+                        state["history"], eligible, reserved_corner
+                    )
+                    if least_cooled is not None:
+                        candidates = [least_cooled]
+                if due_at is not None and candidates:
+                    auto = (self._pick(state, candidates), due_at, "auto")
+        if manual is not None and (auto is None or manual[1] <= auto[1]):
+            return manual
+        return auto
+
+    def _sorengame_on_air(self):
+        """True unless the shared game switch has another game on screen.
+
+        The notice belongs to sorengame; a one-off manual corner or a special
+        view that is not this ledger's own slot must not carry a promise about
+        the rolling rotation. An unreadable ledger keeps the rotation's own
+        slot as the only gate (the tick already proves no pending slot).
+        """
+        try:
+            from .stream_category import BACKGROUND_GAME
+
+            raw = json.loads((Path(self.g.state_dir) / "game_switch.json").read_text())
+        except (OSError, ValueError, UnicodeError):
+            return True
+        except Exception:
+            return True
+        active = raw.get("active") if isinstance(raw, dict) else None
+        game = active.get("game") if isinstance(active, dict) else None
+        if not isinstance(game, str) or not game:
+            return True
+        return game == BACKGROUND_GAME
+
+    @staticmethod
+    def _empty_prediction():
+        return {
+            "in_flight": False,
+            "worker_running": False,
+            "remaining_games": None,
+            "started_at": None,
+        }
+
+    def _prediction_snapshot(self):
+        """Bounded prediction view for the notice and dispatch hold."""
+        if self._prediction_state is not None:
+            try:
+                raw = self._prediction_state()
+            except Exception:
+                return self._empty_prediction()
+            if not isinstance(raw, dict):
+                raw = {"in_flight": bool(raw)}
+            remaining = raw.get("remaining_games")
+            if (type(remaining) is not int or isinstance(remaining, bool)
+                    or not 0 <= remaining <= 100):
+                remaining = None
+            started = raw.get("started_at")
+            if (type(started) not in (int, float) or isinstance(started, bool)
+                    or not math.isfinite(started) or started <= 0):
+                started = None
+            return {
+                "in_flight": bool(raw.get("in_flight")),
+                # An injected snapshot is a test double: the worker is part of
+                # the simulated state unless the caller says otherwise.
+                "worker_running": bool(raw.get("worker_running", True)),
+                "remaining_games": remaining,
+                "started_at": started,
+            }
+        if self._prediction_guard is not None:
+            try:
+                in_flight = bool(self._prediction_guard())
+            except Exception:
+                in_flight = False
+            return {
+                "in_flight": in_flight,
+                "worker_running": False,
+                "remaining_games": None,
+                "started_at": None,
+            }
+        try:
+            from .corner_boundary import prediction_snapshot
+            from .trading.soren_output import resolve_soren_root
+
+            raw = prediction_snapshot(resolve_soren_root(self.g) / "tmp/state")
+        except Exception:
+            return self._empty_prediction()
+        if not isinstance(raw, dict):
+            return self._empty_prediction()
+        return {
+            "in_flight": bool(raw.get("in_flight")),
+            "worker_running": bool(raw.get("worker_running")),
+            "remaining_games": raw.get("remaining_games"),
+            "started_at": raw.get("started_at"),
+        }
+
+    def _prediction_worker_running(self):
+        """True while the prediction worker can still create a prediction."""
+        if self._prediction_state is not None:
+            return bool(self._prediction_snapshot().get("worker_running"))
+        if self._prediction_guard is not None:
+            # The legacy bool injector cannot distinguish a stopped worker;
+            # pending is a new state, so keep it off for those tests.
+            return False
+        try:
+            from .corner_boundary import prediction_worker_running
+            from .trading.soren_output import resolve_soren_root
+
+            return bool(prediction_worker_running(resolve_soren_root(self.g) / "tmp/state"))
+        except Exception:
+            return False
+
+    def _prediction_pending_after_slot(self, state, now):
+        """True during the short window where the next prediction starts first."""
+        if self.prediction_handoff_seconds <= 0:
+            return False
+        result = state.get("last_result")
+        if not isinstance(result, dict):
+            return False
+        if result.get("status") not in NOTICE_SPOKEN_STATUSES:
+            return False
+        try:
+            ended = timestamp(result.get("at"))
+        except Exception:
+            return False
+        if not 0 <= now - ended <= self.prediction_handoff_seconds:
+            return False
+        snapshot = self._prediction_snapshot()
+        if snapshot["in_flight"]:
+            return False
+        return self._prediction_worker_running()
+
+    def _prediction_hold_expired(self, state, snapshot, now):
+        """True when a stuck prediction must stop holding the dispatch."""
+        started = snapshot.get("started_at")
+        if started is None:
+            # No bounded start time: fall back to the slot that ended (the
+            # prediction normally starts right after it), then to the first
+            # tick that observed the hold. Never invent a deadline from an old
+            # result, but never hold forever either.
+            result = state.get("last_result")
+            if isinstance(result, dict):
+                try:
+                    started = timestamp(result.get("at"))
+                except Exception:
+                    started = None
+        if started is None:
+            since = state.get("prediction_hold_since")
+            if (type(since) not in (int, float) or isinstance(since, bool)
+                    or not math.isfinite(since) or since <= 0):
+                since = now
+                state["prediction_hold_since"] = now
+            started = since
+        if self.prediction_hold_wait_seconds <= 0:
+            return True
+        return now - started > self.prediction_hold_wait_seconds
+
+    def _prediction_dispatch_hold(self, state, now):
+        """Return a wait reason while a prediction owns the next auto slot.
+
+        Only an automatic dispatch is held: a queued/manual reservation keeps
+        its operator contract. The prediction deadline is a safety valve; when
+        it is exceeded the normal boundary path runs and can still expire.
+        """
+        notice = corner_notice.read(self.g)
+        if (notice is not None and notice.get("hold") == "prediction-pending"
+                and notice.get("source") == "auto"):
+            return "prediction-handoff"
+        snapshot = self._prediction_snapshot()
+        if not snapshot["in_flight"]:
+            state.pop("prediction_hold_since", None)
+            return None
+        if self._prediction_hold_expired(state, snapshot, now):
+            state["prediction_hold_timeout_at"] = max(
+                float(state.get("prediction_hold_timeout_at") or 0), now)
+            return None
+        return "prediction-hold"
+
+    def _sync_notice(self, state, now, eligible, future_manual=None):
+        """Publish (or clear) the advance notice; speak it once after a slot.
+
+        Never raises: a broadcast projection that cannot be written must not
+        affect selection, execution or recovery.
+        """
+        try:
+            if state.get("pending") is not None or state.get("manual_pending") is not None:
+                corner_notice.clear(self.g)
+                return None
+            if not self._sorengame_on_air():
+                # Another corner or view owns the screen: sorengame is not on.
+                corner_notice.clear(self.g)
+                return None
+            decision = self._next_corner_notice(state, now, eligible, future_manual)
+            if decision is None:
+                corner_notice.clear(self.g)
+                return None
+            corner, due_at, source = decision
+            # A prediction can hold the slot past its planned clock. That is
+            # exactly when the card must stay (the viewer needs to know what
+            # is next), so the "too close to promise" withdrawal only applies
+            # to a normal slot that is about to start. A short post-corner
+            # window announces "予想開始待ち" and lets the prediction start
+            # before a clock is promised again.
+            snapshot = self._prediction_snapshot()
+            hold = None
+            remaining = None
+            if snapshot["in_flight"]:
+                hold = "prediction"
+                remaining = snapshot["remaining_games"]
+            elif (source == "auto"
+                    and timestamp(due_at) - now >= self.prediction_handoff_seconds
+                    and self._prediction_pending_after_slot(state, now)):
+                hold = "prediction-pending"
+            current = corner_notice.read(self.g)
+            if (hold is None
+                    and timestamp(due_at) - now < corner_notice.MIN_LEAD_SECONDS
+                    and (current is None or current.get("corner") != corner)):
+                # Too close to promise, and never a fresh promise after the
+                # fact: the dispatcher starts it in this or the next tick.
+                corner_notice.clear(self.g)
+                return None
+            record = corner_notice.publish(
+                self.g, corner=corner, due_at=due_at, source=source, now=now,
+                hold=hold, remaining_games=remaining,
+            )
+        except Exception:
+            return None
+        try:
+            self._speak_notice_once(state, record, now)
+        except Exception:
+            pass
+        return record
+
+    def _speak_notice_once(self, state, record, now):
+        """Speak the notice once for the slot that just ended (best effort)."""
+        result = state.get("last_result")
+        if not isinstance(result, dict) or record is None or record.get("hold"):
+            return
+        if result.get("status") not in NOTICE_SPOKEN_STATUSES:
+            return
+        request_id = result.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return
+        if state.get("notice_spoken_for") == request_id:
+            return
+        try:
+            ended_at = timestamp(result.get("at"))
+            due_at = timestamp(record.get("due_at"))
+        except Exception:
+            return
+        if not 0 <= now - ended_at <= NOTICE_SPEAK_WINDOW_S:
+            return
+        if due_at - now < corner_notice.MIN_LEAD_SECONDS:
+            return
+        # Marked before delivery: a paused or missing queue must not make every
+        # following tick retry the same line.
+        state["notice_spoken_for"] = request_id
+        speech = self._speech
+        if speech is None:
+            from .trading.soren_output import enqueue_audio_text
+
+            speech = lambda text: enqueue_audio_text(  # noqa: E731
+                self.g, text, context="corner_notice",
+                dedup_scope=f"corner-notice:{request_id}",
+            )
+        try:
+            speech(corner_notice.speech_text(record, now))
+        except Exception:
+            return
+
+    def _clear_notice(self):
+        try:
+            corner_notice.clear(self.g)
+        except Exception:
+            pass
 
     def _reconcile_failed_start(self, adapter, reservation, *, manual, now):
         """Prove a failed start rolled back before terminalizing its reservation."""
@@ -990,7 +1986,7 @@ class CornerRotationManager:
             return False, record
         return True, record
 
-    def _run_auto_restore_recovery(self, state, pending, adapter, now):
+    def _run_auto_restore_recovery(self, state, pending, adapter, now, *, manual=False):
         """Replay the reviewed restore recovery once, inside its own budget.
 
         Returns a settled outcome when the replay made the reservation
@@ -1030,10 +2026,94 @@ class CornerRotationManager:
         state["auto_restore"] = record
         try:
             return self._commit_verified_failed_start(
-                state, pending, adapter, manual=False, now=now
+                state, pending, adapter, manual=manual, now=now
             )
         except Exception:
             return None
+
+    def _auto_plane_recovery_budget(self, state, reservation, now):
+        """Return (allowed, record) for the bounded plane-recovery replay.
+
+        The budget belongs to one reservation: a new request starts a fresh
+        budget, and the attempt count plus the next allowed time are durable so
+        a restart cannot turn the cap into an unbounded recovery loop.
+        """
+
+        record = state.get("auto_plane_recovery")
+        if (not isinstance(record, dict)
+                or record.get("request_id") != reservation.get("request_id")):
+            record = {"request_id": reservation.get("request_id"),
+                      "corner": reservation.get("corner"),
+                      "attempts": 0,
+                      "next_attempt_at": now,
+                      "last_status": None,
+                      "exhausted_recorded": False}
+            state["auto_plane_recovery"] = record
+        attempts = record.get("attempts")
+        if type(attempts) is not int or attempts < 0:
+            attempts = 0
+            record["attempts"] = 0
+        if attempts >= AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT:
+            return False, record
+        next_at = record.get("next_attempt_at")
+        if isinstance(next_at, (int, float)) and not isinstance(next_at, bool) and now < next_at:
+            return False, record
+        return True, record
+
+    def _plane_phase(self, adapter):
+        """Read the shared plane's phase without taking its writer lock."""
+
+        store = getattr(getattr(adapter, "manager", None), "store", None)
+        if store is None:
+            return None
+        try:
+            with store.lock(exclusive=False):
+                canonical, missing = store.canonical.load()
+        except Exception:
+            return None
+        if missing or not isinstance(canonical, dict):
+            return None
+        phase = canonical.get("phase")
+        return phase if isinstance(phase, str) else None
+
+    def _run_auto_plane_recovery(self, state, reservation, adapter, now):
+        """Run at most one reviewed plane recovery for a parked failure.
+
+        Only a stable terminal canonical phase is touched: an in-flight switch
+        has its own driver and must not be raced. The coordinator recovery is
+        the same reviewed path the owner runs by hand (it never starts a
+        corner), and every attempt is bounded and durable. Returns True when an
+        attempt ran so the caller can re-prove the slot.
+        """
+
+        coordinator = getattr(getattr(adapter, "manager", None), "coordinator", None)
+        if not callable(getattr(coordinator, "recover", None)):
+            return False
+        if self._plane_phase(adapter) not in AUTO_PLANE_RECOVERY_PHASES:
+            return False
+        allowed, record = self._auto_plane_recovery_budget(state, reservation, now)
+        if not allowed:
+            return False
+        try:
+            result = coordinator.recover(timeout_s=AUTO_PLANE_RECOVERY_TIMEOUT_S)
+        except Exception:
+            result = None
+        status = getattr(result, "status", None) if result is not None else None
+        if status is None and isinstance(result, str):
+            status = result
+        attempts = int(record.get("attempts") or 0) + 1
+        record.update(attempts=attempts,
+                      last_status=status if isinstance(status, str) and status else "unknown",
+                      next_attempt_at=now + AUTO_PLANE_RECOVERY_BACKOFF_SECONDS[
+                          min(attempts, len(AUTO_PLANE_RECOVERY_BACKOFF_SECONDS)) - 1])
+        state["auto_plane_recovery"] = record
+        if attempts >= AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT and not record.get("exhausted_recorded"):
+            record["exhausted_recorded"] = True
+            self._record_failed_corner_once(
+                state, reservation, resolution="recovery-required",
+                error_kind=state.get("error_kind") or "execution-unverified", now=now,
+            )
+        return True
 
     def _mark_released_request(self, state, corner, request_id, now):
         """Remember one released failure per corner so `_observe` can skip it.
@@ -1077,9 +2157,10 @@ class CornerRotationManager:
         ``True`` means the owner is retired. ``None`` means the adapter proved
         the release but cannot retire the owner yet, so the shared state file
         must stay out of selection and the same settle is retried. ``False``
-        (also for an adapter without the hook, or a raising one) keeps the
-        previous behaviour: the released failure is skipped and other corners
-        keep rotating.
+        (also for an adapter without the hook, or a raising one) means the
+        owner stays on the file: the released failure is skipped for other
+        corners, but this shared state file stays out of selection so a
+        failing re-dispatch cannot evict the release evidence (#3682).
         """
 
         settle = getattr(adapter, "settle_released_failure", None)
@@ -1094,8 +2175,8 @@ class CornerRotationManager:
         return False
 
     def _release_failed_corner(self, state, reservation, adapter, *, error_kind, now,
-                               base_unrestored=False):
-        """Settle an unproven automatic failure without stopping the rotation.
+                               base_unrestored=False, manual=False):
+        """Settle an unproven failure without stopping the rotation.
 
         Only the shared-slot proof gates this. Adapters may retire their own
         failed owner after rechecking that proof; the failed rotation remains
@@ -1104,6 +2185,9 @@ class CornerRotationManager:
         and the corner returns at its normal cadence. ``base_unrestored`` marks
         the case where the plane was reclaimed from a finished corner whose own
         game could not be restored, so the operator can still fix the base.
+        A released manual reservation is dropped from ``manual_pending`` only;
+        its request and failure stay in the audit, so an operator can still see
+        that the start did not run.
         """
 
         self._record_failed_corner(state, reservation, resolution="released-unverified",
@@ -1119,7 +2203,12 @@ class CornerRotationManager:
         # this request is in flight, so the row is stale by construction.
         self._release_program_owner(adapter)
         state["history"].append(dict(corner=reservation["corner"], at=now, source="failure"))
-        state["pending"] = None
+        if manual:
+            state["manual_pending"] = None
+        else:
+            state["pending"] = None
+        self._sweep_orphaned_auto_restore(state)
+        state.pop("auto_plane_recovery", None)
         # Advance the watermark exactly like the operator recovery does: a long
         # latch must not fall into the clock-gap quarantine below (#986).
         state["last_seen_at"] = now
@@ -1133,25 +2222,37 @@ class CornerRotationManager:
     def _auto_release_latch(self, state, now):
         """Try to clear a corner-failure latch without an operator (#2187).
 
-        Returns the tick outcome when the pending automatic reservation was
-        settled; ``None`` keeps the latch. Three proofs are tried in order: an
-        exact terminal rollback commit, the reviewed bounded restore replay
-        (only for an end failure that still owns the corner's game), and the
-        shared slot proof. Nothing here starts a corner, drops history or
-        bypasses the program slot.
+        Returns the tick outcome when the reservation was settled; ``None``
+        keeps the latch. Three proofs are tried in order: an exact terminal
+        rollback commit, the reviewed bounded restore replay (only for an end
+        failure that still owns the corner's game), and the shared slot proof.
+        Nothing here starts a corner, drops history or bypasses the program
+        slot.
+
+        A manual reservation is retried too (owner decision, 2026-11-16): a
+        failed manual start must not stop the rotation until an operator runs
+        ``corner-rotation recover``. The reservation is still not dropped
+        silently: only the same terminal/slot proofs that release an automatic
+        failure may release it, and the release keeps the failure row and the
+        cooldown history. A manual corner that is still running (or may be)
+        never passes ``_slot_reusable`` and keeps the latch.
         """
 
         pending = state.get("pending")
         manual = state.get("manual_pending")
-        if not isinstance(pending, dict) or manual is not None:
-            # A manual reservation is an operator slot: never released here.
+        if isinstance(pending, dict) and manual is None:
+            reservation, is_manual = pending, False
+        elif isinstance(manual, dict) and pending is None:
+            reservation, is_manual = manual, True
+        else:
+            # No reservation, or an inconsistent pair: an operator has to look.
             return None
-        adapter = self.adapters.get(pending.get("corner"))
+        adapter = self.adapters.get(reservation.get("corner"))
         if adapter is None:
             return None
         try:
             outcome = self._commit_verified_failed_start(
-                state, pending, adapter, manual=False, now=now
+                state, reservation, adapter, manual=is_manual, now=now
             )
         except Exception:
             outcome = None
@@ -1162,19 +2263,40 @@ class CornerRotationManager:
         # the rotation: the slot is reclaimable. Try the reviewed restore
         # recovery first (bounded by the per-request budget) so the base game
         # stays honest, then hand the slot to the next corner regardless.
-        leftover = self._leftover_corner_game(adapter, pending)
+        leftover = self._leftover_corner_game(adapter, reservation)
         if leftover:
-            replayed = self._run_auto_restore_recovery(state, pending, adapter, now)
+            replayed = self._run_auto_restore_recovery(
+                state, reservation, adapter, now, manual=is_manual
+            )
             if replayed is not None:
                 return replayed
-        if self._slot_reusable(adapter, pending):
+        if self._slot_reusable(adapter, reservation):
             return self._release_failed_corner(
-                state, pending, adapter, error_kind=kind, now=now,
-                base_unrestored=leftover,
+                state, reservation, adapter, error_kind=kind, now=now,
+                base_unrestored=leftover, manual=is_manual,
             )
+        # The plane itself may be parked in a terminal failure (the failing
+        # switch rolled back into ``failed``). Retry the reviewed coordinator
+        # recovery within its own budget; when it settles the plane the next
+        # proofs can release the failed corner without an operator.
+        if self._run_auto_plane_recovery(state, reservation, adapter, now):
+            try:
+                outcome = self._commit_verified_failed_start(
+                    state, reservation, adapter, manual=is_manual, now=now
+                )
+            except Exception:
+                outcome = None
+            if outcome is not None:
+                return outcome
+            if self._slot_reusable(adapter, reservation):
+                return self._release_failed_corner(
+                    state, reservation, adapter, error_kind=kind, now=now,
+                    base_unrestored=self._leftover_corner_game(adapter, reservation),
+                    manual=is_manual,
+                )
         # Keep the latch, but the failure must stay recorded for the operator
         # even when the tick only re-reads the latch (#2187).
-        self._record_failed_corner_once(state, pending,
+        self._record_failed_corner_once(state, reservation,
                                         resolution="recovery-required",
                                         error_kind=kind, now=now)
         return None
@@ -1221,10 +2343,22 @@ class CornerRotationManager:
             reconcile_stream_metadata(self.g)
         except Exception:
             pass
-        # The common timer owns only retry/reconciliation, never new predictions.
-        from .hanjuku_predictions import tick as prediction_tick
+        # The live run owns prediction creation (run-side agent primary). This
+        # timer is the fallback: when the canonical active Hanjuku runtime has
+        # a fresh observed run, tick_active adopts its identity and can create
+        # the round even if the corner observe loop never started. With no live
+        # run it behaves exactly like the old identity-less settlement tick.
+        # Resolved through the hot-load trampoline (#3838) so a predictions
+        # deploy reaches the long-lived corner worker without a restart.
+        from . import hanjuku_hotload
         from .soren_predictions import tick as soren_prediction_tick
-        prediction_tick(self.g)
+        prediction_module = hanjuku_hotload.module('hanjuku_predictions')
+        prediction_tick = getattr(prediction_module, 'tick_active', None)
+        if callable(prediction_tick):
+            prediction_tick(self.g)
+        else:
+            # Rolling deploy: an older hot-loaded copy has no adoption entry.
+            prediction_module.tick(self.g)
         # 予想王 (#933): Soren の resolve 済み row を台帳へ記録する。best-effort で、
         # 失敗しても rotation の tick は止めない。
         soren_prediction_tick(self.g)
@@ -1236,6 +2370,13 @@ class CornerRotationManager:
             now = timestamp(self.clock())
             state = self.load(now)
             self._remember_catalog(state)
+            # Terminal corner state invalidates the durable records a dead run
+            # left behind: a stale stop marker must not instantly stop the next
+            # run on the same file, and a released replay budget is no longer
+            # actionable (#4226). Both sweeps run before the latch path so a
+            # recovery_required tick cleans them too.
+            self._sweep_terminal_stop_requests()
+            self._sweep_orphaned_auto_restore(state)
             if state["status"] == "recovery_required":
                 # A corner failure must not stop the other corners once the
                 # shared slot is provably free; the timer retries this every
@@ -1245,16 +2386,26 @@ class CornerRotationManager:
                 # restore-replay budget, so persist even when it keeps the latch.
                 self.save(state)
                 if outcome is None:
+                    # A latched rotation cannot promise a start time.
+                    self._clear_notice()
                     return {"status": "recovery_required", "reason": state.get("reason")}
             future_manual = self._import_manual_queue(state, now)
             if now < state["last_seen_at"]:
+                self._clear_notice()
                 return self._wait(state, "clock-regressed")
-            if now - state["last_seen_at"] > DAY:
+            last_alive = self._last_proven_alive_at(state)
+            if last_alive is None or now - last_alive > DAY:
                 # A large jump is indistinguishable from downtime without a
                 # trusted time source: quarantine one full day, don't erase use.
-                state["clock_hold_until"] = now + DAY
+                # A slot parked in this process is not downtime; its heartbeat
+                # proves the process was alive until the restart, and a slot
+                # that ran past the window leaves fresh ledger rows proving
+                # the same after it resolves.
+                if not self._heartbeat_proves_parked_slot(state, now):
+                    state["clock_hold_until"] = now + DAY
             state["last_seen_at"] = now
             if now < state.get("clock_hold_until", 0):
+                self._clear_notice()
                 return self._wait(state, "clock-gap-quarantine")
             try:
                 manual = state.get("manual_pending")
@@ -1310,7 +2461,13 @@ class CornerRotationManager:
                         if owned and owned[0].get("status") == "restoring":
                             # Replay the exact reservation through the common
                             # program-slot and GameSwitchCoordinator gates.
-                            resumed = self.executor.execute(adapter, manual)
+                            with self._slot_heartbeat(manual):
+                                resumed = self.executor.execute(adapter, manual)
+                            # The slot just proved this process lived through
+                            # whatever gap last_seen_at could not record while
+                            # the lock was held; keep the watermark truthful.
+                            state["last_seen_at"] = max(
+                                state["last_seen_at"], timestamp(self.clock()))
                             resumed_status = (resumed if isinstance(resumed, str)
                                               else getattr(resumed, "status", None))
                             if resumed_status in {"completed", "interrupted"}:
@@ -1356,8 +2513,18 @@ class CornerRotationManager:
                     interval_seconds=interval if self.schedule_mode == "interval" else None,
                 )
                 pending = state.get("pending")
+                # Publish (or withdraw) the next-corner notice before any wait
+                # or dispatch below, so a promise never outlives its slot.
+                self._sync_notice(state, now, eligible, future_manual)
                 if busy:
+                    # Persist before the wait: the restoring-drive outcome and
+                    # history rows collected this tick must not evaporate when
+                    # the wedge is exactly what we are trying to observe.
+                    self.save(state)
                     return self._wait(state, "other-corner-needs-finish-or-recovery")
+                cancel_intent = state.get("queued_manual_cancel")
+                if isinstance(cancel_intent, dict):
+                    self._commit_queued_manual_cancel(state, cancel_intent, now)
                 queued = state.get("queued_manual")
                 queued_due = True
                 if queued is not None and queued.get("trigger_at") is not None:
@@ -1372,6 +2539,7 @@ class CornerRotationManager:
                     state["queued_manual"] = None
                     state["slot"] += 1
                     self.save(state)  # atomically transfer queued ownership
+                    self._clear_notice()
                 if pending is None:
                     if not eligible:
                         return self._wait(state, "no-enabled-corner")
@@ -1383,12 +2551,18 @@ class CornerRotationManager:
                     else:
                         # Queue dispatch: the next eligible corner fires as soon
                         # as the shared slot is free; next_due_at is informational
-                        # (the earliest cooldown expiry once nothing is eligible).
+                        # (now, because the exhausted rotation continues with the
+                        # least-cooled corner instead of waiting for a cooldown).
                         state["next_due_at"] = now
-                    recent = {
-                        r["corner"] for r in state["history"]
-                        if r["at"] > now - self.cooldown_seconds
-                    }
+                    # An announced/predicted slot is not dispatched into the
+                    # prediction boundary: the notice already says it starts
+                    # after the prediction (or waits for the prediction to
+                    # begin). The normal 10-minute boundary wait would expire
+                    # a 48-game prediction, so wait here instead (bounded).
+                    hold_reason = self._prediction_dispatch_hold(state, now)
+                    if hold_reason is not None:
+                        self.save(state)
+                        return self._wait(state, hold_reason)
                     # A future manual schedule reserves only its own corner:
                     # automatic rotation may keep using every other eligible
                     # corner, but must not pre-run the scheduled corner itself.
@@ -1396,37 +2570,52 @@ class CornerRotationManager:
                         future_manual.get("corner")
                         if isinstance(future_manual, dict) else None
                     )
-                    candidates = [
-                        c for c in eligible
-                        if c not in recent and c != reserved_corner
-                    ]
+                    candidates = self._auto_candidates(
+                        state, eligible, now, reserved_corner
+                    )
+                    cooldown_exempt = False
                     if not candidates:
-                        cooldown_due = self._cooldown_due_at(
+                        # Every eligible corner is still cooling. Do not idle
+                        # until the first cooldown expires: the exhausted
+                        # rotation continues with the least-cooled corner in
+                        # the next slot (owner decision 2026-11-22). This is
+                        # the only case that may start a corner before its
+                        # rolling cooldown has elapsed.
+                        least_cooled = self._least_cooled_corner(
                             state["history"],
                             [c for c in eligible if c != reserved_corner],
-                            now,
                         )
+                        if least_cooled is not None:
+                            candidates = [least_cooled]
+                            cooldown_exempt = True
+                    if not candidates:
+                        # Only the reserved manual corner is eligible (its
+                        # schedule starts it), or no use history exists yet.
                         trigger_due = None
                         if isinstance(future_manual, dict):
                             trigger_due = timestamp(future_manual["trigger_at"])
-                        deadlines = [d for d in (cooldown_due, trigger_due) if d is not None]
-                        if deadlines:
-                            state["next_due_at"] = min(deadlines)
-                        if trigger_due is not None and (
-                                cooldown_due is None or trigger_due <= cooldown_due):
+                        if trigger_due is not None:
+                            state["next_due_at"] = trigger_due
                             return self._wait(state, "scheduled-manual-not-due")
                         return self._wait(state, "all-corners-cooling-down")
-                    # Seeded independent random ranking is stable across restart
-                    # and catalog order, without persisting interpreter RNG state.
-                    def rank(corner):
-                        return hashlib.sha256(f'{state["seed"]}:{state["slot"]}:{corner}'.encode()).digest()
-                    chosen = min(candidates, key=rank)
+                    # The advance notice decided this corner before it was due
+                    # (the dashboard has already promised it). Honour that
+                    # decision whenever the corner is still a valid candidate;
+                    # re-draw only when the candidate set invalidated it.
+                    announced = corner_notice.read(self.g)
+                    planned = (announced.get("corner")
+                               if announced and announced.get("source") == "auto" else None)
+                    chosen = planned if planned in candidates else self._pick(state, candidates)
                     pending = dict(corner=chosen, phase="selected", selected_at=now,
+                                   cooldown_exempt=cooldown_exempt,
                                    request_id=str(uuid.uuid5(uuid.NAMESPACE_URL,
                                        f'corner:{state["seed"]}:{state["slot"]}:{chosen}')))
                     state["pending"] = pending
                     state["slot"] += 1
                     self.save(state)  # write-ahead reservation, before any side effect
+                    # The stream leaves sorengame now: withdraw the notice until
+                    # the next slot ends and a new one can be decided.
+                    self._clear_notice()
                 if pending["corner"] not in self.adapters:
                     raise RotationError("pending corner removed from catalog",
                                         kind="catalog-mismatch")
@@ -1439,10 +2628,14 @@ class CornerRotationManager:
                 if pending["phase"] == "selected":
                     if pending["corner"] not in pending_eligible:
                         return self._wait(state, "selected-corner-disabled-or-paused")
-                    # Re-check cooldown after importing concurrent/manual activity.
-                    if pending.get("source") != "manual" and any(
-                            r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
-                            for r in state["history"]):
+                    # Re-check cooldown after importing concurrent/manual
+                    # activity. The exhausted-rotation choice is the deliberate
+                    # exception: it is already the least-cooled candidate.
+                    if (pending.get("source") != "manual"
+                            and not pending.get("cooldown_exempt")
+                            and any(
+                                r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
+                                for r in state["history"])):
                         return self._wait(state, "selected-corner-cooling-down")
                     pending["phase"] = "dispatched"
                     state["last_slot_at"] = now
@@ -1452,9 +2645,23 @@ class CornerRotationManager:
                     )
                     source = "manual-reservation" if pending.get("source") == "manual" else "reservation"
                     state["history"].append(dict(corner=pending["corner"], at=now, source=source))
+                if pending.get("source") != "manual":
+                    # A prediction may have started after this pending was
+                    # reserved; hold it here too instead of spending the
+                    # boundary wait and expiring the slot.
+                    hold_reason = self._prediction_dispatch_hold(state, now)
+                    if hold_reason is not None:
+                        self.save(state)
+                        return self._wait(state, hold_reason)
                 state.update(status="running", reason=None)
                 self.save(state)
-                result = self.executor.execute(adapter, pending)
+                with self._slot_heartbeat(pending):
+                    result = self.executor.execute(adapter, pending)
+                # The slot just proved this process lived through whatever gap
+                # last_seen_at could not record while the lock was held; keep
+                # the watermark truthful for every outcome branch below.
+                state["last_seen_at"] = max(
+                    state["last_seen_at"], timestamp(self.clock()))
                 status = result if isinstance(result, str) else result.status
                 for raw in adapter.observations():
                     if raw.get("rotation_request_id") == pending["request_id"] and raw.get("started_at") is not None:
@@ -1467,6 +2674,7 @@ class CornerRotationManager:
                     state["history"].append(dict(corner=pending["corner"], at=max(now, finished), source="completion"))
                     state.update(pending=None, status="ready", last_result={"corner": pending["corner"],
                                  "request_id": pending["request_id"], "status": status, "at": finished})
+                    self._sweep_orphaned_auto_restore(state)
                     # Compact only old history, after successful execution; retain
                     # at least the last use of every ID including removed entries.
                     latest = {}
@@ -1722,6 +2930,8 @@ class CornerRotationManager:
             state["pending"] = None
             state["history"].append(
                 dict(corner=corner_id, at=max(now, finished), source="completion"))
+        self._sweep_orphaned_auto_restore(state)
+        state.pop("auto_plane_recovery", None)
         state.update(last_seen_at=now, status="ready", reason=None,
                      last_result={"corner": corner_id,
                                   "request_id": reservation["request_id"],
@@ -1777,9 +2987,27 @@ def main(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("command", choices=["tick", "status", "recover"])
     args = parser.parse_args(argv)
-    manager = CornerRotationManager(load_global(Path(__file__).resolve().parents[2], args.config))
+    try:
+        manager = CornerRotationManager(
+            load_global(Path(__file__).resolve().parents[2], args.config)
+        )
+    except Exception:
+        if args.command != "status":
+            raise
+        # `status` is the read-only probe the recovery script uses to verify
+        # the reservation. Name the failing stage with a fixed literal so the
+        # caller can distinguish setup from ledger I/O, and never echo the
+        # exception text (it may carry provider output or credentials).
+        print("corner-rotation status: initialization failed", file=sys.stderr)
+        return 5
     if args.command == "status":
-        print(manager.path.read_text() if manager.path.exists() else "{}")
+        try:
+            body = manager.path.read_text() if manager.path.exists() else "{}"
+        except (OSError, UnicodeError):
+            print("corner-rotation status: ledger read failed", file=sys.stderr)
+            return 6
+        print(body)
+        return 0
     elif args.command == "recover":
         # Operator-gated recovery (#986). RotationError messages are fixed
         # literals from this module; unexpected exception text is never printed
@@ -1926,7 +3154,12 @@ def run_manual(g, manager, games):
             runtime_environment=getattr(selected_adapter, "runtime_environment", None),
         )
         try:
-            result = rotation.executor.execute(adapter, request)
+            with rotation._slot_heartbeat(request):
+                result = rotation.executor.execute(adapter, request)
+            # Same watermark truth as the timer path: a manual slot that ran
+            # past the quarantine window is not downtime either.
+            state["last_seen_at"] = max(
+                state["last_seen_at"], timestamp(rotation.clock()))
             status = result if isinstance(result, str) else result.status
             if status == "capture-profile-expired":
                 owned = [raw for raw in selected_adapter.observations()

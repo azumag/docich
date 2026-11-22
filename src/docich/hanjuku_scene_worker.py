@@ -45,6 +45,7 @@ CARD_ROLE_MEANINGS = {
     'inspect_live_inventory_before_selection': '使用前に実際の手持ち札一覧を確認する必要があるという判断',
     'observed_control_chain_not_a_kill': '手持ち一覧に後続の攻撃札を確認し、準備用の札を候補にする判断。連携成功や撃破ではない',
     'control_has_no_observed_followup': '手持ち一覧に後続の攻撃札を確認できず、準備用の札を許可しなかった判断',
+    'halving_not_a_kill': '敵将軍のHPを半減して不利でなくなる札として許可する判断。半減の成功や撃破の結果ではない',
     'summon_already_observed': '既に召喚を観測した後の札評価。今回の札による召喚ではない',
 }
 
@@ -68,12 +69,12 @@ def _fact_valid(value):
         'egg_priority_replan': {'soldiers', 'policy_change'},
         'card_decision': {'decision_kind', 'card', 'allowed', 'role', 'target_kind'},
     }.get(kind)
-    optional = ({'ally_hp', 'enemy_hp', 'cards_used'} if kind == 'battle_result' else
+    optional = ({'ally_hp', 'enemy_hp', 'cards_used', 'winner', 'loser'} if kind == 'battle_result' else
                 {*scene.ESTIMATE_NUMBERS, 'lethal'} if kind == 'card_decision' else set())
     if required is None or not required <= value.keys() or set(value) - required - optional != {'id', 'kind'}:
         return False
     for key, item in value.items():
-        if key in {'ally', 'enemy', 'castle', 'card'} and scene.name(item) is None:
+        if key in {'ally', 'enemy', 'castle', 'card', 'winner', 'loser'} and scene.name(item) is None:
             return False
         if key in {'ally_hp', 'enemy_hp', 'qty', 'soldiers_after', 'cost', 'soldiers', *scene.ESTIMATE_NUMBERS} and scene.number(item) is None:
             return False
@@ -159,7 +160,7 @@ def build_prompt(snapshot, recent=()):
         '観測事実は直前の履歴です。「いま」「現在」「これから」と断定せず、過去形で説明してください。',
         'battle_startのHPは開戦時、battle_resultのHPは戦闘終了時です。現在HPではありません。',
         'HPの数字ごとに将軍名とHPを省略せず、開戦時か終了時かも明記します。',
-        '勝敗を話せるのはbattle_resultだけです。勝った側または負けた側の名前を主語にしてください。',
+        '勝敗を話せるのはbattle_resultだけです。winnerが勝った側、loserが負けた側です。勝った側または負けた側の名前を主語にしてください。',
         '勝利は城の占領を意味しません。敗北は死亡を意味しません。死亡や全滅を断定しないでください。',
         'cards_usedだけが消費確認済みです。選択や予定から命中・損害・召喚阻止を断定しないでください。',
         'egg_priority_replanは兵士数の表示を受けて卵回復を優先する方針へ変えた事実です。回復完了ではありません。',

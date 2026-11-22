@@ -310,6 +310,11 @@ class NethackProgressResolver:
         self._inv_no_food = False
         self._inv_turn: int | None = None
         self._inv_block_turns = 0
+        # The status line does not always expose "T:" (production 3.6.7 omits
+        # it), so the re-probe window also counts acknowledged gameplay actions
+        # between probes instead of relying on the turn counter alone.
+        self._inv_probed = False
+        self._inv_since = 0
         self._meal_pending = False
 
     def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
@@ -495,6 +500,10 @@ class NethackProgressResolver:
         resolve() alone must never spend retry budgets or create pending edges.
         """
         if decision.actions:
+            if decision.intent not in {"open_inventory", "close_inventory"}:
+                # Count one acknowledged action toward the turn-free re-probe
+                # window (the inventory keys themselves advance no turns).
+                self._inv_since += 1
             if decision.intent == "open_door_start":
                 target = _next_unattempted_door(obs, self._attempted_doors)
                 if target is None:
@@ -517,7 +526,7 @@ class NethackProgressResolver:
                 self._inv_stage = "open"
                 self._inv_raw_text = obs.raw_text
                 self._inv_unchanged = 0
-                self._inv_turn = obs.vitals.turn
+                self._mark_probed(obs)
                 self._meal_pending = False
                 return
             if decision.intent == "close_inventory":
@@ -585,15 +594,26 @@ class NethackProgressResolver:
         return PolicyDecision("tactical", intent, reason, (Action(type="special", key=key),))
 
     def _inventory_probe_due(self, obs: NethackObservation) -> bool:
-        if self._inv_turn is None or obs.vitals.turn is None:
-            return self._inv_turn is None
-        return obs.vitals.turn - self._inv_turn >= self._inv_block_turns
+        if self._inv_turn is not None and obs.vitals.turn is not None:
+            return obs.vitals.turn - self._inv_turn >= self._inv_block_turns
+        # Without a visible turn counter, fall back to acknowledged actions.
+        # Treating an unknown turn as "always due" re-opened the probed menu on
+        # every capture (open/close flicker on the live stream).
+        if not self._inv_probed:
+            return True
+        return self._inv_since >= self._inv_block_turns
+
+    def _mark_probed(self, obs: NethackObservation) -> None:
+        """Restart the re-probe window from the frame that was probed."""
+        if obs.vitals.turn is not None:
+            self._inv_turn = obs.vitals.turn
+        self._inv_probed = True
+        self._inv_since = 0
 
     def _cooldown_probe(self, obs: NethackObservation, turns: int) -> None:
         """Pause probing after an abandoned flow so a weird frame cannot
         re-open the menu every single capture."""
-        if obs.vitals.turn is not None:
-            self._inv_turn = obs.vitals.turn
+        self._mark_probed(obs)
         self._inv_block_turns = turns
 
     def _resolve_inventory(
@@ -637,7 +657,18 @@ class NethackProgressResolver:
             # The frame changed after Escape. A probed safe letter may only be
             # spent on a complete gameplay frame; the stage itself advances
             # only in sent(), so a rejected plan replans this same key.
-            if self._food_letter is None or not turn_ready(obs):
+            if self._food_letter is None:
+                # The listing's verdict is the probe result: there is nothing
+                # safe to eat. Keep its full re-probe window instead of
+                # shortening it to the generic abandon window.
+                self._cooldown_probe(
+                    obs,
+                    INVENTORY_REPROBE_TURNS if self._inv_no_food
+                    else MAX_UNCHANGED_INVENTORY_CAPTURES * 2,
+                )
+                self._clear_inventory()
+                return None
+            if not turn_ready(obs):
                 self._cooldown_probe(obs, MAX_UNCHANGED_INVENTORY_CAPTURES * 2)
                 self._clear_inventory()
                 return None
@@ -675,8 +706,7 @@ class NethackProgressResolver:
             self._inv_no_food = False
             self._meal_pending = True
             self._inv_block_turns = EAT_REPROBE_TURNS
-            if obs.vitals.turn is not None:
-                self._inv_turn = obs.vitals.turn
+            self._mark_probed(obs)
             return None
         return None
 

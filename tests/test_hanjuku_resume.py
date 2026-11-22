@@ -18,11 +18,26 @@ from docich.game_switch import DeadlineExceededError, RuntimeSpec, atomic_write_
 from docich.config import load_global, load_game
 from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, identity, read_record
 from docich import hanjuku_run
+from docich.hanjuku.state.regions import world as _world
 
 
 def state_bytes(mem=b'serialized core'):
     return (b'RASTATE\x01' + b'MEM ' + struct.pack('<I', len(mem)) + mem
             + b'\0' * (-len(mem) % 8) + b'END ' + b'\0' * 4)
+
+
+# S3: every restored policy books the field-inventory read, because a loaded
+# save state may hold cards the old policy never saw. The foreground-seeding
+# tests below assert the rest of the policy; this helper checks the reservation
+# and removes it so each expected literal stays about what it is testing.
+CENSUS_DUE = {'reason': 'checkpoint_restore', 'reasons': ['checkpoint_restore'],
+              'month': None, 'tick': None, 'wait_key': None}
+
+
+def checkpoint_policy(policy):
+    policy = dict(policy)
+    assert policy.pop('card_census_due') == CENSUS_DUE
+    return policy
 
 
 def compressed(data):
@@ -295,7 +310,7 @@ def test_native_roundtrip_must_match_before_ai_unpause_and_fresh_policy(setup):
     assert commands.index('LOAD_STATE_SLOT 0')<commands.index('SAVE_STATE')<commands.index('FRAMEADVANCE')<commands.index('PAUSE_TOGGLE')
     receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==1
-    assert read_record(s.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{'chapter':1,'name':{'done':True}}}
+    assert checkpoint_policy(read_record(s.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={'chapter':1,'name':{'done':True}}
     assert s.source.read_bytes()==compressed(state_bytes())
     resume.require_verified(s.spec)
 
@@ -379,8 +394,8 @@ def test_native_fake_hero_checkpoint_restores_with_only_observed_chapter(setup):
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==2
     assert receipt['frame_sha256']==frame.digest()
-    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
-        'policy': {'name': {'done': True}, 'chapter': 2}}
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={
+        'name': {'done': True}, 'chapter': 2}
 
 
 def test_fake_hero_stale_core_write_is_retried_without_a_second_load(setup):
@@ -405,8 +420,8 @@ def test_fake_hero_stale_core_write_is_retried_without_a_second_load(setup):
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter']==2
     assert receipt['frame_sha256']==frame.digest()
-    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={
-        'policy': {'name': {'done': True}, 'chapter': 2}}
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={
+        'name': {'done': True}, 'chapter': 2}
     assert setup.source.read_bytes()==compressed(state_bytes())
     resume.require_verified(setup.spec)
 
@@ -421,7 +436,7 @@ def test_native_starter_checkpoint_restores_without_inventing_chapter(setup):
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter'] is None
     policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
-    assert policy=={'name':{'done':True},'resume_chapter_pending':True}
+    assert checkpoint_policy(policy) =={'name':{'done':True},'resume_chapter_pending':True}
     assert 'garrison' not in policy and 'chapter' not in policy
 
 
@@ -434,7 +449,7 @@ def test_native_mid_selection_checkpoint_restores_with_only_fresh_cancellation_o
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter'] is None
     policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
-    assert policy=={'name':{'done':True},'resume_chapter_pending':True,
+    assert checkpoint_policy(policy) =={'name':{'done':True},'resume_chapter_pending':True,
                    'resume_sortie_cancel':{'readings':0}}
     assert setup.source.read_bytes()==compressed(state_bytes())
 
@@ -451,7 +466,9 @@ def test_starter_resume_seed_uses_live_selected_row_and_never_issues_sortie(setu
     assert not any(r['decision']=='order_launched' for r in updated['_records'])
 
 
-@pytest.mark.parametrize('castle', ['アルマムーン','あるまむーん','ボス','フー�リック','しゅじんこう'])
+# あるまむーん (chapter 8's own home label) is proof since v646; see
+# test_hanjuku_chapterless_status_probe.py. The katakana label is every other chapter's.
+@pytest.mark.parametrize('castle', ['アルマムーン','ボス','フー�リック','しゅじんこう'])
 def test_unknown_resume_chapter_never_resolves_common_or_unread_names(castle):
     from docich.hanjuku_policy import observe_chapter_castle
     mem={'resume_chapter_pending':True,'_records':[]}
@@ -464,7 +481,7 @@ def test_unknown_resume_chapter_resolves_only_fresh_unique_castle():
     mem={'resume_chapter_pending':True,'_records':[]}
     observe_chapter_castle(mem,'フーリック')
     assert mem['chapter']==2 and mem['chapter_evidence']=='フーリック'
-    assert 'resume_chapter_pending' not in mem and 'garrison' not in mem
+    assert 'resume_chapter_pending' not in mem and 'garrison' not in _world(mem)
     untouched={'_records':[]}
     observe_chapter_castle(untouched,'フーリック')
     assert untouched.get('chapter') is None
@@ -1000,7 +1017,7 @@ def test_native_priest_stall_restores_without_inventing_chapter_or_old_payment(s
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] is None
     policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
-    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+    assert checkpoint_policy(policy) == {'name': {'done': True}, 'resume_chapter_pending': True,
                       'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
@@ -1020,7 +1037,7 @@ def test_gift_menu_checkpoint_restores_existing_policy_without_guessing_chapter(
     receipt=read_record(setup.spec.runtime_dir/resume.RECEIPT_FILE)
     assert receipt['status']=='verified' and receipt['chapter'] is None
     policy=read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy']
-    assert policy=={'name':{'done':True},'resume_chapter_pending':True}
+    assert checkpoint_policy(policy) =={'name':{'done':True},'resume_chapter_pending':True}
     actions,state=decide(frame,{'policy':policy})
     assert state['policy']['bijin_gift_hold'] is True
     assert state['policy'].get('chapter') is None
@@ -1054,7 +1071,7 @@ def test_castle_event_dialogue_checkpoint_restores_without_guessing_chapter(setu
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] is None
     policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
-    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True}
+    assert checkpoint_policy(policy) == {'name': {'done': True}, 'resume_chapter_pending': True}
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
     assert state['policy'].get('chapter') is None
@@ -1074,7 +1091,7 @@ def test_stalled_field_notice_restores_with_the_source_chapter(setup, monkeypatc
     restore_test(setup, chapter=None, native_frame=frame)
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] == 3
-    assert read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy'] == {
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']) == {
         'name': {'done': True}, 'chapter': 3}
 
 
@@ -1153,7 +1170,7 @@ def test_native_namaste_stall_can_restore_only_bounded_foreground(setup):
     receipt = read_record(setup.spec.runtime_dir / resume.RECEIPT_FILE)
     assert receipt['status'] == 'verified' and receipt['chapter'] is None
     policy = read_record(setup.spec.runtime_dir / 'hanjuku_bot.json')['policy']
-    assert policy == {'name': {'done': True}, 'resume_chapter_pending': True,
+    assert checkpoint_policy(policy) == {'name': {'done': True}, 'resume_chapter_pending': True,
                       'resume_egg_ritual': {'readings': 0, 'month': '1-5'}}
     actions, state = decide(frame, {'policy': policy})
     assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
@@ -1204,9 +1221,9 @@ def test_disabled_battle_parent_checkpoint_seeds_only_finite_reobservation(setup
     assert receipt['frame_sha256']==frame.resized().digest()
     assert commands.count('LOAD_STATE_SLOT 0')==1
     assert writes[0]==b'boot state' and all(b==b'serialized core' for b in writes[1:])
-    assert read_record(setup.spec.runtime_dir/'hanjuku_bot.json')=={'policy':{
+    assert checkpoint_policy(read_record(setup.spec.runtime_dir/'hanjuku_bot.json')['policy'])=={
         'name':{'done':True},'resume_chapter_pending':True,
-        'resume_battle_menu':{'readings':0}}}
+        'resume_battle_menu':{'readings':0}}
     assert setup.source.read_bytes()==compressed(state_bytes())
 
 
@@ -1276,3 +1293,146 @@ def test_detached_claimed_refuses_uncertainty(detached_claimed, bad):
     with pytest.raises(s.op.CancelRefused):
         recover_startup(s, apply=True, expected=s.fingerprint)
     assert snapshot_recovery(s) == before
+
+
+def test_detached_claimed_recovers_with_own_interrupted_owner(recovery_setup):
+    # g1099 2026-11-03: a manual claimed original whose dispatch died before
+    # the corner became active leaves an interrupted owner keyed by the same
+    # logical request. That retired owner is proof, not a blocker.
+    s=recovery_setup;base=Path(s.g.state_dir)
+    ledger=s.manager.load(1000000.0)
+    ledger.update(status='waiting',reason='not-due',pending=None,queued_manual=None,
+                  failed_corners=[{'corner':'hanjuku-hero','request_id':s.queue['request_id'],
+                                   'resolution':'released-unverified'}])
+    s.manager.save(ledger)
+    atomic_write_json(base/'retro_corner.json',{
+        'status':'interrupted','game':'hanjuku-hero',
+        'rotation_request_id':s.queue['request_id'],
+        'end_reason':'switch-terminal-before-corner-active'})
+    result=recover_startup(s,apply=True,expected=s.fingerprint)
+    assert result['status']=='recovery-queued'
+    queued=s.manager.load(1000000.0)['queued_manual']
+    assert queued['resume_request_id']==s.queue['request_id']
+
+
+def test_persistent_unrecognized_foreground_falls_back_to_source_chapter(setup):
+    # g1102/g1104: a claimed checkpoint restored to a screen the parser cannot
+    # classify, so the chapter wait burned the whole 60s restore budget and
+    # the switch rolled back on every retry. A stable unrecognized foreground
+    # must still resume with the source-run chapter evidence instead.
+    s=setup
+    commands,writes=restore_test(s,chapter=None,kind='unclassified_modal',seconds=30)
+    receipt=read_record(s.spec.runtime_dir/resume.RECEIPT_FILE)
+    assert receipt['status']=='verified'
+    policy=read_record(s.spec.runtime_dir/'hanjuku_bot.json')['policy']
+    assert policy['name']=={'done':True}
+    resume.require_verified(s.spec)
+def _write_request(s, status, request_id='req-old', **extra):
+    resume._private_root(s.g)
+    record = {'status': status, 'request_id': request_id, 'start_policy': resume.START_POLICY}
+    record.update(extra)
+    atomic_write_json(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE, record)
+
+
+def test_rollback_transition_to_unconsumed_when_runtime_stopped(setup):
+    s = setup
+    _write_request(s, 'claimed')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == resume.ROLLED_BACK_UNCONSUMED
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == resume.ROLLED_BACK_UNCONSUMED
+    assert stored['request_id'] == 'req-old'
+
+
+def test_rollback_transition_keeps_claimed_when_runtime_not_stopped(setup):
+    s = setup
+    _write_request(s, 'claimed')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=False)
+    assert result == 'claimed'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'claimed'
+
+
+def test_rollback_transition_keeps_verified_when_restore_succeeded(setup):
+    s = setup
+    _write_request(s, 'verified')
+    result = resume.transition_rollback_claim(s.g, runtime_stopped=True)
+    assert result == 'verified'
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'verified'
+
+
+def test_prepare_after_rollback_transition_succeeds(setup):
+    s = setup
+    # rolled-back-unconsumed は prepare() で pending 扱いにならず、
+    # 別 request_id の後続 prepare() が成功する
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    resume.prepare(s.g, s.game, dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'prepared'
+
+
+def test_derived_attempt_is_refused_after_rollback_transition(setup):
+    s = setup
+    # 案c③: rolled-back-unconsumed になった元 claim の派生 attempt（同一
+    # resume_request_id を名乗る startup_recovery 経路）は、request を消費
+    # できないため fail-closed で拒否される（新規 request ID での prepare
+    # だけが可能）。identity が一致していても status が resumable でない
+    # 限り通さない。
+    old_request_id = str(uuid.uuid4())
+    attempt_id = str(uuid.uuid4())
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED, request_id=old_request_id,
+                   startup_recovery={'original': {'request_id': old_request_id},
+                                     'attempt_id': attempt_id})
+    with pytest.raises(AdapterError, match='startup recovery identity mismatch'):
+        resume.prepare_start(
+            s.g,
+            dict(s.queue, request_id=attempt_id, resume_request_id=old_request_id),
+        )
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == resume.ROLLED_BACK_UNCONSUMED
+
+
+def test_natural_rotation_prepare_start_succeeds_after_rollback_transition(setup):
+    s = setup
+    # 案c③: rolled-back-unconsumed の後、自然 rotation 経路
+    # （resume_request_id なし）の新規 prepare_start が成功する。
+    _write_request(s, resume.ROLLED_BACK_UNCONSUMED)
+    resume.prepare_start(s.g, dict(s.queue, request_id=str(uuid.uuid4())))
+    stored = read_record(Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE)
+    assert stored['status'] == 'queued'
+
+
+def test_start_claimable_gates_replay_on_the_exact_request(setup):
+    s = setup
+    s.game.raw['hanjuku'] = {'script_bot': True}  # strict claim mode
+    resume.prepare(s.g, s.game, s.queue)
+    resume.publish(s.g, s.queue)
+    atomic_write_json(Path(s.g.state_dir) / 'corner_rotation.json',
+                      {'pending': dict(s.queue, source=s.queue.get('source', 'manual'),
+                                       phase='dispatched')})
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is True
+    # A replay under another request id must not bind this corner's decision.
+    assert resume.start_claimable(s.adapter, str(uuid.uuid4())) is False
+    # Once the decision is consumed or rolled back, a replay can only die at
+    # claim(); the switch terminalizes instead of staging a candidate.
+    _write_request(s, 'verified', request_id=s.queue['request_id'])
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is False
+    (Path(s.g.state_dir) / 'hanjuku-resume' / resume.REQUEST_FILE).unlink()
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is False
+
+
+def test_start_claimable_stays_permissive_without_strict_mode(setup):
+    s = setup  # fixture game has no [hanjuku] script_bot -> non-strict
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is True
+    _write_request(s, 'claimed', request_id=s.queue['request_id'], runtime_id='other-runtime')
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is True
+    # Even non-strict, a claim already bound to this same candidate refuses.
+    _write_request(s, 'claimed', request_id=s.queue['request_id'], runtime_id=s.spec.runtime_id)
+    assert resume.start_claimable(s.adapter, s.queue['request_id']) is False
+
+
+def test_start_claimable_ignores_other_games(setup):
+    s = setup
+    adapter = SimpleNamespace(g=s.g, game=s.game, spec=replace(s.spec, game='nethack'))
+    assert resume.start_claimable(adapter, s.queue['request_id']) is True

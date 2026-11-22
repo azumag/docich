@@ -8,7 +8,7 @@ from docich.research_paper_primary import ENABLE_ENV, fetch_primary_paper
 from docich.reply_research_web import Receipt
 
 URL = "https://arxiv.org/abs/2610.12345"
-AGENT = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+AGENT = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 TEXT = (
     "arXiv:2610.12345 [cs.AI] 23 Oct 2026 "
     "Title: Bounded Public Evidence for Synthetic Agents "

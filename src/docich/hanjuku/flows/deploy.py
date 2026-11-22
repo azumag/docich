@@ -5,33 +5,45 @@ source castle and general, selects the planned cards and confirms the sortie,
 holding or cancelling when the visible menu contradicts the plan.
 """
 from __future__ import annotations
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 import re
 import time
 
-from ..os_layer.screen import Screen
+from ..os_layer.screen import Screen, month_confirmation_positions
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust, hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import (MENU_NAV_BATCH_MAX, MENU_NAV_RELEASE_MS, general_list_batch,
+                                 menu_to, pad)
 from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
-                                _measured_card_select, _options, _present_generals, _sortie_inventory, _current)
+                                _measured_card_select, _options, _present_generals,
+                                _sortie_inventory, _current, month_menu_ready)
 from ..os_layer.world import NAME, _en_route, _owned
+from ..state import egg_memory
+from ..strategy.bargains import forget_picked, note_card_carried
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
+                           NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
-                            _deploy_cards, _extra_card_name, _is_boss_order, _observe_card_stock,
+                            _card_panel_complete, _deploy_cards, _extra_card_name, _is_boss_order,
+                            _observe_card_stock,
                             _sortie_defender, _strict_boss_cards)
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_OBSERVED_LIMIT,
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
                                _continue_transit_sorties, _defense_move_pick, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
+                               drop_retired_step_context,
                                _order_hero_alternatives, _record_source_defender_cancel,
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
                                _sortie_general, _source, _source_location_recheck, _source_spare_missing,
                                _staffed_elsewhere, _unplaced_castle_generals)
+
+
+CARD_SCROLL_HOLD_MAX = 8        # rows one burst scroll may cross (#4884)
+RARE_REWIND_STEPS = 4           # rows one rewind observation may return
 
 
 def _cancel_broken_hero_sortie(mem, order):
@@ -48,7 +60,7 @@ def _cancel_broken_hero_sortie(mem, order):
             observed_metric={'target': order.get('target'), 'repair': 'unconfirmed',
                              'cancel_count': count},
             reason='主人公の卵破損を観測済みで修復未確認のため攻撃出撃を保留する')
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     alternative = _hero_source_alternative(order, mem)
     if count >= HERO_BROKEN_SORTIE_CANCEL_LIMIT:
         gates.pop(step, None)
@@ -68,7 +80,12 @@ def _verify_sortie_source(screen, mem, order):
     name on it is not evidence of departure.
     """
     step = order['step']
-    sortie = mem['sorties'][step]
+    sortie = _sorties(mem).get(step)
+    if not isinstance(sortie, dict) or not isinstance(sortie.get('general'), str) or not sortie.get('general'):
+        _record(mem, 'sortie_verification_held', chart_step=step,
+                reason='出撃記録または将軍名が欠損しているため在城・不在を推定せず検証を保留する')
+        _plan_region(mem)['active'] = None
+        return [pad('b'), pad('b')]
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None
@@ -76,7 +93,7 @@ def _verify_sortie_source(screen, mem, order):
         sortie['verification_reads'] = sortie.get('verification_reads', 0) + 1
         if sortie['verification_reads'] >= 3:
             sortie['verification_unavailable'] = True
-            mem['active'] = None
+            _plan_region(mem)['active'] = None
             _record(mem, 'sortie_verification_held', chart_step=step,
                     reason='一覧で在城・不在を確定できないため出撃未確定を維持して別の指示へ進む')
             return [pad('b'), pad('b')]
@@ -84,12 +101,17 @@ def _verify_sortie_source(screen, mem, order):
     cancelled = sortie['general'] in present
     sortie['status'] = 'cancelled' if cancelled else 'en_route'
     if cancelled:
+        from .house import _sortie_state_sig, _tally_sortie_attempt
+        # Issue #3326 (34): roster presence proves the unit stayed behind.
+        _tally_sortie_attempt(mem, sortie.get('target') or sortie.get('planned_target'),
+                              sortie.get('purpose'), 'cancelled_observed',
+                              _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
         _record_sortie_cancelled_observed(mem, order, sortie)
-        status = (mem.get('orders') or {}).get(step)
+        status = (_plan_region(mem).get('orders') or {}).get(step)
         if status not in ('failed',):
-            mem.setdefault('orders', {})[step] = 'pending'
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
     else:
-        mem.setdefault('orders', {})[step] = 'launched'
+        _plan_region(mem).setdefault('orders', {})[step] = 'launched'
     if not cancelled:
         _garrison_move(mem, sortie['general'], source=sortie['source'])
         from .camp_recheck import observe_departure
@@ -99,12 +121,112 @@ def _verify_sortie_source(screen, mem, order):
             observed_metric=present,
             reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
-    mem.pop('sortie_attempt', None)
-    mem['active'] = None
-    mem['picked'] = []
+    _flow(mem).pop('sortie_attempt', None)
+    _plan_region(mem)['active'] = None
+    if cancelled:
+        # The general is still home, so the carried cards may never have left
+        # the field: forget them rather than keep a count that may be ahead.
+        forget_picked(mem)
+    else:
+        mem['picked'] = []       # departed: the carried copies left the field (S0b)
     return [pad('b'), pad('b')]
 BOSS_ABSENT_LIMIT = 10         # general-list readings without the boss general before giving up
 
+
+
+BALMUNG_HELD = 'balmung_held'
+
+
+def _card_arrow_metric(inventory):
+    """The measured ▲/▼ readings of this panel, recorded but never acted on.
+
+    True / False is a measured scroll arrow; None means it could not be read.
+    The flow already consults them through ``_card_panel_complete`` when it
+    decides whether the visible rows are the whole inventory. Copying them
+    into ``observed_metric`` lets production verify that reading afterwards;
+    it changes no decision.
+    """
+    return {'more_above': inventory.get('more_above'),
+            'more_below': inventory.get('more_below')}
+
+
+def _note_balmung_stock(mem, month, inventory):
+    """Remember a measured バルムンク stock for this month's boss sorties.
+
+    The rare-card sweep shows the whole list over several readings, but the
+    boss order may not be the sortie that sweeps. A shown row sets / clears the
+    record; a panel that proves the card absent (no ▲/▼ scroll arrow, or
+    sandwiched between rows of the ID order) clears it too.
+    """
+    rows = inventory['rows']
+    shown = next((r for r in rows if r['card'] == 'バルムンク'), None)
+    if shown is not None:
+        if shown['stock'] > 0:
+            mem[BALMUNG_HELD] = {'month': month, 'stock': shown['stock']}
+        else:
+            mem.pop(BALMUNG_HELD, None)
+    elif _card_proven_absent('バルムンク', inventory):
+        mem.pop(BALMUNG_HELD, None)
+
+
+def _boss_balmung_generic(mem, order) -> bool:
+    """Every chapter's boss order except the live-tested chapter-two kit.
+
+    owner 2026-11-04: ボスへ効く切り札(バルムンクはボス250)を積極的に使う。
+    第2話 2-B1 は実プレイで検証済みの専用キット(イッテツーン+バルムンク2)を
+    維持し、それ以外の章のボス注文(基礎チャート・調整・波状の追加隊)は
+    ``_boss_balmung_kit`` で実在庫のバルムンクを先頭に足す。
+    """
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or not _is_boss_order(order, mem):
+        return False
+    return not (chapter == 2 and order.get('step') == '2-B1'
+                and order.get('target') == chart.boss_castle(2))
+
+
+def _boss_balmung_kit(mem, order, inventory):
+    """Freeze ``バルムンク x min(stock, 2)`` first, then the planned boss cards.
+
+    Only the unselected live panel counts (never an old cache), and an already
+    started / spent / dropped / rare-kitted attempt is left alone. The kit keeps
+    the planned cards in order while the carry slots and the 47 card-ID budget
+    allow (``_cap_card_ids``), so バルムンク x2 (32) leaves room for one cheap
+    planned card. The measured copies carried decide the battle tactics.
+    """
+    step = order['step']
+    if ((_plan_region(mem).get('orders') or {}).get(step) not in (None, 'pending')
+            or (mem.get('rare_card_kit') or {}).get(step) is not None
+            or (mem.get('kit_spent') or {}).get(step)
+            or (mem.get('card_drop') or {}).get(step)
+            or mem.get('picked') or inventory['remaining'] != CARRY_SLOTS):
+        return None
+    stock = next((r['stock'] for r in inventory['rows'] if r['card'] == 'バルムンク'), None)
+    if stock is None:
+        # Not in this four-row window: a copy the month's sweep measured counts
+        # (the rare-kit selection scrolls to it and a proven absence drops it).
+        held = mem.get(BALMUNG_HELD)
+        month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
+        stock = held.get('stock') if isinstance(held, dict) and held.get('month') == month else 0
+    if type(stock) is not int or stock < 1:
+        return None
+    count = min(stock, 2)
+    original = _deploy_cards(order, mem)
+    kit = _cap_card_ids(['バルムンク'] * count + [c for c in original if c != 'バルムンク'])[:CARRY_SLOTS]
+    if kit.count('バルムンク') != count:
+        return None
+    mem.setdefault('rare_card_kit', {})[step] = kit
+    mem.pop('rare_scan', None)
+    mem.setdefault('strong_card_kit', {}).pop(step, None)
+    _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=step,
+            observed_metric={'card': 'バルムンク', 'stock': stock, 'cards': kit,
+                             'original_cards': original, 'boss': chart.BOSSES.get(mem.get('chapter')),
+                             'boss_damage': reference.boss_damage_card('バルムンク'),
+                             'id_sum': sum(CARD_IDS[c] for c in kit),
+                             'inventory_evidence': inventory.get('inventory_evidence'),
+                             'observed_rows': inventory.get('observed_rows'),
+                             **_card_arrow_metric(inventory)},
+            reason='未選択の実在庫にバルムンク(ボス250)を確認したため、ボス注文の先頭に携行して積極的に使う')
+    return []
 
 
 def _chapter_two_balmung_inventory(mem, order, inventory):
@@ -116,9 +238,11 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
     Never infer stock from an old global cache or alter a selected sortie.
     """
     step = order['step']
+    if _boss_balmung_generic(mem, order):
+        return _boss_balmung_kit(mem, order, inventory)
     if (mem.get('chapter') != 2 or step != '2-B1'
             or order.get('target') != chart.boss_castle(2)
-            or (mem.get('orders') or {}).get(step) not in (None, 'pending')
+            or (_plan_region(mem).get('orders') or {}).get(step) not in (None, 'pending')
             or (mem.get('rare_card_kit') or {}).get(step) is not None
             or (mem.get('kit_spent') or {}).get(step)
             or (mem.get('card_drop') or {}).get(step)):
@@ -136,7 +260,7 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
              'visible_stocks': {c: stocks[c] for c in ('イッテツーン', 'バルムンク')}})
         # Keep this already-started boss order ahead of a new field survey.
         # The restart backs out completely before selecting another actor.
-        mem['active'] = step
+        _plan_region(mem)['active'] = step
         mem['boss_stock_restart'] = {'step': step, 'readings': 0}
         return actions
     if mem.get('picked') or inventory['remaining'] != CARRY_SLOTS:
@@ -152,7 +276,8 @@ def _chapter_two_balmung_inventory(mem, order, inventory):
                              'id_sum': sum(CARD_IDS[c] for c in kit),
                              'stocks': {c: stocks[c] for c in set(kit)},
                              'inventory_evidence': inventory['inventory_evidence'],
-                             'observed_rows': inventory['observed_rows']},
+                             'observed_rows': inventory['observed_rows'],
+                             **_card_arrow_metric(inventory)},
             reason='実在庫のイベント札2枚と道中用の安価な札を確認し、第2話ボスの実測装備を携行する')
     return []  # the following observation selects and verifies the actual kit
 
@@ -165,31 +290,64 @@ def _rare_card_inventory(screen, mem, order, inventory):
     Never change an already picked/in-flight sortie or invent event stock.
     """
     if (mem.get('picked') or inventory['remaining'] == 0
+            or order.get('purpose') == 'move'
             or (mem.get('rare_card_kit') or {}).get(order['step']) is not None):
         return None
     month = mem.get('month') or f"chapter-{mem.get('chapter')}:unknown"
+    boss_generic = _boss_balmung_generic(mem, order)
+    _note_balmung_stock(mem, month, inventory)
+    scan_field, scan_key = 'rare_scan_month', month
     scan = mem.get('rare_scan') or {}
     if scan.get('rewind', 0) > 0:
-        scan['rewind'] -= 1
+        # Same row batching as the sweep itself: one up per observation cost 52
+        # decisions an hour (g1163 2026-11-10 05:3x). The list clamps at the
+        # top, and the landing is always re-read before any selection.
+        steps = max(1, min(RARE_REWIND_STEPS, int(scan['rewind'])))
+        scan['rewind'] -= steps
         if not scan['rewind']:
             mem.pop('rare_scan', None)
         _record(mem, 'sortie_input', **_deploy_context(order, mem),
-                screen='card_select', observed_metric={'rare_scan': 'rewind', 'remaining': scan['rewind']},
+                screen='card_select', observed_metric={'rare_scan': 'rewind',
+                                                       'remaining': scan['rewind'],
+                                                       'steps': steps},
                 reason='レア札在庫の有限探索後に選択カーソルを戻す')
-        return [pad('up')]
+        return [pad('up') for _ in range(steps)]
+    if boss_generic and _boss_balmung_kit(mem, order, inventory) is not None:
+        mem[scan_field] = scan_key
+        return []                        # バルムンクを確認: 次の観測で選択する
     row = next((r for r in inventory['rows'] if r['card'] == 'キャトルミュー'), None)
-    if row and row['stock'] > 0 and inventory['remaining'] > 0:
+    dropped = (mem.get('card_drop') or {}).get(order['step']) or ()
+    stock_cattle = int((mem.get('card_stock') or {}).get('キャトルミュー') or 0)
+    use_cached_cattle = (
+        row is None
+        and len(inventory['rows']) == 4
+        and stock_cattle > 0
+        and 'キャトルミュー' not in dropped
+        and not boss_generic
+        and not _strict_boss_cards(order, mem)
+        and not _card_proven_absent('キャトルミュー', inventory)
+    )
+    if ((row and row['stock'] > 0) or use_cached_cattle) and inventory['remaining'] > 0:
         original = _deploy_cards(order, mem)
         kit = _cap_card_ids(['キャトルミュー', *[c for c in original if c != 'キャトルミュー']])[:3]
         mem.setdefault('rare_card_kit', {})[order['step']] = kit
-        mem['rare_scan_month'] = month
+        if row is not None:
+            # 実パネルでキャトルミューを確認したときだけ当月探索を完了扱いにする
+            # (#4882: キャッシュ採用で rare_scan_month を早閉じすると同月のボス出撃で
+            # バルムンク探索が走らなくなる)。
+            mem[scan_field] = scan_key
         mem.pop('rare_scan', None)
         _record(mem, 'rare_card_kit', **_deploy_context(order, mem), chart_step=order['step'],
-                observed_metric={'card': row['card'], 'stock': row['stock'], 'cards': kit,
-                                 'original_cards': original, 'id_sum': sum(CARD_IDS[c] for c in kit)},
+                observed_metric={'card': 'キャトルミュー',
+                                 'stock': row['stock'] if row else stock_cattle,
+                                 'stock_source': 'panel' if row else 'card_stock',
+                                 'cards': kit,
+                                 'original_cards': original,
+                                 'id_sum': sum(CARD_IDS[c] for c in kit),
+                                 **_card_arrow_metric(inventory)},
                 reason='実在庫と携行枠を確認し、イベント札を1枚携行して活用する')
         return []
-    if not isinstance(month, str) or mem.get('rare_scan_month') == month:
+    if not isinstance(month, str) or mem.get(scan_field) == scan_key:
         return None
     scan = mem.setdefault('rare_scan', {'step': order['step'], 'presses': 0, 'rows': None})
     if scan['step'] != order['step']:
@@ -199,7 +357,7 @@ def _rare_card_inventory(screen, mem, order, inventory):
     at_bottom = inventory['selected_y'] == inventory['rows'][-1]['y']
     if (len(rows) < 4 or scan['presses'] >= RARE_SCAN_LIMIT
             or (at_bottom and scan['rows'] == rows and scan.get('was_bottom'))):
-        mem['rare_scan_month'] = month
+        mem[scan_field] = scan_key
         if scan['presses']:
             scan['rewind'] = scan['presses'] - 1
             if not scan['rewind']:
@@ -210,11 +368,25 @@ def _rare_card_inventory(screen, mem, order, inventory):
             return [pad('up')]
         mem.pop('rare_scan', None)
         return None
-    scan.update(presses=scan['presses'] + 1, rows=rows, was_bottom=at_bottom)
+    # The list is ID-sorted, so the distance to キャトルミュー is known: send up
+    # to four rows per observation instead of one (g1163 2026-11-10 00:38: 34
+    # consecutive sortie_input decisions, ~1 minute, for a single monthly
+    # sweep). The landing is still read before any selection.
+    frames = 1
+    target = CARD_IDS.get('キャトルミュー')
+    ids = [CARD_IDS.get(name) for name in rows]
+    remaining_presses = max(1, RARE_SCAN_LIMIT - int(scan.get('presses') or 0))
+    if target is not None and None not in ids and target > max(ids):
+        frames = max(1, min((target - max(ids)) // 4 + 1, 4))
+    # Owner 2026-11-10 (tests/test_hanjuku_merchant_bargains.py): a jump never
+    # spends more than the sweep's remaining press budget.
+    frames = min(frames, remaining_presses)
+    scan.update(presses=scan['presses'] + frames, rows=rows, was_bottom=at_bottom)
     _record(mem, 'sortie_input', **_deploy_context(order, mem), screen='card_select',
-            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows},
+            observed_metric={'rare_scan': 'discover', 'presses': scan['presses'], 'rows': rows,
+                             'frames': frames, **_card_arrow_metric(inventory)},
             reason='未選択の実在庫を有限回探索し、隠れたイベント札の有無を確認する')
-    return [pad('down')]
+    return [pad('down') for _ in range(frames)]
 
 
 def _egg_drop_substitutes(mem, order, present):
@@ -298,9 +470,33 @@ def _dropper_card_inventory(mem, order, inventory, wanted) -> bool:
                              'cards': carried, 'id_sum': sum(CARD_IDS[c] for c in carried),
                              'remaining': inventory['remaining'], 'defender': enemy,
                              'defender_evidence': 'castle_defenders',
-                             'max_hp_sum': plan['max_hp_sum'], 'threshold': plan['threshold']},
+                             'max_hp_sum': plan['max_hp_sum'], 'threshold': plan['threshold'],
+                             **_card_arrow_metric(inventory)},
             reason='実測した守備将軍の最大HPから卵落の閾値を算出し、卵落札を1枠に加えて開幕の卵ディニアルに備える')
     return True
+
+
+def _strong_card_names(mem, order):
+    """The cards a sortie may carry as its strong-card supplement, in use order.
+
+    Ordinary generals: ``reference.STRONG_CARDS`` (HP halving / big general damage).
+    A monster boss (chapter 5 onward) takes the boss damage column, where
+    クースカン(20) / ノリウツール(8) do almost nothing and the halving effects do
+    not apply (owner 2026-11-04), so its sortie carries the cards that hurt a
+    boss (``reference.BOSS_DAMAGE_CARDS``). A weak general (max HP <=
+    ``SACRIFICE_GENERAL_MAX_HP``) may also spend バグストーム: 50 to the boss at
+    the cost of halving both armies, which a disposable general can afford.
+    """
+    chapter = mem.get('chapter')
+    boss = chart.BOSSES.get(chapter) if type(chapter) is int else None
+    if (not _is_boss_order(order, mem) or chapter == 4 or not boss
+            or boss in reference.BOSS_GENERALS):
+        return reference.STRONG_CARDS
+    names = list(reference.BOSS_DAMAGE_CARDS)
+    actor = _sortie_general(order, mem)
+    if reference.sacrifice_general('しゅじんこう' if actor == NAME else actor):
+        names += reference.BOSS_SACRIFICE_CARDS
+    return tuple(names)
 
 
 def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
@@ -327,7 +523,7 @@ def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
         return False                     # 残り枠は予定札で埋まる
     stock = mem.get('card_stock') or {}
     used = sum(CARD_IDS[c] for c in wanted)
-    held = [name for name in reference.STRONG_CARDS
+    held = [name for name in _strong_card_names(mem, order)
             if name not in wanted and int(stock.get(name, 0) or 0) > 0
             and used + CARD_IDS.get(name, ENEMY_EGG_CARD_ID_SUM) < ENEMY_EGG_CARD_ID_SUM
             and len(wanted) + 1 <= CARRY_SLOTS]
@@ -349,7 +545,8 @@ def _strong_card_inventory(mem, order, inventory, wanted) -> bool:
     _record(mem, 'strong_card_kit', **_deploy_context(order, mem), chart_step=step, card=card,
             observed_metric={'stock': int(stock.get(card, 0) or 0), 'planned': list(wanted),
                              'cards': carried, 'id_sum': sum(CARD_IDS[c] for c in carried),
-                             'remaining': inventory['remaining']},
+                             'remaining': inventory['remaining'],
+                             **_card_arrow_metric(inventory)},
             reason='実在庫の強い切り札を携行枠に加え、強い将軍との戦闘で開幕に使う')
     return True
 
@@ -384,9 +581,10 @@ def _drop_card(screen, mem, order, card, inventory):
     _record(mem, 'card_dropped', **context, card=card, dropped=dropped,
             observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
                              'remaining': inventory['remaining'],
-                             # fewer than 4 rows is the whole stock; 4 may hide more
-                             'complete_list': len(inventory['rows']) < 4,
-                             'readings': CARD_MISS_LIMIT},
+                             # only the measured absence of both scroll arrows is complete
+                             'complete_list': _card_panel_complete(inventory),
+                             'readings': CARD_MISS_LIMIT,
+                             **_card_arrow_metric(inventory)},
             reason='予定切り札の在庫・携行枠を確認できない状態が続いたため、その札を外して出撃を続ける')
     return []
 
@@ -395,8 +593,10 @@ def _card_proven_absent(card, inventory, *, bottom=False):
     """The readable panel proves this card is out of stock, not scrolled off.
 
     Rows are listed in card-ID order and depleted cards disappear. A card shown
-    with stock 0, missing from a panel of fewer than four rows, or whose ID
-    falls between two visible rows' IDs cannot be elsewhere in the list.
+    with stock 0, missing from a panel that drew neither the ▲ nor the ▼ scroll
+    arrow (so nothing is hidden above or below), or whose ID falls between two
+    visible rows' IDs cannot be elsewhere in the list. Row count alone is not
+    proof: a three-row tail with ▲ is still a window (g1288 23:10:40).
     g825 2-9 (2026-10-17 09:3x): 1-B1 wanted クースカン(13); the panel showed
     ブラッキー/フットバース/ノリウツール(11)/バルムンク(16) and the strict boss
     kit held for good.
@@ -411,7 +611,39 @@ def _card_proven_absent(card, inventory, *, bottom=False):
     target = CARD_IDS.get(card)
     if target is None or None in ids or ids != sorted(ids):
         return False
-    return len(rows) < 4 or min(ids) < target < max(ids) or (bottom and target > max(ids))
+    return (_card_panel_complete(inventory) or min(ids) < target < max(ids)
+            or (bottom and target > max(ids)))
+
+
+def _card_scroll_frames(mem, card, inventory):
+    """Frames to hold one scroll toward ``card`` (1 = the measured single down).
+
+    The card list is ID-sorted and shows the cards with stock, so the number of
+    held cards between the visible edge and the target is the number of rows
+    left to scroll. Holding four at once replaces four observations with one
+    (g1163 2026-11-09: 68 scrolls in 15 minutes, ~8 per sortie). The landing is
+    still read before any selection, and the flow can scroll back up.
+    """
+    target = CARD_IDS.get(card)
+    rows = inventory.get('rows') or []
+    ids = [CARD_IDS.get(r['card']) for r in rows]
+    if target is None or None in ids or len(rows) != 4:
+        return 1
+    down = target > max(ids)
+    lo, hi = (max(ids), target) if down else (target, min(ids))
+    stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+    between = [c for c, cid in CARD_IDS.items()
+               if type(cid) is int and lo < cid < hi and int(stock.get(c, 0) or 0) > 0]
+    target_held = int(stock.get(card, 0) or 0) > 0
+    if not between and not target_held:
+        return 1
+    steps = len(between) + (1 if target_held else 0)
+    selected_y = inventory.get('selected_y')
+    if type(selected_y) is int:
+        edge_y = rows[-1]['y'] if down else rows[0]['y']
+        if type(edge_y) is int:
+            steps += max(0, min(3, abs(edge_y - selected_y) // 16))
+    return max(1, min(steps, CARD_SCROLL_HOLD_MAX))
 
 
 def _lower_card_boundary(mem, order, inventory):
@@ -457,9 +689,42 @@ def _upper_card_boundary(mem, order, card, inventory):
         state.pop('await_input', None)
         if state['confirmed'] == 2:
             _record(mem, 'card_upper_boundary_verified', chart_step=order['step'], card=card,
-                    observed_metric={'rows': scope['rows'], 'delivered_up_inputs': 2},
+                    observed_metric={'rows': scope['rows'], 'delivered_up_inputs': 2,
+                                     **_card_arrow_metric(inventory)},
                     reason='一覧先頭で上入力を2回送っても同じ実在庫のため、この札は上に存在しない')
     return state.get('confirmed') == 2
+
+
+def _actor_name_slip(observed, selected):
+    """An unreadable-by-one-character OCR slip of the intended actor.
+
+    The sortie screen prints the general's name; OCR read ポセイドン as
+    ホセイドン and ポ??ドン (g1163 2026-11-10 01:09-01:30: every ポセイドン
+    sortie was cancelled after three "unconfirmed" reads). The observed text is
+    not a known general, so a single mismatching character is a read error, not
+    a different actor.
+    """
+    if not isinstance(observed, str) or not isinstance(selected, str):
+        return False
+    if len(observed) != len(selected) or len(selected) < 3:
+        return False
+    if general_max_hp(observed) is not None:
+        return False          # a real general: never treat it as a slip
+    mismatches = 0
+    known = 0
+    for a, b in zip(observed, selected):
+        if a == UNKNOWN:
+            continue
+        known += 1
+        if a != b:
+            mismatches += 1
+    if known >= 3 and mismatches <= 1:
+        return True
+    # A short name with most of its characters unread (キール read as キ??)
+    # still names the intended general when every readable character matches in
+    # place and no other known general fits: g1163 2026-11-10 02:1x cancelled
+    # every キール sortie this way.
+    return known >= 1 and mismatches == 0 and len(selected) >= 3
 
 
 def _selected_actor_guard(screen, mem, order):
@@ -472,9 +737,10 @@ def _selected_actor_guard(screen, mem, order):
     from ..os_layer.roster import run_identity
     scoped = run_identity(mem.get('_run_identity')) is not None
     selected = (_sortie_general(order, mem) if scoped else
-                (mem.get('sortie_general') or {}).get(order['step']))
-    if order.get('source_probe') is True and (not selected or selected == NAME):
-        (mem.get('general_override') or {}).pop(order['step'], None)
+                (_plan_region(mem).get('sortie_general') or {}).get(order['step']))
+    if (order.get('source_probe') is True and (not selected or selected == NAME)
+            and not (selected == NAME and order.get('corridor') is True and order.get('purpose') == 'move')):
+        (_plan_region(mem).get('general_override') or {}).pop(order['step'], None)
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
             '実一覧で選んだ将軍の証拠がないため配置確認の出撃を取り消す',
@@ -484,19 +750,53 @@ def _selected_actor_guard(screen, mem, order):
         return None
     row = next((line for line in screen.lines if line.y == 31), None)
     name = row.span(16, 80).strip() if row else None
-    if (not row or row.span(80, 128) != 'しょうぐん' or not name
-            or UNKNOWN in name or general_max_hp('しゅじんこう' if name == NAME else name) is None):
+    # The name itself is the strong evidence. A readable name that equals the
+    # intended actor is accepted even when the しょうぐん menu label is not at
+    # its measured columns: the label drifts with the frame's layout while the
+    # name stays the actor (g1163 2026-11-10 01:0x: 7 sorties an hour were
+    # cancelled after three label misses).
+    if not row or not name:
         misses = mem.setdefault('sortie_actor_miss', {})
         misses[order['step']] = misses.get(order['step'], 0) + 1
         if misses[order['step']] < 3:
             return _hold_deploy(screen, mem, order, '代役の出撃画面の本人名を読めないため保留')
         reason = '代役の出撃画面の本人名を3回で確認できず出撃を取り消す'
-    elif name != selected:
-        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
-    else:
+    elif name == selected:
+        # The name is the actor; the menu label and its columns may drift.
         (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
         return None
-    (mem.get('general_override') or {}).pop(order['step'], None)
+    elif _actor_name_slip(name, selected):
+        # OCR read ポセイドン as ホセイドン or ポ??ドン; the readable characters
+        # still name the intended general, so the sortie is not cancelled
+        # (g1163 2026-11-10 01:19-01:46: fifteen retries of this one sortie).
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        _record(mem, 'sortie_actor_ocr_slip', **_deploy_context(order, mem),
+                observed=name, screen=screen.kind,
+                reason=f'出撃画面の将軍名{name}を{selected}の読み違いとして扱う')
+        return None
+    elif (isinstance(selected, str) and selected and selected != NAME and name != NAME
+          and general_max_hp(name) is not None
+          and not chart.is_boss_castle(order.get('target'))
+          and not _strict_boss_cards(order, mem)):
+        # Owner 2026-11-10: for an ordinary castle a different general may
+        # depart in place of the planned one. Boss sorties keep the strict
+        # check (their card kit and cancellation budget belong to the plan).
+        # P1 (#3864) migrated sortie_general into the plan region; writing to
+        # the legacy flat key here would let migrate_legacy_state replace the
+        # whole plan dict and drop other steps' cached actors (#3918).
+        _plan_region(mem).setdefault('sortie_general', {})[order['step']] = name
+        (_plan_region(mem).get('general_override') or {}).pop(order['step'], None)
+        (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
+        _record(mem, 'sortie_actor_substituted', **_deploy_context(order, mem),
+                observed=name, screen=screen.kind,
+                reason=f'計画の{selected}に代わり実画面の{name}を出撃させる（オーナー指示の代替出撃）')
+        return None
+    else:
+        # A readable, different actor cancels at once: the planned substitute
+        # must never be relabelled onto whoever the panel shows (the hero
+        # included). Only an *unreadable* name earns the three holds above.
+        reason = f'選択予定の{selected}と実画面の{name}が違うため出撃を取り消す'
+    (_plan_region(mem).get('general_override') or {}).pop(order['step'], None)
     (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
     return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed', reason,
                                {'selected': selected, 'observed': name, 'screen': screen.kind})
@@ -520,7 +820,9 @@ def _deploy_context(order, mem, *, expected_metric=None):
                        deviation_reason='実在庫のキャトルミューを活用するため携行札を変更')
     elif rare_kit and 'バルムンク' in rare_kit:
         context.update(strategy_variant='rare_balmung_boss',
-                       deviation_reason='実在庫のバルムンクを第2話ボスの実測装備として携行')
+                       deviation_reason=('実在庫のバルムンクを第2話ボスの実測装備として携行'
+                                          if mem.get('chapter') == 2 else
+                                          '実在庫のバルムンク(ボス250)をボス注文の先頭に携行して積極的に使う'))
     return context
 
 
@@ -534,17 +836,63 @@ def _deploy_input(screen, mem, order, actions, reason):
     return actions
 
 
-def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
+DEPLOY_HOLD_LIMIT = 12   # consecutive unclassified sortie screens before cancelling
+
+
+def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
     context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
+    # docich#4715: an unclassified sortie screen held forever — the live run sat
+    # on `field hold` (map_target) for many minutes with months passing and no
+    # sortie. Count the holds per step and cancel like the general-list path
+    # does once the budget is spent, so the plan can move on.
+    holds = _flow(mem).setdefault('deploy_holds', {})
+    count = int(holds.get(order['step']) or 0) + 1
+    holds[order['step']] = count
+    if count > DEPLOY_HOLD_LIMIT:
+        holds.pop(order['step'], None)
+        context.update(observed_metric={'hold_count': count, 'screen': screen.kind})
+        return _hold_guarded_sortie(mem, order, 'sortie_hold_abandoned',
+                                    '出撃画面を分類できないまま保留上限に達したため取り消す',
+                                    {'hold_count': count, 'screen': screen.kind})
     if not (mem.get('retry_context') or {}).get(order['step']):
         context.update(strategy_variant='sortie_cards_unclassified' if screen.kind == 'sortie_confirm'
                        else 'sortie_menu_unclassified', deviation_reason=reason)
     _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
             observed_metric={'hand': screen.hand,
+                             # OCR yield: live frames can render with no
+                             # readable text at all (g1163 2026-11-10 04:39:
+                             # 299x224 frames parsed to ''), so the held screen
+                             # records how much text it actually produced.
+                             'text_len': len(getattr(screen, 'text', '') or ''),
                              'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
-                             'carried_cards_read': carried, 'confirmation': 'unclassified'},
+                             'carried_cards_read': carried, 'confirmation': 'unclassified',
+                             'hold_variant': hold_variant},
             reason=reason)
     return []
+
+
+
+GENERAL_LIST_HOLD_LIMIT = 8
+
+
+def _hold_general_list_bounded(screen, mem, order, reason, variant):
+    """Fail a stuck general-list selection before the 60-tick menu watchdog."""
+    step = order['step']
+    holds = mem.setdefault('general_list_hold', {})
+    holds[step] = holds.get(step, 0) + 1
+    if holds[step] >= GENERAL_LIST_HOLD_LIMIT:
+        count = holds.pop(step)
+        (mem.get('target_cancel') or {}).pop(step, None)
+        _record(mem, 'general_list_hold_exhausted',
+                **_deploy_context(order, mem), screen=screen.kind,
+                observed_metric={'hold_variant': variant, 'hold_count': count},
+                reason=reason)
+        _finish_order(mem, 'failed', deviation_reason=reason,
+                      observed_metric={'hold_variant': variant, 'hold_count': count},
+                      source=_source(order, mem),
+                      reason='将軍一覧の停滞上限に達したため出撃指示を取り消す')
+        return [pad('b'), pad('b')]
+    return _hold_deploy(screen, mem, order, reason, hold_variant=variant)
 
 
 def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
@@ -572,29 +920,55 @@ def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
 
 
 def _move_general_pick(screen, mem, order):
-    """Pick the general a move sends: never the donor's last one."""
+    """Pick the general a move sends: the planned one, never the donor's last.
+
+    A garrison rotation names the general that should thicken the castle near
+    the enemy (replan picks the strongest spare) and writes that name into the
+    order, so the sortie honours it when the general is selectable from this
+    castle. The head of the list stays the fallback for an order that carries
+    no usable name: the MOVE_ANY_GENERAL sentinel, the hero, a general already
+    on the road, or one that is not here any more.
+    g1139 2026-11-06 21:16: a thickening move to ジュメルズ named ゼウス
+    (HP 85) and the list head セルリアク (HP 32) went instead; ジュメルズ fell
+    seven minutes later.
+    """
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '移動元の将軍一覧を読めないため保留')
     busy = _en_route(mem)[0]
     spare = sorted((g for g in present if g not in busy), key=lambda g: g == NAME)
-    if len(present) < 2 or not spare:
+    # Chapter 9 may empty a rear castle and walks the hero forward too
+    # (owner 2026-11-09 / 2026-11-11).
+    road_walk = chart.guard_free(mem.get('chapter'))
+    if (len(present) < 2 and not road_walk) or not spare:
         _finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない',
                       observed_metric=present[:8], source=_source(order, mem),
                       reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')
         return [pad('b'), pad('b')]
-    general = mem.get('general_override', {}).get(order['step'])
+    general = _plan_region(mem).get('general_override', {}).get(order['step'])
     if general not in spare:
-        general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
-                   or spare[0])
-        mem.setdefault('general_override', {})[order['step']] = general
+        planned = order.get('general')
+        # The hero may leave for the gateway hub: ``hero_hub_move`` is the
+        # owner's exception (recruiting happens at the hero's castle, so the
+        # hub only grows when he stands there). Without this the pick fell back
+        # to another general and the hero never arrived (g1190 2026-11-18
+        # 15:12: the order named どうし and ラビオリ departed instead — #4546).
+        if planned in spare and (planned != NAME or road_walk
+                                 or order.get('hero_hub_move') is True):
+            general = planned
+            reason = '計画が名指しした将軍をそのまま移動させる'
+        else:
+            general = (_defense_move_pick(mem, _source(order, mem), order['target'], spare)
+                       or spare[0])
+            reason = '移動元に1人以上残して主人公以外の将軍を空の城へ送る'
+        _plan_region(mem).setdefault('general_override', {})[order['step']] = general
         _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
                 source=_source(order, mem), target=order['target'], observed_metric=present[:8],
-                reason='移動元に1人以上残して主人公以外の将軍を空の城へ送る')
+                reason=reason)
     move = _list_menu_to(screen, mem, order, general)
     if move is None:
         return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
-    return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
+    return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
                          '移動させる将軍を選択')
 
 
@@ -607,15 +981,53 @@ GENERAL_LIST_SCAN_STALLS = 3
 GENERAL_LIST_SCAN_TICKS = 60
 
 
+def _scan_press_limit(mem):
+    """Presses a roster walk may take before the safety limit ends it.
+
+    g1190 2026-11-16 33-4: イデ！'s boss-phase roster held 18 generals and the
+    walk hit the flat 16-press cap every read, so end='limit' never cleared
+    ``roster_read_due`` and the interim probe order was re-issued 100+ times.
+    A roster cannot exceed the country's general count, so that count (plus
+    the stall margin) is the bound; the constant stays the fallback.
+    """
+    army = (mem.get('country_general_count') or {}).get('count')
+    if type(army) is not int or army <= 0:
+        return GENERAL_LIST_SCAN_PRESSES
+    return max(GENERAL_LIST_SCAN_PRESSES, army + GENERAL_LIST_SCAN_STALLS)
+
+
+def _planned_general_on_page(screen, mem, order, present):
+    """The plan's own general when this page already shows him.
+
+    Owner 2026-11-07: when the plan says which general sorties (or moves), the
+    list is a lookup, not a survey. Once that general is on screen the sortie
+    can proceed from this page; pressing down to the end only delays it.
+    Boss, hero, probe and unconfirmed-departure steps still need the whole
+    list: they pick companions from it, prove a source roster, or settle a
+    launch.
+    """
+    if ((_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
+            or _is_boss_order(order, mem) or order.get('source_probe') is True):
+        return None
+    general = _sortie_general(order, mem) or order.get('general')
+    if not general or general == NAME or general in _en_route(mem)[0]:
+        return None
+    if general not in present or not _general_visible(screen, general):
+        return None
+    return general
+
+
 def _general_list_scan(screen, mem, order):
     """Down presses that walk this general list once, or None once it is read.
 
     The walk ends when the cursor returns to the row it started on (a wrapped
     list), stops moving for GENERAL_LIST_SCAN_STALLS frames after a press, or
-    after GENERAL_LIST_SCAN_PRESSES presses. An unreadable frame leaves the
-    walk where it was and lets the callers hold as before.
+    after GENERAL_LIST_SCAN_PRESSES presses. A step that names its general
+    ends the walk on the page where he appears: the rest of the list cannot
+    change who sorties. An unreadable frame leaves the walk where it was and
+    lets the callers hold as before.
     """
-    if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+    if (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
         return None
     present = _present_generals(screen)
     if present is None:
@@ -646,8 +1058,18 @@ def _general_list_scan(screen, mem, order):
         scan['stalls'] += 1
         if scan['stalls'] >= GENERAL_LIST_SCAN_STALLS:
             scan['end'] = 'stalled'
-    if not scan['end'] and scan['presses'] >= GENERAL_LIST_SCAN_PRESSES:
+    if not scan['end'] and scan['presses'] >= _scan_press_limit(mem):
         scan['end'] = 'limit'
+    if not scan['end']:
+        found = _planned_general_on_page(screen, mem, order, present)
+        if found:
+            scan['end'], scan['general'] = 'named', found
+    if scan['end'] == 'named':
+        _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
+                observed_metric={'generals': list(scan['names']), 'end': 'named',
+                                 'general': scan.get('general'), 'presses': scan['presses']},
+                reason=f"計画が名指しした{scan.get('general')}が一覧に見えたため、最後まで送らず出撃の選択へ進む")
+        return None
     if scan['end']:
         _record(mem, 'general_list_scanned', **_deploy_context(order, mem), castle=castle,
                 observed_metric={'generals': list(scan['names']), 'end': scan['end'],
@@ -656,6 +1078,394 @@ def _general_list_scan(screen, mem, order):
         return None
     scan['presses'] += 1
     return [pad('down')]
+
+
+def _corridor_list_end(screen, mem, order):
+    """Chapter 9 march order whose list offers nobody: close it, skip the castle.
+
+    The general list is terminal in mechanical mode (owner 2026-11-11: それ以外
+    の操作はdisable): no walk, substitute or source fallback. An unreadable
+    list holds within the existing bound.
+    """
+    from ..strategy import corridor
+    present = _present_generals(screen)
+    if present is None:
+        return _hold_general_list_bounded(screen, mem, order,
+            '第9話の出撃一覧を読めないため保留', 'cursor_unreadable')
+    others = [g for g in present if g != NAME]   # listed here means here (see _cursor_order_pick)
+    if others and not _keeps_hero_company(order, present):
+        # Generals are listed but the hand/cursor could not be read: never
+        # record the castle as drained from an unread frame.
+        return _hold_general_list_bounded(screen, mem, order,
+            '第9話の出撃一覧のカーソルを読めないため保留', 'cursor_unreadable')
+    kind = 'empty' if not others and NAME not in present else 'hero'
+    corridor.mark_drained(mem, _source(order, mem), kind)
+    _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
+    _finish_order(mem, 'done', observed_metric=present[:8], source=_source(order, mem),
+                  reason=('第9話: 出撃元に出せる将軍がいないため、この城を一時的に対象から外す' if kind == 'empty'
+                          else '第9話: 主人公と最後の1人を残すため攻撃せず、この城を一時的に対象から外す'))
+    return [pad('b'), pad('b')]
+
+
+def _corridor_roster_recheck(screen, mem, order):
+    """A stale-roster attack re-judges the pair wait on the fresh list.
+
+    ``corridor.orders`` lifts the repelled-front pair wait when the front's
+    resident read is too old to trust, purely so the sortie opens the list
+    and reads it again (``front_roster_recheck``). Sending the cursor's
+    general anyway is what emptied the front and serialised the march in #4498
+    (g1270: ``front_roster_stale`` 290x while ``order_start`` gaps grew to
+    261 obs). When the fresh list still shows fewer than ``_keep + 2``
+    residents and the wait itself has not run out, the read is the answer
+    the plan asked for: record it, close the menu, and let the refill moves
+    run. The bounds mirror the planner's, so a nearly dead defender or an
+    expired wait still marches the lone general.
+    """
+    if (order.get('front_roster_recheck') is not True or order.get('corridor') is not True
+            or order.get('roster_probe') is True
+            or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return None
+    present = _present_generals(screen)
+    if present is None:
+        return None                         # the normal path bounds the hold
+    from ..strategy import corridor
+    source, target = _source(order, mem), order['target']
+    keep = 2 if ((corridor._flip_prone(mem, target)
+                  or corridor._defended_recently(mem, source))
+                 and order.get('purpose') != 'retake') else 1
+    mass = keep + 2
+    if not (0 < len(present) < mass):
+        return None
+    if (not corridor._repelled_alone(mem, target)
+            or corridor._defender_nearly_dead(mem, target)
+            or corridor._front_mass_expired(mem, source, len(present))):
+        return None                         # the pair wait ran out: march alone
+    _observe_garrison(screen, mem, order, complete=True)
+    _record(mem, 'front_mass_confirmed', **_deploy_context(order, mem), castle=source,
+            observed_metric={'present': present[:8], 'need': mass},
+            reason='出撃一覧で前線の在城を読み直したところ2人同時に出せる人数に足りないため、出さずに増援を待つ')
+    _finish_order(mem, 'done', source=source,
+                  reason='前線の在城一覧を読み直した結果2人待ちの条件が続いているため、この出撃を閉じて増援を優先する')
+    return [pad('b'), pad('b')]
+
+
+CASTLE_STATUS_AS_LIST_LIMIT = 3   # B presses on a ステータス panel read as the list before cancelling
+CURSOR_PICK_DOWNS = 2 * GENERAL_LIST_FULL   # presses past the hero before the normal path takes over
+
+
+def _cursor_order_pick(screen, mem, order):
+    """Chapter 9: send whoever the list cursor is on; the hero goes last.
+
+    Owner 2026-11-11: 9話にかぎり、出撃の時に将軍を選ぶ必要ないので、カーソルが
+    あった順に出撃させれば短縮になる。ただし主人公だけはゲームオーバーにならない
+    ために最後とする. Chapter 9 lifts every keep-a-defender rule
+    (``chart.guard_free``), so walking the whole list and steering to a named
+    general only costs time. The cursor's general goes at once. On the hero
+    the cursor steps down; he leaves only by a move, and only when nobody else
+    is left. An attack with nobody but the hero falls back to the normal path,
+    which never sends him. Boss orders, read-only roster probes and launch
+    verifications keep the full list.
+    """
+    if not chart.guard_free(mem.get('chapter')) or _is_boss_order(order, mem):
+        return None
+    if (order.get('roster_probe') is True
+            or (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed'):
+        return None
+    present, cur = _present_generals(screen), _current(screen)
+    if not present or not screen.hand or not cur or cur[2] not in present:
+        return None
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    if order.get('corridor') is True:
+        # Chapter 9's march trusts the live list: a general listed here is in
+        # this castle, whatever an unsettled march record says (g1163
+        # 2026-11-11 14:59-15:04: タオ listed アルファルファ, still recorded as
+        # marching, and five orders closed the list as "nobody to send").
+        busy = set()
+    name, step = cur[2], order['step']
+    downs = mem.setdefault('cursor_pick_downs', {})
+    if order.get('corridor_hero') is True:
+        return _corridor_hero_pick(screen, mem, order, present, cur)
+    if _keeps_hero_company(order, present):
+        downs.pop(step, None)
+        return None                     # see _corridor_list_end
+    if order.get('purpose') == 'move' and order.get('corridor') is True:
+        healthy = _healthier_mover(mem, present, name)
+        if healthy is not None:
+            move = menu_to(screen, healthy)
+            if move and move != 'here' and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'healthy_mover_pick', chart_step=step,
+                        observed_metric={'present': present[:8], 'cursor': name,
+                                         'chosen': healthy},
+                        reason='前線へ送る将軍は、傷ついた将軍より元気な将軍を先に出す')
+                return _deploy_input(screen, mem, order,
+                                     _general_selection_actions(screen, healthy, move),
+                                     '増援は元気な将軍へカーソルを送る')
+    if order.get('purpose') != 'move' and order.get('corridor') is True:
+        leader = _full_hp_leader(mem, present, name,
+                                 keep_best=_source_defended(mem, order))
+        if leader is not None:
+            move = menu_to(screen, leader)
+            if move and move != 'here' and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
+                downs[step] = int(downs.get(step) or 0) + 1
+                _record(mem, 'full_hp_leader', chart_step=step,
+                        observed_metric={'present': present[:8], 'cursor': name, 'chosen': leader},
+                        reason='カーソルの将軍が半減以下のため、満タンの将軍を先頭にして攻撃する')
+                return _deploy_input(screen, mem, order,
+                                     _general_selection_actions(screen, leader, move),
+                                     '攻撃は満タンの将軍へカーソルを送る')
+    if name == NAME or name in busy:
+        others = [g for g in present if g != NAME and g not in busy]
+        whole = len(present) < GENERAL_LIST_FULL
+        if others or (not whole and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS):
+            downs[step] = int(downs.get(step) or 0) + 1
+            return _deploy_input(screen, mem, order, [pad('down')],
+                                 '第9話は主人公を最後にするため、カーソルを次の将軍へ送る')
+        if name == NAME:
+            # Owner 2026-11-12: the hero is posted one road castle behind the
+            # front (``corridor._hero_post_order``). Letting a regular march
+            # send him took him to the front: g1163 2026-11-12 12:4x recorded
+            # I:c9:サヌト>オシロガ:328 with どうし as the mover, left サヌト
+            # empty and walked the hero straight back next cycle.
+            downs.pop(step, None)
+            _record(mem, 'hero_move_refused', chart_step=step,
+                    strategy_variant='hero_move_refused',
+                    observed_metric={'present': present[:8]},
+                    deviation_reason='主人公を前線へ出す代わりに、移動の指示を閉じる',
+                    reason='主人公は前線の一つ後ろの自城に常駐させるため、行軍の代役にしない')
+            return None
+    downs.pop(step, None)
+    return _cursor_take(screen, mem, order, name, present)
+
+
+MOVE_HP_MARGIN = 20            # HP a staged mover gains over the cursor one
+
+
+def _healthier_mover(mem, present, current):
+    """The healthiest listed general, when the cursor one is clearly wounded.
+
+    Reinforcements are what the front fights with: moving a 15-HP general
+    forward spends a march and delivers nothing. Only measured HP counts, and
+    the hero is never offered.
+    """
+    hp = (_world(mem).get('general_hp') or {}) if isinstance(_world(mem), dict) else {}
+    if not isinstance(hp, dict):
+        return None
+
+    def value(name):
+        row = hp.get(name) if isinstance(hp.get(name), dict) else {}
+        return row.get('hp') if type(row.get('hp')) is int else None
+
+    def row(name):
+        return hp.get(name) if isinstance(hp.get(name), dict) else {}
+
+    current_row = row(current)
+    current_hp = current_row.get('hp') if type(current_row.get('hp')) is int else None
+    if current_hp is None:
+        return None
+    # A general with no HP record has never been measured in battle: a fresh
+    # recruit (generals never heal in this run — 12k ticks of readings show no
+    # rise, while new ones arrive whole). Send those forward first when the
+    # cursor general is hurt.
+    maximum = current_row.get('max')
+    hurt = type(maximum) is int and maximum > 0 and current_hp < maximum * 8 // 10
+    if hurt:
+        for general in present:
+            if general == NAME or general == current:
+                continue
+            if (row(general).get('hp') is None
+                    and general_max_hp('しゅじんこう' if general == NAME else general) is not None):
+                return general
+    best, best_hp = None, current_hp
+    for general in present:
+        if general == NAME:
+            continue
+        got = value(general)
+        if got is not None and got - best_hp >= MOVE_HP_MARGIN:
+            best, best_hp = general, got
+    return best
+
+
+FULL_HP_LEADER = 80            # percentage of max HP a wave leader needs
+
+
+DEFENSE_KEEP_TICKS = 900       # a just-attacked front keeps its strongest home
+
+
+def _source_defended(mem, order) -> bool:
+    """The sortie's source castle was attacked inside the defence window."""
+    source = _source(order, mem)
+    tick = (mem.get('defense_seen') or {}).get(source)
+    now = int(mem.get('tick') or 0)
+    return (type(tick) is int and 0 <= now - tick <= DEFENSE_KEEP_TICKS)
+
+
+def _full_hp_leader(mem, present, current, keep_best=False):
+    """A whole general when the cursor one is badly hurt.
+
+    Owner 2026-11-12: 将軍のステータスによらず、どんどん上から順に将軍を送る.
+    A battle here is an HP duel and generals never heal (three hours of
+    readings show no rise), so a half-dead leader simply loses. The wave keeps
+    going; only the body that leads it changes, and only when a whole general
+    is right there. Among whole generals the one with the most HP leads: the
+    retake of オオキク (2026-11-13 13:4x) fought a gauntlet of 80/42-HP
+    defenders with a 74-HP general and lost at 19 HP.
+
+    ``keep_best`` is for a front the enemy has just attacked: the strongest
+    general stays home as the defender and the next one leads the sortie.
+    g1163 2026-11-13 15:3x-16:1x lost several defences at enemy 1-8 HP while
+    the healthiest resident had already marched out.
+    """
+    hp = _world(mem).get('general_hp') or {}
+    if not isinstance(hp, dict):
+        return None
+
+    def row(name):
+        return hp.get(name) if isinstance(hp.get(name), dict) else {}
+
+    current_row = row(current)
+    current_hp, maximum = current_row.get('hp'), current_row.get('max')
+    if (type(current_hp) is not int or type(maximum) is not int or maximum <= 0
+            or current_hp * 2 >= maximum):
+        return None
+    whole = []
+    for general in present:
+        if general == NAME:
+            continue
+        got = row(general)
+        if (type(got.get('hp')) is int and type(got.get('max')) is int
+                and got['max'] > 0 and got['hp'] * 100 >= got['max'] * FULL_HP_LEADER):
+            whole.append((general, (got['hp'], got['max'])))
+    if not whole:
+        return None
+    whole.sort(key=lambda item: item[1], reverse=True)
+    if keep_best and len(whole) >= 2:
+        return whole[1][0]
+    return whole[0][0]
+
+
+def _keeps_hero_company(order, present) -> bool:
+    """A chapter 9 attack never takes the hero's last companion (v671).
+
+    Squads leave the hero with whoever is not in the vanguard; sending the
+    last one would leave him alone in the castle the enemy retakes first.
+    Only a whole list (every general visible) can prove "the last one".
+    """
+    others = [g for g in present if g != NAME]
+    return (order.get('corridor') is True and order.get('purpose') != 'move' and NAME in present
+            and len(present) < GENERAL_LIST_FULL and len(others) <= 1)
+
+
+def _corridor_hero_pick(screen, mem, order, present, cur):
+    """Chapter 9 hero order: move the hero himself one hop forward (v671).
+
+    Owner 2026-11-11: しろがとれたら将軍とプラス６人をいかせる. The cursor is
+    steered to the hero's row (bounded); a list without him ends the hero's
+    move for this capture.
+    """
+    from ..strategy import corridor
+    step = order['step']
+    downs = mem.setdefault('cursor_pick_downs', {})
+    if cur[2] == NAME:
+        downs.pop(step, None)
+        return _cursor_take(screen, mem, order, NAME, present)
+    whole = len(present) < GENERAL_LIST_FULL
+    if (NAME in present or not whole) and int(downs.get(step) or 0) < CURSOR_PICK_DOWNS:
+        downs[step] = int(downs.get(step) or 0) + 1
+        up = NAME in present and present.index(NAME) < present.index(cur[2])
+        return _deploy_input(screen, mem, order, [pad('up' if up else 'down')],
+                             '第9話の主人公の移動のため、カーソルを主人公へ合わせる')
+    downs.pop(step, None)
+    corridor.hero_absent(mem)
+    _finish_order(mem, 'done', observed_metric=present[:8], source=_source(order, mem),
+                  reason='第9話: 主人公がこの城の一覧にいないため、この回の主人公の移動をやめる')
+    return [pad('b'), pad('b')]
+
+
+def _cursor_take(screen, mem, order, name, present):
+    step = order['step']
+    _observe_garrison(screen, mem, order, complete=len(present) < GENERAL_LIST_FULL)
+    _plan_region(mem).setdefault('general_override', {})[step] = name
+    _plan_region(mem).setdefault('sortie_general', {})[step] = name
+    _record(mem, 'cursor_order_pick', **_deploy_context(order, mem), castle=_source(order, mem),
+            observed_metric={'general': name, 'planned': order.get('general'), 'visible': present[:8]},
+            reason='第9話は出撃将軍を選ばず、一覧のカーソル位置の将軍をそのまま出す（主人公は最後）')
+    return _deploy_input(screen, mem, order, [pad('a')], '一覧のカーソル位置の将軍を出撃させる')
+
+
+CURSOR_CARD_DOWNS = 12          # rows walked past empty or over-cap cards before the list is closed
+CARD_PICK_RELEASE_MS = 150      # released interval so a batched card pick reads as a distinct A
+
+
+def _cursor_order_cards(order, mem) -> bool:
+    """Chapter 9 picks cards from the top of the list (owner 2026-11-11)."""
+    return (chart.guard_free(mem.get('chapter')) and not _is_boss_order(order, mem)
+            and not _strict_boss_cards(order, mem)
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed')
+
+
+def _cursor_card_step(screen, mem, order, inventory, picked):
+    """Take the highlighted card, else step down; close the list when full.
+
+    Owner 2026-11-11: 9話限定で切り札も上から順に適当に選ぶようにして良い. The
+    plan's cards were searched for by scrolling (g1163 12:15: four scrolls for
+    クースカン on every sortie). The highlighted row is taken while it has
+    stock and keeps the carried ID total under the enemy-egg threshold
+    (``ENEMY_EGG_CARD_ID_SUM``); otherwise the cursor steps down. The picks
+    become the order's kit (``card_override``) so the departure confirmation
+    compares against what was actually taken.
+    """
+    from ..strategy.kit import ENEMY_EGG_CARD_ID_SUM
+    step = order['step']
+    for key in ('strong_card_kit', 'dropper_card_kit', 'rare_card_kit'):
+        (mem.get(key) or {}).pop(step, None)
+    _plan_region(mem).setdefault('card_override', {})[step] = list(picked)
+    downs = mem.setdefault('cursor_card_downs', {})
+    row = next((r for r in inventory['rows'] if r['y'] == inventory['selected_y']), None)
+    total = sum(CARD_IDS.get(card, 0) for card in picked)
+    if inventory['remaining'] > 0 and row is not None:
+        card_id = CARD_IDS.get(row['card'])
+        need = inventory['remaining']
+        # The cursor stays on a stocked row after a pick (the same card's
+        # stock decrements 1 per A), so a row that covers every remaining slot
+        # under the egg-ID cap is taken with one batched A run. The previous
+        # one-pick-per-observation loop spent a full cycle confirming each A.
+        if (row['stock'] >= need and card_id is not None
+                and total + need * card_id < ENEMY_EGG_CARD_ID_SUM):
+            picked.extend([row['card']] * need)
+            _plan_region(mem)['card_override'][step] = list(picked)
+            note_card_carried(mem, row['card'], row['stock'], need)
+            _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
+                    observed_metric={'stock': row['stock'], 'remaining': need, 'count': need,
+                                     'id_sum': total + need * card_id, 'cursor_order': True,
+                                     'inventory_evidence': inventory['inventory_evidence'],
+                                     'observed_rows': inventory['observed_rows'],
+                                     **_card_arrow_metric(inventory)},
+                    resulting_event='selection_planned_not_yet_confirmed',
+                    reason='第9話は一覧のカーソル位置の札を上から順に携行し、残り枠をまとめて取る')
+            actions = [pad('a')]
+            for _ in range(need - 1):
+                actions.extend([{'type': 'wait', 'ms': CARD_PICK_RELEASE_MS}, pad('a')])
+            return actions
+        if row['stock'] > 0 and card_id is not None and total + card_id < ENEMY_EGG_CARD_ID_SUM:
+            picked.append(row['card'])
+            _plan_region(mem)['card_override'][step] = list(picked)
+            note_card_carried(mem, row['card'], row['stock'], 1)
+            _record(mem, 'card_pick', **_deploy_context(order, mem), card=row['card'],
+                    observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
+                                     'id_sum': total + card_id, 'cursor_order': True,
+                                     'inventory_evidence': inventory['inventory_evidence'],
+                                     'observed_rows': inventory['observed_rows'],
+                                     **_card_arrow_metric(inventory)},
+                    resulting_event='selection_planned_not_yet_confirmed',
+                    reason='第9話は切り札を選ばず、一覧のカーソル位置の札を上から順に携行する')
+            return [pad('a')]
+        if int(downs.get(step) or 0) < CURSOR_CARD_DOWNS:
+            downs[step] = int(downs.get(step) or 0) + 1
+            return _deploy_input(screen, mem, order, [pad('down')],
+                                 '第9話はカーソル位置の札が使えないため次の札へ送る')
+    downs.pop(step, None)
+    return _deploy_input(screen, mem, order, [pad('b')], '第9話の上から順の切り札選択を終えて携行確認へ進む')
 
 
 def _listed_generals(screen, mem, order):
@@ -670,27 +1480,111 @@ def _listed_generals(screen, mem, order):
 
 
 def _list_menu_to(screen, mem, order, general):
-    """``menu_to``, or one press toward a walked name outside the window."""
+    """``menu_to``, or a press run toward a walked name outside the window.
+
+    A walked list knows the target's index, so an off-screen destination is a
+    fixed distance: release-separated taps cover it in one observation instead
+    of one row per frame. The landing is still observed before any A.
+    """
     move = menu_to(screen, general)
     names, cur = _listed_generals(screen, mem, order), _current(screen)
     if move is not None or not names or not cur or general not in names or cur[2] not in names:
         return move
-    return pad('down' if names.index(general) > names.index(cur[2]) else 'up')
+    distance = names.index(general) - names.index(cur[2])
+    direction = 'down' if distance > 0 else 'up'
+    actions = [pad(direction)]
+    for _ in range(min(abs(distance), MENU_NAV_BATCH_MAX) - 1):
+        actions.extend([{'type': 'wait', 'ms': MENU_NAV_RELEASE_MS}, pad(direction)])
+    return actions
 
 
-def _observe_garrison(screen, mem, order):
-    """Remember who a castle's general list showed (``interim_candidates``)."""
+def _general_selection_actions(screen, general, move):
+    """Batch only a readable destination lookup, after the caller's guards.
+
+    Neither a completed roster scan nor a planned landing authorizes A.
+    The next observation must put the real cursor on the requested general.
+    """
+    if move == 'here':
+        return [pad('a')]
+    if isinstance(move, list):
+        return move
+    return general_list_batch(screen, general) or [move]
+
+
+GARRISON_EMPTY_READINGS = 2      # equal empty list frames before "no generals"
+
+
+def _observe_garrison(screen, mem, order, *, complete=True):
+    """Remember who a castle's general list showed (``interim_candidates``).
+
+    ``complete`` is false when the walk stopped at the plan's general: that
+    page proves the names on it, not the rest of the castle, so it refreshes
+    the location evidence but is never recorded as the garrison roster.
+    """
     present = _listed_generals(screen, mem, order)
     castle = _source(order, mem)
     if present is None or not castle:
         return
-    garrison = mem.setdefault('garrison', {})
-    # Display-only evidence: decisions never consult this wall-clock field.
-    mem.setdefault('garrison_observed_at', {})[castle] = time.time()
+    if NAME in present:
+        # A live list that shows the hero names his castle; keep the corridor's
+        # belief in step so a later capture can still move him (v844).
+        from ..strategy import corridor
+        corridor.note_hero_post(mem, castle)
+    if not present:
+        # A frame that shows the game's own "no generals" line is evidence on
+        # its own. Anything else is a transition/OCR miss until it repeats: the
+        # menu frame of a staffed castle can read as no rows (g1163 2026-11-09
+        # 08:31:26 recorded {} for アルマムーン with どうし+3 standing there),
+        # and a known-empty castle would stop its sorties and defender checks.
+        if 'おりません' not in (screen.text or ''):
+            streak = mem.setdefault('garrison_empty_streak', {})
+            count = int(streak.get(castle) or 0) + 1
+            streak[castle] = count
+            if count < GARRISON_EMPTY_READINGS or not complete:
+                return
+    else:
+        (mem.get('garrison_empty_streak') or {}).pop(castle, None)
+    garrison = _world(mem).setdefault('garrison', {})
     visible = set(_present_generals(screen) or ())
-    mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
+    _world(mem)['general_location_unknown'] = [g for g in _world(mem).get('general_location_unknown') or ()
                                        if g not in present
                                        or (g in visible and not _general_visible(screen, g))]
+    if not complete:
+        # A full page still proves who is standing here: GENERAL_LIST_FULL rows
+        # means the list scrolls, not that the names are unknown. Refusing to
+        # record them left the castle "drained" while sorties were launched out
+        # of it (g1163 2026-11-12 10:3x: タオ／ハヤク／アルマムーン all read 0
+        # generals while リーキ and コリアンダー marched from one of them). Only
+        # the completeness stamp below is withheld, so the listing stays a lower
+        # bound rather than a full roster.
+        partial = _world(mem).setdefault('garrison_partial', {})
+        if present and partial.get(castle) != present:
+            # A page is not the roster: `garrison` stays untouched (that rule is
+            # deliberate — a page proves those names are here, never who else
+            # is). The lower bound is still worth keeping so a castle read this
+            # way is not mistaken for an empty one. Its tick decides whether it
+            # is newer than the last complete read (corridor._front_names).
+            partial[castle] = present
+            _world(mem).setdefault('garrison_partial_tick', {})[castle] = int(mem.get('tick') or 0)
+            _record(mem, 'garrison_partial_seen', **_deploy_context(order, mem), castle=castle,
+                    observed_metric=present[:8],
+                    reason='将軍一覧の1ページ分を確認したため在城者の下限として記録')
+        # A blind world-map probe waits 200 ticks for this castle's roster and
+        # then rolls the launch back. On a full page that roster never arrives
+        # (GENERAL_LIST_FULL rows means "the list scrolls", not "complete"), so
+        # real launches were rolled back and the same move re-sent: g1163
+        # 2026-11-12 14:0x failed I:c9:オシロガ>ドンドン:41-44 at once while
+        # ブカティーニ and バーミセリ were already marching, and タオ>サヌト
+        # carried 13-15 launch misses. A page still proves presence (rollback),
+        # and, once the marker survey is blind, its absence confirms.
+        from .map import settle_launch_probes_from_roster
+        settle_launch_probes_from_roster(mem, castle, present, complete=False)
+        return
+    # Display-only evidence: decisions never consult this wall-clock field.
+    _world(mem).setdefault('garrison_observed_at', {})[castle] = time.time()
+    # A complete read's tick: corridor._front_names prefers the newer of this
+    # roster and an earlier page lower bound.
+    _world(mem).setdefault('garrison_tick', {})[castle] = int(mem.get('tick') or 0)
     verification = mem.get('recruit_verification') or {}
     joined = (set(present) & set(verification.get('candidates') or ())) - set(
         verification.get('generals_before') or ())
@@ -705,6 +1599,26 @@ def _observe_garrison(screen, mem, order):
                 observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
     from ..strategy import routes
     routes.observed_roster(mem, castle, present)
+    scan = mem.get('general_list_scan') or {}
+    active_scan = scan.get('castle') == castle and scan.get('step') == order['step']
+    completed = (active_scan and scan.get('end') in ('wrapped', 'stalled'))
+    # A short list needs no walk only when there is no unfinished scan.
+    # A partial OCR frame during a long walk must not confirm a launch.
+    short_complete = len(present) < GENERAL_LIST_FULL and not active_scan
+    if completed or short_complete:
+        # Only a conclusive read consumes the verification request. Otherwise
+        # the planner must be able to retry the roster probe.
+        due = mem.get('roster_read_due') or {}
+        due.pop(castle, None)
+        # The same castle may be requested under the on-screen spelling
+        # (イデ！ draws as イデ！): a complete read settles both entries.
+        from .map import _castle_key, settle_launch_probes_from_roster
+        for key in [k for k in due if _castle_key(k) == _castle_key(castle)]:
+            due.pop(key, None)
+        # A completed walk of the source list is the evidence a blind
+        # world-map probe waits for (g1133: chapter 6 draws units as
+        # portraits, so the Y view never showed the committed unit).
+        settle_launch_probes_from_roster(mem, castle, present)
     if castle in _owned(mem):
         # A marching general the game stopped inside this castle is only
         # visible here: our own castles print no entry message. Continue his
@@ -733,8 +1647,18 @@ def _check_source_castle(screen, mem, order):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃前に城のステータスで城名を確認')
     name = m.group(1)
-    if name == source or STATUS_NAMES.get(source) == name:
+    from .map import _castle_key
+    if name == source or STATUS_NAMES.get(source) == name or _castle_key(name) == _castle_key(source):
         mem['castle_verified'] = step
+        _observe_status_garrison(screen, mem, name=source)
+        # The open castle menu belongs to the castle under the cursor, and its
+        # status just named it: that is the cursor's position. g1163
+        # 2026-11-11 00:07: after the jump to ながはま the estimate stayed on
+        # あるまむーん, so the next home order pressed A on ながはま
+        # (source_castle_mismatch) and lost ~20 s plus the hero-select jump.
+        cell = chart.castles(mem.get('chapter') or 0).get(source)
+        if cell:
+            mem['cursor'], mem['uncertain'] = list(cell), False
         # Verification does not prove the status panel has closed. Its hand
         # is hidden while open, so attempting a sortie here can wait forever.
         # Keep closing only the positively identified panel until it is gone.
@@ -742,14 +1666,60 @@ def _check_source_castle(screen, mem, order):
     mem.pop('castle_verified', None)
     cells = chart.castles(mem.get('chapter') or 0)
     label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
+    if label not in cells:
+        label = next((c for c in cells if _castle_key(c) == _castle_key(label)), label)
     if label in cells:
         mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
-    misses = mem.setdefault('source_miss', {})
-    misses[step] = misses.get(step, 0) + 1
+    misses = _count_source_mismatch(mem, step, label)
     _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
-            observed_metric={'castle': name, 'misses': misses[step]},
+            observed_metric={'castle': name, 'misses': misses},
             reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
     return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
+
+
+def _observe_status_garrison(screen, mem, name):
+    """Record the verified castle status panel's residents as its garrison.
+
+    The sortie path records ``world.garrison`` only from the general list
+    (``_observe_garrison``); the status panel this check opens shows the same
+    residents but was read for the castle name alone, so a castle whose list
+    never opened stayed "empty" while its panel was read on every order
+    (docich#3963: ハヤク's panel read ラズベリー while ``world.garrison``
+    held 0 generals). Reuse the house check's exact contract: the
+    「しょうぐんNめい」 count must match the cleanly read names and no label
+    may bleed into the name column (v678), else nothing is written.
+    """
+    from .house import _general_names, _names_at
+    count = re.search(r'しょうぐん(\d+)めい', screen.text or '')
+    names = _general_names(_names_at(screen, 144, 95, 159))
+    if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
+        return
+    world = _world(mem)
+    if world.setdefault('garrison', {}).get(name) != names:
+        world['garrison'][name] = names
+        _record(mem, 'garrison_seen', castle=name,
+                observed_metric=names[:8],
+                reason='城ステータスの在城人数と氏名欄が一致したため在城一覧を記録')
+    unknown = world.get('general_location_unknown')
+    if isinstance(unknown, list):
+        world['general_location_unknown'] = [g for g in unknown if g not in names]
+
+
+def _count_source_mismatch(mem, step, label):
+    """Count consecutive mismatches at the same wrong castle.
+
+    Only the same wrong castle counts as the same failure: opening a different
+    castle each time means the position estimate is being corrected and the
+    march is making progress (g1133 2026-11-05 opened the home castle three
+    times while aiming at オケアナ, which is the case this bounds).
+    """
+    misses = mem.setdefault('source_miss', {})
+    seen = mem.setdefault('source_mismatch_castle', {})
+    if seen.get(step) != label:
+        misses[step] = 0
+        seen[step] = label
+    misses[step] = misses.get(step, 0) + 1
+    return misses[step]
 
 
 def _keep_last_castle(screen, mem, order):
@@ -772,9 +1742,9 @@ def _keep_last_castle(screen, mem, order):
             or not _few_castles(mem) or _staffed_elsewhere(mem, source)):
         return None
     mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
-    mem['orders'][order['step']] = 'pending'
-    mem['active'] = None
-    mem['picked'] = []
+    _plan_region(mem)['orders'][order['step']] = 'pending'
+    _plan_region(mem)['active'] = None
+    forget_picked(mem)
     _record(mem, 'sortie_held_last_castle', chart_step=order['step'], source=source,
             observed_metric=present[:4],
             reason=f'{source}の将軍が{len(present)}人で他の自軍城に待機将軍がいないため、全城を空にして落城・ゲームオーバーにならないよう出撃しない')
@@ -782,15 +1752,20 @@ def _keep_last_castle(screen, mem, order):
 
 
 def _hold_guarded_sortie(mem, order, decision, reason, observed):
-    orders = mem.setdefault('orders', {})
+    orders = _plan_region(mem).setdefault('orders', {})
     # A cancel limit may have just retired the step (failed); an adjusted
     # step put back to pending was re-issued every 10 s (g1075 J2 x15).
     if orders.get(order['step']) != 'failed':
         orders[order['step']] = 'failed' if order['step'].startswith('I:') else 'pending'
-    mem['active'] = None
-    mem['picked'] = []
-    mem.setdefault('sortie_general', {}).pop(order['step'], None)
-    mem.setdefault('order_context', {}).pop(order['step'], None)
+    _plan_region(mem)['active'] = None
+    # A sortie cancelled before its departure confirmation may return the
+    # cards it had taken, so those kinds become unknown (not a guess).
+    forget_picked(mem)
+    _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
+    _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+    # A step retired here ('failed') loses the rest of its plan context too;
+    # a step put back to 'pending' is live and keeps it (docich#4054).
+    drop_retired_step_context(mem)
     _record(mem, decision, chart_step=order['step'], source=_source(order, mem),
             target=order['target'], observed_metric=observed, reason=reason)
     return [pad('b'), pad('b')]
@@ -798,11 +1773,11 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
 
 def _hold_locked_boss(mem, order):
     """Recheck unsent active orders too; retain already-sent reconciliation."""
-    status = (mem.get('orders') or {}).get(order['step'])
+    status = (_plan_region(mem).get('orders') or {}).get(order['step'])
     if (status in ('launched', 'launched_unconfirmed')
             or _boss_target_unlocked(order, mem)):
         return None
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     return _hold_guarded_sortie(mem, order, 'boss_target_locked',
             '章内の通常城をすべて制圧した現在の根拠がないため、未解放ボス城への未送信出撃を保留',
             {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or [])})
@@ -810,11 +1785,11 @@ def _hold_locked_boss(mem, order):
 
 def _hold_unrouted_sortie(mem, order):
     from ..strategy import routes
-    if ((mem.get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
+    if ((_plan_region(mem).get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
             or routes.order_allowed(mem, order, _source(order, mem))):
         return None
     mem.pop('y_jump', None)
-    mem.pop('sortie_attempt', None)
+    _flow(mem).pop('sortie_attempt', None)
     return _hold_guarded_sortie(mem, order, 'sortie_route_unverified',
             '第3話の既存城間ルートにない直行を取り消し、中継城経由で選び直す',
             {'source': _source(order, mem), 'target': order.get('target')})
@@ -839,7 +1814,7 @@ def _keep_sortie_defender(screen, mem, order):
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '守備を残せる将軍一覧を読めないため出撃を保留')
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     available = set(present) - unavailable
     if len(available) >= 2:
         (mem.get('source_location_rechecks') or {}).pop(_source(order, mem), None)
@@ -879,7 +1854,7 @@ def _keep_hero_guard(screen, mem, order):
     present = _listed_generals(screen, mem, order)
     if present is None:
         return _hold_deploy(screen, mem, order, '主人公の城の守備人数を数える将軍一覧を読めないため出撃を保留')
-    unavailable = _en_route(mem)[0] | set(mem.get('general_location_unknown') or ())
+    unavailable = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
     available = set(present) - unavailable
     general = order['general']
     if general == NAME or order.get('source_probe') is True:
@@ -931,6 +1906,102 @@ def resume_sortie_step(screen: Screen, mem):
     return [pad('b')]
 
 
+CHAPTER_PROBE_OPEN_LIMIT = 3   # status openings per month while the chapter is unknown
+CHAPTER_PROBE_MAP_OPEN_LIMIT = 3   # field A presses per month that try to open the interior menu
+CHAPTER_PROBE_MAIN_OPEN_LIMIT = 3  # メインメニュー openings per month while the chapter is unknown
+# Screen kinds the chapterless probe owns: the free field and every menu on the
+# map -> 城内メニュー (month layout) -> メインメニュー -> ステータス route.
+CHAPTER_PROBE_KINDS = frozenset({'map', 'month_menu', 'main_menu', 'castle_menu', 'castle_info'})
+
+
+def chapterless_status_step(screen: Screen, mem):
+    """Open the castle status to learn the chapter when none is known.
+
+    g1163 restarted chapter 8 after a game over with no chapter and every
+    dispatch branch waiting for one, so the castle menu looped on B/A forever.
+    The status panel names the castle; observe_events turns a name unique to
+    one chapter into the chapter. A name still unresolved here is ambiguous.
+
+    #4530: a battery-save resume left the same chapterless bot on the free
+    map, where no flow ever opens a menu and the hold never ends. One measured
+    A on the field opens the castle's interior menu (the month-menu layout),
+    whose メインメニュー row is the only route to ステータス from there, so
+    the probe walks map -> month_menu(メインメニュー) -> main_menu(ステータス)
+    -> status panel. Every input is bounded per month; unreadable screens and
+    foregrounds owned by someone else fail closed.
+    """
+    if mem.get('chapter'):
+        mem.pop('chapter_probe', None)
+        return None
+    probe = mem.get('chapter_probe')
+    if not isinstance(probe, dict) or probe.get('month') != mem.get('month'):
+        probe = {'month': mem.get('month'), 'opens': 0, 'seen': []}
+        mem['chapter_probe'] = probe
+    panel = CASTLE_STATUS.search(screen.text)
+    if panel:
+        name = panel[1]
+        if name not in probe['seen']:
+            probe['seen'].append(name)
+        _record(mem, 'chapter_probe_ambiguous', screen=screen.kind,
+                observed_metric={'castle': name, 'opens': probe['opens']},
+                reason='城名が複数の章に存在するため章を確定できない')
+        return [pad('b')]
+    if screen.kind == 'map':
+        # A chapterless plan can never start, so an active order, a battle or
+        # a monthly/repair session is the only way the field is already owned.
+        # One bounded A opens the interior menu for the two-stage route below.
+        if (_plan_region(mem).get('active') or mem.get('battle')
+                or mem.get('month_sub') or mem.get('house')):
+            return []
+        presses = int(probe.get('map_presses') or 0)
+        if presses >= CHAPTER_PROBE_MAP_OPEN_LIMIT:
+            return []
+        probe['map_presses'] = presses + 1
+        _record(mem, 'chapter_probe_field_open', screen=screen.kind,
+                observed_metric={'presses': probe['map_presses'], 'month': probe.get('month')},
+                reason='章が未確定で計画も無いためAで城内メニューを開き、城名から章を確認する')
+        return [pad('a')]
+    if screen.kind == 'castle_info':
+        # An information panel without a resolvable castle name carries no
+        # chapter evidence; close it to reach the menu behind it.
+        return [pad('b')]
+    if screen.kind == 'month_menu':
+        if month_confirmation_positions(screen):
+            # A うむッ/いかんッ choice over the menu is declined, never
+            # confirmed: B returns to the menu and the probe continues.
+            return [pad('b')]
+        # ready = menu hand in the grid, no confirmation/amount picker, and no
+        # recruitment dialogue. An unreadable foreground holds: a selected
+        # row's help line is decoration, not a dialogue owner.
+        if not month_menu_ready(screen):
+            return []
+        presses = int(probe.get('main_opens') or 0)
+        if presses >= CHAPTER_PROBE_MAIN_OPEN_LIMIT:
+            return []
+        move = menu_to(screen, 'メインメニュー')
+        if move is None:
+            return []
+        if move != 'here':
+            return [move]
+        probe['main_opens'] = presses + 1
+        _record(mem, 'chapter_probe_main_menu', screen=screen.kind,
+                observed_metric={'opens': probe['main_opens'], 'month': probe.get('month')},
+                reason='章が未確定のためメインメニューを開いてステータスへの経路を確保する')
+        return [pad('a')]
+    if int(probe.get('opens') or 0) >= CHAPTER_PROBE_OPEN_LIMIT:
+        return []
+    move = menu_to(screen, 'ステータス')
+    if move is None:
+        return []
+    if move != 'here':
+        return [move]
+    probe['opens'] = int(probe.get('opens') or 0) + 1
+    _record(mem, 'chapter_probe_status', screen=screen.kind,
+            observed_metric={'opens': probe['opens'], 'month': probe.get('month')},
+            reason='章が未確定のため城のステータスを開いて城名から章を確認する')
+    return [pad('a')]
+
+
 SORTIE_CANCEL_READ_LIMIT = 12  # one bounded, identity-owned refusal episode
 
 
@@ -976,8 +2047,12 @@ def _cancelled_sortie_step(screen, mem, owner):
         # bounded backout request; it does not establish arrival or completion.
         owner.pop('decline_ready_tick', None)
         return [pad('b')] if owner.get('decline_sent') is True else []
+    # g1133 decision-003: the decline cursor's left edge jitters x0 138/139
+    # like the card_select hand; both are the same measured sprite.
     refusal_hands = ((138, 105, 156, 118), (138, 105, 158, 118),
-                     (138, 121, 156, 134), (138, 121, 158, 134))
+                     (138, 121, 156, 134), (138, 121, 158, 134),
+                     (139, 105, 156, 118), (139, 105, 158, 118),
+                     (139, 121, 156, 134), (139, 121, 158, 134))
     if not _sortie_decline_panel(screen) or screen.hand not in refusal_hands:
         owner.pop('decline_ready_tick', None)
         _record(mem, 'situation_held', screen=screen.kind,
@@ -1027,7 +2102,7 @@ def boss_stock_restart_step(screen: Screen, mem):
         owner = mem.get('boss_stock_cancelled')
         if (isinstance(owner, dict) and owner.get('identity') == run_identity(mem.get('_run_identity'))
                 and owner.get('chapter') == mem.get('chapter')
-                and mem.get('active') in (None, owner.get('step'))):
+                and _plan_region(mem).get('active') in (None, owner.get('step'))):
             _record(mem, 'sortie_cancel_backout_observed', screen=screen.kind,
                     reason='自由マップまたは城メニューへの復帰を観測し出撃取消ownerを解除')
         for key in ('boss_stock_restart', 'boss_stock_cancelled', 'boss_stock_cancelled_identity',
@@ -1045,7 +2120,7 @@ def boss_stock_restart_step(screen: Screen, mem):
         if isinstance(cancelled, dict) and (
                 not isinstance(cancelled.get('step'), str) or not cancelled['step']
                 or type(cancelled.get('chapter')) is not int
-                or mem.get('active') not in (None, cancelled.get('step'))
+                or _plan_region(mem).get('active') not in (None, cancelled.get('step'))
                 or cancelled.get('chapter') != mem.get('chapter')
                 or 'identity' not in cancelled
                 or cancelled['identity'] != run_identity(mem.get('_run_identity'))):
@@ -1081,7 +2156,7 @@ def boss_stock_restart_step(screen: Screen, mem):
     if restarting.get('cancel_only') is True:
         order = next((row for row in chart.orders(mem.get('chapter') or 0)
                       if row['step'] == restarting.get('step') and _is_boss_order(row, mem)), None)
-        if (mem.get('active') not in (None, restarting.get('step')) or 'identity' not in restarting
+        if (_plan_region(mem).get('active') not in (None, restarting.get('step')) or 'identity' not in restarting
                 or restarting['identity'] != run_identity(mem.get('_run_identity'))):
             order = None  # a different actor/order keeps its own foreground
     if order is None or restarting.get('step') != order['step']:
@@ -1107,7 +2182,7 @@ def boss_stock_restart_step(screen: Screen, mem):
     return [] if fade else [pad('b')]
 
 
-def deploy_step(screen: Screen, mem):
+def deploy_step(screen: Screen, mem, *, frame=None):
     restart = boss_stock_restart_step(screen, mem)
     if restart is not None:
         return restart
@@ -1120,7 +2195,7 @@ def deploy_step(screen: Screen, mem):
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
     if ('_run_identity' in mem
-            and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
         # The deploy continuation (castle menu, general list, card select,
         # sortie confirm) runs without ``_ready``: an adopted interim order
         # can outlive the run map receipt that verified its endpoints, so a
@@ -1145,8 +2220,8 @@ def deploy_step(screen: Screen, mem):
                                      'chapter': mem.get('chapter'),
                                      'registered': sorted(cells)},
                     reason='このランの地図に出撃元・目標城の登録座標がそろわないため、未送信の出撃を取り消して指示を選び直す')
-            mem['active'] = None
-            mem['picked'] = []
+            _plan_region(mem)['active'] = None
+            forget_picked(mem)
             return []
     routed = _hold_unrouted_sortie(mem, order)
     if routed is not None:
@@ -1154,11 +2229,11 @@ def deploy_step(screen: Screen, mem):
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
-    if kind == 'general_list' and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
+    if kind == 'general_list' and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed':
         # A newly selected sortie may use a different actor. An interrupted
         # departure instead retains its evidence for source reconciliation.
-        (mem.get('order_context') or {}).pop(order['step'], None)
-        (mem.get('sortie_general') or {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
     if (_broken_hero_order(order, mem)
             and kind != 'general_list'
             and not (kind == 'castle_menu' and _hero_source_alternative(order, mem))):
@@ -1169,10 +2244,10 @@ def deploy_step(screen: Screen, mem):
             {'target': order['target']})
     if kind != 'general_list' and _source_spare_missing(order, mem, allow_probe=kind == 'castle_menu'):
         _record_source_defender_cancel(mem, order,
-            present=(mem.get('garrison') or {}).get(_source(order, mem)))
+            present=(_world(mem).get('garrison') or {}).get(_source(order, mem)))
         return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
             '出撃元の記録で待機将軍を1人残せないため出撃を取り消す',
-            {'present': (mem.get('garrison') or {}).get(_source(order, mem))})
+            {'present': (_world(mem).get('garrison') or {}).get(_source(order, mem))})
     if kind == 'castle_menu':
         checked = _check_source_castle(screen, mem, order)
         if checked is not None:
@@ -1185,12 +2260,63 @@ def deploy_step(screen: Screen, mem):
             return _hold_deploy(screen, mem, order, '出撃メニューのしゅつげきをカーソルで判定できないため保留')
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
+    if kind == 'general_list' and CASTLE_STATUS.search(screen.text or ''):
+        # The ステータス panel the source check opens (its hand is hidden, so a
+        # stray sprite can make it read as the general list). It is that
+        # check's screen: let it read the castle name and close the panel.
+        # v667 pressed B here without verifying, so the check reopened the
+        # panel forever (g1163 2026-11-11 15:28-15:30 at オシロガ, ten orders).
+        # A panel that keeps coming back after the name was verified still
+        # cancels the order within a bound.
+        misses = mem.setdefault('castle_status_as_list', {})
+        if mem.get('castle_verified') == order['step']:
+            misses[order['step']] = int(misses.get(order['step']) or 0) + 1
+        _record(mem, 'castle_status_not_list', **_deploy_context(order, mem), castle=_source(order, mem),
+                observed_metric={'count': int(misses.get(order['step']) or 0)},
+                reason='将軍一覧ではなく城のステータス表示のため、出撃元の城名確認として読んで閉じる')
+        if int(misses.get(order['step']) or 0) > CASTLE_STATUS_AS_LIST_LIMIT:
+            misses.pop(order['step'], None)
+            _finish_order(mem, 'failed', deviation_reason='出撃一覧の代わりに城のステータス表示が開き続けた',
+                          reason='城のステータス表示から出撃一覧へ進めないため指示を取り消す')
+            return [pad('b'), pad('b')]
+        return _check_source_castle(screen, mem, order)
     if kind == 'general_list':
+        rechecked = _corridor_roster_recheck(screen, mem, order)
+        if rechecked is not None:
+            return rechecked
+        picked = _cursor_order_pick(screen, mem, order)
+        if picked is not None:
+            return picked
+        if order.get('corridor') is True:
+            return _corridor_list_end(screen, mem, order)
         walk = _general_list_scan(screen, mem, order)
         if walk is not None:
             return _deploy_input(screen, mem, order, walk, '出撃元の将軍一覧を下へ送って画面外の将軍を読む')
-        _observe_garrison(screen, mem, order)
-        if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+        scan = mem.get('general_list_scan') or {}
+        named_stop = (scan.get('end') == 'named' and scan.get('step') == order['step']
+                      and scan.get('castle') == _source(order, mem))
+        _observe_garrison(screen, mem, order, complete=not named_stop)
+        if order.get('roster_probe') is True:
+            # docich#3515: a read-only launch verification. The roster read
+            # above settled any blind probe for this castle (still-listed
+            # rolls the phantom launch back to pending). Back out without
+            # selecting or sending; the reopened order re-sends next.
+            present = _listed_generals(screen, mem, order)
+            source = _source(order, mem)
+            verified = source not in (mem.get('roster_read_due') or {})
+            if present is not None:
+                # The read is the evidence: joiners this castle was expected
+                # to hold are refuted when the list does not show them, so a
+                # one-general castle is not probed again for the same set.
+                _refute_unplaced(mem, order)
+            _record(mem, 'roster_probe_complete' if verified else 'roster_probe_incomplete',
+                    **_deploy_context(order, mem), castle=source,
+                    observed_metric={'generals': list(present or [])[:12], 'roster_read': verified},
+                    reason='出撃元一覧の読取結果を記録し、未確定なら次回の再読取要求を保持する')
+            _finish_order(mem, 'done',
+                          reason='読取のみの指示を終了し、未確定なら次回再試行する')
+            return [pad('b'), pad('b')]
+        if (_plan_region(mem).get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
         guard = _keep_sortie_defender(screen, mem, order)
         if guard is not None:
@@ -1208,15 +2334,16 @@ def deploy_step(screen: Screen, mem):
         # Prefer an idle companion when the planned attacker is the hero;
         # preserve a chart's explicit non-hero role.
         if order['general'] == NAME or _is_boss_order(order, mem) or order.get('source_probe') is True:
-            mem.setdefault('sortie_general', {}).pop(order['step'], None)
-            mem.setdefault('order_context', {}).pop(order['step'], None)
+            _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
+            _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
             (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
             present = _listed_generals(screen, mem, order)
             visible = set(_present_generals(screen) or ())
             if (present is None or len(present) != len(set(present))
                     or any((g in visible and not _general_visible(screen, g)) or general_max_hp(
                         'しゅじんこう' if g == NAME else g) is None for g in present)):
-                return _hold_deploy(screen, mem, order, '出撃一覧の本人・カーソルを確認できないため保留')
+                return _hold_general_list_bounded(screen, mem, order,
+                    '出撃一覧の本人・カーソルを確認できないため保留', 'roster_unreadable')
             candidates = (_order_hero_alternatives(order, mem, present)
                           if order['general'] == NAME or _is_boss_order(order, mem)
                           or order.get('source_probe') is True else [])
@@ -1227,9 +2354,9 @@ def deploy_step(screen: Screen, mem):
             general = candidates[0] if candidates else order['general']
             # A stale override is not a receipt, and a companion selected in
             # this list must not inherit the hero's depleted-egg guard.
-            mem.setdefault('general_override', {}).pop(order['step'], None)
+            _plan_region(mem).setdefault('general_override', {}).pop(order['step'], None)
             if general != order['general']:
-                mem['general_override'][order['step']] = general
+                _plan_region(mem)['general_override'][order['step']] = general
             if general not in present or general in _en_route(mem)[0]:
                 holds = mem.setdefault('boss_absent', {})
                 holds[order['step']] = holds.get(order['step'], 0) + 1
@@ -1245,23 +2372,28 @@ def deploy_step(screen: Screen, mem):
                 return _cancel_broken_hero_sortie(mem, order)
             if _boss_egg_depleted(order, mem):
                 return _hold_guarded_sortie(mem, order, 'boss_sortie_cancelled_for_egg',
-                    '代役がいないため主人公の卵回復を待つ', {'general': NAME, 'egg_uses': mem['egg_uses'][NAME]})
+                    '代役がいないため主人公の卵回復を待つ',
+                    {'general': NAME, 'egg_uses': egg_memory.current_uses(mem, NAME)})
             (mem.get('boss_absent') or {}).pop(order['step'], None)
             move = _list_menu_to(screen, mem, order, general)
             if move is None:
-                return _hold_deploy(screen, mem, order, '選択本人へカーソルを合わせられないため保留')
+                return _hold_general_list_bounded(screen, mem, order,
+                    '選択本人へカーソルを合わせられないため保留', 'cursor_unreachable')
+            (mem.get('general_list_hold') or {}).pop(order['step'], None)
             if move == 'here':
-                mem['sortie_general'][order['step']] = general
+                _plan_region(mem).setdefault('sortie_general', {})[order['step']] = general
                 if general != order['general']:
                     _record(mem, 'hero_priority_selected', **_deploy_context(order, mem),
                             observed_metric={'present': present[:8], 'selected': general},
                             reason='主人公の敗北でゲームオーバーになる危険を避け、実在する待機将軍を先発にする')
                 return _deploy_input(screen, mem, order, [pad('a')], '実一覧の出撃本人を選択')
-            return _deploy_input(screen, mem, order, [move], '主人公以外の待機将軍を優先して選択カーソルを移動')
+            return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
+                                 '主人公以外の待機将軍を優先して選択カーソルを移動')
         empty_list = 'おりません' in screen.text
         if not screen.hand and not empty_list:
-            return _hold_deploy(screen, mem, order, '将軍選択カーソルを判定できないため入力を保留')
-        general = mem.get('general_override', {}).get(order['step'], order['general'])
+            return _hold_general_list_bounded(screen, mem, order,
+                '将軍選択カーソルを判定できないため入力を保留', 'cursor_unreadable')
+        general = _plan_region(mem).get('general_override', {}).get(order['step'], order['general'])
         move = _list_menu_to(screen, mem, order, general) if screen.hand else None
         if move is None:
             # The chart's general is not at this castle (routed or lost).
@@ -1282,37 +2414,38 @@ def deploy_step(screen: Screen, mem):
                         strategy_variant='hero_substitute_refused',
                         observed_metric={'present': [NAME, *present][:8]},
                         reason='計画の将軍がいないため、主人公を代役にせず他の将軍か出撃元の変更を待つ')
-            if present and not mem.get('general_override', {}).get(order['step']):
+            if present and not _plan_region(mem).get('general_override', {}).get(order['step']):
                 droppers = _egg_drop_substitutes(mem, order, present)
                 chosen = droppers[0] if droppers else present[0]
-                mem.setdefault('general_override', {})[order['step']] = chosen
+                _plan_region(mem).setdefault('general_override', {})[order['step']] = chosen
                 _record(mem, 'order_substitute', strategy_variant='substitute_general',
                         deviation_reason=f"{order['general']}が出撃元にいないため{chosen}が代わりに出撃",
                         observed_metric=present[:8], expected_metric=f"{order['target']}の占領",
                         reason=('守備将軍の卵を落とせる最大HPの将軍を代役にする' if droppers
                                 else '後続手順とボス条件を満たすため'))
                 move = menu_to(screen, chosen)
-                return [pad('a')] if move == 'here' else [move] if move else []
-            if (not mem.get('source_override', {}).get(order['step'])
+                return _general_selection_actions(screen, chosen, move) if move else []
+            if (not _plan_region(mem).get('source_override', {}).get(order['step'])
                     and chart.home_castle(mem.get('chapter') or 1) in _owned(mem)):
-                mem.setdefault('source_override', {})[order['step']] = chart.home_castle(
+                _plan_region(mem).setdefault('source_override', {})[order['step']] = chart.home_castle(
                     mem.get('chapter') or 1)
-                mem.setdefault('general_override', {}).pop(order['step'], None)
-                mem['orders'][order['step']] = 'pending'
+                _plan_region(mem).setdefault('general_override', {}).pop(order['step'], None)
+                _plan_region(mem)['orders'][order['step']] = 'pending'
                 _record(mem, 'order_source_changed', strategy_variant='source_fallback',
                         deviation_reason=f"{order['source']}に出撃できる将軍がいない",
                         observed_metric=present[:8], reason='本城から出撃し直す')
-                mem['active'] = None
+                _plan_region(mem)['active'] = None
                 return [pad('b'), pad('b')]
         if move is None:
             _finish_order(mem, 'failed', deviation_reason=f"{order['general']}が出撃一覧に見えない",
                           observed_metric=[w for _, _, w in _options(screen)][:12],
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
-        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+        return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
+                             '出撃将軍を選択')
     if kind in {'card_select', 'sortie_confirm'}:
         if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
-                and (mem.get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+                and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
             return _hold_guarded_sortie(mem, order, 'boss_companion_required',
                 '主人公のボス出撃を取り消し、十分な戦力の代役を待つ',
                 {'general': NAME, 'screen': kind, 'hero_forbidden': True})
@@ -1322,31 +2455,35 @@ def deploy_step(screen: Screen, mem):
     if kind in {'card_select', 'sortie_confirm'} and _boss_egg_depleted(order, mem):
         # observe_events reads the egg row before this decision. Cancel a
         # sortie that was chosen while its quantity was still unknown.
-        mem.setdefault('orders', {})[order['step']] = 'pending'
-        mem['active'] = None
-        mem['picked'] = []
-        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('orders', {})[order['step']] = 'pending'
+        _plan_region(mem)['active'] = None
+        forget_picked(mem)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
-                observed_metric={'general': NAME, 'egg_uses': mem['egg_uses'][NAME],
+                observed_metric={'general': NAME, 'egg_uses': egg_memory.current_uses(mem, NAME),
                                  'screen': kind}, expected_metric={'egg_uses': 4},
                 reason='出撃画面で主人公の卵の消耗を確認したため、ボス出撃を取り消して回復を待つ')
         return [pad('b'), pad('b')]
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
-        mem.setdefault('order_context', {}).pop(order['step'], None)
-        if not (mem.get('sortie_general') or {}).get(order['step']):
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+        if not (_plan_region(mem).get('sortie_general') or {}).get(order['step']):
             if kind == 'card_select' and _strict_boss_cards(order, mem):
                 return _hold_boss_card_selection(screen, mem, order,
                     'ボス出撃の選択本人cacheを確認できないため承認せず保留')
             return _hold_deploy(screen, mem, order, 'ボス出撃の選択本人を確認できないため保留')
     if kind == 'card_select':
-        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         picked = mem.setdefault('picked', [])
         wanted = _deploy_cards(order, mem)
         for card in picked:
             if card in wanted:
                 wanted.remove(card)
         card = wanted[0] if wanted else None
-        inventory = _measured_card_select(screen)
+        # Pass the frame only when the caller has one: synthetic screens carry
+        # their arrow evidence in card_more_above/below, and several tests
+        # monkeypatch this reader with a one-argument callable.
+        inventory = (_measured_card_select(screen, frame) if frame is not None
+                     else _measured_card_select(screen))
         if inventory is None:
             if _strict_boss_cards(order, mem):
                 return _hold_boss_card_selection(screen, mem, order,
@@ -1357,17 +2494,48 @@ def deploy_step(screen: Screen, mem):
                 # base boss kit has its own cancellation budget above.
                 misses = mem.setdefault('card_unreadable', {})
                 misses[order['step']] = misses.get(order['step'], 0) + 1
-                if misses[order['step']] >= CARD_UNREADABLE_LIMIT:
+                if misses[order['step']] >= NORMAL_CARD_UNREADABLE_LIMIT:
+                    # Owner 2026-11-10: depart without the planned cards rather
+                    # than cancelling the sortie (シュゼット/バーミセリ lost their
+                    # sorties to six unreadable readings each). Closing the list
+                    # once reaches the departure confirmation, whose readable
+                    # kit is the truth (sortie_kit_mismatch approves it).
                     misses.pop(order['step'], None)
-                    _finish_order(mem, 'failed', deviation_reason='切り札一覧を実測構造として読めない',
-                                  observed_metric={'screen': screen.kind,
-                                                   'readings': CARD_UNREADABLE_LIMIT},
-                                  reason='切り札一覧を読み取れないため出撃を取り消して次の指示へ進む')
+                    skips = mem.setdefault('card_skip_departure', {})
+                    attempts = int(skips.get(order['step']) or 0)
+                    skips[order['step']] = attempts + 1
+                    _record(mem, 'card_list_unreadable_depart',
+                            **_deploy_context(order, mem),
+                            observed_metric={'screen': screen.kind,
+                                             'readings': CARD_UNREADABLE_LIMIT,
+                                             'attempt': attempts + 1},
+                            reason='切り札一覧を読み取れないため、計画の切り札無しで出撃を続行する')
+                    if attempts == 0:
+                        # One B closes the card list and reaches the departure
+                        # confirmation.
+                        return [pad('b')]
+                    if attempts <= 3:
+                        # The list is still on screen: B did not leave it
+                        # (g1163 2026-11-10 08:39: the same ながはま sortie
+                        # looped here). Take the highlighted card so the flow
+                        # can move on; the kit is settled at the confirmation.
+                        return [pad('a')]
+                    skips.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason='切り札一覧から抜けられない',
+                                  observed_metric={'attempts': attempts},
+                                  reason='切り札一覧を閉じても進めないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
-        _observe_card_stock(mem, inventory)
+        if _observe_card_stock(mem, inventory):
+            wanted = _deploy_cards(order, mem)
+            for card in picked:
+                if card in wanted:
+                    wanted.remove(card)
+        _note_balmung_stock(mem, mem.get('month') or f"chapter-{mem.get('chapter')}:unknown", inventory)
+        if _cursor_order_cards(order, mem):
+            return _cursor_card_step(screen, mem, order, inventory, picked)
         boss_actions = _chapter_two_balmung_inventory(mem, order, inventory)
         if boss_actions is not None:
             return boss_actions
@@ -1411,7 +2579,8 @@ def deploy_step(screen: Screen, mem):
             scrolls[order['step']] = scrolls.get(order['step'], 0) + 1
             _record(mem, 'card_scroll', **_deploy_context(order, mem), card=card,
                     observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
-                                     'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']]},
+                                     'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']],
+                                     **_card_arrow_metric(inventory)},
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
             direction = ('up' if CARD_IDS.get(card, 99) <
                          min(CARD_IDS[r['card']] for r in inventory['rows']) else 'down')
@@ -1427,7 +2596,12 @@ def deploy_step(screen: Screen, mem):
             if direction == 'up' and isinstance(boundary, dict):
                 boundary['await_input'] = True
                 boundary.pop('request_trace', None)
-            return [pad(direction)]
+            frames = _card_scroll_frames(mem, card, inventory)
+            # The card list does not auto-repeat: a held direction moved exactly
+            # one row in the live check (g1163 2026-11-09 11:46:26-27: the window
+            # advanced one row per four-frame hold). Send distinct taps instead;
+            # the landing is read before any selection.
+            return [pad(direction) for _ in range(frames)]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
             proven = upper_absent or _card_proven_absent(card, inventory, bottom=bottom)
             if proven:
@@ -1448,13 +2622,17 @@ def deploy_step(screen: Screen, mem):
         if inventory['selected_y'] == row['y']:
             picked.append(card)
             mem.pop('card_upper_boundary', None)
+            # The row shows the field stock before this A; the carried copy
+            # leaves the field now (S0b), so the ledger is the row minus one.
+            note_card_carried(mem, card, row['stock'], 1)
             # A new card is a new bounded search; selection still needs the
             # existing carried-card confirmation before departure.
             (mem.get('card_scroll') or {}).pop(order['step'], None)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=card,
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
                                      'inventory_evidence': inventory['inventory_evidence'],
-                                 'observed_rows': inventory['observed_rows']},
+                                     'observed_rows': inventory['observed_rows'],
+                                     **_card_arrow_metric(inventory)},
                     resulting_event='selection_planned_not_yet_confirmed', reason=order['note'])
             return [pad('a')]
         move = pad('down' if row['y'] > inventory['selected_y'] else 'up')
@@ -1466,11 +2644,12 @@ def deploy_step(screen: Screen, mem):
                                  'selected_card': selected['card'], 'target_y': row['y'],
                                  'target_stock': row['stock'], 'remaining': inventory['remaining'],
                                  'inventory_evidence': inventory['inventory_evidence'],
-                                 'observed_rows': inventory['observed_rows']},
+                                 'observed_rows': inventory['observed_rows'],
+                                 **_card_arrow_metric(inventory)},
                 reason='実測配置の正数在庫と携行余枠を確認し、予定切り札へカーソルを移動')
         return [move]
     if kind == 'sortie_confirm':
-        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
         empty_receipt = _empty_sortie_inventory(screen)
         slot_receipt = _sortie_inventory(screen)
         carried = [] if empty_receipt else slot_receipt
@@ -1480,20 +2659,57 @@ def deploy_step(screen: Screen, mem):
         ambiguous = carried is None
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
+        if (order.get('corridor') and not want and carried is not None
+                and (_plan_region(mem).get('orders') or {}).get(order['step'])
+                not in {'launched', 'launched_unconfirmed'}):
+            # Chapter 9's mechanical order names no cards on purpose (owner
+            # 2026-11-11: 切り札を選ばず、一覧のカーソル位置の札を上から順に携行する),
+            # so a readable kit can never match the empty plan. Holding for the
+            # mismatch budget every sortie only slowed the road: g1163
+            # 2026-11-12 09:2x-09:3x held 42 card picks for 15 sorties.
+            _record(mem, 'sortie_kit_corridor_approve',
+                    **_deploy_context(order, mem, expected_metric=want),
+                    carried=carried,
+                    observed_metric={'carried': carried, 'planned': want},
+                    reason='第9話は切り札を選ばないため、読み取れた携行札をそのまま承認する')
+            return [pad('a')]
         if ambiguous or got != want:
             misses = mem.setdefault('sortie_confirm_miss', {})
             misses[order['step']] = misses.get(order['step'], 0) + 1
             # Strict boss kits approve a readable carried kit too — the
             # assault must not be cancelled over cards that cannot be bought
             # anyway (owner 2026-11-02: 切り札不足でも延期しない).
-            if misses[order['step']] >= SORTIE_CONFIRM_LIMIT:
+            ordinary = (not chart.is_boss_castle(order.get('target'))
+                        and not _strict_boss_cards(order, mem))
+            # An ordinary sortie departs after a short unreadable spell (the
+            # panel is unreadable for 63 of 165 holds in 40 minutes); a boss
+            # keeps its full cancellation budget (#3201).
+            limit = (SORTIE_CONFIRM_UNREADABLE_LIMIT
+                     if carried is None and ordinary else SORTIE_CONFIRM_LIMIT)
+            if misses[order['step']] >= limit:
                 if carried is None:
+                    # Owner 2026-11-10: an unreadable departure confirmation
+                    # must not cancel the sortie — press the default (はい)
+                    # once and let the departure itself prove it. A second
+                    # unreadable round means the blind A did nothing, so the
+                    # existing cancel path takes over.
+                    if ordinary and not (mem.get('sortie_confirm_blind') or {}).get(order['step']):
+                        mem.setdefault('sortie_confirm_blind', {})[order['step']] = True
+                        misses.pop(order['step'], None)
+                        _record(mem, 'sortie_confirm_blind_approve',
+                                **_deploy_context(order, mem, expected_metric=sorted(_deploy_cards(order, mem))),
+                                observed_metric={'carried': None, 'screen': screen.kind},
+                                reason='出撃確認の携行札を読めないため既定（はい）で出撃を承認する')
+                        # Two presses: the confirmation panel takes the
+                        # selection and then the うむッ! row (g1163 2026-11-10
+                        # 04:04: a single blind A left the screen unchanged).
+                        return [pad('a'), {'type': 'wait', 'ms': 150}, pad('a')]
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
                                   observed_metric={'carried': None},
                                   reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
-                if misses[order['step']] == SORTIE_CONFIRM_LIMIT:
+                if misses[order['step']] == limit:
                     # A readable panel is the truth: approve the shown kit.
                     _record(mem, 'sortie_kit_mismatch',
                             **_deploy_context(order, mem, expected_metric=want),
@@ -1502,7 +2718,7 @@ def deploy_step(screen: Screen, mem):
                             reason='読み取れた携行札を実際の携行として出撃を承認（計画と不一致）')
             else:
                 if (_strict_boss_cards(order, mem) and misses[order['step']] >= SORTIE_CONFIRM_LIMIT
-                        and (mem.get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
+                        and (_plan_region(mem).get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
                     from ..os_layer.roster import run_identity
                     _hold_guarded_sortie(mem, order, 'sortie_confirmation_unconfirmed',
                         '必須携行札を有限観測で確認できないため装備条件を変えず出撃拒否へ進む',
@@ -1512,7 +2728,10 @@ def deploy_step(screen: Screen, mem):
                         'identity': run_identity(mem.get('_run_identity'))}
                     return _cancelled_sortie_step(screen, mem, owner)
                 return _hold_deploy(screen, mem, order,
-                                    '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
+                                    '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留',
+                                    carried=carried,
+                                    hold_variant=(f'kit_mismatch:{len(carried)}/{len(want)}'
+                                                  if isinstance(carried, list) else 'kit_unreadable'))
         else:
             mem.get('sortie_confirm_miss', {}).pop(order['step'], None)
         move = menu_to(screen, 'うむッ!')
@@ -1528,7 +2747,7 @@ def deploy_step(screen: Screen, mem):
                 return _hold_guarded_sortie(mem, order, 'sortie_actor_unconfirmed',
                     '確認した将軍・出撃元・持ち札が一致しないため出撃を取り消す',
                     {'general': context['general'], 'source': source})
-            mem['order_context'][order['step']] = {
+            _plan_region(mem).setdefault('order_context', {})[order['step']] = {
                 'strategy_variant': context['strategy_variant'],
                 'deviation_reason': context['deviation_reason'],
                 'actual_general': context['general'], 'planned_general': order['general'],
@@ -1540,7 +2759,7 @@ def deploy_step(screen: Screen, mem):
                     inventory_evidence=inventory_evidence,
                     observed_metric=got,
                     reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
-            mem['sortie_attempt'] = {'step': order['step'], 'target_seen': False,
+            _flow(mem)['sortie_attempt'] = {'step': order['step'], 'target_seen': False,
                 **({'confirmation_tick': departure['departure_binding']['confirm_tick']}
                    if departure is not None else {})}
             cell = chart.castles(mem['chapter']).get(source)

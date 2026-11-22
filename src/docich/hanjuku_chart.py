@@ -148,9 +148,9 @@ CASTLES_APPROX: dict[int, dict[str, tuple[int, int]]] = {
 # 2026-10-28) match all 24 ordinary castles of chapters 1–3 exactly. The
 # CASTLES_APPROX cell 8*(flag + (1, 3)) is within 8 px of every probe-measured
 # ordinary cell except chapter 3's large home castle (16 px); a Y jump lands
-# on the cell and the last pixels are walked onto the roof. Bosses are not in
-# the source table: boss cells stay unmeasured (chapter 4 has four sites and
-# chapter 9's boss moves).
+# on the cell and the last pixels are walked onto the roof. Single-site boss
+# flags use the same anchor as approximate cells below; measured boss cells
+# still win, chapter 4 has four sites and chapter 9's boss moves.
 SOURCE_CHAPTERS = frozenset(range(4, 13))
 for _chapter in sorted(SOURCE_CHAPTERS):
     CASTLES[_chapter] = dict(CASTLES_APPROX[_chapter])
@@ -171,16 +171,68 @@ SEASON_SITE_CELLS = {
 }
 CASTLES[4].update(SEASON_SITE_CELLS)
 
-# Chapter 5's 完熟大魔城, measured 2026-11-02 from the live g1097 Y view with
-# every ordinary castle ours (the castle spawns only then; GCGX: 全ての城を
-# 制圧すると完熟大魔城が出現する). The skull sits at view ~(159, 82.5). The
-# skull is drawn centred on its castle (unlike a flag, anchored at the pole
-# base): its centre maps straight to the cell — ((159-64.3)*8, (82.5-45.0)*8)
-# = (758, 300). The earlier (746,271) used chapter 3's flag-pole calibration
-# and marched generals camped one cell NW of the castle instead of entering.
-# Production is read-only: no march has entered through this cell yet.
-DEMON_CASTLE_CELLS = {5: {'ボス': (758, 300)}}
+# Chapter 5's 完熟大魔城 (the castle spawns only after every ordinary castle
+# is ours; GCGX: 全ての城を制圧すると完熟大魔城が出現する). The 2026-11-02
+# value (758, 300) took the Y-view skull centre (159, 82.5) for the castle
+# and used the flag offset (64.3, 45.0). On 2026-11-04 the live g1133 run
+# marched generals at that cell and they camped just south-east of the
+# building (owner report 16:2x JST: the marker lands slightly bottom-right of
+# the boss castle and never enters). The chapter 5 WRAM castle records
+# (0x1700, 16-byte [id, x, y, ...], 8 px tiles; read 2026-11-04 from the g1133
+# chapter 5 savestate) list the eleven ordinary castles as ids 31-41 and the
+# boss as id 231 at tile (90, 32). Ordinary field cells sit at the record tile
+# + (3, 4) - the flag/skull anchor measured for chapters 1-3 - so the boss
+# cell is 8 * ((90, 32) + (3, 4)) = (744, 288). The skull sprite itself is
+# drawn about (4.5, 5.5) view px below-right of its record, which is why the
+# skull centre overshoots; the older (746, 271) sat above the building and
+# camped north-west.
+DEMON_CASTLE_CELLS = {5: {'ボス': (744, 288)}}
 for _chapter, _cells in DEMON_CASTLE_CELLS.items():
+    CASTLES[_chapter].update(_cells)
+del _chapter, _cells
+
+# Chapter 6's 完熟秘密基地 also spawns only after every ordinary castle is
+# ours (GCGX 06: 全ての城を制圧すると完熟秘密基地が出現する; a fan board puts
+# it at the centre of the upper-right forest). Without a cell the mechanical
+# planner has no boss target at chapter end and next_order() returns None
+# forever (g1133 simulation 2026-11-05: all twelve castles ours -> {}).
+# The 22:23 g1133 Y view measures that forest centre at (166.5, 68.0) with
+# the chapter offset (64.3, 45.0), so the cell is (818, 184). v556 moved it one
+# tile up (818, 120) on a viewer report, but the armies then stopped short and
+# camped beside the base instead of entering (owner 2026-11-09 15:00), so the
+# measured centre is back. This is an approximate position: the roof checks and
+# the inland search guard the entry, and a live measurement replaces it.
+# A boss cell that never accepts an army is probed one tile at a time (v403).
+# 1 tile = 8 px = 64 chart units. The first candidate is the chart cell itself.
+# Chapter 6's cell is a Y-view estimate; chapters 7, 8, 10, 11 and 12 use the
+# source map's boss flag (the same approximation class as their ordinary
+# castles), so a miss there would otherwise re-send the same cell until the
+# chapter can never end. Chapter 5's cell is WRAM-measured and chapter 9's boss
+# moves, so neither carries probes.
+BOSS_PROBE_CHAPTERS = (6, 7, 8, 10, 11, 12)
+# A source-map estimate can be off by one or two castle tiles, so the first
+# ring is fine (2 tiles) and the coarse 8-tile ring follows. The old order
+# jumped straight to 8 tiles, which never lands on a neighbouring tile: a
+# two-tile error would have missed every candidate.
+BOSS_CELL_PROBES = {chapter: ((0, 0),
+                              (16, 0), (-16, 0), (0, 16), (0, -16),
+                              (16, 16), (-16, 16), (16, -16), (-16, -16),
+                              (64, 0), (-64, 0), (0, 64), (0, -64))
+                    for chapter in BOSS_PROBE_CHAPTERS}
+
+
+def boss_probe_cell(chapter, name, index=0):
+    """The cell to aim at for ``name``: the chart cell or its probe candidate."""
+    cell = castles(chapter).get(name)
+    probes = BOSS_CELL_PROBES.get(chapter)
+    if cell is None or not probes or not is_boss_castle(name):
+        return cell
+    dx, dy = probes[min(max(int(index or 0), 0), len(probes) - 1)]
+    return (cell[0] + dx, cell[1] + dy)
+
+
+SECRET_BASE_CELLS = {6: {'ボス': (818, 184)}}
+for _chapter, _cells in SECRET_BASE_CELLS.items():
     CASTLES[_chapter].update(_cells)
 del _chapter, _cells
 
@@ -205,6 +257,131 @@ del _chapter
 # within 1 px on measured chapter 4. Chapter 9 draws a second heart at
 # source (16, 20) -> view (82.5, 68.5); the registered one is the central
 # heart, re-measure before swapping if dispatches starve on it.
+# The waypoint heart is also the boss-phase waypoint: only its area lets an
+# army around the cliffs to the moving boss (owner 2026-11-16). Chapter 9
+# draws TWO hearts on the Y view — at view (82.5, 68.5) and (117.7, 74.9) —
+# and the boss approach uses the RIGHT one: the Y jump landing is the grass
+# strip immediately RIGHT of the right heart (owner 2026-11-16: 右ハートの右).
+# Its west edge is a black cliff line; the x=122 column south of the heart is
+# pinched by the dark forest band (x~125-137, y~76-84), so aim the open grass
+# row north-east of it instead. View (134.0, 74.0) -> cell.
+CH9_BOSS_WAYPOINT = (568, 212)
+# Issue #4861 / #4937: a black impassable cliff line splits chapter 9's イデ！
+# pocket (x < 640, y > 260) and north corridor (x < 640, y <= 260) from the
+# east boss-orbit area (x >= 640); the corridor mouth is the only join.
+CH9_CLIFF_EAST_X = 640
+CH9_CLIFF_POCKET_Y = 260
+CH9_EAST_MOUTH = (674, 212)
+
+
+def ch9_cliff_detour(unit_world, aim):
+    """First corridor/mouth leg for a cliff-blocked ch9 unit, or None."""
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2
+            and isinstance(aim, (list, tuple)) and len(aim) == 2):
+        return None
+    ux, uy = unit_world
+    ax, ay = aim
+    if ux >= CH9_CLIFF_EAST_X or ax < CH9_CLIFF_EAST_X:
+        return None
+    if uy > CH9_CLIFF_POCKET_Y:
+        return CH9_BOSS_WAYPOINT
+    if ay > CH9_CLIFF_POCKET_Y:
+        return CH9_EAST_MOUTH
+    return None
+
+# Issue #4922 (chapter 10): the White House (boss ホワイトハウス/だいとうりょう,
+# measured boss_cell ≈ (482,365), its roof centre) is ringed by an impassable
+# blue-white wall on the north, west, east and both southern flanks; the only
+# entrance is the southern central red carpet to the front door. A march aimed
+# straight at the boss cell camps against the wall forever; one routed to the
+# south gate first walks up the carpet into 「ボスじょうに せめこんだ！！」 every
+# time (offline verified, g1190-ch1v4). The west outer road reaches the gate
+# through the measured south-west corner (386,436); the remaining ring
+# corners mirror it about the gate axis and the roof centre.
+CH10_BOSS_WAYPOINT = (492, 436)    # 南門前: below the red carpet's south foot
+CH10_WALL_SW = (386, 452)          # west outer road meets the south road below bastion (measured)
+CH10_WALL_SE = (598, 452)          # mirrored about the gate axis x=492
+CH10_WALL_NW = (386, 294)          # mirrored about the roof centre y=365
+CH10_WALL_NE = (598, 294)
+CH10_GATE_STRIP_PX = 24            # on the carpet/gate axis: enter straight
+# A camp cell inside this box belongs to the White House's approach, not an
+# ordinary castle's field: the wall ring plus the outer road and enough
+# margin to catch roster-triangle quantization (e.g. west road measured at
+# field [328, 384]) while staying disjoint from every normal castle.
+CH10_WH_AREA = (280, 220, 680, 520)
+
+
+def ch10_whitehouse_leg(origin, boss_cell):
+    """The next hop a chapter-10 march can reach without crossing the wall.
+
+    ``origin`` is the general's measured field cell and ``boss_cell`` the
+    White House cell. The return is one leg the field march can walk:
+
+    - on the red carpet / at the south gate (gate axis, below the roof):
+      straight in to the boss cell;
+    - strictly south of the southern bastion wall (``y >= 444``): the south gate;
+    - pinned behind the north wall: the nearer northern corner;
+    - west / east outer roads: the corresponding southern corner (``y = 452``)
+      below the bastion wall before turning toward the south gate;
+    - inside the SW/SE alcove (``420 < ox < 468`` or ``516 < ox < 564``,
+      ``by <= oy < 444``): straight south to ``y = 452`` outside the bastion;
+    - behind the inner north wall: the nearer northern corner.
+
+    Repeated calls from each new position therefore relay the general
+    corner -> outer south road -> gate -> front door. ``None`` for an
+    unmeasured origin/cell.
+    """
+    if (not isinstance(origin, (list, tuple)) or len(origin) != 2
+            or not isinstance(boss_cell, (list, tuple)) or len(boss_cell) != 2):
+        return None
+    ox, oy = int(origin[0]), int(origin[1])
+    bx, by = int(boss_cell[0]), int(boss_cell[1])
+    if abs(ox - CH10_BOSS_WAYPOINT[0]) <= CH10_GATE_STRIP_PX and by < oy <= 468:
+        return (bx, by)                    # red carpet / south gate: enter
+    if oy >= CH10_WALL_SW[1] - 8:
+        return CH10_BOSS_WAYPOINT          # south of the bastion wall (y >= 444): open to gate
+    if oy < CH10_WALL_NW[1] - 16:
+        return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE
+    if ox <= 420:
+        return CH10_WALL_SW                # clear south past the bastion wall to y=452 first
+    if ox >= 564:
+        return CH10_WALL_SE
+    if oy >= by:
+        return (ox, CH10_WALL_SW[1])       # straight south out of SW/SE alcove before turning
+    return CH10_WALL_NW if ox < CH10_BOSS_WAYPOINT[0] else CH10_WALL_NE
+
+
+def ch10_whitehouse_recall_leg(origin, goal_cell):
+    """Detour around chapter 10 White House walls for non-boss recalls.
+
+    A camper behind or flanking the White House (e.g. north wall -> アルマムーン)
+    walks into the impassable ring when aiming directly at a castle on the
+    opposite side. Returns the next outer corner/apron waypoint, or ``None``
+    when the direct line does not cross the walled block.
+    """
+    if (not isinstance(origin, (list, tuple)) or len(origin) != 2
+            or not isinstance(goal_cell, (list, tuple)) or len(goal_cell) != 2):
+        return None
+    ox, oy = int(origin[0]), int(origin[1])
+    gx, gy = int(goal_cell[0]), int(goal_cell[1])
+    if 360 <= ox <= 624 and oy <= 316 and gy >= 436:
+        if ox < CH10_BOSS_WAYPOINT[0]:
+            return CH10_WALL_SW if ox <= 400 else CH10_WALL_NW
+        return CH10_WALL_SE if ox >= 584 else CH10_WALL_NE
+    if 360 <= ox <= 624 and oy >= 420 and gy <= 294:
+        if ox < CH10_BOSS_WAYPOINT[0]:
+            return CH10_WALL_NW if ox <= 400 else CH10_WALL_SW
+        return CH10_WALL_NE if ox >= 584 else CH10_WALL_SE
+    if (360 <= ox <= 624 and 316 < oy < 444 and gy >= 436
+            and abs(ox - CH10_BOSS_WAYPOINT[0]) > CH10_GATE_STRIP_PX):
+        if ox <= 420:
+            return CH10_WALL_SW
+        if ox >= 564:
+            return CH10_WALL_SE
+        return (ox, CH10_WALL_SW[1])
+    return None
+
+
 HOUSE_VIEW = {1: (118.5, 126.5), 2: (128.5, 94.5), 3: (116.5, 108.5),
               4: (134.0, 87.5), 5: (124.5, 80.5), 6: (110.5, 138.5),
               7: (144.5, 98.5), 8: (146.5, 104.5), 9: (118.5, 76.5),
@@ -263,6 +440,24 @@ BOSS_CASTLES: dict[int, str] = {
     2: 'ボス', 3: 'ボス', 4: 'ボス', 5: 'ボス', 6: 'ボス',
     7: 'ボス', 8: 'ボス', 9: 'ボス', 10: 'ボス', 11: 'ボス', 12: 'ボス',
 }
+
+# Chapters 7-12 each have one public boss flag. The same flag->cell anchor as
+# ordinary castles gives an approximate boss cell so the planner has a target
+# at all_captured instead of stopping with next_order() == None. Chapters 5/6
+# already carry measured cells above and win here; chapter 4's four sites and
+# chapter 9's moving boss stay special.
+APPROX_BOSS_CELLS: dict[int, tuple[int, int]] = {}
+for _chapter in sorted(SOURCE_CHAPTERS):
+    if _chapter in (4, 9):
+        continue
+    _flags = map_sources.SOURCE_BOSS_FLAGS.get(_chapter, ())
+    _name = BOSS_CASTLES.get(_chapter)
+    if len(_flags) != 1 or _name in CASTLES.get(_chapter, {}):
+        continue
+    _left, _top = _flags[0]
+    APPROX_BOSS_CELLS[_chapter] = (8 * (_left + 1), 8 * (_top + 3))
+    CASTLES[_chapter][_name] = APPROX_BOSS_CELLS[_chapter]
+del _chapter, _flags, _name, _left, _top
 
 # Castle labels this chart used before they matched the game's own text.
 # Chapter 1's home castle was labelled ほんじょう here while the game always
@@ -714,35 +909,35 @@ CHAPTER_9_ORDERS = (
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
      'target': 'オシロガ', 'after': ('captured', 'サヌト'),
      'note': '騎馬A オシロガ城へ'},
-    {'step': '9-K8', 'general': '騎馬B', 'source': 'サヌト',
+    {'step': '9-K8', 'general': '騎馬B', 'source': 'オシロガ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'ドンドン', 'after': ('captured', 'サヌト'),
-     'note': '騎馬B ドンドン城へ'},
-    {'step': '9-K9', 'general': '騎馬A', 'source': 'オシロガ',
+     'target': 'ドンドン', 'after': ('captured', 'オシロガ'),
+     'note': '騎馬B ドンドン城へ（一本道: オシロガの次）'},
+    {'step': '9-K9', 'general': '騎馬A', 'source': 'ドンドン',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'オオキク', 'after': ('captured', 'オシロガ'),
+     'target': 'オオキク', 'after': ('captured', 'ドンドン'),
      'note': '騎馬A オオキク城へ'},
-    {'step': '9-K10', 'general': '騎馬B', 'source': 'ドンドン',
+    {'step': '9-K10', 'general': '騎馬B', 'source': 'オオキク',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'ナッテ', 'after': ('captured', 'ドンドン'),
+     'target': 'ナッテ', 'after': ('captured', 'オオキク'),
      'note': '騎馬B ナッテ城へ'},
-    {'step': '9-K11', 'general': '騎馬A', 'source': 'オオキク',
+    {'step': '9-K11', 'general': '騎馬A', 'source': 'ナッテ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'シマウ', 'after': ('captured', 'オオキク'),
+     'target': 'シマウ', 'after': ('captured', 'ナッテ'),
      'note': '騎馬A シマウ城へ'},
-    {'step': '9-K12', 'general': '騎馬B', 'source': 'ナッテ',
+    {'step': '9-K12', 'general': '騎馬B', 'source': 'シマウ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'カラ', 'after': ('captured', 'ナッテ'),
+     'target': 'カラ', 'after': ('captured', 'シマウ'),
      'note': '騎馬B カラ城へ'},
-    {'step': '9-K13', 'general': '騎馬A', 'source': 'シマウ',
+    {'step': '9-K13', 'general': '騎馬A', 'source': 'カラ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'イソ', 'after': ('captured', 'シマウ'),
+     'target': 'イソ', 'after': ('captured', 'カラ'),
      'note': '騎馬A イソ城へ'},
-    {'step': '9-K14', 'general': '騎馬B', 'source': 'カラ',
+    {'step': '9-K14', 'general': '騎馬B', 'source': 'イソ',
      'cards': ('ブラッキー', 'クースカン', 'ファバード'),
-     'target': 'イデ！', 'after': ('captured', 'カラ'),
+     'target': 'イデ！', 'after': ('captured', 'イソ'),
      'note': '騎馬B イデ！城へ'},
-    {'step': '9-B1', 'general': '騎馬A', 'source': 'イソ',
+    {'step': '9-B1', 'general': '騎馬A', 'source': 'イデ！',
      'cards': ('マグネガキン', 'マグネガキン', 'ファバード'),
      'target': 'ボス', 'after': ('all_captured',),
      'note': 'ハデス（エグモン） 騎馬のどちらかが攻略'},
@@ -777,7 +972,11 @@ CHAPTER_10_ORDERS = (
      'cards': ('グリンボー', 'クースカン', 'エンジェリン'),
      'target': 'ケントルム', 'after': ('captured', 'ファルゲ'),
      'note': '主人公 右上方面へ 対敵将軍迎撃'},
-    {'step': '10-B1', 'general': HERO, 'source': 'ケントルム',
+    # #4922: ケントルム sits behind the White House's north-east wall, so a
+    # boss march from it camps against the ring forever; トルストリア is the
+    # southern castle with a straight field to the south gate
+    # (CH10_BOSS_WAYPOINT), which the order's first hop now targets.
+    {'step': '10-B1', 'general': HERO, 'source': 'トルストリア',
      'cards': ('エンジェリン', 'マグネガキン', 'ファバード'),
      'target': 'ボス', 'after': ('all_captured',),
      'note': 'だいとうりょう 将軍全員で攻略'},
@@ -1016,14 +1215,101 @@ def boss_castle(chapter: int) -> str:
     return BOSS_CASTLES.get(chapter, BOSS_CASTLES[1])
 
 
+# Chapter 9 is a single winding road: the black terrain on the stage map is
+# impassable (GCGX 第9話「黒いところは進入不可なので、くねくねしながら１本道を
+# 進軍することになる」), so a march can only go castle to adjacent castle.
+# The order is the castle-name sentence the guide prints (「早く倒さぬとお城が
+# ドンドン大きくなってしまうから急いで！」 = the table order of the castles).
+# Source: public guide text; the first seven castles agree with a flood fill of
+# the 130 px stage map, the tail does not (thin walls vanish at that scale).
+# NOT measured in the game: re-check against the first live run.
+CORRIDORS: dict[int, tuple[str, ...]] = {
+    9: ('アルマムーン', 'ハヤク', 'タオ', 'サヌト', 'オシロガ', 'ドンドン',
+        'オオキク', 'ナッテ', 'シマウ', 'カラ', 'イソ', 'イデ！'),
+}
+CORRIDOR_STEP = 1000     # distance units per road hop (``_distance`` on a road chapter)
+
+
+def corridor(chapter) -> tuple[str, ...]:
+    """The castles of a single-road chapter in march order, else ``()``."""
+    return CORRIDORS.get(chapter, ())
+
+
+def corridor_gap(chapter, a, b):
+    """Road hops between two castles of the corridor, or None when off it."""
+    road = corridor(chapter)
+    if a in road and b in road:
+        return abs(road.index(a) - road.index(b))
+    return None
+
+
+def corridor_neighbours(chapter, name) -> tuple[str, ...]:
+    road = corridor(chapter)
+    if name not in road:
+        return ()
+    i = road.index(name)
+    return tuple(road[j] for j in (i - 1, i + 1) if 0 <= j < len(road))
+
+
+def corridor_next(chapter, owned):
+    """The first road castle (march order) that is not ours, or None.
+
+    A lost castle in the middle of the road is the next target again: nothing
+    beyond it can be reached while it is held by the enemy.
+    """
+    return next((c for c in corridor(chapter) if c not in owned), None)
+
+
+# Chapter 11 (owner 2026-11-17): the back half of the map cannot be reached
+# from the front castles. Every back-half castle is entered through the
+# central hub タタール, so attacking one while the hub is the enemy's marches an
+# army into terrain it cannot cross (g1190 2026-11-17: ゴンダル/マランマ/
+# アルマムーンから トリフェ/ネペンテ へ出撃を繰り返し、いずれも戻っていた).
+GATEWAYS = {
+    11: {
+        'hub': 'タタール',
+        'front': ('アルマムーン', 'チリベット', 'タプロベイン',
+                  'ジャンセニア', 'ゴンダル', 'マランマ'),
+        'back': ('クラボニア', 'トリフェ', 'アエンタール', 'ネペンテ'),
+    },
+}
+
+
+def gateway(chapter):
+    """The chapter's central hub and the castle halves it separates, else None."""
+    return GATEWAYS.get(chapter)
+
+
+GUARD_FREE_CHAPTERS = frozenset({9})
+
+
+def sender_min(chapter=None) -> int:
+    """Generals a castle must hold before it may send one (2, or 1 when guard-free)."""
+    return 1 if guard_free(chapter) else 2
+
+
+def guard_free(chapter=None) -> bool:
+    """Whether a castle may send its last general (owner 2026-11-09).
+
+    Chapter 9's road puts every rear castle behind the front, so the "keep a
+    defender" policies (the never-empty rule, HERO_CASTLE_GUARD) are lifted
+    there. The owner stated the one-general limit is not a game rule.
+    """
+    if chapter is None:
+        memory = _MAP_MEMORY.get()
+        chapter = memory.get('chapter') if isinstance(memory, dict) else None
+    return chapter in GUARD_FREE_CHAPTERS
+
+
 # Owner 2026-11-02: the speedrun chart's order list was misleading progress
 # (orders waiting on conditions while castles stayed uncaptured), so castles
 # are taken mechanically, nearest first (``replan.interim_candidates``).
-# Chapters 4 (four boss sites) and 9 (a moving boss) have no generic boss
-# castle, so their boss assault still comes from the chart.
+# Chapter 4 (four boss sites) has no generic boss castle, so its boss assault
+# still comes from the chart. Chapter 9 (a moving boss, a single road) runs
+# mechanically along ``CORRIDORS``; its boss cell is the Y-view skull.
 # DOCICH_HANJUKU_SPEEDRUN_CHART=1 restores the chart everywhere.
 SPEEDRUN_CHART_ENV = 'DOCICH_HANJUKU_SPEEDRUN_CHART'
-CHART_ONLY_CHAPTERS = frozenset({4, 9})
+CHART_ONLY_CHAPTERS = frozenset({4})
 
 
 def speedrun_enabled(chapter=None) -> bool:
@@ -1103,6 +1389,57 @@ def verified_castles(mem, chapter):
     return out
 
 
+# Chapter 9's boss moves, so it has no reusable static coordinate. The Y view
+# draws it with the same skull sprite as chapter 3's boss; the map flow
+# measures that position each month (two equal readings) and registers it
+# here. The value expires when the reading ages out (the orchestrator clears
+# it) or the chapter changes, so a stale cell can never authorize an attack.
+MOVING_BOSS_CHAPTER = 9
+# Chapters whose boss cell is an estimate may take a Y-view measured cell.
+MOVEABLE_BOSS_CELL_CHAPTERS = frozenset({6, 7, 8, 9, 10, 11, 12})
+# A moving boss's measurement stays usable for about half a month of
+# observations; the map flow refreshes it on every Y view, so a moved boss
+# ages out quickly. Static bosses keep their measured cell for the chapter.
+MOVING_BOSS_TICKS = 1200
+DYNAMIC_BOSS_CELLS: dict[int, tuple[int, int]] = {}
+
+
+def set_boss_cell(chapter, cell):
+    """Record (or clear with None) a Y-view measured boss cell for ``chapter``.
+
+    Only a chapter whose chart cell is an estimate accepts one: the probe
+    chapters (6, 7, 8, 10, 11, 12) and the moving boss (9). Chapters 1-5 have
+    measured cells already, and a skull-derived cell can sit ~2 tiles off the
+    castle tile (chapter 4's sites), so a measurement must never replace them.
+    """
+    if type(chapter) is not int or chapter not in CASTLE_NAMES:
+        return None
+    if chapter not in MOVEABLE_BOSS_CELL_CHAPTERS:
+        return None
+    if cell is None:
+        DYNAMIC_BOSS_CELLS.pop(chapter, None)
+        return None
+    try:
+        x, y = int(cell[0]), int(cell[1])
+    except (TypeError, ValueError, IndexError):
+        DYNAMIC_BOSS_CELLS.pop(chapter, None)
+        return None
+    if not (0 <= x <= 2047 and 0 <= y <= 2047):
+        DYNAMIC_BOSS_CELLS.pop(chapter, None)
+        return None
+    DYNAMIC_BOSS_CELLS[chapter] = (x, y)
+    return (x, y)
+
+
+def moving_boss_cell(chapter):
+    """The Y-view measured boss cell for ``chapter``, or None."""
+    return DYNAMIC_BOSS_CELLS.get(chapter) if type(chapter) is int else None
+
+
+# Backwards-compatible name used by the chapter-9 moving-boss flow.
+set_moving_boss_cell = set_boss_cell
+
+
 def castles(chapter: int) -> dict:
     static = CASTLES.get(chapter, {})
     memory = _MAP_MEMORY.get()
@@ -1110,8 +1447,13 @@ def castles(chapter: int) -> dict:
         static = {**CASTLES_APPROX.get(chapter, {}), **static}
     if chapter in (4, 9):
         # A generic chapter-4 point cannot identify four separate sites.
-        # Chapter 9's moving boss has no reusable static coordinate.
+        # Chapter 9's moving boss has no reusable static coordinate; only the
+        # measured dynamic cell below may stand in for it.
         static = {n: p for n, p in static.items() if n != boss_castle(chapter)}
+    if chapter in DYNAMIC_BOSS_CELLS:
+        # A Y-view measured boss cell (the skull sprite) is exact evidence for
+        # any chapter and replaces an approximate chart cell.
+        static = {**static, boss_castle(chapter): DYNAMIC_BOSS_CELLS[chapter]}
     memory = _MAP_MEMORY.get()
     if memory is None:
         return static

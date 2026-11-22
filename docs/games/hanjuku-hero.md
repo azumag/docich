@@ -254,6 +254,10 @@ owner-only `corner-rotation-operator.yml` の `resume-hanjuku-latest` は、今�
 
 対応形式はbounded RZIP v1/RASTATE1です。nativeの章表示も先発隊も確認できない保存、内容/core差分、未更新state、ロード失敗、timeoutではcandidateを成功扱いせず、元保存を保持します。一度claimした候補を新規開始へfallbackしたり、次の自然発火で自動巻戻ししたりしません。ゲームオーバー後は改善だけ行って自然発火を待つ運用を維持します。保存データ・ROM・private snapshotはGit/Actions出力へ含めません。
 
+### 章末セーブ確認と先発隊による次章の確定
+
+実プレイ中の章送りは、章末の「セーブをしゅうりょうして よろしいですかな?」（実測 g1059 2026-10-28 05:21:42、g1153 2026-11-07 22:48:34）の直後に始まる先発隊の選択（同 05:21:45 / 22:48:37）を次章の開始として扱います。章の結果メニューやHUDの「2わ」より先に来るため、これが無いと次章の地図を旧章の座標のまま扱います（g1153はHUDまで8分、うち約3分は新章の地図で無入力）。確定は両方の実画面と、その章のボスが戦闘メモリにある・撃破済み・ボス城確保済みのいずれかを条件とし、章末セーブだけ、先発隊だけ、ボス未確認では章を進めません。詳細は `docs/operations/hanjuku-chapter-end-save-party-20261107.md`。
+
 実装根拠: [RetroArch v1.18 task_save.c](https://github.com/libretro/RetroArch/blob/v1.18.0/tasks/task_save.c) のRASTATE/core deserialize、[command.c](https://github.com/libretro/RetroArch/blob/v1.18.0/command.c) の非同期LOAD_STATE_SLOT、[rzip_stream.c](https://github.com/libretro/RetroArch/blob/v1.18.0/libretro-common/streams/rzip_stream.c) のbounded形式を使用します。
 
 

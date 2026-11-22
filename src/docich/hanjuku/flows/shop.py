@@ -8,12 +8,13 @@ from ... import hanjuku_chart as chart
 from ...hanjuku_reference import weakest_general
 from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import menu_to, merchant_list_batch, pad
 from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import month_menu_ready
 from ..os_layer.roster import fixed_wage, run_identity
-from ..strategy.bargains import merchant_card_spendable, plan_bargains
-from ..strategy.boss_cards import note_card_purchase
+from ..strategy.bargains import (HOLD_CAP, held, hold_room, merchant_card_spendable,
+                                 note_card_bought, plan_bargains)
+from ..strategy.boss_cards import UNSEEN, note_card_purchase
 from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough, refill_outcome)
@@ -31,19 +32,182 @@ def _merchant_quote_decline(screen, mem, shop, want, reason):
     return [pad('b')]
 
 
-def _record_shop_exit(mem, shop, screen, reason):
+QUOTE_STALL_LIMIT = 4      # identical visible quotes before the decline is forced
+
+
+def _quote_prompt_visible(screen):
+    """The merchant's price confirmation is on screen (うむッ!/いかんッ!)."""
+    text = screen.text or ''
+    return (re.search(r'\d+こで\d+Gになりまんな', ''.join(text.split())) is not None
+            and 'うむッ' in text and 'いかんッ' in text)
+
+
+def _quote_stall_watch(shop, screen):
+    """True once the same visible quote has survived QUOTE_STALL_LIMIT reads.
+
+    g1190 2026-11-18 10:26: a quote with no planned purchase kept pressing B,
+    which does not close this confirmation; A/B alternated until screen_stalled
+    ended the run. A single read still returns B (unread positions stay safe).
+    """
+    if not _quote_prompt_visible(screen):
+        return False
+    key = ''.join((screen.text or '').split())[:80]
+    watch = shop.get('quote_stall') if isinstance(shop, dict) else None
+    n = int(watch.get('n') or 0) + 1 if isinstance(watch, dict) and watch.get('key') == key else 1
+    if isinstance(shop, dict):
+        shop['quote_stall'] = {'key': key, 'n': n}
+    return n >= QUOTE_STALL_LIMIT
+
+
+def _quote_stall_decline(screen, mem, shop, want, reason):
+    """Select いかんッ! for a stalled quote; fall back to the old no-op B."""
+    if isinstance(shop, dict):
+        shop.pop('quote_stall', None)
+    row = want if isinstance(want, list) and len(want) == 3 else [None, 0, 0]
+    _record(mem, 'buy_skip', card=row[0], qty=row[1], price=row[2],
+            gold=(screen.header or {}).get('gold'), deviation_reason=reason,
+            reason='同じ値段確認が続きBでは閉じないため、いかんッ!を選んで購入を見送る')
+    move = menu_to(screen, 'いかんッ!')
+    if move and move != 'here':
+        return [move]
+    if move == 'here':
+        return [pad('a')]
+    return [pad('b')]
+
+
+def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
     """Record a merchant-list exit that spends nothing (diagnostic, no behavior change)."""
     items = (shop or {}).get('items') or []
     _record(mem, 'shop_list_exit', month=(shop or {}).get('key'),
             observed_metric={'reason': reason, 'planned': [list(row) for row in items[:4]],
+                             'listed': dict(listed or {}),
+                             'bargain_cards': list((shop or {}).get('bargain_cards') or []),
                              'header_month': _month_key(screen.header),
                              'mem_month': mem.get('month'), 'merchant_done': (shop or {}).get('merchant_done')},
             reason='商人の品揃えを見ずに一覧から戻ったため、購入せず終了した理由を記録する')
 
 
+HOLD_LIMIT_PRESS_LIMIT = 4     # A presses on one refusal message before leaving the shop
+
+
+def holding_limit_message(screen: Screen) -> bool:
+    """The merchant refused a card: う〜んそれいじょうもてないようですな!
+
+    Match a short fragment: the wavy dash and the exclamation mark may not be
+    in the font table, and only part of the line may be read.
+    """
+    return 'もてない' in ''.join(screen.text.split())
+
+
+def _holding_limit_step(screen: Screen, mem, shop):
+    """Close the merchant's refusal and retire that kind for this visit.
+
+    The message sits over the still-visible price list, so it classifies as
+    shop_list while the hand cursor is hidden (planning then waits for a
+    cursor that never comes: live 2026-11-06, no input for 78 observations).
+    A refusal is evidence that the kind's ledger was too low; the count is
+    unknown again and the kind is not asked for twice (owner 2026-11-22:
+    halving the ask and re-probing spent a refusal round-trip per try).
+    ``_holding_limit_step`` still closes the message with a bounded number of
+    A presses. Soldiers use another editor and stay.
+    """
+    if not isinstance(shop, dict):
+        return [pad('b')]
+    if shop.get('hold_limit_open') is not True:
+        shop['hold_limit_open'] = True
+        shop['hold_limit_presses'] = 0
+        _learn_holding_limit(screen, mem, shop)
+    presses = shop.get('hold_limit_presses')
+    presses = presses + 1 if type(presses) is int and presses >= 0 else 1
+    shop['hold_limit_presses'] = presses
+    # A message that A cannot clear must not become the next endless hold.
+    return [pad('a')] if presses <= HOLD_LIMIT_PRESS_LIMIT else [pad('b')]
+
+
+def _learn_holding_limit(screen: Screen, mem, shop):
+    """The refusal proves one kind's ledger wrong: unknown it and drop it today.
+
+    A refusal was previously turned into a learned ceiling and a halved retry
+    (v1329 bisected it). The owner's rule (2026-11-22) is difference
+    management: a refusal means the count is not known, so the kind's ledger
+    key is removed and this visit stops asking for it. Other kinds are
+    separate 99-copy limits (measured) and continue. A refusal that cannot be
+    tied to one request still stops every card this visit.
+    """
+    last = shop.get('last_buy')
+    row = last.get('row') if isinstance(last, dict) else None
+    bought = shop.get('bought')
+    gold = (screen.header or {}).get('gold')
+    paid_nothing = (type(gold) is int and isinstance(last, dict)
+                    and type(last.get('gold')) is int and gold >= last['gold'])
+    want = shop.get('want')
+    # Snapshot the pre-refusal shop state before mutating shop.pop/shop['want'] below.
+    last_buy_snapshot = ({**last, 'row': list(last['row']) if isinstance(last.get('row'), list) else last.get('row')}\
+                     if isinstance(last, dict) else last)
+    want_snapshot = list(want) if isinstance(want, list) else want
+    if paid_nothing and isinstance(row, list) and isinstance(bought, list) and bought and bought[-1] == row:
+        bought.pop()                      # refused, not bought: do not count it
+        attempt = row
+    elif isinstance(want, list) and len(want) == 3 and not isinstance(last, dict):
+        attempt = want                    # refused before any quantity was confirmed
+    else:
+        attempt = None                    # cannot tie the message to one request
+    shop.pop('last_buy', None)
+    shop['want'] = None
+    shop['hold_limit'] = int(shop.get('hold_limit') or 0) + 1
+    items = [list(r) for r in (shop.get('items') or [])]
+    name = qty = None
+    if (isinstance(attempt, list) and len(attempt) >= 2 and isinstance(attempt[0], str)
+            and type(attempt[1]) is int and attempt[1] > 0):
+        name, qty = attempt[0], attempt[1]
+    held_before = held(mem, name) if name else None
+    if name is None:
+        dropped, items = items, []        # unattributable: stop buying cards this visit
+    else:
+        # The exact count is unknown until a panel or the field list is read:
+        # a refused card must not keep a ledger value the merchant just
+        # contradicted. UNSEEN is untouched (this is not a purchase).
+        stock = mem.get('card_stock')
+        if isinstance(stock, dict):
+            stock.pop(name, None)
+        # S3: the refusal proved the ledger wrong for this kind; re-read the
+        # whole field list instead of trusting the remaining entries.
+        from ..strategy import card_census as _card_census
+        _card_census.book(mem, 'holding_limit_refusal')
+        dropped = [r for r in items if r[0] == name]
+        items = [r for r in items if r[0] != name]
+    # Full holdings snapshot so a later refusal can be split between a
+    # per-card cap and a whole-hand cap: per-name stock and its total, this
+    # visit's buys (untruncated), and the pre-refusal value of the refused kind.
+    stock = mem.get('card_stock')
+    stock = {k: v for k, v in stock.items() if type(v) is int} if isinstance(stock, dict) else {}
+    _record(mem, 'buy_skip', card=name, qty=qty, deviation_reason='holding_limit',
+            observed_metric={'message': screen.text, 'dropped': dropped,
+                             'held_before': held_before,
+                             'card_stock': dict(stock), 'card_stock_total': sum(stock.values()),
+                             'card_bought_unseen': dict(mem.get(UNSEEN) or {}),
+                             'bought': ([list(r) if isinstance(r, (list, tuple)) else r for r in bought]
+                              if isinstance(bought, list) else bought),
+                             # Record the full post-refusal queue and shop context,
+                             # not just the first few dropped rows.
+                             'items': [list(r) for r in items],
+                             'shop_state': {'hold_limit': shop.get('hold_limit'),
+                                            'hold_limit_open': shop.get('hold_limit_open'),
+                                            'hold_limit_presses': shop.get('hold_limit_presses'),
+                                            'last_buy': last_buy_snapshot,
+                                            'want': want_snapshot,
+                                            'gold': gold}},
+            reason='所持上限で断られたため、この札の所持を未知にし、この訪問ではこの札をやめる(半分で聞き直さない)')
+    shop['items'] = items
+
+
 def shop_step(screen: Screen, mem):
     shop = mem.get('shop')
     kind = screen.kind
+    if kind in ('shop_list', 'text') and holding_limit_message(screen):
+        return _holding_limit_step(screen, mem, shop)
+    if isinstance(shop, dict) and shop.get('hold_limit_open'):
+        shop['hold_limit_open'] = False   # the refusal is closed; a later one counts anew
     if kind == 'shop_exit_confirm':
         move = menu_to(screen, 'うむッ!')
         if shop:
@@ -73,23 +237,58 @@ def shop_step(screen: Screen, mem):
         if m:
             listed[m.group(1)] = int(m.group(2))
     plan_bargains(mem, shop, screen.header, listed=listed)
+    had_items = bool(shop['items'])
     while shop['items']:
         name, qty = shop['items'][0]
+        room = hold_room(mem, name)
+        if room == 0:
+            # The ledger already says the field holds the per-kind cap, so no
+            # quantity can be sold. Asking anyway costs a full refusal
+            # round-trip per card (g1163 2026-11-09 08:53-08:57: fifteen capped
+            # bargain cards, 3.5 minutes of the month). Unknown kinds stay
+            # unknown and are asked (a necessity), because a missing key is not
+            # evidence of 99.
+            _record(mem, 'buy_skip', card=name, qty=qty, gold=gold,
+                    deviation_reason='holding_cap',
+                    observed_metric={'held': held(mem, name), 'cap': HOLD_CAP,
+                                     'card_stock': (mem.get('card_stock') or {}).get(name)},
+                    reason='所持上限(種類ごと99)に達しているため商人に聞かずにこの札をやめる')
+            shop['items'].pop(0)
+            continue
         price = listed.get(name)
         available = merchant_card_spendable(mem, shop, screen.header, name, price)
         if (type(qty) is not int or qty <= 0 or price is None or price <= 0
                 or available is None or price > available):
             _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
+                    listed=dict(listed),
                     deviation_reason='invalid_quantity' if type(qty) is not int or qty <= 0
                                      else 'not_listed' if price is None else 'reserved_funds',
                     reason='商人の品揃えまたは全賃金・未払回復等を保持した購入予算の制約')
             shop['items'].pop(0)
             continue
         n = min(qty, available // price)
+        if room is not None:
+            # A necessity (chart/rebuy) keeps its ask when the kind is unknown,
+            # but a known kind never asks past its remaining room.
+            n = min(n, room)
         shop['items'][0] = [name, n]
         shop['want'] = [name, n, price]
         move = menu_to(screen, name)
-        return [pad('a')] if move == 'here' else [move] if move else []
+        if move == 'here':
+            return [pad('a')]
+        return (merchant_list_batch(screen, name) or [move]) if move else []
+    if had_items is False:
+        _record_shop_exit(mem, shop, screen, 'nothing_planned', listed=listed)
+        if shop.get('merchant_done'):
+            # g1190 99-7: the finished merchant was re-entered ~every 85
+            # observations and nothing_planned kept closing it. Latch the
+            # visit closed so no plan re-adds it; evidence stays recorded.
+            if not shop.get('closed'):
+                _record(mem, 'shop_reenter', month=shop.get('key'),
+                        observed_metric={'header_month': _month_key(screen.header),
+                                         'listed': dict(listed or {})},
+                        reason='購入完了済みの商人へ予定品なしで再入したため、当月起こさないよう閉じる')
+            shop['closed'] = True
     return [pad('b')]
 
 
@@ -180,6 +379,21 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 if (isinstance(cancel, dict) and cancel.get('identity') == identity
                         and cancel.get('key') == key and shop.get('soldiers_done') is True):
                     return [pad('b')] if _army_count_increment(cancel, 'presses', 4) <= 3 else []
+            # g1190-ch1fresh: an unscoped editor that stays unscoped for many
+            # observations never releases. The resume path above is a narrow
+            # escape; hold a bounded count first (a transient chapter=None can
+            # still resolve), then cancel so the month can leave.
+            hold = mem.get('unscoped_refill_hold')
+            if not isinstance(hold, dict) or hold.get('key') != key:
+                hold = mem['unscoped_refill_hold'] = {'key': key, 'count': 0}
+            hold['count'] = int(hold.get('count') or 0) + 1
+            if hold['count'] >= UNSCOPED_REFILL_LIMIT:
+                mem.pop('unscoped_refill_hold', None)
+                shop['soldiers_done'] = True
+                _record(mem, 'unscoped_refill_abandoned', month=key,
+                        observed_metric={'holds': hold['count'], 'chapter': mem.get('chapter')},
+                        reason='章が解決せず数量入力画面が有限回を超えても保留されるため、当月の補充を諦めて月を進める')
+                return [pad('b')]
             return []  # a faded month/header cannot authorize a runtime purchase
         if (scope is not None and isinstance(state, dict) and state.get('scope') == scope
                 and state.get('stage') == 'measured'
@@ -300,6 +514,12 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                 if move == 'here':
                     bought = shop.setdefault('bought', [])
                     bought.append([want[0], value, want[2]])
+                    # The ledger first: a known kind takes the copies, an
+                    # unknown one stays unknown for note_card_purchase below
+                    # to record as UNSEEN (one of the two, never both).
+                    note_card_bought(mem, want[0], value)
+                    shop['last_buy'] = {'row': [want[0], value, want[2]],  # undone if refused
+                                        'gold': (screen.header or {}).get('gold')}
                     extra = want[0] in (shop.get('bargain_cards') or [])
                     _record(mem, 'buy', card=want[0], qty=value, price=want[2],
                             chart_step=month_chart_step(mem),
@@ -312,10 +532,14 @@ def quantity_step(screen: Screen, mem, soldiers=False):
                     shop['want'] = None
                     return [pad('a')]
                 return [move] if move else []
+            if _quote_stall_watch(shop, screen):
+                return _quote_stall_decline(screen, mem, shop, want, 'quote_stall')
             return [pad('b')]
     if value is None or not screen.hand:
         return []
     if not target:
+        if _quote_stall_watch(shop, screen):
+            return _quote_stall_decline(screen, mem, shop, want, 'quote_stall_no_target')
         return [pad('b')]
     # Digit editor: hand x>=200 is the ones digit, a smaller x the tens digit.
     ones_selected = screen.hand[0] >= 200
@@ -355,8 +579,11 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 
 # ---------------------------------------------------------------- prompts
 DISCHARGE_LIMIT = 32             # at most the full roster, one confirmed removal at a time
+DISCHARGE_REMOVAL_LIMIT = 8      # failed removal verify before trying the next weakest
+DISCHARGE_UNVERIFIED_LIMIT = 8   # unreadable list/cursor reads before confirming at the cursor
 DISCHARGE_SCAN_LIMIT = 20        # preserve the existing bounded cursor walk
 DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid up
+UNSCOPED_REFILL_LIMIT = 32       # holds before cancelling an unscoped refill editor
 
 
 def discharge_candidates(screen):
@@ -376,6 +603,23 @@ def discharge_candidates(screen):
             continue
         name = row.span(24, 96).strip()
         if not name:
+            continue
+        # The status panel's left border tiles sit on the lower rows of the
+        # same 16px grid (y=127/143). They are not candidates: a border-only
+        # row has no wage in x=96..136 and every name cell is unreadable.
+        # Treating it as a candidate invalidated the whole list and the bot
+        # held the forced-discharge screen forever (local ch9 2026-11-15:
+        # gold -246G, 101 observations per no-input fallback, months passing
+        # with no dismissal). A wage-bearing row with a partial name still
+        # invalidates the list below.
+        cells = [ch for x, ch in row.cells if 24 <= x < 96]
+        status = [ch for x, ch in row.cells if x >= 144 and ch != UNKNOWN]
+        if (cells and all(ch == UNKNOWN for ch in cells)
+                and not re.search(r'\d', row.span(96, 136)) and status):
+            # The right-hand status panel owns this line (e.g. 「ちんぎん 6G」)
+            # while the left border contributes unreadable frame tiles. A real
+            # candidate row always carries its wage here; an unreadable one
+            # without a wage still invalidates the list below.
             continue
         if UNKNOWN in name or re.search(r'[\d\s]', name) or fixed_wage(name) is None:
             return None
@@ -465,7 +709,52 @@ def discharge_step(screen: Screen, mem, frame=None):
                     observed_metric={'month': key, 'selected': screen.selected,
                                      'names': names},
                     reason='解雇候補の名前またはカーソルを読めないため最弱将軍を確定せず入力を保留')
-        return []
+        observations = int(state.get('unverified_observations') or 0) + 1
+        state['unverified_observations'] = observations
+        if observations < DISCHARGE_UNVERIFIED_LIMIT:
+            return []
+        # 強制解雇はBでキャンセルできないため、読めないままの無界保留は
+        # no_input_fallback のBを空打ちして月だけが進む (issue #4641 実測:
+        # ch1 年4月 -4G で62〜84+連続保留)。上限でカーソル位置をAで確認し、
+        # カウントは次の未読連続へ再武装する。カーソルが既知の将軍名を指す
+        # なら成立検証の対象にし、読めなければ対象不明の確認として記録する。
+        state['unverified_observations'] = 0
+        if state['presses'] >= DISCHARGE_LIMIT:
+            if not state.get('held'):
+                state['held'] = True
+                _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_limit',
+                        observed_metric={'month': key, 'presses': state['presses']},
+                        reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
+            return []
+        state['presses'] = int(state['presses']) + 1
+        selected = screen.selected
+        chosen = selected if (isinstance(selected, str)
+                              and fixed_wage(selected) is not None) else None
+        known = [n for n in (state.get('scan') or []) if isinstance(n, str)]
+        weakest, _ranking = weakest_general(known) if known else (None, None)
+        metric = {'month': key, 'presses': state['presses'], 'selected': selected,
+                  'names': names, 'unverified_observations': observations,
+                  'basis': ('weakest_known' if chosen is not None and chosen == weakest
+                            else 'cursor_named' if chosen is not None else 'cursor_unread'),
+                  'hand': list(screen.hand) if screen.hand else None}
+        if chosen is None:
+            _record(mem, 'discharge_unverified_confirm',
+                    strategy_variant='unverified_cursor',
+                    observed_metric=metric,
+                    reason='候補・カーソルを読めないまま上限に達しBでは抜けないため、カーソル位置をAで確認する。対象は未読')
+            return [pad('a')]
+        if state.get('pending_target') is None:
+            state['pending_target'] = chosen
+        for field in ('scan', 'moved', 'moves'):
+            state.pop(field, None)
+        state['phase'] = 'after'
+        _record(mem, 'discharge_general', general=chosen,
+                strategy_variant='unverified_cursor',
+                observed_metric=metric,
+                reason='候補一覧を読めないまま上限に達したため、カーソル位置の既知候補を確認する。成立は未確認')
+        return [pad('a')]
+    state.pop('unverified', None)
+    state.pop('unverified_observations', None)
     selected = screen.selected
     scan = [n for n in (state.get('scan') or []) if isinstance(n, str)]
     scan = list(dict.fromkeys([*scan, *names]))
@@ -506,6 +795,21 @@ def discharge_step(screen: Screen, mem, frame=None):
                             strategy_variant='discharge_removal_unverified',
                             observed_metric={'month': key, 'target': pending},
                             reason='前の解雇対象が候補一覧に残るため、成立未確認として決定入力を重ねない')
+                held_count = int(state.get('removal_observations') or 0) + 1
+                state['removal_observations'] = held_count
+                if held_count >= DISCHARGE_REMOVAL_LIMIT:
+                    failed = [n for n in (state.get('failed_targets') or []) if isinstance(n, str)]
+                    if pending not in failed:
+                        failed.append(pending)
+                    state['failed_targets'] = failed
+                    _record(mem, 'discharge_removal_failed', general=pending,
+                            strategy_variant='discharge_removal_unverified',
+                            observed_metric={'month': key, 'target': pending,
+                                             'removal_observations': held_count},
+                            reason='解雇要求後も対象が一覧に残るため、不成立として別の候補へ進む')
+                    state.pop('pending_target', None)
+                    state.pop('removal_held', None)
+                    state.pop('removal_observations', None)
                 for field in ('scan', 'moved', 'moves'):
                     state.pop(field, None)
                 state['phase'] = 'scan'
@@ -522,7 +826,9 @@ def discharge_step(screen: Screen, mem, frame=None):
                         observed_metric={'month': key, 'presses': state['presses']},
                         reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
             return []
-        target, evidence = weakest_general(scan)
+        failed = {n for n in (state.get('failed_targets') or []) if isinstance(n, str)}
+        candidates = [n for n in scan if n not in failed] if failed else scan
+        target, evidence = weakest_general(candidates)
         if target is None:
             if not state.get('unresolved'):
                 state['unresolved'] = True

@@ -171,7 +171,7 @@ def test_direct_chat_specs_preserve_legacy_cli_and_use_explicit_profiles():
             "DOCICH_CHAT_OPENROUTER_UPSTREAM": "openai", "DOCICH_CHAT_OPENROUTER_BILLING_MODE": "credits_only"}),
         ("vercel", "openai/gpt-4.1-nano", "AI_GATEWAY_API_KEY", {
             "DOCICH_CHAT_VERCEL_UPSTREAM": "openai", "DOCICH_CHAT_VERCEL_BILLING_MODE": "credits_only"}),
-        ("cloudflare", "cf/qwen/qwen3-30b-a3b-fp8", "CLOUDFLARE_API_TOKEN", {
+        ("cloudflare", "cf/meta/llama-3.1-8b-instruct-fp8-fast", "CLOUDFLARE_API_TOKEN", {
             "DOCICH_CHAT_CLOUDFLARE_ACCOUNT_ID": "a" * 32}),
     ]:
         spec = parse_agents(provider + "-api:" + model)[0]

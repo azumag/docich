@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from . import procs
+from .agent import telemetry as telemetry_mod
 
 
 class XKit:
@@ -40,6 +41,9 @@ class XKit:
         )
         os.close(fd)
         tmp_path = Path(tmp_name)
+        tel = telemetry_mod.active()
+        capture_start = tel.now()
+        tel.count("capture_spawns")
         try:
             procs.run(
                 [
@@ -62,6 +66,10 @@ class XKit:
             )
             os.replace(tmp_path, out_path)
         finally:
+            # Fixed counters only: invocation count and wall time. The frame
+            # itself is never recorded (#3287 / #3151).
+            tel.count("captures")
+            tel.add_time("capture_s", capture_start)
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
         return out_path

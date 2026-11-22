@@ -31,6 +31,7 @@ from docich.hanjuku.flows.battle_menus import (BATTLE_MENU_STALL_RETRIES,  # noq
                                                BATTLE_MENU_STALL_WAIT, _battle_menu_move)
 from docich.hanjuku_font import TextLine  # noqa: E402
 from docich.hanjuku_screen import Screen  # noqa: E402
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA = 'ec79c498bbc98f6c1c8401d4d581872d5cb52d3919f4c646e4a9ac1f932ad330'
@@ -300,7 +301,7 @@ def test_the_use_egg_regression_is_not_vacuous(monkeypatch):
         value = real(screen, mem, label, **kw)
         if isinstance(value, dict) and value.get('buttons') == ['b']:
             calls['n'] += 1
-            return [value]  # the exact pre-fix return shape
+            return [[value]]  # the nested shape the driver must still reject
         return value
 
     monkeypatch.setattr(battle_menus, '_battle_menu_move', pre_fix)

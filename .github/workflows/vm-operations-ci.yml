@@ -12,13 +12,16 @@ on:
       - '!compose.discord-chat*.yml'
       - 'config/**'
       - 'bin/**'
+      - 'scripts/systemd/**'
       - 'games/soviet_now'
       - 'requirements-test.txt'
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
       - '.github/workflows/vm-deploy-blocker-alert.yml'
+      - '.github/workflows/vm-corner-monitor.yml'
       - '.github/workflows/gameswitch-adopt.yml'
+      - '.github/workflows/pr-merge-audio-report.yml'
 
   push:
     branches: [main]
@@ -32,13 +35,16 @@ on:
       - '!compose.discord-chat*.yml'
       - 'config/**'
       - 'bin/**'
+      - 'scripts/systemd/**'
       - 'games/soviet_now'
       - 'requirements-test.txt'
       - '.github/workflows/vm-operations*.yml'
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
       - '.github/workflows/vm-deploy-blocker-alert.yml'
+      - '.github/workflows/vm-corner-monitor.yml'
       - '.github/workflows/gameswitch-adopt.yml'
+      - '.github/workflows/pr-merge-audio-report.yml'
 
 
 permissions:
@@ -90,6 +96,8 @@ jobs:
       - run: >-
           python3 -m py_compile
           ops/vm_actions/authorize.py
+          ops/vm_actions/authorize_pr_merge_audio.py
+          ops/vm_actions/pr_merge_audio_report.py
           ops/vm_actions/authorize_gameswitch_recover.py
           ops/vm_actions/authorize_gameswitch_adopt.py
           ops/vm_actions/authorize_nethack_corner.py
@@ -106,6 +114,7 @@ jobs:
           ops/vm_actions/release_soren_loop_pause.py
           ops/vm_actions/recover_bgm_mute.py
           ops/vm_actions/monitor_silence.py
+          ops/vm_actions/corner_health.py
           ops/vm_actions/realign_hanjuku_presentation.py
           ops/vm_actions/runtime_registry.py
           ops/vm_actions/nethack_canary_production_smoke.py
@@ -130,6 +139,7 @@ jobs:
           ops/vm_actions/install_vm_gateway.sh
           ops/vm_actions/install_nethack_canary_smoke.sh
           ops/vm_actions/request_nethack_canary_smoke.sh
+          ops/vm_actions/report_pr_merge_audio.sh
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/gameswitch_recover.sh
@@ -142,6 +152,7 @@ jobs:
           ops/vm_actions/start_tsuitate_corner.sh
           ops/vm_actions/storage_reclaim.sh
           ops/vm_actions/storage_reclaim_staged.sh
+          ops/vm_actions/browser_profile_reclaim_now.sh
           ops/vm_actions/opencode_db_retention_now.sh
           ops/vm_actions/ensure_opencode_retention_timer.sh
           ops/vm_actions/ensure_twitch_oauth_refresh_timer.sh

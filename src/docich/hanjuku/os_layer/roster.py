@@ -6,12 +6,19 @@ import os
 import re
 
 from ..identity import run_identity
+from ..state.regions import world as _world
 
 MAX_GENERALS = 32
 # hanjuku_house._names_at reads the name column at y=39..151 in steps of 16,
 # so the roster shows this many names at once. A page shorter than this ends
 # on screen and cannot hide a further entry.
 VISIBLE_NAME_ROWS = 8
+# The frozen observation card keeps showing the last complete roster
+# (labelled as the previous month) until this month's complete walk.
+LAST_COMPLETE_KEY = 'roster_last_complete'
+# Confirmed 加入 announcements since that complete list, so the status
+# card can show 名簿人数＋加入人数 instead of dropping to 不明.
+PENDING_JOINS_KEY = 'roster_pending_joins'
 # SFC ID0..127 canonical char.csv: candidate wage is not known before payment.
 MAX_RECRUIT_WAGE = 15
 FRESH_TICKS = 400
@@ -164,6 +171,36 @@ def fixed_wage(name):
     return GENERAL_WAGES.get('しゅじんこう' if name == 'どうし' else name)
 
 
+def known_generals(names):
+    """The tokens that are actual generals, in order.
+
+    A castle-status panel prints 城名/じょう/しゅうにゅう/レベル/しょうぐん/めい beside
+    the name column, so a wide read can return them as if they were people:
+    g1163 2026-11-11 22:2x stored ハヤク's garrison as
+    ['ハヤク', 'じょう', 'しゅうにゅう', 'G', 'レベル', 'しょうぐん', 'めい',
+    'ラズベリー', 'セルリアク', 'セミヨン']. The plan then believed ten generals
+    stood in a castle holding three and spent sortie cycles finding nobody.
+    """
+    return [n for n in names if isinstance(n, str) and fixed_wage(n) is not None]
+
+
+def country_count(mem, kind):
+    """A national-status count from this run/chapter/month, else unknown."""
+    key, maximum = {'generals': ('country_general_count', MAX_GENERALS),
+                    'soldiers': ('country_soldier_count', 99999)}[kind]
+    row = mem.get(key)
+    now = mem.get('tick')
+    if (not isinstance(row, dict)
+            or row.get('identity') != run_identity(mem.get('_run_identity'))
+            or not isinstance(row.get('scope'), list) or len(row['scope']) != 2
+            or not _same_scope(*row['scope'], mem)
+            or type(row.get('tick')) is not int or type(now) is not int
+            or not 0 <= row['tick'] <= now
+            or type(row.get('count')) is not int or not 0 <= row['count'] <= maximum):
+        return None
+    return row['count']
+
+
 def roles(raw):
     if not isinstance(raw, dict) or set(raw) != {'per_castle', 'attack'}:
         raise ValueError('invalid recruitment roles')
@@ -173,11 +210,138 @@ def roles(raw):
     return dict(raw)
 
 
+def _remember_complete(mem, receipt):
+    """Keep a bounded copy of the last complete roster for the status card.
+
+    The card must not fall back to 不明 when a partial page replaces
+    ``recruit_roster`` or the month rolls over. Membership-changing events
+    still call ``invalidate()``, which drops this copy with the receipts.
+    """
+    identity = run_identity(mem.get('_run_identity'))
+    if not isinstance(receipt, dict) or receipt.get('complete') is not True:
+        return
+    chapter, month = receipt.get('chapter'), receipt.get('month')
+    names, tick = receipt.get('names'), receipt.get('tick')
+    if (identity is None or type(chapter) is not int or chapter <= 0
+            or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or not isinstance(names, list) or not 1 <= len(names) <= MAX_GENERALS
+            or any(not isinstance(name, str) or not 1 <= len(name) <= 32 for name in names)
+            or len(set(names)) != len(names) or type(tick) is not int):
+        return
+    mem[LAST_COMPLETE_KEY] = {'schema': 1, 'identity': dict(identity),
+                             'chapter': chapter, 'month': month, 'tick': tick,
+                             'complete': True, 'names': list(names)}
+    mem.pop(PENDING_JOINS_KEY, None)  # this list already contains the joins
+
+
+def _persistent_status(mem):
+    """Verified per-general readings survive month boundaries, never game changes."""
+    row = mem.get('general_statuses')
+    if (not isinstance(row, dict) or row.get('complete') is not True
+            or row.get('identity') != run_identity(mem.get('_run_identity'))
+            or not isinstance(row.get('scope'), list) or len(row['scope']) != 2
+            or row['scope'][0] != mem.get('chapter')
+            or not isinstance(row.get('statuses'), dict)
+            or not isinstance(row.get('dirty', {}), dict)):
+        return None
+    return row
+
+
+def _dirty_persistent(mem, names=None, fields=('hp', 'location', 'egg')):
+    cache = _persistent_status(mem)
+    if cache is None:
+        return
+    chosen = list(cache['statuses']) if names is None else names
+    for name in chosen:
+        if name in cache['statuses']:
+            stale = set(cache.setdefault('dirty', {}).get(name) or ())
+            cache['dirty'][name] = sorted(stale | set(fields))
+
+
+def record_join(mem, name):
+    """A confirmed 加入告知 adds one general until the next complete list.
+
+    Payment or a return never proves an extra general (that is why a recruit
+    invalidates the receipts), but the game announces the joined name
+    explicitly. The status card adds these names to the last complete list
+    and keeps showing a count. ``invalidate()`` keeps both, a new complete
+    list clears them, and a confirmed departure removes the name from the
+    list it belongs to (see ``record_departure``).
+    """
+    record = mem.get(LAST_COMPLETE_KEY)
+    if isinstance(name, str) and 1 <= len(name) <= 32:
+        cache = _persistent_status(mem)
+        if cache is not None and name not in cache['statuses']:
+            joins = cache.setdefault('pending_joins', [])
+            if name not in joins:
+                joins.append(name)
+    if (not isinstance(name, str) or not 1 <= len(name) <= 32
+            or not isinstance(record, dict) or not isinstance(record.get('names'), list)):
+        return False
+    if name in record['names']:
+        return False
+    pending = [n for n in mem.get(PENDING_JOINS_KEY) or []
+               if isinstance(n, str) and 1 <= len(n) <= 32]
+    if name in pending:
+        return False
+    mem[PENDING_JOINS_KEY] = (pending + [name])[:MAX_GENERALS]
+    return True
+
+
+def record_departure(mem, name):
+    """A confirmed departure subtracts one general from the kept count.
+
+    Only a full list that no longer holds a defeated general confirms this
+    (``forget_defeated``). Merely losing a battle is not proof of death, so
+    ``defeated`` keeps the count.
+    """
+    if not isinstance(name, str):
+        return False
+    record = mem.get(LAST_COMPLETE_KEY)
+    if isinstance(record, dict) and isinstance(record.get('names'), list) and name in record['names']:
+        record['names'] = [n for n in record['names'] if n != name]
+        return True
+    pending = [n for n in mem.get(PENDING_JOINS_KEY) or [] if isinstance(n, str)]
+    if name in pending:
+        mem[PENDING_JOINS_KEY] = [n for n in pending if n != name]
+        return True
+    return False
+
+
+def _purge_verified_departure(mem, name):
+    """A confirmed absent roster member must not remain actionable anywhere."""
+    cache = _persistent_status(mem)
+    if cache is not None:
+        cache['statuses'].pop(name, None)
+        cache.setdefault('dirty', {}).pop(name, None)
+        for key in ('pending_joins', 'suspected_departures'):
+            if isinstance(cache.get(key), list):
+                cache[key] = [g for g in cache[key] if g != name]
+    for residents in (_world(mem).get('garrison') or {}).values():
+        if isinstance(residents, list) and name in residents:
+            residents.remove(name)
+    for key in ('house_eggs', 'egg_types', 'egg_uses', 'egg_memory'):
+        if isinstance(mem.get(key), dict):
+            mem[key].pop(name, None)
+    for key in ('egg_recheck', PENDING_JOINS_KEY):
+        if isinstance(mem.get(key), list):
+            mem[key] = [g for g in mem[key] if g != name]
+    # general_location_unknown lives in the world region (#3193 W3); a flat
+    # mem access would always miss the migrated copy (#3923).
+    unknown_list = _world(mem).get('general_location_unknown')
+    if isinstance(unknown_list, list):
+        _world(mem)['general_location_unknown'] = [g for g in unknown_list if g != name]
+
+
 def invalidate(mem):
+    mem.pop('roster_carry_source', None)  # only observed_member() re-stashes it
     mem.pop('recruit_roster', None)
     mem.pop('roster_survey_scope', None)
     mem.pop('roster_survey', None)
     mem.pop('roster_status_walk', None)
+    # Keep LAST_COMPLETE_KEY/PENDING_JOINS_KEY: the status card shows the
+    # last complete list plus confirmed joins until a new complete list.
     mem.pop('house_status_recheck', None)
     mem['recruit_roster_recheck'] = True
     if mem.get('house'):
@@ -192,11 +356,16 @@ def defeated(mem, name):
     minutes) in the same month. Keep the survey and let the partial walk look
     for the name. Without a complete survey there is nothing worth keeping.
     """
+    dirty_status(mem, [name])
+    cache = _persistent_status(mem)
+    if cache is not None and name in cache['statuses']:
+        lost = cache.setdefault('suspected_departures', [])
+        if name not in lost:
+            lost.append(name)
     survey = completed_survey(mem)
     if survey is None or name not in survey['statuses']:
         invalidate(mem)
         return
-    dirty_status(mem, [name])
     survey['defeated'] = sorted({*(survey.get('defeated') or ()), name})
 
 
@@ -216,6 +385,12 @@ def forget_defeated(mem, name):
     for key in ('dirty', 'dirty_revisions', 'read_revisions'):
         survey.get(key, {}).pop(name, None)
     survey['defeated'].remove(name)
+    record_departure(mem, name)  # subtract; a confirmed departure is not 不明
+    _purge_verified_departure(mem, name)
+    unknown = _world(mem).get('general_location_unknown')
+    if isinstance(unknown, list) and name in unknown:
+        unknown.remove(name)
+    _remember_complete(mem, survey['receipt'])  # the fresh list no longer holds them
     mem['house_status_recheck'] = bool(survey.get('dirty'))
     return True
 
@@ -250,12 +425,24 @@ def observed_member(mem, names):
     if (not names or len(names) > MAX_GENERALS or len(set(names)) != len(names)
             or any(not isinstance(n, str) or not 1 <= len(n) <= 32 for n in names)):
         return
+    # Count newly observed members independently of payroll/status reuse.
+    # After a month change the retained complete list can still drive the
+    # status card even when no current survey or retained bill exists.
+    for name in names:
+        record_join(mem, name)
     survey = completed_survey(mem)
     held = _payroll_hold_wages(mem)
     if survey is None and held is None:
         return
     if survey is not None and set(names) <= set(survey['receipt']['names']):
         return
+    if survey is None and held is not None and set(names) <= set(held):
+        # Issue #3194: these names are already on the retained bill. Re-
+        # invalidating on every page made every later names-only count in the
+        # month incomplete (g1097 18:35: roster_complete false), so the month
+        # could never be carried and the full status walk ran again.
+        return
+    source = deepcopy(survey) if survey is not None and month_carry_enabled() else None
     wages = dict(held or {})
     if survey is not None:
         receipt = survey['receipt']
@@ -277,6 +464,11 @@ def observed_member(mem, names):
         'scope': [mem.get('chapter'), mem.get('month')],
         'wages': wages, 'saturated': saturated}
     invalidate(mem)
+    if source is not None:
+        # A join adds a general; it does not change what was read about the
+        # others. The rows wait here for this month's next complete names-only
+        # count (carry_forward) instead of costing a second full status walk.
+        mem['roster_carry_source'] = source
 
 
 def surveyed(mem):
@@ -362,13 +554,11 @@ def _status_survey(mem, key, *, complete):
     return survey
 
 
-# Issue #3194 (06/10): month-boundary carry-over of unchanged status rows.
-# On by default (owner 2026-11-02: apply on merge). DOCICH_HANJUKU_MONTH_CARRY=0
-# is the kill switch and is read when the brain starts. A row is carried at
-# most MONTH_CARRY_MAX months in a row, then the general is opened again (the
-# periodic cross-check).
+# Issue #3194: unchanged readings may be carried indefinitely. Month changes
+# alone are not evidence that a general's HP, location or egg has changed.
+# A detected event marks the affected fields dirty; run/chapter identity still
+# guards against reusing readings from another playthrough.
 MONTH_CARRY_ENV = 'DOCICH_HANJUKU_MONTH_CARRY'
-MONTH_CARRY_MAX = 2
 
 
 def month_carry_enabled():
@@ -384,15 +574,24 @@ def _previous_month(month):
 
 
 def _carry_eligible(row, dirty_fields):
-    """Only a healthy, unbroken castle resident with no event since the read."""
+    """Any verified, unchanged resident or carry waiter is reusable."""
     if not isinstance(row, dict) or dirty_fields:
         return False
     hp, maximum = row.get('hp'), row.get('max_hp')
-    depth = row.get('carry_depth', 0)
-    return (row.get('location') == 'castle' and row.get('location_observed') is True
-            and row.get('broken') is False
-            and type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum
-            and type(depth) is int and 0 <= depth < MONTH_CARRY_MAX)
+    if row.get('location') == 'castle':
+        return (row.get('location_observed') is True
+                and type(row.get('broken')) is bool
+                and type(hp) is int and type(maximum) is int
+                and maximum > 0 and 0 < hp <= maximum)
+    # A chapter carry-over waiter is a known queue state, not an unread field
+    # location.  The hero-castle manifest refreshes this row each month, so a
+    # clean waiting row can cross the month boundary without another status A.
+    return (row.get('location') in ('field', 'carry')
+            and row.get('carry_waiting') is True
+            and row.get('location_observed') is True
+            and type(row.get('broken')) is bool
+            and type(hp) is int and type(maximum) is int
+            and maximum > 0 and 0 < hp <= maximum)
 
 
 def carry_forward(mem):
@@ -400,8 +599,9 @@ def carry_forward(mem):
 
     The roster names come from this month's complete names-only count, so
     membership is always re-read. A previous-month row is reused only if the
-    general was a healthy, unbroken castle resident whose last read was
-    observed, and no battle/sortie/recall/egg event marked it dirty since.
+    general was a verified castle resident (even wounded or with a broken egg)
+    or a known chapter carry-over waiter, and no battle/sortie/recall/egg event
+    marked it dirty since.
     Every other general gets a placeholder row that is dirty in all fields, so
     the ordinary partial walk opens exactly those. Returns ``None`` when
     nothing was done, else ``{'carried': [...], 'reopen': [...]}``.
@@ -412,10 +612,17 @@ def carry_forward(mem):
     chapter, month = mem.get('chapter'), mem.get('month')
     previous = _previous_month(month)
     prev = mem.get('roster_survey')
+    source = mem.get('roster_carry_source')
+    if isinstance(source, dict) and source.get('scope') not in ([chapter, previous], [chapter, month]):
+        mem.pop('roster_carry_source', None)  # an older month's rows are never reused
+        source = None
+    if (not isinstance(prev, dict) or prev.get('scope') != [chapter, previous]) and source is not None:
+        prev = source  # a join invalidated the survey after it was read/carried
+    same_month = prev is source and isinstance(prev, dict) and prev.get('scope') == [chapter, month]
     receipt = fresh(mem, include_completed=False)
     if (identity is None or previous is None or not isinstance(prev, dict)
             or prev.get('schema') != 1 or prev.get('identity') != identity
-            or prev.get('scope') != [chapter, previous]
+            or (prev.get('scope') != [chapter, previous] and not same_month)
             or not isinstance(prev.get('statuses'), dict) or not isinstance(prev.get('dirty'), dict)
             or receipt is None or receipt.get('complete') is not True
             or not isinstance(receipt.get('wages'), dict)):
@@ -427,8 +634,9 @@ def carry_forward(mem):
         row = prev['statuses'].get(name)
         if _carry_eligible(row, prev['dirty'].get(name)):
             new = deepcopy(row)
-            new.update(month=month, observed_chapter=chapter, observed_tick=rtick,
-                       carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
+            new.update(month=month, observed_chapter=chapter, observed_tick=rtick)
+            if not same_month:  # a same-month row was read (or carried) this month already
+                new.update(carried_from=previous, carry_depth=row.get('carry_depth', 0) + 1)
             statuses[name] = carried_rows[name] = new
             carried.append(name)
         else:
@@ -454,13 +662,21 @@ def carry_forward(mem):
     for name, row in carried_rows.items():
         eggs[name] = deepcopy(row)
     mem['house_status_recheck'] = bool(dirty)
+    mem.pop('roster_carry_source', None)
     return {'carried': carried, 'reopen': reopen}
 
 
 def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
     """A change invalidates only the participant's affected status fields."""
+    _dirty_persistent(mem, names, fields)
     survey = reusable_survey(mem)
     if survey is None:
+        source = mem.get('roster_carry_source')  # waiting for the next names-only count
+        if isinstance(source, dict) and isinstance(source.get('statuses'), dict):
+            for name in (list(source['statuses']) if names is None else names):
+                if name in source['statuses']:
+                    dirty = set(source.setdefault('dirty', {}).get(name) or [])
+                    source['dirty'][name] = sorted(dirty | set(fields))
         return
     selected = survey['receipt']['names'] if names is None else names
     for name in selected:
@@ -472,7 +688,46 @@ def dirty_status(mem, names=None, fields=('hp', 'location', 'egg')):
     mem['house_status_recheck'] = bool(survey.get('dirty'))
 
 
+def _update_persistent_observation(mem, info):
+    """Merge direct HP/egg evidence without claiming an unobserved castle."""
+    cache = _persistent_status(mem)
+    name = info.get('general')
+    if cache is None or name not in cache['statuses']:
+        return
+    row = cache['statuses'][name]
+    stale = set(cache.setdefault('dirty', {}).get(name) or ())
+    if type(info.get('broken')) is bool:
+        row.update(broken=info['broken'], egg=info.get('egg'), uses=info.get('uses'))
+        stale.discard('egg')
+    hp, maximum = info.get('hp'), info.get('max_hp')
+    if (type(hp) is int and type(maximum) is int
+            and maximum > 0 and 0 <= hp <= maximum):
+        row.update(hp=hp, max_hp=maximum)
+        stale.discard('hp')
+    # The generic status reader labels camp/march as 'field', so it cannot
+    # resolve either kind of movement. Only a separately named castle proof
+    # can clear a stale location; do not reuse an old castle after departure.
+    if (info.get('location') == 'castle' and info.get('location_observed') is True
+            and info.get('castle_observed') is True and info.get('castle')):
+        row.update(location='castle', castle=info['castle'])
+        stale.discard('location')
+    elif info.get('location') == 'field' and info.get('location_observed') is True:
+        # The person is visibly outside a castle, but the generic reader
+        # cannot differentiate camp from march. Keep the location unresolved.
+        row.update(location='unknown')
+        row.pop('castle', None)
+        stale.add('location')
+        for residents in (_world(mem).get('garrison') or {}).values():
+            if isinstance(residents, list) and name in residents:
+                residents.remove(name)
+    if stale:
+        cache['dirty'][name] = sorted(stale)
+    else:
+        cache['dirty'].pop(name, None)
+
+
 def status_observed(mem, info):
+    _update_persistent_observation(mem, info)
     survey = reusable_survey(mem)
     name = info.get('general')
     if survey is None or name not in survey['statuses']:
@@ -569,6 +824,7 @@ def complete(mem, state):
             and set(receipt['names']) == set(state.get('seen') or ()))
     if full:
         receipt['complete'] = True
+        _remember_complete(mem, receipt)
         # Prior-stage employed names may still be waiting for arrival. The
         # active list cannot prove they stopped receiving wages. Resolve only
         # by observing every retained name in this full global scan.

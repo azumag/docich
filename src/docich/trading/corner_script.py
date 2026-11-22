@@ -153,6 +153,41 @@ def _latest_improvement(logs_dir) -> dict:
     return record
 
 
+MAX_SLOT_FACTS = 3
+
+
+def _slot_facts(raw: object) -> dict:
+    """Bounded slot facts; empty when no dedicated slot exists."""
+    if not isinstance(raw, Mapping) or not raw.get("slot_count"):
+        return {}
+    strategies = []
+    for item in raw.get("slots") or []:
+        if not isinstance(item, Mapping) or not item.get("experiment_id"):
+            continue
+        strategies.append({
+            "symbol": str(item.get("symbol", "")),
+            "name": str(item.get("name") or ""),
+            # The improvement AI's note written when the candidate was made.
+            # Its figures describe the past, not this slot's results.
+            "candidate_note": str(item.get("thesis") or ""),
+            "closed_sells": item.get("closed_sells"),
+            "age_days": item.get("age_days"),
+            "entries_allowed": item.get("entries_allowed") is True,
+        })
+        if len(strategies) >= MAX_SLOT_FACTS:
+            break
+    return {
+        "slot_summary": {
+            "slot_count": raw.get("slot_count"),
+            "entries_allowed_count": raw.get("entries_allowed_count"),
+            "common_owned_symbol_count": raw.get("common_owned_symbol_count"),
+            "rotation_closed_sells": raw.get("rotation_closed_sells"),
+            "rotation_days": raw.get("rotation_days"),
+        },
+        "slot_strategies": strategies,
+    }
+
+
 def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
                 timeframes: Mapping[str, object] | None = None) -> dict:
     """Compact, allowlisted facts for narration and policy improvement.
@@ -259,6 +294,10 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         "focus": focus,
         "improvement": _latest_improvement(Path(target).parent / "logs"),
         "policy": policy_to_payload(effective),
+        # Per-symbol slots (Issue #3623 §2.9): symbols listed here trade on
+        # their own experiment, so the narration must not present ``policy``
+        # (the common fallback parameters) as their strategy.
+        **_slot_facts(snap.get("slots")),
         # Realized round trips (buy -> sell) with entry/exit context, for the
         # review segment and the strategy-improvement pass.
         "round_trips": build_round_trips(target / "paper.sqlite3", limit=6),
@@ -295,6 +334,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "ニュースが何を意味しそうか、次に何を見るべきかまで自分の視点で噛み砕いてください。"
         "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
+        f"{_slot_guidance(facts)}"
         "【ニュースの扱い】\n"
         f"{research_note}"
         "- **見出しの文言をそのまま読み上げず、媒体名も口に出さないでください。** 「『見出し』（媒体）」という紹介は禁止です。"
@@ -363,7 +403,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- corner: 今日の相場の見取り図と、今日いちばん見るべき点を語るオープニング。\n"
         "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
         "- chart: facts.timeframes の4つの時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
-        "- strategy: 現在の戦略パラメータの狙いを、損益・見送り傾向・ニュースから観測すべき点と結び付ける。\n"
+        "- strategy: facts.slot_strategies があれば【銘柄別の戦略】に従い、銘柄ごとの戦略の狙いを損益・見送り傾向・ニュースから観測すべき点と結び付ける。"
+        "無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
         "- result: 累積損益・本日実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
         "- fills: 直近約定を1件ずつ、signalの観測値と閾値で『なぜ発注したか』を数値つきで説明する。\n"
         "- review: facts.round_trips の往復を1件ずつ、判断の良し悪しを根拠つきで評価し、次に活かす点を述べる。\n"
@@ -455,6 +496,40 @@ def _policy_text(policy: Mapping[str, object]) -> str:
         f"{_fmt_num(policy.get('max_notional_fraction')) or policy.get('max_notional_fraction')}までです。"
         "これらの数値は入口を決める境界であって、利益を保証する数字ではありません。"
     )
+
+
+def _slot_guidance(facts: Mapping[str, object]) -> str:
+    """Prompt rules for per-symbol slots; empty when no slot strategy is in facts."""
+    if not facts.get("slot_strategies"):
+        return ""
+    return (
+        "【銘柄別の戦略】facts.slot_strategies があるので、売買は銘柄ごとの専用の戦略で行っています。\n"
+        "- 戦略を語るときは、その銘柄の name と candidate_note の狙いを噛み砕いて述べる。"
+        "facts.policy は専用の戦略を持たない銘柄の既定値なので、その銘柄の戦略として語らない。\n"
+        "- candidate_note の中の数字（決済数・勝ち数・損益・bpsなど）は、候補を作ったときの改善AIのメモで、今の成績ではない。"
+        "今の成績として読まない。決済件数は closed_sells、損益はほかの facts から述べる。\n"
+        "- 各戦略は決済 slot_summary.rotation_closed_sells 件か rotation_days 日で評価を区切り、次の案に交代する。"
+        "件数が少ないうちは勝ち負けだけで良し悪しを決めない。\n"
+    )
+
+
+def _slot_strategy_text(facts: Mapping[str, object]) -> str:
+    summary = facts.get("slot_summary") if isinstance(facts.get("slot_summary"), Mapping) else {}
+    strategies = [item for item in facts.get("slot_strategies") or [] if isinstance(item, Mapping)]
+    need = summary.get("rotation_closed_sells") or 10
+    days = summary.get("rotation_days") or 7
+    text = (
+        f"今は{summary.get('slot_count')}銘柄が、それぞれ専用の戦略で売買しています。"
+        f"どの戦略も決済{need}件か{days}日で評価を区切り、次の案に交代します。"
+    )
+    for item in strategies[:2]:
+        symbol = str(item.get("symbol", "")).replace("/JPY", "")
+        sells = item.get("closed_sells")
+        progress = f"ここまで決済{sells}件です。" if type(sells) is int else "決済の集計はまだです。"
+        # The thesis is the improvement AI's working note (bps, feature names);
+        # read aloud verbatim it is jargon, so the fixed text names the strategy only.
+        text += f"{symbol}の戦略は「{item.get('name') or '名前なし'}」で、" + progress
+    return text + "件数が少ないうちは、勝ち負けだけで戦略の良し悪しを決めません。"
 
 
 def _finite_float(value) -> float | None:
@@ -866,7 +941,8 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
         "corner": corner,
         "news": _news_text(facts),
         "chart": _chart_text(facts),
-        "strategy": _policy_text(dict(facts.get("policy") or {})),
+        "strategy": (_slot_strategy_text(facts) if facts.get("slot_strategies")
+                     else _policy_text(dict(facts.get("policy") or {}))),
         "result": result,
         "fills": _fills_text(facts),
         "review": _review_text(facts),
@@ -1048,8 +1124,11 @@ def build_next_prompt(
         '"rationale": "検証方法と反証条件", "evidence": "根拠", "confidence": "low|medium|high"}]'
         if news_hints else ""
     )
+    label = SEGMENT_LABELS.get(target_key, "")
+    if target_key == "strategy" and facts.get("slot_strategies"):
+        label = "銘柄別の戦略"
     target_instruction = (
-        f"【今回の固定枠】{target_key}（{SEGMENT_LABELS[target_key]}）。"
+        f"【今回の固定枠】{target_key}（{label}）。"
         "この枠の内容だけを書き、別の枠の説明や総括を混ぜないでください。"
         "新しい切り口が少なくてもこの枠を省略せず、factsで裏付けられる範囲だけを述べてください。\n"
         if target_key is not None else
@@ -1074,6 +1153,7 @@ def build_next_prompt(
         f"{facts_json}\n\n"
         f"【話し済みの切り口】{covered_text}\n"
         f"{target_instruction}"
+        f"{_slot_guidance(facts)}"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"

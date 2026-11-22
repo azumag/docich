@@ -146,6 +146,35 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
             brain.discard_action_plan()
 
 
+def _maybe_periodic_savestate(game, adapter, clock) -> None:
+    """Save the emulator state every ``periodic_savestate_s`` (opt-in).
+
+    A run that never saves loses everything since launch when the corner
+    restarts: g1163 recovered only the state captured at 23:14 after nine
+    hours of play (2026-11-10). Games without the lifecycle key are untouched.
+    """
+    lifecycle = getattr(game, 'lifecycle', None)
+    interval = getattr(lifecycle, 'periodic_savestate_s', None)
+    if type(interval) is not int or interval <= 0:
+        return
+    now = time.monotonic()
+    if clock['last'] and now - clock['last'] < interval:
+        return
+    clock['last'] = now
+    port = getattr(adapter, '_network_port', None)
+    if port is None:
+        return
+    try:
+        from . import netcmd  # noqa: F401  (kept local for the adapter path)
+    except Exception:
+        pass
+    try:
+        from ..netcmd import send_ra_cmd
+        send_ra_cmd('SAVE_STATE', port=port(), wait_reply_s=.2)
+    except Exception as exc:                      # never break the play loop
+        print(f"[agent] 警告: periodical savestate に失敗しました: {exc}", flush=True)
+
+
 def run_agent(
     g: GlobalConfig,
     name: str,
@@ -169,7 +198,28 @@ def run_agent(
     brain = brains.build_brain(g, game)
     # #2832 Stage 1: opt-in via DOCICH_AGENT_TELEMETRY (default off, no-op).
     tel = telemetry_mod.AgentTelemetry.from_env(g.state_dir, name, game.agent.brain)
+    # Adapter/brain code below the loop (ffmpeg capture, brain subprocess) is
+    # counted through the process-local binding added in #3287.
+    telemetry_mod.set_active(tel)
+    # #4228: the run is the primary prediction owner. A fenced Hanjuku agent
+    # starts one best-effort ticker whose identity is this exact runtime, so a
+    # corner observe loop that never starts (or stops before its first tick)
+    # cannot leave the viewers without a wager. The common timer still adopts
+    # the canonical runtime as a fallback.
+    if (fence is not None and game.name == 'hanjuku-hero'
+            and isinstance(fence.lease_id, str) and fence.lease_id):
+        try:
+            from ..hanjuku_predictions import start_owner_ticker
+            start_owner_ticker(g, {
+                'game': fence.game,
+                'runtime_id': fence.runtime_id,
+                'generation': fence.generation,
+                'lease_id': fence.lease_id,
+            })
+        except Exception as exc:
+            print(f"[agent] 警告: Hanjuku 予想 ticker を開始できませんでした: {exc}", flush=True)
 
+    save_clock = {'last': 0.0}
     while True:
         t0 = time.monotonic()
         effective_interval = interval_ms
@@ -193,6 +243,7 @@ def run_agent(
             # observe/act/brain のいずれの例外もここで一括して握りつぶし、次のイテレーションへ進む。
             print(f"[agent] 警告: {game.name} のループでエラーが発生しました: {exc}", flush=True)
 
+        _maybe_periodic_savestate(game, adapter, save_clock)
         _flush_telemetry(tel)
         elapsed_s = time.monotonic() - t0
         remaining_s = max(effective_interval / 1000 - elapsed_s, 0)

@@ -74,11 +74,28 @@
 
 ストリームキー、OAuth token、APIキー、秘密鍵、push targetなどの機密情報は、`handoff.md` を含むこのリポジトリのどのファイル、ログ、Issueにも書かない。テストや進捗表示を理由に資格情報を探索・抽出しない。
 
-### 3.1 投稿前スキャンと合成値の使用（2026-10-23）
+### 3.1 投稿前スキャンと合成値の使用（2026-10-23、2026-11-05 フォールバック追補）
 
 レビューコメントの実測表へ実行環境の資格情報の実値を貼った事案（2026-10-23）を受け、以下を必須とする。
 
-- GitHub へのコメント投稿は、エージェント共通の投稿前スキャン `agent-guards/gh-comment`（ワークスペース直下、リポジトリ外）を経由する。ラッパーを経由しない直接投稿は禁止する。Issue / PR 本文も、投稿前に `agent-guards/secret_scan.py` で走査する。
+必須なのは**投稿前スキャンの実施**であり、投稿経路は実行環境の可否に応じて可変とする
+（docich#3337 の環境別整理と DSH 判断 2026-11-05 に基づく追補）。
+
+- GitHub への投稿（Issue / PR のコメントおよび本文）は、投稿前に `agent-guards/secret_scan.py`（ワークスペース直下、リポジトリ外）で走査し、clean を確認してから投稿する。**スキャン抜きの投稿は経路を問わず禁止する。**
+- 投稿経路は以下のフォールバック表に従う。上から順に、実行可能な最初の経路を使う。
+
+| 環境条件 | 第1経路 | フォールバック | 逸脱記録 |
+|---|---|---|---|
+| `agent-guards` 配置済み・bash と gh が実行可 | `agent-guards/gh-comment` 経由で投稿（正規） | — | 不要 |
+| `agent-guards` 配置済み・gh が実行不可（TLS 検証失敗等） | `secret_scan.py` で走査し clean を証跡化 → curl / GitHub Web UI 等で投稿 | clean 証跡つき代理投稿依頼 | 要 `[process-deviation]` |
+| bash 実行不可・`agent-guards` 未配置 | 実行可能な別環境で `secret_scan.py` を走査（リモートスキャン）→ MCP / 代理投稿 | スキャン結果を明記した代理投稿依頼 | 要 `[process-deviation]` |
+
+- フォールバック経路で投稿した場合は、本文またはスレッドへ逸脱記録を1行残す。形式:
+  `[process-deviation] 環境 / スキャン結果 / 投稿経路 / 理由`
+  （例: `[process-deviation] envA-mac-sandbox / secret_scan: clean / curl 投稿 / gh TLS 検証失敗`）
+- curl での投稿は最終手段とする。代理投稿（健全な環境の gh / MCP）が可能なら curl より優先する。
+- curl を使う場合、`gh auth token` 等で取得したトークンの値を echo・ログ・ファイル保存しない（コマンド置換で変数へ直接入れ、再利用しない）。
+- フォールバック利用中も、下記の合成値・要約の規律は変わらず適用する。
 - 実測・検証・レビューの入力例には合成値のみを使う。実物の資格情報・トークン・コマンド出力の実値を、表・フィクスチャ・ログへ貼らない。
 - 秘密情報を含みうるコマンド出力やログはそのまま貼らず、要約して書く。
 - スキャンは最後の網であり、上記の規律の代替ではない。
@@ -144,6 +161,8 @@ worker（radio/chat/improve_daemon）は起動時に `core/config.sh` の `VAR="
 
 - production VM 上の tracked file の直接編集。
 - ad-hoc な `git pull` / `reset` / `checkout` や手動コピーを正式 deployment として使う。
+- `/home/ubuntu/docich` の production checkout 上での `gh pr merge`、branch switch、開発・merge 作業。PR merge は checkout を変えない GitHub API/UI または別 worktree から行い、merge 後に必要なら承認手順で production checkout を `main` へ正規化する。
+- gateway の deploy / rebaseline / reconcile 実行中に、production checkout の HEAD を動かす操作（branch switch・`git checkout`・`git reset`・手動 merge/fetch）。deploy transaction は checkout HEAD を baseline 採用の判定材料に使うため、実行中に HEAD が動くと途中 HEAD が baseline として記録され rollback_incomplete になる（docich#3709）。checkout を正規化する必要がある場合は、進行中の deploy または recovery の完了を gateway status で確認してから行う。
 - PR / protected main を迂回する通常変更。
 - unknown drift の無条件上書き。drift は fail-closed とし、原因診断から修復する。
 - secret・token・Authorization header・prompt 本文・生成本文・環境変数の Actions 出力。
@@ -189,6 +208,7 @@ worker / queue / model / provider / fallback / runtime component を変更した
 
 - テストは PR ごとに CI が実行する。ローカルでは変更に関係するテストファイルだけを実行する（例: `python3 -m pytest -q tests/test_hanjuku_chart_bot.py`）。
 - 半熟だけを変更する PR は、CI がフルスイートの代わりに半熟スイート（`tests/test_hanjuku*.py` と、`hanjuku` に言及する他のテストファイル）を実行する。半熟以外のコードが直接 import する半熟モジュールを変更した場合と、判定できない場合はフルスイートになる。判定は `.github/scripts/ci_test_scope.py`。フルスイートは main で毎晩も実行する。夜間の失敗は半熟 PR が他の領域を壊した可能性があるので、優先して調べる。
+- CI のテストジョブ（`full-suite` / `hanjuku-suite`）は、収集されたテストをファイル単位で 2 つのシャードに分けて別 runner で並列に実行する（`.github/scripts/ci_shard.py`、環境変数 `CI_SHARD=1/2`）。シャードは収集結果から機械的に切るので、テストファイルの追加に CI の編集は要らない。`ci-required` はマトリクス全体の結果を見る。ローカルの実行は `CI_SHARD` を設定しない限り変わらない。
 - main へのマージには `ci-required` チェックの成功が必要である（2026-11-02 オーナー決定）。赤または実行中の PR を `--admin` で通さない。通常のマージに `--admin` は使わない。例外は本番障害の復旧に必要な場合だけで、理由を PR に書く。main が赤のときは他の作業より先に main を直す。
 - ローカルで全体を流すのは CI では確認できない理由があるときに限り、1 つの変更につき 1 回までにする。失敗したら、失敗したテストのファイルだけを再実行する。
 - macOS で CI 外の実行には、`conftest.py` が自動で次を適用する: 全プロセスの優先度を下げる（`nice` 10 とディスク I/O の utility 段階。利用者のアプリが CPU とディスクを優先して使える）、xdist の並列数を `DOCICH_TEST_MAX_WORKERS`（既定 4）までに抑える（`-n 8` を指定しても 4 になる）、フルスイートはマシン全体で同時に 1 本までにし、後から始めた方は先の実行が終わるまで待つ（最大 `DOCICH_TEST_LOCK_WAIT` 秒、既定 1800）。
@@ -201,4 +221,4 @@ worker / queue / model / provider / fallback / runtime component を変更した
 - `/tmp` 直下、または `$root/tmp` 直下を worktree の親にしない。
 - 検証終了時は `git worktree remove` で必ず片付ける（不要になったら `git worktree prune`）。保存先の分離だけでは残留は防げず、放置が根因だった。
 - 残留の観測: `sys_tmp_reclaim_candidates` は `/tmp` 専用。`$root/tmp/verify/` 配下の残留は `storage_breakdown` の `soren_tmp`（合計 bytes のみ・coarse）でしか見えないため、手動確認も併用する。規約違反で `/tmp` 直下に置かれた worktree は `sys_tmp_top_level`（git_worktree 分類）に現れ、24h 経過後に `sys_tmp_reclaim_candidates` が検知する。
-- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。削除対象の拡張は別判断とする。
+- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。`storage_reclaim.sh` の verify 専用 sweep（#4172）は、3日 gate・gate 期間内に更新されたファイルなし・プロセス参照なしをすべて満たす場合だけ APPLY で削除する。linked worktree は `git worktree remove` と `git worktree prune` で処理し、解消できなければ KEEP。symlink は指し先を追わず保持する。判断できない場合は KEEP/SKIP（fail-closed）。検証終了時の `git worktree remove` を必ず行い、残留物は参照状況を確認して手動回収する。

@@ -230,8 +230,13 @@ class NethackTilesGuiSmokeTests(unittest.TestCase):
                 # The supervisor and browser must be ready while canonical
                 # state still says idle; otherwise startup would deadlock on
                 # the coordinator's later ready commit.
+                # This deadline must outlive the supervisor's own worst-case
+                # startup path (frame service + BROWSER_WINDOW_WAIT_S + stop +
+                # TTY fallback + PRESENTATION_WINDOW_WAIT_S). A 30s budget
+                # expired just before an otherwise-healthy fallback became
+                # observable on loaded CI runners (docich#3240).
                 readiness_with_diagnostics(
-                    adapter, time.monotonic() + 30, None, runtime_dir, display_name,
+                    adapter, time.monotonic() + 90, None, runtime_dir, display_name,
                     lambda display: _visible_window_summary(display, counts_only=True),
                 )
                 manifest_path = runtime_dir / "nethack_tiles.json"

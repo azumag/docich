@@ -19,6 +19,7 @@ def test_cached_quantity_above_per_card_target_is_declined(monkeypatch):
     monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
     mem = memory(complete=True)
     mem['shop']['egg'] = 'done'  # isolate card bounds from pending egg recovery
+    mem['card_stock'] = {'ノリウツール': 0}   # v1352: extras need a known kind
     mem['shop'].update(bargain_cards=['ノリウツール'],
                        items=[['ノリウツール', 4]], want=['ノリウツール', 4, 18])
     assert p.quantity_step(quote(999, count=4, cost=72), mem) == [p.pad('b')]
@@ -29,6 +30,7 @@ def test_cached_discount_quantity_cannot_exceed_remaining_monthly_copies(monkeyp
     monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
     mem = memory(complete=True)
     mem['shop']['egg'] = 'done'  # isolate card bounds from pending egg recovery
+    mem['card_stock'] = {'ノリウツール': 3, 'クースカン': 4, 'ゼンマイン': 0}
     bought = [['ノリウツール', 3, 1], ['クースカン', 4, 1]]
     mem['shop'].update(bargain_cards=['ノリウツール', 'クースカン', 'ゼンマイン'],
                        items=[['ゼンマイン', 2]], want=['ゼンマイン', 2, 1], bought=bought)
@@ -40,6 +42,7 @@ def test_cached_discount_quantity_cannot_exceed_remaining_monthly_copies(monkeyp
 def test_exact_per_card_cap_can_be_confirmed_after_recovery(monkeypatch):
     monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
     mem = memory(complete=True)
+    mem['card_stock'] = {'ノリウツール': 0}   # v1352: extras need a known kind
     mem['shop'].update(egg='done', bargain_cards=['ノリウツール'],
                        items=[['ノリウツール', 3]], want=['ノリウツール', 3, 18])
     assert b.merchant_card_spendable(mem, mem['shop'], quote(999).header,
@@ -51,6 +54,7 @@ def test_exact_per_card_cap_can_be_confirmed_after_recovery(monkeypatch):
 def test_pending_egg_recovery_still_blocks_optional_payment(monkeypatch):
     monkeypatch.setattr(b, '_charted_purchase_ahead', lambda mem, header: False)
     mem = memory(complete=True)
+    mem['card_stock'] = {'ノリウツール': 0}   # v1352: extras need a known kind
     mem['shop'].update(bargain_cards=['ノリウツール'],
                        items=[['ノリウツール', 1]], want=['ノリウツール', 1, 18])
     assert p.quantity_step(quote(999), mem) == [p.pad('b')]

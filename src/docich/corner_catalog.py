@@ -42,6 +42,15 @@ MAX_COOLDOWN_HOURS = 24 * 30
 # value a cadence rather than a hidden second cooldown.
 MIN_INTERVAL_MINUTES = 1.0
 MAX_INTERVAL_MINUTES = 24 * 60.0
+# A prediction in flight delays the announced corner; the rotation holds the
+# due slot instead of spending its normal wait and expiring it. The bound is a
+# safety valve for a stuck prediction, not a second cooldown.
+DEFAULT_PREDICTION_HOLD_WAIT_MINUTES = 90
+MAX_PREDICTION_HOLD_WAIT_MINUTES = 180
+# After a corner, a short window lets the prediction worker start before the
+# rotation promises a clock again. 0 disables the handoff.
+DEFAULT_PREDICTION_HANDOFF_SECONDS = 180
+MAX_PREDICTION_HANDOFF_SECONDS = 900
 
 
 def rotation_config(g) -> dict:
@@ -65,6 +74,20 @@ def rotation_config(g) -> dict:
             "corner_rotation.interval_minutes must be a number of minutes between "
             f"{MIN_INTERVAL_MINUTES:g} and {MAX_INTERVAL_MINUTES:g}"
         )
+    hold_wait = raw.get("prediction_hold_wait_minutes", DEFAULT_PREDICTION_HOLD_WAIT_MINUTES)
+    if (type(hold_wait) is not int or isinstance(hold_wait, bool)
+            or not 0 <= hold_wait <= MAX_PREDICTION_HOLD_WAIT_MINUTES):
+        raise CornerCatalogError(
+            "corner_rotation.prediction_hold_wait_minutes must be an integer 0-"
+            f"{MAX_PREDICTION_HOLD_WAIT_MINUTES}"
+        )
+    handoff = raw.get("prediction_handoff_seconds", DEFAULT_PREDICTION_HANDOFF_SECONDS)
+    if (type(handoff) is not int or isinstance(handoff, bool)
+            or not 0 <= handoff <= MAX_PREDICTION_HANDOFF_SECONDS):
+        raise CornerCatalogError(
+            "corner_rotation.prediction_handoff_seconds must be an integer 0-"
+            f"{MAX_PREDICTION_HANDOFF_SECONDS}"
+        )
     return raw
 
 
@@ -85,6 +108,20 @@ def configured_interval_seconds(g) -> float | None:
 
     interval = rotation_config(g).get("interval_minutes")
     return None if interval is None else float(interval) * 60.0
+
+
+def prediction_hold_wait_seconds(g) -> float:
+    """How long a due corner waits for an in-flight prediction before fallback."""
+
+    return float(rotation_config(g).get(
+        "prediction_hold_wait_minutes", DEFAULT_PREDICTION_HOLD_WAIT_MINUTES)) * 60.0
+
+
+def prediction_handoff_seconds(g) -> float:
+    """Short post-corner window where the next prediction starts first."""
+
+    return float(rotation_config(g).get(
+        "prediction_handoff_seconds", DEFAULT_PREDICTION_HANDOFF_SECONDS))
 
 
 def load_catalog(g) -> tuple[Corner, ...]:
@@ -246,6 +283,27 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("lawsim duration_minutes must be an integer 1-14")
+        elif item.adapter == "chart":
+            # チャート解説コーナー (issue #659): manual-only, non-live read-only
+            # view. Content is generated offline by the program adapter before
+            # the switch; fetch_on_start is rejected and speech stays opt-in
+            # for a future narration step.
+            if item.id != "chart-659" or item.game != "chart-659":
+                raise CornerCatalogError(
+                    "chart requires id=chart-659 and game=chart-659"
+                )
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "chart accepts no fetch_on_start; audio_enabled is a boolean opt-in"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "chart stays manual-only until the owner approves auto rotation"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("chart duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

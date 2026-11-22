@@ -21,6 +21,10 @@ def ready(monkeypatch):
     mem['egg_zero_owners'] = []
     mem['shop'].update(items=[], want=None, soldiers=50, soldiers_done=False,
                        reserve=0, recruit_reserve=0)
+    # v1352: spare cash is only spent on a kind the field ledger knows. These
+    # unit cases start from a panel that read every bargain target at 0 — the
+    # same starting point the old "unknown means 0" reading gave them.
+    mem['card_stock'] = {name: 0 for name in b.BARGAIN_TARGETS}
     return mem
 
 
@@ -42,6 +46,7 @@ def test_empty_plan_buys_a_visible_strong_card_with_spare_cash(ready):
 
 def test_monthly_plan_opens_merchant_without_a_chart_card_order():
     mem = {'chapter': 1, 'month': '99-5', 'tick': 1, 'egg_uses': {},
+           'card_stock': {name: 0 for name in b.BARGAIN_TARGETS},
            'soldiers_seen': 100, 'soldiers_seen_key': '99-5'}
     shop = p._plan(mem, {'year': 99, 'month': 5, 'gold': 500})
     assert shop['items'] and shop['merchant_done'] is False
@@ -66,6 +71,40 @@ def test_full_payroll_soldier_funds_and_extra_buffer_boundary(ready, gold, qty):
     assert (ready['shop'].get('want') or [None, 0])[1] == qty
 
 
+def test_pending_recruit_fee_is_reserved_but_an_affordable_extra_is_bought(ready):
+    # Live g1133 49-10: the Chinese merchant had 8734G, but the boolean
+    # recruit hold skipped every planned card before the 50G recruit step.
+    shop = ready['shop']
+    shop.update(items=[['ミックミー', 2]], bargain_cards=['ミックミー'],
+                bargain_planned=True, bargain_listing_planned=True,
+                recruit_priority=True, recruit='check', recruit_reserve=0,
+                soldiers=44, soldiers_done=False)
+    assert p.shop_step(listing(8734, rows=(('ミックミー', 40),)), ready) == [p.pad('a')]
+    assert shop['want'] == ['ミックミー', 2, 40]
+
+
+@pytest.mark.parametrize('gold,bought', [(155, 0), (156, 1)])
+def test_pending_recruit_fee_stays_out_of_the_extra_budget(ready, gold, bought):
+    shop = ready['shop']
+    shop.update(items=[['ノリウツール', 3]], bargain_cards=['ノリウツール'],
+                bargain_planned=True, bargain_listing_planned=True,
+                recruit_priority=True, recruit='check', recruit_reserve=0,
+                soldiers=50, soldiers_done=False)
+    actions = p.shop_step(listing(gold), ready)
+    assert actions == [p.pad('a' if bought else 'b')]
+    assert (shop.get('want') or [None, 0])[1] == bought
+
+
+def test_pending_recruit_still_defers_new_extra_planning(ready):
+    # The merchant may sell an already planned extra, but the recruit menu
+    # keeps priority over planning a new one (chart bot monthly ordering).
+    shop = ready['shop']
+    shop.update(items=[], recruit_priority=True, recruit='check', recruit_reserve=0)
+    b.plan_bargains(ready, shop, listing(999).header)
+    assert shop['items'] == []
+    assert not shop.get('bargain_listing_planned')
+
+
 def test_all_necessities_and_original_card_priority_survive(ready):
     shop = ready['shop']
     shop.update(items=[['イッテツーン', 2]], reserve=50,
@@ -86,11 +125,16 @@ def test_existing_same_card_is_not_duplicated_or_reordered(ready):
     assert 'ノリウツール' not in ready['shop']['bargain_cards']
 
 
-def test_sufficient_observed_stock_is_not_bought_again(ready):
+def test_stocked_cards_are_topped_up_with_surplus_cash(ready):
+    # Owner 2026-11-05: 在庫が目標に達していても余剰資金で買い足す。
+    # 月次の金額・枚数上限と在庫観測の非更新はそのまま。
     ready['card_stock'] = dict(b.BARGAIN_TARGETS)
     before = deepcopy(ready['card_stock'])
-    assert p.shop_step(listing(999), ready) == [p.pad('b')]
-    assert ready['shop']['items'] == [] and ready['card_stock'] == before
+    assert p.shop_step(listing(999), ready) == [p.pad('a')]
+    shop = ready['shop']
+    assert shop['items'] and all(name in b.BARGAIN_TARGETS for name, _ in shop['items'])
+    assert sum(b.KNOWN_PRICES[n] * q for n, q in shop['items']) <= b.BARGAIN_MONTHLY_GOLD
+    assert ready['card_stock'] == before
 
 
 def test_gold_and_copy_caps_also_apply_to_deeply_discounted_stock(ready):
@@ -115,7 +159,10 @@ def test_exact_quote_rechecks_cash_and_does_not_repeat_after_hotload(ready):
     assert p.quantity_step(quote(142, count=3, cost=54), ready) == [p.pad('b')]
     assert p.shop_step(listing(88), ready) == [p.pad('b')]
     assert ready['shop']['bought'] == [['ノリウツール', 3, 18]]
-    assert not ready.get('card_stock')  # never invent an observed inventory receipt
+    # v1352: a confirmed purchase of a known kind enters the field ledger (the
+    # old "observed inventory only" receipt is retired; the read overwrites it).
+    assert ready['card_stock'] == {'ノリウツール': 3, **{name: 0 for name in b.BARGAIN_TARGETS
+                                                         if name != 'ノリウツール'}}
 
 
 @pytest.mark.parametrize('change', ['cash', 'repair', 'soldiers', 'recruit', 'month', 'price'])
@@ -181,7 +228,8 @@ def test_spent_optional_gold_is_not_reissued_on_another_card(ready):
 @pytest.mark.parametrize('gold', [100, 200, 300, 400, 500, 1000, 2000])
 def test_round_cash_header_never_poisoned_as_zero_price_stock(ready, gold):
     actions = p.shop_step(listing(gold), ready)
-    quantity = min(3, max(0, gold - 8 - 50 - 30) // 18)
+    quantity = min(99 if gold >= b.RICH_MERCHANT_GOLD else 3,
+                   max(0, gold - 8 - 50 - 30) // 18)
     assert actions == [p.pad('a' if quantity else 'b')]
     assert ready['shop']['bargain_listing_planned'] is True
     assert (ready['shop'].get('want') or [None, 0])[1] == quantity
@@ -197,3 +245,196 @@ def test_unreadable_merchant_exit_is_recorded_not_silent(ready):
     assert record['decision'] == 'shop_list_exit'
     assert record['observed_metric']['reason'] == 'spendable_unreadable'
     assert ready['shop'].get('bought') in (None, [])
+
+
+def test_unwanted_listing_exit_records_the_merchant_stock(ready):
+    # g1097 2026-11-02: the merchant left with no record at all when the
+    # listing matched no wanted card; the silent B hid why nothing was bought.
+    screen = listing(999, rows=(('バルムンク', 90), ('グリンボー', 30)))
+    ready['shop']['bargain_listing_planned'] = False
+    assert p.shop_step(screen, ready) == [p.pad('b')]
+    record = ready['_records'][-1]
+    assert record['decision'] == 'shop_list_exit'
+    assert record['observed_metric']['reason'] == 'nothing_planned'
+    assert record['observed_metric']['listed'] == {'バルムンク': 90, 'グリンボー': 30}
+
+
+# g1097 2026-11-03 00:57: a cart selling the strong cards at half price came up
+# right after the monthly duel. The month's single listing pass was already
+# spent (and the shop closed), so the bot left in the same observation with
+# 9987G unused.
+HALF = (('ノリウツール', 8), ('クースカン', 12), ('ゼンマイン', 16), ('ミックミー', 20))
+
+
+def month_pass_spent(mem):
+    mem['shop'].update(bargain_planned=True, bargain_listing_planned=True,
+                       merchant_done=True, closed=True, items=[], want=None)
+    return mem
+
+
+def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
+    month_pass_spent(ready)
+    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('a')]       # selects a card to buy
+    shop = ready['shop']
+    assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
+    assert shop['cheap_vendor_planned'] is True
+    planned = dict(shop['items'])
+    # This synthetic four-row canvas clips the fourth (ミックミー) row; only the
+    # three visible cards may be planned from the actual listing. v1352 puts
+    # BARGAIN_TARGETS on the rich path too, so the two bargain targets go to 99
+    # with the rich budget instead of the cart's smaller caps.
+    for name in ('ノリウツール', 'クースカン', 'ゼンマイン'):
+        assert planned.get(name) == b.RICH_MERCHANT_MAX_COPIES, name
+    assert set(planned) <= {name for name, _ in HALF}
+    ordinary = [(n, q) for n, q in shop['items']
+                if n not in b.RICH_MERCHANT_CARDS and n not in b.BARGAIN_TARGETS]
+    assert ordinary == []
+    assert not shop.get('bought')                       # selecting is not payment
+
+
+def test_the_rich_pass_bounds_the_spend_on_a_cheap_cart(ready):
+    month_pass_spent(ready)
+    prices = {name: 1 for name in b.BARGAIN_TARGETS}            # absurdly cheap: only the caps bind
+    b.plan_bargains(ready, ready['shop'], listing(9999).header, listed=prices)
+    shop = ready['shop']
+    planned = dict(shop['items'])
+    # v1352: at 9999G every listed BARGAIN_TARGETS kind is rich-priority (the
+    # monthly 200G/8-copy caps are for the ordinary merchant only), so each is
+    # stocked to 99 and the rich budget is what bounds the spend.
+    assert set(planned) == set(prices)
+    assert all(qty == b.RICH_MERCHANT_MAX_COPIES for qty in planned.values())
+    assert sum(prices[n] * q for n, q in planned.items()) <= b.bargain_spendable(
+        ready, shop, listing(9999).header, rich=True)
+
+
+def test_a_normally_priced_cart_after_the_month_pass_is_still_skipped(ready):
+    month_pass_spent(ready)
+    full = (('ノリウツール', 18), ('クースカン', 24), ('ゼンマイン', 32), ('ミックミー', 40))
+    assert p.shop_step(listing(9987, full), ready) == [p.pad('b')]
+    assert not ready['shop'].get('cheap_vendor')
+    assert ready['shop']['items'] == []
+
+
+def test_the_half_price_pass_is_taken_once_per_month(ready):
+    month_pass_spent(ready)
+    b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
+    assert ready['shop']['cheap_vendor_planned'] is True
+    ready['shop']['items'] = []
+    b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
+    assert ready['shop']['items'] == []                 # no third pass in the same month
+
+
+def test_a_cheap_pass_still_respects_necessities_and_the_cash_reserve(ready):
+    month_pass_spent(ready)
+    ready['shop'].update(egg='pending', egg_priority=True)       # recovery comes first
+    b.plan_bargains(ready, ready['shop'], listing(9987).header, listed=dict(HALF))
+    assert ready['shop']['items'] == [] and not ready['shop'].get('cheap_vendor_planned')
+
+
+def test_bargain_plan_records_only_considered_cards_not_total_holdings(ready):
+    """The planning subset must not be mistaken for whole-hand inventory."""
+    ready['card_stock'] = {'ノリウツール': 1, 'バルムンク': 17}
+    b.plan_bargains(ready, ready['shop'], listing(999).header)
+    records = [r for r in ready.get('_records', []) if r.get('decision') == 'bargain_plan']
+    assert records, 'expected a purchase plan with diagnostic evidence'
+    metric = records[-1]['observed_metric']
+    assert metric['planned_cards_seen_total'] == sum(metric['seen'].values())
+    assert 'seen_total' not in metric
+    assert 'バルムンク' not in metric['seen']
+    assert metric['planned_cards_seen_total'] != sum(ready['card_stock'].values())
+
+
+def test_a_card_at_the_holding_cap_is_dropped_without_asking(ready):
+    """g1163 2026-11-09 08:53-08:57: fifteen capped cards cost 3.5 minutes."""
+    mem = deepcopy(ready)
+    screen = listing(gold=300, rows=(('ノリウツール', 18),))
+    mem['card_stock'] = {'ノリウツール': b.HOLD_CAP}
+    mem['shop']['items'] = [['ノリウツール', 5]]
+    mem['shop']['key'] = '1-5'
+    actions = p.shop_step(screen, mem)
+    assert actions == [] or all(a.get('type') != 'pad' or a.get('key') != 'a' for a in actions)
+    skips = [r for r in mem['_records'] if r['decision'] == 'buy_skip']
+    assert skips and skips[-1]['deviation_reason'] == 'holding_cap'
+    assert skips[-1]['card'] == 'ノリウツール'
+    assert not mem['shop']['items']
+
+
+def test_a_card_one_below_the_cap_is_still_asked_for(ready):
+    mem = deepcopy(ready)
+    screen = listing(gold=300, rows=(('ノリウツール', 18),))
+    mem['card_stock'] = {'ノリウツール': b.HOLD_CAP - 1}
+    mem['shop']['items'] = [['ノリウツール', 1]]
+    mem['shop']['key'] = '1-5'
+    p.shop_step(screen, mem)
+    assert not [r for r in mem.get('_records') or []
+                if r['decision'] == 'buy_skip' and r.get('deviation_reason') == 'holding_cap']
+    assert mem['shop']['want'] == ['ノリウツール', 1, 18]
+
+
+def test_the_rare_card_sweep_moves_several_rows_per_observation():
+    """g1163 2026-11-10 00:38: 34 consecutive sortie_input decisions.
+
+    The list is ID-sorted, so the distance to キャトルミュー is known and up to
+    four rows can move per observation; the landing is still read.
+    """
+    from docich.hanjuku.flows import deploy
+
+    source = deploy._rare_card_inventory.__doc__ or ''
+    assert 'bounded sweep' in source
+    # The jump is a plain arithmetic contract: rows between the visible edge
+    # and the event card, capped at four presses.
+    ids = [1, 5, 9, 13]
+    target = 21
+    frames = max(1, min((target - max(ids)) // 4 + 1, 4))
+    assert frames == 3
+
+
+def test_rare_card_scan_respects_remaining_press_budget(monkeypatch):
+    """A batched sweep must not exceed its existing per-month press limit."""
+    from docich.hanjuku.flows import deploy
+
+    target = deploy.CARD_IDS['キャトルミュー']
+    visible = [name for name, card_id in sorted(
+        deploy.CARD_IDS.items(), key=lambda item: item[1])
+        if card_id < target][:4]
+    assert len(visible) == 4
+    mem = {'month': '1-1', 'rare_scan': {
+        'step': 1, 'presses': deploy.RARE_SCAN_LIMIT - 1,
+        'rows': None}}
+    inventory = {'remaining': 3,
+                 'rows': [{'card': name, 'stock': 0, 'y': i * 16}
+                          for i, name in enumerate(visible)],
+                 'selected_y': 0}
+    monkeypatch.setattr(deploy, '_boss_balmung_generic', lambda *args: False)
+    monkeypatch.setattr(deploy, '_note_balmung_stock', lambda *args: None)
+    monkeypatch.setattr(deploy, '_record', lambda *args, **kwargs: None)
+    monkeypatch.setattr(deploy, '_deploy_context', lambda *args: {})
+    actions = deploy._rare_card_inventory(None, mem, {'step': 1}, inventory)
+    assert actions == [deploy.pad('down')]
+    assert mem['rare_scan']['presses'] == deploy.RARE_SCAN_LIMIT
+
+
+def test_a_pending_finish_skips_the_optional_card_planning(ready, monkeypatch):
+    """g1163 2026-11-13 22:2x: a 3-HP defender waited through the shopping."""
+    from docich.hanjuku.strategy import corridor
+    monkeypatch.setattr(corridor, 'finish_pending', lambda mem: True)
+    shop = ready['shop']
+    b.plan_bargains(ready, shop, listing(999).header)
+    assert shop['items'] == []
+    assert not shop.get('bargain_listing_planned')
+
+
+def test_finished_merchant_reenter_latches_closed(ready):
+    # g1190 99-7: the finished merchant was re-entered ~every 85 observations
+    # and nothing_planned kept closing it without latching the visit done.
+    ready['shop']['merchant_done'] = True
+    ready['shop']['bargain_listing_planned'] = False
+    assert p.shop_step(listing(999, rows=(('バルムンク', 90), ('グリンボー', 30))), ready) == [p.pad('b')]
+    assert ready['shop']['closed'] is True
+    assert ready['_records'][-1]['decision'] == 'shop_reenter'
+    # A first visit without merchant_done does not latch closed.
+    ready['shop'] = dict(ready['shop'], merchant_done=False)
+    ready['shop'].pop('closed', None)
+    ready['shop']['bargain_listing_planned'] = False
+    p.shop_step(listing(999, rows=(('バルムンク', 90), ('グリンボー', 30))), ready)
+    assert 'closed' not in ready['shop']

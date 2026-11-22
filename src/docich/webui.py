@@ -15,6 +15,11 @@ Mutation defense (issue #42): PUT/POST/DELETE には Host/Origin allowlist・
   を要求する (dangerous action の再確認)。token 未設定 (既定の loopback 開発) でも
   Host/Origin/CSRF/Content-Type チェック自体は有効なままで、CSRF token の発行
   (`GET /api/csrf`) は token 有無に関わらず _check_auth() と同じ経路で行う。
+LIVE タブ: GET /api/live は制御ファイル・worker status・台帳の読み取り専用 view を返し、
+POST /api/live/control は owner のオン/オフと shadow/trade を切り替える (trade で ON に
+するときだけ body の confirm="TRADE" を要求する)。POST は上の mutation guard をそのまま
+通り、viewer/read-only は guard が拒否する。初期方針の export/preview は読み取り専用で、
+activate だけが preview token と writer lease を要求して台帳へ owner_initial を記録する。
 State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren)。
 """
 from __future__ import annotations
@@ -72,6 +77,10 @@ from .runtime_backend import (
     _set_worker_paused,
     _worker_pause_marker_path,
 )
+from . import stream_pause
+from .stream_identity import runner_kind
+from .webui_live import (InitialSetupError, initial_activate, initial_export,
+                         initial_preview, live_snapshot, set_control)
 
 # --- allowlist / validation --------------------------------------------------
 
@@ -706,6 +715,21 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
 CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners"), ("POST", "/api/tsuitate-beta"), ("POST", "/api/special-corner/end"), ("PUT", "/api/special-corner/settings"), ("POST", "/api/special-corner/receiver"), ("POST", "/api/special-corner/start")}
+# POST /api/live/control is deliberately not in the set above: its confirmation value is
+# the literal "TRADE" (validated by webui_live.set_control), not confirm:true.  It still
+# goes through _guard_mutation() like every other mutation.
+
+# The initial-policy preview and activation are operator-only POSTs.  They share the
+# existing Host/Origin/CSRF/auth/read-only guard; only the activation writes the ledger.
+_INITIAL_ERROR_STATUS = {
+    "history_missing": 404, "candidate_missing": 404, "candidate_unsupported": 404,
+    "candidate_ambiguous": 409, "import_mismatch": 409, "active_policy_conflict": 409,
+    "stale_preview": 409, "lease_held": 409, "ledger_unavailable": 409,
+    "activation_refused": 409,
+}
+# A pasted snapshot with another experiment id is an input error; the same history
+# condition is a missing resource on the read-only export.
+_INITIAL_IMPORT_INPUT_ERROR = "candidate_unsupported"
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -1818,6 +1842,7 @@ _ROTATION_FAILED_REASONS = frozenset({
     "execution-or-state-unverified",
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    "terminal-owner-absent",
 })
 _ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
@@ -1838,7 +1863,7 @@ _CORNER_MANUAL_LAUNCHERS = {
     "paper": ("docich-paper-corner-manual", False, False),
 }
 # Weather uses the durable common queue; it has no detached one-off runner.
-_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo", "trpg"})
+_CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "doushi", "puyo", "trpg", "chart"})
 # hanjuku-hero (#2024) は非CLIゲームのため one-off runner を使えない。開始は
 # docich.hanjuku_corner / start-hanjuku と同じ共通 coordinator への durable 予約
 # (CornerRotationManager.queue_manual) で行う。adapter が game のままなので
@@ -1852,6 +1877,7 @@ _CORNER_QUEUED_MANUAL_LABELS = {
     "doushi": ("doushi", "同志カード"),
     "puyo": ("puyo", "ぷよぷよクローン"),
     "trpg": ("trpg", "TRPG"),
+    "chart": ("chart", "チャート解説"),
     "mystery": ("mystery", "AI探偵ミステリー"),
 }
 _MANUAL_RESERVATION_CORNERS = frozenset({
@@ -1970,15 +1996,27 @@ def _rotation_failures_view(raw: Any) -> list[dict[str, Any]]:
 
     The ledger records every corner failure so it stays fixable even though the
     scheduler keeps rotating. Only the corner id, time, fixed resolution and
-    fixed error kind are published.
+    fixed error kind are published. A ``recovery-required`` row whose exact
+    request later appears in ``released_requests`` was settled without an
+    operator: publish the current resolution (released) instead of a stale
+    "要復旧" marker, while leaving the ledger row itself untouched.
     """
     rows = raw.get("failed_corners") if isinstance(raw, dict) else None
+    released = raw.get("released_requests") if isinstance(raw, dict) else None
+    if not isinstance(released, dict):
+        released = {}
     out: list[dict[str, Any]] = []
     if isinstance(rows, list):
         for row in rows[-_ROTATION_FAILED_MAX:]:
             if not isinstance(row, dict):
                 continue
             resolution = row.get("resolution")
+            corner = row.get("corner")
+            settled = released.get(corner) if isinstance(corner, str) else None
+            if (resolution == "recovery-required"
+                    and isinstance(settled, dict)
+                    and settled.get("request_id") == row.get("request_id")):
+                resolution = "released-unverified"
             error_kind = row.get("error_kind")
             reason_code = row.get("reason_code")
             out.append({
@@ -2076,9 +2114,19 @@ def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
     if isinstance(raw.get("eligible"), list):
         eligible = [item[:64] for item in raw.get("eligible") if isinstance(item, str)][:20]
     error_kind = raw.get("error_kind")
+    try:
+        from .corner_rotation import overdue_wait
+
+        overdue = overdue_wait(raw, now)
+    except Exception:
+        overdue = None
     out.update(
         status=status,
         reason=_view_str(raw.get("reason"), 64),
+        reason_since=_view_time(raw.get("reason_since")),
+        # ``overdue`` is the #4333 wedge signal: next_due_at long past while
+        # one unchanged reason keeps holding the wait.
+        overdue=overdue,
         error_kind=(error_kind if error_kind in _ROTATION_ERROR_KIND_ENUM
                     else (None if error_kind is None else "unknown")),
         slot=_view_int(raw.get("slot")),
@@ -2184,7 +2232,91 @@ def _corner_manual_capabilities(g: GlobalConfig, row: Any) -> dict[str, Any]:
             "manual_start_reason": reason}
 
 
-def _corners_view(g: GlobalConfig) -> dict[str, Any]:
+def _prediction_round_view(g: GlobalConfig, soren_root=None) -> dict[str, Any]:
+    """Bounded progress of the Soren prediction round that holds the corner slot.
+
+    The corner panel otherwise only shows ``next_due`` and a pending corner that
+    has not started, which reads like a stuck rotation while a contested 48-game
+    prediction is still counting. Only fixed counters, enums and ages are
+    exposed; the prediction id and outcome ids never leave the state file.
+    """
+    try:
+        root = _resolve_soren_root(g, str(soren_root) if soren_root else None)
+    except Exception:
+        return {"present": False, "readable": False}
+    state_dir = root / "tmp" / "state"
+    path = state_dir / "current_prediction.json"
+    now = time.time()
+
+    def _bounded(value, low, high):
+        return (value if isinstance(value, int) and not isinstance(value, bool)
+                and low <= value <= high else None)
+
+    def _age(mtime):
+        return max(0, int(now - mtime)) if mtime is not None else -1
+
+    def _mtime(target):
+        try:
+            return target.stat().st_mtime
+        except OSError:
+            return None
+
+    retry_raw = _load_json_file(state_dir / "prediction_retry" / "resolve.json")
+    retry = retry_raw if isinstance(retry_raw, dict) else {}
+    next_retry = retry.get("next_retry_at")
+    next_retry = (int(next_retry) if isinstance(next_retry, (int, float))
+                  and not isinstance(next_retry, bool) and next_retry >= 0 else None)
+    http_code = retry.get("http_code")
+    raw = _load_json_file(path)
+    created_at = _view_time(raw.get("created_at")) if isinstance(raw, dict) else None
+    out: dict[str, Any] = {
+        "present": path.is_file(),
+        "readable": isinstance(raw, dict),
+        "round_version": None,
+        "games_completed": None,
+        "max_games": None,
+        "remaining_games": None,
+        "created_age_sec": max(0, int(now - created_at)) if created_at is not None else -1,
+        "progress_age_sec": _age(_mtime(path)),
+        "fence_present": (state_dir / "regression_check_in_progress").is_file(),
+        "fence_age_sec": _age(_mtime(state_dir / "regression_check_in_progress")),
+        "retry": {
+            "attempt": _bounded(retry.get("attempt"), 0, 1000),
+            "next_retry_at": next_retry,
+            "retry_active": (next_retry is not None and next_retry > now),
+            "http_code": (str(http_code)[:16] if http_code is not None else None),
+        },
+        "complete": None,
+        "settlement_pending": None,
+        "settlement_pending_sec": None,
+    }
+    if not isinstance(raw, dict):
+        return out
+    completed = _bounded(raw.get("games_completed"), 0, 1_000_000)
+    maximum = _bounded(raw.get("max_games"), 0, 1_000_000)
+    out.update(
+        round_version=_bounded(raw.get("round_version"), 0, 99),
+        games_completed=completed,
+        max_games=maximum,
+        remaining_games=(max(0, maximum - completed)
+                         if completed is not None and maximum is not None else None),
+    )
+    if completed is not None and maximum is not None and maximum > 0 and completed >= maximum:
+        out["complete"] = True
+        wrote_at = _mtime(path)
+        boundary = _load_json_file(state_dir / "corner_boundary_prediction.json")
+        boundary_at = _view_time(boundary.get("completed_at")) if isinstance(boundary, dict) else None
+        if wrote_at is not None:
+            pending = boundary_at is None or boundary_at < wrote_at
+            out["settlement_pending"] = bool(pending)
+            if pending:
+                out["settlement_pending_sec"] = max(0, int(now - wrote_at))
+    elif completed is not None and maximum is not None:
+        out["complete"] = False
+    return out
+
+
+def _corners_view(g: GlobalConfig, soren_root=None) -> dict[str, Any]:
     """Read-only page model: rotation ledger + game switch + catalog + corner states."""
     from .corner_catalog import load_catalog
 
@@ -2290,6 +2422,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         },
         "rotation": _rotation_view(g),
         "game_switch": _game_switch_view(g),
+        "prediction": _prediction_round_view(g, soren_root),
         "catalog": catalog,
         "catalog_status": catalog_status,
         "catalog_error": catalog_error,
@@ -2971,6 +3104,67 @@ def _voice_endpoint_action(soren_root: Path, action: str, url: str = "") -> dict
     return {"ok": True, "action": action, "url": url, "endpoints": report["endpoints"]}
 
 
+_OWNER_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?DOCICH_STREAM_OWNER=(.*?)\s*$")
+
+
+def _configured_stream_owner(soren_root: Path) -> str:
+    """Owner from this process's environment, else the runtime .env (last assignment wins).
+
+    Only the exact value ``docich`` selects docich; anything else (unset, empty,
+    ``soren``, malformed) means the legacy runner, which is also what
+    ``start_all.sh`` does for the unset case.
+    """
+    raw = os.environ.get("DOCICH_STREAM_OWNER")
+    if raw is None:
+        try:
+            lines = _dotenv_path(soren_root).read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            match = _OWNER_ASSIGNMENT.match(line)
+            if match:
+                raw = match.group(1)
+                # Shell quoting: only a matching pair is removed, and nothing is trimmed
+                # (`VAR= docich` assigns an empty value in a shell).
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+                    raw = raw[1:-1]
+    return "docich" if raw == "docich" else "soren"
+
+
+def _live_runner_owner(soren_root: Path, pid: Any) -> str | None:
+    """Evidence beats configuration: which kind of runner is actually alive?"""
+    if not isinstance(pid, int) or pid <= 0 or not _is_pid_alive(pid):
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+    parts = [p.decode("utf-8", "ignore") for p in raw.split(b"\x00") if p]
+    kind = runner_kind(parts, soren_root, cwd=cwd)
+    return {"legacy": "soren", "docich": "docich"}.get(kind or "")
+
+
+def _stream_owner(soren_root: Path) -> str:
+    """``soren`` or ``docich``: the live runner's kind if one is running, else the configuration."""
+    data = _load_json_file(_stream_status_file(soren_root))
+    live = _live_runner_owner(soren_root, data.get("pid") if isinstance(data, dict) else None)
+    return live or _configured_stream_owner(soren_root)
+
+
+def _stream_is_paused(soren_root: Path, owner: str) -> bool:
+    if owner == "docich":
+        return stream_pause.is_paused(soren_root)
+    return _is_worker_paused(soren_root, STREAM_WORKER)
+
+
+def _set_stream_paused(soren_root: Path, owner: str, paused: bool) -> None:
+    if owner == "docich":
+        stream_pause.set_paused(soren_root, paused, source="webui")
+    else:
+        _set_worker_paused(soren_root, STREAM_WORKER, paused)
+
+
 def _stream_status_file(soren_root: Path) -> Path:
     # lib/direct_stream.py load_config 既定の SOREN_DIRECT_STREAM_STATE_DIR
     return soren_root / "tmp/state/direct_stream/status.json"
@@ -2984,10 +3178,11 @@ def _get_stream_status(soren_root: Path) -> dict[str, Any]:
       - "paused": 停止マーカーあり (オペレータ意図によるオフ、supervisor respawn 対象外)
       - "off":    マーカーなしでプロセスがいない (異常終了・supervisor 停止など)
     """
-    paused = _is_worker_paused(soren_root, STREAM_WORKER)
     data = _load_json_file(_stream_status_file(soren_root))
     if not isinstance(data, dict):
         data = {}
+    owner = _stream_owner(soren_root)
+    paused = _stream_is_paused(soren_root, owner)
     runner_pid = data.get("pid")
     ffmpeg_pid = data.get("ffmpeg_pid")
     runner_alive = isinstance(runner_pid, int) and _is_pid_alive(runner_pid)
@@ -3006,6 +3201,7 @@ def _get_stream_status(soren_root: Path) -> dict[str, Any]:
     out: dict[str, Any] = {
         "ok": True,
         "state": state,
+        "owner": owner,
         "paused": paused,
         "running": running,
         "backend": str(data.get("backend", "")) or None,
@@ -3037,7 +3233,7 @@ def _get_stream_status(soren_root: Path) -> dict[str, Any]:
     return out
 
 
-def _pid_matches_stream_process(pid: int) -> bool:
+def _pid_matches_stream_process(pid: int, soren_root: Path | None = None) -> bool:
     """Linux /proc で cmdline を確認し、誤って無関係プロセスを殺さないガード。
 
     /proc が読めない環境 (macOS 等) は確認不能のため True (許可) を返す。
@@ -3054,6 +3250,8 @@ def _pid_matches_stream_process(pid: int) -> bool:
         return False
     joined = " ".join(parts)
     if "direct_stream" in joined:
+        return True
+    if soren_root is not None and runner_kind(parts, soren_root) == "docich":
         return True
     argv0 = Path(parts[0]).name
     return argv0 == "ffmpeg"
@@ -3076,7 +3274,7 @@ def _stream_runner_pids(soren_root: Path) -> list[int]:
     for c in candidates:
         if isinstance(c, int) and c > 0 and c not in seen:
             seen.add(c)
-            if _pid_matches_stream_process(c):
+            if _pid_matches_stream_process(c, soren_root):
                 pids.append(c)
     return pids
 
@@ -3109,6 +3307,33 @@ def _run_direct_stream_stop_script(soren_root: Path) -> dict[str, Any]:
     return {"ok": proc.returncode == 0, "rc": proc.returncode, "detail": detail[-300:]}
 
 
+def _run_docich_stream_stop(soren_root: Path) -> dict[str, Any]:
+    """docich-owned encoder: ``python3 -m docich.stream_supervisor stop``.
+
+    Same graceful chain (SIGTERM -> runner's q -> SIGINT -> SIGKILL fallback)
+    as the legacy stop. The command only signals a ``docich.stream_supervisor
+    ... run`` process, never a legacy runner.
+    """
+    source_root = str(Path(__file__).resolve().parents[1])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "docich.stream_supervisor", "--root", str(soren_root), "stop"],
+            cwd=str(soren_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=STREAM_STOP_SCRIPT_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": f"timeout after {STREAM_STOP_SCRIPT_TIMEOUT_SEC}s"}
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)[:200]}
+    detail = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    return {"ok": proc.returncode == 0, "rc": proc.returncode, "detail": detail[-300:]}
+
+
 def _stop_stream_runner(soren_root: Path) -> dict[str, Any]:
     """pause マーカー作成後、配信を明示終了する。
 
@@ -3118,9 +3343,14 @@ def _stop_stream_runner(soren_root: Path) -> dict[str, Any]:
     SIGKILL へのエスカレートは runner の q/SIGINT 猶予 (最大約30秒) を守るため
     STREAM_STOP_GRACE_BEFORE_KILL_SEC 経過後のみ。
     """
-    _set_worker_paused(soren_root, STREAM_WORKER, True)
-    script_result = _run_direct_stream_stop_script(soren_root)
-    method = "direct_stream_stop" if script_result.get("ok") else "signal_fallback"
+    owner = _stream_owner(soren_root)
+    _set_stream_paused(soren_root, owner, True)
+    if owner == "docich":
+        script_result = _run_docich_stream_stop(soren_root)
+        method = "docich_stream_stop" if script_result.get("ok") else "signal_fallback"
+    else:
+        script_result = _run_direct_stream_stop_script(soren_root)
+        method = "direct_stream_stop" if script_result.get("ok") else "signal_fallback"
     escalated = False
 
     def alive_pids() -> list[int]:
@@ -3567,6 +3797,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_predictions()
             elif path == "/api/corners":
                 status = self._handle_get_corners()
+            elif path == "/api/live":
+                status = self._handle_get_live(query.get("trade_page", [None])[0])
+            elif path == "/api/live/initial-policy/export":
+                status = self._handle_get_live_initial_export()
             elif path == "/api/special-corner":
                 status = self._handle_get_special_corner()
             elif path == "/api/special-corner/settings":
@@ -3691,6 +3925,12 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_prediction_action()
             elif parsed.path == "/api/corners":
                 status = self._handle_post_corners()
+            elif parsed.path == "/api/live/control":
+                status = self._handle_post_live_control()
+            elif parsed.path == "/api/live/initial-policy/preview":
+                status = self._handle_post_live_initial_preview()
+            elif parsed.path == "/api/live/initial-policy/activate":
+                status = self._handle_post_live_initial_activate()
             elif parsed.path == "/api/special-corner/end":
                 status = self._handle_post_special_corner_end()
             elif parsed.path == "/api/special-corner/receiver":
@@ -4581,11 +4821,15 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return 200
         # start: pause マーカーを外し、supervisor による respawn を待つ
-        _set_worker_paused(self.soren_root, STREAM_WORKER, False)
+        owner = _stream_owner(self.soren_root)
+        _set_stream_paused(self.soren_root, owner, False)
         after = _wait_for_stream_start(self.soren_root)
         hint = None
         if after.get("state") != "live":
-            hint = "supervisor (start_all.sh / soren-runtime) が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
+            if owner == "docich":
+                hint = "docich-stream.service が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
+            else:
+                hint = "supervisor (start_all.sh / soren-runtime) が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
         self._send_json(
             200,
             {"ok": after.get("state") == "live", "action": action, "state": after.get("state"), "hint": hint},
@@ -4701,10 +4945,150 @@ class _Handler(BaseHTTPRequestHandler):
         )
         return 200
 
+    def _handle_get_live(self, trade_page=None) -> int:
+        """Read-only LIVE snapshot (control file + worker status + ledger overview).
+
+        ``trade_page`` is the optional 1-based realized-P&L page; the overview clamps it
+        before slicing so callers cannot request an out-of-range page.
+        """
+        try:
+            snapshot = live_snapshot(self.g.state_dir, now=time.time(), trade_page=trade_page)
+        except Exception as exc:                       # live_snapshot promises not to raise
+            self._send_error_json(500, "live_snapshot_failed", type(exc).__name__)
+            return 500
+        self._send_json(200, snapshot)
+        return 200
+
+    def _handle_get_live_initial_export(self) -> int:
+        """Read-only export of the owner-approved initial policy from PAPER history."""
+        if self._identity() != "operator":
+            self._send_error_json(403, "read_only", "operator identity required")
+            return 403
+        try:
+            result = initial_export(self.g.state_dir)
+        except InitialSetupError as exc:
+            return self._send_initial_error(exc)
+        except Exception:
+            self._send_error_json(500, "initial_policy_failed", "初期方針を取得できません")
+            return 500
+        self._send_json(200, result)
+        return 200
+
+    def _live_initial_body(self) -> tuple[dict | None, int]:
+        body, err = self._read_body()
+        if err:
+            return None, err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception:
+            self._send_error_json(400, "invalid_json", "body must be a JSON object")
+            return None, 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be a JSON object")
+            return None, 400
+        if data.get("source") not in ("history", "import"):
+            self._send_error_json(400, "source_invalid", "source は history または import です")
+            return None, 400
+        return data, 0
+
+    def _send_initial_error(self, exc: InitialSetupError, *, post: bool = False,
+                            source: object = None) -> int:
+        if post and source == "import" and exc.code == _INITIAL_IMPORT_INPUT_ERROR:
+            status = 400
+        else:
+            status = _INITIAL_ERROR_STATUS.get(exc.code, 400)
+        self._send_error_json(status, exc.code, exc.message)
+        return status
+
+    def _handle_post_live_initial_preview(self) -> int:
+        """Validate a candidate and issue a token; nothing is written."""
+        data, err = self._live_initial_body()
+        if err:
+            return err
+        try:
+            result = initial_preview(
+                self.g.state_dir,
+                source=data["source"],
+                snapshot=data.get("snapshot"),
+                experiment_digest=data.get("experiment_digest"),
+                operator=data.get("operator"),
+                note=data.get("note"),
+            )
+        except InitialSetupError as exc:
+            return self._send_initial_error(exc, post=True, source=data["source"])
+        except Exception:
+            self._send_error_json(500, "initial_policy_failed", "初期方針を確認できません")
+            return 500
+        self._send_json(200, result)
+        return 200
+
+    def _handle_post_live_initial_activate(self) -> int:
+        """Confirm a previewed initial activation (the only initial-policy writer)."""
+        data, err = self._live_initial_body()
+        if err:
+            return err
+        try:
+            result = initial_activate(
+                self.g.state_dir,
+                source=data["source"],
+                snapshot=data.get("snapshot"),
+                experiment_digest=data.get("experiment_digest"),
+                operator=data.get("operator"),
+                note=data.get("note"),
+                confirm=data.get("confirm"),
+                now=time.time(),
+            )
+        except InitialSetupError as exc:
+            return self._send_initial_error(exc, post=True, source=data["source"])
+        except Exception:
+            self._send_error_json(500, "initial_policy_failed", "初期方針を記録できません")
+            return 500
+        _log_authz_event(self.soren_root, "POST", "/api/live/initial-policy/activate",
+                         self._identity(), "allow",
+                         "live_initial_activated" if result.get("activated") else "live_initial_repeat")
+        self._send_json(200, result)
+        return 200
+
+    def _handle_post_live_control(self) -> int:
+        """Owner's LIVE switch.  Guard (auth/CSRF/read-only) has already run."""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        try:
+            result = set_control(
+                self.g.state_dir,
+                state=data.get("state"),
+                mode=data.get("mode"),
+                confirm=data.get("confirm"),
+                actor=self._identity(),
+                now=time.time(),
+            )
+        except ValueError as exc:
+            reason_text = str(exc)
+            error = "confirm_required" if reason_text == "confirm_required" else "validation_error"
+            self._send_error_json(400, error, reason_text)
+            return 400
+        except Exception as exc:                       # no path/content in the response
+            self._send_error_json(500, "live_control_failed", type(exc).__name__)
+            return 500
+        # The guard already audited the request; this records that the switch was written.
+        _log_authz_event(self.soren_root, "POST", "/api/live/control",
+                         self._identity(), "allow", "live_control")
+        self._send_json(200, result)
+        return 200
+
     def _handle_get_corners(self) -> int:
         """Read-only rotation/game-switch/corner projection (seed/uuid は出さない)."""
         try:
-            view = _corners_view(self.g)
+            view = _corners_view(self.g, self.soren_root)
         except Exception as exc:
             self._send_error_json(500, "corners_unavailable", str(exc)[:200])
             return 500
@@ -4941,10 +5325,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(428, "confirmation_required", "corner操作には confirm:true が必要です")
             return 428
         action = str(data.get("action", "")).strip().lower()
-        if action not in ("start", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):
+        if action not in ("start", "new-game", "resume-latest", "stop", "recover", "schedule", "cancel-schedule"):
             self._send_error_json(
                 400, "invalid_action",
-                "action must be start, resume-latest, stop, recover, schedule or cancel-schedule",
+                "action must be start, new-game, resume-latest, stop, recover, schedule or cancel-schedule",
             )
             return 400
         if action == "recover":
@@ -4998,6 +5382,12 @@ class _Handler(BaseHTTPRequestHandler):
             return 400
         if action in ("schedule", "cancel-schedule"):
             return self._handle_scheduled_corner_action(row, action, data)
+        if action == "new-game":
+            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
+                self._send_error_json(400, "new_game_unsupported",
+                                      "第1話からの新規開始は半熟英雄だけに対応しています")
+                return 400
+            return self._handle_hanjuku_corner_start(row, new_game=True)
         if action == "resume-latest":
             if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
                 self._send_error_json(400, "resume_latest_unsupported",
@@ -5059,7 +5449,7 @@ class _Handler(BaseHTTPRequestHandler):
         })
         return 200
 
-    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False) -> int:
+    def _handle_hanjuku_corner_start(self, row, *, resume_latest: bool = False, new_game: bool = False) -> int:
         """Queue the fixed Hanjuku start through the common coordinator (#2024).
 
         docich.hanjuku_corner / start-hanjuku と同じ起動要求
@@ -5075,8 +5465,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             manager = CornerRotationManager(self.g)
-            outcome = ((queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True))
-                       if resume_latest else manager.queue_manual(row.game))
+            if new_game:
+                outcome = manager.queue_manual(row.game, new_game=True)
+            elif resume_latest:
+                outcome = queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True)
+            else:
+                outcome = manager.queue_manual(row.game)
             status = outcome.get("status") if isinstance(outcome, dict) else None
         except RotationError as exc:
             reasons = {
@@ -5127,7 +5521,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 500
         self._send_json(200, {
             "ok": True,
-            "action": "resume-latest" if resume_latest else "start",
+            "action": "new-game" if new_game else "resume-latest" if resume_latest else "start",
             "status": status,
             "corner": {"id": row.id, "adapter": row.adapter,
                        "game": row.game, "target": "rotation"},

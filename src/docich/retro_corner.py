@@ -37,6 +37,7 @@ from .game_switch import (
     GameSwitchStore,
     RuntimeSpec,
     StateCorruptError,
+    SWITCH_MIN_START_BUDGET_S,
     _request_payload_hash,
     atomic_write_json,
     new_request_id,
@@ -1189,9 +1190,12 @@ class RetroCornerManager:
         try:
             with self._locked():
                 state = self._read_state()
-                if (state.get("status") != "failed"
-                        or state.get("rotation_request_id") != request_id
-                        or state.get("switch_request_id") != request_id):
+                owner = state.get("rotation_request_id")
+                if owner is None:
+                    # Older restore-failure rows never gained a rotation id;
+                    # the recorded switch request is their only identity.
+                    owner = state.get("switch_request_id")
+                if state.get("status") != "failed" or owner != request_id:
                     return False
                 if not self._released_record_proved(state, corner_id, request_id):
                     return False
@@ -1966,6 +1970,28 @@ class RetroCornerManager:
         return min(remaining, default_timeout_s)
 
     @staticmethod
+    def _start_budget_sufficient(target: str, timeout_s: float | None) -> bool:
+        """Admission gate (#3174): refuse to run a doomed switch request.
+
+        The request budget (min of remaining slot time and the coordinator
+        cap) must cover the measured drain estimate plus the probe floor
+        (SWITCH_MIN_START_BUDGET_S).  Below that the request cannot finish
+        drain+readiness before its deadline, so it deterministically hits
+        timeout -> rollback and leaves a claimed hanjuku-resume request that
+        poisons later rotations.  A request budget of None means the slot is
+        already over, which is also insufficient.
+
+        Only hanjuku-hero targets are gated: both constants were measured on
+        the hanjuku resume path (materialize->restore) and the residual claim
+        that poisons later rotations is specific to hanjuku_resume.claim().
+        Other adapters were not measured and stay ungated for now.
+        """
+
+        if target != "hanjuku-hero":
+            return True
+        return timeout_s is not None and timeout_s >= SWITCH_MIN_START_BUDGET_S
+
+    @staticmethod
     def _succeeded_start_receipt_matches_active(
         canonical: dict[str, object],
         receipt: dict[str, object],
@@ -2071,6 +2097,8 @@ class RetroCornerManager:
         request_id: str,
         target: str,
         previous: str | None,
+        end_reason: str = "start-deadline-expired",
+        detail: str = "retro corner start deadline expired before claim",
     ) -> tuple[dict[str, object], CornerResult | None]:
         """Reconcile a committed start, or cancel only an unclaimed queue entry."""
 
@@ -2162,7 +2190,7 @@ class RetroCornerManager:
                     "to_game": target,
                     "generation": receipt.get("generation"),
                     "error_code": ERROR_TIMEOUT,
-                    "detail": "retro corner start deadline expired before claim",
+                    "detail": detail,
                 }
                 transaction.finish_request(request_id, "failed", result)
         except GameSwitchBusyError:
@@ -2177,7 +2205,7 @@ class RetroCornerManager:
         state.update(
             status="interrupted",
             completed_at=now.isoformat(),
-            end_reason="start-deadline-expired",
+            end_reason=end_reason,
             last_error=None,
             last_error_code=None,
         )
@@ -2186,7 +2214,7 @@ class RetroCornerManager:
             "interrupted",
             game=target,
             previous_game=previous,
-            detail="retro corner start deadline expired before claim",
+            detail=detail,
         )
 
     def _reconcile_stale_locked(self, now: dt.datetime) -> None:
@@ -2352,6 +2380,26 @@ class RetroCornerManager:
             state.update(extra_state)
         self._prepare_start_state(state, scheduled=scheduled)
         self._write_state(state)
+        if not self._start_budget_sufficient(
+            target, self._remaining_start_timeout_s(state, now)
+        ):
+            # Early expire before any request is submitted: no receipt, no
+            # claim, so nothing residual can poison the next slot.
+            state.pop("switch_request_id", None)
+            state.update(
+                status="interrupted",
+                completed_at=now.isoformat(),
+                end_reason="start-budget-insufficient",
+                last_error=None,
+                last_error_code=None,
+            )
+            self._write_state(state)
+            return state, CornerResult(
+                "interrupted",
+                game=target,
+                previous_game=previous,
+                detail="switch start budget below drain+probe estimate",
+            )
         try:
             transition = self._transition_to_start(
                 previous,
@@ -2407,13 +2455,27 @@ class RetroCornerManager:
         if previous is not None and not isinstance(previous, str):
             previous = None
         timeout_s = self._remaining_start_timeout_s(state, now)
-        if timeout_s is None:
+        if timeout_s is None or not self._start_budget_sufficient(target, timeout_s):
+            # A queued hanjuku request admitted with enough budget can no
+            # longer finish drain+probe before its deadline; cancel it only
+            # through the unclaimed-receipt path so a claimed request still
+            # runs to its terminal state untouched.
             return self._expire_queued_start_locked(
                 state,
                 now,
                 request_id=request_id,
                 target=target,
                 previous=previous,
+                end_reason=(
+                    "start-budget-insufficient"
+                    if timeout_s is not None
+                    else "start-deadline-expired"
+                ),
+                detail=(
+                    "queued switch start budget fell below drain+probe estimate"
+                    if timeout_s is not None
+                    else "retro corner start deadline expired before claim"
+                ),
             )
         try:
             transition = self._transition_to_start(
@@ -2499,6 +2561,14 @@ class RetroCornerManager:
             return None
         with self._locked():
             latest = self._read_state()
+            # A durable stop request is an operator stop that arrived while the
+            # corner was still ``starting``.  Consume it exactly like the
+            # direct stop path: a scripted Hanjuku run needs the same request
+            # id in ``hanjuku_manual_save.json`` or its restore waits for a
+            # round boundary that never comes.  ``failed`` stays untouched
+            # here (#4226 owns that slice).
+            if latest.get("status") == "active" and self._scripted_hanjuku(latest):
+                self._request_hanjuku_save(latest)
             if latest.get("status") in {"active", "restoring"}:
                 result = self._finish_locked(latest, self._local_now())
             else:
@@ -2509,7 +2579,25 @@ class RetroCornerManager:
 
     def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
         if self._scripted_hanjuku(state):
-            return self._wait_hanjuku(state)
+            # #3287: the corner monitor is a separate process from the agent,
+            # so it binds its own fixed-path snapshot (role=corner). Off means
+            # DISABLED: no file and no behaviour change.
+            from .agent import telemetry as telemetry_mod
+            tel = telemetry_mod.AgentTelemetry.from_env(
+                self.g.state_dir, 'hanjuku-hero', 'corner', role='corner')
+            telemetry_mod.set_active(tel)
+            try:
+                return self._wait_hanjuku(state)
+            finally:
+                # Flush the corner's own snapshot, then unbind. A state-write
+                # failure is logged and never changes the corner result.
+                try:
+                    tel.flush(force=True)
+                except OSError as exc:
+                    print(f"[retro-corner] 警告: telemetry の書き出しに失敗しました: {exc}",
+                          flush=True)
+                finally:
+                    telemetry_mod.set_active(telemetry_mod.DISABLED)
         ends_at = self._parse_ends_at(state)
         if ends_at is None:
             raise RetroCornerError("retro corner ends_atが不正です")
@@ -2572,6 +2660,7 @@ class RetroCornerManager:
     def _wait_hanjuku(self, state):
         """No fixed session deadline: observe until game-over or 300s stasis."""
         from .adapters import make_adapter
+        from .agent import telemetry as telemetry_mod
         from .agent.fence import AgentFence, shared_section
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .hanjuku_run import event
@@ -2633,6 +2722,9 @@ class RetroCornerManager:
                 self._sleep(2.)
                 continue
             not_ready = 0
+            # Persist the corner's fixed capture/spawn counters at the same
+            # throttled cadence as the agent (#3287); off is a no-op.
+            telemetry_mod.flush_active()
             run = observation.meta.get('hanjuku') or {}
             runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
             # #1469: durably publish the Hanjuku logic generation this corner is
@@ -2680,8 +2772,11 @@ class RetroCornerManager:
             # the input gate. It re-verifies durable terminal evidence itself.
             from .record_clips import consider_hanjuku
             consider_hanjuku(self.g, owned_identity)
-            from .hanjuku_predictions import tick as prediction_tick
-            prediction = prediction_tick(self.g, owned_identity)
+            # Resolved through the hot-load trampoline (#3838): the long-lived
+            # corner worker must pick up a deployed predictions change without
+            # a process restart.
+            prediction = hanjuku_hotload.module('hanjuku_predictions').tick(
+                self.g, owned_identity)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
@@ -2740,6 +2835,24 @@ class RetroCornerManager:
                                 runtime_identity(fence))
                         except Exception as exc:
                             latest['chart_review'] = {'error': type(exc).__name__}
+                    if run.get('terminal_reason') in {'screen_stalled', 'input_stalled'}:
+                        # A screen/input stall ends this corner and releases the
+                        # slot to rotation. Record the stop before teardown so
+                        # the fix issue carries the measured terminal evidence;
+                        # never let filing failure block the teardown.
+                        try:
+                            from . import month_audit
+                            month_audit.record_corner_stall(
+                                runtime_dir,
+                                reason=run.get('terminal_reason'),
+                                run=run,
+                                identity=owned_identity,
+                                rotation_request_id=latest.get('rotation_request_id'),
+                                terminal_evidence=latest.get('terminal_evidence'))
+                        except Exception as exc:
+                            print(
+                                f"[hanjuku-stall-audit] status=failed error={type(exc).__name__}",
+                                file=sys.stderr)
                     return self._finish_locked(latest, self._local_now())
                 if time.monotonic() >= next_repair:
                     self._repair_active_agent(latest)
@@ -3467,6 +3580,58 @@ class RetroCornerManager:
             return CornerResult("failed", game=game, previous_game=previous,
                                 detail="terminal restore proof refused")
 
+    def _drive_recorded_restore(self, state: dict[str, object]) -> CornerResult:
+        """Replay the durable ``restoring`` finish through the recorded-request
+        gate.  A crash between the ``restoring`` write and the restore switch
+        leaves no automatic driver; the same recorded request is replayed here
+        instead of inventing a new one.  On failure the durable state keeps a
+        fixed ``last_error_code`` so diagnostics can name the blocking gate.
+
+        The caller must hold ``self._locked()``.
+        """
+        request_id = state.get("rotation_request_id")
+        if not isinstance(request_id, str) or not request_id:
+            # A restore recorded before request-binding existed carries no
+            # rotation_request_id. Refusing here wedges the row forever (the
+            # caller never sees the detail), so mark it and let the finish
+            # proceed fenced by the recorded switch_request_id and the
+            # coordinator's expected_source check instead.
+            state["last_error_code"] = "restoring-owner-unverified"
+            self._write_state(state)
+        else:
+            try:
+                self._verify_restoring_request(state, request_id)
+            except Exception:
+                latest = self._read_state()
+                if latest.get("status") == "restoring":
+                    latest["last_error_code"] = "restoring-request-unverified"
+                    self._write_state(latest)
+                raise
+        try:
+            self._ensure_runtime()
+            result = self._finish_locked(state, self._local_now())
+        except Exception:
+            # _finish_locked already records its own failure when it reaches
+            # its switch; only a pre-switch refusal needs the durable marker.
+            latest = self._read_state()
+            if latest.get("status") == "restoring":
+                latest["last_error_code"] = "restoring-finish-unverified"
+                self._write_state(latest)
+            raise
+        if result.status not in {"completed", "interrupted"}:
+            # A queued/waiting finish leaves no marker; name the pend so the
+            # wedge is diagnosable from diagnostics alone. The suffix is the
+            # fixed CornerResult status so the exact pending gate is visible.
+            latest = self._read_state()
+            if latest.get("status") == "restoring":
+                suffix = result.status if result.status in {
+                    "queued", "waiting", "busy", "accepted",
+                    "in_progress", "stopping", "switching",
+                } else "unknown"
+                latest["last_error_code"] = f"restoring-finish-{suffix}"
+                self._write_state(latest)
+        return result
+
     def recover_failed_restore(self) -> CornerResult:
         """Timer-safe subset of ``recover_failed``: restore recovery only (#2187).
 
@@ -3476,10 +3641,22 @@ class RetroCornerManager:
         only settles a proven terminal restore or replays the already recorded
         restore inside that record's own bounded deadline. The caller owns the
         attempt budget and backoff; this method is idempotent per record.
+
+        A record parked at ``restoring`` is the same bounded replay: the
+        rotation only ever sees the BUSY row and the legacy restoring retry
+        tick is unreachable while rotation is enabled, so this entry drives
+        the recorded finish instead of letting the slot wedge every corner.
         """
 
         with self._locked():
             state = self._read_state()
+            if state.get("status") == "restoring":
+                try:
+                    return self._drive_recorded_restore(state)
+                except Exception as exc:
+                    return CornerResult("failed", game=state.get("game"),
+                                        previous_game=state.get("previous_game"),
+                                        detail=_safe_detail(exc))
             if not self._restore_failure_candidate(state):
                 return CornerResult("noop", detail="not-a-restore-failure")
             terminal = self._recover_terminal_hanjuku_restore(state)
@@ -3521,6 +3698,15 @@ class RetroCornerManager:
         now = self._local_now()
         with self._locked():
             state = self._read_state()
+            # A slot the rotation already released (pinned proof the shared
+            # slot is clear, retirement deferred) has nothing left to recover:
+            # report noop so the fixed recovery entry can still reach
+            # ``corner-rotation recover`` and clear the rotation latch, instead
+            # of refusing on a row that is intentionally kept ``failed``.
+            if state.get("status") == "failed" and isinstance(
+                    state.get("released_settle_pending"), dict):
+                return CornerResult("noop", game=state.get("game"),
+                                    detail="already released by rotation")
             # Deliberately ahead of the recovery-required gate below: a
             # quiesce_failed slot is not a canonical-recovery failure, so the
             # retry path must not claim it.
@@ -3539,6 +3725,16 @@ class RetroCornerManager:
             restored = self._recover_restore_failed(state)
             if restored is not None:
                 return restored
+            # A crash between the durable ``restoring`` write and the restore
+            # switch leaves no automatic path that finishes it: the common
+            # rotation only sees the BUSY row and waits forever, and the
+            # ``restoring`` retry tick is unreachable while rotation is
+            # enabled.  Replaying the already recorded finish is the same
+            # bounded operation the stop path performs, so the fixed operator
+            # entry drives it here after the recorded-request gate proves the
+            # restore still belongs to this corner.
+            if state.get("status") == "restoring":
+                return self._drive_recorded_restore(state)
             if not self._failed_state_is_recoverable(state):
                 return CornerResult("noop", detail="failed-slot-not-recoverable")
             target = state.get("game")
@@ -3598,6 +3794,31 @@ class RetroCornerManager:
         if resumed is None:
             return CornerResult("failed", game=target, detail="failed-slotの再開状態を作成できません")
         return self._wait_and_finish(resumed)
+
+    def seal_dead_save(self, runtime_id: str) -> CornerResult:
+        """Seal a dead runtime's finished manual save as its boundary.
+
+        Operator-only companion of ``recover_runtime`` for the case where the
+        runtime is already gone and canonical no longer owns it, so relaunching
+        it is impossible: without the seal the newest progress can never be
+        resumed ("Hanjuku reached boundary identity mismatch") and the corner
+        would restart from an older chapter.  Every precondition — dead
+        runtime, completed manual save request, newer complete checkpoint — is
+        re-proved here; the caller only names the runtime.
+        """
+        from . import hanjuku_resume, hanjuku_run
+        from .retroarch_boundary import read_record
+        state_dir = Path(self.g.state_dir)
+        runtime = state_dir / 'runtimes' / validate_runtime_id(runtime_id)
+        run = read_record(runtime / hanjuku_run.RUN_FILE)
+        if not isinstance(run, dict) or not run:
+            raise RetroCornerError('復旧対象runtimeにrun記録がありません')
+        spec = RuntimeSpec.from_runtime(state_dir, dict(run, adapter=str(run.get('adapter') or 'retroarch')))
+        adapter = make_coordinator_adapter(self.g, spec)
+        sealed = hanjuku_resume.seal_dead_manual_save(
+            self.g, spec.runtime_id, adapter=adapter)
+        return CornerResult('completed', game='hanjuku-hero',
+                            detail=f"sealed {sealed['checkpoint']} ({sealed['bytes']} bytes)")
 
     def recover_runtime(self) -> CornerResult:
         """Relaunch a dead scripted runtime, then end the corner safely.
@@ -3716,34 +3937,50 @@ class RetroCornerManager:
             return stop_manual(self.g, self, self._stop_direct, busy_callback=self._stop_direct)
         return self._stop_direct()
 
+    def _request_hanjuku_save(self, state: dict[str, object]) -> None:
+        """Write the manual-save request that authorizes a Hanjuku stop.
+
+        The caller must hold ``self._locked()`` (the lock is not re-entrant).
+        This is the explicit operator-stop contract: the save request carries
+        the same request id the restore switch will use, and
+        ``allow_unsaved_stop`` only permits the stop when the save itself
+        fails.  Natural endings and non-scripted games never opt in.
+
+        A refusal raises before the caller can write ``restoring``.  The
+        durable stop marker and the active owner are left untouched, so the
+        operator can retry the stop instead of it being silently converted
+        into an unsaved restore.
+        """
+        from .agent.fence import shared_section
+        from .naming import runtime_directory
+        from .retroarch_boundary import MANUAL_SAVE_FILE
+
+        def request_save():
+            canonical, _ = self.store.canonical.load()
+            active = canonical.get("active") or {}
+            expected = state.get("bot_identity")
+            if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
+                    or active.get("game") != "hanjuku-hero"
+                    or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
+                           ("game", "runtime_id", "generation", "lease_id"))):
+                raise RetroCornerError("Hanjuku stop runtime identity is unverified")
+            request_id = new_request_id()
+            atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
+                              / MANUAL_SAVE_FILE,
+                              {**expected, "schema": 1, "request_id": request_id,
+                               "allow_unsaved_stop": True})
+            state.update(status="active", switch_request_id=request_id,
+                         manual_stop_requested=True)
+
+        shared_section(self.g.state_dir, request_save)
+
     def _stop_direct(self) -> CornerResult:
         with self._locked():
             state = self._read_state()
             if self._scripted_hanjuku(state) and state.get("status") in {"active", "failed"}:
                 # Explicit operator stop attempts a save, then permits an
                 # unsaved stop on failure. Natural endings do not opt in.
-                from .agent.fence import shared_section
-                from .naming import runtime_directory
-                from .retroarch_boundary import MANUAL_SAVE_FILE
-
-                def request_save():
-                    canonical, _ = self.store.canonical.load()
-                    active = canonical.get("active") or {}
-                    expected = state.get("bot_identity")
-                    if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
-                            or active.get("game") != "hanjuku-hero"
-                            or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
-                                   ("game", "runtime_id", "generation", "lease_id"))):
-                        raise RetroCornerError("Hanjuku stop runtime identity is unverified")
-                    request_id = new_request_id()
-                    atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
-                                      / MANUAL_SAVE_FILE,
-                                      {**expected, "schema": 1, "request_id": request_id,
-                                       "allow_unsaved_stop": True})
-                    state.update(status="active", switch_request_id=request_id,
-                                 manual_stop_requested=True)
-
-                shared_section(self.g.state_dir, request_save)
+                self._request_hanjuku_save(state)
             if state.get("status") not in {"active", "restoring"}:
                 return CornerResult("noop", detail="not-active")
             self._ensure_runtime()
@@ -3751,8 +3988,16 @@ class RetroCornerManager:
 
     def tick(self) -> CornerResult:
         # Retry our durable result after a network failure, even after teardown.
-        from .hanjuku_predictions import tick as prediction_tick
-        prediction_tick(self.g)
+        # Through the trampoline (#3838) so a deploy reaches this worker live.
+        # tick_active also lets a legacy/no-rotation timer adopt a live run
+        # whose corner observe loop never created the round (#4228).
+        from . import hanjuku_hotload
+        prediction_module = hanjuku_hotload.module('hanjuku_predictions')
+        prediction_tick = getattr(prediction_module, 'tick_active', None)
+        if callable(prediction_tick):
+            prediction_tick(self.g)
+        else:
+            prediction_module.tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager
@@ -4516,6 +4761,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "recover-failed",
         help="canonical failed後のレトロ枠を安全に復旧し、同じゲームを再試行する",
     )
+    seal = sub.add_parser(
+        "seal-dead-save",
+        help="消滅したruntimeの完了済み手動セーブを境界として確定する（復旧専用）",
+    )
+    seal.add_argument("--runtime-id", required=True)
     sub.add_parser(
         "recover-runtime",
         help="死んだscripted runtimeを正規手順で再起動し、セーブを試みた停止でコーナーを終了する",
@@ -4578,8 +4828,10 @@ def main(argv: list[str] | None = None) -> int:
         method_name = {
             "recover-failed": "recover_failed",
             "recover-runtime": "recover_runtime",
+            "seal-dead-save": "seal_dead_save",
         }.get(args.command, args.command)
-        result = getattr(manager, method_name)()
+        result = (manager.seal_dead_save(args.runtime_id)
+                  if args.command == "seal-dead-save" else getattr(manager, method_name)())
         print(
             json.dumps(
                 {

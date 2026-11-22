@@ -15,6 +15,7 @@ from docich import hanjuku_chart as chart, hanjuku_policy as policy, hanjuku_ref
 from docich.hanjuku_egg_reference import GENERAL_EGGS, general_max_hp
 from docich.hanjuku_screen import Battle, Screen
 from test_hanjuku_sortie_evidence import foot_order_memory, measured_card_select, memory
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def test_shogun_table_cross_checks_char_csv_and_egg_reference():
@@ -172,7 +173,7 @@ def test_deploy_step_carries_the_strong_card_after_the_planned_one():
 
 def test_sortie_without_planned_cards_still_carries_a_held_strong_card():
     mem = memory()                                    # 1-B1 ではなく 1-A1 (予定札なし)
-    mem['active'] = '1-A1'
+    _plan_region(mem)['active'] = '1-A1'
     screen = measured_card_select(('クースカン', 'フットバース', 'イッテツーン', 'ブラッキー'))
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     assert mem['strong_card_kit']['1-A1'] == 'クースカン'
@@ -210,12 +211,16 @@ def test_strong_general_opens_with_the_carried_strong_card():
     assert rec['strong_enemy']['enemy']['combat'] == 13 and rec['strong_enemy']['enemy']['hp'] == 99
 
 
-def test_weak_general_keeps_the_strong_card_in_reserve():
+def test_weak_general_also_opens_with_the_strong_card():
+    """Owner 2026-11-04: 切り札はピンチの救済ではなく状況を有利にするために使う。
+
+    A weak enemy is no reason to keep the carried card in reserve.
+    """
     mem = battle_memory('1-A1', 'キャラウェイ', 'ヴィーナス')   # 4/40 vs 12/82
     policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
-    assert mem['battle'].get('card_flow') is None
-    assert mem['strong_card_kit']['1-A1'] == 'クースカン'      # 携行は維持する
-    assert not [r for r in mem['_records'] if r['decision'] == 'battle_card']
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert mem['strong_card_kit']['1-A1'] == 'クースカン'
+    assert [r for r in mem['_records'] if r['decision'] == 'battle_card']
 
 
 def test_boss_enemy_opens_with_the_carried_strong_card():
@@ -244,8 +249,8 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
     step = 'A:abcdef123456:J1'
     mem = battle_memory(step, 'キャラウェイ', 'ヴィーナス')
     mem['strong_card_kit'] = {step: card}
-    mem['order_context'] = {step: {'observed_metric': {'cards': [card]}}}
-    mem['chart_plan'] = {'orders': [{'step': step, 'general': 'ヴィーナス',
+    _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': [card]}}}
+    _plan_region(mem)['chart_plan'] = {'orders': [{'step': step, 'general': 'ヴィーナス',
                                     'source': 'アルマムーン', 'cards': [],
                                     'target': 'ジョンリギ', 'after': None}]}
 
@@ -254,15 +259,49 @@ def test_adjusted_strong_card_does_not_enter_ungated_derived_tactics(card):
     assert policy._deploy_cards(policy._order(mem), mem) == [card]
     assert not [t for t in policy._tactics(mem, step)
                 if t.get('step') == step and t['card'] == card]
+    # The dedicated strong tactic opens it, whoever the enemy is (owner 2026-11-04).
     policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
-    assert mem['battle'].get('card_flow') is None
-    assert not [r for r in mem['_records'] if r['decision'] == 'battle_card']
+    assert mem['battle']['card_flow']['card'] == card
+    assert mem['battle']['card_flow']['tactic_id'].startswith('strong:')
+
+
+def adjusted_order_memory(step, enemy, ally, cards):
+    mem = battle_memory(step, enemy, ally)
+    _plan_region(mem)['order_context'] = {step: {'observed_metric': {'cards': list(cards)}}}
+    _plan_region(mem)['chart_plan'] = {'orders': [{'step': step, 'general': ally, 'source': 'アルマムーン',
+                                    'cards': list(cards), 'target': 'クロチェット', 'after': None}]}
+    return mem
+
+
+def test_a_strong_general_opens_with_the_strong_card_before_an_unverified_default():
+    """g1133 2026-11-04 16:00:50 (キール vs マンゴスチン, HP85 vs 65).
+
+    The order carried ころぼぐんだん + クースカン. The unverified default
+    "use any carried card at the opening" ranked before the strong-only
+    tactic, so the dropper opened and the strong card never fired.
+    """
+    step = 'A:10e074de:M387e01'
+    mem = adjusted_order_memory(step, 'マンゴスチン', 'キール',
+                                ['ころぼぐんだん', 'クースカン'])
+    policy.battle_step(battle_screen('マンゴスチン', 'キール'), mem)
+    assert (mem['battle'].get('card_flow') or {}).get('card') == 'クースカン'
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'battle_card' and rec.get('strong_enemy', {}).get('rule') == 'hp'
+
+
+def test_a_weak_general_opens_with_the_strong_card_before_the_unverified_one():
+    """The strong card opens even against a weak general; the unverified default stays last."""
+    step = 'A:10e074de:M387e01'
+    mem = adjusted_order_memory(step, 'キャラウェイ', 'ヴィーナス',
+                                ['ころぼぐんだん', 'クースカン'])
+    policy.battle_step(battle_screen('キャラウェイ', 'ヴィーナス'), mem)
+    assert (mem['battle'].get('card_flow') or {}).get('card') == 'クースカン'
 
 
 def test_strong_card_requires_measured_carry_even_when_the_plan_includes_it():
     mem = battle_memory('1-A1', 'バタール', 'ココット')
     mem['strong_card_kit'] = {'1-A1': 'ミックミー'}
-    mem['order_context']['1-A1']['observed_metric']['cards'] = []
+    _plan_region(mem)['order_context']['1-A1']['observed_metric']['cards'] = []
 
     # The plan still contains the strong-card addition; the readable sortie
     # panel is authoritative and shows that no card was actually carried.

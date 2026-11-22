@@ -17,7 +17,7 @@ D = Decimal
 DEFAULT_TAKER_FEE_RATE = D("0.0012")  # 12 bps
 DEFAULT_SLIPPAGE_BPS = D("5")         # 5 bps each execution
 BPS = D("10000")
-COST_MODEL_VERSION = "paper-cost-v1"
+COST_MODEL_VERSION = "paper-cost-v2"  # v2: buys charge max(quote, base) taker fee
 
 
 @dataclass(frozen=True)
@@ -42,21 +42,28 @@ class ExecutionCost:
 def resolve_fee_rate(market: MarketInfo | None, side: str) -> tuple[Decimal, str]:
     """Return (taker fee rate, source) for a market/side pair.
 
-    Side-aware: spot buys settle in base, sells settle in quote, so the
-    side-native fee field wins. Any explicit market fee beats the
-    conservative fallback; a missing market or missing fee metadata
-    fails safe to the fallback.
+    Sells use the quote-side fee. Buys use the higher of the quote-side and
+    base-side fees: bitbank publishes ``taker_fee_rate_base`` = 0 next to a
+    non-zero ``taker_fee_rate_quote`` for its JPY pairs, and trusting the zero
+    base rate made every PAPER buy free (a ledger audit on 2026-11-07 found
+    all 5,188 buys with a recorded cost at fee_rate=0). Charging the higher
+    known rate keeps PAPER costs conservative until real fills show which
+    currency the fee is taken in. A legacy single ``taker_fee_rate`` is used
+    when no side-specific rate is known; a missing market or missing fee
+    metadata fails safe to the fallback.
     """
     normalized = str(side or "").strip().lower()
     if normalized not in {"buy", "sell"}:
         raise TradingValidationError("paper fill side must be buy or sell")
     if market is not None:
         if normalized == "buy":
-            candidates = (
-                market.taker_fee_rate_base,
-                market.taker_fee_rate,
-                market.taker_fee_rate_quote,
-            )
+            known = [
+                rate for rate in (market.taker_fee_rate_quote, market.taker_fee_rate_base)
+                if rate is not None
+            ]
+            if known:
+                return as_decimal(max(known), "taker_fee_rate"), "market"
+            candidates = (market.taker_fee_rate,)
         else:
             candidates = (
                 market.taker_fee_rate_quote,

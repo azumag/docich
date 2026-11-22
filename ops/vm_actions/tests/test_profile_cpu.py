@@ -291,5 +291,100 @@ class CompareAndCliTests(unittest.TestCase):
         self.assertEqual(mod.percentile(list(range(1, 101)), 95), 95)
 
 
+class TelemetryReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = pathlib.Path(self.tmp.name) / "agent_telemetry"
+        self.dir.mkdir()
+
+    def write(self, name, data):
+        path = self.dir / name
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def fixture(self, **overrides):
+        data = {
+            "schema": "docich.agent_telemetry.v1",
+            "game": "hanjuku-hero",
+            "brain": "command",
+            "role": "agent",
+            "counters": {
+                "cycles": 40,
+                "captures": 40,
+                "capture_spawns": 40,
+                "brain_spawns": 39,
+                "unexpected_counter": 999,
+            },
+            "seconds": {"capture_s": 1.25, "observe_s": 2.5, "unexpected_s": 1.0},
+            "written_at": 1_800_000_000,
+            "payload": "SECRET-FRAME",
+            "cmdline": "--token=SECRET",
+        }
+        data.update(overrides)
+        return data
+
+    def test_reads_agent_and_corner_snapshots_with_fixed_fields_only(self):
+        self.write("hanjuku-hero.json", self.fixture())
+        self.write("hanjuku-hero.corner.json", self.fixture(role="corner", brain="corner"))
+        out = mod.read_telemetry(self.dir)
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual([row["role"] for row in out["snapshots"]], ["agent", "corner"])
+        agent = out["snapshots"][0]
+        self.assertEqual(agent["game"], "hanjuku-hero")
+        self.assertEqual(agent["counters"]["captures"], 40)
+        self.assertEqual(agent["counters"]["brain_spawns"], 39)
+        self.assertNotIn("unexpected_counter", agent["counters"])
+        self.assertEqual(agent["seconds"]["capture_s"], 1.25)
+        self.assertNotIn("unexpected_s", agent["seconds"])
+        encoded = json.dumps(out, sort_keys=True)
+        for leaked in ("SECRET", "payload", "cmdline", "token"):
+            self.assertNotIn(leaked, encoded)
+
+    def test_foreign_or_malformed_files_are_skipped(self):
+        self.write("foreign.json", {"schema": "other", "counters": {"cycles": 1}})
+        self.write("bad.json", {"schema": "docich.agent_telemetry.v1", "counters": "no"})
+        out = mod.read_telemetry(self.dir)
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(len(out["snapshots"]), 1)
+        self.assertEqual(out["snapshots"][0]["counters"], {})
+
+    def test_symlink_and_missing_directory_are_not_followed(self):
+        real = pathlib.Path(self.tmp.name) / "real.json"
+        real.write_text(json.dumps(self.fixture()), encoding="utf-8")
+        (self.dir / "link.json").symlink_to(real)
+        out = mod.read_telemetry(self.dir)
+        self.assertEqual(out["status"], "empty")
+        self.assertEqual(mod.read_telemetry(self.dir / "missing")["status"], "absent")
+        self.assertEqual(mod.read_telemetry(None)["status"], "absent")
+
+
+class TelemetryReportTests(unittest.TestCase):
+    def test_sample_report_carries_the_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = FakeProc(tmp + "/proc")
+            proc.root.mkdir()
+            proc.write_host()
+            telemetry_dir = pathlib.Path(tmp) / "agent_telemetry"
+            telemetry_dir.mkdir()
+            (telemetry_dir / "g.json").write_text(json.dumps({
+                "schema": "docich.agent_telemetry.v1",
+                "game": "g", "brain": "b", "role": "agent",
+                "counters": {"cycles": 1}, "seconds": {"capture_s": 0.5},
+                "written_at": 1_800_000_000,
+            }), encoding="utf-8")
+            clock = [0.0]
+
+            def fake_sleep(sec):
+                clock[0] += sec
+
+            report = mod.sample(proc.root, 1, 1.0, None, "unit",
+                                sleep=fake_sleep, monotonic=lambda: clock[0],
+                                telemetry_dir=telemetry_dir)
+        self.assertEqual(report["telemetry"]["status"], "ok")
+        self.assertEqual(report["telemetry"]["snapshots"][0]["counters"]["cycles"], 1)
+        self.assertIn("agent telemetry", mod.render_text(report))
+
+
 if __name__ == "__main__":
     unittest.main()

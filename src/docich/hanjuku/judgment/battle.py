@@ -6,6 +6,8 @@ current battle state and returns a judgment or bookkeeping update; none of
 them reads the screen or produces pad input (see ``flows.battle``).
 """
 from __future__ import annotations
+from ..state import egg_memory
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from dataclasses import asdict
 
@@ -13,7 +15,7 @@ from ...hanjuku_egg_reference import GENERAL_EGGS, enemy_egg_triggers, general_m
 from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_stock import observed_uses
 from ..decision_log import _record
-from ..os_layer.readers import CARD_NAMES
+from ..os_layer.readers import ALL_CARD_NAMES, CARD_NAMES
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS
 from ..strategy.kit import CARD_IDS, ENEMY_EGG_CARD_ID_SUM, _deploy_cards, _is_boss_order
 from ..strategy.orders import _order_for_step, _sortie_step_for, _tactics
@@ -26,7 +28,7 @@ ENTRY_RETURN_KINDS = frozenset({'main_menu', 'castle_info', 'castle_menu',
 
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     captured = set(mem.get('captured', []))
     if attack.get('side') == 'defense' or (attack.get('general') and attack.get('general') == ally):
         side = attack.get('side')
@@ -38,7 +40,7 @@ def _battle_context(mem, ally):
         return {'castle': attack.get('castle'), 'side': side, 'step': step,
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
-    en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
+    en_route = [step for step, sortie in _sorties(mem).items()
                 if sortie.get('general') == ally
                 and sortie.get('status') in ('en_route', 'arrived', 'launched_unconfirmed')
                 and sortie.get('target') not in captured]
@@ -47,7 +49,7 @@ def _battle_context(mem, ally):
                 'context': 'unclassified_location'}
     if en_route:
         return {'castle': None, 'side': None, 'step': None, 'context': 'ambiguous_sortie'}
-    for castle, info in (mem.get('launched') or {}).items():
+    for castle, info in (_world(mem).get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
             return {'castle': None, 'side': None, 'step': info.get('step'),
                     'context': 'unclassified_location'}
@@ -64,9 +66,25 @@ def _boss_tactics_allowed(mem, cur):
     if cur.get('entry_evidence') == 'measured_boss_entry':
         return True
     chapter = mem.get('chapter')
+    enemy = cur.get('enemy')
     boss = chart.BOSSES.get(chapter)
-    return bool(boss and cur.get('enemy') == boss
-                and _is_boss_order(_order_for_step(mem, cur.get('step')), mem))
+    is_chapter_boss = bool(
+        enemy and (
+            enemy == boss
+            or (enemy in reference.BOSS_GENERALS
+                and (reference.general_profile(enemy) or {}).get('debut') == chapter)
+        )
+    )
+    if not is_chapter_boss:
+        return False
+    if _is_boss_order(_order_for_step(mem, cur.get('step')), mem):
+        return True
+    # Owner 2026-11-21: 卵を使われる前にバルムンク×2. Chapter 9's boss is met
+    # by a field ambush, so there is no charted boss order; the panel reading
+    # せいめいたい (boss general) or ハデス (chart boss) is the authorization
+    # (#4855). Other chapters keep the matching-sortie contract
+    # (test_hanjuku_boss_events).
+    return chapter == chart.MOVING_BOSS_CHAPTER
 
 
 def _battle_labels(cur):
@@ -80,10 +98,10 @@ def _bind_battle_strategy(mem, cur):
         return
     step = cur.get('step')
     retry = (mem.get('retry_context') or {}).get(step)
-    sortie = (mem.get('order_context') or {}).get(step) or {}
+    sortie = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     if sortie.get('actual_general') != cur.get('ally'):
         sortie = {}
-    if retry or (mem.get('card_override') or {}).get(step):
+    if retry or (_plan_region(mem).get('card_override') or {}).get(step):
         cur['strategy_variant'] = (retry or {}).get('strategy_variant', 'retry_with_opening_cards')
         cur['deviation_reason'] = (retry or {}).get('deviation_reason') or '保存済みの再攻撃用切り札計画を適用（元の敗北詳細は未分類）'
         cur['strategy_expected'] = (retry or {}).get('expected_metric') or {'goal': '敵HP減少と戦闘勝利'}
@@ -156,12 +174,19 @@ def _card_use_unclassified(mem, cur, reason):
         _record(mem, 'battle_card_open_unclassified', **_battle_labels(cur), card=card,
                 expected_metric='実メニューと札一覧の選択',
                 observed_metric={'selection_planned': False, 'attempts': count,
+                                 'stage': flow.get('stage'), 'cause': reason,
                                  'retry_allowed': bool(tid and count < CARD_OPEN_ATTEMPTS)},
                 reason='札の選択前に操作が戻ったため携行札を差し引かず、有限回だけ再試行')
         cur['card_flow'] = None
         return
     if card:
         cur.setdefault('cards_unclassified', []).append(card)
+        # The banner hides the HP panel, so the drop is only visible once the
+        # menu closes; leave a pending confirmation for battle_step.
+        if type(flow.get('enemy_hp_at_open')) is int:
+            cur['card_pending_confirm'] = {'card': card,
+                                           'hp': flow['enemy_hp_at_open'],
+                                           'tick': int(mem.get('tick') or 0)}
         # A selected card with no calibrated receipt still leaves the kit for
         # this sortie: re-planning it would open an empty list next battle.
         step = cur.get('step')
@@ -175,6 +200,9 @@ def _card_use_unclassified(mem, cur, reason):
     _record(mem, 'battle_card_unclassified', **_battle_labels(cur), card=card,
             expected_metric='選択した切り札の実使用告知',
             observed_metric={'confirmation': 'unclassified'}, reason=reason)
+    if flow.get('egg_drop_only'):
+        _egg_drop_trace(mem, cur, 'unclassified', card=card,
+                        tactic_id=flow.get('tactic_id'), reason=reason)
     cur['card_flow'] = None
 
 
@@ -215,7 +243,7 @@ def _strong_cards_carried(mem, cur):
     kit = (mem.get('strong_card_kit') or {}).get(step)
     if not kit or not step:
         return []
-    context = (mem.get('order_context') or {}).get(step) or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
     observed = (context.get('observed_metric') or {}).get('cards')
     if not isinstance(observed, list):
         return []
@@ -299,6 +327,26 @@ def _control_melee_advantage(cur, enemy_hp, ally_soldiers, enemy_soldiers):
             and hp > GENERAL_CRITICAL_RETREAT_HP
             and hp * 10 > ally[0] * BEHIND_EGG_RATIO_TENTHS
             and hp >= enemy_hp * 2)
+
+
+def _card_halving_leads(cur, estimate):
+    """クースカン halves the general's HP: after it we are not behind in HP.
+
+    Owner 2026-11-04: 切り札はピンチの救済ではなく状況を有利にするために使う。
+    Holding it does not stop a lost melee, it only throws the card away (g1133
+    22:45: ally 38 vs enemy 46, クースカン refused six times in 36 s with no
+    input, then the general retreated with the card unused; 14 refusals in 90
+    minutes). The strict follow-up projection (``_control_melee_advantage``:
+    twice the HP, army and combat parity) still decides the melee hold after
+    the card; this only decides whether to open it. Bosses and unread HP keep
+    the old refusal.
+    """
+    hp, remaining = cur.get('ally_hp'), estimate['remaining_hp_upper']
+    return (estimate['effect_kind'] == 'half_enemy_hp' and not estimate['self_harm']
+            and estimate['target_kind'] == 'general'
+            and cur.get('enemy') not in reference.BOSS_GENERALS
+            and type(estimate['damage_lower_bound']) is int and estimate['damage_lower_bound'] > 0
+            and type(remaining) is int and type(hp) is int and hp > 0 and remaining <= hp)
 
 
 def _card_melee_projection(cur, card, context, estimate):
@@ -420,6 +468,7 @@ def _card_wears_down_enemy(estimate):
 
     Owner 2026-11-02: damage the soldiers absorb is not lost, the army gap it
     opens wins the melee. Halving, healing and self-harm keep their own rules.
+
     """
     raw, pool = estimate['raw_damage_min'], estimate['enemy_soldier_hp_upper']
     soldiers = estimate['enemy_soldiers_upper']
@@ -427,6 +476,35 @@ def _card_wears_down_enemy(estimate):
             or type(raw) is not int or raw <= 0 or type(pool) is not int):
         return False
     return raw > pool or (soldiers > 0 and raw >= pool / soldiers)
+
+
+def _boss_card_wears_down_enemy(estimate, cur):
+    """#4411: a boss hit that the ordinary "remove a soldier" proxy misses.
+
+    A boss soldier has 100 HP, so a 90-damage card never removes one even
+    though the pool really drops.  A positive guaranteed raw hit is the
+    whittle-down itself.  This is not a claim about the general's own HP:
+    damage_lower_bound stays as the estimator computed it, and the gate
+    keeps every egg flag and threat untouched.  The stale-chain guard is
+    scoped here so the ordinary permission above is never withdrawn.
+    """
+    if estimate['target_kind'] != 'boss_general' or _card_wears_down_enemy(estimate):
+        return False
+    raw, pool = estimate['raw_damage_min'], estimate['enemy_soldier_hp_upper']
+    if (estimate['effect_kind'] not in CLASH_SAFE_EFFECTS or estimate['self_harm']
+            or type(raw) is not int or raw <= 0 or type(pool) is not int):
+        return False
+    return not _card_control_chain_pending(cur)
+
+
+def _card_control_chain_pending(cur):
+    """A half/control card is selected but its effect has not been re-observed.
+
+    #4411: an unconfirmed クースカン/ブレイコウ chain must not authorize a
+    boss hit.  The next real panel has to prove the soldier state again.
+    """
+    pending = [*(cur.get('cards_selected') or []), *(cur.get('cards_unclassified') or [])]
+    return any(card in CARD_CONTROL_SETUP for card in pending)
 
 
 def _card_damage_gate(mem, cur, card, *, listed_cards=None):
@@ -454,7 +532,12 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
               'egg_risk_flags': asdict(triggers), 'egg_drop': drop,
               'egg_reach': reach, 'listed_followups': []}
     finished = any(type(cur.get(key)) is int and cur[key] <= 0 for key in ('enemy_hp', 'ally_hp'))
-    if (not finished and cur.get('card_context_unclassified') and not summoned
+    # Owner 2026-11-06: バルムンクはボス専用。チャート札にも使用直前の制限を適用。
+    measured_boss = bool(boss or cur.get('enemy') in chart.BOSSES.values()
+                         or cur.get('entry_evidence') == 'measured_boss_entry')
+    if card in reference.BOSS_ONLY_CARDS and not measured_boss:
+        result['role'] = 'boss_only_balmung'
+    elif (not finished and cur.get('card_context_unclassified') and not summoned
             and not cur.get('card_combatants_changed') and drop and drop.get('drops')):
         # 卵落 depends on the generals' max HP, not on this panel. g1097 07:11:
         # ミックミー would have dropped the egg and was refused as unclassified.
@@ -474,7 +557,7 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         result.update(allowed=True, role='enemy_egg_triggers_unreachable')
     elif drop and drop.get('drops'):
         result.update(allowed=True, role='egg_drop_candidate_not_a_kill')
-    elif _card_wears_down_enemy(estimate):
+    elif _card_wears_down_enemy(estimate) or _boss_card_wears_down_enemy(estimate, cur):
         # Owner 2026-11-02: a card need not finish the enemy in one hit. Holding
         # it does not stop the enemy's egg either; the melee reaches the same
         # triggers. g1097 07:05: ミックミー was refused four times with ヴィーナス
@@ -489,7 +572,9 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         # number of クースカン selections or from inferred soldier HP loss.
         followups = []
         for other in dict.fromkeys(listed_cards):
-            if other == card or other not in CARD_NAMES or other in CARD_CONTROL_SETUP:
+            if (other == card or other not in ALL_CARD_NAMES
+                    or other in CARD_CONTROL_SETUP
+                    or (other in reference.BOSS_ONLY_CARDS and not measured_boss)):
                 continue
             predicted = reference.card_damage_estimate(other, **context)
             raw = predicted.get('raw_damage_min')
@@ -511,6 +596,8 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
             melee = _card_melee_projection(cur, card, context, estimate)
             if melee:
                 result.update(allowed=True, role='control_then_melee_not_a_kill', melee_followup=melee)
+            elif card == 'クースカン' and _card_halving_leads(cur, estimate):
+                result.update(allowed=True, role='halving_not_a_kill')
             else:
                 result['role'] = 'control_has_no_observed_followup'
     elif estimate['lethal'] is None:
@@ -578,25 +665,12 @@ def _card_gate_choice(mem, cur, candidates, names):
     else:
         choice = None
         for role in ('single_card_lethal', 'egg_drop_candidate_not_a_kill', 'damage_not_a_kill',
-                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill'):
+                     'observed_control_chain_not_a_kill', 'control_then_melee_not_a_kill',
+                     'halving_not_a_kill'):
             choices = [card for card in candidates if gates[card]['role'] == role]
             if choices:
                 choice = _rescue_card(choices, cur)
-                # Conserve firepower only between already-proven finishers.
-                # Critical/unknown HP keeps the existing emergency order;
-                # healing above, explicit chart choices, and final A gates
-                # remain unchanged. Do not rank guessed or self-harming hits.
-                if (role == 'single_card_lethal'
-                        and type(cur.get('ally_hp')) is int
-                        and cur['ally_hp'] > GENERAL_CRITICAL_RETREAT_HP):
-                    safe = [card for card in choices
-                            if gates[card]['estimate']['self_harm'] is False
-                            and type(gates[card]['estimate']['raw_damage_min']) is int
-                            and gates[card]['estimate']['raw_damage_min'] > 0]
-                    if safe:
-                        minimum = min(gates[card]['estimate']['raw_damage_min'] for card in safe)
-                        choice = _rescue_card([card for card in safe
-                            if gates[card]['estimate']['raw_damage_min'] == minimum], cur)
+                # Stronger finishers need not be conserved for a later fight.
                 break
         if choice is None:
             choice = _rescue_card(candidates, cur)
@@ -668,6 +742,7 @@ def _card_damage_recheck_resources(mem, cur):
 
 CARD_OPEN_ATTEMPTS = 2        # initial chart opening plus one bounded retry
 CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
+CARD_LIST_OPEN_WAITS = 4      # battle panels tolerated while the card list draws (#4645)
 CARD_LIST_CURSOR_LIMIT = 10  # same finite list budget as survival selections
 CARD_ANNOUNCE_LIMIT = 6      # shared by chart and survival confirmation waits
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
@@ -746,6 +821,24 @@ def _combat_behind(cur):
             and ours * 10 <= theirs * BEHIND_EGG_RATIO_TENTHS)
 
 
+def _summon_pair_behind(cur: dict):
+    """Complete summon HP pair when general HPs cannot ground a comparison."""
+    if not (cur.get('egg_battle') or cur.get('card_summon_observed')):
+        return None
+    ally_hp, enemy_hp = cur.get('ally_hp'), cur.get('enemy_hp')
+    ally_unread = type(ally_hp) is not int or ally_hp <= 0
+    enemy_unread = type(enemy_hp) is not int or enemy_hp <= 0
+    if not (ally_unread or enemy_unread):
+        return None
+    summon_ally = cur.get('summon_ally_hp')
+    summon_enemy = cur.get('summon_enemy_hp')
+    if type(summon_ally) is not int or type(summon_enemy) is not int:
+        return None
+    if not (0 < summon_ally <= 9999 and 0 < summon_enemy <= 9999):
+        return None
+    return summon_ally < summon_enemy
+
+
 def _behind(cur: dict) -> bool:
     if not (cur.get('egg_battle') or cur.get('card_summon_observed')):
         balance = _melee_balance(cur)
@@ -757,15 +850,18 @@ def _behind(cur: dict) -> bool:
             return True  # unknown attack cannot license ordinary melee conservation
     # Monster-menu comparisons intentionally supply HP alone, not generals.
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
-    if type(enemy_hp) is not int or type(ally_hp) is not int:
-        return False
+    if type(enemy_hp) is not int or type(ally_hp) is not int or ally_hp <= 0 or enemy_hp <= 0:
+        summon = _summon_pair_behind(cur)
+        return False if summon is None else summon
     return ally_hp < enemy_hp
 
 
 # Only non-sacrificial cards are eligible for automatic survival use. Rank
-# healing first, then control/damage; this is not a guaranteed damage model.
-# Effects: https://gcgx.games/hanjuku/kirihuda.html
-SURVIVAL_CARDS = ('エンジェリン', 'キャトルミュー', 'ミックミー', 'マグネガキン', 'クースカン',
+# healing first, then boss-only バルムンク (gated to measured bosses by
+# _card_damage_gate, #4855), then control/damage; this is not a guaranteed
+# damage model. Effects: https://gcgx.games/hanjuku/kirihuda.html
+SURVIVAL_CARDS = ('エンジェリン', 'バルムンク', 'キャトルミュー', 'ミックミー',
+                  'マグネガキン', 'クースカン',
                   'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
                   'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
@@ -838,6 +934,64 @@ def _carried_kit(mem, cur):
     return None if order is None else _deploy_cards(order, mem)
 
 
+# #4456: a defense battle has no sortie order, so its kit is unknown until the
+# real きりふだ list is read. The flow layer records that read on the battle;
+# bounded and scope-bound so a stale or foreign menu never becomes a kit.
+DEFENSE_MENU_READ_LIMIT = 4
+
+
+def _defense_menu_kit(mem, cur):
+    """Real きりふだ names read in this defense battle, or None when unknown.
+
+    ``cur['defense_card_menu']`` is written only by the flow layer from a
+    readable card list, with no selection and no consumption. Scope binding
+    rejects a menu read from another battle or an older opening panel. An
+    unreadable/empty list is recorded with no names and stays kit_unknown
+    (fail-closed); a defense menu we could not read is never an assumed kit.
+    """
+    if cur.get('side') != 'defense' or cur.get('step'):
+        return None
+    seen = cur.get('defense_card_menu')
+    if not isinstance(seen, dict):
+        # The existing defense survival path already reads the real きりふだ
+        # list and records its names. Reuse that ground truth instead of
+        # opening a second menu (#4456 DSH review: no parallel menu path).
+        rescue = cur.get('survival')
+        listed = rescue.get('listed_cards') if isinstance(rescue, dict) else None
+        if not isinstance(listed, list) or not listed:
+            return None
+        seen = {'cards': listed, 'readings': 1}
+    elif any(seen.get(k) != cur.get(k) for k in
+             ('enemy', 'ally', 'start_enemy_hp', 'start_ally_hp')):
+        return None
+    readings = seen.get('readings')
+    if type(readings) is not int or not 1 <= readings <= DEFENSE_MENU_READ_LIMIT:
+        return None
+    cards = seen.get('cards')
+    if not isinstance(cards, (list, tuple)):
+        return None
+    names = []
+    for name in cards:
+        if isinstance(name, str) and name in reference.CARDS and name not in names:
+            names.append(name)
+    return names[:40] or None
+
+
+def _confirmed_carried_kit(mem, cur):
+    """出撃時に確定した携行札の未使用残り。確定できない戦闘は None。
+
+    ``departure_binding`` は出撃確認で実際に読まれた携行札の確定記録であり、
+    チャートや予定札ではない。確定使用 (``kit_spent``) は ``_deploy_cards``
+    が差し引くため、返る一覧は「確定携行 − 確定使用」の差分だけを残す。
+    バインドが読めない・出撃が未確定の戦闘は、実メニューで確認するため None。
+    """
+    from ..strategy.execution import bound_fields
+    order = _order_for_step(mem, cur.get('step'))
+    if order is None or bound_fields(order, mem) is None:
+        return None
+    return _deploy_cards(order, mem)
+
+
 def _egg_inventory(mem, cur, kit):
     """Bounded display/decision rows for the observed cards (#2364).
 
@@ -905,7 +1059,18 @@ def _egg_plan(mem, cur):
     defense = True if side == 'defense' else False if side == 'attack' else None
     triggers = enemy_egg_triggers(enemy, player_castle_defense=defense)
     kit = _carried_kit(mem, cur)
-    ids = None if kit is None else [CARD_IDS.get(card) for card in kit]
+    kit_source = 'order' if kit is not None else 'unknown'
+    # #4456: a defense battle has no sortie order. Fall back to the real
+    # きりふだ names read by the flow layer, but only when defense, no step,
+    # and the kit is otherwise unknown. A menu we could not read stays unknown.
+    if kit is None and defense is True and not cur.get('step'):
+        menu_kit = _defense_menu_kit(mem, cur)
+        if menu_kit is not None:
+            kit, kit_source = menu_kit, 'menu_read'
+    # #4456 review condition: a defense battle never claims a carried card-ID
+    # total. Even a real menu read cannot prove the enemy's opening-egg gate,
+    # so id_sum / deny_opening_egg stay None whatever the kit source.
+    ids = None if kit is None or defense is True else [CARD_IDS.get(card) for card in kit]
     enemy_max, ally_max, excluded = _egg_max_hp(cur)
     total = (enemy_max + ally_max
              if type(enemy_max) is int and type(ally_max) is int else None)
@@ -924,7 +1089,8 @@ def _egg_plan(mem, cur):
     plan = {'enemy': enemy, 'ally': cur.get('ally'),
             'threat': _egg_threat(triggers), 'has_egg': triggers.has_egg,
             'egg_state': egg_state,
-            'kit_known': kit is not None, 'carried': list(kit or []),
+            'kit_known': kit is not None, 'kit_source': kit_source,
+            'carried': list(kit or []),
             'id_sum': None if ids is None or any(i is None for i in ids) else sum(ids),
             'deny_opening_egg': None,
             'enemy_max_hp': enemy_max, 'ally_max_hp': ally_max,
@@ -974,7 +1140,8 @@ def _egg_plan(mem, cur):
             row['drops'] = prediction['drops']
     plan['cards'] = rows
     # 携行IDの合計が48以上だと敵が開幕で卵を使う (gcgx ai.html)。不明IDは失敗扱い。
-    if kit is not None:
+    # 防衛では携行ID合計未知のため確定しない (#4456 レビュー条件2)。
+    if kit is not None and defense is not True:
         plan['deny_opening_egg'] = plan['id_sum'] is not None and plan['id_sum'] < ENEMY_EGG_CARD_ID_SUM
     if isinstance(plan['sortie_dropper'], dict):
         # 出撃時と戦闘時で同じ対戦相手なら同じ算出になるはず (#1553)。
@@ -990,11 +1157,14 @@ def _egg_plan(mem, cur):
     plan['charted'] = sorted({t['card'] for t in _tactics(mem, cur.get('step'))
                               if t.get('step') in (None, cur.get('step'))
                               and t.get('enemy') in (None, enemy)})
-    if not (plan['threat'] is True and plan['droppers']
+    # Owner 2026-11-06: 卵持ちで落下条件が成立する携行札は、敵AIの
+    # 自発的な卵使用リスクにかかわらず開幕に使う。
+    if not (plan['has_egg'] is True and plan['droppers']
             and egg_state == 'available'):
         cur['egg_plan'] = plan
         return plan
-    # Owner 2026-10-21: 成立する開幕卵落を後続チャートの札予約より優先する。
+    # Owner 2026-11-06: 成立する開幕卵落を、チャート・再攻撃・
+    # 通常の温存/救済判断より優先する。
     free = list(plan['droppers'])
     # 卵落の強い札を先に、同値は将軍へのダメージが小さい札を (主力を温存)。
     plan['dropper'] = None if not free else min(free, key=lambda card: (
@@ -1004,9 +1174,102 @@ def _egg_plan(mem, cur):
     if plan['dropper'] is not None:
         plan['egg_drop'] = _egg_drop_evidence(cur, plan['dropper'])
         plan['verdict'] = 'droppable'
+        if not cur.get('egg_drop_decision_recorded'):
+            cur['egg_drop_decision_recorded'] = True
+            cur['egg_drop_decision_tick'] = mem.get('tick')
+            _egg_drop_trace(mem, cur, 'decided', card=plan['dropper'], plan=plan,
+                            tactic_id=f"eggdrop:{cur.get('step')}:{plan['dropper']}")
     plan['egg_drop_free'] = bool(free)
     cur['egg_plan'] = plan
     return plan
+
+
+def _egg_drop_trace(mem, cur, stage, *, card=None, tactic_id=None, plan=None, **extra):
+    """One link in the opening egg-drop decision -> execution trace (#4456).
+
+    g1270: a droppable decision and a selected card were followed by the
+    enemy's egg use and an empty settled-use list. Every stage writes the same
+    tactic id and the ticks it was observed at, so the order can be checked in
+    the decision log without inferring execution from the decision alone.
+    """
+    plan = plan if isinstance(plan, dict) else (cur.get('egg_plan') or {})
+    flow = cur.get('card_flow') or {}
+    # Preserve the opening attempt across transient plans and card flows.
+    identity = cur.get('egg_drop_trace_identity') or {}
+    if stage == 'enemy_egg_used' and identity:
+        card = card or identity.get('card')
+        tactic_id = tactic_id or identity.get('tactic_id')
+    card = card or flow.get('card') or plan.get('dropper')
+    tid = tactic_id or flow.get('tactic_id')
+    if tid is None and card and cur.get('egg_drop_decision_tick') is not None:
+        tid = f"eggdrop:{cur.get('step')}:{card}"
+    if stage in ('decided', 'selected') and card and tid:
+        cur['egg_drop_trace_identity'] = {'card': card, 'tactic_id': tid}
+    observed = {'tick': mem.get('tick'),
+                'decision_tick': cur.get('egg_drop_decision_tick'),
+                'selected_tick': cur.get('egg_drop_selected_tick'),
+                'kit_source': plan.get('kit_source'), 'verdict': plan.get('verdict'),
+                'max_hp_sum': plan.get('max_hp_sum'), 'remainder': plan.get('remainder'),
+                'threshold': plan.get('threshold'),
+                'drop_value': reference.egg_drop_value(card) if card else None,
+                'cards_selected': list(cur.get('cards_selected') or []),
+                'cards_unclassified': list(cur.get('cards_unclassified') or []),
+                'enemy_transform_observed': bool(cur.get('enemy_transform_observed')),
+                **extra}
+    return _record(mem, 'battle_egg_drop_trace', **_battle_labels(cur),
+                   card=card, tactic_id=tid, stage=stage,
+                   expected_metric='決定→選択→実使用/未確認→敵卵使用の順序',
+                   observed_metric=observed,
+                   reason=f'開幕卵落の{stage}時点を記録（実行の確定ではない）')
+
+
+def _defense_kit_read_window(mem, cur):
+    """A defense opening egg drop blocked only by an unread kit (#4456).
+
+    Unlike the okunote deadline this is not HP-driven: the enemy can use its
+    egg at any time, so the card list is read once at the opening. Existing
+    bounded defenses (okunote/summon/last resort) keep priority; this only
+    fills the gap when no other rescue is due and the kit alone blocks a drop.
+    """
+    if cur.get('side') != 'defense' or cur.get('step'):
+        return None
+    if (_defender_egg_window(mem, cur) or _defender_summon_preempt(mem, cur)
+            or _defender_last_resort(mem, cur)
+            or any((cur.get(k) or {}).get('exhausted') for k in
+                   ('okunote_egg_preempt', 'okunote_summon_preempt', 'defense_egg_kit_read'))):
+        return None
+    # A rescue/conservation episode is already in charge of the card menu (and
+    # records its names). Do not start a second menu episode behind it.
+    rescue = cur.get('survival') or {}
+    if (rescue.get('opens') or rescue.get('pending_opens') or rescue.get('listed_cards')
+            or rescue.get('critical_open_recheck') or rescue.get('egg_attempted')
+            or rescue.get('conserving_melee') or cur.get('card_damage_rescue_needed')
+            or cur.get('command_open_pending')):
+        return None
+    plan = cur.get('egg_plan') or {}
+    if (plan.get('has_egg') is not True or plan.get('egg_state') != 'available'
+            or type(plan.get('max_hp_sum')) is not int
+            or plan.get('kit_source') != 'unknown' or plan.get('dropper') is not None
+            or cur.get('defense_card_menu') is not None
+            or cur.get('card_flow') or cur.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('enemy_summon_observed')
+            or cur.get('card_damage_list_blocked') or cur.get('cards_unclassified')
+            or (cur.get('survival') or {}).get('exhausted')
+            or _one_hit_lethal(cur)):
+        return None
+    return {'reason': 'egg_drop_kit_unread', 'due': True,
+            'max_hp_sum': plan['max_hp_sum'], 'remainder': plan.get('remainder'),
+            'threshold': plan.get('threshold')}
+
+
+def _defense_kit_read_unread(mem, cur, reason):
+    """Close an unreadable defense card-menu read and stay fail-closed."""
+    guard = cur.setdefault('defense_egg_kit_read', {'opens': 1})
+    guard['read_done'] = True
+    cur['card_flow'] = None
+    _record(mem, 'battle_defense_kit_read_unread', **_battle_labels(cur),
+            observed_metric={'opens': guard.get('opens', 1), 'reason': reason},
+            reason='防衛の実切り札一覧を読めず、kit_unknown のまま fail-closed で戻る')
 
 
 def _egg_drop_tactics(mem, cur, enemy, plan=None):
@@ -1058,8 +1321,11 @@ def _observe_egg_drop_candidate(mem, cur):
         return
     if watch['card'] not in (cur.get('cards_selected') or []):
         return                      # 札一覧の選択に達していない＝使用の根拠がない
+    already_flagged = cur.get('enemy_egg_drop_expected') is True
     cur['enemy_egg_drop_expected'] = True
     cur.pop('egg_drop_watch', None)
+    if already_flagged:
+        return  # 同一戦闘の曖昧さは一度だけ記録する（unclassified が複数回残る実害 #4335）
     _record(mem, 'battle_egg_drop_unconfirmed', **_battle_labels(cur), card=watch['card'],
             enemy=cur.get('enemy'), enemy_hp=hp, ally_hp=cur.get('ally_hp'),
             egg_drop={'value': watch['value'], 'threshold': watch['threshold'],
@@ -1096,6 +1362,17 @@ def _rescue_card(candidates, cur):
 
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
 GENERAL_CRITICAL_RETREAT_HP = 12
+# docich#4999 (owner 2026-11-22): spend the remaining egg/cards before the
+# retreat row. A committed card selection keeps its bounded announce
+# lifecycle instead of an instant preemption, and a listed leftover card
+# gets one bounded retry through the survival menu. The floor is the g460
+# counterweight: one melee contact has been observed removing ≥10 HP, so
+# under RETREAT_RESOURCE_FLOOR_HP any further card wait or menu detour only
+# costs the general; there the retreat preempts again. The own egg stays
+# eligible at any HP because its transform is itself the survival
+# mechanism (_egg_before_retreat keeps its own EGG_ATTEMPT_LIMIT bound).
+RETREAT_RESOURCE_FLOOR_HP = 4    # immediate-loss band: card waits/detours stop
+RETREAT_CARD_GRACE_LIMIT = 6     # battle observations a pending card may hold the retreat
 
 
 def _unarmed_clash_risk(cur):
@@ -1113,7 +1390,10 @@ def _survival_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     if any(type(n) is not int or n <= 0 for n in (hp, enemy)):
         return False
-    # Sword practice has no resource menu. Preserve its released A bursts.
+    # Sword practice and monthly event duels have no B command menu; trying to
+    # open it wastes every frame until the hero dies (#4867: どうし 83->0 vs 92).
+    if cur.get('event_duel'):
+        return False
     if (cur.get('enemy'), cur.get('ally'), start, cur.get('start_enemy_hp'), cur.get('step')) == (
             'だいじん', 'どうし', 90, 90, None):
         return False
@@ -1139,8 +1419,11 @@ def _survival_needed(cur):
                     and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values()
                     and not (ours is not None and theirs is not None and ours >= theirs
                              and start * 10 > cur['start_enemy_hp'] * 9))
+    # #4606: a summon-class opponent's live panel HP out-scales the stale
+    # general reading; compare the observed summon value, never an inferred one.
+    threat = (_summon_enemy_hp(cur) or enemy) if _summon_class_enemy(cur) else enemy
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
+            or hp * 10 <= threat * BEHIND_EGG_RATIO_TENTHS or behind_start
             or cur.get('card_damage_rescue_needed') is True
             or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur)
             or (not cur.get('planned_cards') and _combat_behind(cur)))
@@ -1181,6 +1464,8 @@ def _survival_state(mem, cur):
                         if _unarmed_clash_risk(cur)
                         else '初期卵なしまたは観測残数0の攻撃将軍は、敵の壁判定召喚より先に実資源を確認'
                         if _unarmed_wall_risk(cur)
+                        else '観測した召喚獣・大型敵が実敵のため、戦闘メニューで救済手段を確認'
+                        if _summon_class_enemy(cur)
                         else 'HP・兵士数・将軍の戦闘力で不利なため、戦闘メニューで救済手段を確認'
                         if _combat_behind(cur)
                         else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
@@ -1247,10 +1532,10 @@ def _general_egg_rescue_recheck(mem, cur):
     from ..os_layer.roster import run_identity
     rescue = cur.get('survival')
     if (not isinstance(rescue, dict)
-            or cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+            or cur.get('ally') in (None, NAME, 'しじんこう', 'しゅじんこう', 'だいじん')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS
-            or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel')
             or cur.get('card_summon_observed') or cur.get('card_flow') or cur.get('planned_cards')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('resource_menu_observed') or cur.get('okunote_only_observed')
@@ -1346,7 +1631,7 @@ def _melee_continuation_evidence(mem, cur):
     scope = [identity, cur.get('ally'), cur.get('enemy'), start, enemy_start]
     if (identity is None or cur.get('melee_opening_scope') != scope
             or cur.get('ally') in (NAME, 'しゅじんこう') or cur.get('enemy') in chart.BOSSES.values()
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
             or cur.get('card_flow') or cur.get('card_damage_rescue_needed')
             or any(type(n) is not int or n <= 0 for n in
@@ -1405,7 +1690,7 @@ def _healthy_melee_margin_evidence(mem, cur):
     if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
             or cur.get('card_soldiers_current') is not True
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
             or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
             or _own_egg_empty(mem, cur)
@@ -1469,6 +1754,108 @@ def _enemy_transformed(mem, cur):
     return False
 
 
+def _stale_army_melee_hold(mem, cur):
+    """Last-observed evidence that melee is still the better first move.
+
+    The live battle panel can be covered by the rescue/clash menu, so the
+    current-HP/soldiers markers go unread even though the last panel was
+    healthy and clearly ahead. Troops only decrease inside a battle, so the
+    last counts are upper bounds: credit us with none and the enemy with its
+    last observed total. This only delays the egg by one melee observation;
+    the caller bounds how often it may do so, and it never licences the
+    hero's last egg without a doubled margin.
+    """
+    from ..os_layer.roster import run_identity
+    identity = run_identity(mem.get('_run_identity'))
+    if _enemy_transformed(mem, cur):
+        return None
+    ally, enemy_name = cur.get('ally'), cur.get('enemy')
+    if identity is None or not all(isinstance(n, str) for n in (ally, enemy_name)):
+        return None
+    # Only the stale case: a current panel has its own stricter rules.
+    if not (cur.get('card_soldiers_current') is not True or cur.get('card_hp_unread')
+            or cur.get('card_context_unclassified')):
+        return None
+    hp, enemy, start, enemy_start = (cur.get(k) for k in
+                                    ('ally_hp', 'enemy_hp', 'start_ally_hp', 'start_enemy_hp'))
+    maximum = general_max_hp('しゅじんこう' if ally == NAME else ally)
+    enemy_maximum = general_max_hp(enemy_name)
+    ours, theirs = cur.get('ally_soldiers'), cur.get('enemy_soldiers')
+    if (cur.get('melee_opening_scope') != [identity, ally, enemy_name, start, enemy_start]
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
+            or enemy_name in chart.BOSSES.values() or enemy_name in reference.BOSS_GENERALS
+            or cur.get('card_flow') or cur.get('planned_cards') or cur.get('card_damage_rescue_needed')
+            or _own_egg_empty(mem, cur)
+            or any(type(n) is not int or not 0 <= n <= 6 for n in (ours, theirs))
+            or any(type(n) is not int or n <= 0 for n in
+                   (hp, enemy, start, enemy_start, maximum, enemy_maximum))
+            or not GENERAL_CRITICAL_RETREAT_HP < hp <= start <= maximum
+            or not enemy <= enemy_start <= enemy_maximum
+            or hp <= enemy or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS):
+        return None
+    if hp < start and (enemy >= enemy_start
+                       or (start - hp) * enemy_start > (enemy_start - enemy) * start):
+        return None
+    balance = _melee_balance(cur)
+    ac, ec = balance['ally_combat'], balance['enemy_combat']
+    if any(type(n) is not int or not 1 <= n <= 15 for n in (ac, ec)):
+        return None
+    own_force, enemy_force = hp, enemy + 10 * theirs
+    own_score, enemy_score = own_force * ac, enemy_force * ec
+    if own_force * 10 <= enemy_force * BEHIND_EGG_RATIO_TENTHS or own_score <= enemy_score:
+        return None
+    if ally == NAME and not (hp > 2 * enemy_force and own_score > 2 * enemy_score):
+        return None
+    return {'rule': 'stale_army_melee_hold', 'ally_hp': hp, 'enemy_hp': enemy,
+            'ally_max_hp': maximum, 'ally_opening_hp': start, 'enemy_opening_hp': enemy_start,
+            'soldiers_last': [ours, theirs], 'ally_soldiers_min': 0,
+            'enemy_soldiers_max': theirs, 'ally_force_min': own_force,
+            'enemy_force_max': enemy_force, 'ally_melee_score_min': own_score,
+            'enemy_melee_score_max': enemy_score, 'army_basis': 'stale_upper_bounds'}
+
+
+HP_ONLY_MARGIN_NUM, HP_ONLY_MARGIN_DEN = 3, 2    # own score at least 1.5x the enemy's
+
+
+def _hp_only_clear_margin(mem, cur):
+    """Keep the egg when the HP-and-combat comparison is clearly ours, armies unread.
+
+    Owner 2026-11-05: 有利なのに卵を無駄に使ってしまう. g1133 23:23:22 ヘスティア
+    (HP 25/25, combat 9) against ヘーゼル (HP 33, combat 4) spent the egg at the
+    pre-clash check: the soldier counts were unread (``card_soldiers_current``
+    False), every conservation rule needs them, so the egg went although the
+    score was 225 to 132. With both armies unread the comparison is HP only on
+    both sides (``_melee_balance`` credits nobody), a fair estimate; a clear 1.5x
+    margin with a healthy general keeps the melee. Nothing is spent for good:
+    the survival menu re-asks on every ordinary panel, so an HP loss, a read
+    army or a summon takes the egg back at once. Strong generals, the hero,
+    wounded generals and unread HP keep the old behaviour.
+    """
+    if (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('ally') in (NAME, 'しゅじんこう')):
+        return None
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    maximum = max((n for n in (general_max_hp(cur.get('ally')), cur.get('ref_ally_hp'),
+                               cur.get('start_ally_hp')) if type(n) is int and n > 0),
+                  default=None)
+    balance = _melee_balance(cur)
+    ac, ec = balance['ally_combat'], balance['enemy_combat']
+    if (any(type(n) is not int or n <= 0 for n in (hp, enemy, maximum, ac, ec))
+            or hp > maximum or hp * 10 <= maximum * BEHIND_EGG_RATIO_TENTHS
+            or hp <= GENERAL_CRITICAL_RETREAT_HP):
+        return None
+    strong, _ = _strong_enemy(mem, cur)
+    if strong:
+        return None
+    own, theirs = hp * ac, enemy * ec
+    if own * HP_ONLY_MARGIN_DEN < theirs * HP_ONLY_MARGIN_NUM:
+        return None
+    return {'rule': 'hp_only_clear_margin', 'ally_hp': hp, 'ally_max_hp': maximum,
+            'enemy_hp': enemy, 'ally_combat': ac, 'enemy_combat': ec,
+            'ally_melee_score': own, 'enemy_melee_score': theirs,
+            'army_basis': 'unread_both_sides_hp_only'}
+
+
 def _hold_melee_egg(mem, cur, labels):
     """Preserve a healthy advantage or a scoped, overwhelming ordinary melee.
 
@@ -1478,13 +1865,17 @@ def _hold_melee_egg(mem, cur, labels):
     if (_enemy_transformed(mem, cur)
             or _critical_survival_needed(cur)
             or _own_egg_empty(mem, cur)
-            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
-            or cur.get('card_soldiers_current') is not True
-            or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel')
             or cur.get('card_summon_observed')
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('enemy') in reference.BOSS_GENERALS):
         return False
+    if (cur.get('card_soldiers_current') is not True
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')):
+        # The live panel is covered: the last observed counts are upper
+        # bounds, so only the conservative stale evidence may hold the egg.
+        return (_stale_army_melee_hold(mem, cur) is not None
+                or _hp_only_clear_margin(mem, cur) is not None)
     if _healthy_melee_margin_evidence(mem, cur) is not None:
         return True
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
@@ -1533,7 +1924,7 @@ def _conserved_army_recheck(mem, cur):
             or cur.get('card_flow') or cur.get('command_open_pending')
             or cur.get('card_damage_rescue_needed')
             or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_summon_observed')
             or cur.get('card_soldiers_current') is not True
             or any(cur.get(k) is not None and
                    (type(cur.get(k)) is not int or not 0 <= cur[k] <= 6)
@@ -1557,22 +1948,88 @@ def _conserved_army_recheck(mem, cur):
     return True
 
 
+def _retreat_immediate_loss(cur):
+    """Ally HP in the immediate-loss band: no card wait or spend detour (#4999).
+
+    One melee contact has removed ≥10 HP in a single observation (g460),
+    so at or below RETREAT_RESOURCE_FLOOR_HP the next contact is almost
+    certainly lethal and only the retreat itself (and the egg's transform,
+    which is survival not spending) is still worth the frames.
+    """
+    hp = cur.get('ally_hp')
+    return type(hp) is int and 0 < hp <= RETREAT_RESOURCE_FLOOR_HP
+
+
+def _retreat_remaining_cards(cur):
+    """Selected cards with no confirmed use — the audit's remaining list.
+
+    Unclassified selections stay in the remainder: an unconfirmed use is
+    not a receipt (month_audit._remaining_cards applies the same rule).
+    """
+    used = [card for card in (cur.get('cards_used') or ()) if isinstance(card, str)]
+    remaining = []
+    for card in cur.get('cards_selected') or ():
+        if not isinstance(card, str):
+            continue
+        if card in used:
+            used.remove(card)
+        else:
+            remaining.append(card)
+    return remaining
+
+
+def _retreat_cards_to_spend(cur):
+    """#4999: audit-visible remaining cards that still have a spend path.
+
+    Each name consumes at most one spend retry (cards_spend_retry); a card
+    picked from the live list again lands in cards_attempted and then needs
+    the same retry flag, so the detour cannot loop. The survival menu's own
+    bounds (cards_checked, cards_exhausted, exhausted) cap the detour too.
+    """
+    rescue = cur.get('survival') or {}
+    if (rescue.get('exhausted') or rescue.get('cards_exhausted')
+            or int(rescue.get('cards_checked') or 0) >= 3):
+        return False
+    retried = cur.get('cards_spend_retry') or ()
+    return any(card not in retried for card in _retreat_remaining_cards(cur))
+
+
 def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
     # Only the observed list, not a chart kit, licenses delaying an active
     # egg for a heal/proven finishing blow. Selection is still not a use.
+    # The bounded-failure guards apply to every card: a stale inventory
+    # must not suppress retreat indefinitely.
     if for_retreat and (rescue.get('cards_checked', 0) >= 3
             or rescue.get('cards_exhausted')
             or (rescue.get('exhausted') and rescue.get('critical_menu_recheck'))):
-        return False  # stale inventory must not suppress retreat indefinitely
+        return False
     names = rescue.get('listed_cards') or []
     for card in names:
         if (card not in SURVIVAL_CARDS or card in rescue.get('cards_attempted', [])
                 or card in cur.get('cards_selected', [])):
             continue
         gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-        if gate['allowed'] and (gate['role'] == 'single_card_lethal'
+        if not gate['allowed']:
+            continue
+        # A proven finisher (or a needed heal) defers retreat at any HP:
+        # the observed kill lands on this turn, before the enemy's next
+        # hit (test_hanjuku_finish_before_retreat). The immediate-loss
+        # floor below only cuts off the speculative spend-before-retreat
+        # detour (#4999), never a confirmed kill.
+        if (gate['role'] == 'single_card_lethal'
                 or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))):
             return True
+        if for_retreat:
+            # docich#4999: before the retreat row, spend any unattempted
+            # card the gate permits (lethal, damage, control, drop, heal) —
+            # not only a proven finisher. A heal still needs a wound.
+            # Below the immediate-loss floor the gamble stops and the
+            # retreat proceeds (g460: the general died 24 -> 12 -> 0 while
+            # waiting in card menus).
+            if _retreat_immediate_loss(cur):
+                continue
+            if gate['role'] != 'healing_not_a_kill' or _card_healing_needed(cur):
+                return True
     return False
 
 
@@ -1636,6 +2093,9 @@ def _bind_substitute_defender(mem, cur, b):
             reason='チャート想定と別の将軍が守るが、HPが自軍の1.5倍以上のため同じ手順の開幕切り札を使う')
 
 
+EGG_ATTEMPT_LIMIT = 2      # summon-menu selections per battle before melee resumes
+
+
 def _egg_before_retreat(mem, cur, *, menu=False):
     """Inspect this actor's untried positive egg before fleeing ordinary melee.
 
@@ -1648,10 +2108,18 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     if (rescue.get('conserving_melee') is True
             and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
         return False
-    return (not cur.get('egg_battle') and _survival_needed(cur)
+    attempts = int(rescue.get('egg_attempts') or 0)
+    # A legacy flag without the counter means the menu was already used: only
+    # the counted attempts (v726) may retry once.
+    spent = attempts >= EGG_ATTEMPT_LIMIT or (rescue.get('egg_attempted') and not attempts)
+    return (not cur.get('egg_battle') and not cur.get('event_duel')
+            and _survival_needed(cur)
+            # #4606: against an observed summon/large enemy the retreat must not
+            # wait behind another probe of the same unreliable command box.
+            and not _summon_class_enemy(cur)
             and (_critical_survival_needed(cur) or not cur.get('planned_cards'))
             and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur)
-            and not rescue.get('egg_attempted') and not rescue.get('exhausted')
+            and not spent and not rescue.get('exhausted')
             and (menu or (int(rescue.get('opens') or 0) < 12
                           and int(rescue.get('pending_opens') or 0) < 3))
             and not (cur.get('hero_retreat') or {}).get('selected'))
@@ -1667,6 +2135,59 @@ def _egg_rescue_pending(cur):
         return True
     rescue['egg_pending'] = False
     return False
+
+
+def _monster_panel_enemy(cur):
+    """The record itself opened on a summon/large-enemy panel (#4606).
+
+    ``cur['enemy']`` holds the opponent panel's name, so a direct battle
+    against a monster reads e.g. ドラゴンフライ/ランプキン/テュポーン there
+    instead of a general's name (the ch11 panels whose command box then
+    ignored every input). Only the ``MONSTER_SKILLS`` table discriminates:
+    a large enemy absent from it is indistinguishable from an unread
+    general, and a monster sharing a general's name (none today) would
+    read as the general. Chapter bosses, boss generals/monsters and the
+    season kings keep their own fight rules.
+    """
+    enemy = cur.get('enemy')
+    if not isinstance(enemy, str) or enemy not in reference.MONSTER_SKILLS:
+        return False
+    if enemy in chart.BOSSES.values() or reference.is_boss_target(enemy):
+        return False
+    from ...hanjuku_map_sources import SEASON_KINGS
+    return enemy not in SEASON_KINGS and general_max_hp(enemy) is None
+
+
+def _summon_class_enemy(cur):
+    """The observed opponent is a summon monster or large enemy (#4606).
+
+    A record that opened on the monster panel reads its name into
+    ``cur['enemy']``; a mid-battle summon keeps the general's name there
+    while the monster panels latch ``enemy_summon_observed`` instead. The
+    latch only proves a summon was seen, so it carries the egg_battle
+    threshold; the panel itself is the "this kind of enemy" the issue
+    avoids. Which panels freeze their command box cannot be discriminated
+    from observations, so the whole class is treated as unplannable.
+    """
+    return (_monster_panel_enemy(cur)
+            or cur.get('enemy_summon_observed') is True)
+
+
+def _summon_enemy_hp(cur):
+    """The live summon-class opponent's observed panel HP, or None.
+
+    ``summon_enemy_hp`` records the enemy monster's own reading and an armed
+    bait's ``monster_hp`` the observed one from the summon proof, while
+    ``enemy_hp`` holds the general's; a record opened on the monster carries
+    it in ``enemy_hp`` itself. The largest observed value decides so a stale
+    pre-summon general HP cannot hide the live summon.
+    """
+    bait = cur.get('enemy_egg_bait')
+    monster = (bait.get('monster_hp') if isinstance(bait, dict)
+               and bait.get('phase') == 'summoned' else None)
+    values = [v for v in (cur.get('enemy_hp'), cur.get('summon_enemy_hp'), monster)
+              if type(v) is int and v > 0]
+    return max(values, default=None)
 
 
 def _default_retreat_needed(cur):
@@ -1695,12 +2216,20 @@ def _default_retreat_needed(cur):
             and not (_healthy_melee_advantage(cur) or _pre_summon_hp_advantage(cur)
                     or _full_hp_melee_advantage(cur))):
         return True  # no observed rescue remains; retreat before the summon
-    if cur.get('egg_battle'):
+    if cur.get('egg_battle') or _summon_class_enemy(cur):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
         # winnable melee: retreat before the general dies (owner 2026-09-29;
         # g460 16:46: ヴィーナス 82 vs アルファルファ 38 summoned and killed
         # her while the bot chose こうげき and the retreat came too late).
-        return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
+        # #4606: compare the live summon HP, never the stale general reading;
+        # the latches may be missing when the box froze before they were
+        # written. A record that opened on the monster panel itself
+        # (ドラゴンフライ/ランプキン/テュポーン) never had a winnable melee
+        # plan, so any observed deficit retreats; a summon behind a general's
+        # name keeps the existing half-pool threshold.
+        threat = _summon_enemy_hp(cur) or enemy
+        behind = hp < threat if _monster_panel_enemy(cur) else hp * 2 <= threat
+        return hp <= GENERAL_CRITICAL_RETREAT_HP or behind or hp * 2 <= ref
     return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
 
 
@@ -1838,6 +2367,30 @@ EGG_WALL_DAMAGE = 4          # gcgx battle.html: a hit against the edge costs 4 
 DEFENDER_EGG_OPEN_LIMIT = 3
 
 
+def _one_hit_lethal(cur):
+    """The next push already wins: no okunote, egg or card is worth spending.
+
+    Owner 2026-11-02: 相手のHPが1で、一回ぶつかれば勝てるのでこの場合は
+    おくのても卵も切り札もいらない. An edge hit costs at least
+    ``EGG_WALL_DAMAGE`` HP, so an enemy at or below it dies to one push.
+    Only a complete, current battle panel counts (``_card_battle_reading``
+    clears the unread flags on one): a stale HP, a summon or an egg battle
+    is not evidence that the enemy general is one hit from defeat.
+    """
+    if not isinstance(cur, dict):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    # Owner 2026-11-22: ボスだからではなく、ボス兵士が残っているとHPが削れない.
+    # The enemy general's HP can sit at 1 while its soldiers still stand and
+    # soak the push (live g1288: HP1のボスに3連敗). Require measured zero
+    # enemy soldiers; an unread soldier row is not evidence either.
+    return (type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE
+            and type(hp) is int and hp > EGG_WALL_DAMAGE
+            and cur.get('enemy_soldiers') == 0
+            and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+                     or cur.get('egg_battle') or cur.get('card_summon_observed')))
+
+
 def _defender_egg_window(mem, cur, *, menu_open=False):
     """A measured eggless defender's deadline before the next enemy summon.
 
@@ -1865,7 +2418,7 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             or cur.get('side') != 'defense'
             or cur.get('castle') not in (*chart.castles(chapter), *chart.CASTLE_NAMES.get(chapter, ()))
             or cur.get('ally') in (None, 'だいじん') or cur.get('enemy') in chart.BOSSES.values()
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_flow')
+            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('event_duel') or cur.get('card_flow')
             or cur.get('enemy_summon_observed')
             or not cur.get('okunote_only_observed')
             or guard.get('selected') or guard.get('exhausted') or guard.get('unavailable')):
@@ -1925,6 +2478,14 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
 
 
 DEFENDER_SUMMON_OPEN_LIMIT = 3
+# The egg-battle command box shows 3 rows; おくのて is a 4th row below the
+# greyed たまごをつかう (owner-confirmed layout, v362). Bounded downward
+# presses until it is visible.
+DEFENDER_SUMMON_SCROLL_LIMIT = 4
+# Presses sent in one observation on that bounded scroll. Two is measured safe:
+# the box clamps its hand on the last row, the pair is the same input order as
+# two single downs, and the labels are re-read before any confirm.
+SUMMON_SCROLL_BATCH = 2
 
 
 def _defender_summon_preempt(mem, cur):
@@ -1943,6 +2504,10 @@ def _defender_summon_preempt(mem, cur):
     """
     chapter = mem.get('chapter')
     guard = cur.get('okunote_summon_preempt') or {}
+    # Owner 2026-11-04: 相手（召喚獣）のHPが一撃で倒せる残りなら奥の手は不要。
+    enemy_hp = cur.get('summon_enemy_hp')
+    if type(enemy_hp) is int and 0 < enemy_hp <= EGG_WALL_DAMAGE:
+        return None
     if (type(chapter) is not int or chapter not in range(1, 13)
             or cur.get('side') not in ('defense', 'attack')
             or (cur.get('side') == 'defense'
@@ -1951,17 +2516,26 @@ def _defender_summon_preempt(mem, cur):
             or (cur.get('side') == 'attack' and not _own_egg_empty(mem, cur))
             or cur.get('ally') in (None, 'だいじん')
             or cur.get('enemy') in chart.BOSSES.values()
-            or cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_flow')
+            # Our own egg still fighting keeps the old policy; once the egg
+            # row is dead (spent/greyed on the summon menu) it no longer does.
+            or ((cur.get('egg_battle') or mem.get('egg_battle'))
+                and not cur.get('summon_egg_unavailable'))
+            or cur.get('card_flow')
             or not (cur.get('card_summon_observed') or cur.get('enemy_summon_observed'))
             or guard.get('selected') or guard.get('exhausted') or guard.get('unavailable')):
         return None
     resources_free = (cur.get('okunote_only_observed')
-                      or (_own_egg_empty(mem, cur) and not cur.get('planned_cards')))
+                      or ((_own_egg_empty(mem, cur) or cur.get('summon_egg_unavailable'))
+                          and (cur.get('summon_egg_unavailable') or not cur.get('planned_cards'))))
     hp = cur.get('ally_hp')
     draws = int(cur.get('okunote_draws') or 0)
-    if not resources_free or draws >= OKUNOTE_REDRAW_LIMIT:
+    if not resources_free:
         return None
+    # Owner 2026-11-03: 敵の召喚獣が残っている間は、おくのてを何度でも
+    # 引き直して倒し切る。抽選回数を理由に通常メニュー(こうげき)へ戻さない。
+    # メニューを開く回数・未読時の上限は従来どおり有界。
     return {'resources_basis': ('observed_okunote_only' if cur.get('okunote_only_observed')
+                                else 'summon_menu_egg_unavailable' if cur.get('summon_egg_unavailable')
                                 else 'own_egg_empty_no_cards'),
             'enemy': cur.get('enemy'), 'ally_hp': hp, 'okunote_draws': draws,
             'reason': 'enemy_summon_present', 'due': True}
@@ -1974,13 +2548,14 @@ def _defender_last_resort(mem, cur):
     replaces repeated losing melee after *measured* resource unavailability.
     Boss kits, the hero, uncertain locations and healthy fights stay excluded.
     """
-    if (cur.get('ally') in (None, NAME, 'しゅじんこう', 'だいじん')
+    if (cur.get('ally') in (None, NAME, 'しじんこう', 'しゅじんこう', 'だいじん')
             or cur.get('side') != 'defense'
             or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
             or cur.get('enemy') in chart.BOSSES.values()
             or cur.get('planned_cards') or cur.get('card_flow') or cur.get('egg_battle')
             or cur.get('okunote_last_resort_selected')
             or (cur.get('okunote_egg_preempt') or {}).get('selected')
+            or _one_hit_lethal(cur)
             or not cur.get('okunote_only_observed')):
         return False
     hp, enemy, start, enemy_start = (cur.get(k) for k in
@@ -2016,6 +2591,8 @@ def _defender_summon_last_resort(mem, cur, reading):
         return False
     hp, enemy = reading.get('ally_hp'), reading.get('enemy_monster_hp')
     starts = (cur.get('start_ally_hp'), cur.get('start_enemy_hp'))
+    if type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE:
+        return False   # 一撃で倒せる残りHPでは奥の手を使わない (owner 2026-11-04)
     return (type(hp) is int and type(enemy) is int and 0 < hp <= OKUNOTE_MAX_SELF_DAMAGE
             and all(type(v) is int and v > 0 for v in starts)
             and type(general_max_hp(cur.get('enemy'))) is int
@@ -2085,7 +2662,7 @@ def _rescue_rearm(mem, cur, context):
 
 def _hero_marching(mem):
     now = int(mem.get('tick') or 0)
-    return [step for step, s in (mem.get('sorties') or {}).items()
+    return [step for step, s in _sorties(mem).items()
             if s.get('general') == NAME and s.get('status') in ('en_route', 'launched_unconfirmed')
             and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
 
@@ -2119,6 +2696,11 @@ def _egg_quantities_unknown(mem):
     blocked.update(n for n, value in counts.items() if type(value) is int and value == 0)
     mem['egg_zero_owners'] = sorted(blocked)[:32]
     mem['egg_uses'] = {}
+    # #4439: a receipt invalidates the counts, not the measured presence. The
+    # record keeps type/presence/tick so it still outranks an older 「卵なし」
+    # status row right after a payment; dropping it re-adopted that row and
+    # briefly removed the recovered general from the boss wave.
+    egg_memory.invalidate_uses(mem)
 
 
 def _own_egg_positive(mem, battle):
@@ -2132,6 +2714,25 @@ def _own_egg_positive(mem, battle):
         return False  # a selection dirties the old count until this owner is read
     uses = observed_uses((mem.get('egg_uses') or {}).get(ally)) if ally else None
     return uses is not None and uses > 0
+
+
+def _dying_with_egg(mem, battle):
+    """この将軍が次の1〜2撃で倒れる見込みで、確定した卵が残っているか。
+
+    HP が敵の半分以下 (ally*10 <= enemy*5) の将軍は、開幕切り札を消費して
+    いる間に倒れて卵を撃てない。卵の変身だけが生存を保つため、切り札より
+    先に卵を選ぶ根拠とする (owner 2026-12: キッシュ 26 vs カペリーニ 63 が
+    切り札を消費して卵を使わず敗北)。確定回数の無い卵は fail-closed で
+    扱わず、未読なら従来の切り札優先のまま残す。
+    """
+    if not isinstance(battle, dict):
+        return False
+    hp, enemy = battle.get('ally_hp'), battle.get('enemy_hp')
+    if not (type(hp) is int and type(enemy) is int and hp > 0 and enemy > 0):
+        return False
+    if hp * 10 > enemy * 5:  # ally at or above half the enemy's HP: not dying
+        return False
+    return _own_egg_positive(mem, battle) and not _own_egg_empty(mem, battle)
 
 
 def _own_egg_needed(mem, battle, general_reading=None):

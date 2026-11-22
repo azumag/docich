@@ -1,0 +1,125 @@
+"""docich#5077: a boss-phase order may not wait forever for dispatch.
+
+g1190 ch1 9-10 sat 600 s / 5,622 observations with two startable move orders
+pending and zero ``order_start``: the repeated map foreground work (world-map
+survey, SELECT refocus, camp hunts) owned the frames before the dispatch
+block could run ``next_order``. While the boss phase holds a pending order's
+wait is now bounded — past the bound ``order_dispatch_starved`` is recorded
+once per episode and the repeated work yields, so the block can start it.
+"""
+from docich import hanjuku_chart as chart
+from docich.hanjuku.flows import map as M
+from docich.hanjuku.flows import recall
+from docich.hanjuku.os_layer.commands import pad
+from docich.hanjuku.strategy import orders
+from test_hanjuku_off_chart import map_screen, FRAME
+
+CH = 1
+CASTLES = chart.castles(CH)
+BOSS = chart.boss_castle(CH)
+HOME = chart.home_castle(CH)
+NON_BOSS = [c for c in CASTLES if not chart.is_boss_castle(c)]
+STARVE = orders.ORDER_DISPATCH_STARVE_TICKS
+
+
+def plan_order(step='A:p:M1', source=HOME, target=None, purpose='move'):
+    return {'step': step, 'general': 'ゼウス', 'source': source,
+            'target': target or next(c for c in NON_BOSS if c != HOME),
+            'cards': [], 'after': None, 'purpose': purpose, 'note': 't'}
+
+
+def boss_phase_mem(**overrides):
+    """Chapter 1: every normal castle held, the boss site still enemy, one
+    pending move order in the adopted plan, its wait already past the bound."""
+    mem = {'chapter': CH, 'tick': 10_000, 'orders': {}, '_records': [],
+           'captured': list(NON_BOSS), 'lost': [],
+           'chart_plan': {'request_id': 'p', 'orders': [plan_order()]},
+           'garrison': {HOME: ['どうし', 'ゼウス', 'ココット']},
+           'world': {'sorties': {}},
+           'order_dispatch_since': 10_000 - STARVE - 1}
+    mem.update(overrides)
+    return mem
+
+
+def test_boss_only_phase_needs_every_normal_castle_and_a_remaining_boss():
+    mem = boss_phase_mem()
+    assert orders.boss_only_phase(mem) is True
+    mem['lost'] = [NON_BOSS[-1]]
+    assert orders.boss_only_phase(mem) is False
+
+
+def test_boss_only_phase_is_false_once_the_boss_is_held():
+    assert orders.boss_only_phase(boss_phase_mem(captured=[*NON_BOSS, BOSS])) is False
+    assert orders.boss_only_phase(boss_phase_mem(boss_defeated=CH)) is False
+
+
+def test_a_pending_order_past_the_bound_records_once_per_episode():
+    mem = boss_phase_mem()
+    assert orders.order_dispatch_starved(mem) is True
+    assert orders.order_dispatch_starved(mem) is True
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'order_dispatch_starved']) == 1
+
+
+def test_a_pending_order_inside_the_bound_does_not_yield():
+    mem = boss_phase_mem(order_dispatch_since=10_000 - 5)
+    assert orders.order_dispatch_starved(mem) is False
+    assert not [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+
+
+def test_no_pending_order_ends_the_wait():
+    mem = boss_phase_mem(chart_plan={'request_id': 'p', 'orders': []},
+                       orders={o['step']: 'done' for o in chart.orders(CH)})
+    assert orders.order_dispatch_starved(mem) is False
+    assert 'order_dispatch_since' not in mem
+
+
+def test_outside_the_boss_phase_nothing_yields():
+    mem = boss_phase_mem(lost=[NON_BOSS[-1]])
+    assert orders.order_dispatch_starved(mem) is False
+    assert not [r for r in mem['_records'] if r['decision'] == 'order_dispatch_starved']
+
+
+def test_the_world_map_survey_yields_to_a_starved_dispatch():
+    mem = boss_phase_mem(world_map_due=True)
+    actions = M.map_step(map_screen(80, 90), mem, FRAME)
+    assert actions != [pad('y')]
+    assert 'world_map_open' not in [r['decision'] for r in mem['_records']]
+    # The freed frame reaches the dispatch block: the pending move starts.
+    starts = [r for r in mem['_records'] if r['decision'] == 'order_start']
+    assert [r['chart_step'] for r in starts] == ['A:p:M1']
+    assert 'order_dispatch_since' not in mem
+
+
+def test_the_survey_runs_normally_inside_the_bound():
+    mem = boss_phase_mem(world_map_due=True,
+                         order_dispatch_since=10_000 - 5)
+    assert M.map_step(map_screen(80, 90), mem, FRAME) == [pad('y')]
+    assert 'world_map_open' in [r['decision'] for r in mem['_records']]
+
+
+def test_a_startable_wait_resets_when_next_order_finds_nothing(monkeypatch):
+    # The yield only re-checks: a pending order that proves unstartable ends
+    # the wait so the repeated work is not starved forever.
+    monkeypatch.setattr(M, 'next_order', lambda _mem: None)
+    mem = boss_phase_mem(world_map_due=True)
+    assert M.map_step(map_screen(80, 90), mem, FRAME) == []
+    assert 'order_dispatch_since' not in mem
+
+
+def test_the_periodic_select_refocus_yields_while_starved():
+    # A SELECT can still leave the frame: the dispatched move order's own
+    # castle jump starts with one. The refocus itself must not record.
+    mem = boss_phase_mem(select_focus_tick=10_000 - M.SELECT_FOCUS_INTERVAL - 1,
+                         select_used=False)
+    M.map_step(map_screen(80, 90), mem, FRAME)
+    assert 'select_focus' not in [r['decision'] for r in mem['_records']]
+
+
+def test_a_new_camp_recall_yields_while_starved(monkeypatch):
+    monkeypatch.setattr(recall, 'own_camps', lambda frame: [{'target': (10, 10)}])
+    mem = boss_phase_mem()
+    assert recall.camp_recall_step(map_screen(80, 90), mem, FRAME) is None
+    # Inside the bound a visible camp starts the ordinary recall instead.
+    mem = boss_phase_mem(order_dispatch_since=10_000 - 5)
+    assert recall.camp_recall_step(map_screen(80, 90), mem, FRAME) is not None

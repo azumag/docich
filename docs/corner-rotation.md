@@ -51,18 +51,26 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 - `interval`: 目標間隔は `interval_minutes`（分）秒。未設定なら 86400/N秒で、毎tickに実効Nを
   再評価する（N=0なら待機）。次の発火は「直近の発火 + 目標間隔」。遅延やcornerの長さによって
   本数/日を保証しない。取りこぼしは1回にまとめ、過去slotを連発しない。
-  例: N=11・`interval_minutes=60` なら1時間ごとに1本。24h cooldownを併用すると、N件を
-  消化した後は最も早いcooldown明け（初回発火の24時間後）まで待機する。
+  例: N=11・`interval_minutes=60` なら1時間ごとに1本。N件を消化して全eligible cornerが
+  24h cooldown中でも次のinterval枠は空けず、残りクールダウンが最短のcornerを開始する
+  （2026-11-22 オーナー決定）。
 - `queue`: 間隔アンカーを使わず、共有スロットが空き次第、rolling cooldown外の候補から
   **一様ランダム**に1本選んで連続発火する。乱数は `seed`・`slot`・corner IDのSHA-256で
   与えるため、同じledger seedと同じslotでは再現でき、再起動で再抽選しない（`slot`は発火ごとに
-  進むので順序は毎回引き直される）。`next_due_at`は「次に発火可能な時刻」の意味になり、
-  候補が空のときだけ最も早いcooldown明けへ再アンカーする。
+  進むので順序は毎回引き直される）。全eligible cornerがcooldown中（候補が空）のときは、
+  残りクールダウンが最短のcornerを次に開始する。`next_due_at`は「次に発火可能な時刻」の
+  意味になり、このfallbackでは現在時刻になる。
   発火は常に1本ずつで、重複・並行起動はしない（pending・共通program slotは両modeで同じ）。
+- `prediction_hold_wait_minutes`（既定90、0〜180）は予想in-flight中にdueコーナーを
+  待たせる上限。`prediction_handoff_seconds`（既定180、0〜900）はコーナー直後に
+  予想を先に開始する猶予。
 - `cooldown_hours`（既定24）は同一cornerを再選択できるまでのrolling窓。小さいほど連続性が上がる。
-  どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。
-- queue modeの実効間隔は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
-  24h cooldownを維持する場合、eligible N件を消化した後は最も早いcooldown明けまで待機する。
+  どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。ただし全eligible cornerが
+  cooldown中で自動選択の候補が尽きた場合だけ、残りが最短のcornerを次の枠へ繰り上げる
+  （24h cooldownの唯一の例外。選択されたcornerのcooldownはその開始時刻から再スタートする）。
+  予約済みmanualのcorner、paused/disabled/manual_onlyのcornerは繰り上げの対象にしない。
+- queue modeの実効間隔は、候補がある間は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
+  全eligible cornerを消化した後はcooldown明けを待たず、残り最短のcornerで連続発火する。
 - queue modeでは次のcornerは前の改善ジョブの終端を待たない（`resources_released`の
   改善待ちを外す）。改善ジョブは `locks/corner-improve-lane.lock` の共有レーンで直列化し、
   同時実行を1本に制限する。レーン待ちは1800秒で打ち切り、取得できない回は
@@ -78,16 +86,112 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 - 選択候補は有効cornerのうち、予約・実開始・終了・手動使用が直近24時間にないもの。
   終了時刻も使用に数える保守的な契約とし、長時間枠・遅延開始でcooldownが短くならない。
   24時間ちょうどで再び候補になる。したがって24/Nは目標であり、遅延やcornerの長さによって
-  N回/日を保証しない。候補空は明示待機し、重複で穴埋めしない。
+  N回/日を保証しない。候補空は待機せず、最後の使用が最も古いcorner（残りクールダウン最短）を
+  次の枠で開始する。次の枠はinterval modeではinterval anchor、queue modeでは共有slotが
+  空いた時点。予約済みmanualのcornerと休止・無効のcornerはこのfallbackから除外する。
 - 初回はdue。既存retro履歴があれば引き継ぐ。取りこぼしは1回にまとめ、過去slotを連発しない。
   次回は実際に受理/開始したslotから24/N。queuedの遅延開始が分かればanchorを更新する。
-- cadence上はdueでも全eligible cornerがrolling cooldown中なら、最も早くcooldownが解ける時刻へ
-  `next_due_at`を再アンカーする。過去のnominal時刻を保存し続けず、毎分tickはその時刻に到達した
-  次の候補を一度だけ選ぶ。これはcooldownを短縮したり、同じcornerを重複起動したりするものではない。
 - 永続seed、slot番号、corner IDのSHA-256順位で候補を選ぶ。登録順に依存せず、同じseedと
-  clockで再現可能。seedは初回だけ生成し、再起動による再抽選をしない。
+  clockで再現可能。seedは初回だけ生成し、再起動による再抽選をしない。全cornerがcooldown中の
+  fallbackだけは、最後の使用が最も古いcornerを選ぶ（同時刻ならcorner ID順で安定）。
+  これは24h cooldownを通常より早く再開する唯一の例外で、同一tickで同じcornerを二重起動しない。
 - 時刻逆行は以前の観測時刻へ戻るまで待つ。観測間隔が24時間を超えた場合は、長期停止と
-  大幅時計変更を区別できないため24時間隔離する。clock/seedはテストへ注入できる。
+  大幅時計変更を区別できないため24時間隔離する。判定は `last_seen_at` だけでなく
+  ledger が最後に書いた活動時刻（`last_result.at`・history・`last_slot_at`・
+  予約の `selected_at`）の最新値で行うため、1枠が24時間超ロックを保持して正常終了
+  した場合は隔離しない。本当に停止していた場合は新しい行が書かれないので従来どおり
+  隔離する。clock/seedはテストへ注入できる。
+
+## 次コーナーの予告（`next_corner.json`、2026-11-07 オーナー依頼）
+
+コーナーとコーナーの間（sorengameが表に出ている間）、右サイドバーに
+「次：〜 / 18:00 予定」を出す。予告は推測ではなく、共通timerが
+**dueより前に確定させた次の1枠**である。
+
+- `CornerRotationManager._next_corner_notice` が、dispatchと同じ規則
+  （interval anchor → 全eligible cornerがcooldown中なら残り最短のcorner → 予約済みmanualが
+  先ならそれ）で次のcornerと開始可能時刻を決める。順位はdispatchと同じ
+  `seed`・`slot`・corner IDのSHA-256（cooldown fallbackだけは最終使用が最も古いcorner）。
+- 決定は `state_dir/next_corner.json` へboundedに投影する。seed・slot・request UUIDは
+  含めない。`corner` / `label`（視聴者向け表示名）/ `when`（表示用時刻）/
+  `due_at` / `source`（auto|manual）/ `hold` / `remaining_games` / `decided_at` /
+  `updated_at` だけ。`remaining_games` は予想round（v2）の残り試合数（0〜100）で、
+  `hold="prediction"` のときだけ意味を持つ。
+- dispatchは、予告したcornerがまだ候補ならそれを優先する。一度出した予告を
+  別のcornerへ差し替えないためで、候補から外れた（pause・cooldown・manual予約との
+  競合）ときだけ引き直して投影も更新する。cooldown fallbackの予告も、そのcornerが
+  引き続き残り最短である間は維持する。
+- 枠の開始（pending確定）時に投影を消す。sorengameへ戻った次のtickで次の予告を出す。
+  `game_switch.json` の `active.game` が `sorengame` でない間（他コーナー・special view・
+  復帰失敗）は出さない。queue modeは間隔が無いので、予約済みmanualがあるときだけ出す。
+- **予想ガード（48試合のprediction）中も予告は出す。** in-flightのpredictionは
+  コーナー入りの境界を待たせるため開始時刻を約束できない。`hold="prediction"` と
+  `remaining_games` を記録し、配信側はコーナー名と「N試合後」を表示する
+  （残数不明/0なら「予想終了後」）。読み上げは行わない。
+- **コーナー終了直後は予想を先に始める猶予を出す。** `last_result` がterminal
+  （completed / interrupted / expired）で `prediction_handoff_seconds` 以内、
+  prediction workerが稼働中、predictionがin-flightでない、次の決定がauto、かつ
+  次のdueが猶予より先なら `hold="prediction-pending"` を出し、配信側は
+  「予想開始待ち」と表示する。予想が始まれば次のtickで `hold="prediction"` に変わる。
+  猶予が切れても予想が始まらない場合は `hold=null` の時刻掲示へ戻し、その時刻は
+  prediction作成の抑止（下記）で守る。queue modeは時刻約束がないためこの猶予を出さない。
+- **予想中のdueコーナーは10分でexpireさせない。** auto dispatchは掲示が
+  `prediction` の間 `prediction-hold`、`prediction-pending` の間
+  `prediction-handoff` として待つ。上限は `prediction_hold_wait_minutes`（既定90分）で、
+  超過時は `prediction-hold-timeout` をstateへ記録して通常のboundary待ちへ戻す
+  （固まった予想で永久に塞がない安全弁）。マニュアル予約は既存経路のまま。
+- **予想と改善の開始はsoviet側で掲示と実行中のコーナーに連動する。**
+  `lib/corner_notice_state.py` が `next_corner.json` を読み、`time`/`prediction`/未知holdでは
+  新規48試合予想を作らない。`prediction-pending` のときだけ、acc>0や改善running/lockが
+  あっても予想の作成を許す（A/B・hot streak・48試合条件は維持）。改善ロック作成は `hold` が
+  付いている間は行わず、試合消化だけを続ける。
+- **WebUIのコーナー欄は予想roundの進捗と待ち理由を表示する。** 予想がin-flightの間は
+  `current_prediction.json` の `games_completed` / `max_games` / 残り試合と、
+  `prediction_retry/resolve.json` のretry状態・`regression_check_in_progress` の有無を
+  boundedに投影し、「起動要求済み」のpendingが予想の完了待ちなのか、48/48完了後の精算待ち
+  なのかを区別する。`next_due_at` はローテーションの目安であり、予想ホールド中の実際の
+  開始時刻ではない。予想roundが48/48で完了しているのに境界が更新されていない場合は
+  「精算の反映待ち」として表示する（境界の公開は従来どおりSoren側が行う）。
+- **コーナー実行中も新規予想を始めない。** コーナーが始まると `next_corner.json` は消えるため、
+  掲示だけではSoren gameが裏にいる間の予想開始を防げない。`corner_notice_state.py` は同じ
+  `game_switch.json` の `phase`/`active.game` も読み、`ready` + `sorengame` 以外（PAPERの
+  `paper-view`、切替中、failed/recovery_required、idle）では新規予想を作らない。
+  `game_switch.json` が未読・破損・未知phaseのときはfail-openで予想を止めない。改善の開始は
+  この判定では変えない（従来どおり掲示中の `hold` だけが抑止する）。
+- **枠確定からコーナー開始までの間も新規予想を始めない。** 回転は pending 確定時に
+  `next_corner.json` を消し、試合境界・オーディオ待ちのあと `game_switch` を切り替える。
+  この間 `game_switch` はまだ `sorengame` なので、`corner_rotation.json` の
+  `pending` / `manual_pending` が非空の間も `corner_notice_state.py` は新規予想を作らない
+  （2026-11-15 13:32 の PAPER で、枠確定後の待ち時間に作られた予想がコーナー中に残るのを観測）。
+  さらに interval では `next_due_at` まで `LEAD_SECONDS`（300秒）以内も同じ扱いにする。
+  `next_corner.json` の欠落・遅延があっても予定直前の予想開始を防ぐためで、queue mode は
+  時刻約束がないので pending / active だけで守る。台帳が未読・破損・未知schema・非数値の
+  `next_due_at` のときは fail-open。改善バッチの加算はこの判定では変えない。
+- 枠の終了後、`last_result` がterminal（completed / interrupted / expired）かつ
+  30分以内なら、共有audio queueへ1回だけ「次のコーナーは〜、18時からの予定です。」を
+  入れる。`notice_spoken_for`（request UUID）で冪等にし、`dedup_scope` も同じ
+  requestに結ぶ。復元未確認（`unverified`）では読み上げない。
+- 配信側は `overlays/direct_broadcast_overlay_state.mjs` が
+  `<docich>/run-soren-live/next_corner.json` を読み、`nextCorner` として
+  `/__soren_overlay/broadcast/state` に載せる。
+  `overlays/direct_broadcast_overlay.html` は右サイドバー上部のカード
+  （`#next-corner`）として描画する。記録が10分更新されない・予定時刻を15分過ぎた
+  （`hold` なし）・未知の `hold` のときは出さない。`hold="prediction"` は予定時刻を
+  過ぎても表示を続け、`remaining_games` を「N試合後」として表示する
+  （不明/0は「予想終了後」）。`hold="prediction-pending"` は「予想開始待ち」。
+- 投影・読み上げはbest-effortで、書けない・届かないことは rotation の選択・実行・
+  復帰を止めない。
+- 反映の注意: 共有サイドバーの state (`/__soren_overlay/broadcast/state`) を組み立てる
+  のは共有オーバーレイサービス (`/home/ubuntu/soren/lib/shared_overlay.mjs`) で、
+  docich の state builder を import 時に読む。`overlays/direct_broadcast_overlay.html` を
+  変える deploy は workflow が `reload_shared_overlay.sh` を自動実行するが、
+  **gitlink 同期だけの deploy（soviet 側の配線変更）は自動では再起動されない**ので、
+  正規の `ops/vm_actions/reload_shared_overlay.sh` で再起動して
+  `/__soren_overlay/broadcast/state` に `nextCorner` が出ることを確認する。
+  同じ deploy は Soren91 の inline GAME/OPS レールも `refresh_soren_inline_overlay.sh` で
+  再描画する（2026-11-15 追加）。inline レールは install 時に HTML を読むため、
+  この step が無いと overlay HTML の変更が次の gitlink 変更まで配信へ出ない。
+  `ops/vm_actions/soren_inline_overlay_refresh_epoch` を bump しても再描画できる。
 
 ## 永続化、キュー、所有権
 
@@ -116,8 +220,9 @@ last_seen、pending、request UUID、結果をatomic writeする。
   （`lib/outbound_queue.sh` → `broadcast/comment.sh`の`get_comment_backlog_counts`）と同じ規則:
   プロセス環境の`COMMENT_QUEUE_DIR` → `<soren>/.env`の`COMMENT_QUEUE_DIR` → `tmp/.comment_queue`。
   相対値はSoren root基準（shellはcwd=Soren rootで動く）。
-- **改善サイクルとA/Bは意図的にゲートしない**（試合/ラウンド境界はgame-switch coordinatorが
-  所有し、A/Bは一時停止して再開する）。
+- **改善サイクルとA/Bはこのboundaryではゲートしない**（試合/ラウンド境界はgame-switch
+  coordinatorが所有し、A/Bは一時停止して再開する）。掲示中の改善**開始**はsoviet側の
+  `corner_notice_state` ゲートが抑止する。
 - 境界待ちをするのは`wait_boundary=True`のコーナー（view系=weather/tsuitate/yoso、
   external video、paper/retroの通常経路）。**NetHackとSoren91（Meriken）は既存設計で
   `wait_boundary=False`**であり、この境界を待たない（Soren91はoverlay-only linkage、
@@ -164,12 +269,21 @@ last_seen、pending、request UUID、結果をatomic writeする。
    解放済みの失敗はadapter観測が`failed`等のBUSYのまま残り得る。`_observe()`は
    `released_requests`が指すrequestに限り、**その時点で`_slot_reusable()`が
    再び真のときだけ**BUSY観測を枠占有として数えない（後で別ownerが所有すれば即座に待機へ戻る）。
+   adapterがowner-onlyの`recover_failed` hookを持たない場合（`no-hook`）も、2回連続の
+   failed観測をstale証明として同じslot解放経路へ渡す（2026-11-16。これが無いと、解放できる
+   失敗rowが`status=waiting`のまま永続的に次枠を塞ぐ）。
    ただし解放前に書かれたrowが残っている間は、次のcornerはまず共有slotの待ちに落ちる。slot待ちの
    tickは`corner-rotation.lock`を保持し続けるため他のtickは`already-running`を返し、rowの解放は
    そのtickが待ち窓（`CornerExecutionCoordinator`の`wait_seconds`、既定600秒）を使い切った後の
    最初のtickで行われる。この形は`status=recovery_required`のlatchを作らないので
-   `recover_corner_rotation.sh`の対象外であり、復旧は**「最大で待ち窓＋1tick」に有界だが即時ではない**
-   （#2282 の残件。正規の復旧操作の追加は別途）。
+   `recover_corner_rotation.sh`の対象外である。
+   released ownerがadapter側でまだretireされていない間（`settle_released_failure`が`None`=延期、
+   または`False`=hook未実装/retire不可）、その共有state fileはselectionから外れる
+   （`excluded[<id>]=released-owner-unretired`）。同じfileへの再dispatchは別requestの失敗を量産し、
+   有界auditから元requestの解放証拠を押し出すだけなので行わない（#3682）。
+   解放証拠を全て失った古い`failed` ownerの復旧は、固定operation
+   `check-release-stale-failed-owner` / `release-stale-failed-owner`による
+   （本書末尾「証拠を失った failed owner の固定解放（#3682）」参照）。
 3. 共有slotの安全が証明できない場合だけ、`status=recovery_required` /
    `reason=execution-or-state-unverified` / `error_kind=<固定enum>`でlatchし、`tick()`は
    自動開始と手動startを拒否する。この場合も`failed_corners`へ`resolution=recovery-required`の
@@ -179,8 +293,10 @@ last_seen、pending、request UUID、結果をatomic writeする。
 
 例外本文はstateに書かない（provider出力やcredentialを含み得るため）。`failed_corners`にも
 例外本文・payload・request identityは保存しない（固定reason_codeと固定`error_kind`のみ）。
-手動予約（`manual_pending`）はoperatorの枠であり暗黙に解放しない: 1.のterminal commitだけを
-自動で試し、成立しなければ従来どおり待機/latchを維持する。
+手動予約（`manual_pending`）も、1.のterminal commitか2.のslot証明が成立した時点で自動解放する
+（2026-11-16 オーナー判断: 1つのコーナーの失敗で次のコーナーを止めない）。解放時は
+`manual_pending`だけを消し、requestとfailureは`failed_corners`/`history`に残す。
+証拠が成立しない間は従来どおり待機/latchを維持する（fail-closed）。
 
 #### 終了済みcornerが枠を保持している場合（reclaim、#2187）
 
@@ -211,6 +327,16 @@ last_seen、pending、request UUID、結果をatomic writeする。
   **1回だけ**記録しlatchを維持する（以後はoperatorの固定operation）。
 - 予算の状態は診断 `corners.corner_rotation.auto_restore_*`（corner / attempts / attempt_limit /
   next_at / last_status）で見える。request identityは出さない。
+
+#### plane自体がterminal failedに残った場合の自動復旧（2026-11-16）
+
+失敗したswitchがrollbackできず、canonicalのgame-switch planeが`failed`/`recovery_required`の
+まま残るとslot証明が成立せずlatchが続く。tickは同じ予約に対して、**安定したterminal phaseだけ**を
+対象にreview済みの`GameSwitchCoordinator.recover()`を自動で再試行する（in-flightのswitchは触らない）。
+予算はrequestごとに3回・5/15/30分のbackoffで、上限到達後はlatchを維持する。復旧が成立すると
+同じtickがterminal/slot証明を再評価し、成立すれば予約を解放して次のcornerへ進む。
+予算の状態は診断 `corners.corner_rotation.auto_plane_recovery_*`（corner / attempts /
+attempt_limit / next_at / last_status）で見える。request identityは出さない。
 
 復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
 
@@ -306,7 +432,8 @@ last_seen、pending、request UUID、結果をatomic writeする。
    ledgerが存在しなければlatchは無いので0）。結果JSONには `latch_resolved` を含め、
    ログを読む側はexit codeとこのフラグで判定する。
 
-`tick()` 自身はlatchを自動解除しない（毎分のtimerが自動再試行ループを作るため）。
+`tick()` は証明（terminal commit / slot証明）が成立した範囲でのみlatchを自動解除し、
+証明の無いlatchを強制clearしない（毎分のtimerが同じ判定を再試行する）。
 ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時計調整は復旧手順ではない。
 `error_kind` は**初回のlatch時**の固定分類として、次にlatchし直すまでledgerと診断に残る。
 復旧操作が拒否された時に上書きしない（拒否理由より元原因の分類を残す）。
@@ -317,8 +444,15 @@ latch中かどうかを問わず出す）、latch自体を総合 `warn` とし�
 固定投影する。`resolution=released-unverified` は「記録して他cornerのローテーションを継続した」、
 `recovery-required` は「共有slotの安全が証明できずlatchを維持した」を表し、
 request identity・例外本文は出さない。
+この固定投影を入力に、10分ごとの監視workflowがコーナー不正終了とローテーション異常
+（latch・overdue・解放済みownerの未退役・timer停止など）を固定タイトルのIssueへ
+自動起票し、解消時に自動closeする。判定・重複排除・本文の固定fieldは
+`ops/vm_actions/corner_health.py`、運用手順は
+[`corner-health-monitor.md`](operations/corner-health-monitor.md) を正本とする。
+復旧操作はこの監視に含めない。
 復旧後の `tick()` のcooldown再検証は `phase=="selected"` の予約だけで、
-`dispatched` の復元はdispatch時の履歴行がcooldownを担保する。
+`dispatched` の復元はdispatch時の履歴行がcooldownを担保する。cooldown fallbackとして
+選んだ予約は `cooldown_exempt` を持ち、再起動後の再検証でもその意図を保つ。
 
 起動済みcornerは無効化後も安全な終了・復帰を継続する。まだ起動していない予約が無効化
 された場合は予約を保持して待機する。pending対象のcatalog削除は要復旧。
@@ -660,12 +794,63 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
+WebUI の半熟英雄には3つの起動方法がある。
+
+- **開始予約**: 従来の境界判定に従う。直前が画面停滞・入力停滞なら検証済みセーブから自動再開する。
+- **最新セーブから再開**: 明示的に検証済みのセーブを引き継ぐ。未精算の再開要求は既存の復旧検証を通す。
+- **第1話から新規開始**: 確認ダイアログ後、`POST /api/corners` の `action=new-game`,
+  `corner=hanjuku-hero`, `confirm=true` で予約する。現在の枠の終了・資源解放を待ち、
+  `new_game=true` を同じ予約UUIDのままdispatchまで保持する。新しいgenerationの
+  `states/`・`saves/` で起動し、過去のセーブ・SRAM・bot状態を読み込まない。
+
+新規開始は既存セーブの削除・上書きを行わない。過去の実行にセーブは残るが、
+新規開始後の「最新セーブから再開」は新しい実行が対象となり、古い実行を選び直すUIはない。
+通常開始・再開・新規開始の予約は相互に上書きせず、異なるモードの要求は競合として拒否する。
+新規開始も無効化・pause・復旧待ちの制約を維持する。未精算のcheckpoint要求がある場合も
+その要求を消さず起動を拒否し、既存の復旧を必要とする。時刻指定は従来の境界判定のままで、
+新規開始との組合せは扱わない。
+
+#### dispatch前の手動予約の取消（check-cancel-queued-hanjuku / cancel-queued-hanjuku）
+
+`cancel_scheduled_manual` が扱うのは時刻指定予約がまだ独立inboxにある場合だけであり、
+即時予約や取り込み済みの `queued_manual` には取消経路がなかった。
+`CornerRotationManager.cancel_queued_manual` は、inbox と `queued_manual` の両方を対象に、
+非ブロックの実行lockと manual-queue lock を保持して予約全体を検証し、dispatch 前だけを
+取り消す。枠の実行中は lock が取れず `busy` で拒否する。`pending`/`manual_pending` へ
+進んだ予約、recovery latch、時計逆行、別cornerの予約、指紋不一致は固定理由で拒否し、
+以後は従来どおり stop/recovery 経路に委譲する。
+
+`resume_latest` 予約が作った `hanjuku-resume/hanjuku_resume.json`（prepared/queued）と
+シール済み `<request_id>.state` は、request_id 照合のうえ `discard_unclaimed` で先に破棄する。
+claimed/verified の受領や別要求の記録は解除しない（dispatch消費済み＝recovery領域）。
+取消は audit `last_queued_manual_cancel` に元予約を残し、cooldown・履歴・休止・
+他owner/receipt/runtime は変更しない。check は予約全体の sha256 指紋を返し、apply は
+レビュー済み指紋の一致を必須とする。canonical operator の固定 operation は
+`check-cancel-queued-hanjuku` / `cancel-queued-hanjuku`。
+
+### 長時間コーナー中の再起動（slot heartbeat）
+
+ローテーションは枠の実行中、tick が flock を保持したままコーナー終了まで待つため、
+`last_seen_at` はコーナーが終わるまで進まない。24時間を超えるコーナーの途中で
+deploy / サービス再起動 / クラッシュ復帰をすると、停止していないにもかかわらず
+`now - last_seen_at > DAY` となり clock-gap quarantine に入っていた（2026-11-05 実測）。
+
+枠を実行しているプロセスは `state_dir/corner_rotation_heartbeat.json` に
+`schema` / `corner` / `request_id` / `pid` / `at` を30秒ごとに書く。再起動後の tick は、
+ledger が `status=running` かつ pending が同一 request で、heartbeat が
+`HEARTBEAT_FRESH_S`（180秒）以内のときだけ「park していた」と判定し、quarantine を
+付けずに `last_seen_at` を更新して継続する。heartbeat が古い・別 request・
+`running` でない場合は従来どおり fail-closed で1日 quarantine する。
+heartbeat は枠の正常終了時に削除される。
+
 ### clock-gap quarantine 中の半熟手動予約（clear-hanjuku-clock-quarantine）
 
 長時間の停止（now - last_seen_at > DAY）を検知した rotation は、cooldown の基準が
 信頼できないため clock_hold_until = now + DAY を保存し、clock-gap-quarantine で待機する。
 この間も queued_manual は保持されるが、timer は予約を処理しない。
-restart-service は state の hold を消さないため、これだけでは解除できない。
+restart-service は state の hold を消さないため、これだけでは解除できない
+（slot heartbeat 導入後は、park 中の短時間再起動では hold 自体が作られない。
+既に hold が入っている場合は下記 operator が必要）。
 
 canonical operator の固定 operation clear-hanjuku-clock-quarantine は、次を全て満たす
 時だけ clock_hold_until を削除する。ゲームの開始・停止・切替は行わない。
@@ -698,8 +883,8 @@ game = "yosou-view", enabled = true, audio_enabled = true }` を登録してい�
 詳細は `docs/features/yosou-oh-corner.md` と `AGENTS.md` の全画面例外を参照。
 記録・集計は `prediction_leaderboard.py`、view は `yoso_view.py`、lifecycle は
 `yoso_corner.py`、program adapter は `adapters/yoso_program.py`。台帳は read-only で、
-view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（catalog の `duration_minutes` で
-1〜14 分）が**上限**で、読み上げを入れた run は発話が共有 queue から消えた時点で
+view は Twitch・ゲーム・encoder に触れない。表示は既定 2 分（本番 catalog は部門ごとの読み上げのため
+`duration_minutes = 4`、設定可能範囲 1〜14 分）が**上限**で、読み上げを入れた run は発話が共有 queue から消えた時点で
 `end_reason = "audio-complete"` として早期に終了する（天気予報 corner の音声完了と同じ考え方）。
 queue が混んで発話が上限まで残る場合は従来どおり `end_reason = "duration"` で終わる。
 common slot の停止・復帰は既存 GameSwitch 経路を通る。
@@ -796,14 +981,17 @@ row を再観測した時に `hanjuku_predictions._record_canceled` で記録す
 
 予想王 corner は view を表示するだけでなく、active になった直後に1回だけ
 `yoso_narration.announcement()` を呼ぶ。共通 eventOverlay の既存 `prediction` category へ
-**コーナー紹介と ranking の2件**を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
+**コーナー紹介と ranking の2件**（overlay は的中率ランキングのみ）を bounded（本文 `OVERLAY_BODY_LIMIT` 以内、`source_id =
 yosou:intro:<request_id>` / `yosou:ranking:<request_id>`。共有 queue は `source_id` ごとに
 最新1件だけを残すため分ける）に積む。catalog の `audio_enabled = true` を明示したときだけ、
-同じ2件を発話として enqueue する（紹介 `context="yosou:intro"` → ranking
-`context="yosou:ranking"` の順、各上限300字、共有 audio worker の既定音声）。
+発話は紹介 `context="yosou:intro"` の後に**部門ごとに1件**（的中率 → 賭けたpt → 得たpt → 失ったpt →
+賭けた回数、`context="yosou:board:<metric>"`、各部門の上位3名、各上限300字、共有 audio worker の既定音声）を
+enqueue する。画面（view）は共有 queue の `.playing` マーカーを読み取りだけで観測して
+読み上げ中の部門を出す（`/api/yosou` の `voice`、adapter が `--queue-dir` で渡す。詳細は
+`docs/features/yosou-oh-corner.md` §3.1）。
 
 読み上げを入れた run は、`yoso_narration.voice_items_in_flight()` が自分の
-`yosou:intro` / `yosou:ranking` の queue マーカー（`.txt` / `.playing`）を数え、
+`yosou:intro` / `yosou:board:<metric>` の queue マーカー（`.txt` / `.playing`）を数え、
 0 になった時点で `audio-complete` として早期終了する。共有 audio worker は再生前に
 `.playing` へ rename し、再生試行が終わってから削除するため、マーカーの不在が
 この queue で得られる唯一の完了証拠である（他 source のコメントや他 corner は数えない）。
@@ -851,3 +1039,11 @@ dispatch を使い、失敗時は定型文へ fallback する。reveal は常に
 セッション中に slot が別 owner へ動いた場合は `operator-moved-during-mystery` で
 interrupted になり、予想があれば精算したうえで復帰する。設計・制限の正本は
 `docs/features/mystery-corner.md`。
+
+### 証拠を失った failed owner の固定解放（#3682）
+
+`waiting` 状態で、古い `failed` owner の解放証拠が `released_requests` pointer・`failed_corners` の有界audit・`released_settle_pending` pin のいずれにも存在しない場合、通常の `recover-failed` は対象外です。owner-only の `corner-rotation-operator` で `check-release-stale-failed-owner` を先に実行し、`admin-eligible` を確認してから、同じ fingerprint を指定して `release-stale-failed-owner` を実行します。手動で ledger・state file を編集してはいけません。
+
+fingerprint は対象 observation の `corner` と `rotation_request_id` から `sha256(json.dumps({"corner": corner, "request_id": request_id}, sort_keys=True, separators=(",", ":")))`（UTF-8）で導出する64桁の小文字16進数です。対象の一意性、共有slotの解放、canonical の安定性は各操作時に再検証され、条件が変われば拒否します。成功時は `failed_corners` に `resolution=released-unverified` / `reason_code=stale-owner-admin-released`、`released_requests` pointer、および最大16件の `stale_owner_admin_releases` 監査記録を書き戻し、adapter の settle を試みます。settle が成功しない場合も再dispatchは許可しません。
+
+`_observe` は解放済み owner の settle が `True` 以外（`None` または `False`）なら、その共有 state file を選択対象から外します。これは同じ state file への再dispatchによる失敗・audit証拠の押し出しを防ぎます。pointer は同じ corner の新しい解放記録で上書きされ得るため、別の未retire ownerがpointerのみに依存する場合は再びfail-closedとなり、対象を再確認して別途checkが必要です。実際のコーナー起動失敗の根本原因は別途調査してください。

@@ -79,8 +79,14 @@ def test_repeated_unread_army_still_reaches_rescue_after_two_observations():
         assert p.battle_step(native(1446), mem) == [{'type': 'wait', 'ms': 50}]
         mem = json.loads(json.dumps(mem))
     assert p.battle_step(native(1446), mem) == [p.pad('b')]
-    assert p.battle_menu_step(native(1448), mem) == [p.pad('a')]
-    assert mem['battle']['survival']['egg_attempted']
+    # docich#4048: the menu frame keeps its field visible and now re-measures
+    # both armies ((4,1) on g745-1448). That complete fresh read licenses
+    # conservation at the menu itself, so the old "unread army -> egg rescue"
+    # outcome no longer applies once the menu supplies real counts.
+    assert p.battle_menu_step(native(1448), mem) == [p.pad('b')]
+    assert mem['battle']['ally_soldiers'] == 4
+    assert mem['battle']['enemy_soldiers'] == 1
+    assert not mem['battle']['survival']['egg_attempted']
 
 
 def test_readable_unread_oscillation_does_not_refill_the_battle_budget():

@@ -37,6 +37,12 @@ LIVE_ELIGIBLE = False
 EXECUTION_MODEL_VERSION = "next_observation_ioc_v1"
 TIME_IN_FORCE = "next_observation_ioc"
 
+# N00 v2 §3.5 approved operational clock tolerance (confirmed 1000 ms). The
+# fill fence uses ``2 x max_error_ms`` because the quote writer and the fill
+# worker each contribute one tolerance. This is a contract constant, not a
+# replay manifest key (docich#2644 P3 PR-B / #780 precondition 2).
+CONTRACT_MAX_ERROR_MS = 1000
+
 # Fixed diagnostic codes (parent #769 D10). The host never stores free-form
 # exception text in a code field.
 TERMINAL_STATUSES = frozenset({"filled", "canceled", "expired", "rejected"})
@@ -97,7 +103,7 @@ class ClockQuality:
 
     synced: bool
     source: str
-    max_error_ms: int
+    max_error_ms: int = CONTRACT_MAX_ERROR_MS
 
     def __post_init__(self) -> None:
         if not isinstance(self.synced, bool):
@@ -638,12 +644,17 @@ def _market_rejection(
         return "LIQUIDITY_UNKNOWN"
     if spread_bps(observation) > constraints.spread_limit_bps:
         return "SPREAD_TOO_WIDE"
-    if (
-        constraints.volatility_limit_bps is not None
-        and observation.volatility_bps is not None
-        and observation.volatility_bps > constraints.volatility_limit_bps
-    ):
-        return "VOLATILITY_LIMIT"
+    if constraints.volatility_limit_bps is not None:
+        # docich#2644 acceptance item 3 (P2-4 residual risk): when an instrument
+        # configures a volatility limit, an observation that carries no
+        # volatility figure cannot be proven to satisfy it. Unknown volatility
+        # is not "below the limit", so the observation is ineligible instead of
+        # passing through fail-open. Instruments without a configured limit
+        # keep no volatility gate at all.
+        if observation.volatility_bps is None:
+            return "VOLATILITY_UNKNOWN"
+        if observation.volatility_bps > constraints.volatility_limit_bps:
+            return "VOLATILITY_LIMIT"
     age = D((now - observation.market_available_at).total_seconds())
     if age < 0 or age > constraints.max_quote_age_seconds:
         return "QUOTE_STALE"

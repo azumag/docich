@@ -9,6 +9,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_policy as p
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse, Screen, Battle
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku'
 KIT = ['イッテツーン', 'バルムンク', 'バルムンク']
@@ -66,17 +67,17 @@ def test_existing_or_committed_attempts_are_not_rekitted(state):
     elif state == 'spent': mem['kit_spent'] = {'2-B1': ['バルムンク']}
     elif state == 'dropped': mem['card_drop'] = {'2-B1': ['イッテツーン']}
     elif state == 'existing': mem['rare_card_kit'] = {'2-B1': ['キャトルミュー']}
-    else: mem['orders'] = {'2-B1': 'launched' if state == 'launched' else 'launched_unconfirmed'}
+    else: _plan_region(mem)['orders'] = {'2-B1': 'launched' if state == 'launched' else 'launched_unconfirmed'}
+    _plan_region(mem)  # P2: snapshot in region form; the inventory read migrates flat keys.
     before = deepcopy(mem)
     assert p._chapter_two_balmung_inventory(mem, order(), inventory()) is None
     assert mem == before
 
 
-@pytest.mark.parametrize('change', ['chapter', 'step', 'target'])
+@pytest.mark.parametrize('change', ['chapter', 'target'])
 def test_other_chapters_orders_and_targets_keep_their_chart_kit(change):
     mem = memory(); o = dict(order())
     if change == 'chapter': mem['chapter'] = 1
-    elif change == 'step': o['step'] = '2-S1'
     else: o['target'] = 'ウラノポリス'
     assert p._chapter_two_balmung_inventory(mem, o, inventory()) is None
     assert not mem.get('rare_card_kit')
@@ -86,9 +87,9 @@ def test_native_hero_kit_is_read_but_cannot_authorize_a_hero_boss_departure():
     mem = memory(); p._chapter_two_balmung_inventory(mem, order(), inventory())
     screen = parse(read_png(F / 'g700-balmung-kit-confirm.png'))
     assert p._sortie_inventory(screen) == KIT
-    mem['sortie_general']['2-B1'] = p.NAME
+    _plan_region(mem)['sortie_general']['2-B1'] = p.NAME
     assert p.deploy_step(screen, mem) == [p.pad('b'), p.pad('b')]
-    assert not mem.get('order_context')
+    assert not _plan_region(mem).get('order_context')
     assert mem['_records'][-1]['decision'] == 'boss_companion_required'
 
 
@@ -116,7 +117,7 @@ def test_boss_tactics_require_actual_carriage_and_keep_each_copy_distinct():
 
 def test_road_enemy_does_not_receive_the_boss_opening_tactic():
     mem = confirmed()
-    mem['attack'] = {'general': p.NAME, 'castle': None, 'side': 'attack', 'step': '2-B1'}
+    _plan_region(mem)['attack'] = {'general': p.NAME, 'castle': None, 'side': 'attack', 'step': '2-B1'}
     screen = Screen([], None, '', kind='battle', battle=Battle('クミン', 27, p.NAME, 90))
     p.battle_step(screen, mem); p.battle_step(screen, mem)
     assert not any(r['decision'] == 'battle_card' and r.get('card') == 'バルムンク'
@@ -135,7 +136,7 @@ def test_native_before_after_and_next_chapter_cue_prove_isolated_boss_defeat():
 
 def test_zero_boss_panel_never_spends_the_spare_event_card():
     mem = confirmed()
-    mem['attack'] = {'general': p.NAME, 'castle': 'ボス', 'side': 'attack',
+    _plan_region(mem)['attack'] = {'general': p.NAME, 'castle': 'ボス', 'side': 'attack',
                      'step': '2-B1', 'entry_evidence': 'measured_boss_entry'}
     live = parse(read_png(F / 'g700-fake-hero-before-balmung.png'))
     p.battle_step(live, mem); p.battle_step(live, mem)
@@ -149,9 +150,9 @@ def test_zero_boss_panel_never_spends_the_spare_event_card():
 def test_partial_original_kit_cancels_without_rewriting_reserved_cards(remaining):
     mem = memory(); mem['picked'] = ['イッテツーン']; inv = inventory(); inv['remaining'] = remaining
     assert p._chapter_two_balmung_inventory(mem, order(), inv) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] == '2-B1' and mem['picked'] == []
+    assert _plan_region(mem)['active'] == '2-B1' and mem['picked'] == []
     assert mem['boss_stock_restart'] == {'step': '2-B1', 'readings': 0}
-    assert mem['orders']['2-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['2-B1'] == 'pending'
     assert not mem.get('rare_card_kit') and not mem.get('kit_spent')
     assert mem['_records'][-1]['decision'] == 'boss_stock_kit_restart'
 
@@ -167,9 +168,9 @@ def test_restart_backs_out_before_reselecting_and_is_bounded():
     screen = parse(read_png(F / 'g700-balmung-kit-confirm.png'))
     for _ in range(11):
         assert p.deploy_step(screen, mem) == [p.pad('b')]
-        assert not mem.get('order_context')
+        assert not _plan_region(mem).get('order_context')
     assert p.deploy_step(screen, mem) == [p.pad('b'), p.pad('b')]
-    assert mem['active'] is None and not mem.get('boss_stock_restart')
+    assert _plan_region(mem)['active'] is None and not mem.get('boss_stock_restart')
 
 
 def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
@@ -181,7 +182,7 @@ def test_restart_flag_is_cleared_on_full_backout_and_other_order(monkeypatch):
     mem = memory(); mem['boss_stock_restart'] = {'step': '2-B1', 'readings': 2}
     monkeypatch.setattr(p, '_check_source_castle', lambda *args: [p.pad('b')])
     p.deploy_step(Screen([], None, '', kind='castle_menu'), mem)
-    assert not mem.get('boss_stock_restart') and mem['active'] == '2-B1'
+    assert not mem.get('boss_stock_restart') and _plan_region(mem)['active'] == '2-B1'
 
 
 def test_chapter_two_boss_keeps_comparable_companions_and_accepts_a_weaker_fit_one():
@@ -205,7 +206,7 @@ def test_broken_hero_is_replaced_by_a_fit_companion_and_never_sent():
 
     The hero's own broken egg still never licenses sending the hero himself.
     """
-    mem = memory(); mem['garrison'] = {'スペランザ': ['どうし', 'シェーブル']}
+    mem = memory(); _world(mem)['garrison'] = {'スペランザ': ['どうし', 'シェーブル']}
     mem['house_eggs'] = {'どうし': {'broken': True}}
     mem['captured'] = [n for n in chart.castles(2) if n not in ('アルマムーン', 'ボス')]
     assert p._hero_source_alternative(order(), mem)

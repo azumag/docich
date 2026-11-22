@@ -9,24 +9,43 @@ of the effect.
 from __future__ import annotations
 
 _STATE_KEY = 'omedetori_cycle'
+# A summon-only fight has no normal battle record. Hold the one-press receipt
+# on the monster menu's own scope instead of repeating ミカンをおす forever
+# (owner 2026-11-15: the menu kept choosing ミカンをおす every turn).
+_MENU_KEY = 'omedetori_cycle_menu'
 
 
 def _state(mem, ally, enemy):
     battle = mem.get('battle')
-    if not isinstance(battle, dict):
+    if ally is None or enemy is None or ally.name != 'おめでとり':
+        if isinstance(battle, dict):
+            battle.pop(_STATE_KEY, None)
+        mem.pop(_MENU_KEY, None)
         return None
-    if (ally is None or enemy is None or ally.name != 'おめでとり'
-            or not isinstance(battle.get('ally'), str)
-            or not isinstance(battle.get('enemy'), str)):
-        battle.pop(_STATE_KEY, None)
+    if (isinstance(battle, dict) and isinstance(battle.get('ally'), str)
+            and isinstance(battle.get('enemy'), str)):
+        scope = [battle['ally'], battle['enemy'], ally.name, enemy.name]
+        value = battle.get(_STATE_KEY)
+        if (not isinstance(value, dict) or value.get('scope') != scope
+                or type(value.get('mikan_submitted')) is not bool
+                or type(value.get('mikan_unverified_attempt', False)) is not bool):
+            value = battle[_STATE_KEY] = {'scope': scope, 'mikan_submitted': False,
+                                          'mikan_unverified_attempt': False}
+        else:
+            value.setdefault('mikan_unverified_attempt', False)
+        return value
+    # No normal battle record (a summon-only fight). Latch the receipt on the
+    # monster menu's own scope so the second turn can warm.
+    menu_scope = mem.get('monster_menu_choice_scope')
+    if not isinstance(menu_scope, list):
         return None
-    scope = [battle['ally'], battle['enemy'], ally.name, enemy.name]
-    value = battle.get(_STATE_KEY)
+    scope = ['menu', *menu_scope, ally.name, enemy.name]
+    value = mem.get(_MENU_KEY)
     if (not isinstance(value, dict) or value.get('scope') != scope
             or type(value.get('mikan_submitted')) is not bool
             or type(value.get('mikan_unverified_attempt', False)) is not bool):
-        value = battle[_STATE_KEY] = {'scope': scope, 'mikan_submitted': False,
-                                      'mikan_unverified_attempt': False}
+        value = mem[_MENU_KEY] = {'scope': scope, 'mikan_submitted': False,
+                                  'mikan_unverified_attempt': False}
     else:
         value.setdefault('mikan_unverified_attempt', False)
     return value

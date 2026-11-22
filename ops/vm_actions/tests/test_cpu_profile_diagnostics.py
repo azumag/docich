@@ -248,6 +248,73 @@ class CpuProfileDiagnosticsTests(unittest.TestCase):
         self.assertEqual(out["status"], "invalid")
 
 
+class CpuProfileTelemetryProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "profile.json"
+        self.now = 1_800_000_000
+
+    def write(self, data):
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_only_fixed_telemetry_fields_are_projected(self):
+        self.write({
+            "schema": "docich.cpu_profile.v1",
+            "meta": {"scenario": "latest-main", "generated_at": self.now},
+            "host": {},
+            "components": [],
+            "spawns": [],
+            "telemetry": {
+                "status": "ok",
+                "snapshots": [
+                    {
+                        "role": "agent", "game": "hanjuku-hero", "brain": "command",
+                        "counters": {"cycles": 40, "captures": 40,
+                                     "capture_spawns": 40, "brain_spawns": 39,
+                                     "evil": 1},
+                        "seconds": {"capture_s": 1.25, "evil_s": 2.0},
+                        "written_at": self.now,
+                        "payload": "SECRET-FRAME",
+                    },
+                    {"role": "root", "game": "g", "brain": "b"},
+                    {"role": "corner", "game": "../etc/passwd", "brain": "b"},
+                    {"role": "corner", "game": "g", "brain": "b",
+                     "counters": {"captures": "lots"}},
+                ],
+            },
+        })
+        out = collector._collect_cpu_profile(self.now + 5, path=self.path)
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(len(out["telemetry"]), 2)
+        agent = out["telemetry"][0]
+        self.assertEqual(agent["role"], "agent")
+        self.assertEqual(agent["game"], "hanjuku-hero")
+        self.assertEqual(agent["counters"]["brain_spawns"], 39)
+        self.assertNotIn("evil", agent["counters"])
+        self.assertEqual(agent["seconds"]["capture_s"], 1.25)
+        self.assertNotIn("evil_s", agent["seconds"])
+        self.assertEqual(out["telemetry"][1]["counters"], {})
+        encoded = json.dumps(out, sort_keys=True)
+        self.assertNotIn("SECRET", encoded)
+        self.assertNotIn("passwd", encoded)
+
+    def test_telemetry_list_is_bounded(self):
+        self.write({
+            "schema": "docich.cpu_profile.v1",
+            "meta": {"scenario": "latest-main", "generated_at": self.now},
+            "host": {},
+            "components": [],
+            "spawns": [],
+            "telemetry": {"snapshots": [
+                {"role": "agent", "game": f"g{i}", "brain": "b"}
+                for i in range(collector.CPU_PROFILE_MAX_TELEMETRY + 5)
+            ]},
+        })
+        out = collector._collect_cpu_profile(self.now + 5, path=self.path)
+        self.assertEqual(len(out["telemetry"]), collector.CPU_PROFILE_MAX_TELEMETRY)
+
+
 class CpuProfileOperationContractTests(unittest.TestCase):
     def test_helper_is_fixed_readonly_profile(self):
         subprocess.run(["bash", "-n", str(HELPER)], check=True)

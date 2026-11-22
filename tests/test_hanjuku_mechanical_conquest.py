@@ -10,6 +10,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator  # noqa: F401  (import side effects of the package)
 from docich.hanjuku.strategy import replan, routes
 from docich.hanjuku.strategy.orders import _distance
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 @pytest.fixture(autouse=True)
@@ -35,8 +36,9 @@ def attack_targets(mem):
 def test_the_chart_orders_are_off_by_default_but_the_measured_table_stays():
     assert chart.speedrun_enabled(1) is False and chart.orders(1) == ()
     assert chart.orders(5) == () and len(chart.measured_orders(5)) > 0
-    # Chapters 4 (boss sites) and 9 (moving boss) still take their boss orders from the chart.
-    assert chart.speedrun_enabled(4) and chart.speedrun_enabled(9)
+    # Chapter 4 (boss sites) still takes its boss orders from the chart; chapter 9
+    # (moving boss, single road) runs mechanically along chart.CORRIDORS.
+    assert chart.speedrun_enabled(4) and not chart.speedrun_enabled(9)
     assert len(chart.orders(4)) > 0
 
 
@@ -66,7 +68,11 @@ def test_the_boss_is_attacked_only_after_every_other_castle_is_owned():
     partial = memory(captured=others[:-1])
     assert 'けっかい' not in [o['target'] for o in replan.interim_candidates(partial).values()]
     full = memory(captured=others)
-    assert [o['target'] for o in replan.interim_candidates(full).values()] == ['けっかい']
+    # Attacking the boss is what the gate is about; the garrison rotation the
+    # same plan emits (owner 2026-11-04) only moves generals between our castles.
+    # Owner 2026-11-05: the boss takes every spare as a wave, so the same
+    # target may appear more than once in one plan.
+    assert set(attack_targets(full)) == {'けっかい'}
 
 
 def test_an_unfinished_chart_order_no_longer_holds_progress_back():
@@ -83,7 +89,7 @@ def test_off_chart_runs_without_requesting_or_adopting_a_model_chart():
     replan._off_chart(mem)
     kinds = [r['decision'] for r in mem['_records']]
     assert 'chart_adjust_request' not in kinds and 'chart_adjust_applied' in kinds
-    plan = mem['chart_plan']
+    plan = _plan_region(mem)['chart_plan']
     assert plan['source'] == 'mechanical' and plan['orders']
     assert plan['orders'][0]['target'] in attack_targets(memory(captured=('キカンドン',))) + ['ゴーメン']
 
@@ -95,7 +101,11 @@ def test_chapter_three_still_marches_along_the_measured_road_table():
 
 
 def test_lost_castles_are_retaken_nearest_an_owned_castle_first():
-    mem = memory(captured=('キカンドン',), lost=['スペンソニア', 'ゴーメン', 'ナキューメラ'])
+    # #3266: each retake books a different general, so キカンドン needs three
+    # sendable spares (it used to name the same head-of-list actor every time).
+    mem = memory(captured=('キカンドン',), lost=['スペンソニア', 'ゴーメン', 'ナキューメラ'],
+                 garrison={'アルマムーン': ['どうし', 'ゼウス', 'ヴィーナス'],
+                           'キカンドン': ['ココット', 'リーキ', 'ヘラ', 'アテナ']})
     retakes = [o['target'] for o in replan.interim_candidates(mem).values() if o['purpose'] == 'retake']
     nearest = lambda c: min(_distance(1, o, c) for o in ('アルマムーン', 'キカンドン'))
     assert retakes == sorted(retakes, key=lambda c: (nearest(c), c)) and len(retakes) == 3

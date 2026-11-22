@@ -1,9 +1,12 @@
 """Owner 2026-11-02: ボスモンスターに「かぼちゃ」はきかない。
 
-ランプキン vs a chapter boss or named boss-general always takes
-「へんなおどり」 (skill1); the wasted かぼちゃ turn is never sent. No native
-ランプキン menu frame is kept, so the native g749 monster menu is reused with
-substituted panel names/HP and skill rows — the decision path, not the reader.
+ランプキン vs a chapter boss, named boss-general or boss monster always takes
+「へんなおどり」 (skill1); the wasted かぼちゃ turn is never sent. A boss
+castle's monster changes form (第6話 ハードマン→ハードロボ, 第12話
+クーモン→スーモン→ボイルド), and the later forms are not in chart.BOSSES, so
+they regressed until 2026-11-05. No native ランプキン menu frame is kept, so
+the native g749 monster menu is reused with substituted panel names/HP and
+skill rows — the decision path, not the reader.
 """
 from dataclasses import replace
 import pytest
@@ -39,7 +42,8 @@ def panel(s):
 
 @pytest.mark.parametrize('enemy', ['クイーン', 'にせヒーロー', 'プリンス', 'せいめいたい',
                                    '四季王', 'だいまおう', 'ハードマン', 'ランパイア',
-                                   'ノブナーガ', 'ハデス', 'だいとうりょう', 'エッグママ', 'クーモン'])
+                                   'ノブナーガ', 'ハデス', 'だいとうりょう', 'エッグママ', 'クーモン',
+                                   'ハードロボ', 'スーモン', 'ボイルド'])
 def test_every_boss_takes_hennaodori(enemy):
     s = menu(enemy, 500, ally_hp=10)   # even behind, かぼちゃ never goes out
     m = memory()
@@ -122,10 +126,26 @@ def test_the_same_confirm_seen_again_is_one_turn_not_two():
     assert m['lampkin_cycle']['n'] == 2
 
 
-def test_boss_is_always_hennaodori_and_does_not_advance_the_cycle():
+def test_later_boss_monster_form_never_sends_kabocha():
+    """live g1133 (2026-11-05): ランプキン vs ハードロボ HP1127 sent かぼちゃ."""
+    m = memory()
+    m['chapter'] = 6
+    m['battle']['enemy'] = 'ハードロボ'
+    s = menu('ハードロボ', 1127, ally_hp=100)
+    assert _monster_lampkin_choice('ally', panel(s)['ally'], panel(s)['enemy'], SKILLS) == 'skill1'
+    assert monster_menu_step(s, m) == [pad('a')]
+    rec = m['_records'][-1]
+    assert m['monster_menu_choice'] == 'skill1'
+    assert rec['observed_metric']['lampkin_choice'] == 'skill1'
+    assert 'ボスモンスター' in rec['reason'] and 'かぼちゃ' in rec['reason']
+    assert 'lampkin_cycle' not in m
+
+
+@pytest.mark.parametrize('enemy', ['クイーン', 'ハードロボ', 'スーモン'])
+def test_boss_is_always_hennaodori_and_does_not_advance_the_cycle(enemy):
     m = memory()
     for i in range(5):
-        assert turn(m, 'クイーン', 500, tick=100 + 10 * i) == 'skill1'
+        assert turn(m, enemy, 500, tick=100 + 10 * i) == 'skill1'
         leave_menu(m)
     assert m.get('lampkin_cycle', {}).get('n', 0) == 0
 

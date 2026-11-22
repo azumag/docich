@@ -102,6 +102,43 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_rotation_projection_flags_wait_overdue_on_one_reason(tmp_path):
+    """#4333: a wait held on one reason past next_due_at is projected."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+        "reason_since": 150, "eligible": ["paper"],
+    }))
+    output = {}
+    # 3500s past due and the reason held for 3550s: both over the warn bound.
+    module._collect_corner_files(tmp_path, output, 3700)
+    projection = output["corner_rotation"]
+    assert projection["waiting_overdue"] is True
+    assert projection["overdue_sec"] == 3500
+    assert projection["reason_age_sec"] == 3550
+    assert projection["reason_since"] == 150
+
+    # A fresh reason inside the warn bound is not a wedge.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200, "reason_since": 3600,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+    assert output["corner_rotation"]["overdue_sec"] is None
+
+    # A ledger written before reason_since existed cannot prove continuity.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+
+
 def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path):
     """Enabling a manual-only corner must be observable without a reservation."""
     module = load_collector()
@@ -392,6 +429,164 @@ def test_auto_restore_projection_is_absent_without_a_record(tmp_path):
     assert rotation["auto_restore_status"] is None
 
 
+def test_auto_plane_recovery_projection_is_bounded(tmp_path):
+    # #4349 recovery was invisible in the 2026-11-16 hanjuku incident
+    # (#4356): the durable record must surface with bounded fields.
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "auto_plane_recovery": {
+            "corner": "hanjuku-hero", "request_id": "DO-NOT-PUBLISH",
+            "attempts": 2, "next_attempt_at": 130,
+            "last_status": "failed",
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_plane_recovery_corner"] == "hanjuku-hero"
+    assert rotation["auto_plane_recovery_attempts"] == 2
+    assert (rotation["auto_plane_recovery_attempt_limit"]
+            == module.ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT)
+    assert rotation["auto_plane_recovery_next_at"] == 130
+    assert rotation["auto_plane_recovery_status"] == "failed"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_auto_plane_recovery_projection_defaults_without_a_record(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_plane_recovery_corner"] is None
+    assert rotation["auto_plane_recovery_attempts"] is None
+    assert rotation["auto_plane_recovery_status"] is None
+
+
+def test_fifo_projection_flags_expired_hard_deadlines(tmp_path):
+    # #4356: an accepted receipt left past its hard cap is the wedge the
+    # watchdog must terminalize; flag it without exposing request identity.
+    module = load_collector()
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    now = 1794758400.0  # 2026-11-15T16:00:00Z
+    (requests / "11111111-1111-4111-8111-111111111111.json").write_text(json.dumps({
+        "status": "accepted", "operation": "switch", "target": "hanjuku-hero",
+        "generation": 3, "updated_at": "2026-11-15T15:00:00Z",
+        "hard_deadline_at": "2026-11-15T15:30:00Z",
+    }))
+    (requests / "22222222-2222-4222-8222-222222222222.json").write_text(json.dumps({
+        "status": "accepted", "operation": "switch", "target": "robots",
+        "generation": 4, "updated_at": "2026-11-15T15:00:00Z",
+    }))
+    (requests / "33333333-3333-4333-8333-333333333333.json").write_text(json.dumps({
+        "status": "queued", "operation": "switch", "target": "nethack",
+        "generation": 5, "created_at": "2026-11-15T15:40:00Z",
+        "hard_deadline_at": "2026-11-15T17:00:00Z",
+    }))
+    result = module._collect_game_switch_fifo(tmp_path, now)
+    pending = {row["target"]: row for row in result["pending"]}
+    assert pending["hanjuku-hero"]["hard_deadline_expired"] is True
+    assert pending["robots"]["hard_deadline_expired"] is None
+    assert result["head"]["hard_deadline_expired"] is False
+    assert "11111111" not in json.dumps(result)
+
+
+def _write_retained_game_switch(tmp_path, *, phase="ready", game="hanjuku-hero"):
+    (tmp_path / "game_switch.json").write_text(json.dumps({
+        "phase": phase,
+        "active": {"game": game, "runtime_id": "g1190-67435f4d",
+                   "generation": 1190, "lease_id": "synthetic-lease"},
+    }))
+
+
+def test_retained_corner_game_exposes_the_fixed_operator_reason(tmp_path):
+    """Game-switch retaining a terminal corner's game must say why (#4226).
+
+    #4226: the hanjuku rollback kept `hanjuku-hero` active while the corner
+    state was `failed`, so the overlay card could only report an unexplained
+    unavailable. The diagnostics entry must name the operator-facing reason.
+    """
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "known_corners": {"hanjuku-hero": {"id": "hanjuku-hero",
+                                           "adapter": "game",
+                                           "game": "hanjuku-hero"}},
+        "failed_corners": [
+            {"corner": "hanjuku-hero", "request_id": "DO-NOT-PUBLISH", "at": 90,
+             "resolution": "released-unverified",
+             "reason_code": "base-game-unrestored",
+             "error_kind": "execution-unverified"},
+        ],
+    }))
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero",
+        "secret": "DO-NOT-PUBLISH-CORNER"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    corner = output["retro_corner"]
+    assert corner["retained_active"] is True
+    assert corner["retained_reason"] == "base-game-unrestored"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_retained_corner_projection_stays_quiet_for_live_or_settled_corners(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    # A live corner owning its active game is the normal case, not a retention.
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "active", "game": "hanjuku-hero"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+    # Terminal but a different game is active: also not a retention.
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    _write_retained_game_switch(tmp_path, game="sorengame")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+
+def test_retained_corner_reason_ignores_unhashable_corner_id(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "known_corners": {"hanjuku-hero": {"game": "hanjuku-hero"}},
+        "failed_corners": [{"corner": ["malformed"], "reason_code": "base-game-unrestored"}],
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is True
+    assert output["retro_corner"]["retained_reason"] == "corner-terminal-game-retained"
+
+
+def test_retained_corner_reason_falls_back_without_a_ledger_row(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    corner = output["retro_corner"]
+    assert corner["retained_active"] is True
+    assert corner["retained_reason"] == "corner-terminal-game-retained"
+
+    # A mid-flight switch phase is not a settled retention.
+    _write_retained_game_switch(tmp_path, phase="switching")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
     module = load_collector()
     for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):
@@ -441,6 +636,22 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
         'status':'interrupted','game':'hanjuku-hero',
         'end_reason':'SECRET-END-REASON'})
     assert unknown['end_reason'] is None
+
+
+def test_corner_end_reason_reports_the_admission_gate_vocabulary():
+    # #3174 follow-up: the admission gate's early-expire reason must stay
+    # visible in diagnostics; an unregistered reason would silently project
+    # as null exactly when the gate fires in production.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-budget-insufficient'})
+    assert output['status']=='interrupted'
+    assert output['end_reason']=='start-budget-insufficient'
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-deadline-expired'})
+    assert output['end_reason']=='start-deadline-expired'
 
 
 def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
@@ -1401,8 +1612,10 @@ def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
 
 
 def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
+    from docich.hanjuku.version import BOT_VERSION
+
     module = load_collector()
-    versions = ("hanjuku-script-v1", "hanjuku-chart-v2",
+    versions = (BOT_VERSION, "hanjuku-script-v1", "hanjuku-chart-v2",
                 "hanjuku-chart-v129-battle-card-progress",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
@@ -1489,7 +1702,96 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v341-chikyu-harmagedon-general",
                  "hanjuku-chart-v343-defender-okunote-melee-behind",
                  "hanjuku-chart-v344-sortie-list-walk",
-                 "hanjuku-chart-v345-roster-unplaced",)
+                 "hanjuku-chart-v345-roster-unplaced",
+                 "hanjuku-chart-v526-completed-season-sites",
+                 "hanjuku-chart-v754-okunote-only-box",
+                 "hanjuku-chart-v755-plan-step-map-budget",
+                 "hanjuku-chart-v756-ch9-empty-front-probe-reuse",
+                 "hanjuku-chart-v757-front-mass-wait",
+                 "hanjuku-chart-v758-probe-rearm-names",
+                 "hanjuku-chart-v759-retake-pair-wait",
+                 "hanjuku-chart-v760-destination-roster-probe",
+                 "hanjuku-chart-v761-due-probe-budget",
+                 "hanjuku-chart-v762-strongest-full-hp-leader",
+                 "hanjuku-chart-v763-owner-veto-order",
+                 "hanjuku-chart-v764-owned-target-settle",
+                 "hanjuku-chart-v765-defended-front-keep",
+                 "hanjuku-chart-v766-partial-tick-order",
+                 "hanjuku-chart-v767-finish-20",
+                 "hanjuku-chart-v768-own-target-marker",
+                 "hanjuku-chart-v769-guard-expiry-sticky",
+                 "hanjuku-chart-v770-flag-owner-confirm",
+                 "hanjuku-chart-v771-keep-defender",
+                 "hanjuku-chart-v772-recall-roster-due",
+                 "hanjuku-chart-v773-roster-due-ttl",
+                 "hanjuku-chart-v774-recall-read-delay",
+                 "hanjuku-chart-v775-capture-roster-read",
+                 "hanjuku-chart-v776-mass-hold-reset",
+                 "hanjuku-chart-v777-partial-on-move",
+                 "hanjuku-chart-v778-mass-retract-active",
+                 "hanjuku-chart-v779-front-hold-reinforcements",
+                 "hanjuku-chart-v780-receipt-during-wave",
+                 "hanjuku-chart-v781-defended-last-resident",
+                 "hanjuku-chart-v782-last-resort-stall",
+                 "hanjuku-chart-v783-front-marks-clean",
+                 "hanjuku-chart-v784-partial-move-update",
+                 "hanjuku-chart-v785-empty-front-reset",
+                 "hanjuku-chart-v786-hold-consistency",
+                 "hanjuku-chart-v787-panel-finish-precedence",
+                 "hanjuku-chart-v788-battle-start-defense-seen",
+                 "hanjuku-chart-v789-step-id-collision",
+                 "hanjuku-chart-v790-defense-seen-clean",
+                 "hanjuku-chart-v791-finish-pending-shopping",
+                 "hanjuku-chart-v792-lost-castle-page",
+                 "hanjuku-chart-v793-recruit-roster-due",
+                 "hanjuku-chart-v794-nonowned-page-clean",
+                 "hanjuku-chart-v795-camp-world-anchor",
+                 "hanjuku-chart-v796-camp-loss-record",
+                 "hanjuku-chart-v797-recruit-at-cap",
+                 "hanjuku-chart-v798-camp-occluded-tolerance",
+                 "hanjuku-chart-v799-camp-enter-record",
+                 "hanjuku-chart-v800-scene-abandon-record",
+                 "hanjuku-chart-v801-interrupt-record",
+                 "hanjuku-chart-v802-month-defer-recall",
+                 "hanjuku-chart-v803-month-default-estimate",
+                 "hanjuku-chart-v804-month-margin",
+                 "hanjuku-chart-v805-camp-timing-record",
+                 "hanjuku-chart-v806-recall-month-priority",
+                 "hanjuku-chart-v807-recall-roof-goal",
+                 "hanjuku-chart-v808-camp-origin-record",
+                 "hanjuku-chart-v809-interrupt-month-estimate",
+                 "hanjuku-chart-v810-camp-hunt-log",
+                 "hanjuku-chart-v811-hunt-timing",
+                 "hanjuku-chart-v812-jump-camps",
+                 "hanjuku-chart-v813-jump-camp-priority",
+                 "hanjuku-chart-v814-jump-camp-skip",
+                 "hanjuku-chart-v815-recall-battle-log",
+                 "hanjuku-chart-v816-hunt-origin",
+                 "hanjuku-chart-v817-camp-cursor-cell",
+                 "hanjuku-chart-v818-hunt-roof-detail",
+                 "hanjuku-chart-v819-picker-progress",
+                 "hanjuku-chart-v820-roof-support",
+                 "hanjuku-chart-v821-hunt-chart-cells",
+                 "hanjuku-chart-v822-picker-own",
+                 "hanjuku-chart-v823-hunt-chart-all",
+                 "hanjuku-chart-v824-picker-fallback-nearby",
+                 "hanjuku-chart-v825-picker-hero",
+                 "hanjuku-chart-v826-hero-status-goal",
+                 "hanjuku-chart-v827-picker-hero-status",
+                 "hanjuku-chart-v828-picker-hero-read",
+                 "hanjuku-chart-v829-picker-fallback-home",
+                 "hanjuku-chart-v830-picker-month-timing",
+                 "hanjuku-chart-v1354-card-announce-evidence",
+                 "hanjuku-chart-v1355-math-corner",
+                 "hanjuku-chart-v1365-chikujou-list-limit",
+                 "hanjuku-chart-v1369-egg-quote-owned",
+                 "hanjuku-chart-v1360-spend-resources-before-retreat",
+                 "hanjuku-chart-v1362-camp-recall-ch2",
+                 "hanjuku-chart-v1363-chikujou-at-month-end",
+                 "hanjuku-chart-v1370-chikujou-tried-ledger",
+                 "hanjuku-chart-v1373-egg-receipt-settle",
+                 "hanjuku-chart-v1375-boss-dispatch-guarantee",
+)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
@@ -2196,6 +2498,102 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertEqual(boundary["improvement"]["age_sec"], 300)
         self.assertEqual(boundary["prediction"]["present"], False)
         self.assertEqual(boundary["prediction"]["age_sec"], -1)
+        self.assertNotIn("round", boundary["prediction"])
+
+    def test_boundary_reports_prediction_round_progress(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 7200})
+        )
+        state = root / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2,
+            "games_completed": 36,
+            "max_games": 48,
+            "created_at": self.now - 5400,
+            "target_first_game": 10,
+            "last_game_num": 60,
+            "prediction_id": "PRIVATE-PREDICTION",
+            "outcome_ids": ["PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"],
+        }))
+        os.utime(state, (self.now - 120, self.now - 120))
+        retry_dir = root / "prediction_retry"
+        retry_dir.mkdir()
+        (retry_dir / "resolve.json").write_text(json.dumps({
+            "operation": "resolve", "attempt": 2,
+            "next_retry_at": self.now + 300, "http_code": "401",
+        }))
+        (root / "regression_check_in_progress").write_text("")
+
+        result = module._collect_boundary(root, self.now)
+
+        round_state = result["prediction"]["round"]
+        self.assertEqual(round_state["games_completed"], 36)
+        self.assertEqual(round_state["max_games"], 48)
+        self.assertEqual(round_state["remaining_games"], 12)
+        self.assertEqual(round_state["created_age_sec"], 5400)
+        self.assertEqual(round_state["progress_age_sec"], 120)
+        self.assertIs(round_state["complete"], False)
+        self.assertIsNone(round_state["settlement_pending"])
+        self.assertIs(round_state["fence_present"], True)
+        self.assertEqual(round_state["retry"]["attempt"], 2)
+        self.assertEqual(round_state["retry"]["http_code"], "401")
+        self.assertIs(round_state["retry"]["retry_active"], True)
+        rendered = json.dumps(result)
+        for secret in ("PRIVATE-PREDICTION", "PRIVATE-A", "PRIVATE-B",
+                       "PRIVATE-C", "PRIVATE-D"):
+            self.assertNotIn(secret, rendered)
+
+    def test_boundary_flags_a_completed_prediction_that_was_not_settled(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 3600})
+        )
+        state = root / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2, "games_completed": 48, "max_games": 48,
+            "created_at": self.now - 7200,
+        }))
+        os.utime(state, (self.now - 600, self.now - 600))
+
+        result = module._collect_boundary(root, self.now)
+        round_state = result["prediction"]["round"]
+        self.assertIs(round_state["complete"], True)
+        self.assertIs(round_state["settlement_pending"], True)
+        self.assertGreaterEqual(round_state["settlement_pending_sec"], 590)
+
+        # A boundary published after the last game count is not pending.
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 60})
+        )
+        result = module._collect_boundary(root, self.now)
+        round_state = result["prediction"]["round"]
+        self.assertIs(round_state["complete"], True)
+        self.assertIs(round_state["settlement_pending"], False)
+        self.assertIsNone(round_state["settlement_pending_sec"])
+
+    def test_prediction_projection_keeps_round_progress(self):
+        module = load_collector()
+        corners = {"boundary": {"prediction": {
+            "present": True, "readable": True, "completed_at": self.now - 7200,
+            "round": {
+                "present": True, "readable": True, "round_version": 2,
+                "games_completed": 48, "max_games": 48, "remaining_games": 0,
+                "created_age_sec": 7200, "progress_age_sec": 600,
+                "fence_present": False, "fence_age_sec": -1,
+                "retry": {"present": False, "readable": False, "attempt": None,
+                          "next_retry_at": None, "retry_active": None,
+                          "http_code": None},
+                "complete": True, "settlement_pending": True,
+                "settlement_pending_sec": 600,
+            }}}}
+        projection = module._prediction_projection(corners, self.now)
+        round_state = projection["boundary"]["round"]
+        self.assertEqual(round_state["games_completed"], 48)
+        self.assertIs(round_state["settlement_pending"], True)
+        self.assertEqual(round_state["settlement_pending_sec"], 600)
 
     def test_boundary_reports_the_shared_audio_queue(self):
         module = load_collector()
@@ -4186,6 +4584,19 @@ def _ownership(module, root, row):
     return module._collect_hanjuku_predictions(root)["ownership"]
 
 
+def test_hanjuku_prediction_achieved_count_is_projected_as_cleared(tmp_path):
+    """Goal-settled rows have no terminal result; diagnostics still show the count."""
+    module = load_collector()
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2))
+    entry = module._collect_hanjuku_predictions(tmp_path)
+    assert entry["cleared"] == 2 and entry["status"] == "RESOLVED"
+
+    # A terminal result is authoritative when it carries a count.
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2,
+                                           result={"cleared": 1}))
+    assert module._collect_hanjuku_predictions(tmp_path)["cleared"] == 1
+
+
 def test_hanjuku_prediction_ownership_reports_the_decisive_record(tmp_path):
     module = load_collector()
     run_name, result_name, progress_name = (
@@ -5051,3 +5462,140 @@ def test_hanjuku_chart_worker_projection_is_bounded(tmp_path):
     assert odd['attempts'] is None
     empty=module._project_hanjuku_chart_worker(tmp_path/'no-such',now)
     assert empty=={'present':False,'readable':False}
+
+
+def test_compact_policy_projects_the_measured_boss_cell_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 7, 'cell': [488, 300], 'tick': 4700,
+                      'readings': 2, 'note': 'DO-NOT-PUBLISH'},
+        'captured': ['PRIVATE'],
+    })
+    assert policy['boss_cell'] == {'chapter': 7, 'cell': [488, 300],
+                                   'readings': 2, 'age_ticks': 300}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_marks_a_malformed_boss_cell_as_unknown():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 'PRIVATE', 'cell': ['a', 'b'], 'tick': 'x',
+                      'readings': -1},
+    })
+    assert policy['boss_cell'] == {'chapter': None, 'cell': None,
+                                   'readings': None, 'age_ticks': None}
+    assert 'PRIVATE' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_cell'] is None
+
+
+def test_compact_policy_projects_the_boss_probe_rotation():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 100, 'active': None,
+        'boss_step_probe': {'A:x:M1': 0, 'A:x:M2': 1, 'A:x:M3': 1, 'A:x:M4': 'x'},
+    })
+    assert policy['boss_probes'] == {'steps': 4, 'indices': [0, 1]}
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_probes'] is None
+
+
+def test_compact_policy_projects_the_month_status_walk_outcome():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 6, 'tick': 100, 'active': None,
+        'post_month_status_last': {'complete': True, 'failed': None,
+                                   'manifest': {'done': True, 'arrived': ['a', 'b']},
+                                   'carry': ['a', 'b'], 'note': 'DO-NOT-PUBLISH'},
+    })
+    assert policy['post_month'] == {'complete': True, 'failed': None, 'manifest_done': True,
+                                    'manifest_arrived': 2, 'carry': 2}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 6})['post_month'] is None
+    odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'failed': 'PRIVATE'}})
+    assert odd['post_month'] == {'complete': False, 'failed': 'PRIVATE', 'manifest_done': False,
+                                 'manifest_arrived': None, 'carry': None}
+
+
+def test_hanjuku_tactical_keeps_its_projection_at_the_hard_ceiling():
+    # #4152: a fat envelope dropped ``hanjuku_tactical`` to a bare
+    # ``output_omitted`` skeleton, so the live-status path could not read
+    # chapter/month/phase at all. The stub now keeps the same small
+    # projections the soft budget keeps.
+    module = load_collector()
+    stub = module._section_omission_stub('hanjuku_tactical', {
+        'policy': {'chapter': 9, 'month': '9-3', 'phase': 'boss',
+                   'active': True, 'no_input_streak': 0},
+        'chart_worker': {'alive': True, 'pid': 1234},
+        'chapter': 9, 'age_sec': 42,
+        'refill': {'huge': 'z' * 1024},
+        'boss': {'order': '4-B1'}})
+    assert stub['status'] == 'output_omitted'
+    assert stub['reason'] == 'hard_ceiling'
+    assert stub['basis'] == 'bot_record'
+    assert stub['policy'] == {'chapter': 9, 'month': '9-3', 'phase': 'boss',
+                            'active': True, 'no_input_streak': 0}
+    assert stub['chart_worker'] == {'alive': True, 'pid': 1234}
+    assert stub['chapter'] == 9
+    assert stub['age_sec'] == 42
+    assert 'refill' not in stub and 'boss' not in stub
+
+
+def test_hanjuku_tactical_stub_tolerates_missing_fields():
+    module = load_collector()
+    stub = module._section_omission_stub(
+        'hanjuku_tactical', {'refill': {'huge': 'z'}})
+    assert stub == {'status': 'output_omitted', 'reason': 'hard_ceiling',
+                    'basis': 'bot_record'}
+
+
+def test_an_inaccessible_docich_root_is_treated_as_absent(tmp_path):
+    # A runner where /home/ubuntu exists but is unreadable made
+    # Path.is_file() raise PermissionError inside the collector and failed
+    # every security-regressions test (2026-11-15).
+    module = load_collector()
+    soren = tmp_path / "soren"
+    (soren / "tmp" / "state").mkdir(parents=True)
+    locked = tmp_path / "locked"
+    (locked / "overlays").mkdir(parents=True)
+    (locked / "overlays" / "direct_broadcast_overlay.html").write_text("x")
+    os.chmod(locked, 0)
+    try:
+        output = module._collect_broadcast_template(soren, docich_root=locked, now=100)
+    finally:
+        os.chmod(locked, stat.S_IRWXU)
+    assert output["resolved_source"] == "soren-fallback"
+    assert output["docich_template"]["present"] is False
+
+
+class BroadcastTemplateProbeTests(unittest.TestCase):
+    def test_an_inaccessible_docich_root_is_treated_as_absent(self):
+        module = load_collector()
+        with tempfile.TemporaryDirectory(prefix="vmops-template-") as tmp:
+            soren = Path(tmp) / "soren"
+            (soren / "tmp" / "state").mkdir(parents=True)
+            locked = Path(tmp) / "locked"
+            (locked / "overlays").mkdir(parents=True)
+            (locked / "overlays" / "direct_broadcast_overlay.html").write_text("x")
+            os.chmod(locked, 0)
+            try:
+                output = module._collect_broadcast_template(soren, docich_root=locked, now=100)
+            finally:
+                os.chmod(locked, stat.S_IRWXU)
+        self.assertEqual(output["resolved_source"], "soren-fallback")
+        self.assertFalse(output["docich_template"]["present"])
+
+
+class BroadcastTemplateProbePermissionTests(unittest.TestCase):
+    def test_probe_metadata_permission_error_is_nonfatal(self):
+        # PR #4307: stat() can succeed while is_file()/is_symlink() still
+        # raise on a protected path; the probe must stay best-effort.
+        module = load_collector()
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.html"
+            template.write_text("test", encoding="utf-8")
+            with mock.patch.object(Path, "is_file",
+                                   side_effect=PermissionError(13, "denied")):
+                result = module._broadcast_template_probe(template, 100)
+        self.assertEqual(result, {"present": False})

@@ -282,10 +282,19 @@ class HelperOwnershipTests(unittest.TestCase):
     def test_missing_runtime_directory_is_ownership_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            state = canonical(phase="ready", active=runtime(), next_generation=4)
+            seat = runtime(game="nsnake", adapter="cli")
+            state = canonical(phase="ready", active=seat, next_generation=4)
             with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
                 HELPER_MODULE.verify_ownership(root, state)
             self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_soren_seat_needs_no_runtime_directory(self):
+        # soren/soren91 never materialize spec.runtime_dir, so demanding one
+        # refused every rollback whose previous seat was sorengame.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            HELPER_MODULE.verify_ownership(
+                root, canonical(phase="ready", active=runtime(), next_generation=4))
 
     def test_present_runtime_directory_proves_ownership(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,6 +324,220 @@ class HelperOwnershipTests(unittest.TestCase):
             (receipts / f"{request_id}.json").write_text(
                 json.dumps({"request_id": request_id}), encoding="utf-8")
             HELPER_MODULE.verify_ownership(root, state)
+
+
+FAILED_REQUEST = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
+
+
+def failed_candidate_state(seat, *, previous=None, retiring=None, **overrides):
+    """One failed switch whose candidate seat is the given runtime."""
+
+    previous = previous or runtime(seat_generation=seat["generation"] - 1)
+    state = canonical(
+        phase="failed",
+        candidate=seat if retiring is None else None,
+        previous=previous,
+        retiring=[] if retiring is None else [retiring],
+        next_generation=seat["generation"] + 1,
+        last_result={
+            "status": "failed",
+            "request_id": FAILED_REQUEST,
+            "generation": seat["generation"],
+            "to_game": seat["game"],
+            "error_code": "rollback_failed",
+            "cleanup_pending": True,
+        },
+    )
+    state.update(overrides)
+    return state
+
+
+def write_failed_receipt(root, seat, request_id=FAILED_REQUEST, **overrides):
+    receipt = {
+        "request_id": request_id,
+        "status": "failed",
+        "generation": seat["generation"],
+        "runtime_id": seat["runtime_id"],
+        "target": seat["game"],
+        "result": {
+            "status": "failed",
+            "error_code": "rollback_failed",
+            "to_game": seat["game"],
+            "generation": seat["generation"],
+        },
+    }
+    receipt.update(overrides)
+    path = root / HELPER_MODULE.REQUESTS_REL / f"{request_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+
+class HelperDeadSeatOwnershipTests(unittest.TestCase):
+    """A failed candidate that lost its runtime directory stays recoverable.
+
+    2026-11-14: the standard recover always refused with ownership_missing
+    because the failed view candidate's working directory was already gone, so
+    the canonical CLI -- the only surface that settles the dead seat -- could
+    never run and the whole corner rotation latched.
+    """
+
+    def seat(self, **overrides):
+        return runtime(seat_generation=3, game="mystery-view", adapter="program", **overrides)
+
+    def test_missing_candidate_directory_is_owned_by_its_terminal_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            HELPER_MODULE.verify_ownership(root, state)
+
+    def test_missing_candidate_directory_without_the_receipt_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code,
+                             HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE)
+
+    def test_the_receipt_must_name_the_same_candidate_identity(self):
+        broken = (
+            {"runtime_id": "g3-999999"},
+            {"generation": 4},
+            {"target": "sorengame"},
+            {"status": "rolled_back"},
+            {"result": {"status": "succeeded"}},
+        )
+        for overrides in broken:
+            with self.subTest(overrides=overrides):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    seat = self.seat()
+                    state = failed_candidate_state(seat)
+                    (root / HELPER_MODULE.RUNTIMES_REL
+                     / state["previous"]["runtime_id"]).mkdir(parents=True)
+                    write_failed_receipt(root, seat, **overrides)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(root, state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE)
+
+    def test_missing_candidate_directory_without_a_failed_result_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(seat, last_result=None)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code,
+                             HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE)
+
+    def test_retiring_failed_candidate_is_covered_by_the_same_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat(cleanup_role="failed_candidate")
+            state = failed_candidate_state(seat, retiring=seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            HELPER_MODULE.verify_ownership(root, state)
+
+    def test_retiring_seat_without_the_failed_candidate_role_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat(cleanup_role="retired")
+            state = failed_candidate_state(seat, retiring=seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code,
+                             HELPER_MODULE.EX_OWNERSHIP_MISSING_RETIRING)
+
+    def test_a_stable_seat_keeps_the_original_ownership_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(
+                seat, previous=runtime(seat_generation=2, game="nsnake", adapter="cli"))
+            # previous (the game we must restore) has no directory and is never
+            # covered by the candidate's terminal failure.
+            write_failed_receipt(root, seat)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+
+class HelperDirlessAdapterContractTests(unittest.TestCase):
+    """The dirless-adapter list is a fixed contract (#4206).
+
+    soren keeps one shared runtime for sorengame and soren91 rides that
+    same process, so neither adapter's seat ever materializes a per-runtime
+    directory and ``verify_ownership`` must not demand one. The set is pinned
+    literally rather than derived from ``src/docich/adapters`` because the
+    exemption reflects the shared-process runtime contract, not whether an
+    adapter's source happens to touch ``spec.runtime_dir``.
+    """
+
+    def test_dirless_adapters_is_the_fixed_set(self):
+        self.assertEqual(
+            HELPER_MODULE.DIRLESS_ADAPTERS, frozenset({"soren", "soren91"}))
+
+    def test_every_dirless_adapter_seat_skips_the_directory_requirement(self):
+        for adapter in sorted(HELPER_MODULE.DIRLESS_ADAPTERS):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    HELPER_MODULE.verify_ownership(Path(tmp), state)
+
+    def test_dirless_exemption_applies_to_every_seat_position(self):
+        # The 2026-11-14 incident was a rollback whose previous (restore
+        # target) seat was sorengame: every seated position is exempt, not
+        # just active.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = canonical(
+                phase="failed",
+                previous=runtime(seat_generation=1, runtime_id="g1-abcdef",
+                                 adapter="soren"),
+                retiring=[runtime(seat_generation=2, runtime_id="g2-abcdef",
+                                  adapter="soren91")],
+                candidate=runtime(seat_generation=3, runtime_id="g3-abcdef",
+                                  adapter="soren"),
+            )
+            HELPER_MODULE.verify_ownership(Path(tmp), state)
+
+    def test_non_dirless_adapters_still_require_the_directory(self):
+        for adapter in ("cli", "retroarch", "browser", "program"):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(Path(tmp), state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_dirless_match_is_exact_and_fail_closed(self):
+        for adapter in ("soren ", "SOREN", "soren2", "soren91x"):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(Path(tmp), state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING)
 
 
 class HelperCliTests(unittest.TestCase):

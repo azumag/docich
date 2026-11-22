@@ -75,9 +75,29 @@ def test_matching_source_never_certifies_loaded_functions(fixture):
     assert result["open_script_matches_expected"] is True
     assert result["loaded_functions_status"] == "unverified"
     text = json.dumps(result)
-    for private in ["4242", "PRIVATE", str(fixture[1]), "/usr/bin/bash", "reviewed public script"]:
+    # Wall-clock mtime/ctime can contain the PID digits by coincidence.
+    # Exclude only these public timestamps from the PID leakage assertion.
+    without_timestamps = {
+        key: value for key, value in result.items()
+        if key not in {"deployed_script_mtime", "deployed_script_ctime"}
+    }
+    assert "4242" not in json.dumps(without_timestamps)
+    for private in ["PRIVATE", str(fixture[1]), "/usr/bin/bash", "reviewed public script"]:
         assert private not in text
     assert len(text) < 1500
+
+
+def test_pid_leak_check_ignores_clock_digit_collision(fixture):
+    result = collect(fixture)
+    # Reproduce the CI failure deterministically, independent of wall clock.
+    result["deployed_script_mtime"] = 1794242682
+    result["deployed_script_ctime"] = 1794242682
+    assert "4242" in json.dumps(result)
+    without_timestamps = {
+        key: value for key, value in result.items()
+        if key not in {"deployed_script_mtime", "deployed_script_ctime"}
+    }
+    assert "4242" not in json.dumps(without_timestamps)
 
 
 def test_expected_hash_and_comparisons_use_real_git_helper(fixture, tmp_path):

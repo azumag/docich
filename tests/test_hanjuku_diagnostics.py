@@ -64,6 +64,58 @@ def test_terminal_and_symlink_and_large_records_hidden(tmp_path):
     assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
 
 
+def test_stale_record_keeps_a_bounded_age_and_reason(tmp_path):
+    setup(tmp_path)
+    out = d._collect_hanjuku_tactical(tmp_path, 200)
+    assert out['status'] == 'stale'
+    assert out['reason'] == 'record_stale'
+    assert out['age_sec'] == 100
+    # The last written position stays observable under the stale label.
+    assert out['chapter'] == 1 and isinstance(out['policy'], dict)
+
+
+def test_stale_record_without_a_valid_chapter_still_hides_the_policy(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].pop('chapter')
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 200)
+    assert out['status'] == 'stale'
+    assert 'chapter' not in out and 'policy' not in out
+
+
+def test_soft_omission_keeps_the_fixed_detail_cause(monkeypatch):
+    payload = {'hanjuku_tactical': {'status': 'stale', 'reason': 'record_stale',
+                                    'age_sec': 100, 'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert tactical['status'] == 'output_omitted'
+    assert tactical['detail_status'] == 'stale'
+    assert tactical['detail_reason'] == 'record_stale'
+    assert tactical['age_sec'] == 100
+
+
+def test_an_unknown_detail_token_is_not_copied(monkeypatch):
+    payload = {'hanjuku_tactical': {'status': 'PRIVATE', 'reason': 'DO NOT EMIT',
+                                    'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert 'detail_status' not in tactical
+    assert 'detail_reason' not in tactical
+    assert 'PRIVATE' not in str(tactical) and 'DO NOT EMIT' not in str(tactical)
+
+
 def test_generation_switch_during_read_hides_projection(tmp_path,monkeypatch):
     setup(tmp_path); original=d._read_hanjuku_record; calls=0
     def read(path):
@@ -323,3 +375,71 @@ def test_recent_decisions_are_fixed_tokens_only(tmp_path):
     assert [row['strategy_variant'] for row in recent] == ['sortie_menu_unclassified', None]
     text = json.dumps(out, ensure_ascii=False)
     assert 'DO NOT EMIT' not in text and '3-Z1' not in text
+
+
+def test_sortie_launch_stall_detected(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [
+        {'schema': 1, **active, 'event': 'decision', 'decision': 'order_start',
+         'screen_kind': 'map', 'at': 100 + i}
+        for i in range(4)]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    launch = out['policy']['sortie_launch']
+    assert launch == {'order_start': 4, 'order_launched': 0, 'stalled': True}
+
+
+def test_sortie_launch_not_stalled_when_launched(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [{'schema': 1, **active, 'event': 'decision', 'decision': n,
+             'screen_kind': 'map', 'at': 100}
+            for n in ['order_start', 'order_start', 'order_start', 'order_launched']]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    launch = out['policy']['sortie_launch']
+    assert launch == {'order_start': 3, 'order_launched': 1, 'stalled': False}
+
+
+def test_camp_tail_counts_camp_decisions(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [{'schema': 1, **active, 'event': 'decision', 'decision': n,
+             'screen_kind': 'map', 'at': 100}
+            for n in ['camp_found', 'camp_enter', 'camp_recall_aborted', 'camp_recall_aborted']]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['policy']['camp'] == {'counts': {
+        'camp_found': 1, 'camp_enter': 1, 'camp_recall_aborted': 2}}
+
+
+def test_recall_projection_reports_an_armed_retry_window(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['flow'] = {'recall_skip': {'tick': 460}, 'recall_skip_ticks': 120,
+                             'recall_retry': {'count': 2},
+                             'retreat_rechecks': {'first': {}, 'second': {}},
+                             'retreat_anonymous_budget': {'reads': 9}}
+    file.write_text(json.dumps(bot))
+    os.utime(file, (100, 100))
+    recall = d._collect_hanjuku_tactical(tmp_path, 110)['policy']['recall']
+    assert recall['state'] == 'idle'
+    assert recall['skip'] == {'age': 40, 'window': 120, 'retry': 2}
+    assert recall['queue'] == 2 and recall['anonymous_reads'] == 9
+
+
+def test_recall_projection_reports_the_stage_and_keeps_names_private(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['flow'] = {'recall': {'stage': 'to_camp', 'steps': 3,
+                                        'target': [120, 80], 'general': 'private-general'}}
+    file.write_text(json.dumps(bot))
+    os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    recall = out['policy']['recall']
+    assert recall == {'state': 'recalling', 'stage': 'to_camp', 'steps': 3,
+                      'named': False, 'hero': False, 'target': [120, 80]}
+    assert 'private-general' not in json.dumps(out, ensure_ascii=False)
+

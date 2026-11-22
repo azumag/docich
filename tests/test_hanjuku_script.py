@@ -12,6 +12,7 @@ from docich.adapters.base import AdapterError
 from docich.hanjuku_bot import decide, classify, is_squaresoft_splash, _TITLE_ROWS
 from docich.hanjuku_pixels import Frame, read_png
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 IDENTITY={'game':'hanjuku-hero','runtime_id':'g1-abcdef','generation':1,'lease_id':'lease'}
 
@@ -631,6 +632,65 @@ def test_optional_concert_exits_instead_of_selecting_the_same_track():
     assert decide(Frame(256,224,bytes(rgb)),{})[0][0]['buttons']==['b']
 
 
+def test_concert_b_alternation_is_bounded_per_scene():
+    from docich.hanjuku.orchestrator import CONCERT_PICKER_REPEAT_MAX
+    rgb=bytearray(frame((160,110,60)).rgb)
+    for y in range(150,208):
+        for x in range(18,236):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((16,72,57))
+    for y in range(128):
+        for x in (*range(32),*range(224,256)):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((200,0,0))
+    quiet=Frame(256,224,bytes(rgb))
+    gold=bytearray(rgb)
+    for x in range(200,240):
+        i=(184*256+x)*3
+        gold[i:i+3]=bytes((197,141,74))
+    picker=Frame(256,224,bytes(gold))
+    assert classify(quiet)=='concert' and classify(picker)=='concert'
+    state={}
+    sent=[]
+    # The blinking cursor alternates B/A; only a phase-wide total-B cap bounds
+    # the loop, since consecutive-identity tracking never accumulates (#4365).
+    for _ in range(CONCERT_PICKER_REPEAT_MAX*2):
+        for f in (picker,quiet):
+            actions,state=decide(f,state)
+            sent.append(actions[0]['buttons'])
+    # The cap counts B attempts and converts the MAXth to A, so MAX-1 B's are
+    # actually sent before the phase stays on A.
+    assert sent.count(['b'])==CONCERT_PICKER_REPEAT_MAX-1
+    assert sent[-4:]==[['a']]*4
+    assert (state['policy'].get('concert_picker_watch') or {}).get('exhausted') is True
+
+
+def test_concert_b_count_clears_when_phase_leaves():
+    from docich.hanjuku.orchestrator import CONCERT_PICKER_REPEAT_MAX
+    rgb=bytearray(frame((160,110,60)).rgb)
+    for y in range(150,208):
+        for x in range(18,236):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((16,72,57))
+    for y in range(128):
+        for x in (*range(32),*range(224,256)):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((200,0,0))
+    quiet=Frame(256,224,bytes(rgb))
+    gold=bytearray(rgb)
+    for x in range(200,240):
+        i=(184*256+x)*3
+        gold[i:i+3]=bytes((197,141,74))
+    picker=Frame(256,224,bytes(gold))
+    state={}
+    for _ in range(CONCERT_PICKER_REPEAT_MAX+1):
+        _,state=decide(picker,state)
+        _,state=decide(quiet,state)
+    assert (state['policy'].get('concert_picker_watch') or {}).get('exhausted') is True
+    _,state=decide(frame((0,0,0)),state)   # non-concert phase clears the scene
+    assert 'concert_picker_watch' not in state['policy']
+
+
 def test_red_curtain_merchant_exits_price_list_then_advances_farewell():
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(128):
@@ -765,6 +825,9 @@ def test_corner_binds_committed_start_before_first_observation(manager, monkeypa
     monkeypatch.setattr(manager, '_validate_games', lambda *a: None)
     monkeypatch.setattr(manager, '_announce_start_locked', lambda *a: None)
     if queued:
+        # This test isolates post-commit identity binding. A queued start
+        # must have a claimable boundary decision before it may stage.
+        monkeypatch.setattr('docich.hanjuku_resume.start_claimable', lambda adapter, request_id: True)
         request = str(uuid.uuid4())
         manager.store.initialize()
         with manager.store.transaction() as tx:

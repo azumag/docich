@@ -7,6 +7,7 @@ import pytest
 from docich import hanjuku_chart as chart, hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, world as _world, plan as _plan_region
 
 
 def memory(chapter=1, after=None):
@@ -37,21 +38,21 @@ def test_adjusted_boss_target_cannot_bypass_unlock_with_an_unconditional_order(c
 
 def test_unsent_hotloaded_boss_marker_cannot_confirm_a_locked_castle(monkeypatch):
     order, mem = memory()
-    monkeypatch.setattr(p, 'nav_step', lambda *args: 'arrived')
+    monkeypatch.setattr(p, 'nav_step', lambda *args, **kwargs: 'arrived')
     monkeypatch.setattr(p, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(p, '_want_y_jump', lambda *args: False)
     actions = p.target_step(Screen([], None, '', kind='map_target'), mem, None)
     assert p.pad('a') not in actions
-    assert mem['active'] is None and mem['orders'][order['step']] == 'pending'
-    assert not mem.get('sorties') and not mem.get('sortie_attempt')
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders'][order['step']] == 'pending'
+    assert not mem.get('sorties') and not _flow(mem).get('sortie_attempt')
 
 
 def test_unsent_confirmation_is_held_without_changing_a_sent_sortie():
     order, mem = memory(); before = {'general': 'ゼウス', 'status': 'en_route', 'tick': 80}
-    mem['sorties'] = {'other': deepcopy(before)}
+    _world(mem)['sorties'] = {'other': deepcopy(before)}
     p.deploy_step(actor_panel(measured_loaded_sortie(), 'ヴィーナス'), mem)
-    assert mem['active'] is None and not mem.get('sortie_attempt')
-    assert mem['sorties'] == {'other': before}
+    assert _plan_region(mem)['active'] is None and not _flow(mem).get('sortie_attempt')
+    assert _world(mem)['sorties'] == {'other': before}
     assert mem['_records'][-1]['decision'] == 'boss_target_locked'
 
 
@@ -89,15 +90,15 @@ def test_pending_retry_does_not_use_an_old_arrival_as_current_unlock():
     from docich.hanjuku.flows.deploy import _hold_locked_boss
     order, mem = memory()
     old = {'general': 'ヴィーナス', 'status': 'arrived', 'tick': 1, 'target': order['target']}
-    mem['sorties'] = {order['step']: deepcopy(old)}
+    _world(mem)['sorties'] = {order['step']: deepcopy(old)}
     assert _hold_locked_boss(mem, order) == [p.pad('b'), p.pad('b')]
-    assert mem['sorties'][order['step']] == old
+    assert _world(mem)['sorties'][order['step']] == old
 
 
 @pytest.mark.parametrize('status', ['launched', 'launched_unconfirmed'])
 def test_already_sent_sortie_keeps_its_reconciliation_state(status):
     from docich.hanjuku.flows.deploy import _hold_locked_boss
-    order, mem = memory(); mem['orders'][order['step']] = status
+    order, mem = memory(); _plan_region(mem)['orders'][order['step']] = status
     before = deepcopy(mem)
     assert _hold_locked_boss(mem, order) is None
     assert mem == before

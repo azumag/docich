@@ -49,6 +49,18 @@ CORNER_IMPROVE_REASON_CODES = frozenset({
     "ab-eval", "ab-state", "ab-baseline-changed", "unexpected",
 })
 
+# Every status value ``_run_corner_improve_locked`` may persist into
+# corner_improve_<game>.json (the bounded ``failed`` record of the exception
+# path is separate). ``corner_adapters.resources_released`` releases the next
+# corner only for TERMINAL_IMPROVEMENT_STATUSES, so a status persisted outside
+# that set wedges interval-mode rotation on
+# "other-corner-needs-finish-or-recovery" (2026-11-15 incident, #4333). The
+# write path below clamps an undeclared status to the ``failed`` record; the
+# tests pin this set against every status the job can return.
+CORNER_IMPROVE_PERSISTED_STATUSES = frozenset({
+    "promoted", "kept", "rejected", "skipped", "dry-run", "ab-staged",
+})
+
 PACMAN_AB_GAME = "pacman4console"
 PACMAN_AB_TRIAL_NAME = "pacman4console_ab_trial.json"
 
@@ -838,6 +850,16 @@ def _run_corner_improve_locked(
             llm=llm, evaluator=evaluator, window=window,
             rotation_request_id=rotation_request_id,
         )
+        status = result.get("status")
+        if status not in CORNER_IMPROVE_PERSISTED_STATUSES:
+            # An undeclared status must never reach the durable record: the
+            # release gate reads anything outside the terminal set as
+            # still-running forever (#4333). The except path records the
+            # bounded terminal ``failed`` evidence instead.
+            raise CornerImproveError(
+                "改善結果のステータスが未宣言です",
+                code="unexpected", phase="unknown",
+            )
     except BaseException as exc:
         atomic_write_json(status_path, {
             "status": "failed", "started_at": started, "completed_at": time.time(),
@@ -849,7 +871,7 @@ def _run_corner_improve_locked(
             ),
         })
         raise
-    record = {"status": result["status"], "started_at": started,
+    record = {"status": status, "started_at": started,
               "completed_at": time.time()}
     reason_code = _fixed_enum(
         result.get("reason_code"), CORNER_IMPROVE_REASON_CODES, "unknown"

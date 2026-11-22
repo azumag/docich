@@ -247,9 +247,38 @@ def _queue_failed_retry(g, *, tmux=None, now=time.time):
                 or (queued and (queued.get('request_id') != attempt_queued_id
                                 or queued.get('resume_request_id') != logical))):
             raise CancelRefused('manual_queue_conflict')
-        owner = _object(base / 'retro_corner.json')
-        if owner.get('status') not in {'idle', 'completed', 'interrupted', 'expired'}:
+        owner_path = base / 'retro_corner.json'
+        owner = _object(owner_path)
+        terminal_owner = owner.get('status') in {'idle', 'completed', 'interrupted', 'expired'}
+        # A derived attempt can leave its exact owner at failed even though the
+        # switch has already rolled back and every runtime resource is gone.
+        # The original logical request can also remain as the stale failed
+        # owner after the derived attempt was recorded. Accept the latter only
+        # after revalidating the original request's own exact rollback receipt.
+        original_terminal = store.receipts.load(logical)
+        original_result = original_terminal.get('result') if original_terminal else None
+        original_rolled_back = (
+            original_terminal is not None
+            and original_terminal.get('operation') == 'switch'
+            and original_terminal.get('target') == 'hanjuku-hero'
+            and original_terminal.get('status') == 'rolled_back'
+            and original_terminal.get('generation') == original['generation']
+            and original_terminal.get('runtime_id') == original['runtime_id']
+            and isinstance(original_result, dict)
+            and original_result.get('status') == 'rolled_back'
+            and original_result.get('request_id') == logical
+            and original_result.get('generation') == original['generation']
+        )
+        failed_owner = (owner.get('status') == 'failed'
+                        and owner.get('game') == 'hanjuku-hero'
+                        and (owner.get('rotation_request_id') == attempt_receipt_id
+                             or (owner.get('rotation_request_id') == logical
+                                 and original_rolled_back)))
+        if not terminal_owner and not failed_owner:
             raise CancelRefused('owner_not_terminal')
+        if failed_owner:
+            atomic_write_json(owner_path, dict(owner, status='interrupted',
+                                               startup_resume_recovery=attempt_queued_id))
         if failed is None:
             audit = {'claim': claim, 'attempt_id': first, 'fingerprint': fingerprint(claim)}
             new_recovery = dict(previous, attempt_id=attempt_ids[1], failed_attempt=audit)
@@ -461,6 +490,17 @@ def recover(g, *, expected=None, apply=False, tmux=None, now=time.time):
                                       and owner.get('startup_resume_recovery') == attempt)))
                 or (automatic and released_proven and terminal_owner)
                 or (interrupted_release and owns_failure and owner.get('status') == 'interrupted')
+                # A manual claimed original whose dispatch died before the
+                # corner became active leaves an interrupted owner keyed by
+                # the same logical request, marked with the pre-AI terminal
+                # reason. The earlier gates already proved rolled-back
+                # termination, absent gameplay files and released runtime
+                # resources for this exact transfer, so that retired owner
+                # must not strand the recovery the way a live or failed owner
+                # would (g1099 2026-11-03).
+                or (detached_claimed and owns_failure
+                    and owner.get('status') == 'interrupted'
+                    and owner.get('end_reason') == 'switch-terminal-before-corner-active')
                 or ((unclaimed_release or unclaimed is not None) and owns_unclaimed)
                 or ((detached_claimed or recovered_pending) and foreign_terminal_owner)):
             raise CancelRefused('owner_not_terminal')

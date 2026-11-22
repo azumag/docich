@@ -398,7 +398,7 @@ class TestThroughTheProductionProgramSlot(LotteryBase):
 
         root = self.program_root()
         (root / "prediction_worker.pid").write_text(str(os.getpid()))
-        (root / "current_prediction.json").write_text(json.dumps({"status": "ACTIVE"}), encoding="utf-8")
+        (root / "current_prediction.json").write_text(json.dumps({"prediction_id": "p1", "outcome_ids": ["o1", "o2"], "created_at": 1}), encoding="utf-8")
         return root
 
     def test_a_hit_runs_through_program_slot_and_releases_it(self):

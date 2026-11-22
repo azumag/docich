@@ -29,8 +29,8 @@ def live(month='28-9'):
             'unplaced_refuted': {'castle': 'マラコビア', 'month': '27-10', 'names': []},
             'unplaced_refuted_castles': {'アルマムーン': {'castle': 'アルマムーン', 'month': '25-4', 'names': []},
                                          'マラコビア': {'castle': 'マラコビア', 'month': '27-10', 'names': []}},
-            'sorties': {'I:d7d27e:3': {'general': 'クランベリー', 'source': 'アルマムーン', 'target': 'マラコビア',
-                                       'status': 'en_route', 'tick': 137262}},
+            'world': {'sorties': {'I:d7d27e:3': {'general': 'クランベリー', 'source': 'アルマムーン', 'target': 'マラコビア',
+                                       'status': 'en_route', 'tick': 137262}}},
             'orders': {'4-B2': 'pending', '4-B3': 'pending', 'I:d7d27e:3': 'launched'}}
 
 
@@ -44,11 +44,17 @@ def test_the_retake_opens_a_list_that_may_hold_them():
     assert orders, 'the 11:04-11:48 hold: no interim candidate at all'
     retake = orders[0]
     assert retake['target'] == 'フヌイヌム' and retake['purpose'] == 'retake'
-    # The hero's castle, where joiners stand, is opened with a missing general.
-    assert retake['source'] == 'アルマムーン' and retake['general'] in MISSING
+    # A month-roster name does not prove castle membership. Owner 2026-11-17:
+    # the hero alone satisfies the guard, so a measured spare at the hero's
+    # castle is sent directly (no probe guess needed).
+    assert retake['source'] == 'アルマムーン'
+    assert retake['general'] != 'どうし'
 
 
 def test_a_roster_from_another_month_says_nothing():
     mem = live(month='28-8')
     assert p._unplaced_castle_generals(mem) == []
-    assert not p.interim_candidates(mem)
+    # The unplaced list is empty, but a measured spare at the hero's castle
+    # may still sortie (Owner 2026-11-17: hero alone satisfies the guard).
+    cands = list(p.interim_candidates(mem).values())
+    assert all(o['general'] != 'どうし' for o in cands)

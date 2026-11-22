@@ -201,6 +201,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, metavar="SEC", help="復旧・再開処理のdeadline (秒)"
     )
 
+    p_clear = sub.add_parser(
+        "hanjuku-clear-terminal",
+        help="半熟英雄: 復旧済みランタイムの終了判定を、オーナー操作で解除する",
+    )
+    p_clear.add_argument(
+        "--runtime", metavar="RUNTIME_ID",
+        help="対象 runtime (省略時は active runtime)",
+    )
+
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
         "--dry-run", action="store_true", help="切り替えを実行せず、切替先のゲーム名を表示するだけにする"
@@ -431,6 +440,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_obs(g, args.game)
     if command == "send":
         return cmd_send(g, args.game, args.json)
+    if command == "hanjuku-clear-terminal":
+        return cmd_hanjuku_clear_terminal(g, runtime=args.runtime)
     if command == "ra-cmd":
         return cmd_ra_cmd(g, args.cmd)
     if command == "ra-boundary":
@@ -1347,6 +1358,58 @@ def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
             os.environ[RUNTIME_GAME_SESSION_ENV] = session
             return
     os.environ.pop(RUNTIME_GAME_SESSION_ENV, None)
+
+
+def cmd_hanjuku_clear_terminal(g: GlobalConfig, *, runtime: str | None = None) -> int:
+    """Clear a terminal verdict on an already-restored Hanjuku runtime.
+
+    A restart after an emulator crash leaves ``terminal_reason='game_over'`` in
+    ``hanjuku_run.json``; every input is then refused with "Hanjuku terminal
+    evidence holds input" even though the game is playing again (g1163
+    2026-11-10 17:4x-18:0x, ~2 hours). Releasing that verdict is an owner
+    decision — a finished match must not resume on its own — so this command
+    keeps a byte copy, clears only the terminal fields and records the act.
+    """
+    import shutil
+    import time
+
+    from .game_switch import atomic_write_json
+    from .hanjuku_run import RUN_FILE
+    from .retroarch_boundary import read_record
+
+    runtime_id = runtime
+    if runtime_id is None:
+        raw = read_record(Path(g.state_dir) / "game_switch.json")
+        active = (raw or {}).get("active") or {}
+        runtime_id = active.get("runtime_id")
+    if not isinstance(runtime_id, str) or not runtime_id:
+        raise CliError("active runtime が見つかりません。--runtime で指定してください")
+    runtime_dir = Path(g.state_dir) / "runtimes" / runtime_id
+    run_path = runtime_dir / RUN_FILE
+    run = read_record(run_path)
+    if not run:
+        raise CliError(f"run 状態がありません: {run_path}")
+    reason = run.get("terminal_reason")
+    if not reason and not run.get("terminal_candidate"):
+        print(f"docich: 終了判定はありません ({runtime_id})")
+        return 0
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+    backup = run_path.with_suffix(f".json.bak-{stamp}")
+    shutil.copy2(run_path, backup)
+    atomic_write_json(run_path, {**run, "terminal_reason": None,
+                                 "terminal_candidate": None,
+                                 "terminal_evidence": None,
+                                 "terminal_at": None,
+                                 "terminal_cleared_at": time.time(),
+                                 "terminal_cleared_reason": reason})
+    events = runtime_dir / "hanjuku_events.jsonl"
+    with events.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"event": "terminal_cleared_by_operator",
+                                 "at": time.time(), "runtime_id": runtime_id,
+                                 "previous_reason": reason,
+                                 "backup": str(backup)}, ensure_ascii=False) + "\n")
+    print(f"docich: 終了判定を解除しました ({runtime_id}: {reason}) バックアップ: {backup.name}")
+    return 0
 
 
 def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:

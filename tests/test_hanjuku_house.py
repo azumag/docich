@@ -9,6 +9,7 @@ from docich import hanjuku_house as house, hanjuku_policy as p
 from docich.hanjuku_screen import Screen, parse
 from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_pixels import Frame, read_png
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal, world as _world
 
 
 class Canvas(BaseCanvas):
@@ -443,9 +444,9 @@ def test_first_postbattle_map_cannot_start_a_chart_sortie_during_house_trip():
 
 def test_emergency_recall_cancels_repair_instead_of_resuming_old_route():
     mem = memory('travel')
-    mem['recall'] = {'stage': 'hero_focus', 'hero': True}
+    _flow(mem)['recall'] = {'stage': 'hero_focus', 'hero': True}
     assert house.step(Screen([], None, '', kind='map'), mem, None) is None
-    assert 'house' not in mem and mem['recall']['hero']
+    assert 'house' not in mem and _flow(mem)['recall']['hero']
 
 
 def test_nonhero_uses_selected_roster_jump_then_requires_named_unit_status():
@@ -572,7 +573,7 @@ def test_repair_purchase_confirmation_uses_only_the_real_price(gold, selected):
 def test_marching_general_dispatch_defers_until_arrival():
     mem = memory('leave_roster', pending=['ヴィーナス', 'ゼウス'])
     mem['gold'] = 250
-    mem['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ',
+    _world(mem)['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'target': 'ナキューメラ',
                                   'status': 'en_route', 'purpose': 'sortie', 'tick': 9}}
     mem['house_eggs'] = {'ヴィーナス': {'location': 'field'}, 'ゼウス': {'location': 'field'}}
     house._next_general(mem)
@@ -582,7 +583,7 @@ def test_marching_general_dispatch_defers_until_arrival():
     # A sole marching candidate closes the trip instead of dispatching:
     # re-aiming an army in march was measured not to reach the house.
     mem = memory('leave_roster', pending=['ヴィーナス'])
-    mem['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'status': 'launched_unconfirmed', 'tick': 9}}
+    _world(mem)['sorties'] = {'A:ce:J2': {'general': 'ヴィーナス', 'status': 'launched_unconfirmed', 'tick': 9}}
     house._next_general(mem)
     assert mem['house']['phase'] == 'close'
     assert any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
@@ -590,15 +591,15 @@ def test_marching_general_dispatch_defers_until_arrival():
 
 def test_fresh_named_castle_status_allows_recheck_despite_old_marching_hint():
     mem = memory('leave_roster', pending=['どうし'])
-    mem['sorties'] = {'old': {'general': 'どうし', 'target': 'キカンドン',
+    _world(mem)['sorties'] = {'old': {'general': 'どうし', 'target': 'キカンドン',
                               'status': 'en_route', 'tick': 100}}
-    original = dict(mem['sorties']['old'])
+    original = dict(_world(mem)['sorties']['old'])
     house._observe_status(parse(status('どうし', castle=True, hp=90, max_hp=90)), mem)
     mem['tick'] += 25
     house._next_general(mem)
     assert mem['house']['phase'] == 'find_castle'
     assert mem['house']['general'] == 'どうし'
-    assert mem['sorties']['old'] == original  # no inferred destination/arrival
+    assert _world(mem)['sorties']['old'] == original  # no inferred destination/arrival
     assert not any(r['decision'] == 'house_dispatch_requested' for r in mem['_records'])
 
 
@@ -610,7 +611,7 @@ def test_fresh_named_castle_status_allows_recheck_despite_old_marching_hint():
 ])
 def test_uncertain_or_old_castle_status_cannot_override_marching(changes):
     mem = memory('leave_roster', pending=['どうし'])
-    mem['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
+    _world(mem)['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
     house._observe_status(parse(status('どうし')), mem)
     mem['house_eggs']['どうし'].update(changes)
     house._next_general(mem)
@@ -621,12 +622,12 @@ def test_uncertain_or_old_castle_status_cannot_override_marching(changes):
 def test_newer_departure_or_expired_observation_still_blocks_repair():
     for expired in (False, True):
         mem = memory('leave_roster', pending=['どうし'])
-        mem['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
+        _world(mem)['sorties'] = {'old': {'general': 'どうし', 'status': 'en_route', 'tick': 100}}
         house._observe_status(parse(status('どうし')), mem)
         if expired:
             mem['tick'] += 401
         else:
-            mem['sorties']['new'] = {'general': 'どうし', 'status': 'launched_unconfirmed', 'tick': 501}
+            _world(mem)['sorties']['new'] = {'general': 'どうし', 'status': 'launched_unconfirmed', 'tick': 501}
             mem['tick'] = 502
         house._next_general(mem)
         assert mem['house']['phase'] == 'close'
@@ -659,7 +660,7 @@ def test_travel_map_arrival_text_is_dismissed_and_wrong_visitor_exits():
 
 def test_house_finish_closes_stale_bookkeeping_sorties():
     mem = memory('close', tick=9)
-    mem['sorties'] = {
+    _world(mem)['sorties'] = {
         'HOUSE_OUT:9': {'general': 'ゼウス', 'target': None, 'status': 'en_route',
                         'purpose': 'house', 'tick': 9},
         'HOUSE:10': {'general': 'ゼウス', 'target': 'アルマムーン', 'status': 'en_route',
@@ -669,9 +670,9 @@ def test_house_finish_closes_stale_bookkeeping_sorties():
     }
     assert house.step(Screen([], None, '', kind='map'), mem, None) == []
     # target=None must stop matching every castle arrival (_bind_sortie).
-    assert mem['sorties']['HOUSE_OUT:9']['status'] == 'closed'
-    assert mem['sorties']['HOUSE:10']['status'] == 'en_route'
-    assert mem['sorties']['A:ce:J2']['status'] == 'en_route'
+    assert _world(mem)['sorties']['HOUSE_OUT:9']['status'] == 'closed'
+    assert _world(mem)['sorties']['HOUSE:10']['status'] == 'en_route'
+    assert _world(mem)['sorties']['A:ce:J2']['status'] == 'en_route'
     assert 'house' not in mem
     assert any(r['decision'] == 'house_sortie_closed' for r in mem['_records'])
 
@@ -705,6 +706,25 @@ def test_close_phase_concert_text_falls_back_to_ordinary():
     assert (house_state['phase'], house_state['age'], house_state['total']) == ('close', 20, 60)
 
 
+def test_month_scan_releases_a_month_event_instead_of_raising_keyerror():
+    """A concert drawn over the monthly menu must not reach the repair fallback.
+
+    Local g2001-ch9 (2026-11-15): the scan state had no actor yet, the screen
+    was a concert (kind=text) and every observation raised KeyError('general')
+    in _repair_step, so the bot held the event indefinitely.
+    """
+    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g514-frame-077-retainer-offer.png')
+    mem = {'chapter': 9, 'month': '16-4', 'gold': 250, 'tick': 500,
+           'house': {'phase': 'month_open', 'chapter': 9, 'age': 4, 'total': 0,
+                     'month_scan': True, 'level_only': True,
+                     'pending': [], 'seen': []}}
+    actions = house.step(parse(frame), mem, frame)
+    assert actions is None
+    assert mem['house']['phase'] == 'month_open'
+    assert mem['house']['month_open_released'] is True
+    assert [r['decision'] for r in mem['_records']][-1] == 'house_month_scan_released'
+
+
 def test_unaffordable_dispatch_records_the_defer_before_closing():
     mem = memory('leave_roster', pending=['ゼウス'])
     mem['gold'] = 49
@@ -716,3 +736,45 @@ def test_unaffordable_dispatch_records_the_defer_before_closing():
     metric = rec['observed_metric']
     assert (metric['gold'], metric['pending'], metric['need']) == (49, ['ゼウス'], 50)
     assert mem['house']['pending'] == ['ゼウス']
+
+
+def test_departure_pending_alone_leaves_garrison_unchanged():
+    # W4 reroute: popping departure_pending on the field map only proves
+    # the unit started moving — the garrison must not be edited until the
+    # arrival observation (#3193, DSH requirement ①).
+    mem = memory('travel', departure_pending=True, source='アルマムーン')
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    _world(mem)['sorties'] = {'1-A1': {'general': 'ゼウス', 'status': 'en_route'}}
+    house.step(Screen([], None, '', kind='map'), mem, None)
+    assert _world(mem).get('garrison') == {'アルマムーン': ['ゼウス', 'どうし']}
+    assert _world(mem)['sorties']['1-A1']['status'] == 'redirected_house'
+
+
+def test_prices_observation_moves_general_from_dispatch_source():
+    # W4 reroute: the prices panel is the arrival evidence — only here
+    # does the garrison update fire (DSH requirement ②).
+    mem = memory('travel', departure_pending=True, source='アルマムーン')
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    feed(mem, gifts())
+    assert _world(mem).get('garrison') == {'アルマムーン': ['どうし']}
+    assert any(r['decision'] == 'house_arrival_seen' for r in mem.get('_records', []))
+
+
+def test_prices_without_dispatch_leaves_garrison_unchanged():
+    # W4 reroute recommended check: a prices observation without an
+    # outbound dispatch must not move anyone (DSH requirement ③).
+    mem = memory('travel')
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    feed(mem, gifts())
+    assert _world(mem).get('garrison') == {'アルマムーン': ['ゼウス', 'どうし']}
+
+
+def test_a_boss_wave_defers_the_house_scan():
+    mem = {'chapter': 9, 'tick': 100, '_records': [],
+           'house': {'phase': 'roster_next', 'roster_month': '62-7'},
+           'boss_wave_generals': {'カシス': {'step': 'A', 'launched': 1}},
+           'world': {'garrison': {'イデ！': ['どうし', 'ゼウス']}},
+           'boss_cell': {'chapter': 9, 'cell': [770, 629], 'tick': 100}}
+    assert house.step(Screen([], None, '', kind='text'), mem, None) is None
+    assert 'house' not in mem
+    assert any(r['decision'] == 'house_scan_deferred_for_boss' for r in mem['_records'])

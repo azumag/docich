@@ -509,7 +509,7 @@ class DirectProfileTests(unittest.TestCase):
             "only": ["openai"], "order": ["openai"], "allow_fallbacks": False, "require_parameters": True}})
         self.assertEqual(chat.direct_chat_options(self.profile("vercel")), {
             "providerOptions": {"gateway": {"only": ["openai"]}}})
-        cf = self.profile("cloudflare", upstream="", billing_mode="", model="@cf/qwen/qwen3-30b-a3b-fp8",
+        cf = self.profile("cloudflare", upstream="", billing_mode="", model="@cf/meta/llama-3.1-8b-instruct-fp8-fast",
                           base_url="https://api.cloudflare.com/client/v4/accounts/" + "a" * 32 + "/ai/v1")
         self.assertEqual(chat.direct_chat_options(cf), {"options": {"rejectIfBusy": True}})
         invalid = [dict(provider="unknown"), dict(upstream=""), dict(upstream="openai,azure"),

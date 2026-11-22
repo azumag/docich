@@ -45,23 +45,22 @@ def test_unchanged_picker_screen_escapes_b_loop_with_a():
         pressed.append(buttons(actions))
     # A real picker closes on the first B; this frame never changes.
     assert pressed == [['b']] * 7
-    assert state['policy']['concert_picker_watch']['repeat'] == 7
+    assert state['policy']['concert_picker_watch']['b_count'] == 7
     actions, state = decide(frame, state)
     assert buttons(actions) == ['a']
-    # The escape starts a fresh count instead of repeating A forever.
-    assert 'concert_picker_watch' not in state['policy']
+    # Once exhausted, A remains selected throughout this concert phase.
+    assert state['policy']['concert_picker_watch']['exhausted'] is True
     actions, state = decide(frame, state)
-    assert buttons(actions) == ['b']
-    assert state['policy']['concert_picker_watch']['repeat'] == 1
+    assert buttons(actions) == ['a']
 
 
-def test_picker_screen_that_changes_keeps_using_b():
+def test_picker_screen_that_changes_still_has_a_phase_b_budget():
     state = {}
-    for row in range(178, 178 + 10):
+    for i, row in enumerate(range(178, 178 + 10)):
         actions, state = decide(concert_picker_frame(gold_row=row), state)
-        assert buttons(actions) == ['b']
-    # Ten different frames never accumulate the unchanged-repeat count.
-    assert state['policy']['concert_picker_watch']['repeat'] == 1
+        assert buttons(actions) == (['b'] if i < 7 else ['a'])
+    assert state['policy']['concert_picker_watch']['b_count'] == 8
+    assert state['policy']['concert_picker_watch']['exhausted'] is True
 
 
 def test_concert_without_picker_still_advances_with_a():
@@ -72,3 +71,50 @@ def test_concert_without_picker_still_advances_with_a():
         rgb[i:i + 3] = bytes((16, 72, 57))
     actions, _ = decide(Frame(256, 224, bytes(rgb)), {})
     assert buttons(actions) == ['a']
+
+
+def test_a_text_screen_with_a_blinking_pixel_still_escapes_b(tmp_path):
+    # g1190 99-7: the chapter-9 shop is classified 'concert' (red curtains +
+
+    # bottom green) and its blinking hand changed the frame digest every
+
+    # observation, so the digest repeat never fired and B looped ~1300 times.
+
+    # A readable text screen must keep a content identity across the blink.
+    from docich.hanjuku_screen import parse
+    from docich.hanjuku_pixels import read_png
+    base = read_png(Path(__file__).resolve().parent / 'fixtures/hanjuku/g1190-shop-bottom-price-panel.png').resized()
+    assert classify(base) == 'concert' and parse(base).text
+    state = {}
+    for i in range(7):
+        rgb = bytearray(base.rgb)
+        x, y = 60 + i, 150
+        idx = (y * 256 + x) * 3
+        rgb[idx:idx + 3] = bytes((200, 0, 0) if i % 2 else (16, 72, 57))
+        frame = Frame(256, 224, bytes(rgb))
+        assert parse(frame).text == parse(base).text
+        actions, state = decide(frame, state)
+        assert buttons(actions) == ['b']
+    rgb = bytearray(base.rgb)
+    rgb[150 * 256 * 3 + 60 * 3:150 * 256 * 3 + 60 * 3 + 3] = bytes((200, 0, 0))
+    actions, state = decide(Frame(256, 224, bytes(rgb)), state)
+    assert buttons(actions) == ['a']
+
+
+def test_alternating_picker_detection_does_not_reset_b_budget():
+    picker = concert_picker_frame()
+    rgb = bytearray(picker.rgb)
+    for x in range(200, 240):
+        i = (184 * 256 + x) * 3
+        rgb[i:i + 3] = bytes((16, 72, 57))
+    no_picker = Frame(256, 224, bytes(rgb))
+    assert classify(picker) == classify(no_picker) == 'concert'
+    state = {}
+    pressed = []
+    for i in range(20):
+        actions, state = decide(picker if i % 2 == 0 else no_picker, state)
+        pressed.append(buttons(actions))
+    assert pressed[:14:2] == [['b']] * 7
+    assert pressed[14:] == [['a']] * 6
+    assert state['policy']['concert_picker_watch']['exhausted'] is True
+    assert state['policy']['concert_picker_watch']['b_count'] == 8

@@ -6,6 +6,7 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
+from ..state.regions import world as _world, sorties as _sorties
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
@@ -80,6 +81,33 @@ def observed_cursor_cell(screen, mem, frame, *, max_error=12, ambiguity=24):
     return [cursor[0] + best[0][0], cursor[1] + best[0][1]]
 
 
+def roof_camera_support(mem, frame, *, max_error=12):
+    """The best roof-constellation support and the camera it implies.
+
+    ``observed_cursor_cell`` needs two roofs to agree; when it returns None the
+    caller cannot tell whether there were too few roofs or the constellation
+    disagreed. This exposes the same measurement without the two-roof gate
+    (g1163 2026-11-14 07:32: two roofs, no origin).
+    """
+    if not isinstance(frame, Frame):
+        return None
+    cells = chart.castles(mem.get('chapter') or 0)
+    roofs = [r for r in castle_roofs(frame) if not r.get('clipped')]
+    best = None
+    for roof in roofs:
+        for x, y in cells.values():
+            cam = (x - roof['target'][0], y - roof['target'][1])
+            support = sum(any(abs(r['target'][0] + cam[0] - cx)
+                              + abs(r['target'][1] + cam[1] - cy) <= max_error
+                              for cx, cy in cells.values()) for r in roofs)
+            if best is None or support > best[0]:
+                best = (support, cam)
+    return best
+
+
+NAV_CONTINUITY_TICKS = 30      # ticks between map frames that still integrate
+
+
 def update_world(screen: Screen, mem, frame, goal_name=None):
     """Track the cursor's map cell from measured screen motion and roof anchors.
 
@@ -107,8 +135,13 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
         # rule (trust only anchored frames or the inland search).
         trusted = not mem.get('uncertain') or last.get('search')
     else:
-        trusted = (type(last_tick) is int and type(tick) is int
-                   and last_tick == tick - 1 and last.get('kind') == screen.kind)
+        # Map frames are sparse while the chapter throws battles (g1133
+        # 2026-11-05: two map frames in 8.4 minutes), so requiring the very
+        # next tick froze the estimate for hours. A short gap still integrates;
+        # a long one does not.
+        gap = tick - last_tick if type(last_tick) is int and type(tick) is int else None
+        trusted = (gap is not None and 0 <= gap <= NAV_CONTINUITY_TICKS
+                   and last.get('kind') == screen.kind)
     if world and last and last.get('screen') and trusted:
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
@@ -117,7 +150,14 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
             else:
                 moved.append(s[axis] - last['screen'][axis])
         world = [world[0] + moved[0], world[1] + moved[1]]
-    mem['nav_last'] = None
+    # Seed the continuity record from this frame when there is none: `nav_step`
+    # only writes it after it computes a direction, so one early return left it
+    # None for good and no later frame could integrate (g1133 2026-11-05 froze
+    # at [392,144] for hours: every order was stuck at its source).
+    if not isinstance(mem.get('nav_last'), dict):
+        mem['nav_last'] = {'screen': list(s), 'expected': [0, 0],
+                           'tick': int(tick) if type(tick) is int else None,
+                           'kind': screen.kind, 'search': bool(mem.get('nav_search'))}
     box = (s[0] - 2, s[1] - 2, s[0] + 18, s[1] + 18)
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
@@ -190,6 +230,7 @@ def _goal_anchor(roofs, castles, cam, anchored, goal_name):
 
 
 OWNER_CONFIRM = 2             # consecutive anchored map readings before a change
+CAPTURE_READ_DELAY = 30       # ticks after a capture before its roster is read
 
 
 def observe_owners(mem, roofs, cam):
@@ -221,29 +262,39 @@ def observe_owners(mem, roofs, cam):
         if count < OWNER_CONFIRM or castle in fixed:
             continue
         from .roster import owner
-        owner(mem, STATUS_NAMES.get(castle, castle), kind)
         captured = mem.setdefault('captured', [])
-        if kind == 'enemy' and castle in captured:
-            (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
-            mem['captured'] = [c for c in captured if c != castle]
-            lost = mem.setdefault('lost', [])
-            if castle not in lost:
-                lost.append(castle)
-            (mem.get('garrison') or {}).pop(castle, None)
-            # Ownership changed hands: the remembered defender is stale.
-            (mem.get('castle_defenders') or {}).pop(castle, None)
-            _record(mem, 'castle_lost_observed', castle=castle,
-                    observed_metric={'roof': kind, 'readings': count},
-                    resulting_event=f'lost:{castle}',
-                    reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
-            _tally(mem, 'castle_losses')
-        elif kind == 'own' and castle not in captured:
+        if kind == 'enemy':
+            # The enemy roof is ownership evidence on its own.
+            owner(mem, STATUS_NAMES.get(castle, castle), 'enemy')
+            if castle in captured:
+                (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
+                mem['captured'] = [c for c in captured if c != castle]
+                lost = mem.setdefault('lost', [])
+                if castle not in lost:
+                    lost.append(castle)
+                garrison_lost(mem, castle)
+                # Ownership changed hands: the remembered defender is stale.
+                (mem.get('castle_defenders') or {}).pop(castle, None)
+                _record(mem, 'castle_lost_observed', castle=castle,
+                        observed_metric={'roof': kind, 'readings': count},
+                        resulting_event=f'lost:{castle}',
+                        reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
+                _tally(mem, 'castle_losses')
+        elif kind == 'own' and castle in captured:
+            # Already ours: keep the ownership record from drifting.
+            owner(mem, STATUS_NAMES.get(castle, castle), 'own')
+        elif kind == 'own':
             flag = (mem.get('world_flags') or {}).get(castle) or {}
             if (flag.get('kind') == 'enemy' and flag.get('chapter') == chapter
                     and 0 <= int(mem.get('tick') or 0) - int(flag.get('tick') or 0) <= WORLD_FLAG_TRUST):
                 # g684 2-8 15:12:45: four roof reads called スペンソニア ours
                 # while every world map flew its enemy flag; the false capture
                 # met all_captured and sent the hero to the boss castle.
+                # Record the veto BEFORE the ownership update: g1163
+                # 2026-11-13 14:05 vetoed オオキク's own roof while the world
+                # flag was enemy, yet castle_ownership already said own, so
+                # the presentation thought it ours while the corridor kept
+                # targeting it as a retake.
                 if not streak[castle].get('world_flag_vetoed'):
                     streak[castle]['world_flag_vetoed'] = True
                     _record(mem, 'castle_owned_vetoed', castle=castle,
@@ -251,6 +302,7 @@ def observe_owners(mem, roofs, cam):
                                              'world_flag_tick': flag.get('tick')},
                             reason='屋根は自軍色だが直近の全体マップの旗が敵のため占領と扱わない')
                 continue
+            owner(mem, STATUS_NAMES.get(castle, castle), 'own')
             (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
             captured.append(castle)
             if castle in (mem.get('lost') or []):
@@ -261,34 +313,221 @@ def observe_owners(mem, roofs, cam):
                     reason='城の屋根が自軍の色のため占領として扱う')
 
 
-SORTIE_BUSY_TICKS = 400       # observations (~10 min at 1.5 s) a marching general stays busy
+SORTIE_BUSY_TICKS = 400       # legacy observation window (~10 min), NOT proof of arrival
+BOSS_ARRIVAL_LIMIT = 2 * SORTIE_BUSY_TICKS
+# g1133 chapter 6: 603 chart cells took 23-32 min and 740 cells took 34 min.
+# The rate must cover the slow end (32 min / 603 cells = 3.18 ticks/cell): at
+# 2.4 the limit was 1447 and a march measured at 1701 ticks was declared
+# overdue while it could still arrive, re-sending the same order.
+# Measured on chapter 6 (g1163 2026-11-05): a march takes ~3.2 observations per
+# chart cell. The rate is the game's walking speed, not a chapter property, so
+# it applies to every chapter that has no measured override. Chapters without an
+# entry used the fixed 800-observation default and declared long marches overdue
+# while they were still walking (g1163 chapter 8 2026-11-09 23:22: three
+# あるまむーん marches to おだわら/まつやま were abandoned at 1675-1813).
+MARCH_TICKS_PER_CELL = {6: 3.2}
+DEFAULT_MARCH_TICKS_PER_CELL = 3.2
+# Chapters whose short-map marches keep the fixed window: chapter 3's sites and
+# chapter 4's four kings are reached across a road map whose walking time was
+# never measured in cells, and their relaunch budgets are calibrated to the
+# 800-observation bound (tests/test_hanjuku_boss_sortie_overdue.py).
+FIXED_LIMIT_CHAPTERS = frozenset({3, 4})
+LONG_MARCH_TICKS = 6 * SORTIE_BUSY_TICKS   # window for late arrival binding
+MARCH_ARRIVAL_CAP = LONG_MARCH_TICKS
+
+# A general whose march outlived its window is not proven anywhere, so he is
+# marked location-unknown and kept out of new sorties until his castle is read.
+# Nothing walks the road castles to clear that mark in chapter 9's mechanical
+# mode, and the marks only accumulate: g1163 2026-11-11 23:0x had 29 of the 32
+# living generals unknown, which left about three usable and starved the front
+# while captured castles flipped back and forth. The mark therefore expires;
+# the next sortie's live list read settles where he actually stands.
+LOCATION_UNKNOWN_TTL = 2 * SORTIE_BUSY_TICKS
+
+
+def mark_location_unknown(mem, name, tick=None):
+    """Keep a general out of new sorties until his location is measured."""
+    if not isinstance(name, str) or not name:
+        return
+    unknown = _world(mem).setdefault('general_location_unknown', [])
+    if name not in unknown:
+        unknown.append(name)
+    since = _world(mem).setdefault('general_location_unknown_at', {})
+    if name not in since:
+        since[name] = int((mem.get('tick') or 0) if tick is None else tick)
+
+
+def garrison_lost(mem, castle):
+    """Drop a lost castle's remembered residents as location-unknown.
+
+    Every loss path pops ``world.garrison[castle]`` so the fallen castle no
+    longer claims residents. Until docich#3963 the members were discarded
+    with the row: the country's general count then exceeded
+    ``in garrison + location unknown`` and nobody was scheduled to be
+    re-read (g1163 2026-11-12 01:2x: 32 generals, 0 in garrison, only 5
+    unknown after the two castles fell). Marking each member unknown
+    keeps the deficit visible to the plan; the mark expires or is
+    corrected by the next live list read, exactly like an unconfirmed
+    march's mark.
+    Returns the dropped member list.
+    """
+    garrison = _world(mem).get('garrison')
+    members = list((garrison or {}).pop(castle, None) or ())
+    # The page was a snapshot of the castle while it was ours. Left behind it
+    # would outlive the ownership and mislead the first read after a retake
+    # (g1163 2026-11-13 22:3x: garrison_partial['ドンドン'] still listed
+    # キャロット while the castle flew the enemy flag).
+    partial = _world(mem).get('garrison_partial')
+    if isinstance(partial, dict):
+        partial.pop(castle, None)
+    partial_tick = _world(mem).get('garrison_partial_tick')
+    if isinstance(partial_tick, dict):
+        partial_tick.pop(castle, None)
+    for name in members:
+        mark_location_unknown(mem, name)
+    return members
+
+
+def expire_unknown_locations(mem, now=None, ttl=None):
+    """Let a stale location mark go so the army is not permanently crippled."""
+    world = _world(mem)
+    unknown = world.get('general_location_unknown')
+    if not isinstance(unknown, list) or not unknown:
+        return []
+    now = int(mem.get('tick') or 0) if now is None else int(now)
+    ttl = LOCATION_UNKNOWN_TTL if ttl is None else int(ttl)
+    since = world.get('general_location_unknown_at')
+    if not isinstance(since, dict):
+        since = world['general_location_unknown_at'] = {}
+    released, kept = [], []
+    for name in unknown:
+        at = since.get(name)
+        if type(at) is not int:
+            since[name] = now                 # start the clock, never expire blind
+            kept.append(name)
+        elif now - at >= ttl:
+            released.append(name)
+            since.pop(name, None)
+        else:
+            kept.append(name)
+    if released:
+        world['general_location_unknown'] = kept
+    return released
+
+
+def march_arrival_limit(mem, sortie):
+    """Bound an unconfirmed march by the chapter's measured chart distance.
+
+    Keep this pure estimate in the observed-world layer so both strategy and
+    busy-general bookkeeping use the same bound without an upwards import.
+    An exceeded bound is not evidence that a general has arrived.
+    """
+    chapter_now = mem.get('chapter') or 0
+    rate = MARCH_TICKS_PER_CELL.get(chapter_now)
+    if rate is None:
+        if chapter_now in FIXED_LIMIT_CHAPTERS:
+            return BOSS_ARRIVAL_LIMIT
+        rate = DEFAULT_MARCH_TICKS_PER_CELL
+    cells = chart.castles(mem.get('chapter'))
+    source = cells.get(sortie.get('source'))
+    target_name = sortie.get('target') or sortie.get('planned_target')
+    target = cells.get(target_name)
+    if not source or not target:
+        return BOSS_ARRIVAL_LIMIT
+    distance = ((source[0] - target[0]) ** 2 + (source[1] - target[1]) ** 2) ** 0.5
+    limit = max(BOSS_ARRIVAL_LIMIT, min(MARCH_ARRIVAL_CAP, round(distance * rate)))
+    # Boss paths can detour through forest; the Euclidean distance underestimates.
+    if chart.is_boss_castle(target_name):
+        limit = MARCH_ARRIVAL_CAP
+    hops = chart.corridor_gap(chapter_now, sortie.get('source'), target_name)
+    if hops:
+        # docich#3952: chapter 9 transfers may ride several owned road castles
+        # in one march. A road leg costs roughly a short march each, while the
+        # Euclidean distance above ignores the winding road entirely; bound
+        # the window by the hop count so a long direct transfer is not
+        # declared overdue mid-march.
+        limit = max(limit, min(MARCH_ARRIVAL_CAP, hops * SORTIE_BUSY_TICKS))
+    return limit
 
 
 def _en_route(mem):
-    """(generals, targets) of sorties launched but not yet seen arriving.
+    """(generals, targets) of launches without an observed end.
 
-    Only recent ones: an arrival that was never read kept どうし and ココット
-    "marching" for over an hour in g407 (01:38-02:39), which blocked every
-    order of the adopted plan and, through it, every off-chart sortie. A
-    sortie without a tick predates this bound and no longer counts.
+    The 400-observation display window is shorter than measured 20-40 minute
+    marches. Keep generals and their targets busy until the strategy's
+    distance-aware arrival limit; then overdue reconciliation determines
+    whether to retry. An overdue/arrived receipt is never treated as moving.
+    Missing or future ticks are not evidence of a fresh march.
     """
     now = int(mem.get('tick') or 0)
-    sorties = [s for s in (mem.get('sorties') or {}).values()
-               if s.get('status') in ('en_route', 'launched_unconfirmed')
-               and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
-    return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
+    sorties = [
+        s for s in _sorties(mem).values()
+        if isinstance(s, dict)
+        and s.get('status') in ('en_route', 'launched_unconfirmed')
+        and type(s.get('tick')) is int
+        and 0 <= now - s['tick'] < max(SORTIE_BUSY_TICKS, march_arrival_limit(mem, s))
+    ]
+    return ({s.get('general') for s in sorties if s.get('general')},
+            {s['target'] for s in sorties if s.get('target')})
 
 
 WORLD_FLAG_TRUST = 200   # observations a world-map (Y) flag outranks a roof reading
+
+
+def _confirmed_flags(mem, flags):
+    """Keep only flag values that were read twice in a row.
+
+    g1163 2026-11-12 09:54-11:19: ドンドン and サヌト changed hands at the same
+    minute they were captured (two ownership records each), and オシロガ did it
+    twice. A roof that is hidden, clipped or the wrong colour reads as the other
+    owner, and the plan then chased a castle that had never changed hands. A
+    disagreeing value has to survive two consecutive reads before it counts;
+    the agreeing ones pass straight through.
+    """
+    known = mem.get('world_map_flags')
+    if not isinstance(known, dict):
+        known = {}
+    pending = mem.get('world_map_pending')
+    if not isinstance(pending, dict):
+        pending = {}
+    chapter = mem.get('chapter') or 0
+    home = chart.home_castle(chapter)
+    confirmed, still_pending = {}, {}
+    for castle, owner in flags.items():
+        previous = known.get(castle)
+        # The home castle has its own loss/recovery rules below; it is never
+        # held back here.
+        if castle == home or chart.is_boss_castle(castle):
+            confirmed[castle] = owner
+            continue
+        if previous is None or previous == owner:
+            confirmed[castle] = owner
+            continue
+        if pending.get(castle) == owner:
+            confirmed[castle] = owner            # the same disagreement again
+        else:
+            still_pending[castle] = owner
+    mem['world_map_pending'] = still_pending
+    return confirmed
 
 
 def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     from .roster import owner
     seen = mem.setdefault('world_flags', {})
+    home = chart.home_castle(chapter)
     for name, kind in flags.items():
         if name in chart.castles(chapter):
-            owner(mem, STATUS_NAMES.get(name, name), kind)
+            # Home and boss keep their immediate record (home has its own
+            # loss/recovery rules, the boss is never a normal ownership cell).
+            # Every other castle's ownership is written with the confirmed
+            # captured/lost update below: g1163 2026-11-13 16:0x had
+            # castle_ownership['ドンドン']=enemy while captured still held it
+            # and lost did not list it, because the flag read was recorded
+            # before _confirmed_flags and the captured/lost update was
+            # skipped as unconfirmed.
+            if name == home or chart.is_boss_castle(name):
+                owner(mem, STATUS_NAMES.get(name, name), kind)
             seen[name] = {'kind': kind, 'tick': int(mem.get('tick') or 0), 'chapter': chapter}
     home = chart.home_castle(chapter)
     cur = mem.get('battle') or {}
@@ -319,32 +558,63 @@ def _apply_world_flags(mem, flags):
         lost = mem.setdefault('lost', [])
         if home not in lost:
             lost.insert(0, home)
-        (mem.get('garrison') or {}).pop(home, None)
+        garrison_lost(mem, home)
     elif home_owner == 'own' and (mem.get('home_lost') or home in (mem.get('lost') or [])):
         # A defense loss lists home in lost without home_lost; the own flag
         # clears that too (g1075 14:24: アルマムーン own, still lost).
         mem['home_lost'] = False
         mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
         changed.append(('captured', home))
-    for castle, owner in flags.items():
+    flags = _confirmed_flags(mem, flags)
+    for castle, owner_kind in flags.items():
         if castle == home or chart.is_boss_castle(castle):
             continue
-        if owner == 'enemy' and castle in captured:
+        # The ownership record moves with the confirmed captured/lost update,
+        # so a single misread flag cannot leave castle_ownership alone.
+        owner(mem, STATUS_NAMES.get(castle, castle), owner_kind)
+        if owner_kind == 'enemy' and castle in captured:
             mem['captured'] = captured = [c for c in captured if c != castle]
             lost = mem.setdefault('lost', [])
             if castle not in lost:
                 lost.append(castle)
-            (mem.get('garrison') or {}).pop(castle, None)
+            garrison_lost(mem, castle)
             # Ownership changed hands: the remembered defender is stale.
             (mem.get('castle_defenders') or {}).pop(castle, None)
             changed.append(('lost', castle))
-        elif owner == 'own' and castle not in captured:
+        elif owner_kind == 'own' and castle not in captured:
             captured.append(castle)
             mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
+            # The castle's own list is the receipt for who stands there now:
+            # the winner occupied it, and residents that retreated come back.
+            # Without this read they stay in general_location_unknown
+            # (g1163 2026-11-13 17:3x: オオキク was retaken and バゲット /
+            # ジェラート / チコリ / ビーツ stayed unknown).
+            mem.setdefault('roster_read_due', {})[castle] = (
+                int(mem.get('tick') or 0) + CAPTURE_READ_DELAY)
             changed.append(('captured', castle))
-    _record(mem, 'world_map_owners', observed_metric=flags,
-            resulting_event=[f'{k}:{c}' for k, c in changed] or None,
-            reason='全体マップの旗の色で全城の所有を確認')
+    # The Y view is read once per picker step and once per survey; recording
+    # the same flag set again (g1133 2026-11-05: 204 owners records an hour,
+    # most of them identical picker steps) hid real changes in the log.
+    # The signature has to survive the policy's JSON round trip: a tuple is
+    # reloaded as a list, so a tuple never compares equal again and the same
+    # flag set was recorded on every observation anyway (measured 2026-11-05:
+    # 147 owners records an hour over nine distinct flag sets).
+    # A partial read is not a change. The view drops a flag whenever a roof is
+    # hidden or misread, so the same map arrived as 10, 11 or 12 entries and
+    # every set counted as news (g1163 2026-11-12 08:5x: 56 owners records an
+    # hour, none of them an actual ownership change). Only a value that
+    # disagrees with what we already knew is recorded.
+    known = mem.get('world_map_flags')
+    if not isinstance(known, dict):
+        known = {}
+    differences = {castle: owner for castle, owner in flags.items()
+                   if known.get(castle) != owner}
+    if differences:
+        mem['world_map_flags'] = {**known, **flags}
+        mem['world_map_signature'] = [[k, v] for k, v in sorted(mem['world_map_flags'].items())]
+        _record(mem, 'world_map_owners', observed_metric=flags,
+                resulting_event=[f'{k}:{c}' for k, c in changed] or None,
+                reason='全体マップの旗の色で全城の所有を確認')
     for kind, castle in changed:
         _record(mem, 'castle_lost_observed' if kind == 'lost' else 'castle_owned_observed',
                 castle=castle, observed_metric={'world_map': flags[castle]},
@@ -353,6 +623,135 @@ def _apply_world_flags(mem, flags):
                         if kind == 'lost' else '全体マップで城の旗が自軍の色のため占領として扱う'))
         if kind == 'lost':
             _tally(mem, 'castle_losses')
+
+
+SEASON_SITE_CONFIRM = 2        # consecutive Y-view readings before a site state changes
+
+
+def _apply_season_sites(mem, sites):
+    """Keep chapter 4's cleared 四季王 sites closed from the Y view's markers.
+
+    g1163 2026-11-09: 北西/北東/南西 had been cleared (owner report; the live
+    Y view drew their pennants) but the bot kept sortieing to them, because a
+    king fight that ends on the closing dialogue leaves no measured 0 HP and
+    so never reached ``boss_victories``. The marker is direct evidence, so it
+    also stops the next sortie there. Two consecutive readings are required,
+    an unreadable marker keeps the previous state, and the impossible
+    "all four closed while the chapter is not over" reading is refused so a
+    misread can never park the whole chapter.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter != 4 or not sites:
+        return
+    sites_all = set(chart.boss_sites(4))
+    if (set(sites) >= sites_all and all(kind == 'closed' for kind in sites.values())
+            and (mem.get('boss_defeated') or 0) != 4):
+        # The chapter cannot still be running with every site cleared: this is
+        # a misread (gold frame/cursor pixels), never a reason to park the
+        # whole chapter. One record per reading signature.
+        digest = [list(item) for item in sorted(sites.items())]
+        if mem.get('season_sites_refused') != digest:
+            mem['season_sites_refused'] = digest
+            _record(mem, 'season_sites_all_closed_refused',
+                    observed_metric={'sites': sorted(sites), 'marker': 'closed'},
+                    reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
+        return
+    seen = mem.setdefault('season_sites', {})
+    streak = mem.setdefault('season_site_streak', {})
+    for name, kind in sorted(sites.items()):
+        previous = streak.get(name) or {}
+        count = previous.get('count', 0) + 1 if previous.get('kind') == kind else 1
+        streak[name] = {'kind': kind, 'count': count, 'chapter': chapter}
+        if count < SEASON_SITE_CONFIRM:
+            continue
+        row = seen.get(name) or {}
+        if row.get('state') == kind and row.get('chapter') == chapter:
+            continue
+        if kind == 'closed' and (mem.get('boss_defeated') or 0) != 4:
+            closed = {other for other, value in seen.items()
+                      if isinstance(value, dict) and value.get('state') == 'closed'
+                      and value.get('chapter') == chapter}
+            closed.add(name)
+            if len(closed) >= len(chart.boss_sites(4)):
+                _record(mem, 'season_sites_all_closed_refused', castle=name,
+                        observed_metric={'closed': sorted(closed),
+                                         'readings': count, 'marker': kind},
+                        reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
+                continue
+        seen[name] = {'state': kind, 'chapter': chapter, 'tick': int(mem.get('tick') or 0),
+                      'readings': count}
+        _record(mem, 'season_site_closed' if kind == 'closed' else 'season_site_open',
+                castle=name,
+                observed_metric={'site': name, 'marker': kind, 'readings': count},
+                resulting_event=f'{kind}:{name}',
+                reason=('全体マップの四季王の印が旗に変わったため、この地点は撃破済みとして出撃しない'
+                        if kind == 'closed' else
+                        '全体マップの四季王の印がドクロのため、撃破済みの記録を取り消して出撃対象へ戻す'))
+
+
+BOSS_SKULL_READINGS = 2      # equal Y-view skull readings before the cell is used
+
+
+def _apply_skull_boss(mem, frame):
+    """Locate a boss from the Y view's boss skull.
+
+    Chapter 3's boss skull is the same sprite for chapter 4's sites and for a
+    moving boss, so a single skull on the whole-island view is the boss's
+    current cell. Two equal readings are required, an unreadable view keeps
+    the previous value, and the orchestrator decides how long it stays valid
+    (a moving boss ages out, a static one keeps its measured cell).
+    Chapter 4's four sites are read by ``_apply_season_sites`` instead.
+    """
+    chapter = mem.get('chapter') or 0
+    if chapter in (0, 4) or frame is None:
+        return
+    from .readers import skull_cell_at, y_view_skulls
+    skulls = y_view_skulls(frame)
+    if len(skulls) != 1:
+        mem.pop('boss_cell_streak', None)
+        # #4447: a moving-boss chapter that never measures a cell is invisible
+        # until the boss order is expected. Surface how many skull sprites the
+        # view actually drew (0 = none on screen, 2+ = castle sites share the
+        # sprite) so the next whole-island read can be diagnosed. Record only
+        # on a count change to keep the frequent survey quiet.
+        if mem.get('boss_skull_unmeasured') != len(skulls):
+            mem['boss_skull_unmeasured'] = len(skulls)
+            _record(mem, 'boss_skull_unmeasured',
+                    observed_metric={'skulls': len(skulls), 'chapter': chapter},
+                    reason='ボスドクロが1つに検出されないためセル未測定。検出数で原因を切り分ける')
+        return
+    mem.pop('boss_skull_unmeasured', None)
+    cell = skull_cell_at(skulls[0], chapter)
+    if cell is None:
+        return
+    streak = mem.get('boss_cell_streak') or {}
+    count = (streak.get('count', 0) + 1) if streak.get('cell') == list(cell) else 1
+    mem['boss_cell_streak'] = {'cell': list(cell), 'count': count}
+    if count < BOSS_SKULL_READINGS:
+        return
+    previous = mem.get('boss_cell') or {}
+    mem['boss_cell'] = {'chapter': chapter, 'cell': list(cell),
+                        'tick': int(mem.get('tick') or 0), 'readings': count}
+    # Owner 2026-11-20: the moving boss looks random but runs a fixed orbit,
+    # so keep the measured track and let the pursuit place a general on it
+    # instead of chasing the current cell. One entry per distinct cell keeps
+    # the ring compact (16 is more than a full orbit of the observed sweep).
+    track = mem.get('boss_cell_track')
+    track = list(track) if isinstance(track, list) else []
+    last = track[-1] if track else None
+    if not (isinstance(last, dict) and isinstance(last.get('cell'), (list, tuple))
+            and abs(last['cell'][0] - cell[0]) + abs(last['cell'][1] - cell[1]) < 16):
+        track.append({'cell': list(cell), 'tick': int(mem.get('tick') or 0)})
+        mem['boss_cell_track'] = track[-16:]
+    if previous.get('chapter') != chapter or previous.get('cell') != list(cell):
+        _record(mem, 'boss_cell_measured',
+                observed_metric={'chapter': chapter, 'cell': list(cell), 'readings': count},
+                resulting_event=f'boss_cell:{cell[0]},{cell[1]}',
+                reason='全体マップのボスのドクロ位置からボスセルを実測した')
+
+
+# Backwards-compatible name used by the chapter-9 moving-boss call sites.
+_apply_moving_boss = _apply_skull_boss
 
 
 def _owned(mem):
@@ -371,7 +770,7 @@ def _hero_castle(mem):
         return None
     owned = _owned(mem)
     castles = chart.castles(mem.get('chapter') or 0)
-    for castle, present in (mem.get('garrison') or {}).items():
+    for castle, present in (_world(mem).get('garrison') or {}).items():
         if castle in owned and castle in castles and NAME in (present or ()):
             return castle
     return None

@@ -77,6 +77,25 @@ def _paper_corner_speech_text(text: str, event_id: str, *, corner_owner: str = "
     return body
 
 
+def _safe_is_dir(path: Path) -> bool:
+    """Python 3.12 raises ``PermissionError`` from ``is_dir`` on EACCES.
+
+    A non-runtime host can have an unreadable ``/home/ubuntu/soren``; that is
+    "not the soren root", not a fatal config error.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def resolve_soren_root(g: GlobalConfig) -> Path:
     raw = (g.webui.soren_root or "").strip()
     if raw:
@@ -93,15 +112,15 @@ def resolve_soren_root(g: GlobalConfig) -> Path:
             if not runtime.is_absolute():
                 runtime = g.repo_root / runtime
             runtime = runtime.resolve()
-            if runtime.is_dir():
+            if _safe_is_dir(runtime):
                 return runtime
     except ConfigError:
         pass
     candidate = g.repo_root / "games" / "soviet_now"
-    if (candidate / "eloop_lib.sh").is_file():
+    if _safe_is_file(candidate / "eloop_lib.sh"):
         return candidate.resolve()
     cwd = Path.cwd()
-    if (cwd / "eloop_lib.sh").is_file():
+    if _safe_is_file(cwd / "eloop_lib.sh"):
         return cwd.resolve()
     return candidate.resolve()
 

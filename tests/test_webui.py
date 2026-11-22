@@ -1548,10 +1548,14 @@ class TestHttpHandlers(unittest.TestCase):
 
     def test_workers_snapshot_tolerates_now_second_boundary(self):
         """回帰 (#1225): 秒境界をまたいでも snapshot 比較が成立すること。"""
-        status_a, data_a = self._request("GET", "/api/workers")
+        # #3737: 1回目を実時刻で取ると、CI 負荷で処理が 1 秒を超えて秒境界を
+        # またいだ場合に now_a が base の 1 秒前になり、差が 3 になって flake
+        # する。両方を mock し、差がちょうど 2 の決定論的な回帰テストにする。
+        base = int(time.time())
+        with mock.patch.object(webui.time, "time", return_value=base):
+            status_a, data_a = self._request("GET", "/api/workers")
         self.assertEqual(status_a, 200)
-        base = time.time()
-        with mock.patch.object(webui.time, "time", return_value=int(base) + 2):
+        with mock.patch.object(webui.time, "time", return_value=base + 2):
             status_b, data_b = self._request("GET", "/api/workers")
         self.assertEqual(status_b, 200)
         now_a = data_a.pop("now", None)
@@ -1868,6 +1872,35 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_rotation_view_flags_wait_overdue_on_one_reason(self):
+        # #4333: a wait held on one unchanged reason past next_due_at is the
+        # wedge signal; the view must expose it for the overlay warning.
+        self._write_catalog_config()
+        now = time.time()
+        self._write_rotation_state(
+            status="waiting", pending=None,
+            reason="other-corner-needs-finish-or-recovery",
+            reason_since=now - 3600, next_due_at=now - 3600,
+        )
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        rotation = view["rotation"]
+        self.assertEqual(rotation["status"], "waiting")
+        self.assertAlmostEqual(rotation["reason_since"], now - 3600, delta=1)
+        self.assertIsNotNone(rotation["overdue"])
+        self.assertEqual(rotation["overdue"]["reason_age_sec"], 3600)
+        self.assertEqual(rotation["overdue"]["overdue_sec"], 3600)
+
+        # A fresh reason inside the warn bound is not a wedge.
+        self._write_rotation_state(
+            status="waiting", pending=None,
+            reason="other-corner-needs-finish-or-recovery",
+            reason_since=now - 60, next_due_at=now - 3600,
+        )
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertIsNone(view["rotation"]["overdue"])
+
     def test_weather_manual_start_reserves_without_dispatch_and_is_idempotent(self):
         self._write_weather_catalog_config()
         pending = {"corner": "nsnake", "phase": "dispatched",
@@ -2123,6 +2156,8 @@ class TestHttpHandlers(unittest.TestCase):
             'action:"schedule"',
             'action:"cancel-schedule"',
             '"scheduled-manual-not-due"',
+            "予想の完了待ち",
+            "next_due（目安）",
         ):
             self.assertIn(marker, body)
 
@@ -2459,6 +2494,101 @@ class TestHttpHandlers(unittest.TestCase):
         for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
             self.assertNotIn(secret, json.dumps(data))
 
+    def test_get_corners_exposes_prediction_round_progress(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        state_dir = self.soren / "tmp" / "state"
+        state = state_dir / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2,
+            "games_completed": 36,
+            "max_games": 48,
+            "created_at": now - 3600,
+            "target_first_game": 10,
+            "last_game_num": 60,
+            "prediction_id": "PRIVATE-PREDICTION",
+            "outcome_ids": ["PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"],
+        }))
+        os.utime(state, (now - 120, now - 120))
+        (state_dir / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": now - 7200}))
+        (state_dir / "prediction_retry").mkdir()
+        (state_dir / "prediction_retry" / "resolve.json").write_text(json.dumps({
+            "operation": "resolve", "attempt": 2,
+            "next_retry_at": int(now + 300), "http_code": "401",
+        }))
+        (state_dir / "regression_check_in_progress").write_text("")
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        prediction = data["prediction"]
+        self.assertIs(prediction["present"], True)
+        self.assertIs(prediction["readable"], True)
+        self.assertEqual(prediction["round_version"], 2)
+        self.assertEqual(prediction["games_completed"], 36)
+        self.assertEqual(prediction["max_games"], 48)
+        self.assertEqual(prediction["remaining_games"], 12)
+        self.assertIs(prediction["complete"], False)
+        self.assertIsNone(prediction["settlement_pending"])
+        self.assertEqual(prediction["progress_age_sec"], 120)
+        self.assertIs(prediction["fence_present"], True)
+        self.assertEqual(prediction["retry"]["attempt"], 2)
+        self.assertEqual(prediction["retry"]["http_code"], "401")
+        self.assertIs(prediction["retry"]["retry_active"], True)
+        rendered = json.dumps(data)
+        for secret in ("PRIVATE-PREDICTION", "PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"):
+            self.assertNotIn(secret, rendered)
+
+    def test_get_corners_flags_a_completed_prediction_awaiting_settlement(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        state_dir = self.soren / "tmp" / "state"
+        state = state_dir / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2, "games_completed": 48, "max_games": 48,
+            "created_at": now - 7200, "prediction_id": "PRIVATE-PREDICTION",
+        }))
+        os.utime(state, (now - 600, now - 600))
+        (state_dir / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": now - 3600}))
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        prediction = data["prediction"]
+        self.assertIs(prediction["complete"], True)
+        self.assertIs(prediction["settlement_pending"], True)
+        self.assertGreaterEqual(prediction["settlement_pending_sec"], 590)
+        self.assertNotIn("PRIVATE-PREDICTION", json.dumps(data))
+
+    def test_get_corners_marks_a_latch_row_released_after_scheduler_settles_it(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        self._write_rotation_state(
+            status="waiting", pending=None, reason="not-due",
+            failed_corners=[
+                {"corner": "moon-buggy", "request_id": "PRIVATE-SETTLED",
+                 "at": now - 120, "resolution": "recovery-required",
+                 "reason_code": "execution-or-state-unverified",
+                 "error_kind": "execution-error"},
+                {"corner": "weather", "request_id": "PRIVATE-OPEN",
+                 "at": now - 60, "resolution": "recovery-required",
+                 "reason_code": "execution-or-state-unverified",
+                 "error_kind": "execution-error"},
+            ],
+            released_requests={"moon-buggy": {"request_id": "PRIVATE-SETTLED",
+                                              "at": now - 30}},
+        )
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        failures = {row["corner"]: row for row in data["rotation"]["recent_failures"]}
+        self.assertEqual(failures["moon-buggy"]["resolution"], "released-unverified")
+        self.assertEqual(failures["weather"]["resolution"], "recovery-required")
+        self.assertNotIn("PRIVATE-SETTLED", json.dumps(data))
+
     def test_get_corners_publishes_the_effective_interval_seconds(self):
         self._write_weather_catalog_config()
         self._write_rotation_state(status="waiting", pending=None,
@@ -2690,6 +2820,43 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(row["manual_mode"], "queue")
         # private request id は投影に出さない
         self.assertNotIn(inbox["request_id"], json.dumps(view))
+
+    def test_post_corners_new_game_requires_confirmation_and_preserves_other_modes(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        ledger = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger.read_bytes()
+        payload = {"action": "new-game", "corner": "hanjuku-hero"}
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", payload)
+            self.assertEqual(status, 428, data)
+            inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+            self.assertFalse(inbox.exists())
+            payload["confirm"] = True
+            for _ in range(2):
+                status, data = self._request("POST", "/api/corners", payload)
+                self.assertEqual(status, 200, data)
+                self.assertEqual(data["action"], "new-game")
+            queued = inbox.read_bytes()
+            self.assertTrue(json.loads(queued)["new_game"])
+            for action in ("start", "resume-latest"):
+                status, data = self._request("POST", "/api/corners", {
+                    "action": action, "corner": "hanjuku-hero", "confirm": True})
+                self.assertEqual(status, 409, data)
+                self.assertEqual(inbox.read_bytes(), queued)
+            popen.assert_not_called()
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def test_post_corners_new_game_refuses_other_games(self):
+        self._write_catalog_config()
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "new-game", "corner": "nsnake", "confirm": True})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "new_game_unsupported")
+        popen.assert_not_called()
 
     def test_hanjuku_start_is_idempotent_while_the_same_reservation_waits(self):
         self._write_hanjuku_catalog_config()
@@ -3162,6 +3329,65 @@ class TestAccessLogSynchronization(unittest.TestCase):
             [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
         )
 
+    def test_authz_check_waits_for_post_response_audit_logs(self):
+        case = TestMutationGuard("test_authz_audit_event_logged_without_secret_or_body")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        _assert_no_stuck_handlers(self, case.server.wait_for_handlers())
+        log_file = case.soren / "tmp/debug/webui.log"
+
+        release_logs = threading.Event()
+        log_held = threading.Event()
+        checkpoint = threading.Event()
+        finished = threading.Event()
+        errors = []
+        log_timeouts = []
+        original_log = webui._log_authz_event
+        original_wait = case.server.wait_for_handlers
+
+        def delayed_log(soren_root, method, path, identity, decision, reason=""):
+            if decision == "deny" and reason == "invalid_origin":
+                log_held.set()
+                if not release_logs.wait(timeout=10):
+                    log_timeouts.append(path)
+            original_log(soren_root, method, path, identity, decision, reason)
+
+        def wait_for_handlers(*args, **kwargs):
+            checkpoint.set()
+            return original_wait(*args, **kwargs)
+
+        def check_authz():
+            try:
+                case.test_authz_audit_event_logged_without_secret_or_body()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+                checkpoint.set()
+
+        checker = threading.Thread(target=check_authz, daemon=True)
+        with mock.patch.object(webui, "_log_authz_event", side_effect=delayed_log), \
+                mock.patch.object(case.server, "wait_for_handlers", side_effect=wait_for_handlers):
+            checker.start()
+            try:
+                # invalid_origin は応答送信後に audit event を書く。検証が handler
+                # 完了の同期点へ到達するまでは終わらないことを決定的に確認する。
+                self.assertTrue(checkpoint.wait(timeout=5), "authz check did not reach its checkpoint")
+                self.assertTrue(log_held.wait(timeout=5), "invalid_origin audit log was not held after the response")
+                self.assertFalse(finished.is_set(), "authz check finished before the audit log was written")
+            finally:
+                release_logs.set()
+                checker.join(timeout=5)
+
+        self.assertFalse(checker.is_alive(), "authz check thread did not finish")
+        self.assertEqual([], log_timeouts, "authz log hold timed out before release")
+        self.assertEqual([], errors, "authz check failed after releasing the audit logs")
+        records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(
+            any(r.get("event") == "authz" and r.get("decision") == "deny" and r.get("reason") == "invalid_origin"
+                for r in records)
+        )
+
 
 class _PostResponseWriterHandler(webui._Handler):
     """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
@@ -3513,6 +3739,10 @@ class TestMutationGuard(TestHttpHandlers):
                 )
         finally:
             self.g.webui.token = ""
+        # invalid_origin は拒否応答を送った後に authz event を書く。HTTP 応答の
+        # 受信完了だけでは書込み完了を意味しないため、ログを読む前に fixture が
+        # 追跡する in-flight handler を有限時間だけ待つ。
+        _assert_no_stuck_handlers(self, self.server.wait_for_handlers())
         log_file = self.soren / "tmp/debug/webui.log"
         lines = [json.loads(ln) for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
         authz = [r for r in lines if r.get("event") == "authz"]
@@ -3818,12 +4048,27 @@ const fmtTime=x=>x?String(x):'-';
             "document.getElementById('corners-select').value=" + json.dumps(select_after)
             + ";updateCornerButtons();\n" if select_after is not None else ""
         ) + '''
-const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
+const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-new-game','corners-resume-latest','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_new_game_button_is_hanjuku_only_and_respects_start_gates(self):
+        row = {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+               "manual": True, "manual_start": True, "manual_mode": "queue",
+               "enabled": True, "paused": False, "state_file": "retro_corner"}
+        for rotation, disabled in (({"status": "ready"}, False),
+                                   ({"status": "recovery_required", "latch": True}, True),
+                                   ({"queued_manual": {"corner": "hanjuku-hero"}}, True)):
+            with self.subTest(rotation=rotation):
+                out = self._render(rotation, catalog=[row], selected=row["id"], corners={})
+                self.assertEqual(out["corners-new-game"]["style"]["display"], "")
+                self.assertEqual(out["corners-new-game"]["disabled"], disabled)
+        out = self._render({"status": "ready"})
+        self.assertEqual(out["corners-new-game"]["style"]["display"], "none")
+        self.assertTrue(out["corners-new-game"]["disabled"])
 
     def test_hanjuku_queues_start_without_duration_and_keeps_stop(self):
         # #2024: 半熟英雄は分数を使わない queue 方式。開始は予約ボタンとして

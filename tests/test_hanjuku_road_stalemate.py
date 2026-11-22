@@ -1,0 +1,72 @@
+"""Repeated unclosed road engagements settle the march like a defeat (#4927).
+
+g1190-ch1v4 generation 1163, ch10 47-9: an interception that ends with
+neither HP at 0 (a draw or a forced separation) leaves the sortie
+``en_route`` and the two units re-collide. The battle count climbs, the
+march ages past the stuck bound and the month closed with zero sorties.
+A single unclosed end is ambiguous, but a chain means the march is
+pinned — settle it the way a measured road defeat does.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.flows import battle as b
+from docich.hanjuku.state.regions import world as _world
+
+
+def memory(hp=(30, 40), status='en_route'):
+    return {'chapter': 10, 'tick': 45000, '_records': [],
+            'world': {'sorties': {'10-K1': {'general': 'ジェラート',
+                                            'source': 'アルマムーン',
+                                            'target': 'マカリア',
+                                            'status': status,
+                                            'tick': 44000}}},
+            'battle': {'enemy': 'リディア', 'ally': 'ジェラート',
+                       'ally_hp': hp[0], 'enemy_hp': hp[1],
+                       'castle': None, 'side': None, 'step': '10-K1',
+                       'cards_used': []}}
+
+
+def test_a_single_unclosed_road_battle_keeps_the_march_running():
+    mem = memory()
+    b.battle_end(mem, 'map')
+    b.battle_end(mem, 'map')
+    sortie = _world(mem)['sorties']['10-K1']
+    assert sortie['status'] == 'en_route'
+    assert sortie.get('road_stalemates') == 1
+    assert type(sortie.get('road_defeat')) is not int
+    assert any(r['decision'] == 'sortie_road_stalemate' for r in mem['_records'])
+
+
+def test_chained_unclosed_road_battles_settle_the_march():
+    mem = memory()
+    for _ in range(b.ROAD_STALEMATE_LIMIT):
+        b.battle_end(mem, 'map')
+        b.battle_end(mem, 'map')
+        mem['battle'] = {'enemy': 'リディア', 'ally': 'ジェラート',
+                         'ally_hp': 25, 'enemy_hp': 35,
+                         'castle': None, 'side': None, 'step': '10-K1',
+                         'cards_used': []}
+    sortie = _world(mem)['sorties']['10-K1']
+    assert type(sortie.get('road_defeat')) is int
+    assert sortie['road_stalemates'] == b.ROAD_STALEMATE_LIMIT
+    assert any(r['decision'] == 'sortie_road_stalemate_settled' for r in mem['_records'])
+    entry = next(h for h in mem['sortie_history'] if h.get('road'))
+    assert entry['outcome'] == 'lost' and entry['target'] == 'マカリア'
+    # The same observation sweep that settles a measured road defeat now
+    # ends the march without waiting for the arrival deadline.
+    from docich.hanjuku.flows import prompts as p
+    p._settle_road_defeats(mem)
+    assert sortie['status'] == 'overdue'
+
+
+def test_a_measured_road_loss_still_settles_immediately():
+    mem = memory(hp=(0, 40))
+    b.battle_end(mem, 'map')
+    b.battle_end(mem, 'map')
+    sortie = _world(mem)['sorties']['10-K1']
+    assert type(sortie.get('road_defeat')) is int
+    assert not sortie.get('road_stalemates')
+    assert any(r['decision'] == 'sortie_road_defeat' for r in mem['_records'])

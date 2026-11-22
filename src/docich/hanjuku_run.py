@@ -16,7 +16,7 @@ import uuid
 from .adapters.base import AdapterError
 from .game_switch import atomic_write_json
 from .hanjuku_bot import BOT_VERSION, classify
-from .hanjuku_hotload import logic_generation as _logic_generation
+from .hanjuku_hotload import logic_generation as _logic_generation, module as _hot_module
 from .hanjuku_pixels import Frame
 from .retroarch_boundary import read_record
 from .naming import runtime_id_generation
@@ -25,8 +25,27 @@ from . import hanjuku_repetition
 # The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
 LOGIC_GENERATION = _logic_generation()
 
+
+def _bot_version():
+    """Version of the logic generation actually producing this record.
+
+    A long-lived observer keeps this module imported while deploys hot-load
+    newer copies through ``hanjuku_hotload``; the import-time constant then
+    stays stale (g1153: the run record kept v507 while the decisions used
+    v522, #3753). Read the current-generation copy first so the written
+    version matches the code that judged the frame.
+    """
+    try:
+        current = getattr(_hot_module('hanjuku_bot'), 'BOT_VERSION', None)
+    except Exception:
+        current = None
+    return current or BOT_VERSION
+
 RUN_FILE='hanjuku_run.json'
 TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
+# A released game_over cannot re-latch for this long (the title stays up while
+# the first inputs are delivered).
+GAME_OVER_CLEAR_GRACE_S = 120
 STALL_SECONDS=300
 # #1369: the merchant confirm screen held ~16 min with no input sent while the
 # screen kept animating, so screen_stalled never fired and the corner had no
@@ -38,9 +57,13 @@ INPUT_STALL_SECONDS=600
 INPUT_STALL_OBSERVATIONS=120
 MAX_SAMPLE_GAP=15
 MAX_LOG_BYTES=4*1024*1024
-# Consecutive observations the battle panel must hold (or stay away) before a
-# start or an end is counted. Matches the policy's own two-reading debounce.
+# Consecutive observations the battle panel must hold (or a confirmed
+# post-battle scene must persist) before a start or end is counted.
 BATTLE_PHASE_DEBOUNCE=2
+# Transitional/dialogue/event frames also occur *inside* a fight (commands,
+# eggs, fades, result text). They are not evidence that the fight has ended.
+# The actual map classifier says 'field'; 'map' covers legacy observations.
+BATTLE_EXIT_PHASES=frozenset({'field', 'map', 'field_menu', 'month_menu', 'shop'})
 
 
 def enabled(game):
@@ -142,6 +165,34 @@ def _checkpoint_start_request(runtime_dir: Path, identity: dict, wall: float):
                 or any(c not in '0123456789abcdef' for c in digest)):
             return None
     return request
+
+
+AUTOSAVE_REQUEST = 'hanjuku_autosave.json'
+AUTOSAVE_INTERVAL_S = 900
+
+
+def request_autosave(runtime_dir: Path, *, now=None, interval=AUTOSAVE_INTERVAL_S):
+    """Ask the adapter to save the emulator state at most once per interval.
+
+    The agent loop's own periodic save never reached the emulator in production
+    (g1163 2026-11-10: the state file stayed at 10:58 for nine hours, so a
+    hung battle cost the whole run). The brain already runs inside the runtime,
+    so it drops a request beside the run file and the adapter — the only place
+    with the RetroArch command port — performs it.
+    """
+    now=time.time() if now is None else now
+    if not isinstance(interval, int) or interval <= 0:
+        return None
+    path=runtime_dir/AUTOSAVE_REQUEST
+    try:
+        prior=read_record(path)
+    except Exception:
+        prior={}
+    last=prior.get('requested_at') if isinstance(prior, dict) else None
+    if isinstance(last, (int, float)) and 0 <= now-last < interval:
+        return None
+    atomic_write_json(path, {'requested_at': now})
+    return path
 
 
 def terminal(runtime_dir: Path, identity: dict):
@@ -253,6 +304,15 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
+    # A manual "this was not a game over" release earns a grace window: the
+    # game sits on its title while the first inputs land, and without it the
+    # same observation latched game_over again immediately (g1163 2026-11-10
+    # 21:4x: clear -> re-latch -> every input refused, for hours).
+    cleared_at = old.get('terminal_cleared_at')
+    if (reason == 'game_over' and type(cleared_at) in (int, float)
+            and math.isfinite(cleared_at) and 0 <= wall - cleared_at < GAME_OVER_CLEAR_GRACE_S):
+        reason = None
+        candidate = False
     if not reason and duration>=STALL_SECONDS:
         reason='screen_stalled'
     # #1369: observations kept arriving while no input was sent (an animated
@@ -293,21 +353,21 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
                     'reason': 'ゲームオーバーの振り返り実況', 'terminal_recap': True, **identity})
         except Exception:
             pass
-    # The battle panel blinks during the melee, so a single frame in `battle`
-    # is not a battle. 2026-10-02 measurement on g534: 45 frame-level entries
-    # against 24 real battles, and the counters were reported as 34 started /
-    # 33 finished. Require the same two-consecutive-observation debounce the
-    # policy uses (battle_end's `away >= 2`) so the corner counters and the
-    # judged battle records describe the same battles. Counting an end on any
-    # non-battle phase also covers the most common measured ending, which the
-    # old exit-phase whitelist missed entirely (`next_screen: map`).
+    # A single battle panel can blink away during a fight. Count an opening
+    # only after two battle observations, and count an exit only after two
+    # observations of a *confirmed post-battle scene*. Dialogue, egg/command
+    # overlays, fades, and other ambiguous images are not battle-end evidence:
+    # treating all non-battle phases as exits caused repeated start/end notices
+    # in the Soren bulletin while the same fight was still in progress.
+    # Include both actual 'field' and legacy 'map' so returns to the map
+    # still count as completed battles.
     battle_active=old.get('battle_active',False)
     def _streak(key):
         value=old.get(key,0)
         return value+1 if type(value) is int and 0 <= value < 1000000 else 1
     battle_streak=_streak('battle_streak') if phase=='battle' else 0
     away_streak=(_streak('battle_away_streak')
-                 if (battle_active and phase!='battle') else 0)
+                 if (battle_active and phase in BATTLE_EXIT_PHASES) else 0)
     battle_started=battle_streak==BATTLE_PHASE_DEBOUNCE and not battle_active
     battle_ended=battle_active and away_streak>=BATTLE_PHASE_DEBOUNCE
     if battle_started: battle_active=True
@@ -328,10 +388,17 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     if loop_proof:
         reason = 'screen_stalled'
         since, duration = loop_proof['since'], loop_proof['seconds']
-    state={**identity,'schema':1,'bot_version':BOT_VERSION,
+    state={**identity,'schema':1,'bot_version':_bot_version(),
            'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
+           # Keep the manual release stamp: this dict is rebuilt every
+           # observation, and dropping it re-armed game_over immediately
+           # (g1163 2026-11-10 22:0x).
+           'terminal_cleared_at': (old.get('terminal_cleared_at')
+                                   if isinstance(old.get('terminal_cleared_at'), (int, float))
+                                   else None),
+           'terminal_cleared_reason': old.get('terminal_cleared_reason'),
            'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,
@@ -370,7 +437,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     event(runtime_dir, {
         'event': 'observation', 'at': wall, 'phase': phase,
         'frame_sha256': digest, 'unchanged_seconds': round(duration, 3),
-        'playing': playing, 'terminal_reason': reason, 'bot_version': BOT_VERSION,
+        'playing': playing, 'terminal_reason': reason, 'bot_version': _bot_version(),
         'terminal_candidate': candidate, 'terminal_evidence': state['terminal_evidence'],
         'frame_unchanged_seconds': round(frame_duration, 3),
         'repetition_evidence': loop_proof,
@@ -386,12 +453,22 @@ def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
     state=load(runtime_dir,identity)
     if now is None:
         now=time.monotonic()
-    trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
+    # The bot's own memory can outgrow the bounded-record limit (g1163
+    # 2026-11-12 02:2x: 270 051 bytes). Raising here fails the whole
+    # observation, the brain never gets to run, and therefore never compacts
+    # the record that broke it: the run latched input_stalled and every
+    # following observation died the same way. The trace is decoration, so a
+    # record we cannot read bounded is simply no trace.
+    try:
+        trace = (read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024)
+                 .get('decision_trace') or {})
+    except AdapterError:
+        trace = {}
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
                       'buttons':list(action.buttons),'hold_ms':action.hold_ms,
-                      'frame_sha256':state.get('frame_sha256'),'bot_version':BOT_VERSION,
+                      'frame_sha256':state.get('frame_sha256'),'bot_version':_bot_version(),
                       'decision_id':trace.get('decision_id'),
                       'decision_frame_sha256':trace.get('frame_sha256')})
     if state:

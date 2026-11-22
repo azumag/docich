@@ -167,6 +167,15 @@ class TestNethackSpectator(unittest.TestCase):
         self.assertNotIn("innerHTML", shell)
         self.assertNotIn("location.reload", shell)
         self.assertNotIn("https://", shell)
+        # Non-map screens keep the reviewed TTY fallback and add a readable
+        # item panel for listings; both stay textContent-only.
+        self.assertIn('id="menu"', shell)
+        self.assertIn("listingIndent", shell)
+        self.assertIn("cellsToLines", shell)
+        self.assertIn("categoryTile", shell)
+        self.assertIn("fitMenu", shell)
+        self.assertIn("fitTty", shell)
+        self.assertIn("[hidden]", shell)
         with self.assertRaises(ValueError):
             render_live_shell(
                 runtime_id="g3-deadbeef",

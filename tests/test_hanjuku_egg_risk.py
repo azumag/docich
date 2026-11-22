@@ -11,6 +11,7 @@ from docich import hanjuku_policy as policy, hanjuku_reference as reference
 from docich.hanjuku_egg_reference import (GENERAL_DEBUT, GENERAL_EGGS, GENERAL_HP,
                                           enemy_egg_triggers, general_debut_chapter, general_max_hp)
 from docich.hanjuku_screen import Battle, Screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 MASH = [action for _ in range(policy.POWER_TAPS)
         for action in (policy.pad('a', 3), {'type': 'wait', 'ms': 50})]
@@ -193,7 +194,7 @@ def test_defense_override_and_unknown_context_cannot_grant_normal_type_two_mash(
 
 def test_captured_castle_context_applies_defense_override():
     mem = memory()
-    mem['attack']['castle'] = 'キカンドン'
+    _plan_region(mem)['attack']['castle'] = 'キカンドン'
     mem['captured'] = ['キカンドン']
     assert enter(panel('キッシュ'), mem) == [policy.pad('b')]
     assert policy._melee_step(mem, mem['battle']) == []
@@ -202,7 +203,7 @@ def test_captured_castle_context_applies_defense_override():
 
 def test_due_card_precedes_risky_melee_hold():
     mem = memory(step='1-V2')
-    mem['attack']['general'] = 'ヴィーナス'
+    _plan_region(mem)['attack']['general'] = 'ヴィーナス'
     screen = panel('ガルバンゾー', 60)
     screen.battle.ally = 'ヴィーナス'
     assert enter(screen, mem) == [policy.pad('b')]

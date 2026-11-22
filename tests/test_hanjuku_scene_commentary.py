@@ -74,7 +74,8 @@ def test_fact_whitelist_requires_receipts_and_does_not_infer_death_or_capture():
     result = scene.fact({'decision': 'battle_result', 'ally': 'ココット', 'enemy': 'クイーン',
                          'outcome': 'loss', 'resulting_event': 'lost:アルマムーン',
                          'observed_metric': {'general_loss': 'unclassified', 'cards_selected': ['イッテツーン']}})
-    assert result == {'kind': 'battle_result', 'ally': 'ココット', 'enemy': 'クイーン', 'outcome': 'loss'}
+    assert result == {'kind': 'battle_result', 'ally': 'ココット', 'enemy': 'クイーン',
+                      'outcome': 'loss', 'winner': 'クイーン', 'loser': 'ココット'}
     receipt = {'decision': 'soldier_refill_receipt', 'resulting_event': 'unverified',
                'observed_metric': {'qty': 20, 'soldiers_after': 70, 'basis': 'observed_plus_paid_refill'}}
     assert scene.fact(receipt) is None

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from docich import tsuitate_prose as prose
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 LIMIT = "公開後の盤面での比較で、当時の見え方や最善手は判定していません。"
 

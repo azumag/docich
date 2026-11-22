@@ -24,13 +24,15 @@ def _main_on(label, month=7):
     return c.frame()
 
 
-def _country_page1(month=7):
+def _country_page1(month=7, soldiers=None, generals=10):
     c = Canvas()
     c.text(56, 7, f'1わ1ねん{month}のつき250G')
     c.text(24, 39, 'わがくにの じょうたい')
     c.text(24, 71, 'しゅうにゅう 300G')
     c.text(24, 87, 'そうちんぎん 150G')
-    c.text(24, 103, 'しょうぐんにんすう 10にん')
+    c.text(24, 103, f'しょうぐんにんすう {generals}にん')
+    if soldiers is not None:
+        c.text(24, 119, f'へいしすう {soldiers}にん')
     return c.frame()
 
 
@@ -77,6 +79,38 @@ def test_await_level_scan_bounds():
     assert month_flow._await_level_scan(mem, shop) is False
 
 
+def _after_recruit_memory(recruit):
+    mem = _month_memory()
+    mem.update(shop={'key': '1-7', 'level_scan_wait': 1, 'recruit': recruit},
+               month_roster_scan={'scope': [1, '1-7'], 'tick': 400},
+               recruit_month_scan_attempts={'scope': [1, '1-7'], 'count': 1},
+               recruit_roster={'chapter': 1, 'month': '1-7', 'tick': 400,
+                               'names': ['どうし'], 'wages': {}, 'complete': True})
+    return mem
+
+
+def test_finished_recruit_does_not_block_the_country_status_visit():
+    # g1133 49-9: the month's roster scan and recruit were done, and the
+    # recruit gate held every observation, so 現在収入/総賃金 stayed at 49-6.
+    mem = _after_recruit_memory('done')
+    menu = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(menu), mem, menu) == [p.pad('a')]
+    assert mem['house']['level_only'] is True
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == [p.pad('a')]
+    page1 = _country_page1()
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_income'] == {'scope': [1, '1-7'], 'tick': 500, 'income': 300}
+    assert mem['country_wages'] == {'scope': [1, '1-7'], 'tick': 500, 'wages': 150}
+
+
+def test_an_open_recruit_still_keeps_the_status_visit_waiting():
+    mem = _after_recruit_memory('opened')
+    menu = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(menu), mem, menu) is None
+    assert mem.get('house') is None
+
+
 def test_level_trigger_visits_status_and_skips_the_roster():
     mem = _month_memory()
     mem.update(shop={'key': '1-7', 'level_scan_wait': 1},
@@ -94,6 +128,10 @@ def test_level_trigger_visits_status_and_skips_the_roster():
     assert mem['house']['phase'] == 'level_status'
     page1 = _country_page1()
     assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    # Page 1 carries the country's total income and total wages; keep both as
+    # the last observations shown as 現在収入 / 総賃金 on the status card.
+    assert mem['country_income'] == {'scope': [1, '1-7'], 'tick': 500, 'income': 300}
+    assert mem['country_wages'] == {'scope': [1, '1-7'], 'tick': 500, 'wages': 150}
     page2 = _country_page2(level=14, value=2800, needed=3400)
     assert house.step(parse(page2), mem, page2) == [p.pad('b')]
     assert mem['hanjuku_level'] == 14
@@ -115,17 +153,43 @@ def test_level_trigger_visits_status_and_skips_the_roster():
     assert mem['recruit_roster']['complete'] is True
 
 
-def test_roster_scan_does_not_detour_without_the_level_trigger():
-    # Ordinary roster visits keep their measured order: the status page is
-    # only read on the end-of-month visit the level trigger creates.
+def test_month_command_reads_headcount_without_opening_general_list():
     mem = _month_memory()
     mem['shop'] = {'key': '1-7'}
     menu = month_canvas(250, on='メインメニュー', month=7)
     assert house.step(parse(menu), mem, menu) == [p.pad('a')]
-    assert not mem['house'].get('level_only')
+    assert mem['house']['level_only'] is True
     main = _main_on('しょうぐん')
+    assert house.step(parse(main), mem, main) == [p.pad('down')]
+    main = _main_on('ステータス')
     assert house.step(parse(main), mem, main) == [p.pad('a')]
-    assert mem['house']['phase'] == 'roster'
+    page1 = _country_page1(soldiers=70)
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_general_count']['scope'] == [1, '1-7']
+    assert 'recruit_roster' not in mem
+    assert house.step(parse(_country_page2()), mem, _country_page2()) == [p.pad('b')]
+    assert house.step(parse(main), mem, main) == []
+    assert house.step(parse(main), mem, main) == [p.pad('b')]
+    assert house.step(parse(menu), mem, menu) == []
+    assert 'house' not in mem
+    assert house.step(parse(menu), mem, menu) is None
+
+
+def test_country_status_count_is_scoped_and_suffices_for_recruitment():
+    from docich.hanjuku.strategy.economy import _recruit_shortage, _recruit_sufficient
+    mem = _month_memory()
+    mem.update(garrison={'アルマムーン': ['どうし']},
+               country_general_count={'scope': [1, '1-7'], 'identity': None,
+                                      'tick': 500, 'count': 2, 'joined': []})
+    shortage = _recruit_shortage(mem)
+    assert shortage['count_lower_bound'] == 2
+    assert shortage['available_observed'] == []
+    assert not _recruit_sufficient(mem)
+    mem['country_general_count']['count'] = 10
+    assert _recruit_sufficient(mem)
+    mem['month'] = '1-8'
+    assert not _recruit_sufficient(mem)
 
 
 def test_unreadable_level_page_gives_up_bounded():
@@ -149,6 +213,20 @@ def _level_state():
     return {'phase': 'level_status', 'chapter': 1, 'roster_month': '1-7',
             'month_scan': True, 'age': 0, 'total': 0, 'seen': [], 'pending': [],
             'level_only': True, 'level_checked': True}
+
+
+def test_country_status_soldier_count_is_observed_not_assumed():
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    page1 = _country_page1(soldiers=70)
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_soldier_count']['count'] == 70
+    # A later unread count does not overwrite the last actual observation
+    # and is never treated as zero.
+    page1_unread = _country_page1()
+    assert house.step(parse(page1_unread), mem, page1_unread) == [p.pad('a')]
+    assert mem['country_soldier_count']['count'] == 70
 
 
 def test_the_status_row_is_pressed_again_once_its_help_line_shows():
@@ -188,3 +266,67 @@ def test_a_read_level_clears_the_unread_count():
     assert house.step(parse(page2), mem, page2) == [p.pad('b')]
     assert 'hanjuku_level_unread' not in mem
 
+
+def test_the_visit_reopens_status_when_the_level_read_left_the_count_unread():
+    """The level page read must not leave the month's general count behind.
+
+    A visit that lands on the level page (or whose page-1 count row went
+    unread) has 半熟レベル/半熟値 but still no 将軍数. The same bounded
+    visit re-opens ステータス once so page 1's headcount is read with it.
+    """
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    page2 = _country_page2(level=14, value=2800, needed=3400)
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert mem['hanjuku_level'] == 14
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == []   # leave_status → open_roster
+    assert mem['house']['phase'] == 'open_roster'
+    # Count still unread → the visit re-opens ステータス instead of leaving.
+    general = _main_on('しょうぐん')
+    assert house.step(parse(general), mem, general) == [p.pad('down')]
+    assert mem['house'].get('count_retry', 0) == 0
+    assert mem['house']['phase'] == 'open_roster'
+    assert house.step(parse(main), mem, main) == [p.pad('a')]
+    assert mem['house']['phase'] == 'level_status'
+    assert mem['house']['count_retry'] == 1
+    page1 = _country_page1(soldiers=70)
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    assert mem['country_general_count']['count'] == 10
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert house.step(parse(main), mem, main) == []   # leave_status → open_roster
+    # Count now current: the visit leaves normally, no third open.
+    assert house.step(parse(main), mem, main) == [p.pad('b')]
+    assert mem['house']['phase'] == 'leave_roster'
+
+
+def test_the_count_reopen_is_bounded_when_page_one_keeps_missing():
+    """A level page that never yields the count does not re-open forever."""
+    mem = _month_memory()
+    mem['house'] = _level_state()
+    page2 = _country_page2(level=14, value=2800, needed=3400)
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    main = _main_on('ステータス')
+    assert house.step(parse(main), mem, main) == []
+    assert house.step(parse(main), mem, main) == [p.pad('a')]   # one re-open
+    # The re-opened visit sees the level page again without the count read;
+    # the bounded retry is spent, so this time the visit leaves.
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert house.step(parse(main), mem, main) == []
+    assert house.step(parse(main), mem, main) == [p.pad('b')]
+    assert mem['house']['phase'] == 'leave_roster'
+
+
+
+def test_month_rollover_releases_the_previous_month_roster_visit():
+    """g1107 46-8->46-9: the old house close step owned the month menu with no
+    input until screen_stalled. A month change must return the screen."""
+    mem = _month_memory()
+    mem['month'] = '1-8'
+    mem['house'] = {'phase': 'close', 'chapter': 1, 'roster_month': '1-7',
+                    'month_scan': False, 'age': 0, 'total': 0,
+                    'seen': [], 'pending': []}
+    menu = month_canvas(250, on='メインメニュー', month=8)
+    assert house.step(parse(menu), mem, menu) is None
+    assert 'house' not in mem
+    assert any(r.get('decision') == 'house_month_changed' for r in mem.get('_records') or [])

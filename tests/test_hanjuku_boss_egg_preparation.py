@@ -2,6 +2,7 @@
 from test_hanjuku_chart_bot import policy, sortie_canvas, month_canvas
 from docich import hanjuku_chart as chart
 from docich.hanjuku_screen import Screen, parse
+from docich.hanjuku.state.regions import plan as _plan_region
 import pytest
 
 
@@ -27,7 +28,7 @@ def test_depleted_boss_order_waits_and_does_not_request_replacement(uses):
     assert 'chart_adjust' not in mem
     assert len(mem['_records']) == 1
     assert mem['_records'][0]['decision'] == 'boss_egg_recovery_wait'
-    assert mem['orders']['1-B1'] == 'pending'
+    assert _plan_region(mem)['orders']['1-B1'] == 'pending'
 
 
 def test_newly_read_depletion_cancels_sortie_and_recovery_reopens_check():
@@ -36,7 +37,7 @@ def test_newly_read_depletion_cancels_sortie_and_recovery_reopens_check():
     screen = sortie_canvas('どうし', 3)
     policy.observe_events(screen, mem)
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
-    assert mem['active'] is None and mem['picked'] == []
+    assert _plan_region(mem)['active'] is None and mem['picked'] == []
     assert not policy._ready(order(), mem)
     # Existing recovery payment path clears stale counts, never invents 4.
     mem['month'] = '1-7'
@@ -62,6 +63,33 @@ def test_guard_is_scoped_to_chapter_one_hero_boss_and_known_counts():
     assert policy._ready(order(), memory(4))
     assert policy._ready(order(), memory())
     assert policy._ready(order(), memory(True))
+
+
+def test_depletion_reads_the_dated_record_when_the_flat_ledger_is_absent():
+    # #4439: the guard reads through the egg_memory port. A hero count that
+    # survives only as a dated observation still holds the boss sortie, and a
+    # full record does not invent a depletion.
+    from docich.hanjuku.state import egg_memory
+    mem = memory()
+    egg_memory.observe(mem, 'どうし', egg='スロットエッグ', uses=2, present=True,
+                       source=egg_memory.STATUS)
+    assert policy._boss_egg_depleted(order(), mem)
+    egg_memory.observe(mem, 'どうし', egg='スロットエッグ', uses=4, present=True,
+                       source=egg_memory.STATUS)
+    assert not policy._boss_egg_depleted(order(), mem)
+
+
+def test_the_wait_probe_masks_both_egg_mirrors_not_only_the_flat_ledger():
+    # #4439: the recovery-wait readiness probe blanks egg_uses so the depleted
+    # gate does not judge the wait itself. The record port must be blanked
+    # with it, or a dated record would re-arm the gate inside _ready.
+    from docich.hanjuku.state import egg_memory
+    mem = memory(3)
+    egg_memory.observe(mem, 'どうし', egg='スロットエッグ', uses=3, present=True,
+                       source=egg_memory.STATUS)
+    policy._off_chart(mem)
+    assert mem['_records'][-1]['decision'] == 'boss_egg_recovery_wait'
+    assert mem['boss_egg_wait'][2] == 3
 
 
 def test_recovery_wait_reserves_income_for_eggs_before_soldier_refill():

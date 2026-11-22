@@ -38,7 +38,11 @@ cannot select that wording. This is record-based variety, not proof of strategy
 adoption or improved game performance. Strategy-feature metadata is still a
 separate extension.
 
-更新契機は既存のゲーム切替・コーナー復帰です。プレイ中の常時更新は行いません。
+更新契機は既存のゲーム切替・コーナー復帰に加え、半熟英雄の**目標達成時**です。
+半熟英雄だけは、ready runtimeの検証済み突破話数が増えたときに配信タイトルを
+次の目標へ更新します（2026-11-09 オーナー判断）。カテゴリは変更せず
+`--title-only` でタイトルだけを更新し、同じ突破話数では再送しません。
+毎tickの常時更新ではなく、話数をまたいだときだけの有界な更新です。
 
 ## commit を伴わない復帰の再整合（#2673）
 
@@ -57,8 +61,12 @@ commit を作らない経路では前のコーナーのメタデータが配信�
   それ以外の phase は遷移中なので何もしない。
 - 直近の announce 記録（`run-soren-live/stream_metadata_last.json`）と同じ
   ランタイムなら再送しない。commit 経由の announce も同じ記録を更新する。
+- 記録は game/status に加えて、半熟英雄だけ `generation:cleared` の
+  突破話数マーカーを持つ。同じゲームでもマーカーが変わったときだけ
+  `--title-only` で再送し、マーカーが読めない観測では再送しない。
 - 送信失敗は記録して 300 秒 backoff。失敗が rotation の tick を止めない。
-- 記録・判定は状態 enum とゲーム名だけで、トークン・本文・応答bodyを残さない。
+- 記録・判定は状態 enum・ゲーム名・検証済みの突破話数だけで、
+  トークン・本文・応答bodyを残さない。
 
 これは「配信中の常時更新」ではない。画面とメタデータが食い違ったままになる経路を
 有界に自己修復するだけで、資格情報・エンコーダ・ゲーム入力・既存 lock の契約は変えない。

@@ -48,6 +48,13 @@ reason が `reconcile_*` 系なら、VM checkout の live bytes が reviewed lin
    へ収束する。
 3. 次の push deploy 成功で本 Issue は自動 close される。
 
+production checkout の先行 HEAD または gitlink 前進のまま live 投影が収束しない
+場合は、`projection_not_converged` / `baseline_regression_refused` /
+`tracked_vm_drift` として fail-closed する。`/home/ubuntu/docich` 上で `gh pr merge`
+や開発・merge 作業は行わず、checkout を変えない GitHub API/UI または別 worktree を
+使う。merge 後に必要なら承認手順で production checkout を `main` へ正規化してから
+再 deploy する。
+
 恒久対策として、soviet_now 側に projection live-apply gate
 （`core/strategy_runtime.sh`、`docs/projection_guard_runbook.md`）があり、
 `IMPROVE_LIVE_APPLY_POLICY=enforce_reviewed` で未 review bytes の live 書き込みを

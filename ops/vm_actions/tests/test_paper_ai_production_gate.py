@@ -43,7 +43,7 @@ def _receipt(home: Path, sha: str, *, age: int = 0) -> Path:
         "research_backend": "websearch_verified_body",
         "source_count": 2,
         "asset_background": True,
-        "direct_agent": "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8",
+        "direct_agent": "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast",
         "output_chars": 42,
         "output_sha256": "a" * 64,
         "publishing": False,

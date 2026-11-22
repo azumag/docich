@@ -57,6 +57,7 @@ from .game_switch import (
     GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchStore,
+    TERMINAL_RECEIPT_STATUSES,
     atomic_write_json,
 )
 from .mystery_case import CaseError, ai_detective_choice, generate, new_seed
@@ -1807,6 +1808,61 @@ class MysteryCornerManager:
                              end_reason="switch-terminal-before-corner-active")
                 state.pop("switch_request_id", None)
                 state.pop("switch_status", None)
+                self._save(state)
+                self._clear_stop_request()
+                return True
+        except (OSError, ValueError, GameSwitchBusyError, MysteryCornerError):
+            return False
+
+    def settle_released_failure(self, request_id):
+        """Retire an old failed owner after rotation proved its slot released.
+
+        Same contract as the other view corners (doushi shape): the common
+        rotation calls this only after it re-proved that the shared program
+        slot holds nothing from that request, and this method re-checks the
+        shared plane under the store lock because the release decision and
+        this write are separate operations. Until this hook existed the
+        mystery state file kept its released ``failed`` owner forever, every
+        later dispatch refused with "another mystery execution owns the
+        state", and the repeated failures evicted the original release
+        evidence from the bounded audit (#3682). ``True`` retires the owner;
+        ``False`` leaves the fail-closed state untouched. The overlay and
+        program-flag obligations are re-shown/cleared here exactly like the
+        ordinary interrupted path, so a dead owner cannot leave the status
+        rails hidden or the radio flag set.
+        """
+        try:
+            request_id = self._request_id(request_id)
+            with self.store.lock(exclusive=True):
+                state = self._read_state()
+                if (state.get("status") != "failed"
+                        or state.get("rotation_request_id") != request_id):
+                    return False
+                canonical, missing = self.store.canonical.load()
+                if missing or not _stable(canonical):
+                    return False
+                if (canonical.get("operation") is not None
+                        or canonical.get("request_id") is not None
+                        or canonical.get("deadline_at") is not None):
+                    return False
+                active = canonical.get("active")
+                if (isinstance(active, dict)
+                        and _identity(active).get("game") == VIEW_NAME):
+                    return False
+                receipt = self.store.receipts.load(request_id)
+                if (isinstance(receipt, dict)
+                        and receipt.get("status") not in TERMINAL_RECEIPT_STATUSES):
+                    return False
+                queued = self.store.receipts.queued()
+                if not isinstance(queued, list) or any(
+                        isinstance(row, dict) and row.get("request_id") == request_id
+                        for row in queued):
+                    return False
+                self._release_status_overlays(state)
+                self._clear_program_flag(state)
+                state.update(status="interrupted",
+                             completed_at=state.get("completed_at") or self.clock(),
+                             end_reason="released-failure-before-retry")
                 self._save(state)
                 self._clear_stop_request()
                 return True

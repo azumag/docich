@@ -166,6 +166,8 @@ jobs:
               80) reason="declared_mismatch" ;;
               81) reason="unknown_drift" ;;
               82) reason="ownership_missing" ;;
+              83) reason="ownership_missing_candidate" ;;
+              84) reason="ownership_missing_retiring" ;;
               *) reason="transport_failure" ;;
             esac
             echo "::error::GameSwitch recovery refused: $reason (exit $rc)"

@@ -7,6 +7,7 @@ operational value (N00 v2 §5). Contract sources: N00 v2 §2 (schemas), §3.4
 D6-D9 and issue #782 acceptance items.
 """
 import datetime as dt
+import json
 import os
 import sqlite3
 import subprocess
@@ -17,7 +18,12 @@ from decimal import Decimal as D
 from pathlib import Path
 
 from docich.trading.news_paper import ledger as ld
-from docich.trading.news_paper.execution import ClockQuality, ExecutionOutcome, Fill
+from docich.trading.news_paper.execution import (
+    ClockQuality,
+    ExecutionOutcome,
+    Fill,
+    MarketObservation,
+)
 
 UTC = dt.timezone.utc
 T0 = dt.datetime(2026, 9, 18, 0, 10, 4, tzinfo=UTC)
@@ -122,12 +128,13 @@ def accept(ledger: ld.NewsLedger, receipt_id: str = "receipt_001",
 def fill(order_id="paper_order:receipt_001", quote_ref="quote_121", level_index=0,
          quantity=D("300"), price=D("1001"), fee=D("31"), side="buy",
          partial=False, receipt_id="receipt_001", asset="stocks:XTKS:DEMO",
+         account_id="paper_news_demo",
          filled_at=T0 + dt.timedelta(minutes=10), fill_id=None) -> Fill:
     return Fill(
         fill_id=fill_id or f"{order_id}:{quote_ref}:{level_index}",
         order_id=order_id,
         receipt_id=receipt_id,
-        account_id="paper_news_demo",
+        account_id=account_id,
         asset=asset,
         side=side,
         quantity=quantity,
@@ -432,6 +439,124 @@ class FenceTest(unittest.TestCase):
         self.assertEqual(fence.fence_at, again.fence_at)
         self.assertEqual(fence.fence_id, again.fence_id)
 
+    def test_fence_is_bound_to_its_marker_and_receipt(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        row = self.ledger._conn.execute(
+            "SELECT marker_id, receipt_id FROM fill_fences WHERE fence_id = ?",
+            (fence.fence_id,),
+        ).fetchone()
+        self.assertEqual(row, ("marker:receipt_001", "receipt_001"))
+        self.assertEqual(fence.marker_id, "marker:receipt_001")
+        # A receipt without a committed marker gets no fence at all.
+        self.assertIsNone(
+            self.ledger.establish_fence(
+                "receipt_002", ClockQuality(True, "injected", 1000)
+            )
+        )
+
+    def test_fence_is_reused_across_restart_as_a_whole(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        first = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        self.ledger.close()
+        self.ledger = ld.NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news",
+            clock=lambda: T0 + dt.timedelta(hours=1),
+        )
+        # The caller's later clock quality must not replace the stored fence.
+        again = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "ntp", 60_000)
+        )
+        self.assertEqual(again.fence_id, first.fence_id)
+        self.assertEqual(again.fence_at, first.fence_at)
+        self.assertEqual(again.clock_quality, first.clock_quality)
+        self.assertEqual(again.clock_quality.max_error_ms, 1000)
+
+    def test_crash_after_marker_before_fence_fails_closed(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        committed_at = ld._parse_ts(self.ledger._conn.execute(
+            "SELECT committed_at FROM execution_markers WHERE receipt_id = 'receipt_001'"
+        ).fetchone()[0])
+        # Crash before the fence INSERT: nothing is stored. A restart an hour
+        # later must sample a *later* fence and refuse the pre-crash quote.
+        self.ledger.close()
+        self.ledger = ld.NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news",
+            clock=lambda: committed_at + dt.timedelta(hours=1),
+        )
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        self.assertGreater(fence.fence_at, committed_at)
+        old_quote = self._observation(committed_at + dt.timedelta(seconds=1))
+        self.assertFalse(fence.admits(old_quote))
+        boundary = fence.fence_at + dt.timedelta(seconds=2)
+        self.assertFalse(fence.admits(self._observation(boundary)))
+        self.assertTrue(fence.admits(
+            self._observation(boundary + dt.timedelta(microseconds=1))
+        ))
+
+    def test_regressed_clock_never_samples_fence_before_marker_commit(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        committed_at = ld._parse_ts(self.ledger._conn.execute(
+            "SELECT committed_at FROM execution_markers WHERE receipt_id = 'receipt_001'"
+        ).fetchone()[0])
+        self.ledger.close()
+        self.ledger = ld.NewsLedger.open(
+            self.tmp, "run_demo_001", "price_plus_news",
+            clock=lambda: committed_at - dt.timedelta(hours=1),
+        )
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        self.assertEqual(fence.fence_at, committed_at)
+
+    def test_tampered_fence_binding_or_timestamp_fails_closed(self):
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+        fence = self.ledger.establish_fence(
+            "receipt_001", ClockQuality(True, "injected", 1000)
+        )
+        quality = ClockQuality(True, "injected", 1000)
+        self.ledger._conn.execute(
+            "UPDATE fill_fences SET receipt_id = 'receipt_other' WHERE fence_id = ?",
+            (fence.fence_id,),
+        )
+        with self.assertRaises(ld.LedgerError) as ctx:
+            self.ledger.establish_fence("receipt_001", quality)
+        self.assertEqual(ctx.exception.code, "STORE_UNAVAILABLE")
+        # A fence that pre-dates its own marker commit is equally unusable.
+        self.ledger._conn.execute(
+            "UPDATE fill_fences SET receipt_id = 'receipt_001', "
+            "fence_at = '2026-09-18T00:00:00.000000Z' WHERE fence_id = ?",
+            (fence.fence_id,),
+        )
+        with self.assertRaises(ld.LedgerError) as ctx:
+            self.ledger.establish_fence("receipt_001", quality)
+        self.assertEqual(ctx.exception.code, "STORE_UNAVAILABLE")
+
+    def _observation(self, available_at: dt.datetime) -> MarketObservation:
+        return MarketObservation(
+            observation_id="quote_crash", source="fixture",
+            asset="stocks:XTKS:DEMO", ingest_sequence=121,
+            market_event_at=available_at - dt.timedelta(seconds=1),
+            market_available_at=available_at - dt.timedelta(seconds=1),
+            available_at=available_at, bid=D("999"), ask=D("1000"),
+            bid_size=D("1000"), ask_size=D("1000"),
+            size_semantics="executable", tradeable=True, realtime=True,
+            session_id="s1", calendar_version="c1", quote_digest="a" * 64,
+            provenance_class="test_fixture",
+            instrument_constraints_version="fixture-stocks-v1",
+        )
+
 
 class ApplyAccountingTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -551,6 +676,129 @@ class ApplyAccountingTest(unittest.TestCase):
             for key, value in data.items():
                 self.assertIsInstance(key, str)
                 self.assertIsInstance(value, (str, int)) or value is None
+
+
+class FillBacktraceTest(unittest.TestCase):
+    """docich#2644 acceptance item 2: every fill must trace back to the
+    decision receipt and the decision quote that produced it."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="n05-ledger-trace-"))
+        self.ledger = open_ledger(self.tmp)
+        self.ledger.create_account(
+            account_id="paper_news_demo", run_id="run_demo_001",
+            scenario_id="price_plus_news", initial_cash="1000000",
+        )
+        accept(self.ledger)
+        self.ledger.commit_receipt("receipt_001")
+
+    def tearDown(self) -> None:
+        self.ledger.close()
+
+    def test_fill_backtraces_to_receipt_and_decision_quote(self):
+        self.ledger.apply_execution(outcome(
+            fills=(
+                fill(quote_ref="quote_121", level_index=0, quantity=D("200")),
+                fill(quote_ref="quote_121", level_index=1,
+                     quantity=D("100"), fill_id="f_lvl1"),
+            ),
+        ))
+        rows = self.ledger._conn.execute(
+            "SELECT fill_id, order_id, receipt_id, quote_ref FROM fills "
+            "ORDER BY level_index"
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        order = self.ledger.order_row("paper_order:receipt_001")
+        receipt = self.ledger.receipt_row("receipt_001")
+        self.assertEqual(receipt["order_ref"], "paper_order:receipt_001")
+        decision_quote = json.loads(receipt["decision_quote"])
+        for fill_id, order_id, receipt_id, quote_ref in rows:
+            # fill -> order -> receipt -> decision quote, and fill -> the
+            # source observation that produced it, are all resolvable.
+            self.assertEqual(order_id, "paper_order:receipt_001")
+            self.assertEqual(receipt_id, "receipt_001")
+            self.assertEqual(quote_ref, "quote_121")
+            self.assertTrue(fill_id)
+        self.assertEqual(
+            decision_quote,
+            ["src", "stocks:XTKS:DEMO", "2026-09-18T00:10:04.000000Z", HEX_A],
+        )
+
+
+class MultiLevelFeeHeadroomTest(unittest.TestCase):
+    """docich#2644 acceptance item 4 (P2-6): the post-fill cash re-check must
+    include every level's fee, and a shortfall must roll the whole outcome
+    back atomically rather than settle a partial set of fills."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="n05-ledger-fee-"))
+        self.ledger = open_ledger(self.tmp)
+
+    def tearDown(self) -> None:
+        self.ledger.close()
+
+    def _accept_tight_account(self, cash: str) -> None:
+        self.ledger.create_account(
+            account_id="paper_tight", run_id="run_demo_001",
+            scenario_id="price_plus_news", initial_cash=cash,
+        )
+        self.ledger.begin_receipt(
+            receipt=receipt_draft(receipt_id="receipt_tight",
+                                  account_id="paper_tight"),
+            order=order_draft(order_id="paper_order:receipt_tight",
+                              requested_quantity="600",
+                              reservation_id="res:receipt_tight",
+                              event_use_id="event_use:tight"),
+            reservation=reservation_draft(reservation_id="res:receipt_tight"),
+            event_use=event_use_draft(event_use_id="event_use:tight",
+                                      event_group_id="event_tight"),
+        )
+        self.ledger.commit_receipt("receipt_tight")
+
+    def _two_level_outcome(self) -> ExecutionOutcome:
+        # Two level fills, each charged its own fee: 300@1001+31 and
+        # 300@1002+31, total cost 600962 across the single outcome.
+        return outcome(
+            order_id="paper_order:receipt_tight",
+            fills=(
+                fill(order_id="paper_order:receipt_tight",
+                     receipt_id="receipt_tight", account_id="paper_tight",
+                     quantity=D("300"), price=D("1001"), fee=D("31"),
+                     level_index=0, fill_id="f_t0"),
+                fill(order_id="paper_order:receipt_tight",
+                     receipt_id="receipt_tight", account_id="paper_tight",
+                     quantity=D("300"), price=D("1002"), fee=D("31"),
+                     level_index=1, fill_id="f_t1"),
+            ),
+            requested=D("600"), filled=D("600"),
+        )
+
+    def test_multi_level_fees_settle_within_cash(self):
+        self._accept_tight_account("600962")
+        result = self.ledger.apply_execution(self._two_level_outcome())
+        self.assertEqual(result.applied_fills, 2)
+        snap = self.ledger.account_snapshot("paper_tight")
+        # Both per-fill fees were charged: notional 300300 + 300600 plus
+        # fee 31 + 31 leaves exactly zero.
+        self.assertEqual(snap.cash, D("0"))
+
+    def test_multi_level_fee_shortfall_rolls_back_atomically(self):
+        # One yen short of the two-level total: the second fill's fee is the
+        # residual P2-6 headroom that sizing never reserved.
+        self._accept_tight_account("600961")
+        with self.assertRaises(ld.LedgerError) as ctx:
+            self.ledger.apply_execution(self._two_level_outcome())
+        self.assertEqual(ctx.exception.code, "INSUFFICIENT_FUNDS")
+        snap = self.ledger.account_snapshot("paper_tight")
+        self.assertEqual(snap.cash, D("600961"))
+        self.assertEqual(snap.positions, {})
+        written = self.ledger._conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE order_id = ?",
+            ("paper_order:receipt_tight",),
+        ).fetchone()[0]
+        self.assertEqual(written, 0)
+        order = self.ledger.order_row("paper_order:receipt_tight")
+        self.assertEqual(order["filled_quantity"], "0")
 
 
 class UnhealthyStoreTest(unittest.TestCase):

@@ -16,6 +16,7 @@ should import the owning layer module instead. See
 ``docs/hanjuku_layered_architecture.md``.
 """
 from __future__ import annotations
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, flow as _flow
 
 import random
 import re
@@ -40,7 +41,8 @@ from .hanjuku.flows import (battle as _flow_battle, battle_menus as _flow_battle
                             camp_recheck as _flow_camp_recheck,
                             deploy as _flow_deploy, egg_recovery as _flow_egg_recovery, map as _flow_map,
                             month as _flow_month, name as _flow_name, prompts as _flow_prompts,
-                            recall as _flow_recall, shop as _flow_shop)
+                            recall as _flow_recall, shop as _flow_shop,
+                            sortie_retry_guard as _flow_sortie_retry_guard)
 from .hanjuku.judgment import battle as _judgment_battle, events as _judgment_events
 from .hanjuku.os_layer import (commands as _os_commands, navigation as _os_navigation,
                                readers as _os_readers, world as _os_world)
@@ -74,7 +76,7 @@ _camp_recheck_step_without_stale_rearm = _flow_camp_recheck.step
 
 
 def _rearm_exhausted_camp_rechecks(mem):
-    if mem.get('recall'):
+    if _flow(mem).get('recall'):
         return []
     now = mem.get('tick')
     if type(now) is not int or now < 0:
@@ -101,8 +103,10 @@ def _rearm_exhausted_camp_rechecks(mem):
 
 
 def _camp_recheck_step_with_stale_rearm(screen, mem, frame, existing):
-    if (screen.kind == 'map' and frame is not None and not mem.get('recall') and not any(
-            mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump', 'sortie_attempt', 'attack'))):
+    if (screen.kind == 'map' and frame is not None
+            and not _flow(mem).get('recall') and not _flow(mem).get('sortie_attempt')
+            and not any(mem.get(key) for key in ('battle', 'month_sub', 'house', 'y_jump'))
+            and not _plan_region(mem).get('attack')):
         _rearm_exhausted_camp_rechecks(mem)
     return _camp_recheck_step_without_stale_rearm(screen, mem, frame, existing)
 
@@ -122,8 +126,8 @@ _next_order_without_boss_roster_reprobe = next_order
 def _reprobe_stalled_season_boss_roster(mem) -> bool:
     if mem.get('chapter') != 4:
         return False
-    states = mem.get('orders') or {}
-    sorties = mem.get('sorties') or {}
+    states = _plan_region(mem).get('orders') or {}
+    sorties = _world(mem).get('sorties') or {}
     sites = set(chart.boss_sites(4))
     stalled = [order for order in chart.orders(4)
                if order.get('target') in sites
@@ -139,7 +143,7 @@ def _reprobe_stalled_season_boss_roster(mem) -> bool:
     home = chart.home_castle(4)
     if home not in _os_world._owned(mem):
         return False
-    garrison = mem.setdefault('garrison', {})
+    garrison = _world(mem).setdefault('garrison', {})
     if home not in garrison or garrison.get(home) is None:
         return False
 
@@ -150,7 +154,7 @@ def _reprobe_stalled_season_boss_roster(mem) -> bool:
 
     previous = list(garrison.get(home) or ())
     garrison.pop(home, None)
-    (mem.get('garrison_observed_at') or {}).pop(home, None)
+    (_world(mem).get('garrison_observed_at') or {}).pop(home, None)
     mem['boss_roster_reprobe_tick'] = now
     _decision_log._record(
         mem, 'boss_roster_reprobe',

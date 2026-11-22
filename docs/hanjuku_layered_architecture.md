@@ -39,6 +39,7 @@ decision_log   判断記録（全層から利用可）
 |---|---|---|
 | OS層 | `hanjuku/os_layer/pixels.py` / `glyphs.py` / `font.py` | PNG読込、8×8字形の照合による文字読取 |
 | OS層 | `hanjuku/os_layer/screen.py` | 1フレームの構造化（文字・手カーソル・マップカーソル・城の屋根・戦闘パネル）と画面種別 |
+| OS層 | `hanjuku/os_layer/menu_feedback.py` | 操作欄と現在カーソルを根拠にしたメニューの観測周期情報（入力・確定は行わない） |
 | OS層 | `hanjuku/os_layer/starter_view.py` | 先発隊画面の名前欄と確認画面の読取 |
 | OS層 | `hanjuku/os_layer/phase.py` | フレーム全体の分類（タイトル・戦闘・メニュー・フィールド等） |
 | OS層 | `hanjuku/os_layer/readers.py` | 解析済み画面からの読取（メニュー項目と手カーソル、ワールドマップの旗・カーソル、出撃携行札、月次会話、定型語彙） |

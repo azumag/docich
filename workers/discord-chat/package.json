@@ -12,16 +12,8 @@
     "test:workerd": "node test/workerd-integration.mjs"
   },
   "devDependencies": {
-    "@cloudflare/build-output-utils": "0.8.5",
-    "cf": "1.0.0-beta.12",
-    "wrangler": "4.151.3"
-  },
-  "overrides": {
-    "miniflare@5.20260930.0-alpha": {
-      "sharp": "0.35.5"
-    },
-    "miniflare@5.20261001.0-alpha": {
-      "sharp": "0.35.5"
-    }
+    "@cloudflare/build-output-utils": "0.9.10",
+    "cf": "1.0.0-beta.28",
+    "wrangler": "4.158.0"
   }
 }

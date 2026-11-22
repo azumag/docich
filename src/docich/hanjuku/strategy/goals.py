@@ -13,6 +13,7 @@ only records intent and attempt history. Every screen-evidence gate in the
 owning flow still decides whether the goal may act.
 """
 from __future__ import annotations
+from ..state.regions import world as _world, sorties as _sorties
 
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
@@ -20,11 +21,15 @@ from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
 
 GOAL_LIMIT = 24            # bounded ledger; the fact stores stay the fallback
+GOAL_STALE_TICKS = 3600    # observations a never-attempted goal may sit queued
+GOAL_EXPIRED_COOLDOWN = 7200  # observations an expired goal stays out after that
 STARVE_ATTEMPTS = 6        # deferral outcomes per goal before a starved record
 MAP_IDLE_WINDOW = 2        # observations a "nothing to sortie" reading stays current
 
 # The fact store that keeps each kind's intent alive, and the flow that owns it:
 #   repair      house_eggs[name].broken            -> flows/house.py session
+
+EGG_REPAIR_DISABLED = True            # 2026-11-21: 「アタシの家」修復出撃が進行を阻害するため一時停止
 #   egg_recover economy._egg_recovery_targets      -> flows/month.py sub
 #   recruit     economy._recruit_shortage          -> flows/month.py sub
 #   retake      mem['lost']                        -> replan interim candidates
@@ -86,7 +91,8 @@ def _wanted(mem):
             wanted[('retake', None, castle)] = {'kind': 'retake', 'target': castle}
     departed = _departed(mem, chapter)
     for name, info in (mem.get('house_eggs') or {}).items():
-        if isinstance(info, dict) and info.get('broken') is True and name not in departed:
+        if (not EGG_REPAIR_DISABLED and isinstance(info, dict)
+                and info.get('broken') is True and name not in departed):
             wanted[('repair', name, None)] = {'kind': 'repair', 'actor': name}
     from .economy import _egg_recovery_targets, _recruit_shortage
     targets = _egg_recovery_targets(mem)
@@ -107,14 +113,33 @@ def _wanted(mem):
     # it stops counting as a want the way ``interim_candidates`` sees it.
     from .orders import _sortie_reserved_target
     heading = {_sortie_reserved_target(mem, step, s)
-               for step, s in (mem.get('sorties') or {}).items()
+               for step, s in _sorties(mem).items()
                if s.get('status') in ('en_route', 'launched_unconfirmed')
                and s.get('tick') is not None
                and 0 <= now - int(s['tick']) < SORTIE_BUSY_TICKS} - {None}
-    garrison = mem.get('garrison') or {}
-    for castle in sorted(owned - lost - heading):
-        if garrison.get(castle) == []:
-            wanted[('move', None, castle)] = {'kind': 'move', 'target': castle}
+    garrison = _world(mem).get('garrison') or {}
+    # Chapter 9 empties its castles on purpose: every general marches down the
+    # road and the corridor planner owns every movement (owner 2026-11-11:
+    # ９話は機械的に次の城にすべての将軍を送る、それ以外はdisable). Refilling an
+    # empty road castle is not a want there — the ledger filled up with six
+    # never-attempted ``move`` goals (g1163 2026-11-12 13:4x, queued 86867-92397
+    # while all four rear castles read ``[]``), which the normal planner then
+    # tried to serve as name-less moves. The exemption also holds after the
+    # road is fully owned: ``interim_candidates`` emits no refill moves in a
+    # guard-free chapter (``empty = []``), so post-road move goals can only
+    # ever age as ``unavailable`` (g1190: all 12 owned castles queued,
+    # 130+ starved attempts each while every garrison read empty). Other
+    # chapters keep the refill want.
+    try:
+        march = bool(chart.guard_free(chapter) and chart.corridor(chapter))
+    except AttributeError:
+        # A rebound chart without the road tables (the layer contract allows a
+        # minimal namespace) is not a mechanical march.
+        march = False
+    if not march:
+        for castle in sorted(owned - lost - heading):
+            if garrison.get(castle) == []:
+                wanted[('move', None, castle)] = {'kind': 'move', 'target': castle}
     return wanted
 
 
@@ -126,13 +151,41 @@ def refresh(mem):
     resolution record when it has a history worth closing. Newly observed
     wants append behind the existing queue.
     """
-    wanted = _wanted(mem)
-    goals = _goals(mem)
     tick = int(mem.get('tick') or 0)
+    # A want whose goal never attempts anything keeps the field busy for
+    # months while the sortie plan waits (g1190 2026-11-19 run 4: egg_recover
+    # queued at tick 47685 with attempts 0, 0 captures to 62-x -- #4618). Such
+    # a goal expires; the fact re-queues it only after a cooldown so ordinary
+    # play can serve it in the meantime.
+    expired = mem.get('goal_expired')
+    expired = expired if isinstance(expired, dict) else {}
+    expired = {key: until for key, until in expired.items()
+               if type(until) is int and until > tick}
+    if expired:
+        mem['goal_expired'] = expired
+    else:
+        mem.pop('goal_expired', None)
+    expired_any = False
+    wanted = {key: spec for key, spec in _wanted(mem).items()
+              if key not in expired}
+    goals = _goals(mem)
     kept, resolved = [], []
     for goal in goals:
-        spec = wanted.pop(_key(goal), None)
+        key = _key(goal)
+        spec = wanted.pop(key, None)
         if spec is not None:
+            queued = goal.get('queued')
+            if (not goal.get('attempts') and type(queued) is int
+                    and tick - queued >= GOAL_STALE_TICKS):
+                expired[key] = tick + GOAL_EXPIRED_COOLDOWN
+                mem['goal_expired'] = expired
+                expired_any = True
+                _record(mem, 'goal_expired', chart_step=None,
+                        observed_metric={'goal': _summary(goal),
+                                         'queued_for': tick - queued,
+                                         'cooldown': GOAL_EXPIRED_COOLDOWN},
+                        reason='試行されないまま期限を過ぎた目標を台帳から外し、通常プレイで達成できるよう一定期間再登録しない')
+                continue
             if spec.get('targets') is not None:
                 goal['targets'] = spec['targets']
             kept.append(goal)
@@ -162,7 +215,7 @@ def refresh(mem):
                     reason='目標台帳が上限のため新しい未達目標を登録できない。事実は各元データに残る')
     else:
         mem.pop('goals_overflow', None)
-    if resolved or new_items:
+    if resolved or new_items or expired_any:
         mem['goals'] = kept
 
 
@@ -187,7 +240,7 @@ def _repair_signature(mem, actor):
     """Location facts that decide whether a repair session can reach the actor."""
     info = (mem.get('house_eggs') or {}).get(actor) or {}
     in_garrison = any(actor in (roster or [])
-                    for roster in (mem.get('garrison') or {}).values())
+                    for roster in (_world(mem).get('garrison') or {}).values())
     gold = mem.get('gold')
     bucket = (min(gold, 400) // 100) if type(gold) is int and gold >= 0 else None
     return [info.get('location'), info.get('month'), in_garrison, bucket]
@@ -226,6 +279,8 @@ def _repair_goal_due(mem, goal):
 
 def repair_due(mem):
     """A deferred broken-egg repair is waiting for idle map time."""
+    if EGG_REPAIR_DISABLED:
+        return False
     return any(g.get('kind') == 'repair' and _repair_goal_due(mem, g)
                for g in _goals(mem))
 

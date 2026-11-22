@@ -41,18 +41,7 @@ ${comment_ops_context}
 【Celebration History Memo】
 ${celebration_history_context}
 
-【Main Game Basic Rules (not current Soren91 scores)】
-Use these only where consistent with the current-game memo; Soren91 is rank-based, not score-based.
-- There are 16 countries from Armenia through the Soviet Union; later countries are larger.
-- When two pieces of the same country physically touch, they merge into the next country.
-- Two Russia pieces merge into the maximum Soviet Union piece, completing Soviet Creation. Later countries score more points.
-- Never call a country by an internal type/T number. Always use its Japanese country name in this order: アルメニア、モルドバ、エストニア、ラトビア、リトアニア、ジョージア、アゼルバイジャン、タジキスタン、キルギス、ベラルーシ、ウズベキスタン、トルクメニスタン、ウクライナ、カザフスタン、ロシア、ソ連.
-- Pieces are convex polygons shaped like national territories. They fall with gravity, collide, and rotate. Precise landing prediction is difficult.
-- Merging creates an explosion shockwave that moves surrounding pieces — this is the main cause of chain reactions.
-- Chain = place a pair of the previous country near its growth destination, then use the merge shockwave for a multi-stage merge.
-- Only X coordinate of drop is controllable (Y is left to gravity)
-- Game over when pieces exceed the deadline line
-- Strategy keys: same-country clustering, country growth-order layout (pipeline), large-country one-sided clustering, chain design
+${_comment_game_rules}
 
 【Comment Batch Context】
 ${comment_batch_context}
@@ -84,6 +73,7 @@ ${comment_thumbnail_ocr_context}
 - Add one witty, slightly sarcastic touch after the direct answer when natural: a concise tsukkomi, surprising comparison, light irony, wordplay, or observational twist. Avoid bland, overly polite replies — be a bit edgy and clever, but never rude. Answer sincerely first, then add wit as a finishing touch.
 - Do not let the joke replace the game-status number, rule explanation, or strategy answer.
 - All replies, including replies to English comments, MUST use Japanese polite style (です・ます) in this generation stage. English translations are produced separately after the Japanese reply is complete.
+- Avoid over-polite forms (でございます / でございまして / ております). Use ordinary です・ます (e.g. 〜でございます → 〜です); ありがとうございます is fine.
 - Do not use markdown or symbols. Plain text only.
 - No preamble or supplemental explanation needed. Output only the comment reply body.
 - Use actually available search tools when external verification is needed. If no tool or usable result is available, state what remains unverified. Never invent facts or claim to have searched without doing so.

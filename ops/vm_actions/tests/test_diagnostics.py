@@ -34,6 +34,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.doc = self.base / "docich"
         (self.doc / "ops" / "vm_actions").mkdir(parents=True)
         (self.doc / "src" / "docich" / "semantic_decision").mkdir(parents=True)
+        (self.doc / "src" / "docich" / "hanjuku" / "state").mkdir(parents=True)
         (self.doc / "ops" / "audio_priority").mkdir(parents=True, exist_ok=True)
         self.soren = self.base / "soren"
         (self.soren / "tmp" / "state").mkdir(parents=True)
@@ -42,6 +43,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "ops/vm_actions/recover_soren_game.py",
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
+            "src/docich/stream_identity.py",
             "src/docich/pulse_volume.py",
             "src/docich/corner_rotation.py",
             "src/docich/game_switch.py",
@@ -54,6 +56,9 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "src/docich/semantic_decision/__init__.py",
             "src/docich/semantic_decision/diagnostics.py",
             "src/docich/semantic_decision/routes.py",
+            "src/docich/hanjuku/__init__.py",
+            "src/docich/hanjuku/state/__init__.py",
+            "src/docich/hanjuku/state/regions.py",
             "ops/audio_priority/priority.py",
         ):
             src = ROOT / rel
@@ -171,6 +176,18 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         proc = self.call(f"diagnostics docich production {'b' * 40} extra")
         self.assertNotEqual(proc.returncode, 0)
 
+    def _pop_tree_keys(self, node, names):
+        # Recursively remove every dict key listed in `names` from a decoded
+        # JSON tree, without touching sibling fields of the same sections.
+        if isinstance(node, dict):
+            for name in names:
+                node.pop(name, None)
+            for value in node.values():
+                self._pop_tree_keys(value, names)
+        elif isinstance(node, list):
+            for item in node:
+                self._pop_tree_keys(item, names)
+
     def test_stdin_payload_cannot_change_diagnostics(self):
         clean = self.call(f"diagnostics docich production {'b' * 40}")
         evil = self.call(
@@ -182,6 +199,17 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         evil_data = json.loads(evil.stdout.decode())
         for data in (clean_data, evil_data):
             data["diagnostics"]["meta"].pop("generated_at", None)
+            # `allocated_bytes` is derived from `st_blocks * 512`
+            # (collect_diagnostics._storage_allocated_bytes): the filesystem
+            # can legitimately allocate or release one 512B block between two
+            # independent read-only calls, which flaked CI by exactly 4096
+            # bytes (#3715). Scrub by key name only -- count, bytes and
+            # hardlink_duplicates stay compared, so a stdin payload that
+            # really alters storage output is still caught. If the collector
+            # gains more st_blocks-derived keys (e.g. "blocks"), add the key
+            # name here instead of scrubbing whole sections like
+            # bundle_storage.
+            self._pop_tree_keys(data["diagnostics"], {"allocated_bytes"})
             # The two independent read-only calls can cross a wall-clock second.
             history = data["diagnostics"]["nethack_history"]
             self.assertIs(type(history["collected_at"]), int)
@@ -345,6 +373,21 @@ class DiagnosticsJsonCapTests(unittest.TestCase):
         self.assertTrue(65537 > gateway.DIAGNOSTICS_JSON_MAX)
 
 
+class DiagnosticsReasonCodeTests(unittest.TestCase):
+    def test_collector_failure_maps_to_a_fixed_reason_code(self):
+        # docich#4318: a crashing collector collapsed to the generic
+        # `operation_rejected`, hiding the diagnostics path in rejections.
+        gateway = load_gateway()
+        self.assertEqual(
+            gateway.reason_code(ValueError("diagnostics collector failed")),
+            "diagnostics_collector_failed",
+        )
+        self.assertEqual(
+            gateway.reason_code(ValueError("diagnostics output invalid")),
+            "operation_rejected",
+        )
+
+
 class DiagnosticsAuthorizeTests(unittest.TestCase):
     def run_auth(self, **overrides):
         env = {
@@ -403,6 +446,19 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", INPUT_REF="feature").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="audio_gap_measure", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
 
+    def test_browser_profile_reclaim_is_owner_only_production_main_without_extra_confirm(self):
+        # Phase-1 wiring is a bounded read-only dry-run plan (docich #3122);
+        # same gating shape as diagnostics: owner-only dispatch on
+        # production/main with no confirm=production requirement.
+        proc = self.run_auth(INPUT_OPERATION="browser_profile_reclaim")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual((data["operation"], data["target"], data["ref"]),
+                         ("browser_profile_reclaim", "production", "main"))
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="browser_profile_reclaim", INPUT_TARGET="preview").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="browser_profile_reclaim", INPUT_REF="feature").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="browser_profile_reclaim", GITHUB_TRIGGERING_ACTOR="collab").returncode, 0)
+
     def test_loop_pause_release_is_owner_only_production_main_with_confirm(self):
         base = {"INPUT_OPERATION": "release_soren_loop_pause", "INPUT_CONFIRM": "production"}
         proc = self.run_auth(**base)
@@ -437,7 +493,7 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn(
             "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
             "configure_jev_route_vercel, configure_jev_route_clef, configure_jev_route_clef_reuse, disable_jev_route, bootstrap, diagnostics, cpu_profile, audio_gap_measure, reclaim, rebaseline, "
-            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause]", text
+            "market_paper, paper_ai_canary, paper_ai_enable, paper_ai_disable, restart_chat_kick_workers, restart_webui, recover_soren_game, recover_soren_round, recover_bgm_mute, recover_hanjuku_projection, release_soren_loop_pause, browser_profile_reclaim]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)

@@ -4,6 +4,7 @@ import pytest
 from docich import hanjuku_policy as policy
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 HOME = 'アルマムーン'
@@ -212,7 +213,7 @@ def test_three_holdings_are_all_upgraded_in_one_month():
     third = 'キカンドン'   # chart order: アルマムーン, キカンドン, ..., ジョンリギ
     mem = memory()
     mem['captured'] = [OTHER, third]
-    mem['garrison'][third] = ['ヴィーナス']
+    _world(mem)['garrison'][third] = ['ヴィーナス']
     names = (HOME, third, OTHER)
 
     def upgrade_listed(castle, gold, cost):
@@ -281,10 +282,29 @@ def test_unavailable_castle_advances_to_another_owned_castle(refusal):
     assert policy.month_sub_step(quote(OTHER, 150, 9), mem) == [policy.pad('a')]
 
 
+def test_no_general_refusal_marks_the_garrison_empty():
+    """g1190: a castle staffed on record but marched out gets refused with
+    「しょうぐんがおりませなんだ」 every month. Record the live empty
+    garrison so later candidate lists stop offering it."""
+    mem = memory()
+    open_build(mem)
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('a')]
+    refused = castles(on=OTHER, text='とほほほしょうぐんがおりませなんだ!' + PROMPT)
+    assert policy.month_sub_step(refused, mem) == [policy.pad('a')]
+    assert _world(mem)['garrison'][HOME] == []
+    # The generic "no more upgrades" refusal says nothing about staffing.
+    mem = memory()
+    open_build(mem)
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('a')]
+    refused = castles(on=OTHER, text='これいじょうのぞうちくはできませんぞ!!' + PROMPT)
+    assert policy.month_sub_step(refused, mem) == [policy.pad('a')]
+    assert _world(mem)['garrison'][HOME] == ['ゼウス']
+
+
 def test_unowned_or_known_empty_castles_are_not_building_candidates():
     mem = memory()
     mem['captured'] = ['ゴーメン']
-    mem['garrison'].update({'ゴーメン': [], 'キカンドン': ['ヴィーナス']})
+    _world(mem)['garrison'].update({'ゴーメン': [], 'キカンドン': ['ヴィーナス']})
     assert policy._chikujou_candidates(mem) == [HOME]
     # Old captured-home state must not override positive evidence of its loss.
     mem['home_lost'] = True
@@ -436,3 +456,48 @@ def test_walk_to_chikujou_is_bounded_when_the_hand_does_not_move():
     assert out[:policy.MENU_NAV_PRESS_LIMIT] == [[policy.pad('down')]] * policy.MENU_NAV_PRESS_LIMIT
     assert out[-1] == [policy.pad('b')]
     assert mem['_records'][-1]['decision'] == 'menu_nav_stuck'
+
+
+def test_an_abandoned_sub_keeps_the_months_tried_ledger():
+    # docich#5026: a dropped sub must not forget which castles were already
+    # refused this month - the audit reads shop['chikujou_tried'].
+    mem = memory()
+    open_build(mem, 150)
+    sub = mem['month_sub']
+    sub['rows_tried'] = [HOME]
+    sub['chosen'] = OTHER
+    sub['aborted'] = True
+    sub['abort_backs'] = policy.MONTH_SUB_ABANDON_BACKS - 1
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('b')]
+    assert 'month_sub' not in mem
+    assert mem['shop']['chikujou'] == 'skipped'
+    assert mem['shop']['chikujou_tried'] == [HOME, OTHER]
+    assert any(r['decision'] == 'month_sub_abandoned' for r in mem['_records'])
+
+
+def test_a_lost_sub_keeps_the_months_tried_ledger():
+    # docich#5026: same ledger preservation when an exit-kind screen drops
+    # the sub without a measured menu return.
+    mem = memory()
+    open_build(mem, 150)
+    mem['month_sub']['rows_tried'] = [HOME]
+    field = Screen([], None, 'フィールド', kind='map')
+    assert policy.month_sub_step(field, mem) is None
+    assert 'month_sub' not in mem
+    assert mem['shop']['chikujou_tried'] == [HOME]
+    assert any(r['decision'] == 'month_sub_lost' for r in mem['_records'])
+
+
+def test_a_stale_month_sub_does_not_write_this_months_ledger():
+    mem = memory()
+    open_build(mem, 150)
+    sub = mem['month_sub']
+    sub['key'] = '1-6'                       # last month's sub
+    sub['rows_tried'] = [HOME]
+    sub['aborted'] = True
+    sub['abort_backs'] = policy.MONTH_SUB_ABANDON_BACKS - 1
+    assert policy.month_sub_step(castles(), mem) == [policy.pad('b')]
+    assert 'month_sub' not in mem
+    # open_build already creates the (empty) ledger via _month_chikujou, so
+    # the stale sub must leave it empty rather than absent.
+    assert mem['shop'].get('chikujou_tried') == []

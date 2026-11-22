@@ -270,6 +270,13 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   terminal へ到達して中断した**ことを意味し（#1044）、他の中断と区別して読む。
   通常の完了や停止で起きた中断ではないため、以降の `recover-failed` と
   `corner-rotation recover` の2操作でのみ確定する。severity は変えない。
+- `corners.<id>.end_reason` が `start-budget-insufficient` の場合、その枠は
+  **投入前 admission gate（#3174）が残り slot 予算（drain 見積 360s + probe
+  下限 40s = 400s 未満）を不足と判定し、switch request を submit せずに
+  早期 expire した**ことを意味する。claim 前の拒否なので hanjuku-resume の
+  claim 残留はなく、timeout/rollback による失敗ではない点で
+  `switch-terminal-before-corner-active` や `start-deadline-expired` と
+  区別して読む。対象は hanjuku-hero の切替のみ。
 - `corners.soren91_corner` は meriken（soren91）枠のライフサイクルと、その枠を
   終わらせた切替の結果を出す（#1221）。`status` / `game` / `previous_game` /
   `completed_at` / `end_reason` は他コーナーと同じ固定射影で、加えて
@@ -330,7 +337,11 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   再接続先チャンネルが含まれるため、**allowlistの数値・enumキーだけを写し、
   元のdictは保持しない**。URL・キー・チャンネル名・PIDは出さない。
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
-  FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
+  FIFO先頭の operation/target/age だけを出す。`accepted`/`allocating` のまま止まった
+  receiptは `pending`（最大5件、status/operation/target/generation/age のみ）として出す。
+  `head` と `pending` 各行の `hard_deadline_expired` は、hard deadlineを持つrequestが
+  期限超過なら true、期限内なら false、deadline非設定なら null を返す（#4356）。
+  request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
 - `corners.soren_game` は試合状態の固定enum（`MOVE`/`DROP`/`WAITING`/`STOP`/
   `GAMEOVER`）、state更新からの秒数、建国markerの有無と帰属、試合数、score、駒数、
@@ -349,6 +360,10 @@ cleanup の成功・対象の不存在・すべての読み取りの成功を保
   `owned_submodule_missing_or_invalid` は 0|1。`scan_complete=0` のときは
   `unknown=1`・`drift_detected=1` とし、失敗したscanを drift なしの0件扱いにしない。
   path・filename・diff・file bytes・raw exception は出さない。severity は変えない。
+  `/home/ubuntu/docich` 上での `gh pr merge` や開発作業で checkout が別 branch / 非祖先
+  commit / 古い submodule HEAD に残った場合も同じ tracked drift として扱う。復旧は
+  production checkout 上の merge・開発を止め、checkout を変えない merge 経路と承認済み
+  正規化手順を使う。
 
 - gatewayの `ops_brief_projection.status` は親コミットの公開用生成物とVMの
   実バイト/modeを比較した `matched` / `drift` / `unmanaged` / `unknown`。
@@ -404,6 +419,16 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
   end失敗の自動restore再実行の予算を `auto_restore_corner` / `auto_restore_attempts` /
   `auto_restore_attempt_limit` / `auto_restore_next_at` / `auto_restore_status`
   （固定enum）で出す（#2187）。request identityは出さない。
+  terminal phaseに残った共有planeへの自動復旧の予算も同様に `auto_plane_recovery_corner` /
+  `auto_plane_recovery_attempts` / `auto_plane_recovery_attempt_limit` /
+  `auto_plane_recovery_next_at` / `auto_plane_recovery_status`（固定enum）で出す（#4349）。
+  request identityは出さない。
+  game-switchが終了済みcornerのgameをactive保持している場合（switch phaseが
+  `idle`/`ready` で、corner stateが `idle`/`completed`/`interrupted`/`expired`/`failed`）、
+  各corner state投影へ `retained_active`（boolean）と `retained_reason` を出す（#4226）。
+  `retained_reason` は `failed_corners` の固定 reason_code（`base-game-unrestored` 等）を
+  そのgameへ結び付けた最新のもの、無記録や不正値は `corner-terminal-game-retained`。
+  overlay cardは `unavailable` としか示せないため、operatorが保持理由を診断で区別する。
   自動予約とは別に `manual_pending`（bool）、`manual_pending_corner`（固定enum）、
   `manual_pending_state_file`（固定8種のstate名、拡張子なし）、
   `manual_pending_age_sec`（未観測/未来時刻は-1）、`manual_pending_owner`、
@@ -679,6 +704,17 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
+- boundary.prediction.round: 予想round（v2）が存在するときだけ、その進捗を固定キーで投影する
+  （`current_prediction.json` が無い場合はキー自体を出さず、既存のenvelopeを増やさない）。
+  `present` / `readable` / `round_version` / `games_completed` / `max_games` /
+  `remaining_games` / `target_first_game` / `last_game_num` / `created_age_sec` /
+  `progress_age_sec`（state mtimeからの経過）/ `fence_present` / `fence_age_sec` /
+  `retry`（`attempt` / `next_retry_at` / `retry_active` / `http_code`）/
+  `complete` / `settlement_pending` / `settlement_pending_sec`。
+  `complete=true` かつ `settlement_pending=true` は「48/48まで到達したが、
+  その後に `corner_boundary_prediction.json` が更新されていない」ことを表す。
+  prediction id・outcome id・本文は出さない。同じ投影はhard ceilingで `corners` が
+  落ちても残るよう top-level `prediction.boundary.round` にも複製される。
 - boundary.audio: 共有オーディオキュー（`COMMENT_QUEUE_DIR`、既定
   `<soren>/tmp/.comment_queue`）の `comment_*.txt` / `comment_*.playing` の
   件数、最古itemのage、固定enum `reason`（`quiet` / `queued` / `playing` /
@@ -1435,3 +1471,32 @@ path・ファイル名・内容・権限情報は出力しません。
 - `/var/lib/docker` は意図的に対象外です: collector の uid が traverse できず、恒久的に
   unreadable な root は共通の incomplete フラグを永久に立てるため bytes の帰属になりません。
   `/tmp` の一時 `.so` family は既存の tmp shared objects 投影が担当します。
+
+### opencode session ファイルのサブパス指標（#3140）
+
+`storage_breakdown` の version 2 には、opencode 既定データディレクトリ（`~/.local/share/opencode/`）
+の固定サブパス指標が optional で含まれます。旧 collector の payload には存在せず、共通の
+incomplete フラグにも影響しません。
+
+- `opencode_default_snapshot`（`snapshot/`）、`opencode_default_storage`（`storage/`）、
+  `opencode_default_tool_output`（`tool-output/`）、`opencode_default_log`（`log/`）:
+  `present` / `scan_complete` / `count` / `allocated_bytes`。
+- `opencode_default_other`: `opencode_default_total` から上記 4 サブパスと db family を引いた残差。
+  未知サブパスの検知用ですが、**減算指標のため truncate 時は数値が意味を持ちません**。
+  `scan_complete=false` のときは `_complete=0` だけを描画し、`_bytes` / `_count` 行は出しません
+  （欠落 = unknown。数値を出すと「未知の増加」または「回収済み」と逆誤読されるため）。
+  100,000 entry の scan cap は意図的な bound で、`complete=1` への復帰は初回 apply で
+  tree が縮んだ後に monitor で確認します。
+
+### opencode session ファイル retention の status 投影（#3140）
+
+`opencode_session_file` は、hourly retention の **file pass** が残す
+`soren/tmp/state/opencode_session_file_retention.json`（mode 0600）を固定 field だけで投影します。
+helper の dry-run JSON に含まれる plan（session path を含む）は転記しません。
+
+- `present` / `readable`: status file の有無と schema 一致。
+- `status`（`completed` / `failed` / `gate_timeout`）、`mode`（`dry-run` / `apply`）、
+  `reason`（helper の固定理由コード。未知値は `unknown`）、`age_sec` / `stale`（3 時間）。
+- `entries_planned` / `entries_confirmed` / `entries_selected` / `bytes_planned` /
+  `bytes_removed` / `truncated` / `state_written` / `auto_apply` / `cutoff_seconds`。
+- status file の書き込みは best-effort で、失敗しても retention unit の成否は変わりません。

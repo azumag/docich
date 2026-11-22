@@ -167,7 +167,7 @@ def _pending(target, *, hold_minutes=600):
     save_pending_experiment(target, _spec("pending", hold_minutes=hold_minutes), proposed_at=NOW - 60)
 
 
-def test_worker_stops_eight_losing_exits_without_corner_or_llm_and_keeps_old_exits(tmp_path):
+def test_losing_exits_without_candidate_keep_collecting_paper_data(tmp_path):
     g, target = _environment(tmp_path)
     original = (target / EXPERIMENT_FILENAME).read_bytes()
     _seed_losses(target, open_at=NOW - 4000)
@@ -175,17 +175,20 @@ def test_worker_stops_eight_losing_exits_without_corner_or_llm_and_keeps_old_exi
     result = _cycle(g, gateway)
     fills, positions = _account(target)
     new_fills = [fill for fill in fills if fill.filled_at >= NOW]
-    assert result.new_fill_count == 1
-    assert [(fill.side, fill.symbol, fill.strategy_id) for fill in new_fills] == [
+    # PAPER losses are simulated: a losing sample keeps trading so the next
+    # evaluation has data, instead of pausing until a daily candidate.
+    assert result.new_fill_count == 2
+    assert sorted((fill.side, fill.symbol, fill.strategy_id) for fill in new_fills) == [
+        ("buy", "NEW/JPY", "lab:active:entry"),
         ("sell", "BTC/JPY", "lab-exit:active:exit"),
     ]
-    assert new_fills[0].price == paper_execution_price("100", "sell")
-    assert positions == {}
+    assert positions["NEW/JPY"] > 0
     assert (target / EXPERIMENT_FILENAME).read_bytes() == original
     control = _control(target)
-    assert control["status"] == "waiting-candidate"
-    assert control["reason_code"] == "early-stop"
-    assert control["entries_allowed"] is False
+    assert control["status"] == "active"
+    assert control["reason_code"] == "collecting"
+    assert control["drain_reason_code"] is None
+    assert control["entries_allowed"] is True
     evaluation = json.loads((target / EVALUATION_FILENAME).read_text(encoding="utf-8"))
     assert evaluation["closed_sells"] == 9
     assert D(evaluation["profit_factor"]) < D("0.75")
@@ -193,7 +196,7 @@ def test_worker_stops_eight_losing_exits_without_corner_or_llm_and_keeps_old_exi
 
 def test_worker_drains_before_pending_activation_and_consumes_candidate_when_flat(tmp_path):
     g, target = _environment(tmp_path)
-    _seed_losses(target, open_at=NOW - 300)
+    _seed_losses(target, count=20, open_at=NOW - 300)
     _pending(target, hold_minutes=600)
     original = (target / EXPERIMENT_FILENAME).read_bytes()
     queued = (target / PENDING_FILENAME).read_bytes()
@@ -205,6 +208,7 @@ def test_worker_drains_before_pending_activation_and_consumes_candidate_when_fla
     assert (target / EXPERIMENT_FILENAME).read_bytes() == original
     assert (target / PENDING_FILENAME).read_bytes() == queued
     assert _control(target)["status"] == "draining"
+    assert _control(target)["reason_code"] == "sample-complete"
     assert _control(target)["entries_allowed"] is False
 
     second = _cycle(g, gateway, now=NOW + 3600, index=2)
@@ -217,20 +221,22 @@ def test_worker_drains_before_pending_activation_and_consumes_candidate_when_fla
     assert _control(target)["entries_allowed"] is True
 
 
-def test_worker_does_not_apply_eight_exit_loss_gate_to_seven_exits(tmp_path):
-    g, target = _environment(tmp_path)
-    _seed_losses(target, count=7)
-    result = _cycle(g, HistoryGateway())
-    fills, positions = _account(target)
-    assert result.new_fill_count == 1
-    assert fills[0].side == "buy" and fills[0].strategy_id == "lab:active:entry"
-    assert positions["NEW/JPY"] > 0
-    assert _control(target)["entries_allowed"] is True
+def test_losing_sample_with_candidate_waits_for_sample_gate(tmp_path):
+    _g, target = _environment(tmp_path)
+    _seed_losses(target, count=19)
+    _pending(target)
+    step = _assess(target)
+    assert step.entries_allowed is True and step.status == "active"
+    assert step.evaluation["closed_sells"] == 19
+    assert D(step.evaluation["profit_factor"]) < D("0.75")
+    assert load_strategy_experiment(target).experiment_id == "active"
+    assert load_pending_experiment(target).experiment_id == "pending"
 
 
-def test_eighth_loss_in_current_cycle_cancels_already_planned_new_buys(tmp_path):
+def test_sample_gate_reached_in_current_cycle_cancels_already_planned_new_buys(tmp_path):
     g, target = _environment(tmp_path)
-    _seed_losses(target, count=7, open_at=NOW - 4000)
+    _seed_losses(target, count=19, open_at=NOW - 4000)
+    _pending(target, hold_minutes=600)
     gateway = HistoryGateway({"BTC/JPY": [100] * 25, "NEW/JPY": [100] * 24 + [104]})
     result = _cycle(g, gateway)
     fills, positions = _account(target)
@@ -238,18 +244,22 @@ def test_eighth_loss_in_current_cycle_cancels_already_planned_new_buys(tmp_path)
     assert result.new_fill_count == 1
     assert [(fill.side, fill.symbol) for fill in current_fills] == [("sell", "BTC/JPY")]
     assert positions == {}
+    # The 20th exit met the gate with a candidate: the old plan's buy is
+    # dropped and the flat account switches to the candidate in this cycle.
+    assert load_strategy_experiment(target).experiment_id == "pending"
+    assert load_strategy_experiment(target).activated_at == NOW
     control = _control(target)
-    assert control["entries_allowed"] is False
-    assert control["reason_code"] == "early-stop"
-    evaluation = json.loads((target / EVALUATION_FILENAME).read_text(encoding="utf-8"))
-    assert evaluation["closed_sells"] == 8
+    assert control["status"] == "active" and control["experiment_id"] == "pending"
+    assert control["entries_allowed"] is True
 
 
-def test_drain_latch_survives_unavailable_evaluation_and_recovery_to_better_pf(tmp_path):
+def test_drain_latch_survives_unavailable_evaluation_and_lost_candidate(tmp_path):
     _g, target = _environment(tmp_path)
-    _seed_losses(target, open_at=NOW - 300)
+    _seed_losses(target, count=20, open_at=NOW - 300)
+    _pending(target)
     initial = _assess(target)
     assert initial.entries_allowed is False and initial.status == "draining"
+    assert initial.reason_code == "sample-complete"
     ledger_path = target / "paper.sqlite3"
     temporarily_unavailable = target / "paper.sqlite3.unavailable"
     ledger_path.rename(temporarily_unavailable)
@@ -260,24 +270,13 @@ def test_drain_latch_survives_unavailable_evaluation_and_recovery_to_better_pf(t
     finally:
         temporarily_unavailable.rename(ledger_path)
 
-    # A profitable exit of inventory held before the stop improves PF. This
-    # does not authorize reopening the failed strategy after a read outage.
-    ledger = PaperLedger(ledger_path)
-    try:
-        PaperBroker(ledger).fill(
-            _decision("profitable-drain", "sell", "130", symbol="BTC/JPY"), timestamp=NOW + 120,
-        )
-    finally:
-        ledger.close()
+    # Losing the candidate after the drain began must not reopen entries
+    # while the old strategy still owns inventory, nor once it is flat.
+    (target / PENDING_FILENAME).unlink()
     recovered = _assess(target, now=NOW + 120)
-    assert recovered.evaluation["closed_sells"] == 9
-    assert D(recovered.evaluation["profit_factor"]) > D("0.75")
-    assert D(recovered.evaluation["realized_pnl_jpy"]) > 0
-    assert recovered.status == "waiting-candidate" and recovered.entries_allowed is False
-    assert recovered.reason_code == "early-stop"
+    assert recovered.status == "draining" and recovered.entries_allowed is False
+    assert recovered.reason_code == "sample-complete"
 
-    # Losing the active file and restoring the exact same identity must retain
-    # its stop, even though the now-profitable evidence alone would allow buys.
     active_path = target / EXPERIMENT_FILENAME
     active_bytes = active_path.read_bytes()
     active_path.unlink()
@@ -287,9 +286,35 @@ def test_drain_latch_survives_unavailable_evaluation_and_recovery_to_better_pf(t
         assert missing.reason_code == "invalid-active"
     finally:
         active_path.write_bytes(active_bytes)
+    ledger = PaperLedger(ledger_path)
+    try:
+        PaperBroker(ledger).fill(
+            _decision("drain-exit", "sell", "100", symbol="BTC/JPY"), timestamp=NOW + 200,
+        )
+    finally:
+        ledger.close()
     restored = _assess(target, now=NOW + 240)
     assert restored.status == "waiting-candidate" and restored.entries_allowed is False
-    assert restored.reason_code == "early-stop"
+    assert restored.reason_code == "sample-complete"
+
+
+def test_legacy_early_stop_latch_still_drains_to_next_candidate(tmp_path):
+    _g, target = _environment(tmp_path)
+    _seed_losses(target, count=8)
+    assert _assess(target).status == "active"
+    control = _control(target)
+    control.update({"status": "waiting-candidate", "reason_code": "early-stop",
+                    "drain_reason_code": "early-stop", "entries_allowed": False})
+    (target / CONTROL_FILENAME).write_text(json.dumps(control), encoding="utf-8")
+
+    waiting = _assess(target, now=NOW + 60)
+    assert waiting.status == "waiting-candidate" and waiting.entries_allowed is False
+    assert waiting.reason_code == "early-stop"
+
+    _pending(target)
+    activated = _assess(target, now=NOW + 120)
+    assert activated.activated is True and activated.entries_allowed is True
+    assert load_strategy_experiment(target).experiment_id == "pending"
 
 
 def test_missing_active_file_cannot_return_to_legacy_entries_on_later_cycles(tmp_path):
@@ -309,16 +334,18 @@ def test_missing_active_file_cannot_return_to_legacy_entries_on_later_cycles(tmp
 
 def test_reused_id_with_different_rules_cannot_rotate_or_pass_generation_validation(tmp_path):
     g, target = _environment(tmp_path)
-    _seed_losses(target, count=7, open_at=NOW - 4000)
+    _seed_losses(target, count=19, open_at=NOW - 4000)
     collision = _spec("active", hold_minutes=600)
     save_pending_experiment(target, collision, proposed_at=NOW - 60)
     original = (target / EXPERIMENT_FILENAME).read_bytes()
-    gateway = HistoryGateway({"BTC/JPY": [100] * 25, "NEW/JPY": [100] * 24 + [104]})
+    gateway = HistoryGateway({"BTC/JPY": [100] * 25})
     result = _cycle(g, gateway)
     assert result.new_fill_count == 1
     assert (target / EXPERIMENT_FILENAME).read_bytes() == original
-    assert _control(target)["entries_allowed"] is False
-    assert _control(target)["reason_code"] == "early-stop"
+    # The sample gate is met, but a reused id is not a usable candidate.
+    assert _control(target)["status"] == "active"
+    assert _control(target)["reason_code"] == "sample-complete"
+    assert _control(target)["pending_available"] is False
     assert _account(target)[1] == {}
 
     called = []

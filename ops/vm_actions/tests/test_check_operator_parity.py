@@ -53,7 +53,14 @@ class ParityGateTests(unittest.TestCase):
             check=True,
         )
 
-    def run_gate(self, status, expected, control=None):
+    def advance_src(self, count):
+        for index in range(count):
+            (self.src / "f.txt").write_text(f"ahead-{index}\n")
+            git(self.src, "add", "f.txt")
+            git(self.src, "commit", "-qm", f"ahead-{index}")
+        return git(self.src, "rev-parse", "HEAD").stdout.strip()
+
+    def run_gate(self, status, expected, control=None, extra=()):
         if not isinstance(status, str):
             status = json.dumps(status)
         argv = [
@@ -61,6 +68,7 @@ class ParityGateTests(unittest.TestCase):
             status,
             expected,
             str(control if control is not None else self.control),
+            *extra,
         ]
         out = io.StringIO()
         code = 0
@@ -151,6 +159,59 @@ class ParityGateTests(unittest.TestCase):
         code, out = self.run_gate(status, self.main_sha)
         self.assertEqual(code, 1)
         self.assertIn("main history fetch failed", out)
+
+    def test_newer_production_is_allowed_only_with_the_explicit_flag(self):
+        # A deploy of a newer main may finish while the report is running.  The
+        # opt-in accepts that reviewed descendant, but the default gate stays
+        # one-directional.
+        (self.src / "f.txt").write_text("newer\n")
+        git(self.src, "add", "f.txt")
+        git(self.src, "commit", "-qm", "newer")
+        newer = git(self.src, "rev-parse", "HEAD").stdout.strip()
+        status = {"status": "configured", "sha": newer}
+        code, out = self.run_gate(status, self.main_sha)
+        self.assertEqual(code, 1)
+        self.assertIn("ancestor of current main", out)
+        code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
+        self.assertEqual(code, 0, out)
+
+    def test_newer_production_at_the_depth_limit_is_allowed(self):
+        newer = self.advance_src(parity.PARITY_DEPTH)
+        status = {"status": "configured", "sha": newer}
+        code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
+        self.assertEqual(code, 0, out)
+
+    def test_newer_production_beyond_the_depth_limit_refuses(self):
+        newer = self.advance_src(parity.PARITY_DEPTH + 1)
+        status = {"status": "configured", "sha": newer}
+        code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
+        self.assertEqual(code, 1)
+        self.assertIn("more than", out)
+
+    def test_newer_production_flag_still_refuses_an_unrelated_commit(self):
+        side = self.base / "side-newer"
+        side.mkdir()
+        subprocess.run(["git", "clone", "-q", str(self.src), str(side)], check=True)
+        git(side, "config", "user.email", "t@example.com")
+        git(side, "config", "user.name", "T")
+        git(side, "checkout", "-q", "-b", "side", self.shas[0])
+        (side / "f.txt").write_text("side\n")
+        git(side, "add", "f.txt")
+        git(side, "commit", "-qm", "local-only")
+        side_sha = git(side, "rev-parse", "HEAD").stdout.strip()
+        status = {"status": "configured", "sha": side_sha}
+        code, out = self.run_gate(status, self.main_sha, extra=("--allow-newer-production",))
+        self.assertEqual(code, 1)
+        self.assertIn("not within", out)
+
+    def test_unknown_extra_argument_is_a_usage_error(self):
+        code, out = self.run_gate(
+            {"status": "configured", "sha": self.main_sha},
+            self.main_sha,
+            extra=("--unknown",),
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
 
     def test_invalid_expected_sha_is_a_usage_error(self):
         code, out = self.run_gate({"status": "configured", "sha": self.main_sha}, "nothex")

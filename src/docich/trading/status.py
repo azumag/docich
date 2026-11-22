@@ -21,6 +21,8 @@ _WORKER_SUMMARY_KEYS = {
     "cycle_index", "last_success_at", "next_cycle_at", "frame_error_count",
     "arbitrage_candidate_count", "new_fill_count", "new_settlement_count",
     "error_codes", "experiment_status", "experiment_reason_code", "experiment_entries_allowed",
+    "slot_count", "slot_active_count", "slot_entries_allowed_count", "slot_blocked_count",
+    "slot_layout_invalid", "common_owned_symbol_count",
 }
 
 _PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions"}

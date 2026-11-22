@@ -52,6 +52,7 @@ TEST_RELEVANT = [
     '.github/workflows/ci.yml',
     '.github/scripts/ci_test_scope.py',
     '.github/scripts/ci_trigger_paths.py',
+    '.github/scripts/ci_shard.py',
 ]
 HANJUKU_ONLY = [
     *HANJUKU_MODULES,

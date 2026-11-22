@@ -20,6 +20,8 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich-soren91-corner.timer` | 毎分 `soren91-corner tick`。設定timezone/start_hour(/weekdays)に一致した時だけ1日1回実行 |
 | `docich-nethack-daily-improve.service` | 完了runの結果・経過要約からcanary候補を作るoneshot。ゲーム操作なし |
 | `docich-nethack-daily-improve.timer` | 毎日05:10 JSTに日次改善候補を1回実行 |
+| `docich-paper-improve.service` | 暗号資産PAPER戦略改善を `paper-improve-scheduled`（gate付き）で1回実行するoneshot。ゲーム操作なし |
+| `docich-paper-improve.timer` | 毎日06:20 JSTに1回実行（Persistent）。停止は `trading/paper_improve_scheduled.disabled` を置く（`docs/operations/paper-experiment-feedback.md`） |
 | `docich-host-metrics.service` | ホスト指標 (load/CPU/meminfo/PSI/disk/固定unit状態) を1回だけ採取するoneshot。ゲーム・配信・他unitは操作しない |
 | `docich-host-metrics.timer` | 毎分00秒に1点採取し、候補順（`~/.local/state/docich/host-metrics` → `~/.local/share/docich/host-metrics` → `~/docich-host-metrics`）で最初に書けた ring (0600/0700、最大240点・256KiB) へ追記 |
 | `docich-webui.service` | `docich webui` を常駐させる simple ユニット (Tailscale serve で公開する場合のみ利用) |
@@ -49,7 +51,9 @@ for f in \
   docich-soren91-corner.service \
   docich-soren91-corner.timer \
   docich-nethack-daily-improve.service \
-  docich-nethack-daily-improve.timer
+  docich-nethack-daily-improve.timer \
+  docich-paper-improve.service \
+  docich-paper-improve.timer
 do
   sed "s|__DOCICH_ROOT__|${DOCICH_ROOT}|g" "scripts/systemd/${f}" \
     > ~/.config/systemd/user/"${f}"
@@ -73,6 +77,10 @@ systemctl --user enable --now docich-corner-rotation.timer
 # production profileで設定済みのNetHack日次改善候補生成。
 # timerはゲームを起動・操作せず、要約からcanary候補を作る。
 systemctl --user enable --now docich-nethack-daily-improve.timer
+
+# 暗号資産PAPER戦略改善を毎日06:20 JSTに1回、コーナー完了と無関係に実行する。
+# 緊急停止は <state_dir>/trading/paper_improve_scheduled.disabled を置く。
+systemctl --user enable --now docich-paper-improve.timer
 
 # ゲーム切替の呼び出し元が停止しても、期限切れdrainingとFIFOを復旧する。
 # 期限前の試合終了待ちは変更せず、共通配信基盤も再起動しない。

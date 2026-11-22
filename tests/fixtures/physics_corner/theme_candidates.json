@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "corner": "physics",
+  "fixtureId": "fixed-physics-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production synthetic theme candidate list for the physics corner. Candidates are planning input only; titles, constants and explanations must not be presented as verified physics data.",
+  "candidates": [
+    {
+      "id": "mountain-boiling-point",
+      "title": "なぜ山の上では水は低い温度で沸くのか",
+      "domain": "thermodynamics",
+      "description": "飽和蒸気圧と周囲圧力の一致としての沸騰条件、クラウジウス・クラペイロンの関係、圧力鍋・真空濃縮への応用。",
+      "fixtureId": "fixed-physics-001"
+    },
+    {
+      "id": "tea-leaves-vortex",
+      "title": "かき混ぜたコップで茶葉が中心に集まるのはなぜか",
+      "domain": "fluids",
+      "description": "回転する液体の圧力勾配と底面摩擦が生む二次流れが、茶葉を渦の中心へ運ぶ仕組み。",
+      "fixtureId": null
+    },
+    {
+      "id": "magnifying-glass-focus",
+      "title": "虫眼鏡は日光を集められるのに窓ガラスはなぜ集めないのか",
+      "domain": "optics",
+      "description": "曲面レンズの屈折と焦点、エネルギー密度の集中、平行平板ガラスとの違い。",
+      "fixtureId": null
+    },
+    {
+      "id": "rainbow-fixed-angle",
+      "title": "虹はなぜ一定の角度の円で、自分の背後に現れるのか",
+      "domain": "optics",
+      "description": "水滴内の屈折・内部反射・分散による偏向角の極値、反陽点を中心とする円弧として見える条件。",
+      "fixtureId": null
+    },
+    {
+      "id": "refrigerator-heat-pump",
+      "title": "冷蔵庫はなぜ冷たい所から温かい所へ熱を運べるのか",
+      "domain": "thermodynamics",
+      "description": "熱力学第二法則と仕事の投入、蒸気圧縮サイクルによる熱の汲み上げ、ヒートポンプへの応用。",
+      "fixtureId": null
+    },
+    {
+      "id": "gps-clock-relativity",
+      "title": "GPSの時計はなぜずれて、補正が必要なのか",
+      "domain": "relativity",
+      "description": "特殊相対論の運動する時計の遅れと一般相対論の重力ポテンシャル差による進み、衛星時計補正の技術応用。",
+      "fixtureId": null
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true
+  }
+}

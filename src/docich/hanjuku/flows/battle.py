@@ -5,6 +5,7 @@ tactic or rescue is due, opens the command menu for it and settles the record
 when the battle ends.
 """
 from __future__ import annotations
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 import re
 import time
@@ -12,34 +13,38 @@ from dataclasses import asdict
 
 from ..judgment.battle import _general_egg_rescue_recheck
 from . import egg_bait
-from ..os_layer.screen import Screen
+from ..os_layer.screen import Screen, _card_picker_rows
 from ..os_layer.font import UNKNOWN
 from ... import hanjuku_chart as chart, hanjuku_experience as experience
 from ... import hanjuku_reference as reference
 from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record, _tally
-from ..judgment.battle import (DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
+from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, CARD_LIST_OPEN_WAITS, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
+                               RETREAT_CARD_GRACE_LIMIT, _retreat_cards_to_spend, _retreat_immediate_loss,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
                                MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _bind_battle_strategy,
                                _bind_event_duel, _bind_substitute_defender, _boss_tactics_allowed,
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
-                               _defender_summon_preempt,
-                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics, _egg_plan, _hero_marching,
+                               _defender_summon_preempt, _defense_kit_read_unread, _defense_kit_read_window,
+                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics,
+                               _egg_drop_trace, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
-                               _migrate_card_evidence, _observe_egg_drop_candidate, _own_egg_empty,
-                               _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
+                               _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
+                               _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
 from ..os_layer.readers import STATUS_NAMES
-from ..os_layer.world import NAME
+from ..os_layer.world import NAME, CAPTURE_READ_DELAY, garrison_lost
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
 from ..strategy.kit import _is_boss_order
+from ..strategy.execution import bound_fields
 from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
+                                drop_retired_step_context,
                                 _garrison_move, _match_sortie, _order_for_step, _tactics)
 
 
@@ -50,7 +55,7 @@ def observe_entry_return(screen, mem):
     active battles and their pending first panel until battle_end finishes.
     Never manufacture a loss, death, or castle owner from a skipped entry.
     """
-    entry = mem.get('attack')
+    entry = _plan_region(mem).get('attack')
     if not isinstance(entry, dict) or not entry or mem.get('battle'):
         return
     if screen.kind not in ENTRY_RETURN_KINDS:
@@ -59,7 +64,7 @@ def observe_entry_return(screen, mem):
             side=entry.get('side'), general=entry.get('general'), screen=screen.kind,
             resulting_event='unclassified_entry_closed',
             reason='戦闘未開始のまま管理画面へ戻ったため古い城情報を解除')
-    mem['attack'] = None
+    _plan_region(mem)['attack'] = None
     mem.pop('battle_seen', None)
 
 
@@ -110,7 +115,7 @@ def observe_season_king_panel(screen, mem):
                 if ally.name == cur['ally']:
                     cur['ally_hp'] = ally.hp
         return
-    attack = mem.get('attack') or {}
+    attack = _plan_region(mem).get('attack') or {}
     rows = _season_king_rows(screen) if not cur and mem.get('chapter') == 4 else None
     if (not rows or attack.get('side') != 'attack' or attack.get('entry_evidence') != 'measured_boss_entry'
             or rows[0].name != attack.get('general')):
@@ -161,7 +166,7 @@ def _defender_successor(mem, cur, b):
     predecessor = cur['ally']
     battle_end(mem, 'defender_successor', defense_continues=True)
     reset_battle_controls(mem)
-    mem['attack'] = context
+    _plan_region(mem)['attack'] = context
     mem['battle_seen'] = reading
     _record(mem, 'defender_successor', ally=b.ally, enemy=b.enemy,
             castle=context['castle'], previous_ally=predecessor,
@@ -198,7 +203,7 @@ def _attack_defender_successor(mem, cur, b):
     beaten = cur['enemy']
     battle_end(mem, 'attack_defender_successor', attack_continues=True)
     reset_battle_controls(mem)
-    mem['attack'] = context
+    _plan_region(mem)['attack'] = context
     mem['battle_seen'] = reading
     _record(mem, 'attack_defender_successor', ally=b.ally, enemy=b.enemy,
             castle=context['castle'], previous_enemy=beaten,
@@ -272,7 +277,7 @@ def _unlocated_successor(mem, cur, b):
     battle_end(mem, 'unlocated_successor', actor_continues=True)
     reset_battle_controls(mem)
     # Match only the new actor and deliberately carry no location or route.
-    mem['attack'] = {'general': b.ally, 'side': None, 'castle': None, 'step': None}
+    _plan_region(mem)['attack'] = {'general': b.ally, 'side': None, 'castle': None, 'step': None}
     mem['battle_seen'] = [b.enemy, b.ally]
     mem['melee_opening_candidate'] = [scope[0], b.ally, b.enemy]
     _record(mem, 'unlocated_successor', ally=b.ally, enemy=b.enemy,
@@ -289,7 +294,7 @@ def _entered_battle_successor(mem, cur, b):
     the hero/Venus. The old zero-enemy-HP record then blocked every input.
     Never infer a transition from changed names alone or from a living enemy.
     """
-    entry = mem.get('attack')
+    entry = _plan_region(mem).get('attack')
     maximum = general_max_hp('しゅじんこう' if b.ally == NAME else b.ally)
     eligible = (isinstance(entry, dict) and entry.get('side') == 'attack'
                 and entry.get('general') == b.ally and b.ally != cur.get('ally')
@@ -309,7 +314,7 @@ def _entered_battle_successor(mem, cur, b):
     previous_ally, previous_enemy = cur['ally'], cur['enemy']
     battle_end(mem, 'confirmed_new_entry')
     reset_battle_controls(mem)
-    mem['attack'] = context
+    _plan_region(mem)['attack'] = context
     mem['battle_seen'] = reading
     _record(mem, 'battle_entry_successor', ally=b.ally, enemy=b.enemy,
             castle=context['castle'], previous_ally=previous_ally, previous_enemy=previous_enemy,
@@ -344,6 +349,25 @@ def _card_battle_reading(screen, cur, mem=None):
     """
     b = screen.battle
     if b is None and screen.kind != 'battle':
+        # 通常戦闘メニューでは HP パネルが隠れるが兵士はフィールドに残る。
+        # パネル保持契約 (HP・文脈は直近の読みを保持) と同じく、実測できた
+        # 側の兵士数だけを更新し、未読の側は前回の読みを保持する
+        # (docich#4048)。部分読みで既存の計測を消すと、g745-1436 のように
+        # (6,None) が直前の (4,1) を上書きして卵温存を壊す。誤読は採らない。
+        counts = getattr(screen, 'field_soldiers', None)
+        if (screen.kind == 'battle_menu'
+                and isinstance(counts, (tuple, list)) and len(counts) == 2):
+            measured = False
+            for key, value in zip(('ally_soldiers', 'enemy_soldiers'), counts):
+                if type(value) is int and 0 <= value <= 6:
+                    cur[key] = value
+                    measured = True
+            # 「現在値として証明済み」の印は、実際にどちらかの側を計測
+            # できたときだけ立てる。両側とも未読 (None, None) のフレームで
+            # 立てると、未読前提の保護 (奥の手の温存など、#3358) が実測
+            # ありと誤認して崩れる (g482 の回帰で検出)。
+            if measured:
+                cur['card_soldiers_current'] = True
         return
     if (b is None or b.enemy != cur.get('enemy') or b.ally != cur.get('ally')
             or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
@@ -477,7 +501,11 @@ def _observe_defender(mem, cur):
             or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)):
         return
     record = {'general': cur['enemy'], 'chapter': mem.get('chapter') or 0,
-              'evidence': 'battle_panel', 'step': cur.get('step')}
+              'evidence': 'battle_panel', 'step': cur.get('step'),
+              # The panel also reads the defender's HP: keeping it lets the
+              # march see which castle has a defender already worn down
+              # (g1163 2026-11-13 01:1x オオキク read 74/74/3 across the wave).
+              'hp': cur.get('enemy_hp')}
     defenders = mem.setdefault('castle_defenders', {})
     if defenders.get(cur['castle']) != record:
         defenders[cur['castle']] = record
@@ -527,6 +555,122 @@ def _drop_defender_record(mem, castles):
         defenders.pop(castle, None)
 
 
+def _carried_opening_tactics(mem, cur, existing):
+    """Spend otherwise-unused, *confirmed carried* cards at the fight opening.
+
+    The battle chart still owns the timings of its named cards. An observed
+    sortie kit may contain additional cards that otherwise sit unused until
+    retreat. Never invent cards from the shop stock or an unconfirmed plan.
+    """
+    step = cur.get('step')
+    if _dying_with_egg(mem, cur):
+        if not cur.get('egg_opening_preempt_recorded'):
+            cur['egg_opening_preempt_recorded'] = True
+            _record(mem, 'battle_egg_opening_preempt', **_battle_labels(cur),
+                    observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
+                    reason='敵HPの半分以下で倒れかけの将軍は、開幕切り札を消費する前に卵の変身だけが生存を保つため、開幕札を撃たず卵を優先する')
+        return []
+    order = _order_for_step(mem, step)
+    bound = bound_fields(order, mem)
+    if not bound or bound['general'] != cur.get('ally'):
+        # A chapter-9 cursor-picked sortie names nobody in the plan ("—"), and
+        # its departure binding can be absent/unread even though the launch
+        # was confirmed from the source list. The confirmation context carries
+        # the measured actor and cards; use them so the carried cards are not
+        # wasted in the castle attack (owner 2026-11-15: the castle attack
+        # never used cards or eggs).
+        snapshot = order if isinstance(order, dict) else {}
+        if (snapshot.get('corridor') is True and snapshot.get('general') == cur.get('ally')
+                and isinstance(snapshot.get('cards'), list) and snapshot['cards']):
+            # The launched snapshot carries the measured actor and carried kit.
+            bound = {'general': snapshot['general'], 'cards': list(snapshot['cards'])}
+        else:
+            context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
+            observed = context.get('observed_metric')
+            cards = observed.get('cards') if isinstance(observed, dict) else None
+            if (snapshot.get('corridor') is True and isinstance(cards, list) and cards
+                    and context.get('actual_general') == cur.get('ally')):
+                bound = {'general': context['actual_general'], 'cards': list(cards)}
+            else:
+                # The battle's step and the sortie's launch step can disagree
+                # (a retry mints a new step; the march context may not be set
+                # yet). Fall back to the newest launched snapshot of this exact
+                # actor so the carried cards are not wasted (owner 2026-11-15:
+                # the castle attack never used them).
+                # #4879: Never reuse an earlier attack sortie snapshot during a
+                # castle defense battle — defense battles read their real kit
+                # via _defense_kit_read_window (#4456) instead of inventing
+                # stale attack cards that cause repeated B-menu open/decline loops.
+                if cur.get('side') == 'defense':
+                    return []
+                ally = cur.get('ally')
+                recent = [(snap.get('confirmation_tick') or 0, snap) for snap in
+                          (_world(mem).get('launched_orders') or {}).values()
+                          if isinstance(snap, dict) and snap.get('general') == ally
+                          and isinstance(snap.get('cards'), list) and snap['cards']]
+                if not recent:
+                    return []
+                chosen = max(recent, key=lambda item: item[0])[1]
+                bound = {'general': ally, 'cards': list(chosen['cards'])}
+    boss_entry = _boss_tactics_allowed(mem, cur)
+    if _is_boss_order(order, mem) and not boss_entry:
+        return []  # reserve the boss kit on the road to the boss
+    covered = {}
+    for tactic in existing:
+        card = tactic['card']
+        covered[card] = covered.get(card, 0) + 1
+    carried = list(bound['cards'])
+    for card in (mem.get('kit_spent') or {}).get(step) or ():
+        if card in carried:
+            carried.remove(card)
+    added = []
+    for slot, card in enumerate(carried):
+        if card in reference.BOSS_ONLY_CARDS and not boss_entry:
+            continue
+        if covered.get(card, 0) > 0:
+            covered[card] -= 1
+            continue
+        added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
+                      'step': step, 'tactic_id': f'carried:{step}:{card}:{slot}',
+                      'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'})
+    return added
+
+
+def _planned_battle_cards(mem, cur, enemy):
+    """The cards this fight can actually spend: the only rescue resources.
+
+    A card the sortie left behind (the measured departure kit) or one the
+    battle rules forbid before a measured boss entry (``BOSS_ONLY_CARDS``)
+    cannot be spent. Counting it as a pending plan kept ``_resources_exhausted``
+    false while the general fell with it in hand (g1153 2026-11-08 13:21
+    ココット: 在庫0のイッテツーン2枚と使用禁止のバルムンクが planned_cards に
+    残り、白兵9.8倍差でも退却しなかった).
+    """
+    planned = [t['card'] for t in _tactics(mem, cur.get('step'))
+               if _tactic_enemy_ok(t, enemy, cur) and t.get('step') in (None, cur.get('step'))
+               and not (t.get('boss_only')
+                        and not _boss_tactics_allowed(mem, cur))]
+    planned += list((_plan_region(mem).get('card_override') or {}).get(cur.get('step')) or ())
+    bound = bound_fields(_order_for_step(mem, cur.get('step')), mem)
+    if (isinstance(bound, dict) and isinstance(bound.get('cards'), list)
+            and bound.get('general') in (None, cur.get('ally'))):
+        planned = [card for card in planned if card in bound['cards']]
+    if not _boss_tactics_allowed(mem, cur):
+        planned = [card for card in planned if card not in reference.BOSS_ONLY_CARDS]
+    return planned
+
+
+def _mark_defense_seen(mem, cur):
+    """A defence battle is the threat itself: record it like せめこまれました.
+
+    g1163 2026-11-13 21:2x: the enemy attacked ドンドン while the finish
+    sortie was out; only the toast set defense_seen, so an attack started
+    without it kept the strongest general out front.
+    """
+    if isinstance(cur, dict) and cur.get('side') == 'defense' and cur.get('castle'):
+        mem.setdefault('defense_seen', {})[cur['castle']] = int(mem.get('tick') or 0)
+
+
 def battle_step(screen: Screen, mem):
     b = screen.battle
     if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
@@ -546,6 +690,28 @@ def battle_step(screen: Screen, mem):
     cur = mem.get('battle')
     if cur:
         cur.pop('defeat_owner', None)  # a later complete combat panel invalidates the post-combat flag
+        # docich#4707: the announce banner covers the HP panel, so the drop a
+        # card causes is only readable after the menu closes. A use that timed
+        # out its announce therefore leaves a pending confirmation; the first
+        # complete battle frame after it decides the question by measurement.
+        pending = cur.get('card_pending_confirm')
+        if isinstance(pending, dict):
+            opening = pending.get('hp')
+            tick = int(mem.get('tick') or 0)
+            if type(opening) is int and type(b.enemy_hp) is int and b.enemy_hp < opening:
+                used = cur.setdefault('cards_used', [])
+                card = pending.get('card')
+                if card and card not in used:
+                    used.append(card)
+                cur['card_consumption_complete'] = True
+                _record(mem, 'battle_card_effect_confirmed',
+                        **_battle_labels(cur), card=card,
+                        observed_metric={'enemy_hp_at_open': opening, 'enemy_hp': b.enemy_hp},
+                        expected_metric='敵HPの低下',
+                        reason='告知が読めなかった切り札について、メニューが閉じた後の敵HP低下で使用を確定する')
+                cur.pop('card_pending_confirm', None)
+            elif tick - int(pending.get('tick') or 0) > 12:
+                cur.pop('card_pending_confirm', None)   # no drop seen: keep it unclassified
     if cur and (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         if not (_entered_battle_successor(mem, cur, b) or _defender_successor(mem, cur, b)
                 or _attack_defender_successor(mem, cur, b) or _unlocated_successor(mem, cur, b)):
@@ -602,7 +768,7 @@ def battle_step(screen: Screen, mem):
             mem['hero_max_hp'] = max(int(mem.get('hero_max_hp') or 0), b.ally_hp)
             cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
-        if cur.get('step') and not (mem.get('attack') or {}).get('step'):
+        if cur.get('step') and not (_plan_region(mem).get('attack') or {}).get('step'):
             # The order id stayed unknown (ambiguous entry): only the marching
             # sortie's kit is bound, and the record says so.
             _record(mem, 'battle_step_resolved', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
@@ -611,18 +777,35 @@ def battle_step(screen: Screen, mem):
                     reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         _bind_substitute_defender(mem, cur, b)
         _bind_event_duel(mem, cur)
-        planned = [t['card'] for t in _tactics(mem, cur['step'])
-                   if _tactic_enemy_ok(t, b.enemy, cur) and t.get('step') in (None, cur['step'])
-                   and not (t.get('boss_only')
-                            and not _boss_tactics_allowed(mem, cur))]
-        planned += list(mem.get('card_override', {}).get(cur['step']) or [])
+        planned = _planned_battle_cards(mem, cur, b.enemy)
         cur['planned_cards'] = list(planned)
+        if isinstance(b.ally, str) and type(b.ally_hp) is int:
+            # The HP this general brought into the fight is the only measured
+            # strength the plan can see: g1163 2026-11-12 16:4x attacked オオキク
+            # with 18/22/27-HP generals against a 50-68-HP defender fourteen
+            # times and lost every one. Keeping the reading lets the attack
+            # pick a healthy general instead of the highest maximum.
+            name = 'しゅじんこう' if b.ally == NAME else b.ally
+            known = _world(mem).setdefault('general_hp', {})
+            row = known.get(b.ally) if isinstance(known.get(b.ally), dict) else {}
+            maximum = row.get('max') or general_max_hp(name) or b.ally_hp
+            known[b.ally] = {'hp': int(b.ally_hp), 'max': int(maximum),
+                             'tick': int(mem.get('tick') or 0)}
+        # 開戦時の兵士数も記録する (docich#4048)。フィールド計測が未読の
+        # 側は None のまま残し、誤読を戦闘判断へ流さない。
+        army = screen.field_soldiers
+        if not isinstance(army, (tuple, list)) or len(army) != 2:
+            army = (None, None)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
-                observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
+                observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp,
+                                 'ally_soldiers': army[0], 'enemy_soldiers': army[1]},
                 planned_cards=planned, context=cur.get('context', 'message'),
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
+                ally_soldiers=army[0], enemy_soldiers=army[1],
                 reason='戦闘パネルの将軍名とHPを確認')
+        _note_boss_panel_hp(mem, b)
+        _mark_defense_seen(mem, cur)
         _tally(mem, 'battles_started')
         # 将軍 (最大HP) と携行切り札 (卵落・ID合計) の組み合わせで、この戦闘の
         # 「卵を使わせない／落とさせる」方針を先に決めて記録する。卵を使える能力が
@@ -704,14 +887,21 @@ def battle_step(screen: Screen, mem):
     _card_damage_recheck_resources(mem, cur)
     egg_bait.observe_melee(screen, mem, cur)
     melee_followup = _card_melee_ready(mem, cur)
+    # An eligible carried egg-drop card opens before an easy melee finish:
+    # the owner's rule is unconditional once the enemy egg and max-HP
+    # remainder are known. A prior selection is not a new opening.
+    if _one_hit_lethal(cur) and not _egg_plan(mem, cur).get('dropper'):
+        return _one_hit_finish_step(mem, cur)
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
         return opening_wait
     if _egg_rescue_pending(cur):
         return [{'type': 'wait', 'ms': 50}]
-    if not melee_followup and _general_egg_rescue_recheck(mem, cur):
+    dropper_due = (bool((cur.get('egg_plan') or {}).get('dropper'))
+                   and not cur.get('card_flow'))
+    if not dropper_due and not melee_followup and _general_egg_rescue_recheck(mem, cur):
         return _human_menu_open(cur, 'survival', mem)
-    if not melee_followup and _egg_before_retreat(mem, cur):
+    if not dropper_due and not melee_followup and _egg_before_retreat(mem, cur):
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
         else:
@@ -725,7 +915,7 @@ def battle_step(screen: Screen, mem):
                                  'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
                 reason='本人の卵残数が正数で未試行のため、退却より先に実メニューの召喚可否を確認')
         return _human_menu_open(cur, 'survival', mem)
-    retreat = None if melee_followup else _hero_retreat_open(mem, cur)
+    retreat = None if melee_followup or dropper_due else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
     if (_critical_survival_needed(cur) and cur.get('side') == 'defense'
@@ -736,6 +926,14 @@ def battle_step(screen: Screen, mem):
         return [pad('b')]
     if cur.get('card_flow'):
         flow = cur['card_flow']
+        if flow.get('read_kit'):
+            # Open the command menu with the existing bounded B retries; no
+            # selection is ever made from a read-only kit flow.
+            flow['battle_frames_without_receipt'] = int(flow.get('battle_frames_without_receipt') or 0) + 1
+            if flow['battle_frames_without_receipt'] <= CARD_MENU_OPEN_RETRIES:
+                return [pad('b')]
+            _defense_kit_read_unread(mem, cur, 'コマンドメニューが開かないため上限')
+            return [pad('b')]
         opening_hp = flow.get('enemy_hp_at_open')
         # g484: Queen 68->34 after selected クースカン, but two idle
         # observations before reopening B let the Queen summon. A measured
@@ -755,9 +953,26 @@ def battle_step(screen: Screen, mem):
                                              if melee_followup else
                                              '選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま後続札へ進む'))
         else:
+            stage = flow.get('stage')
+            if stage != 'menu' and _card_picker_rows(screen):
+                # 実切り札一覧がHPパネルと併存して battle 分類のまま残る実画面
+                # がある。一覧の選択手順へそのまま渡す ('menu'/'down' の帳簿
+                # ずれは card_list_step 側で現段へ揃える)。
+                from . import battle_menus
+                return battle_menus.card_list_step(screen, mem)
+            if stage in ('down', 'list'):
+                # きりふだ行への確定から一覧の描画までは数観測掛かる。間の実
+                # 戦闘パネルは白兵復帰ではなく開き途中なので有界に待つ
+                # (g1190-local ch1: 描画途中の battle 観測2回でフローが閉じ、
+                # 開いた一覧を selection_planned=False のまま捨てていた)。
+                waits = int(flow.get('list_open_battle_waits') or 0) + 1
+                flow['list_open_battle_waits'] = waits
+                if waits >= CARD_LIST_OPEN_WAITS:
+                    _card_use_unclassified(mem, cur, '切り札一覧が開かないまま白兵へ戻った')
+                return []
             flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
             waited = flow['battle_frames_without_receipt']
-            opening = flow.get('stage') == 'menu'
+            opening = stage == 'menu'
             if opening and waited <= CARD_MENU_OPEN_RETRIES:
                 return [pad('b')]
             if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
@@ -776,17 +991,35 @@ def battle_step(screen: Screen, mem):
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in ([] if (mem.get('rare_card_kit') or {}).get(cur.get('step')) is not None
-                          else mem.get('card_override', {}).get(cur.get('step')) or [])]
-    # 元の並びはtactic ID用に保ち、実行順だけ救済extra→成立する開幕卵落→
-    # チャート/強敵札とする（2026-10-21オーナー指定）。
+                          else _plan_region(mem).get('card_override', {}).get(cur.get('step')) or [])]
+    # 元の並びはtactic ID用に保ち、実行順は成立する開幕卵落→
+    # 再攻撃extra→チャート/強敵札（2026-11-06オーナー指定）。
     egg_plan = _egg_plan(mem, cur)
     tactics = [*extra, *_tactics(mem, cur.get('step')),
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
+    tactics.extend(_carried_opening_tactics(mem, cur, tactics))
+    # Even old chart/override tactics cannot spend a boss-only card on an ordinary foe.
+    if not _boss_tactics_allowed(mem, cur):
+        tactics = [t for t in tactics if t['card'] not in reference.BOSS_ONLY_CARDS]
     done = cur.setdefault('tactics_done', [])
+
     # Preserve original indexes (chart tactic IDs) while prioritizing egg drop.
-    ordered = sorted(enumerate(tactics), key=lambda item: (
-        0 if item[0] < len(extra) else 1 if item[1].get('egg_drop_only') else 2))
+    # The unverified default "use any carried card at the opening" (tactic id
+    # 'd:') is a last resort: ranked above the strong-only tactic it opened
+    # with the dropper and the carried strong card never fired against a strong
+    # general (g1133 2026-11-04 16:00:50, キール vs マンゴスチン).
+    def _tactic_rank(item):
+        index, tactic = item
+        if tactic.get('egg_drop_only'):
+            return 0                   # any measured carried egg drop opens first
+        if index < len(extra):
+            return 1                   # retry/override opener only after egg drop
+        if str(tactic.get('tactic_id') or '').startswith('d:'):
+            return 3                   # unverified default: only when nothing else is due
+        return 2                       # verified chart tactic / strong card
+
+    ordered = sorted(enumerate(tactics), key=_tactic_rank)
     for index, tactic in ordered:
         tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
         if not _tactic_enemy_ok(tactic, b.enemy, cur) or tid in done:
@@ -807,10 +1040,10 @@ def battle_step(screen: Screen, mem):
             continue          # do not spend the boss kit in an unmeasured road fight
         strong_evidence = None
         if tactic.get('strong_only'):
-            strong, strong_evidence = _strong_enemy(mem, cur)
-            if not strong:
-                # 追加携行した切り札は、強い将軍と判定された戦闘以外では温存する。
-                continue
+            # Owner 2026-11-04: 切り札はピンチの救済ではなく、状況を有利にする
+            # ために使う。不利でなくても、携行した強い札は開幕で使う。強い
+            # 将軍かどうかは判断の根拠として記録するだけで、使用の条件にしない。
+            _, strong_evidence = _strong_enemy(mem, cur)
         # No calibrated use receipt exists, so a selected-then-unclassified card
         # is the best evidence there is. Without chaining on it the charted boss
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
@@ -844,7 +1077,10 @@ def battle_step(screen: Screen, mem):
                     cur['strategy_variant'] = 'after_card_unconfirmed'
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
             cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
-                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid}
+                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
+                                'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
+                                'egg_drop_only': bool(tactic.get('egg_drop_only')),
+                                'kit_source': egg_plan.get('kit_source')}
             # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
             # どの札が落ちさせても同じなので、チャート札も同じ根拠で監視する。
             drop_evidence = _egg_drop_evidence(cur, tactic['card'])
@@ -859,7 +1095,7 @@ def battle_step(screen: Screen, mem):
                     **({'egg_drop': drop_evidence,
                         'egg_plan': {key: egg_plan.get(key) for key in
                                      ('threat', 'deny_opening_egg', 'id_sum', 'droppers',
-                                      'dropper', 'max_hp_sum',
+                                      'dropper', 'max_hp_sum', 'kit_source',
                                       'remainder', 'egg_state')}}
                        if drop_evidence else {}),
                     resulting_event='card_planned')
@@ -917,7 +1153,32 @@ def battle_step(screen: Screen, mem):
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
             return _human_menu_open(cur, 'survival', mem)
+    # #4456: a defense battle has no sortie kit. Read the real きりふだ list
+    # once (bounded) before falling back to melee; existing rescue/retreat and
+    # chart-card priorities above have already had their turn. No selection.
+    kit_read = _defense_kit_read_open(mem, cur)
+    if kit_read is not None:
+        return kit_read
     return _melee_step(mem, cur)
+
+
+def _one_hit_finish_step(mem, cur):
+    """Push through a one-hit-lethal enemy; open no menu and hold no input."""
+    flow = cur.get('card_flow')
+    if flow:
+        if flow.get('stage') == 'announce':
+            _card_use_unclassified(mem, cur, '敵が一撃で倒れるため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
+        else:
+            cur['card_flow'] = None
+    cur['melee_holds'] = 0
+    if not cur.get('one_hit_finish'):
+        cur['one_hit_finish'] = True
+        _record(mem, 'battle_one_hit_finish', **_battle_labels(cur),
+                enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
+                observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
+                                 'wall_damage': EGG_WALL_DAMAGE},
+                reason='敵HPが一撃で倒せる値のため、奥の手・卵・切り札を使わず白兵で押し切る')
+    return _power_mash(mem, cur)
 
 
 def _melee_step(mem, cur):
@@ -985,8 +1246,22 @@ def _melee_step(mem, cur):
             return _human_menu_open(cur, 'survival', mem)
     mode = 'card_damage_probe' if probe else 'power_mash' if safe else 'egg_safe_hold'
     egg_window = _defender_egg_window(mem, cur)
-    taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS
-    actions = _power_mash(mem, cur, taps=taps) if safe else []
+    # Owner 2026-11-22: a monthly duel is always accepted (a betrayal event can
+    # start one anyway).  The blue window exists only in the chapter-1
+    # tutorial; later the red bar instead dims briefly.  When that dim is on
+    # screen, press inside it; otherwise keep a denser released burst across
+    # the whole 500 ms melee observation so the short window is not missed.
+    ally_gauge = (cur.get('clash_gauge') or {}).get('ally')
+    duel_dim = isinstance(ally_gauge, dict) and ally_gauge.get('state') == 'dim'
+    if duel:
+        taps = DUEL_DIM_TAPS if duel_dim else DUEL_POWER_TAPS
+        frames = DUEL_POWER_FRAMES
+        wait_ms = DUEL_POWER_WAIT_MS
+    else:
+        taps = 1 if probe or egg_window and egg_window['short_burst'] else POWER_TAPS
+        frames = 3
+        wait_ms = 50
+    actions = _power_mash(mem, cur, taps=taps, frames=frames, wait_ms=wait_ms) if safe else []
     # Per returned action batch, not just the first use in a fight. These are
     # requested A frames; the executor's fence/delivery result remains separate.
     _record(mem, 'battle_melee', **_battle_labels(cur),
@@ -995,8 +1270,9 @@ def _melee_step(mem, cur):
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             enemy_egg_dropped=None,
             enemy_egg_drop_expected=cur.get('enemy_egg_drop_expected') is True,
-            a_frames_sent=taps * 3 if safe else 0,
+            a_frames_sent=taps * frames if safe else 0,
             clash_gauge=cur.get('clash_gauge'),
+            duel_gauge_dim=duel_dim if duel else None,
             **({'defender_egg_window': egg_window} if egg_window else {}),
             hold_hp_budget=hp_budget, hold_hp_bled=hp_bled,
             reason=('札での撃破を未保証のため、保持予算内の短い入力で実HP・兵数を再観測' if probe
@@ -1015,19 +1291,29 @@ def _melee_step(mem, cur):
 # card/egg menus still use their own policies. Six taps without release waits
 # lost the isolated RetroArch tutorial, despite winning a frame-stepped replay.
 POWER_TAPS = 4
+# A duel can end the run: spread released A presses across the 500 ms melee
+# observation, and press once immediately when the red bar's dim window is on
+# screen.  The ordinary 4-tap burst spends most of the interval idle and can
+# miss a short window.
+DUEL_POWER_TAPS = 6
+DUEL_DIM_TAPS = 1
+DUEL_POWER_FRAMES = 3          # 50 ms press; pad() takes frames, not ms
+DUEL_POWER_WAIT_MS = 30
 
 
-def _power_mash(mem, cur, *, taps=POWER_TAPS):
+def _power_mash(mem, cur, *, taps=POWER_TAPS, frames=3, wait_ms=50):
     if not cur.get('power_mash'):
         cur['power_mash'] = True
         _record(mem, 'battle_power', **_battle_labels(cur),
-                expected_metric={'taps': taps, 'hold_ms': 50, 'release_ms': 50},
+                expected_metric={'taps': taps, 'frames': frames,
+                                 'hold_ms': max(16, round(frames * 1000 / 60)),
+                                 'release_ms': wait_ms},
                 observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
                 reason='白兵のぶつかり合いで押し負けないようA連打で踏ん張る')
     # xdotool's keyup/next keydown can fall between emulator polls. An
-    # explicit release is necessary for four distinct presses, not a hold.
+    # explicit release is necessary for distinct presses, not a hold.
     return [action for _ in range(taps)
-            for action in (pad('a', 3), {'type': 'wait', 'ms': 50})]
+            for action in (pad('a', frames), {'type': 'wait', 'ms': wait_ms})]
 
 
 def note_duel_event(screen, mem):
@@ -1037,7 +1323,19 @@ def note_duel_event(screen, mem):
 
 
 def _hero_retreat_open(mem, cur):
+    if cur.get('event_duel'):
+        return None
     if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
+        return None
+    ally = cur.get('ally')
+    if (mem.get('chapter') == 9 and isinstance(ally, str)
+            and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')):
+        # Owner 2026-11-09: in chapter 9 only the hero retreats, so the menu
+        # opened "to check the retreat" is refused at once
+        # (battle_retreat_forbidden) and, with the rescue already spent, it
+        # stayed open (the game paused) for 101 observations per cycle
+        # (g1190 2026-11-16 シェーブル vs ジェラート). Eggs and cards are
+        # still offered by the survival menu.
         return None
     if _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True):
         return None
@@ -1049,12 +1347,28 @@ def _hero_retreat_open(mem, cur):
     card_flow = cur.get('card_flow') or {}
     if card_flow.get('stage') == 'announce':
         # Preserve a selected card's receipt while HP is above the critical
-        # threshold. At critical HP, waiting for an uncalibrated receipt can
-        # cost the general before the retreat menu opens (g460: ココット
-        # 24 -> 12 -> 0 while stuck in card menus). Unknown card use stays
-        # unknown; survival takes precedence over continuing that selection.
+        # threshold. Unknown card use stays unknown; survival takes
+        # precedence over continuing that selection.
         hp = cur.get('ally_hp')
         if type(hp) is not int or hp > GENERAL_CRITICAL_RETREAT_HP:
+            return None
+        # docich#4999 (owner 2026-11-22): spend the card before retreating.
+        # A committed selection keeps its bounded announce lifecycle for up
+        # to RETREAT_CARD_GRACE_LIMIT battle observations instead of an
+        # instant preemption. The g460 counterweight stays: below
+        # RETREAT_RESOURCE_FLOOR_HP, or once the grace is spent, the wait is
+        # cut and the retreat preempts (24 -> 12 -> 0 while stuck in card
+        # menus). Unknown card use stays unknown.
+        if (card_flow.get('selection_planned') and not _retreat_immediate_loss(cur)
+                and int(cur.get('retreat_card_grace') or 0) < RETREAT_CARD_GRACE_LIMIT):
+            cur['retreat_card_grace'] = int(cur.get('retreat_card_grace') or 0) + 1
+            if cur['retreat_card_grace'] == 1:
+                _record(mem, 'battle_retreat_card_wait', **_battle_labels(cur),
+                        general=cur.get('ally'), enemy=cur.get('enemy'),
+                        card=card_flow.get('card'),
+                        observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
+                                         'grace_limit': RETREAT_CARD_GRACE_LIMIT},
+                        reason='選択済み切り札の有界な使用確認を待ってから退却する (#4999)')
             return None
         pending_card = card_flow.get('card')
         _card_use_unclassified(mem, cur, '危険HPに達したため未確認の切り札を保留し、退却を優先')
@@ -1064,6 +1378,24 @@ def _hero_retreat_open(mem, cur):
                                  'card_confirmation': 'unclassified'},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
+    elif (not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur)):
+        # docich#4999: selected-but-unconfirmed cards get one bounded spend
+        # retry through the survival menu before the retreat menu opens.
+        # The same opens/pending_opens bounds as the egg path apply.
+        rescue = _survival_state(mem, cur)
+        if int(rescue.get('opens') or 0) < 12 and int(rescue.get('pending_opens') or 0) < 3:
+            rescue.update(opens=rescue['opens'] + 1,
+                          pending_opens=rescue.get('pending_opens', 0) + 1,
+                          menu_ticks=0)
+            _record(mem, 'battle_cards_before_retreat', **_battle_labels(cur),
+                    general=cur.get('ally'), enemy=cur.get('enemy'),
+                    observed_metric={'ally_hp': cur.get('ally_hp'),
+                                     'enemy_hp': cur.get('enemy_hp'),
+                                     'cards_selected': cur.get('cards_selected', []),
+                                     'cards_used': cur.get('cards_used', []),
+                                     'cards_unclassified': cur.get('cards_unclassified', [])},
+                    reason='使用未確認の切り札が残るため、退却より先に救済メニューで1回だけ使用を試行 (#4999)')
+            return _human_menu_open(cur, 'survival', mem)
     flow = cur.setdefault('hero_retreat', {})
     flow['opens'] = flow.get('opens', 0) + 1
     cur['card_flow'] = None  # supersede an unselected chart card intention
@@ -1072,6 +1404,11 @@ def _hero_retreat_open(mem, cur):
             castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur.get('start_ally_hp'),
+                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
+                             'cards_selected': cur.get('cards_selected', []),
+                             'cards_used': cur.get('cards_used', []),
+                             'card_pending': (cur.get('card_flow') or {}).get('card')
+                             if isinstance(cur.get('card_flow'), dict) else None,
                              'melee_balance': _melee_balance(cur),
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
             reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
@@ -1116,6 +1453,39 @@ def _defender_egg_open(mem, cur):
     return _human_menu_open(cur, 'defender_egg', mem)
 
 
+def _defense_kit_read_open(mem, cur):
+    """#4456: open the real きりふだ list once, bounded, for a defense kit.
+
+    Uses the existing card_flow menu-open path (and the existing defense open
+    budget); no parallel menu mechanism and no selection/consumption. The read
+    itself is done by battle_menus.card_list_step.
+    """
+    window = _defense_kit_read_window(mem, cur)
+    if not window or not window['due']:
+        return None
+    guard = cur.setdefault('defense_egg_kit_read', {'opens': 0})
+    if guard.get('exhausted') or guard.get('read_done'):
+        return None
+    if guard['opens'] >= DEFENDER_EGG_OPEN_LIMIT:
+        guard['exhausted'] = True
+        _record(mem, 'battle_defense_kit_read_failed', **_battle_labels(cur),
+                observed_metric={**window, 'open_attempt': guard['opens'],
+                                 'limit': DEFENDER_EGG_OPEN_LIMIT},
+                reason='防衛の実切り札一覧を有限回試したが読めず、kit_unknown のまま fail-closed で戻る')
+        return None
+    guard['opens'] += 1
+    # A read-only flow: card is None, so no tactic/list selection can consume a
+    # card. The existing card_flow branch sends the bounded B to open the menu.
+    cur['card_flow'] = {'card': None, 'stage': 'menu', 'read_kit': True,
+                        'enemy_hp_at_open': cur.get('enemy_hp')}
+    _record(mem, 'battle_defense_kit_read_open', **_battle_labels(cur),
+            observed_metric={**window, 'open_attempt': guard['opens'],
+                             'limit': DEFENDER_EGG_OPEN_LIMIT},
+            expected_metric='実切り札一覧の札名を読む（選択・消費なし）',
+            reason='防衛戦の開幕卵落は携行不明のため、実メニューの札名を有界で読む')
+    return [pad('b')]
+
+
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
                attack_continues=False, panel_changed=False):
     _hold_general_loss_metric(mem)
@@ -1134,7 +1504,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
     mem['battle_seen'] = None
     mem.pop('battle', None)
-    mem['attack'] = None
+    _plan_region(mem)['attack'] = None
     enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
     if ally_hp == 0:
         from ..os_layer.roster import defeated
@@ -1170,25 +1540,47 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             captured.append(castle)
         mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
         # The winner occupies the castle it took.
-        mem.setdefault('garrison', {})[castle] = []
+        _world(mem).setdefault('garrison', {})[castle] = []
         _garrison_move(mem, cur.get('ally'), target=castle)
         # Our own general stands there now: the remembered defender is stale.
         _drop_defender_record(mem, [castle])
+        # Read the taken castle's own list: residents that retreated come
+        # back, and the capture is the receipt for who is really there.
+        mem.setdefault('roster_read_due', {})[castle] = (
+            int(mem.get('tick') or 0) + CAPTURE_READ_DELAY)
     if (outcome == 'win' and castle and cur.get('side') == 'defense' and not seasonal_boss
             # g1075 2026-10-29 23:58: a recruit had cleared アルマムーン's list
             # and the joiner's win made it [ビシソワーズ]; the hero's castle
             # then looked one-general and retakes waited 37 minutes. A
             # defender is one resident, not the list: unread stays unread.
-            and (mem.get('garrison') or {}).get(castle) is not None):
+            and (_world(mem).get('garrison') or {}).get(castle) is not None):
         _garrison_move(mem, cur.get('ally'), target=castle)
     if (outcome == 'loss' and castle and cur.get('side') == 'defense' and not seasonal_boss
             and not (defense_continues or defense_retained)):
         (mem.get('castle_income') or {}).pop(STATUS_NAMES.get(castle, castle), None)
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
-        (mem.get('garrison') or {}).pop(castle, None)
+        # Snapshot the garrison before it is dropped: a defense loss is the
+        # only loss path that never recorded castle_lost_observed (g1163
+        # chapter 7 2026-11-09: マンシー and リデンブロック fell with no loss
+        # record at all), and the garrison is what a later fix needs.
+        _garrison_row = (_world(mem).get('garrison') or {}).get(castle)
+        _garrison_before = list(_garrison_row or ())
+        garrison_lost(mem, castle)
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
+            _record(mem, 'castle_lost_observed', castle=castle,
+                    observed_metric={'cause': 'defense_loss',
+                                     'garrison': _garrison_before[:8],
+                                     # g1163 2026-11-09 19:49 フィロメラ: a
+                                     # defender fought while the bookkeeping
+                                     # held no row at all, so the empty list
+                                     # alone reads as "undefended" when it was
+                                     # only unread.
+                                     'garrison_known': isinstance(_garrison_row, list),
+                                     'ally': cur.get('ally'), 'enemy': cur.get('enemy')},
+                    resulting_event=f'lost:{castle}',
+                    reason='守備戦で敗れて城を失ったため、守備人数と相手を残して奪還対象にする')
         # g1075 15:42:43: パタゴーヌ fell, the survey Y closed before its
         # enemy flag was read, and the roof streak built while it was ours
         # (164 readings) took it back 3 s later. The loss is the newest flag.
@@ -1206,9 +1598,9 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 'evidence': 'defense_loss_capture', 'step': cur.get('step')}
     if outcome == 'loss' and (cur.get('side') == 'attack' or defense_continues or defense_retained or actor_continues) and cur.get('ally'):
         general = cur['ally']
-        for source in list(mem.get('garrison') or {}):
+        for source in list(_world(mem).get('garrison') or {}):
             _garrison_move(mem, general, source=source)
-        unknown = mem.setdefault('general_location_unknown', [])
+        unknown = _world(mem).setdefault('general_location_unknown', [])
         if general not in unknown:
             unknown.append(general)
         _record(mem, 'general_location_unclassified', general=general, castle=castle,
@@ -1218,6 +1610,9 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
     confirmed = len(cur.get('cards_used', []))
     stats['cards_confirmed'] = stats.get('cards_confirmed', 0) + confirmed
+    # A card spent in battle does not move the field inventory: the carried
+    # copy left the field when the sortie panel took it (S0b), and a battle
+    # spends the carried copy. The ledger is not touched here.
     if stats.get('cards_used') is not None and cur.get('card_consumption_complete') is True:
         stats['cards_used'] += confirmed
     else:
@@ -1248,10 +1643,14 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     if outcome in ('loss', 'unclassified') and boss_attempt:
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
-        for key in ('general_override', 'card_override', 'rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'order_context', 'sortie_general', 'sortie_actor_miss'):
+        for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
             mem.setdefault(key, {}).pop(step, None)
+        for key in ('general_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
+        _plan_region(mem).setdefault('order_context', {}).pop(step, None)
+        _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         if retries[step] <= 3:
-            mem.setdefault('orders', {})[step] = 'pending'
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',
                        'deviation_reason': ('ボス戦のHP敗北を確認。出撃将軍と既定切り札を再確認して再試行'
                                             if outcome == 'loss' else
@@ -1266,7 +1665,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                     reason=('既定のチャート装備を確認してボスへ再挑戦' if outcome == 'loss' else
                             '決着が実測できないままボス戦が終わったため、チャート装備を確認してボスへ再挑戦'))
         else:
-            mem.setdefault('orders', {})[step] = 'failed'
+            _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+            drop_retired_step_context(mem)
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
                     observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
     elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == boss_name):
@@ -1279,24 +1679,38 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
         if retries[step] <= 2:
-            mem.setdefault('orders', {})[step] = 'pending'
-            # Better than repeating a lost melee: open with two イッテツーン
-            # (10 general damage each per the chart's card table).
-            extra = ['イッテツーン', 'イッテツーン']
-            mem.setdefault('card_override', {})[step] = extra
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
+            # Better than repeating a lost melee: open with up to two イッテツーン
+            # (10 general damage each per the chart's card table). Only copies
+            # the measured stock holds: a card at 0 cannot be carried, and
+            # planning it anyway kept the retreat gate open as if a resource
+            # remained (g1153 2026-11-08 13:21 ココット: 在庫0のイッテツーン2枚を
+            # 計画し、使用も携行もできず白兵で敗北した).
+            stock = mem.get('card_stock') or {}
+            copies = min(2, max(0, int(stock.get('イッテツーン', 0) or 0)))
+            opening = ['イッテツーン'] * copies
+            if opening:
+                _plan_region(mem).setdefault('card_override', {})[step] = opening
+                reason = f'チャートの白兵で敗北したため、開幕イッテツーン{len(opening)}枚で再攻撃'
+                expected = {'enemy_hp_after_open': max(0, (enemy_hp or 0) - 10 * len(opening))}
+            else:
+                # A stale override would keep planning cards the stock cannot
+                # carry; the next sortie starts from the chart kit again.
+                _plan_region(mem).get('card_override', {}).pop(step, None)
+                reason = 'チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃'
+                expected = {'enemy_hp_after_open': None}
             mem.setdefault('retry_context', {})[step] = {
-                'deviation_reason': 'チャートの白兵で敗北したため、開幕イッテツーン2枚で再攻撃',
-                'expected_metric': {'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)}}
+                'deviation_reason': reason, 'expected_metric': expected}
             _record(mem, 'order_retry', chart_step=step, strategy_variant='retry_with_opening_cards',
-                    deviation_reason='チャートの白兵で敗北したため、開幕イッテツーン2枚で再攻撃',
-                    expected_metric={'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)},
+                    deviation_reason=reason, expected_metric=expected,
                     observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
                     resulting_event=f'retry:{retries[step]}', reason='城を取らないと後続手順とボスへ進めない')
         else:
             # Leaving the exhausted step 'launched' made it look like a march
             # still heading for the target: steps waiting on that capture and
             # the off-chart planner kept waiting on a sortie that had ended.
-            mem.setdefault('orders', {})[step] = 'failed'
+            _plan_region(mem).setdefault('orders', {})[step] = 'failed'
+            drop_retired_step_context(mem)
             _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
                     observed_metric={'retries': retries[step], 'outcome': outcome,
                                      'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
@@ -1305,10 +1719,15 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     resulting = None
     if season_win:
         victories = mem.setdefault('boss_victories', {})
-        victories[cur['enemy']] = {
-            'enemy': cur['enemy'], 'chapter': 4,
-            'site': castle if castle in chart.boss_sites(4) else None,
-            'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
+        previous = victories.get(cur['enemy'])
+        # A repeated/generic ボス entry proves the king's defeat again,
+        # but cannot erase the corner already measured for that king.
+        site = castle if castle in chart.boss_sites(4) else None
+        if not (site is None and isinstance(previous, dict)
+                and previous.get('site') in chart.boss_sites(4)):
+            victories[cur['enemy']] = {
+                'enemy': cur['enemy'], 'chapter': 4, 'site': site,
+                'evidence': 'measured_boss_entry_hp_win', 'tick': mem.get('tick')}
         resulting = f"season_king_defeated:{cur['enemy']}"
         if SEASON_KINGS <= set(victories):
             mem['boss_defeated'] = 4
@@ -1335,6 +1754,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
+                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_used': cur.get('cards_used', []),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),
@@ -1346,12 +1766,121 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
+    # Owner 2026-11-05: an attack that ended at its destination closes the
+    # sortie record. It used to stay 'en_route' after a defeat, so the left
+    # status chart kept showing a march that was already over and the ledger
+    # never learned win/loss/retreat by diff. A battle on the road (castle
+    # different from the sortie target) leaves the march running.
+    sortie = (_sorties(mem).get(step)) if step else None
+    if isinstance(sortie, dict) and cur.get('side') == 'attack':
+        target = sortie.get('target') or sortie.get('planned_target')
+        retreat = bool((cur.get('hero_retreat') or {}).get('selected'))
+        lost_battle = outcome == 'loss' or retreat
+        won_battle = outcome == 'win' and (enemy_hp == 0)
+        if castle and target and castle == target and (won_battle or lost_battle):
+            result = 'won' if won_battle else ('retreated' if retreat else 'lost')
+            _sorties(mem).pop(step, None)
+            history = mem.setdefault('sortie_history', [])
+            history.append({'step': step, 'general': sortie.get('general'),
+                            'source': sortie.get('source'), 'target': target,
+                            'outcome': result, 'tick': int(mem.get('tick') or 0),
+                            'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
+            del history[:-40]
+            _record(mem, 'sortie_outcome', chart_step=step, general=sortie.get('general'),
+                    castle=castle,
+                    observed_metric={'outcome': result, 'ally_hp': ally_hp,
+                                     'enemy_hp': enemy_hp},
+                    reason='戦闘結果で出撃の終了を差分記録し、行軍中の表示から外す')
+    # g1163 2026-11-10 23:24: キール fell to 0 HP in a field encounter on the
+    # way to おかざき (side None, castle None: a road battle bound to his
+    # step); the order stayed 'launched' until the march deadline at 23:47
+    # and nobody was sent there for 23 minutes. A general at 0 HP leaves the
+    # roster (g1097 2026-11-02) and a retreating one turns back, so the march
+    # is over: mark it and let the overdue settlement run now. It keeps the
+    # location recheck, the relaunch budget and the blocked-path rule instead
+    # of a second settlement. Defense battles and the target's own battle
+    # (closed above) are not road battles.
+    sortie = (_sorties(mem).get(step)) if step else None
+    if isinstance(sortie, dict) and cur.get('side') in (None, 'attack'):
+        target = sortie.get('target') or sortie.get('planned_target')
+        retreat = bool((cur.get('hero_retreat') or {}).get('selected'))
+        if (target and castle != target and cur.get('ally') == sortie.get('general')
+                and (retreat or (outcome == 'loss' and ally_hp == 0))
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('road_defeat')) is not int):
+            sortie['road_defeat'] = int(mem.get('tick') or 0)
+            # The outcome ledger is what the march and the attack rules read
+            # (``sortie_history`` consumers). A road defeat
+            # that only lived on the sortie record was invisible to them:
+            # g1163 2026-11-12 15:1x-15:5x lost :11-:15 on the road to オオキク
+            # and ``sortie_history`` still ended at :11, so nothing could see
+            # that the exchange kept losing.
+            history = mem.setdefault('sortie_history', [])
+            history.append({'step': step, 'general': sortie.get('general'),
+                            'source': sortie.get('source'), 'target': target,
+                            'outcome': 'lost', 'tick': int(mem.get('tick') or 0),
+                            'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                            'road': True})
+            del history[:-40]
+            _record(mem, 'sortie_road_defeat', chart_step=step, general=sortie.get('general'),
+                    castle=castle,
+                    observed_metric={'target': target, 'retreat': retreat,
+                                     'ally_hp': ally_hp, 'enemy_hp': enemy_hp},
+                    reason='目的地に着く前の戦闘で出撃した将軍が敗北・退却したため、行軍の期限を待たずに出撃を決着させる')
+        elif (target and castle != target and cur.get('ally') == sortie.get('general')
+                and outcome == 'unclassified'
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('road_defeat')) is not int):
+            # g1190-ch1v4 #4927 ch10 47-9: an interception that closes with
+            # neither HP at 0 (a draw or a forced separation) leaves the
+            # march 'en_route', and the two units re-collide on the next
+            # map frames. Chained unresolved road fights keep the battle
+            # count climbing while the march ages past the stuck bound, so
+            # the month can close with zero new sorties. A single unclosed
+            # end is ambiguous — the unit may still be advancing — but a
+            # chain means the march is pinned, so the next one settles it
+            # the way the measured road defeat above does.
+            sortie['road_stalemates'] = int(sortie.get('road_stalemates') or 0) + 1
+            if sortie['road_stalemates'] >= ROAD_STALEMATE_LIMIT:
+                sortie['road_defeat'] = int(mem.get('tick') or 0)
+                history = mem.setdefault('sortie_history', [])
+                history.append({'step': step, 'general': sortie.get('general'),
+                                'source': sortie.get('source'), 'target': target,
+                                'outcome': 'lost', 'tick': int(mem.get('tick') or 0),
+                                'castle': castle, 'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                                'road': True, 'stalemates': sortie['road_stalemates']})
+                del history[:-40]
+                _record(mem, 'sortie_road_stalemate_settled', chart_step=step,
+                        general=sortie.get('general'), castle=castle,
+                        observed_metric={'target': target, 'ally_hp': ally_hp,
+                                         'enemy_hp': enemy_hp,
+                                         'stalemates': sortie['road_stalemates']},
+                        reason='道上の戦闘が決着なく繰り返されて行軍が進まないため、敗北と同様に出撃を決着させる')
+            else:
+                _record(mem, 'sortie_road_stalemate', chart_step=step,
+                        general=sortie.get('general'), castle=castle,
+                        observed_metric={'target': target, 'ally_hp': ally_hp,
+                                         'enemy_hp': enemy_hp,
+                                         'stalemates': sortie['road_stalemates']},
+                        reason='道上の戦闘が決着なく終わったため、行軍の継続か再戦の可能性を残して回数を記録する')
     # One judged battle per started battle, whatever the verdict. The gap
     # against battles_started is the set the status panel must disclose.
     _tally(mem, 'battles_judged')
     from . import camp_recheck as hanjuku_camp_recheck
     hanjuku_camp_recheck.capture(mem, cur)
+    # A field encounter that interrupted a march leaves anchor/near_goal
+    # pointing at the pre-battle camera cell; without the reset nav_step
+    # steers from that stale position and walks to a wrong coordinate.
+    for key in ('anchor', 'near_goal', 'goal_anchor_lock', 'select_used',
+                'nav_search', 'nav_search_leg', 'nav_last', 'nav_pressed', 'nav_still'):
+        mem.pop(key, None)
+    mem['uncertain'] = True
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
+    # A battle result may return straight to the map while the post-month
+    # status owner is still expecting its pre-battle roster or SELECT menu.
+    # Restore that owner before the next observation can select a sortie.
+    from . import post_month_status
+    post_month_status.resume_after_battle(mem, cur)
 
 
 def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
@@ -1364,14 +1893,14 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
     SELECT + A opens is the camp menu (g436 22:04), so the camp recall's
     きかん path is reused.
     """
-    if cur.get('ally') != NAME or outcome != 'win' or type(ally_hp) is not int or mem.get('recall'):
+    if cur.get('ally') != NAME or outcome != 'win' or type(ally_hp) is not int or _flow(mem).get('recall'):
         return
     full = int(mem.get('hero_max_hp') or 0)
     limit = max(HERO_RECALL_MIN_HP, full * HERO_RECALL_RATIO_TENTHS // 10)
     marching = _hero_marching(mem)
     if ally_hp > limit or not marching:
         return
-    mem['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': marching}
+    _flow(mem)['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': marching}
     (mem.get('y_jumps') or {}).pop('RECALL:target', None)
     (mem.get('y_jumped') or {}).pop('RECALL', None)
     _record(mem, 'hero_recall_start', observed_metric={'ally_hp': ally_hp, 'full_hp': full,
@@ -1382,6 +1911,7 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
 DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
 BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is closed anyway
+ROAD_STALEMATE_LIMIT = 2    # unclosed road engagements on one march before it is settled as stopped
 OPENING_DIALOGUE_WAIT_LIMIT = 12   # consecutive taunt-visible panels before the existing judgment resumes (chosen bound, not measured)
 
 
@@ -1389,7 +1919,7 @@ def _boss_entry_cell(mem, general):
     """The boss castle an entry text names: chapter 4's 「ボスじょう」 is one of
     four 四季王 sites, the one this general is marching on (no site, no guess)."""
     chapter = mem.get('chapter') or 0
-    current = mem.get('attack') or {}
+    current = _plan_region(mem).get('attack') or {}
     if (chapter == 4 and current.get('general') == general and current.get('castle') in chart.boss_sites(4)
             and current.get('entry_evidence') == 'measured_boss_entry'):
         # The same entry text on the next frame: its march is arrived by now
@@ -1400,12 +1930,12 @@ def _boss_entry_cell(mem, general):
         # An unconfirmed launch keeps its site as planned_target only (g1075
         # 08:34:57: カペリーニ's 4-B2 entry matched nothing and was held 7 times).
         now = int(mem.get('tick') or 0)
-        sorties = [s for s in (mem.get('sorties') or {}).values()
+        sorties = [s for s in _sorties(mem).values()
                    if isinstance(s, dict) and s.get('general') == general
                    and (s.get('target') or s.get('planned_target')) in chart.boss_sites(4)]
         # A re-sent step replaces its sortie; the retired attempt still names
         # the site this general is marching to.
-        retired = mem.get('retired_sorties')
+        retired = _world(mem).get('retired_sorties')
         for rows in (retired.values() if isinstance(retired, dict) else ()):
             sorties.extend(s for s in rows or ()
                            if isinstance(s, dict) and s.get('general') == general
@@ -1426,6 +1956,36 @@ def _boss_entry_cell(mem, general):
     return chart.boss_castle(chapter)
 
 
+def _friendly_general(mem, general):
+    """This run's own receipts mark the general as ours.
+
+    Only measured evidence counts: a sortie record (even one whose march
+    bound expired), a garrison/general-list row, this month's roster
+    receipt, or a launched record. Enemy generals never enter these stores.
+    """
+    if not isinstance(general, str) or not general or general in (NAME, 'しゅじんこう'):
+        return general in (NAME, 'しゅじんこう')
+    for pool in (_world(mem).get('sorties'), _world(mem).get('retired_sorties')):
+        if not isinstance(pool, dict):
+            continue
+        for row in pool.values():
+            items = row if isinstance(row, list) else (row,)
+            if any(isinstance(s, dict) and s.get('general') == general for s in items):
+                return True
+    for present in (_world(mem).get('garrison') or {}).values():
+        if isinstance(present, (list, tuple)) and general in present:
+            return True
+    for info in (_world(mem).get('launched') or {}).values():
+        if isinstance(info, dict) and info.get('general') == general:
+            return True
+    try:
+        from ..os_layer import roster
+        receipt = roster.fresh(mem)
+    except Exception:
+        receipt = None
+    return isinstance(receipt, dict) and general in (receipt.get('names') or ())
+
+
 def message_step(screen: Screen, mem):
     text = screen.text
     encounter = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがてきとそうぐうしました!!', text)
@@ -1441,7 +2001,7 @@ def message_step(screen: Screen, mem):
     if boss_entry:
         general = boss_entry.group(1)
         boss_cell = _boss_entry_cell(mem, general)
-        current = mem.get('attack') or {}
+        current = _plan_region(mem).get('attack') or {}
         step, match = _match_sortie(mem, boss_cell, general)
         if (match != 'matched' and current.get('castle') == boss_cell
                 and current.get('general') == general
@@ -1460,7 +2020,7 @@ def message_step(screen: Screen, mem):
                         observed_metric={'general': general, 'message': text, 'sortie_match': match},
                         deviation_reason='ambiguous_sortie',
                         reason='ボス城への出撃が複数在途のため注文は特定せず、実測文のみで進行')
-                mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+                _plan_region(mem)['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
                                  'step': None, 'entry_evidence': 'measured_boss_entry'}
                 return [pad('a')]
             held = mem.get('boss_entry_hold') or {}
@@ -1481,11 +2041,11 @@ def message_step(screen: Screen, mem):
                     observed_metric={'general': general, 'message': text, 'sortie_match': match},
                     deviation_reason='boss_entry_hold_released',
                     reason=f'出撃注文と一致しない突入文を{BOSS_ENTRY_HOLD_LIMIT}回保留したため表示を閉じる')
-            mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+            _plan_region(mem)['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
                              'step': step, 'entry_evidence': 'measured_boss_entry'}
             return [pad('a')]
         _bind_sortie(mem, step, boss_cell, general)
-        mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
+        _plan_region(mem)['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
                 expected_metric={'general': general}, observed_metric={'general': general, 'message': text},
@@ -1496,16 +2056,20 @@ def message_step(screen: Screen, mem):
         general, castle = m.groups()
         observe_chapter_castle(mem, castle)
         castle = _castle_label(mem, castle)
-        launched = (mem.get('launched') or {}).get(castle) or {}
-        current = mem.get('attack') or {}
+        launched = (_world(mem).get('launched') or {}).get(castle) or {}
+        current = _plan_region(mem).get('attack') or {}
         step, match = _match_sortie(mem, castle, general)
         if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
             return [pad('a')]              # same entry text still on screen
         # 'legacy' is our own launched record for this general and castle; it
         # may carry no step (g839 step 4210: アマンディーヌ read as side='enemy',
-        # which switched off the value-aware retreat policy).
+        # which switched off the value-aware retreat policy). A sortie record,
+        # garrison row or roster receipt proves ours even when the march bound
+        # expired (g1133 2026-11-05: ピスタチオ's 1651-tick march to ユージア
+        # matched nothing, ran as side 'enemy', and he retreated at 9 vs 7).
         ours = (step is not None or match in ('ambiguous', 'legacy')
-                or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス'))
+                or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
+                or _friendly_general(mem, general))
         side = 'attack' if ours else 'enemy'
         _bind_sortie(mem, step, castle, general)
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
@@ -1513,16 +2077,49 @@ def message_step(screen: Screen, mem):
                 deviation_reason=(None if step or not ours
                                   else 'ambiguous_sortie' if match == 'ambiguous' else 'unplanned_attack'),
                 reason='のりこんだ表示')
-        mem['attack'] = {'general': general, 'castle': castle, 'side': side, 'step': step}
+        _plan_region(mem)['attack'] = {'general': general, 'castle': castle, 'side': side, 'step': step}
         return [pad('a')]
     m = DEFENSE.search(text)
     if m:
         castle = m.group(1)
         observe_chapter_castle(mem, castle)
         castle = _castle_label(mem, castle)
-        if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
+        if (_plan_region(mem).get('attack') or {}).get('castle') != castle or (_plan_region(mem).get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
+            # Keep the threat on the books: the corridor keeps two residents
+            # home at a front that has just been attacked (g1163 2026-11-13:
+            # オオキク was retaken at 14:05, counter-attacked from 14:15, and
+            # lost again while the attack on ナッテ held only one defender).
+            mem.setdefault('defense_seen', {})[castle] = int(mem.get('tick') or 0)
             mem['world_map_due'] = True      # the castle may have fallen without a battle
-        mem['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
+        _plan_region(mem)['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
     return None
+
+
+def _note_boss_panel_hp(mem, battle):
+    """Remember the boss HP shown on an opening battle panel.
+
+    The ch9 boss (ハデス) is met by a field ambush, not a charted boss sortie,
+    so ``battle_menus.note_boss_monster_hp`` — which keys off
+    ``plan.attack.castle`` being a boss castle — never records the reading
+    (live g1288 2026-11-20 20:46: the first boss battle happened but
+    ``boss_hp_seen`` stayed None). Key off the enemy name instead so the
+    remaining HP, and whether a wave hurt the boss, is measurable.
+    """
+    enemy, hp = getattr(battle, 'enemy', None), getattr(battle, 'enemy_hp', None)
+    if not isinstance(enemy, str) or type(hp) is not int or not 0 < hp <= 9999:
+        return
+    names = set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    names.add(chart.boss_castle(mem.get('chapter') or 0))
+    if enemy not in names and not reference.is_boss_target(enemy):
+        return
+    seen = {'monster': enemy, 'hp': hp, 'general': getattr(battle, 'ally', None),
+            'tick': int(mem.get('tick') or 0)}
+    mem['boss_hp_seen'] = seen
+    history = mem.get('boss_hp_history')
+    history = history if isinstance(history, list) else []
+    last = history[-1] if history else None
+    if not isinstance(last, dict) or any(last.get(key) != seen[key] for key in ('monster', 'hp', 'general')):
+        history.append(seen)
+        mem['boss_hp_history'] = history[-8:]

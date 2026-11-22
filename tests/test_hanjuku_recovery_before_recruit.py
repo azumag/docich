@@ -18,7 +18,7 @@ def memory(gold=180, uses=None):
 def test_recruitment_first_checks_recovery_even_when_army_or_egg_quantity_is_unknown(uses):
     mem = memory(uses=uses)
     actions = policy.month_step(parse(month_canvas(180, on='しょうぐんぼしゅう')), mem)
-    assert actions == [policy.pad('down')]
+    assert actions == [policy.pad('down'),{'type':'wait','ms':60},policy.pad('down')]
     assert mem['shop']['egg'] == 'pending'
     assert 'month_sub' not in mem
     assert policy.month_step(parse(month_canvas(180, on='たまごのかいふく')), mem) == [policy.pad('a')]
@@ -320,12 +320,6 @@ def test_a_short_army_keeps_the_recruit_fee_from_building():
     assert policy._chikujou_reserve({}, shop) == policy.WAGE_RESERVE
 
 
-def test_the_month_waits_briefly_for_a_deferred_roster_scan_then_closes():
-    # g684 2-10 15:24:44: month_done fired before the roster scan could start.
-    shop = {'key': '1-7', 'recruit': 'deferred_roster'}
-    mem = {'chapter': 1, 'month': '1-7', '_records': []}
-    waits = [policy._await_month_roster_scan(mem, shop) for _ in range(policy.MONTH_ROSTER_WAIT + 2)]
-    assert waits == [True] * policy.MONTH_ROSTER_WAIT + [False, False]
-    mem2 = {'chapter': 1, 'month': '1-7', 'recruit_month_scan_attempts': {'scope': [1, '1-7'], 'count': 1}}
-    assert policy._await_month_roster_scan(mem2, {'recruit': 'deferred_roster'}) is False
-    assert policy._await_month_roster_scan(mem, {'recruit': 'done'}) is False
+def test_monthly_roster_wait_is_removed_for_status_headcount():
+    assert not hasattr(policy, '_await_month_roster_scan')
+    assert not hasattr(policy, 'MONTH_ROSTER_WAIT')

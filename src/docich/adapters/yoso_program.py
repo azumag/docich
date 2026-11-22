@@ -13,9 +13,11 @@ from time import monotonic, sleep
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from ..comment_queue import comment_queue_dir
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
 from ..prediction_leaderboard import LeaderboardError
+from ..trading.soren_output import resolve_soren_root
 from ..yoso_view import DEFAULT_PORT, VIEW_NAME, YosoViewError, board
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
@@ -48,10 +50,19 @@ class YosoProgramViewAdapter(ProgramViewAdapter):
         self.dashboard_kind = "html"
         self.dashboard_port = DEFAULT_PORT
 
+    def _voice_queue_dir(self) -> str | None:
+        # The shared audio queue the corner reads its departments through. The
+        # view only lists it (read-only) to follow the department being spoken;
+        # when it cannot be resolved the view rotates on its own timer.
+        try:
+            return str(comment_queue_dir(resolve_soren_root(self.g)))
+        except Exception:
+            return None
+
     def _game_command(self) -> list[str]:
         # ``serve`` is read-only: the corner never mutates the ledger, and a
         # missing ledger is an empty board rather than a hidden write.
-        return [
+        command = [
             sys.executable, "-m", "docich.yoso_view",
             "--state-dir", str(self.g.state_dir),
             "--port", str(self.dashboard_port),
@@ -59,6 +70,10 @@ class YosoProgramViewAdapter(ProgramViewAdapter):
             "--generation", str(self.spec.generation),
             "--lease-id", self.spec.lease_id,
         ]
+        queue_dir = self._voice_queue_dir()
+        if queue_dir is not None:
+            command += ["--queue-dir", queue_dir]
+        return command
 
     def _game_session_env(self) -> dict[str, str]:
         # tmux starts the command from the server environment and never

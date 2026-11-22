@@ -63,11 +63,14 @@ def test_unreadable_cursor_bounds_mikan_to_one_unverified_attempt(events):
     assert state['monster_menu_choice'] == 'skill2'
 
 
-def test_unscoped_battle_holds_mikan_and_never_self_destructs(events):
+def test_a_summon_only_fight_presses_mikan_once_then_warms(events):
+    """Owner 2026-11-15: one ミカン press, then あたためる, even without a named
+    battle record. The stable monster menu scope holds the receipt."""
     state = {'battle': {}}
-    for _ in range(3):
-        menus.monster_menu_step(view(cursor=160), state)
-        assert state['monster_menu_choice'] == 'skill1'
+    menus.monster_menu_step(view(cursor=160), state)
+    assert state['monster_menu_choice'] == 'skill1'
+    menus.monster_menu_step(view(cursor=160), state)
+    assert state['monster_menu_choice'] == 'skill2'
     assert 'omedetori_cycle' not in state['battle']
 
 

@@ -1,0 +1,43 @@
+"""A deferring retreat recheck must not keep the month flow off the screen.
+
+g1190 2026-11-18 11:12-11:13: the retreat recheck deferred on one castle menu
+19 times in a minute (97 getcontext), holding the month flow while the hub
+stayed enemy. During its retry clock the recheck now yields the foreground.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.flows import camp_recheck as c
+from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.state.regions import flow as _flow
+
+ID = {'game': 'hanjuku-hero', 'runtime_id': 'recheck-test', 'generation': 1,
+      'lease_id': 'lease-test'}
+MAIN = Screen([], None, '', kind='main_menu')
+
+
+def memory(retry_after):
+    mem = {'chapter': 1, 'tick': 100, '_run_identity': dict(ID), '_records': [],
+           'recall': {'retreat_recheck': True, 'general': 'ゼウス', 'stage': 'recheck_read',
+                      'steps': 0, 'identity': dict(ID), 'chapter': 1, 'recheck_tick': 1},
+           'retreat_rechecks': {'ゼウス': {
+               'identity': dict(ID), 'chapter': 1, 'tick': 1, 'attempts': 0,
+               'retry_after': retry_after, 'status': 'needs_observation'}}}
+    return mem
+
+
+def test_backing_off_yields_the_foreground():
+    mem = memory(200)
+    assert c.interrupt(MAIN, mem) is False
+    row = _flow(mem)['retreat_rechecks']['ゼウス']
+    assert row['retry_after'] == 200          # untouched: no new defer
+
+
+def test_an_expired_backoff_defers_once_more():
+    mem = memory(50)
+    assert c.interrupt(MAIN, mem) is True
+    row = _flow(mem)['retreat_rechecks']['ゼウス']
+    assert row['retry_after'] == mem['tick'] + c.RETRY_TICKS
+    assert any(r['decision'] == 'retreat_recheck_unconfirmed' for r in mem['_records'])

@@ -4,6 +4,8 @@ from copy import deepcopy
 import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state import egg_memory
+from docich.hanjuku.strategy import orders, replan
 from test_hanjuku_chart_bot import Canvas, MONTH_GRID
 from test_hanjuku_recovery_payroll import memory as payroll_memory
 
@@ -90,8 +92,8 @@ def test_paid_individual_keeps_other_counts_and_reserved_unpaid_eggs():
     assert mem['shop']['egg_paid_actors'] == ['ココット']
     assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
     assert mem['shop']['soldiers'] == 0
-    assert p._own_egg_empty(mem, {'ally': 'ココット'})
-    mem['egg_uses']['ココット'] = 4  # only the later actual named reading releases zero
+    assert not p._own_egg_empty(mem, {'ally': 'ココット'})  # the paid recovery releases the zero
+    mem['egg_uses']['ココット'] = 4
     assert not p._own_egg_empty(mem, {'ally': 'ココット'})
 
 
@@ -136,6 +138,33 @@ def test_unknown_or_full_rows_are_never_paid_as_partial_recovery(change):
     if change != 'unbound_run':
         mem['shop']['egg_paid_actors'] = ['ゼウス']
     assert not p._individual_egg_candidate(screen, mem, mem['month_sub'])
+
+
+def one_shot_list():
+    c = Canvas()
+    c.text(32, 47, 'ぜんかいふく')
+    c.text(32, 95, 'ココット'); c.text(104, 95, '1')
+    c.hand(10, 89)
+    return parse(c.frame())
+
+
+def test_one_shot_kind_reads_the_dated_record_not_a_stale_flat_mirror():
+    # #4439: a quantity-1 row of a one-shot egg is never paid as a partial
+    # recovery, but the kind must come from the newest observation. A stale
+    # flat いっぱつエッグ must not exclude a general whose newer record says
+    # the egg is gone, and a dated one-shot record excludes the row even
+    # without the flat mirror.
+    mem = memory()
+    mem['month_sub']['gold_before'] = 80  # full recovery (2 debts) is short
+    mem.setdefault('egg_types', {})['ココット'] = 'いっぱつエッグ'
+    egg_memory.observe(mem, 'ココット', egg=None, uses=None, present=False,
+                       source=egg_memory.STATUS)
+    assert egg_memory.egg_type(mem, 'ココット') is None
+    assert p._individual_egg_candidate(one_shot_list(), mem, mem['month_sub']) == 'ココット'
+    mem.get('egg_types', {}).pop('ココット', None)
+    egg_memory.observe(mem, 'ココット', egg='いっぱつエッグ', uses=1, present=True,
+                       source=egg_memory.CAMP)
+    assert p._individual_egg_candidate(one_shot_list(), mem, mem['month_sub']) is None
 
 
 @pytest.mark.parametrize('gold,opens', [(49, False), (50, True), (80, True)])
@@ -183,7 +212,31 @@ def test_actual_zero_list_overrules_stale_positive_and_survives_payment():
     assert mem['egg_uses']['ココット'] == 0 and p._own_egg_empty(mem, {'ally': 'ココット'})
     p._egg_recovery_step(quote(), mem, mem['month_sub'])
     p._finish_month_sub(ready_menu(), mem, mem['shop'])
-    assert p._own_egg_empty(mem, {'ally': 'ココット'})
+    assert not p._own_egg_empty(mem, {'ally': 'ココット'})
+
+
+def test_paid_individual_keeps_the_newer_presence_over_an_old_no_egg_row():
+    # #4439: ココット's tick-900 status row read eggless and the recovery list
+    # then showed the spent egg (tick 1500). Until the payment the spent egg
+    # is correctly eggless for damage, but paying for him invalidates only
+    # the count: the record keeps type/presence/tick, so the stale 「卵なし」
+    # row must not re-adopt him out of the boss wave after the payment.
+    # Dropping the whole record used to.
+    mem = memory()
+    mem['general_statuses'] = {'statuses': {
+        'ココット': {'hp': 60, 'egg': None, 'uses': None, 'broken': False, 'tick': 900}}}
+    assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert mem['month_sub']['individual_actor'] == 'ココット'
+    assert replan._boss_eggless(mem, 'ココット') is True   # the list shows a spent egg
+    assert p._egg_recovery_step(quote(), mem, mem['month_sub']) == [p.pad('a')]
+    assert p._finish_month_sub(ready_menu(), mem, mem['shop'])
+    assert replan._boss_eggless(mem, 'ココット') is False
+    assert orders._holds_egg(mem, 'ココット') is True
+    rec = egg_memory.record(mem, 'ココット')
+    assert rec == {'egg': None, 'uses': None, 'present': True, 'broken': False,
+                   'observed_tick': 1500, 'source': egg_memory.RECOVERY}
+    # Another general's untouched count is not invalidated by this payment.
+    assert egg_memory.record(mem, 'ゼウス')['uses'] == 1
 
 
 def test_duplicate_named_quantities_cannot_bind_an_individual_selection():
@@ -215,7 +268,7 @@ def test_hero_payment_keeps_other_zero_and_leaves_budget_for_next_actor():
     assert mem['shop']['egg_paid_actors'] == ['どうし']
     assert mem['egg_uses'] == {'ゼウス': 1, 'ヴィーナス': 4, 'ココット': 0}
     assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
-    assert mem['shop']['soldiers'] == 0 and p._own_egg_empty(mem, {'ally': 'どうし'})
+    assert mem['shop']['soldiers'] == 0 and not p._own_egg_empty(mem, {'ally': 'どうし'})
     mem['month_sub'] = {'kind': 'egg', 'gold_before': 80, 'presses': 0, 'key': '1-6', 'left_menu': True}
     assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
     assert mem['month_sub']['individual_actor'] == 'ココット'
@@ -307,3 +360,17 @@ def test_hotloaded_old_soldier_plan_is_recapped_to_the_shortfall_floor():
     # the documented shortfall floor is, and the receipt is still required.
     assert mem['shop']['soldiers'] == 50
     assert not mem['shop'].get('soldier_receipt')
+
+def test_a_white_egg_row_overrides_a_stale_zero():
+    # Owner 2026-11-22: after a paid recovery the state kept 卵0; the white
+    # 「たまごをつかう」 command row is live availability evidence.
+    from docich.hanjuku.flows import battle_menus as B
+    from docich.hanjuku_screen import Screen
+    mem = {'battle': {'ally': 'アルファルファ'},
+           'egg_zero_owners': ['アルファルファ'],
+           'egg_uses': {},
+           '_records': []}
+    screen = Screen([], None, 'たまごをつかう', kind='battle_menu')
+    B.battle_menu_step(screen, mem)
+    assert mem['egg_zero_owners'] == []
+    assert not p._own_egg_empty(mem, mem['battle'])

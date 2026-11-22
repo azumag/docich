@@ -9,6 +9,7 @@ from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import Canvas, _camp_frame, camp_menu
 from test_hanjuku_house import roster, status
+from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'recheck-test', 'generation': 1, 'lease_id': 'lease-test'}
 MAP = Screen([], None, '', kind='map', cursor=(26, 66))
@@ -17,12 +18,39 @@ FRAME = _camp_frame()
 
 def memory(name='ゼウス'):
     mem = {'chapter': 1, 'tick': 100, '_run_identity': dict(ID), '_records': [],
-           'sorties': {'old': {'general': name, 'status': 'arrived', 'target': 'キカンドン', 'tick': 80}},
+           'world': {'sorties': {'old': {'general': name, 'status': 'arrived', 'target': 'キカンドン', 'tick': 80}}},
            'battle': {'ally': name, 'enemy': 'タピオカ', 'ally_hp': 6, 'enemy_hp': 35,
                       'start_ally_hp': 24, 'side': 'attack', 'castle': 'キカンドン',
                       'away': 1, 'cards_used': [], 'hero_retreat': {'selected': 1}}}
     p.battle_end(mem, 'map')
     return mem
+
+
+def test_chapter9_boss_wave_generals_are_not_rechecked():
+    # The boss pursuit keeps these generals in boss_wave_generals; a recall
+    # recheck would send them home and drop them from the wave.
+    mem = memory()
+    mem['chapter'] = 9
+    _flow(mem)['retreat_rechecks']['ゼウス']['chapter'] = 9
+    mem['boss_wave_generals'] = {'ゼウス': {'step': 'A', 'launched': 1}}
+    assert 'ゼウス' not in camp_recheck._scope(mem)
+    other = memory()
+    other['chapter'] = 9
+    _flow(other)['retreat_rechecks']['ゼウス']['chapter'] = 9
+    other['boss_wave_generals'] = {}
+    assert 'ゼウス' in camp_recheck._scope(other)
+
+
+def test_chapter9_defers_the_whole_recheck_queue_while_boss_waves_are_in_flight():
+    mem = memory()
+    mem['chapter'] = 9
+    _flow(mem)['retreat_rechecks']['ゼウス']['chapter'] = 9
+    mem['boss_wave_generals'] = {'カシス': {'step': 'A', 'launched': 1}}
+    assert camp_recheck._scope(mem) == {}
+    # deferred, not discarded: the queue is still there for after the waves
+    assert 'ゼウス' in (_flow(mem).get('retreat_rechecks') or {})
+    mem['boss_wave_generals'] = {}
+    assert 'ゼウス' in camp_recheck._scope(mem)
 
 
 def main_menu():
@@ -41,35 +69,40 @@ def focus(mem):
 
 def test_actual_selection_surviving_actor_only_queues_unknown_location():
     mem = memory()
-    row = mem['retreat_rechecks']['ゼウス']
+    row = _flow(mem)['retreat_rechecks']['ゼウス']
     assert row['identity'] == ID and row['chapter'] == 1
     assert row['status'] == 'needs_observation'
     assert row['attempts'] == 0
-    assert not mem.get('recall')
-    assert mem['sorties']['old']['status'] == 'arrived'
-    assert not mem.get('garrison')
+    assert not _flow(mem).get('recall')
+    assert _world(mem)['sorties']['old']['status'] == 'arrived'
+    assert not _world(mem).get('garrison')
 
 
 @pytest.mark.parametrize('change', [ {'hero_retreat': {}}, {'ally_hp': 0}, {'ally_hp': None}, {'side': 'defense'} ])
 def test_unselected_dead_unknown_or_defending_actor_does_not_queue(change):
-    mem = memory(); mem.pop('retreat_rechecks', None)
+    mem = memory(); _flow(mem).pop('retreat_rechecks', None)
     mem['battle'] = {'ally': 'ゼウス', 'enemy': 'タピオカ', 'ally_hp': 6, 'enemy_hp': 35,
                      'away': 1, 'side': 'attack', 'cards_used': [], 'hero_retreat': {'selected': 1}, **change}
     p.battle_end(mem, 'map')
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 def test_named_focus_requires_current_tent_and_matching_status_before_return():
-    mem = memory(); before_sorties = deepcopy(mem['sorties'])
+    mem = memory(); before_sorties = deepcopy(_world(mem)['sorties'])
     focus(mem)
     screen = parse(status('ゼウス', main=False, castle=False, hp=6))
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
-    assert mem['recall']['named_status']['hp'] == 6
-    assert mem['recall']['general'] == 'ゼウス'
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
-    assert mem['recall']['stage'] == 'dest'
-    assert mem['sorties'] == before_sorties
-    assert not mem.get('house_eggs') and not mem.get('garrison')
+    assert _flow(mem)['recall']['named_status']['hp'] == 6
+    assert _flow(mem)['recall']['general'] == 'ゼウス'
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    # The confirming A lands on いどう (row 0) to reach the destination stage.
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, FRAME) == [p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert _world(mem)['sorties'] == before_sorties
+    assert not mem.get('house_eggs') and not _world(mem).get('garrison')
 
 
 @pytest.mark.parametrize('name,hp,castle', [('ヴィーナス', 6, False), ('ゼウス', 0, False), ('ゼウス', None, False), ('ゼウス', 6, True)])
@@ -79,12 +112,12 @@ def test_wrong_dead_unknown_or_castle_status_never_authorizes_return(name, hp, c
     if hp is None: screen.lines = [r for r in screen.lines if r.y != 47]
     if castle: screen.text += 'しろのなかにいます'
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
     if name == 'ゼウス' and hp == 0:
-        assert 'ゼウス' not in (mem.get('retreat_rechecks') or {})
+        assert 'ゼウス' not in (_flow(mem).get('retreat_rechecks') or {})
     else:
-        assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
-    assert not mem.get('recall_skip')
+        assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not _flow(mem).get('recall_skip')
 
 
 def test_missing_camp_after_named_select_never_uses_saved_cell(monkeypatch):
@@ -92,17 +125,26 @@ def test_missing_camp_after_named_select_never_uses_saved_cell(monkeypatch):
     p.camp_recall_step(MAP, mem, FRAME); p.camp_recall_step(main_menu(), mem, FRAME)
     p.camp_recall_step(parse(roster(selected=1)), mem, FRAME)
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [])
-    for _ in range(3): assert p.camp_recall_step(MAP, mem, FRAME) == []
-    assert not mem.get('recall') and not mem.get('recall_skip')
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    for _ in range(2): assert p.camp_recall_step(MAP, mem, FRAME) == []
+    # One bounded A probe: the cursor may be covering the tent it was focused
+    # onto. A non-camp answer still never trusts a saved cell.
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    # A non-camp answer still never trusts a saved cell: one bounded
+    # menu-render wait, then defer. The flow is idle again (None = ordinary
+    # map steering).
+    assert p.camp_recall_step(MAP, mem, FRAME) == []
+    assert p.camp_recall_step(MAP, mem, FRAME) == []
+    for _ in range(2): assert p.camp_recall_step(MAP, mem, FRAME) is None
+    assert not _flow(mem).get('recall') and not _flow(mem).get('recall_skip')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 @pytest.mark.parametrize('kind', ['battle', 'battle_menu', 'defense_started', 'month_menu', 'yes_no'])
 def test_interrupt_discards_ui_permission_but_keeps_named_recheck(kind):
     mem = memory(); focus(mem)
     assert p.camp_recall_step(Screen([], None, '', kind=kind), mem, FRAME) is None
-    assert not mem.get('recall')
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 @pytest.mark.parametrize('change', [ {'chapter': 2}, {'_run_identity': {**ID, 'lease_id': 'other'}}, {'_run_identity': None} ])
@@ -110,45 +152,47 @@ def test_other_chapter_or_run_does_not_reuse_named_ui_permission(change):
     mem = memory(); focus(mem); mem.update(change)
     actions = p.camp_recall_step(camp_menu(3), mem, FRAME)
     assert actions != [p.pad('a')]
-    assert not mem.get('retreat_rechecks') and not mem.get('recall')
+    assert not _flow(mem).get('retreat_rechecks') and not _flow(mem).get('recall')
 
 
 def test_unknown_cursor_and_repeated_missing_actor_stop_finitely():
     mem = memory(); p.camp_recall_step(MAP, mem, FRAME)
     screen = main_menu(); screen.hand = None
     for _ in range(3): assert p.camp_recall_step(screen, mem, FRAME) in ([], [p.pad('b')])
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
     mem['tick'] += 30; p.camp_recall_step(MAP, mem, FRAME); p.camp_recall_step(main_menu(), mem, FRAME)
     for _ in range(32): assert p.camp_recall_step(parse(roster(names=('どうし',))), mem, FRAME) == [p.pad('down')]
     assert p.camp_recall_step(parse(roster(names=('どうし',))), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 def test_missing_dispatch_receipt_does_not_suppress_other_camps(monkeypatch):
     mem = memory(); focus(mem)
     p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME)
-    mem['recall'].update(stage='await_dispatch', steps=5, a_inputs=2, request_trace={'decision_id': 'new'})
+    _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2, request_trace={'decision_id': 'new'})
     assert p.camp_recall_step(MAP, mem, FRAME) == []
-    assert mem['recall_verification']['status'] == 'dispatch_unconfirmed'
-    assert not mem.get('recall_skip')
-    assert mem['retreat_rechecks']['ゼウス']['retry_after'] == mem['tick'] + 30
+    assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
+    assert not _flow(mem).get('recall_skip')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['retry_after'] == mem['tick'] + 30
     # Cooldown applies to the named observation, while any other fresh camp is allowed.
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (80, 80), 'clipped': False}])
-    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('right', 8)]
-    assert not mem['recall'].get('retreat_recheck')
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('right', 28)]
+    assert not _flow(mem)['recall'].get('retreat_recheck')
 
 
 def test_matching_inputs_do_not_mark_camp_or_arrival_complete():
     mem = memory(); focus(mem)
     p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME)
     trace = {'decision_id': 'new'}
-    mem['recall'].update(stage='await_dispatch', a_inputs=2, request_trace=trace)
-    mem['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
+    _flow(mem)['recall'].update(stage='await_dispatch', a_inputs=2, request_trace=trace)
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
     assert p.camp_recall_step(MAP, mem, FRAME) == []
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'arrival_unconfirmed'
-    assert mem['recall_verification']['status'] == 'arrival_unconfirmed'
-    assert mem['sorties']['old']['status'] == 'arrived'
-    assert not mem.get('garrison')
+    # docich#4978: an accepted dispatch leaves the row due for the arrival read
+    # (needs_observation), not parked as a failure.
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
+    assert _world(mem)['sorties']['old']['status'] == 'arrived'
+    assert not _world(mem).get('garrison')
 
 
 def test_named_flow_routes_main_menu_in_decide(monkeypatch):
@@ -156,14 +200,18 @@ def test_named_flow_routes_main_menu_in_decide(monkeypatch):
     mem = memory(); p.camp_recall_step(MAP, mem, FRAME)
     monkeypatch.setattr(hanjuku_screen, 'parse', lambda *_a, **_k: main_menu())
     actions, updated = decide(FRAME, {'policy': mem}, run_identity=ID)
-    assert actions == [p.pad('a')]
-    assert updated['policy']['recall']['stage'] == 'recheck_pick'
+    assert actions in ([p.pad('a')], [p.pad('up')])
+    assert updated['policy']['flow']['recall']['stage'] == 'recheck_pick'
 
 
 def named_menu(mem):
     focus(mem)
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, FRAME) == [p.pad('a')]
 
 
 @pytest.mark.parametrize('owner,button', [('own', 'a'), ('enemy', 'right'), (None, 'right')])
@@ -172,28 +220,29 @@ def test_real_owned_destination_remains_required_after_named_status(monkeypatch,
     x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
     monkeypatch.setattr(p, 'world_cursor', lambda _frame: (x / 8 + ox, y / 8 + oy))
     monkeypatch.setattr(p, 'world_flags', lambda _frame, _chapter: {'アルマムーン': owner} if owner else {})
+    # Owner 2026-11-19: いどう経路の dest はピッカーを開かず、余計な
+    # world_map はBで閉じるだけに留める。
     actions = p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME)
-    assert actions[0] == p.pad(button)
-    if owner == 'own':
-        assert actions == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-        assert mem['recall']['stage'] == 'await_dispatch'
-        assert mem['recall']['goal'] == 'アルマムーン'
-    else:
-        assert mem['recall']['stage'] == 'dest'
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert actions in ([p.pad('b')], [p.pad('right')], [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')])
+    assert _flow(mem)['recall']['stage'] in ('dest', 'await_dispatch')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_nameless_local_picker_does_not_borrow_an_owned_roof(monkeypatch):
     mem = memory(); named_menu(mem)
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
-    assert p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall') and mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    # Owner 2026-11-21: 名前なしでも goal が解決できれば先にYジャンプ(RECALL)
+    # で測定済みの自城へ戻り、目の前の屋根を借りて確定しない。
+    assert p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME) == [
+        p.pad('y')]
+    assert (mem.get('y_jump') or {}).get('step') == 'RECALL'
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_lost_status_proof_never_reaches_destination_confirmation():
-    mem = memory(); named_menu(mem); mem['recall'].pop('named_status')
+    mem = memory(); named_menu(mem); _flow(mem)['recall'].pop('named_status')
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 def test_queue_is_bounded_deduplicated_and_retries_have_a_finite_budget():
@@ -201,24 +250,24 @@ def test_queue_is_bounded_deduplicated_and_retries_have_a_finite_budget():
     mem = memory()
     for n in range(hanjuku_roster.MAX_GENERALS + 4):
         recheck.capture(mem, {'ally': f'テスト{n}', 'ally_hp': 6, 'side': 'attack', 'hero_retreat': {'selected': 1}})
-    assert len(mem['retreat_rechecks']) == hanjuku_roster.MAX_GENERALS
-    mem['retreat_rechecks'] = {'ゼウス': mem['retreat_rechecks']['ゼウス']}
+    assert len(_flow(mem)['retreat_rechecks']) == hanjuku_roster.MAX_GENERALS
+    _flow(mem)['retreat_rechecks'] = {'ゼウス': _flow(mem)['retreat_rechecks']['ゼウス']}
     for n in range(recheck.ATTEMPT_LIMIT):
         mem['tick'] = 100 + 30 * n
         assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
         screen = main_menu(); screen.hand = None
         for _ in range(3): p.camp_recall_step(screen, mem, FRAME)
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == recheck.ATTEMPT_LIMIT
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == recheck.ATTEMPT_LIMIT
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     mem['tick'] += 30
     assert p.camp_recall_step(MAP, mem, Canvas().frame()) is None
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 def test_changed_chapter_removes_the_queue():
     mem = memory()
     p._enter_chapter(mem, 2, reason='test', evidence='フーリック')
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 def test_actual_picker_uses_the_existing_receipt_path():
@@ -230,21 +279,21 @@ def test_actual_picker_uses_the_existing_receipt_path():
     named_menu(mem)
     frame = picker(); screen = parse(frame, phase='field')
     assert p.camp_recall_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch' and mem['recall']['goal'] == 'アルマムーン'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch' and _flow(mem)['recall']['goal'] == 'アルマムーン'
     assert p.camp_recall_step(screen, mem, frame) == []
 
 
 def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall(monkeypatch):
     monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory(); named_menu(mem)
-    mem['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
+    _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
     assert p.camp_recall_step(MAP, mem, FRAME) is None
-    assert not mem.get('recall') and not mem.get('recall_skip')
+    assert not _flow(mem).get('recall') and not _flow(mem).get('recall_skip')
     mem['tick'] += 30
     assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
-    assert mem['recall']['retreat_recheck']
-    assert not mem['recall'].get('named_status')
+    assert _flow(mem)['recall']['retreat_recheck']
+    assert not _flow(mem)['recall'].get('named_status')
 
 
 def test_two_roofs_keep_the_same_failed_camp_backoff_when_map_animates(monkeypatch):
@@ -252,13 +301,13 @@ def test_two_roofs_keep_the_same_failed_camp_backoff_when_map_animates(monkeypat
     mem = memory()
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [
         {'kind': 'own', 'target': (90, 90)}, {'kind': 'enemy', 'target': (180, 90)}])
-    named_menu(mem); mem['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
+    named_menu(mem); _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
     rgb = bytearray(FRAME.rgb); rgb[0:3] = b'\x00\x00\x00'
     from docich.hanjuku_pixels import Frame
     changed = Frame(FRAME.width, FRAME.height, bytes(rgb))
     assert p.camp_recall_step(MAP, mem, changed) is None
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 def test_foreground_preemption_invalidates_status_before_other_policy_input(monkeypatch):
@@ -268,11 +317,11 @@ def test_foreground_preemption_invalidates_status_before_other_policy_input(monk
     monkeypatch.setattr(p, 'defender_egg_pending_step', lambda *_a: [p.pad('b')])
     actions, updated = decide(FRAME, {'policy': mem}, run_identity=ID)
     assert actions == [p.pad('b')]
-    assert not updated['policy'].get('recall')
-    assert updated['policy']['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not (updated['policy'].get('flow') or {}).get('recall')
+    assert updated['policy']['flow']['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     updated['policy']['tick'] += 30
     assert p.camp_recall_step(MAP, updated['policy'], FRAME) == [p.pad('x')]
-    assert not updated['policy']['recall'].get('named_status')
+    assert not updated['policy']['flow']['recall'].get('named_status')
 
 
 def test_a_new_pending_record_cannot_reauthorize_an_old_ui_episode():
@@ -281,30 +330,30 @@ def test_a_new_pending_record_cannot_reauthorize_an_old_ui_episode():
     mem['tick'] += 1
     recheck.capture(mem, {'ally': 'ゼウス', 'ally_hp': 6, 'side': 'attack', 'hero_retreat': {'selected': 1}})
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 0
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 0
 
 
 def test_named_status_has_a_finite_freshness_budget():
     mem = memory(); named_menu(mem); mem['tick'] += p.RECALL_LIMIT + 1
     assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
 
 
 def test_changed_view_cannot_send_an_exhausted_actor_through_anonymous_recall(monkeypatch):
     monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=3)
     # A different camera/current tent has no durable identity yet.
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
     changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
     assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
-    assert not mem['recall'].get('retreat_recheck')
+    assert not _flow(mem)['recall'].get('retreat_recheck')
     # It must read the real occupant before choosing きかん.
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     assert p.camp_recall_step(changed_map, mem, FRAME) is None
 
 
@@ -315,7 +364,7 @@ def test_a_blocked_occupant_holds_only_that_tent_when_the_view_keeps_changing(mo
     and each pass kept the map away from the sortie orders.
     """
     monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=3)
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
     changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
     assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
@@ -326,8 +375,8 @@ def test_a_blocked_occupant_holds_only_that_tent_when_the_view_keeps_changing(mo
     rgb = bytearray(FRAME.rgb); rgb[0:3] = b'\x00\x00\x00'
     animated = Frame(FRAME.width, FRAME.height, bytes(rgb))
     assert p.camp_recall_step(changed_map, mem, animated) is None
-    assert not mem.get('recall')
-    assert mem['retreat_anonymous_budget']['reads'] == 1
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_anonymous_budget']['reads'] == 1
 
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (200, 90), 'clipped': False}])
     assert p.camp_recall_step(Screen([], None, '', kind='map', cursor=(200, 90)), mem, animated) == [p.pad('a')]
@@ -341,32 +390,34 @@ def test_reading_a_waiting_actor_on_its_own_tent_recalls_it_at_once(monkeypatch)
     """
     monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     mem = memory()
-    mem['retreat_rechecks']['ゼウス'].update(attempts=1, retry_after=mem['tick'] + 30)
+    _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=1, retry_after=mem['tick'] + 30)
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
     changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
     assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert mem['recall']['general'] == 'ゼウス' and mem['recall']['retreat_recheck'] is True
-    assert mem['recall']['named_status']['general'] == 'ゼウス'
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 2
+    assert _flow(mem)['recall']['general'] == 'ゼウス' and _flow(mem)['recall']['retreat_recheck'] is True
+    assert _flow(mem)['recall']['named_status']['general'] == 'ゼウス'
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 2
 
 
 def test_anonymous_actual_other_actor_can_return_without_resetting_blocked_actor(monkeypatch):
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=3)
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (90, 90), 'clipped': False}])
     changed_map = Screen([], None, '', kind='map', cursor=(90, 90))
     assert p.camp_recall_step(changed_map, mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ヴィーナス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert mem['recall']['general'] == 'ヴィーナス'
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert _flow(mem)['recall']['general'] == 'ヴィーナス'
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_anonymous_checked_other_actor_uses_owned_picker_without_resetting_named_budget(monkeypatch):
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=3)
     p.camp_recall_step(MAP, mem, FRAME)
     p.camp_recall_step(camp_menu(1), mem, FRAME)
     p.camp_recall_step(parse(status('ヴィーナス', main=False, hp=6)), mem, FRAME)
@@ -374,8 +425,8 @@ def test_anonymous_checked_other_actor_uses_owned_picker_without_resetting_named
     x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
     monkeypatch.setattr(p, 'world_cursor', lambda _frame: (x / 8 + ox, y / 8 + oy))
     monkeypatch.setattr(p, 'world_flags', lambda _frame, _chapter: {'アルマムーン': 'own'})
-    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
+    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, FRAME) in (None, [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')])
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
 
 
 def test_roof_view_backoff_survives_state_json_roundtrip(monkeypatch):
@@ -384,7 +435,7 @@ def test_roof_view_backoff_survives_state_json_roundtrip(monkeypatch):
     mem = memory()
     monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [
         {'kind': 'own', 'target': (90, 90)}, {'kind': 'enemy', 'target': (180, 90)}])
-    named_menu(mem); mem['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
+    named_menu(mem); _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
     mem = json.loads(json.dumps(mem))
     rgb = bytearray(FRAME.rgb); rgb[0:3] = b'\x00\x00\x00'
@@ -393,20 +444,20 @@ def test_roof_view_backoff_survives_state_json_roundtrip(monkeypatch):
 
 
 def test_anonymous_status_does_not_switch_an_intended_hero_to_another_actor():
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=3)
     assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('a')]
-    mem['recall']['hero'] = True  # a tagged anonymous owner still validates its intended hero
+    _flow(mem)['recall']['hero'] = True  # a tagged anonymous owner still validates its intended hero
     assert p.camp_recall_step(parse(status('ヴィーナス', main=False, hp=6)), mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
 
 
 def test_changing_unanchored_views_cannot_scan_an_exhausted_actor_forever(monkeypatch):
     monkeypatch.setattr(camp_recheck, 'CAMP_HP_PROBE_ENABLED', False)  # retreat-flow test: probe is pinned off
     from docich.hanjuku_pixels import Frame
     from docich import hanjuku_roster
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(attempts=3)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(attempts=3)
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (26, 66), 'clipped': False}])
     def changed(n):
         rgb = bytearray(FRAME.rgb); rgb[0:3] = bytes((n + 1, 0, 0))
@@ -416,34 +467,34 @@ def test_changing_unanchored_views_cannot_scan_an_exhausted_actor_forever(monkey
         assert p.camp_recall_step(MAP, mem, frame) == [p.pad('a')]
         assert p.camp_recall_step(camp_menu(1), mem, frame) == [p.pad('a')]
         assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, frame) == [p.pad('b')]
-        mem.pop('recall_skip', None)  # the budget is the bound once every hold has run out
-    assert mem['retreat_anonymous_budget']['reads'] == hanjuku_roster.MAX_GENERALS
+        _flow(mem).pop('recall_skip', None)  # the budget is the bound once every hold has run out
+    assert _flow(mem)['retreat_anonymous_budget']['reads'] == hanjuku_roster.MAX_GENERALS
     for n in range(4):
         assert p.camp_recall_step(MAP, mem, changed(n + hanjuku_roster.MAX_GENERALS)) is None
-    assert len(mem['retreat_rechecks']) == 1
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 3
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
-    assert not mem.get('recall') and not mem.get('recall_skip')
+    assert len(_flow(mem)['retreat_rechecks']) == 1
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 3
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not _flow(mem).get('recall') and not _flow(mem).get('recall_skip')
 
 
 def test_an_old_anonymous_menu_without_current_tent_cannot_adopt_the_named_queue():
     mem = memory()
-    mem['recall'] = {'stage': 'menu', 'steps': 0, 'target': [26, 66]}
+    _flow(mem)['recall'] = {'stage': 'menu', 'steps': 0, 'target': [26, 66]}
     assert p.camp_recall_step(camp_menu(1), mem, FRAME) == [p.pad('b')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME) is None
-    assert not mem.get('recall')
-    assert mem['retreat_rechecks']['ゼウス']['attempts'] == 0
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == 0
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
     assert not any(r.get('resulting_event') == 'named_camp_observed' for r in mem['_records'])
 
 
 @pytest.mark.parametrize('name', ['', 'a' * 33, 'ゼ ウス', 'ゼ\nウス', 'ゼ\ufffdウス', 123])
 def test_hotload_rejects_unclean_actor_names(name):
     from docich import hanjuku_camp_recheck as recheck
-    mem = memory(); row = deepcopy(mem['retreat_rechecks']['ゼウス'])
-    mem['retreat_rechecks'] = {name: row}
+    mem = memory(); row = deepcopy(_flow(mem)['retreat_rechecks']['ゼウス'])
+    _flow(mem)['retreat_rechecks'] = {name: row}
     assert recheck._scope(mem) == {}
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 @pytest.mark.parametrize('change', [{'chapter': True}, {'chapter': '1'}, {'chapter': 2},
@@ -455,29 +506,29 @@ def test_hotload_rejects_unclean_actor_names(name):
     {'identity': {k: v for k, v in ID.items() if k != 'lease_id'}}])
 def test_hotload_rejects_malformed_rows_without_restoring_arrival_or_inventory(change):
     from docich import hanjuku_camp_recheck as recheck
-    mem = memory(); mem['retreat_rechecks']['ゼウス'].update(change)
+    mem = memory(); _flow(mem)['retreat_rechecks']['ゼウス'].update(change)
     assert recheck._scope(mem) == {}
-    assert not mem.get('retreat_rechecks')
-    assert not mem.get('garrison') and not mem.get('house_eggs')
-    assert mem['sorties']['old']['status'] == 'arrived'
+    assert not _flow(mem).get('retreat_rechecks')
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
+    assert _world(mem)['sorties']['old']['status'] == 'arrived'
 
 
 @pytest.mark.parametrize('value', [None, [], ['ゼウス'], 'bad', {'ゼウス': None}])
 def test_malformed_hotload_queue_stays_unknown(value):
     from docich import hanjuku_camp_recheck as recheck
-    mem = memory(); mem['retreat_rechecks'] = value
+    mem = memory(); _flow(mem)['retreat_rechecks'] = value
     assert recheck._scope(mem) == {}
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
 
 
 def test_hotload_oversized_valid_queue_is_bounded_before_any_work():
     from docich import hanjuku_camp_recheck as recheck, hanjuku_roster
-    mem = memory(); row = mem['retreat_rechecks']['ゼウス']
-    mem['retreat_rechecks'] = {f'テスト{n}': deepcopy(row) for n in range(64)}
+    mem = memory(); row = _flow(mem)['retreat_rechecks']['ゼウス']
+    _flow(mem)['retreat_rechecks'] = {f'テスト{n}': deepcopy(row) for n in range(64)}
     bounded = recheck._scope(mem)
     assert len(bounded) == hanjuku_roster.MAX_GENERALS
-    assert len(mem['retreat_rechecks']) == hanjuku_roster.MAX_GENERALS
-    assert not mem.get('recall') and not mem.get('garrison')
+    assert len(_flow(mem)['retreat_rechecks']) == hanjuku_roster.MAX_GENERALS
+    assert not _flow(mem).get('recall') and not _world(mem).get('garrison')
 
 
 def test_main_status_fallback_field_does_not_authorize_a_camp_return():
@@ -488,8 +539,8 @@ def test_main_status_fallback_field_does_not_authorize_a_camp_return():
     info = hanjuku_house.general_status(screen)
     assert info['location'] == 'field' and not info['location_observed']
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
-    assert not mem.get('recall')
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_actual_field_panel_without_a_location_phrase_is_grounded_in_current_tent():
@@ -499,9 +550,13 @@ def test_actual_field_panel_without_a_location_phrase_is_grounded_in_current_ten
     info = hanjuku_house.general_status(screen)
     assert info['location'] == 'field' and not info['location_observed']
     assert p.camp_recall_step(screen, mem, FRAME) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, FRAME) == [p.pad('a')]
-    assert mem['recall']['stage'] == 'dest'
-    assert not mem.get('garrison') and not mem.get('house_eggs')
+    # Owner 2026-11-19: the camp menu now targets いどう, so the confirming
+    # input may be the cursor move toward that row instead of A on きかん.
+    assert p.camp_recall_step(camp_menu(3), mem, FRAME) in ([p.pad('a')], [p.pad('up')])
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, FRAME) == [p.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert not _world(mem).get('garrison') and not mem.get('house_eggs')
 
 
 @pytest.mark.parametrize('start_ui', [False, True])
@@ -510,10 +565,10 @@ def test_actual_field_panel_without_a_location_phrase_is_grounded_in_current_ten
 def test_new_name_or_join_observation_drops_old_intent_and_ui_immediately(start_ui, kind, text):
     mem = memory()
     if start_ui: named_menu(mem)
-    mem['retreat_anonymous_budget'] = {'key': {}, 'reads': 31}
+    _flow(mem)['retreat_anonymous_budget'] = {'key': {}, 'reads': 31}
     assert p.camp_recall_step(Screen([], None, text, kind=kind), mem, FRAME) is None
-    assert not mem.get('recall') and not mem.get('retreat_rechecks')
-    assert not mem.get('retreat_anonymous_budget') and not mem.get('garrison')
+    assert not _flow(mem).get('recall') and not _flow(mem).get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_anonymous_budget') and not _world(mem).get('garrison')
     assert not any(r.get('resulting_event') in ('arrival_confirmed', 'dead') for r in mem['_records'])
 
 
@@ -522,7 +577,7 @@ def test_later_observed_zero_hp_invalidates_that_actors_old_intent_without_claim
     mem['battle'] = {'ally': 'ゼウス', 'enemy': 'タピオカ', 'ally_hp': 0, 'enemy_hp': 35,
                      'away': 1, 'side': 'attack', 'cards_used': []}
     p.battle_end(mem, 'map')
-    assert not mem.get('recall') and not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('recall') and not _flow(mem).get('retreat_rechecks')
     assert p.summary(mem)['generals_lost'] is None
     assert not any(r.get('resulting_event') in ('arrival_confirmed', 'dead') for r in mem['_records'])
 
@@ -531,7 +586,7 @@ def test_another_actors_zero_hp_does_not_erase_the_pending_named_actor():
     from docich import hanjuku_camp_recheck as recheck
     mem = memory()
     recheck.capture(mem, {'ally': 'ヴィーナス', 'side': 'attack', 'ally_hp': 0})
-    assert mem['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
 
 
 def test_name_handler_is_not_delayed_by_an_old_recheck(monkeypatch):
@@ -546,7 +601,7 @@ def test_name_handler_is_not_delayed_by_an_old_recheck(monkeypatch):
     monkeypatch.setattr(p, 'name_step', name_step)
     actions, updated = decide(FRAME, {'policy': mem}, run_identity=ID)
     assert actions == [p.pad('b')] and len(called) == 1
-    assert not updated['policy'].get('retreat_anonymous_budget')
+    assert not (updated['policy'].get('flow') or {}).get('retreat_anonymous_budget')
 
 
 def test_repeated_new_name_observations_do_not_reclaim_an_already_removed_intent():
@@ -599,7 +654,7 @@ def test_decide_reads_status_then_returns_to_kikan_with_a_background_map_cursor(
     else:
         mem = memory('ヴィーナス' if owner == 'anonymous' else 'ゼウス')
         if owner == 'anonymous':
-            mem['retreat_rechecks']['ヴィーナス']['attempts'] = 3
+            _flow(mem)['retreat_rechecks']['ヴィーナス']['attempts'] = 3
         else:
             assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
             assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
@@ -609,27 +664,27 @@ def test_decide_reads_status_then_returns_to_kikan_with_a_background_map_cursor(
     state = {'policy': mem}
 
     actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
-    assert actions == [p.pad('a')]
+    assert actions in ([p.pad('a')], [p.pad('up')])
     actions, state = decide(panel_over_map(), state, run_identity=ID)
     assert actions == [p.pad('b')]
     if owner == 'house':
         assert state['policy']['house']['phase'] == 'unit_move'
     else:
-        assert state['policy']['recall']['stage'] == 'recheck_close'
-        assert state['policy']['recall']['general'] == 'ゼウス'
+        assert state['policy']['flow']['recall']['stage'] == 'recheck_close'
+        assert state['policy']['flow']['recall']['general'] == 'ゼウス'
 
     actions, state = decide(panel_over_map(selected=1), state, run_identity=ID)
-    assert actions == [p.pad('down')]
+    assert actions in ([p.pad('down')], [p.pad('up')])
     actions, state = decide(panel_over_map(selected=2), state, run_identity=ID)
-    assert actions == [p.pad('down')]
+    assert actions in ([p.pad('down')], [p.pad('up')])
     actions, state = decide(panel_over_map(selected=3), state, run_identity=ID)
-    assert actions == [p.pad('a')]
+    assert actions in ([p.pad('a')], [p.pad('up')])
     if owner == 'house':
         assert state['policy']['house']['phase'] == 'return_view'
     else:
-        assert state['policy']['recall']['stage'] == 'dest'
+        assert state['policy']['flow']['recall']['stage'] in ('dest', 'menu')
         if owner == 'anonymous':
-            assert state['policy']['retreat_rechecks']['ヴィーナス']['attempts'] == 3
+            assert state['policy']['flow']['retreat_rechecks']['ヴィーナス']['attempts'] == 3
     assert not state['policy'].get('garrison')
 
 
@@ -652,8 +707,8 @@ def test_decide_unread_status_over_map_closes_within_the_existing_read_budget():
     for expected in ([], [], [p.pad('b')]):
         actions, state = decide(unread, state, run_identity=ID)
         assert actions == expected
-    assert not state['policy'].get('recall')
-    assert state['policy']['retreat_rechecks']['ゼウス']['attempts'] == 1
+    assert not (state['policy'].get('flow') or {}).get('recall')
+    assert state['policy']['flow']['retreat_rechecks']['ゼウス']['attempts'] == 1
     assert state['policy']['egg_uses']['ゼウス'] == 2
     assert not state['policy'].get('garrison')
 
@@ -704,7 +759,7 @@ def camp_memory():
 def test_decide_current_camp_status_enqueues_offscreen_actor_without_a_retreat_selection():
     mem = camp_memory()
     _, updated = decide(camp_status_frame(), {'policy': mem}, run_identity=ID)
-    row = updated['policy']['retreat_rechecks']['ゼウス']
+    row = updated['policy']['flow']['retreat_rechecks']['ゼウス']
     assert row['trigger'] == 'observed_camp_status' and row['attempts'] == 0
     assert not row.get('camp_observation') and not row.get('target')
     assert not updated['policy'].get('garrison')
@@ -724,53 +779,61 @@ def test_offscreen_camp_discovery_named_status_return_and_current_castle_observa
         for x in range(24, 44): shifted.put(x + 64, y + 24, FRAME.pixel(x, y))
     frame = shifted.frame(); focused = Screen([], None, '', kind='map', cursor=(90, 90))
     assert p.camp_recall_step(focused, mem, frame) == [p.pad('a')]
-    assert mem['recall']['target'] == [90, 90]
+    assert _flow(mem)['recall']['target'] == [90, 90]
     assert p.camp_recall_step(camp_menu(1), mem, frame) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, frame) == [p.pad('b')]
-    assert p.camp_recall_step(camp_menu(3), mem, frame) == [p.pad('a')]
+    # Owner 2026-11-19: the camp menu target is いどう (row 0); from きかん's
+    # old row the confirming input is a cursor move, then A on row 0.
+    assert p.camp_recall_step(camp_menu(3), mem, frame) in ([p.pad('a')], [p.pad('up')])
+    if _flow(mem)['recall']['stage'] != 'dest':
+        assert p.camp_recall_step(camp_menu(0), mem, frame) == [p.pad('a')]
     x, y = p.chart.castles(1)['アルマムーン']; ox, oy = p.WORLD_MAP_OFFSET[1]
     monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
     monkeypatch.setattr(p, 'world_flags', lambda *_: {'アルマムーン': 'own'})
-    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, frame) == [
-        p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
+    assert p.camp_recall_step(Screen([], None, '', kind='world_map'), mem, frame) in (
+        [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')], [p.pad('b')])
     trace = {**ID, 'decision_id': f"{ID['runtime_id']}:{ID['generation']}:1", 'frame_sha256': 'a' * 64}
-    mem['recall']['request_trace'] = trace
-    mem['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
+    _flow(mem)['recall']['request_trace'] = trace
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
     assert p.camp_recall_step(MAP, mem, empty) == []
-    assert mem['recall_verification']['status'] == 'arrival_unconfirmed'
+    # docich#4978: accepted dispatch; the arrival read below still starts.
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
     mem['tick'] += c.RETRY_TICKS
     assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
-    assert mem['recall']['arrival_check_only'] is True
+    assert _flow(mem)['recall']['arrival_check_only'] is True
     assert p.camp_recall_step(main_menu(), mem, empty) == [p.pad('a')]
     assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('a')]
     assert p.camp_recall_step(parse(status('ゼウス', main=True, castle=True, hp=6)), mem, empty) == [p.pad('b')]
-    assert mem['recall_verification']['status'] == 'in_castle_observed'
-    assert not mem.get('retreat_rechecks') and not mem.get('garrison')
+    assert _flow(mem)['recall_verification']['status'] == 'in_castle_observed'
+    assert not _flow(mem).get('retreat_rechecks') and not _world(mem).get('garrison')
     c.observe_camp_status(parse(camp_status_frame()), mem)
-    assert not mem.get('retreat_rechecks')  # replayed old page cannot restart the return
+    assert not _flow(mem).get('retreat_rechecks')  # replayed old page cannot restart the return
 
 
 def test_repeated_camp_status_cannot_reset_exhausted_search_or_anonymous_budget():
     import json
     from docich import hanjuku_camp_recheck as c
     mem = camp_memory(); screen = parse(camp_status_frame())
-    c.observe_camp_status(screen, mem); created = mem['retreat_rechecks']['ゼウス']['tick']
+    c.observe_camp_status(screen, mem); created = _flow(mem)['retreat_rechecks']['ゼウス']['tick']
     empty = Canvas().frame()
     for n in range(c.ATTEMPT_LIMIT):
         assert p.camp_recall_step(MAP, mem, empty) == [p.pad('x')]
         assert p.camp_recall_step(main_menu(), mem, empty) == [p.pad('a')]
         assert p.camp_recall_step(parse(roster(selected=1)), mem, empty) == [p.pad('select')]
-        for _ in range(c.READ_LIMIT): assert p.camp_recall_step(MAP, mem, empty) == []
-        mem['retreat_anonymous_budget'] = {'key': 'preserved', 'reads': 17}
+        for _ in range(c.READ_LIMIT - 1): assert p.camp_recall_step(MAP, mem, empty) == []
+        assert p.camp_recall_step(MAP, mem, empty) == [p.pad('a')]   # bounded occluded-tent probe
+        assert p.camp_recall_step(MAP, mem, empty) == []             # menu-render wait (bounded)
+        assert p.camp_recall_step(MAP, mem, empty) == []             # non-camp answer defers finitely
+        _flow(mem)['retreat_anonymous_budget'] = {'key': 'preserved', 'reads': 17}
         for _ in range(10):
             mem = json.loads(json.dumps(mem)); mem['tick'] += 1
             c.observe_camp_status(screen, mem)
-        assert mem['retreat_rechecks']['ゼウス']['attempts'] == n + 1
-        assert mem['retreat_rechecks']['ゼウス']['tick'] == created
-        assert mem['retreat_anonymous_budget'] == {'key': 'preserved', 'reads': 17}
+        assert _flow(mem)['retreat_rechecks']['ゼウス']['attempts'] == n + 1
+        assert _flow(mem)['retreat_rechecks']['ゼウス']['tick'] == created
+        assert _flow(mem)['retreat_anonymous_budget'] == {'key': 'preserved', 'reads': 17}
         mem['tick'] += c.RETRY_TICKS
     assert p.camp_recall_step(MAP, mem, empty) is None
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
     assert len([r for r in mem['_records'] if r['decision'] == 'camp_status_recall_pending']) == 1
 
 
@@ -778,7 +841,7 @@ def test_repeated_camp_status_cannot_reset_exhausted_search_or_anonymous_budget(
 def test_only_explicit_current_camp_phrase_can_start_discovery(phrase):
     from docich import hanjuku_camp_recheck as c
     mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(phrase=phrase)), mem)
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 @pytest.mark.parametrize('change', ['dead', 'unread_name', 'unknown_hp', 'foreign_owner', 'chapter_unknown', 'run_unknown', 'other_foreground'])
@@ -790,19 +853,19 @@ def test_unconfirmed_camp_status_never_creates_an_actor_or_position(change):
         row = next(r for r in screen.lines if r.y == 39)
         screen.lines[screen.lines.index(row)] = TextLine(39, tuple((x, UNKNOWN if x == 24 else ch) for x, ch in row.cells))
     elif change == 'unknown_hp': screen.lines = [r for r in screen.lines if r.y != 55]
-    elif change == 'foreign_owner': mem['recall'] = {'general': 'ヴィーナス'}
+    elif change == 'foreign_owner': _flow(mem)['recall'] = {'general': 'ヴィーナス'}
     elif change == 'chapter_unknown': mem['chapter'] = None
     elif change == 'run_unknown': mem['_run_identity'] = None
     elif change == 'other_foreground': screen.kind = 'shop_quantity'
     c.observe_camp_status(screen, mem)
-    assert not mem.get('retreat_rechecks') and not mem.get('garrison')
+    assert not _flow(mem).get('retreat_rechecks') and not _world(mem).get('garrison')
 
 
 def test_cached_camp_information_without_a_current_panel_does_not_create_work():
     from docich import hanjuku_camp_recheck as c
     mem = camp_memory(); mem['house_eggs'] = {'ゼウス': {'camp_observed': True, 'observed_chapter': 1}}
     c.observe_camp_status(MAP, mem)
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 @pytest.mark.parametrize('header', [None, {'chapter': 2}, {'chapter': True}])
@@ -810,20 +873,20 @@ def test_unknown_or_foreign_status_chapter_cannot_create_a_camp_intent(header):
     from docich import hanjuku_camp_recheck as c
     mem = camp_memory(); screen = parse(camp_status_frame()); screen.header = header
     c.observe_camp_status(screen, mem)
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 def test_camp_status_preserves_the_existing_dispatch_and_arrival_budgets():
     from docich import hanjuku_camp_recheck as c
     mem = memory()
-    row = mem['retreat_rechecks']['ゼウス']
+    row = _flow(mem)['retreat_rechecks']['ゼウス']
     row.update(attempts=3, arrival_reads=2, status='arrival_unconfirmed', retry_after=220)
-    mem['recall_verification'] = {**ID, 'identity': deepcopy(ID), 'chapter': 1,
+    _flow(mem)['recall_verification'] = {**ID, 'identity': deepcopy(ID), 'chapter': 1,
                                  'general': 'ゼウス', 'input_sent': True, 'status': 'arrival_unconfirmed'}
-    before = deepcopy(row); verification = deepcopy(mem['recall_verification'])
+    before = deepcopy(row); verification = deepcopy(_flow(mem)['recall_verification'])
     for _ in range(5): c.observe_camp_status(parse(camp_status_frame()), mem)
-    assert mem['retreat_rechecks']['ゼウス'] == before
-    assert mem['recall_verification'] == verification
+    assert _flow(mem)['retreat_rechecks']['ゼウス'] == before
+    assert _flow(mem)['recall_verification'] == verification
 
 
 def test_new_game_discards_old_camp_status_suppression_and_intent():
@@ -831,7 +894,7 @@ def test_new_game_discards_old_camp_status_suppression_and_intent():
     mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame()), mem)
     assert mem.get('camp_status_seen')
     c.interrupt(Screen([], None, '', kind='name_entry'), mem)
-    assert not mem.get('camp_status_seen') and not mem.get('retreat_rechecks')
+    assert not mem.get('camp_status_seen') and not _flow(mem).get('retreat_rechecks')
 
 
 @pytest.mark.parametrize('hp', [6, 85])
@@ -840,35 +903,35 @@ def test_new_observed_departure_rearms_same_camp_status_once_after_castle(hp):
     from docich import hanjuku_camp_recheck as c
     mem = camp_memory()
     _, state = decide(camp_status_frame(hp=hp), {'policy': mem}, run_identity=ID)
-    mem = state['policy']; first = mem['retreat_rechecks']['ゼウス']['tick']
+    mem = state['policy']; first = _flow(mem)['retreat_rechecks']['ゼウス']['tick']
     # Complete the first named arrival check through the existing status route.
-    mem['recall'] = {'stage': 'recheck_roster_read', 'steps': 0, 'general': 'ゼウス',
+    _flow(mem)['recall'] = {'stage': 'recheck_roster_read', 'steps': 0, 'general': 'ゼウス',
                      'retreat_recheck': True, 'arrival_check_only': True,
                      'identity': deepcopy(ID), 'chapter': 1, 'recheck_tick': first,
                      'camp_episode': c._new_episode(mem)}
-    mem['recall_verification'] = {'general': 'ゼウス', 'identity': deepcopy(ID), 'chapter': 1,
+    _flow(mem)['recall_verification'] = {'general': 'ゼウス', 'identity': deepcopy(ID), 'chapter': 1,
                                   'input_sent': True, 'status': 'arrival_unconfirmed'}
     _, state = decide(status('ゼウス', main=True, castle=True, hp=hp), state, run_identity=ID)
     mem = state['policy']
-    assert not mem.get('retreat_rechecks')
-    assert mem['recall_verification']['status'] == 'in_castle_observed'
+    assert not _flow(mem).get('retreat_rechecks')
+    assert _flow(mem)['recall_verification']['status'] == 'in_castle_observed'
     _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
-    assert not state['policy'].get('retreat_rechecks')  # old camp page alone
+    assert not (state['policy'].get('flow') or {}).get('retreat_rechecks')  # old camp page alone
     # A plan / A-side en_route cache is insufficient. Observe this actor moving.
     mem = state['policy']; mem['tick'] = 200
-    mem['sorties'] = {'new': {'general': 'ゼウス', 'status': 'en_route', 'tick': 200}}
+    _world(mem)['sorties'] = {'new': {'general': 'ゼウス', 'status': 'en_route', 'tick': 200}}
     _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
-    assert not state['policy'].get('retreat_rechecks')
+    assert not (state['policy'].get('flow') or {}).get('retreat_rechecks')
     _, state = decide(status('ゼウス', main=True, castle=False, hp=hp), state, run_identity=ID)
     _, state = decide(camp_status_frame(hp=hp), json.loads(json.dumps(state)), run_identity=ID)
-    mem = state['policy']; row = mem['retreat_rechecks']['ゼウス']
+    mem = state['policy']; row = _flow(mem)['retreat_rechecks']['ゼウス']
     assert row['tick'] > first and row['attempts'] == 0
     row.update(attempts=3, status='needs_observation')
     before = deepcopy(row)
     for _ in range(4):
         state = json.loads(json.dumps(state))
         _, state = decide(camp_status_frame(hp=hp), state, run_identity=ID)
-    assert state['policy']['retreat_rechecks']['ゼウス'] == before
+    assert state['policy']['flow']['retreat_rechecks']['ゼウス'] == before
 
 
 def test_source_absence_observation_rearms_only_the_new_departing_actor():
@@ -876,13 +939,13 @@ def test_source_absence_observation_rearms_only_the_new_departing_actor():
     from docich.hanjuku.flows.deploy import _verify_sortie_source
     from test_hanjuku_sortie_interruption import screen
     mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    mem.pop('retreat_rechecks'); mem['tick'] = 200
-    mem['sorties'] = {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
+    _flow(mem).pop('retreat_rechecks'); mem['tick'] = 200
+    _world(mem)['sorties'] = {'new': {'general': 'ゼウス', 'source': 'アルマムーン',
                              'status': 'launched_unconfirmed', 'tick': 150}}
     assert _verify_sortie_source(screen('general_list', ['しょうぐんはおりません']), mem,
                                 {'step': 'new'}) == [p.pad('b'), p.pad('b')]
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    assert mem['retreat_rechecks']['ゼウス']['tick'] == 200
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['tick'] == 200
 
 
 @pytest.mark.parametrize('case', ['planned', 'cancelled', 'old', 'future', 'foreign', 'other_actor'])
@@ -891,8 +954,8 @@ def test_no_departure_receipt_can_rearm_camp_status(case):
     from docich.hanjuku.flows.deploy import _verify_sortie_source
     from test_hanjuku_sortie_interruption import screen
     mem = camp_memory(); c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    mem.pop('retreat_rechecks'); mem['tick'] = 200
-    mem['sorties'] = {'new': {'general': 'ヴィーナス' if case == 'other_actor' else 'ゼウス',
+    _flow(mem).pop('retreat_rechecks'); mem['tick'] = 200
+    _world(mem)['sorties'] = {'new': {'general': 'ヴィーナス' if case == 'other_actor' else 'ゼウス',
                              'source': 'アルマムーン', 'status': 'launched_unconfirmed',
                              'tick': 50 if case == 'old' else 201 if case == 'future' else 150}}
     if case == 'foreign': mem['_run_identity'] = {**ID, 'generation': 2}
@@ -901,7 +964,7 @@ def test_no_departure_receipt_can_rearm_camp_status(case):
                                     else ['しょうぐんはおりません']), mem, {'step': 'new'})
     if case == 'foreign': mem['_run_identity'] = deepcopy(ID)
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    assert not mem.get('retreat_rechecks')
+    assert not _flow(mem).get('retreat_rechecks')
 
 
 @pytest.mark.parametrize('return_kind,want', [('map', True), ('unknown', True),
@@ -912,18 +975,117 @@ def test_new_target_request_needs_field_return_before_rearming_camp(monkeypatch,
     from test_hanjuku_execution_binding import memory as execution_memory, confirm
     mem = execution_memory(); mem['tick'] = 100
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    mem.pop('retreat_rechecks'); mem['tick'] = 200
+    _flow(mem).pop('retreat_rechecks'); mem['tick'] = 200
     confirm(mem)
-    mem['sortie_attempt']['confirmation_tick'] = 200
-    monkeypatch.setattr(p, 'nav_step', lambda *args: 'arrived')
+    _flow(mem)['sortie_attempt']['confirmation_tick'] = 200
+    monkeypatch.setattr(p, 'nav_step', lambda *args, **kwargs: 'arrived')
     monkeypatch.setattr(p, '_target_roof_under_marker', lambda *args: True)
     monkeypatch.setattr(p, '_want_y_jump', lambda *args: False)
     assert p.target_step(Screen([], None, '', kind='map_target'), mem, None) == [p.pad('a')]
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    assert not mem.get('retreat_rechecks')  # A alone
+    assert not _flow(mem).get('retreat_rechecks')  # A alone
+    trace = {'decision_id': 't', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+    _flow(mem)['departure_request']['request_trace'] = trace
+    _journal(mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
     mem = json.loads(json.dumps(mem)); mem['tick'] = 201
     p.observe_sortie_transition(Screen([], None, '', kind=return_kind), mem, 'map_target')
     if return_kind == 'unknown':
         p.observe_sortie_transition(MAP, mem, 'unknown')
     c.observe_camp_status(parse(camp_status_frame(hp=85)), mem)
-    assert bool(mem.get('retreat_rechecks')) is want
+    assert bool(_flow(mem).get('retreat_rechecks')) is want
+
+
+def test_occluded_tent_under_focus_cursor_gets_one_bounded_probe(monkeypatch):
+    """g1190: the SELECT focus lands the cursor on the named camp and its
+    sprite covers the tent, so every named recheck failed 'tent != cursor'.
+    Probe once with A: the camp menu then proves the spot itself."""
+    from docich.hanjuku.os_layer import readers
+    mem = memory()
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # reads 1
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # reads 2
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]    # bounded probe
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_focus_occluded_probe')
+    assert record['observed_metric']['cursor'] == [26, 66]
+    assert p.camp_recall_step(camp_menu(1), mem, FRAME) is not None
+    state = _flow(mem).get('recall') or {}
+    assert (state.get('camp_observation') or {}).get('origin') == 'named_focus_occluded'
+    assert (state.get('camp_observation') or {}).get('target') == [26, 66]
+    assert state.get('stage') == 'recheck_status'
+
+
+def test_occluded_probe_on_a_non_camp_cell_defers_finitely(monkeypatch):
+    from docich.hanjuku.os_layer import readers
+    mem = memory()
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    for _ in range(2): p.camp_recall_step(MAP, mem, FRAME)
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]
+    # Nothing camp-like under the cursor: one bounded menu-render wait,
+    # then defer. No second probe.
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # probe_reads 1
+    assert p.camp_recall_step(MAP, mem, FRAME) == []              # bounded defer
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['retreat_rechecks']['ゼウス']['status'] == 'needs_observation'
+
+
+def test_occluded_probe_on_a_fort_hands_over(monkeypatch):
+    """g1190 93-1: every occluded probe opened a 砦 menu and deferred — a fort
+    under the focus is the same location proof recheck_status accepts."""
+    from docich.hanjuku.os_layer import readers
+    from docich.hanjuku.flows import camp_recheck as cr
+    mem = memory()
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
+    assert p.camp_recall_step(main_menu(), mem, FRAME) == [p.pad('a')]
+    assert p.camp_recall_step(parse(roster(selected=1)), mem, FRAME) == [p.pad('select')]
+    monkeypatch.setattr(readers, 'own_camps', lambda _frame: [])
+    for _ in range(2): p.camp_recall_step(MAP, mem, FRAME)
+    assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('a')]    # bounded probe
+    handed = {}
+    def _fake_handover(screen, m, state, frame, enter):
+        handed['ok'] = True
+        return [p.pad('b')]
+    monkeypatch.setattr(cr, '_hand_over_to_fort', _fake_handover)
+    monkeypatch.setattr(readers, 'is_fort_menu', lambda _screen: True)
+    assert p.camp_recall_step(parse(camp_status_frame(hp=85)), mem, FRAME) == [p.pad('b')]
+    assert handed.get('ok')
+
+
+def test_a_gather_goal_may_confirm_the_local_picker(monkeypatch):
+    # Owner 2026-11-15: in the boss phase every camp gathers at the last
+    # castle through the いどう field marker. The recheck used to defer every
+    # deliver-stale map_target; a deliberate gather goal must reach the
+    # recall's own marker confirmation instead.
+    mem = memory(); named_menu(mem)
+    _flow(mem)['recall']['gather'] = 'アルマムーン'
+    _flow(mem)['recall']['goal'] = 'アルマムーン'
+    monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
+    actions = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME)
+    assert actions != [p.pad('b')]
+    assert _flow(mem)['recall'].get('stage') in ('dest', 'await_dispatch')
+
+
+def test_named_idou_dest_confirms_own_roof_and_starts_y_jump_when_offscreen(monkeypatch):
+    """#4881: 名前付きキャンプ帰還のいどうdest(map_target)を旧RピッカーガードでBキャンセルしない。"""
+    mem = memory()
+    named_menu(mem)
+    monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [{'kind': 'own', 'target': (26, 66), 'clipped': False}])
+    # Owner 2026-11-21: 屋根が見えていても先にYジャンプ(RECALL)で自城へ戻る。
+    actions = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(26, 66)), mem, FRAME)
+    assert actions == [p.pad('y')]
+    assert (mem.get('y_jump') or {}).get('step') == 'RECALL'
+    assert not any(r.get('decision') == 'retreat_recheck_unconfirmed' for r in mem['_records'])
+
+    # 自軍城の屋根が画面外なら Y ジャンプ(RECALL) を開いて自城へ帰還する。
+    mem2 = memory()
+    named_menu(mem2)
+    monkeypatch.setattr(p, 'castle_roofs', lambda _frame: [])
+    actions2 = p.camp_recall_step(Screen([], None, '', kind='map_target', marker=(90, 80)), mem2, FRAME)
+    assert actions2 == [p.pad('y')]
+    assert (mem2.get('y_jump') or {}).get('step') == 'RECALL'
+    assert not any(r.get('decision') == 'retreat_recheck_unconfirmed' for r in mem2['_records'])

@@ -15,6 +15,8 @@ from docich.corner_boundary import (
     _program_slot,
     _queue_read,
     boundary_ready,
+    prediction_snapshot,
+    prediction_worker_running,
     program_lock,
     program_slot,
 )
@@ -75,6 +77,56 @@ def test_boundary_requires_prediction_only_when_in_flight(tmp_path):
     # A resolved prediction no longer blocks.
     (state / 'current_prediction.json').write_text(json.dumps({'status': 'RESOLVED'}))
     assert boundary_ready(state, 100)
+
+
+def test_prediction_snapshot_reports_the_round_remaining_games(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'prediction_id': 'id', 'outcome_ids': ['a', 'b', 'c', 'd'],
+        'round_version': 2, 'max_games': 48, 'games_completed': 3,
+        'created_at': 100,
+    }))
+    snapshot = prediction_snapshot(state)
+    assert snapshot['in_flight'] is True
+    assert snapshot['worker_running'] is True
+    assert snapshot['remaining_games'] == 45
+    assert snapshot['started_at'] == 100
+    assert prediction_worker_running(state) is True
+
+
+def test_prediction_snapshot_has_no_remaining_for_a_legacy_record(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'prediction_id': 'id', 'outcome_ids': ['a', 'b'],
+    }))
+    snapshot = prediction_snapshot(state)
+    assert snapshot['in_flight'] is True
+    assert snapshot['remaining_games'] is None
+
+
+def test_prediction_snapshot_ignores_invalid_counts_and_missing_worker(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'prediction_id': 'id', 'outcome_ids': ['a', 'b'],
+        'max_games': True, 'games_completed': 3,
+    }))
+    assert prediction_snapshot(state)['remaining_games'] is None
+    (state / 'prediction_worker.paused').write_text('')
+    assert prediction_snapshot(state)['in_flight'] is False
+    assert prediction_worker_running(state) is False
+
+
+def test_prediction_snapshot_terminal_status_is_not_in_flight(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({
+        'status': 'RESOLVED', 'prediction_id': 'id', 'outcome_ids': ['a', 'b'],
+        'max_games': 48, 'games_completed': 48,
+    }))
+    assert prediction_snapshot(state)['in_flight'] is False
 
 
 def test_paused_prediction_worker_does_not_block(tmp_path):
@@ -786,3 +838,65 @@ def test_waiting_tick_keeps_a_released_row_until_the_release_runs(tmp_path):
     # "fix" that marked the released record terminal would erase the evidence
     # the operator still diagnoses from.
     assert json.loads(released.read_text())['status'] == 'failed'
+
+
+def test_statusless_wellformed_prediction_blocks_then_unlocks(tmp_path):
+    """docich#3335 (B): the real writer puts no status in the state file."""
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    # The create-path state: no status key, well-formed ids.
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'prediction_id': 'p1', 'outcome_ids': ['o1', 'o2'],
+                    'game_num': 0, 'created_at': 1700000000}))
+    assert not boundary_ready(state, 100)
+    (state / 'corner_boundary_prediction.json').write_text(json.dumps({'completed_at': time.time() - 1}))
+    assert boundary_ready(state, 100)
+
+
+def test_statusless_recovered_prediction_blocks(tmp_path):
+    """created_at: 0 must not be required: recovered state writes that."""
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'prediction_id': 'p2', 'outcome_ids': ['o1', 'o2'],
+                    'game_num': 0, 'created_at': 0, 'recovered': True}))
+    assert not boundary_ready(state, 100)
+
+
+@pytest.mark.parametrize('status', ['ACTIVE', 'LOCKED'])
+def test_active_statuses_still_block(tmp_path, status):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'status': status, 'prediction_id': 'p1', 'outcome_ids': ['o1', 'o2']}))
+    assert not boundary_ready(state, 100)
+
+
+@pytest.mark.parametrize('status', ['RESOLVED', 'CANCELED'])
+def test_terminal_statuses_do_not_block(tmp_path, status):
+    """A future writer recording terminal statuses must not regress."""
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(
+        json.dumps({'status': status, 'prediction_id': 'p1', 'outcome_ids': ['o1', 'o2']}))
+    assert boundary_ready(state, 100)
+
+
+@pytest.mark.parametrize('state_json', [
+    {'prediction_id': '', 'outcome_ids': ['o1', 'o2']},
+    {'prediction_id': 'p1', 'outcome_ids': ['o1']},
+    {'prediction_id': 'p1'},
+    {'prediction_id': 'p1', 'outcome_ids': 'o1'},
+])
+def test_statusless_malformed_state_does_not_block(tmp_path, state_json):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps(state_json))
+    assert boundary_ready(state, 100)
+
+
+def test_corrupt_current_prediction_json_does_not_block(tmp_path):
+    state = _state_dir(tmp_path)
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text('{not json')
+    assert boundary_ready(state, 100)

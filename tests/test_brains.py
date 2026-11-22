@@ -138,6 +138,32 @@ class TestCommandBrainDecide(BrainsTestBase):
             actions = brain.decide(_obs("cli"))
         self.assertEqual(actions, [])
 
+    def test_hanjuku_state_drop_lines_reach_the_parent_stderr(self):
+        """#4422: a successful bot run must not swallow the cache-drop line."""
+        script = (
+            "import sys, json; "
+            "sys.stderr.write('[hanjuku-state-drop] source=compact_state "
+            "reason=size_over_limit keys=obs_cost\\n'); "
+            "sys.stderr.write('unrelated bot chatter\\n'); "
+            "print(json.dumps({'actions': [{'type': 'wait', 'ms': 1}]}))"
+        )
+        game = config.GameConfig(
+            name="hanjuku-hero", title="Hanjuku", adapter="cli", raw={},
+            agent=config.GameAgentConfig(brain="command",
+                                         command=[sys.executable, "-c", script]),
+            path=self.repo_root / "config" / "games" / "hanjuku-hero.toml",
+        )
+        brain = brains.CommandBrain(self.g, game)
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            actions = brain.decide(_obs("cli"))
+        self.assertEqual(len(actions), 1)
+        err = buf.getvalue()
+        self.assertEqual(err.count("[hanjuku-state-drop]"), 1)
+        self.assertIn("source=compact_state", err)
+        self.assertIn("keys=obs_cost", err)
+        self.assertNotIn("unrelated bot chatter", err)
+
     def test_decide_runs_command_with_cwd_repo_root(self):
         # tmux window の cwd に依存せず、brain の相対パス参照 (例: "brains/hanjuku/brain.py")
         # が安定するよう、CommandBrain は procs.run に cwd=repo_root を渡す (hanjuku_brain.md §1)。

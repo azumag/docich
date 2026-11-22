@@ -5,6 +5,7 @@ import pytest
 from docich import hanjuku_camp_recheck as recheck
 from docich import hanjuku_policy as p
 from test_hanjuku_retreat_recheck import FRAME, MAP, main_menu, memory
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 
 def _exhaust_named_recheck(mem):
@@ -15,13 +16,13 @@ def _exhaust_named_recheck(mem):
         screen.hand = None
         for _ in range(recheck.READ_LIMIT):
             p.camp_recall_step(screen, mem, FRAME)
-    row = mem['retreat_rechecks']['ゼウス']
+    row = _flow(mem)['retreat_rechecks']['ゼウス']
     assert row['attempts'] == recheck.ATTEMPT_LIMIT
     return row
 
 
 def _row(mem):
-    return mem['retreat_rechecks']['ゼウス']
+    return _flow(mem)['retreat_rechecks']['ゼウス']
 
 
 def test_exhausted_predispatch_recheck_rearms_after_stale_wait():
@@ -48,8 +49,8 @@ def test_exhausted_predispatch_recheck_rearms_after_stale_wait():
     # it does not infer identity from the current camp coordinate.
     assert p.camp_recall_step(MAP, mem, FRAME) == [p.pad('x')]
     assert _row(mem)['attempts'] == 1
-    assert mem['recall']['retreat_recheck']
-    assert mem['recall']['general'] == 'ゼウス'
+    assert _flow(mem)['recall']['retreat_recheck']
+    assert _flow(mem)['recall']['general'] == 'ゼウス'
 
 
 @pytest.mark.parametrize('status_name', ['dispatch_unconfirmed', 'arrival_unconfirmed'])

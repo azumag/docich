@@ -14,6 +14,7 @@ where it started, stops moving, or a press limit.
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties
 
 ROSTER = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンディー', 'ココット', 'リースリング']
 
@@ -49,55 +50,75 @@ def walk(mem, screens):
 
 
 def test_a_full_window_is_walked_down_until_the_cursor_wraps():
-    mem = memory()
+    # A boss step still needs the whole list: it picks its companion from it.
+    mem = boss_site_memory()
     pages = [window(0, 0), window(0, 1), window(0, 2), window(0, 3),
              window(1, 3), window(2, 3)]
     for actions in walk(mem, pages):
         assert actions == [policy.pad('down')]
     # Wrapped to the first row: the whole list is known and recorded.
     walk(mem, [window(0, 0)])
-    assert mem['garrison']['アルマムーン'] == ROSTER
+    assert _world(mem)['garrison']['アルマムーン'] == ROSTER
     (record,) = [r for r in mem['_records'] if r['decision'] == 'general_list_scanned']
     assert record['observed_metric'] == {'generals': ROSTER, 'end': 'wrapped', 'presses': 6}
 
 
-def test_the_chart_general_below_the_window_is_reached_not_replaced():
+def test_the_planned_general_below_the_window_ends_the_walk_at_his_page():
+    """Owner 2026-11-07: the list is a lookup for the general the plan named."""
     mem = memory()
-    walk(mem, [window(0, 0), window(0, 1), window(0, 2), window(0, 3), window(1, 3), window(2, 3)])
-    # 1-C1 sends ココット, fifth in the list: the cursor goes down to him.
-    (actions,) = walk(mem, [window(0, 0)])
-    assert actions == [policy.pad('down')]
-    assert not [r for r in mem['_records'] if r['decision'] == 'order_substitute']
+    for screen in [window(0, 0), window(0, 1), window(0, 2), window(0, 3)]:
+        (actions,) = walk(mem, [screen])
+        assert actions == [policy.pad('down')]
+    # 1-C1 sends ココット, fifth in the list: the walk stops on his page.
     (actions,) = walk(mem, [window(1, 3)])
     assert actions == [policy.pad('a')]                       # A on ココット's row
-    assert mem['orders']['1-C1'] != 'failed'
-    assert not (mem.get('general_override') or {}).get('1-C1')
+    assert mem['general_list_scan']['end'] == 'named'
+    assert mem['general_list_scan']['general'] == 'ココット'
+    assert not [r for r in mem['_records'] if r['decision'] == 'order_substitute']
+    assert _plan_region(mem)['orders']['1-C1'] != 'failed'
+    assert not (_plan_region(mem).get('general_override') or {}).get('1-C1')
 
 
 def test_a_short_list_is_read_as_before():
     mem = memory()
     (actions,) = walk(mem, [general_list(['アルファルファ', 'ココット', 'ゼウス'], 0)])
     assert actions == [policy.pad('down')]                    # toward ココット, no walk
-    assert mem['garrison']['アルマムーン'] == ['アルファルファ', 'ココット', 'ゼウス']
+    assert _world(mem)['garrison']['アルマムーン'] == ['アルファルファ', 'ココット', 'ゼウス']
     assert 'general_list_scan' not in mem
 
 
+def test_the_planned_general_on_the_page_starts_the_sortie_at_once():
+    """Owner 2026-11-07: the plan says who sorties; once he is on screen the
+    list does not need to be read to its end before selecting him."""
+    mem = memory()                                   # 1-C1 sends ココット
+    names = ['アルファルファ', 'ココット', 'ゼウス', 'ラズベリー']
+    (actions,) = walk(mem, [general_list(names, 1)])
+    assert actions == [policy.pad('a')]
+    scan = mem['general_list_scan']
+    assert (scan['end'], scan['general'], scan['presses']) == ('named', 'ココット', 0)
+    (record,) = [r for r in mem['_records'] if r['decision'] == 'general_list_scanned']
+    assert record['observed_metric'] == {'generals': names, 'end': 'named',
+                                         'general': 'ココット', 'presses': 0}
+    # That page proves those names are here, not who else is: no garrison.
+    assert not _world(mem).get('garrison')
+
+
 def test_four_names_in_a_longer_window_end_when_the_cursor_wraps():
-    mem = memory()
-    four = ['アルファルファ', 'ココット', 'ゼウス', 'ラズベリー']
+    mem = boss_site_memory()
+    four = HOME[:4]
     actions = walk(mem, [general_list(four, row) for row in range(4)])
     assert actions == [[policy.pad('down')]] * 4
     walk(mem, [general_list(four, 0)])
-    assert mem['garrison']['アルマムーン'] == four
+    assert _world(mem)['garrison']['アルマムーン'] == four
 
 
 def test_a_cursor_that_stops_moving_ends_the_walk():
-    mem = memory()
+    mem = boss_site_memory()
     pages = [window(0, 0), window(0, 1), window(0, 2), window(0, 3), window(1, 3), window(2, 3)]
     walk(mem, pages)
     # The last row never wraps: three unchanged frames after a press end it.
     walk(mem, [window(2, 3)] * 3)
-    assert mem['garrison']['アルマムーン'] == ROSTER
+    assert _world(mem)['garrison']['アルマムーン'] == ROSTER
     (record,) = [r for r in mem['_records'] if r['decision'] == 'general_list_scanned']
     assert record['observed_metric']['end'] == 'stalled'
 
@@ -117,22 +138,27 @@ def test_g1075_a_hidden_recruit_goes_to_the_season_king_site():
 
     walk(mem, [page(0, 0), page(0, 1), page(0, 2), page(0, 3), page(1, 3), page(2, 3)])
     (actions,) = walk(mem, [page(0, 0)])
-    assert mem['garrison']['アルマムーン'] == home
+    assert _world(mem)['garrison']['アルマムーン'] == home
     # アポロン (74/14, egg) is the strongest egg holder and leaves the hero four.
-    assert actions == [policy.pad('down')]
-    assert mem['general_override']['4-B2'] == 'アポロン'
+    # The walked list knows his index, so the four-row move ships as one
+    # release-separated run rather than one press per observation.
+    assert actions == [policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down')]
+    assert _plan_region(mem)['general_override']['4-B2'] == 'アポロン'
 
 
 def test_a_dropped_dakuten_in_the_walk_is_folded_back_to_the_roster():
     """g1075 2026-10-31: キャンティー/ポセイトン readings held 4-B1 ~10 min."""
-    mem = memory()
+    mem = boss_site_memory()
     misread = ['アルファルファ', 'ゼウス', 'ラズベリー', 'キャンティー']
     pages = [window(0, 0), window(0, 1), window(0, 2), general_list(misread, 3),
              window(1, 3), window(2, 3)]
     for actions in walk(mem, pages):
         assert actions == [policy.pad('down')]
     walk(mem, [window(0, 0)])
-    assert mem['garrison']['アルマムーン'] == ROSTER
+    assert _world(mem)['garrison']['アルマムーン'] == ROSTER
 
 
 def boss_site_memory():
@@ -157,9 +183,13 @@ def test_a_dropped_dakuten_in_the_walk_does_not_hold_a_boss_sortie():
     for actions in walk(mem, pages):
         assert actions == [policy.pad('down')]
     (actions,) = walk(mem, [general_list(HOME[0:4], 0)])
-    # The walked list folds back to the roster; the アポロン pick keeps moving.
-    assert actions == [policy.pad('down')]
-    assert mem['garrison']['アルマムーン'] == HOME
+    # The walked list folds back to the roster; the アポロン pick keeps moving,
+    # now as one release-separated four-tap run for the known distance.
+    assert actions == [policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down')]
+    assert _world(mem)['garrison']['アルマムーン'] == HOME
     held = [r for r in mem['_records']
             if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
     assert not held
@@ -172,7 +202,257 @@ def test_a_dropped_dakuten_on_the_visible_page_does_not_hold_a_boss_sortie():
     walk(mem, pages)
     misread = ['どうし', 'ピスタチオ', 'キッシュ', 'クランヘリー']
     (actions,) = walk(mem, [general_list(misread, 0)])
-    assert actions == [policy.pad('down')]
+    assert actions == [policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down'),
+                       {'type': 'wait', 'ms': 60}, policy.pad('down')]
     held = [r for r in mem['_records']
             if r.get('reason') == '出撃一覧の本人・カーソルを確認できないため保留']
     assert not held
+
+
+def test_a_completed_roster_settles_a_blind_launch_probe():
+    """g1133 2026-11-05: chapter 6's Y view drew units as portraits, so the
+    launch probe could never see the committed unit; the source roster is the
+    evidence that settles it."""
+    from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow
+    mem = memory()
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
+        'reads': 3, 'baseline': [], 'blind': True, 'tick': 400}}
+    gone = [g for g in ROSTER if g != 'ゼウス']
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'wrapped', 'names': gone, 'presses': 6,
+                                'tick': mem['tick']}
+    walk(mem, [general_list(gone, 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
+    assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')
+    (record,) = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_confirmed']
+    assert record['general'] == 'ゼウス' and record['observed_metric']['castle'] == 'アルマムーン'
+
+
+def test_a_completed_roster_still_listing_him_rolls_the_launch_back():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
+        'reads': 3, 'baseline': [], 'blind': True, 'tick': 400}}
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'ヴィーナス']}
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'wrapped', 'names': ROSTER, 'presses': 6,
+                                'tick': mem['tick']}
+    walk(mem, [general_list(ROSTER, 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
+
+
+def test_a_roster_read_settles_a_probe_before_the_marker_surveys_finish():
+    """The roster often arrives first (g1133 00:38:04 survey, 00:38:40 roster)."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'スペンソニア', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'スペンソニア',
+        'reads': 1, 'baseline': [], 'tick': 400}}
+    gone = [g for g in ROSTER if g != 'ゼウス']
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'stalled', 'names': gone, 'presses': 6,
+                                'tick': mem['tick']}
+    walk(mem, [general_list(gone, 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
+    assert not (_flow(mem).get('launch_miss') or {}).get('1-A3')
+
+
+def test_a_short_list_still_listing_him_rolls_a_kept_probe_back():
+    """docich#3515: one-general castles never start a walk, so the kept probe
+    must settle from the short list itself."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400,
+                               'launch_kept': True}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'baseline': [], 'blind': True, 'kept': True, 'tick': 400}}
+    mem['garrison'] = {'アルマムーン': []}
+    walk(mem, [general_list(['ゼウス', 'ココット'], 0)])
+    assert '1-A3' not in (_flow(mem).get('launch_probe') or {})
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
+    assert _flow(mem)['launch_miss']['1-A3'] == 1
+
+
+def test_a_roster_probe_reads_and_backs_out_without_sending():
+    """docich#3515: the read-only probe settles the phantom, then leaves
+    without selecting a general."""
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['chapter'] = 6
+    owned = [c for c in chart.castles(6) if not chart.is_boss_castle(c)]
+    mem['captured'] = list(owned)
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400,
+                               'launch_kept': True}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'baseline': [], 'blind': True, 'kept': True, 'tick': 400}}
+    probe_order = {'step': 'Mprobe', 'general': 'しょうぐん', 'source': 'アルマムーン',
+                   'target': 'ボス', 'cards': [], 'after': None, 'purpose': 'attack',
+                   'note': 'probe', 'source_probe': True, 'roster_probe': True}
+    _plan_region(mem)['chart_plan'] = {'orders': [probe_order]}
+    _plan_region(mem)['active'] = 'Mprobe'
+    _plan_region(mem)['orders']['Mprobe'] = 'pending'
+    mem['garrison'] = {'アルマムーン': []}
+    (actions,) = walk(mem, [general_list(['ゼウス', 'ココット'], 0)])
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert _plan_region(mem)['orders']['Mprobe'] == 'done'
+    assert _plan_region(mem)['orders']['1-A3'] == 'pending'
+    assert '1-A3' not in _sorties(mem)
+    assert any(r['decision'] == 'roster_probe_complete' for r in mem['_records'])
+
+
+def test_incomplete_long_roster_keeps_due_for_retry():
+    """An interrupted four-plus-name scan must not consume a blind launch read."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['roster_read_due'] = {'アルマムーン': 490}
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'blind': True, 'kept': True, 'tick': 400}}
+    # The walk reached its safety limit, not the end of the roster.
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'limit', 'names': ROSTER[:4],
+                                'presses': 16, 'tick': mem['tick']}
+    walk(mem, [general_list(ROSTER[:4], 0)])
+    assert mem['roster_read_due'] == {'アルマムーン': 490}
+    assert '1-A3' in _flow(mem)['launch_probe']
+    assert _plan_region(mem)['orders']['1-A3'] == 'launched'
+
+
+def test_a_full_army_roster_wraps_inside_the_scaled_press_limit():
+    """g1190 2026-11-16 33-4: イデ！'s boss-phase roster held 18 generals; the
+    flat 16-press cap ended every walk at 'limit', roster_read_due never
+    cleared and the interim probe was re-issued 100+ times. The country's
+    general count bounds the walk instead."""
+    army = ['どうし', 'アルファルファ', 'ナストリーニ', 'ランプータン', 'デュオニソス', 'キャロット',
+            'カペリーニ', 'ドリアン', 'ソーピニヨン', 'シャルドネ', 'オレガノ', 'シフォン',
+            'コンポート', 'ユイートル', 'セミヨン', 'バーミセリ', 'バラクーダ', 'ビシソワーズ']
+
+    def page(top, row):
+        return general_list(army[top:top + 4], row)
+
+    mem = boss_site_memory()
+    mem['country_general_count'] = {'count': 32, 'scope': [4, '140-0']}
+    mem['roster_read_due'] = {'アルマムーン': 139990, 'アルマムン': 139980}
+    # Cursor descends the first window, then the window scrolls one row per
+    # press while the hand stays on the last row, until the list wraps.
+    pages = [page(0, r) for r in range(4)] + [page(t, 3) for t in range(1, 15)]
+    for actions in walk(mem, pages):
+        assert actions == [policy.pad('down')]
+    assert mem['general_list_scan']['presses'] == 18
+    walk(mem, [page(0, 0)])
+    assert mem['general_list_scan']['end'] == 'wrapped'
+    assert _world(mem)['garrison']['アルマムーン'] == army
+    # The completed read settles both spellings of the due request.
+    assert mem['roster_read_due'] == {}
+
+
+def test_the_army_count_fallback_keeps_the_flat_limit():
+    """Without a country count the old 16-press bound still ends the walk."""
+    army = ['どうし', 'アルファルファ', 'ナストリーニ', 'ランプータン', 'デュオニソス', 'キャロット',
+            'カペリーニ', 'ドリアン', 'ソーピニヨン', 'シャルドネ', 'オレガノ', 'シフォン',
+            'コンポート', 'ユイートル', 'セミヨン', 'バーミセリ', 'バラクーダ', 'ビシソワーズ']
+
+    def page(top, row):
+        return general_list(army[top:top + 4], row)
+
+    mem = boss_site_memory()
+    pages = [page(0, r) for r in range(4)] + [page(t, 3) for t in range(1, 13)]
+    for actions in walk(mem, pages):
+        assert actions == [policy.pad('down')]
+    walk(mem, [page(13, 3)])
+    assert mem['general_list_scan']['presses'] == 16
+    assert mem['general_list_scan']['end'] == 'limit'
+
+
+def test_the_status_name_check_folds_the_half_width_exclamation():
+    """The status panel draws イデ！ as イデ！; that castle is still the source."""
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku_screen import Screen
+    order = {'step': 'I:9', 'general': 'どうし', 'source': 'イデ！', 'target': 'ボス',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 9, 'orders': {'I:9': 'pending'}, 'picked': [], '_records': [],
+           'active': 'I:9', 'launched_orders': {'I:9': order},
+           'cursor': list(chart.castles(9)['オシロガ'])}
+    status = Screen(lines=[], hand=None, kind='castle_menu',
+                    text='しゅつげきイデ!じょうステータスしゅうにゅう30Gレベル3しょうぐん18めいどうし')
+    assert policy._check_source_castle(status, mem, order) == [policy.pad('b')]
+    assert mem['castle_verified'] == 'I:9'
+    assert mem['cursor'] == list(chart.castles(9)['イデ！'])
+    assert not [r for r in mem['_records'] if r['decision'] == 'source_castle_mismatch']
+
+
+def test_a_finished_interim_order_leaves_the_slot():
+    """g1190 chapter 9: roster probe I:381454:101 completed 'done', the state
+    budget pruned its orders entry, and the absent status read as "not
+    started" — the same read-only order re-issued for hours. Retiring the
+    interim slot on the terminal state breaks that loop."""
+    from docich.hanjuku.strategy.orders import _finish_order
+    mem = {'chapter': 9, 'orders': {}, '_records': [], 'picked': [],
+           'chart_adjust': {'interim_order': {'step': 'I:381454:101', 'general': 'しょうぐん',
+                                              'source': 'イデ！', 'target': 'ボス',
+                                              'roster_probe': True}}}
+    _plan_region(mem)['active'] = 'I:381454:101'
+    _finish_order(mem, 'done', reason='読取のみの指示を終了')
+    assert mem['chart_adjust']['interim_order'] is None
+
+
+def test_a_pruned_interim_status_does_not_block_the_next_mint():
+    """The state budget prune can beat _finish_order to the slot (a status
+    written directly, or an order finished by another path). A started step
+    whose orders entry vanished is treated as finished, not busy."""
+    from docich.hanjuku.strategy.replan import _mechanical_interim
+    state = {'interim_order': {'step': 'I:381454:101', 'general': 'しょうぐん',
+                               'source': 'イデ！', 'target': 'ボス',
+                               'roster_probe': True}}
+    mem = {'chapter': 9, 'tick': 5000, 'orders': {}, '_records': [], 'picked': [],
+           'chart_adjust': state, 'captured': [], 'lost': [],
+           'order_start_tick': {'I:381454:101': 4990}}
+    _mechanical_interim(mem, state, '381454', 'd')
+    assert state.get('interim_order') is None or \
+        state['interim_order']['step'] != 'I:381454:101'
+
+
+def test_partial_short_ocr_during_scan_does_not_settle_probe():
+    """A truncated visible page is not proof of a short roster mid-scan."""
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory()
+    mem['roster_read_due'] = {'アルマムーン': 490}
+    _plan_region(mem)['orders']['1-A3'] = 'launched'
+    mem['sorties'] = {'1-A3': {'general': 'ゼウス', 'source': 'アルマムーン',
+                               'target': 'ボス', 'status': 'en_route', 'tick': 400}}
+    _flow(mem)['launch_probe'] = {'1-A3': {
+        'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ボス',
+        'reads': 3, 'blind': True, 'kept': True, 'tick': 400}}
+    mem['general_list_scan'] = {'step': '1-C1', 'castle': 'アルマムーン',
+                                'end': 'limit', 'names': ROSTER[:4],
+                                'presses': 16, 'tick': mem['tick']}
+    walk(mem, [general_list(ROSTER[:2], 0)])
+    assert 'アルマムーン' in mem['roster_read_due']
+    assert '1-A3' in _flow(mem)['launch_probe']

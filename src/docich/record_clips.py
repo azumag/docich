@@ -242,7 +242,11 @@ def consider_hanjuku(g, identity):
     if not enabled(g):
         return
     try:
-        from . import hanjuku_progress as progress, hanjuku_predictions
+        from . import hanjuku_progress as progress, hanjuku_hotload
+        # Read the ledger through the corner's adopted logic generation (#3838):
+        # a deployed schema/rules change must reach this process without a
+        # restart, exactly like the prediction tick itself.
+        hanjuku_predictions = hanjuku_hotload.module('hanjuku_predictions')
         from .naming import runtime_directory
         from .trading.soren_output import resolve_soren_root
         identity = progress.checked_identity(identity)

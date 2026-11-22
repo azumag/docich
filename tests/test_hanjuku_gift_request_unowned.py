@@ -1,0 +1,35 @@
+"""docich#4650: an unowned gift request is accepted early."""
+from docich.hanjuku import orchestrator as O
+
+
+def test_the_unowned_gift_request_is_accepted_after_a_short_settle():
+    assert O.gift_request_unowned_input("gift_request", 1) is None
+    assert O.gift_request_unowned_input("gift_request",
+                                        O.GIFT_REQUEST_HOLD_MAX) is None
+    assert O.gift_request_unowned_input("gift_request",
+                                       O.GIFT_REQUEST_HOLD_MAX + 1) == "a"
+
+
+def test_the_settle_is_far_inside_the_no_input_backstop():
+    assert O.GIFT_REQUEST_HOLD_MAX < O.NO_INPUT_HOLD_MAX
+
+
+def test_other_screens_are_never_answered_by_this_rule():
+    for kind in ("shop_exit_confirm", "shop_list", "shop_quantity",
+                 "yes_no", "map", "text"):
+        assert O.gift_request_unowned_input(kind,
+                                            O.GIFT_REQUEST_HOLD_MAX + 5) is None
+
+
+def test_guarded_holds_stay_fail_closed():
+    streak = O.GIFT_REQUEST_HOLD_MAX + 5
+    assert O.gift_request_unowned_input("gift_request", streak,
+                                        guarded=True) is None
+    assert O.gift_request_unowned_input("gift_request", streak,
+                                        bijin_gift_hold=True) is None
+    assert O.gift_request_unowned_input("gift_request", streak,
+                                        army_owned=True) is None
+    assert O.gift_request_unowned_input("gift_request", streak,
+                                        map_registration_hold=True) is None
+    assert O.gift_request_unowned_input("gift_request", streak,
+                                        orphan_battle_menu=True) is None

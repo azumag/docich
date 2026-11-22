@@ -76,6 +76,11 @@ def test_probe_takes_the_real_lottery_row_once_for_a_measured_losing_melee():
     assert p.battle_menu_step(lottery_parent(), mem) == [p.pad('a')]
     assert mem['battle']['okunote_only_observed']
     assert mem['battle']['okunote_last_resort_selected']
+    # v366: a repeated parent with the おくのて row still visible means the A
+    # may not have been delivered; resend it boundedly, then fall back to B.
+    for _ in range(4):
+        assert p.battle_menu_step(lottery_parent(), mem) == [p.pad('a')]
+    # After the bounded resends the bot falls back (never another lottery).
     assert p.battle_menu_step(lottery_parent(), mem) == [p.pad('b')]
     # The losing panel no longer needs the one-time recheck.
     p.battle_step(native(30780), mem)

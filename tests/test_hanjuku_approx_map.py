@@ -5,6 +5,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku_map_sources import SOURCE_CASTLES
 from docich.hanjuku.flows.map import APPROX_LOCALIZE_LIMIT
 from docich.hanjuku.orchestrator import decide
+from docich.hanjuku.state.regions import plan as _plan_region
 from test_hanjuku_map_discovery import IDENTITY, field, unmeasured_chapter_three  # noqa: F401
 
 # Chapter 3 as shipped (measured 2026-10-28), captured before the module-wide
@@ -54,7 +55,7 @@ def test_approx_context_releases_a_chapter_three_order_in_decide():
            'orders': {}, 'captured': [], '_records': [], 'variant': 'chart_unavailable'}
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY, approx_map=True)
     policy = state['policy']
-    assert policy.get('active') in {'3-Z1', '3-C1', '3-V1'}
+    assert _plan_region(policy).get('active') in {'3-Z1', '3-C1', '3-V1'}
     assert not any(r.get('decision') == 'chart_adjust_request'
                    and r.get('off_chart_reason') == 'chart_unavailable'
                    for r in state.get('_records', []))
@@ -76,7 +77,7 @@ def test_approx_seed_localizes_a_matching_two_roof_frame():
            'orders': {}, 'captured': [], '_records': []}
     actions, state = decide(frame, {'policy': mem}, run_identity=IDENTITY, approx_map=True)
     policy = state['policy']
-    assert policy.get('active') in {'3-Z1', '3-C1', '3-V1'}
+    assert _plan_region(policy).get('active') in {'3-Z1', '3-C1', '3-V1'}
     assert policy.get('cursor') == [712, 160]
     assert actions and actions[-1]['buttons'] == ['a']
     assert not policy.get('nav_search')
@@ -111,7 +112,7 @@ def _feed_roofless_map(state, *, until):
     for _ in range(24):
         _, state = decide(field(roofs=()), state, run_identity=IDENTITY, approx_map=True)
         records += state.get('_records', [])
-        actives.append(state['policy'].get('active'))
+        actives.append(_plan_region(state['policy']).get('active'))
         if until(records):
             break
     return state, records, actives
@@ -160,5 +161,5 @@ def test_source_chapter_still_falls_back_after_the_localize_limit():
     assert fallback[0]['observed_metric']['misses'] == APPROX_LOCALIZE_LIMIT
     assert str(fallback[0].get('chart_step', '')).startswith('5-')
     assert state['policy'].get('approx_fallback') is True
-    assert state['policy'].get('active') is None
+    assert _plan_region(state['policy']).get('active') is None
     assert actives[-1] is None and any(actives)

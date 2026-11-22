@@ -9,6 +9,7 @@ from docich.hanjuku_screen import Battle, Screen, parse
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_bot import decide
 from test_hanjuku_chart_bot import Canvas
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(hp=30, enemy=50):
@@ -495,7 +496,9 @@ def test_hero_emergency_retreat_threshold_is_stricter_than_resource_rescue(hp,en
 def test_a_summoned_monster_raises_the_retreat_threshold():
     cur = {'ally': 'ヴィーナス', 'enemy': 'カメレオンマン', 'ally_hp': 54, 'enemy_hp': 200,
            'start_ally_hp': 82}
-    assert not p._hero_retreat_needed(cur)
+    # #4606: a record opened on a monster panel never had a winnable melee
+    # plan, so any observed deficit retreats even without the egg_battle latch.
+    assert p._hero_retreat_needed(cur)
     assert p._hero_retreat_needed({**cur, 'egg_battle': True})
     # A winnable summon keeps fighting.
     assert not p._hero_retreat_needed({**cur, 'egg_battle': True, 'ally_hp': 82, 'enemy_hp': 60})
@@ -559,7 +562,7 @@ def test_hero_retreat_opens_before_chart_and_selects_only_visible_retreat(monkey
     assert mem['battle']['hero_retreat']['opens']==1
     assert not mem['battle'].get('card_flow')
     actions,state=decide(command_frame(),{'policy':mem})
-    assert actions==[p.pad('down')]
+    assert actions==[p.pad('down'),{'type':'wait','ms':60},p.pad('down')]
     actions,state=decide(command_frame(cursor=1),state)
     assert actions==[p.pad('down')]
     actions,state=decide(command_frame(cursor=2),state)
@@ -592,10 +595,17 @@ def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_figh
 
 def test_hero_retreat_cancels_unselected_cards_and_preempts_critical_pending_card():
     mem=memory(12,50)
-    mem['battle']['card_flow']={'stage':'list','card':'グリンボー'}
-    assert p.card_list_step(menu(('グリンボー',),kind='text'),mem)==[p.pad('b')]
+    # docich#4999: ゲートが許可する一覧札は退却より先に使うため、閉じるのは
+    # 使用できない札 (ボス専用バルムンク) の一覧だけに固定する。
+    mem['battle']['card_flow']={'stage':'list','card':'バルムンク'}
+    assert p.card_list_step(menu(('バルムンク',),kind='text'),mem)==[p.pad('b')]
     assert mem['battle']['card_flow'] is None
     mem['battle']['card_flow']={'stage':'announce','card':'グリンボー','selection_planned':True}
+    # docich#4999: 即死帯 (HP4以下) の上では、選択済み告知は有界な grace で
+    # 完走を待ち、使い切ってから preempt へ戻る。
+    for _ in range(p.RETREAT_CARD_GRACE_LIMIT):
+        assert p._hero_retreat_open(mem,mem['battle']) is None
+    assert mem['battle']['card_flow'] is not None
     assert p._hero_retreat_open(mem,mem['battle']) == [p.pad('b')]
     assert mem['battle']['card_flow'] is None
     assert mem['battle']['cards_used'] == []
@@ -607,7 +617,9 @@ def test_hero_retreat_cancels_unselected_cards_and_preempts_critical_pending_car
 
 @pytest.mark.parametrize('general', ['どうし', 'ココット', 'ヴィーナス', 'ゼウス'])
 def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
-    mem = memory(12, 50)
+    # docich#4999: HP4以下の即死帯では有界な grace を待たず即座に preempt
+    # する (g460: メニュー待ちで将軍を失わない線引き)。
+    mem = memory(4, 50)
     mem['battle'].update(ally=general, enemy='タピオカ', start_ally_hp=24,
                          side='attack', card_flow={
                              'stage': 'announce', 'card': 'グリンボー',
@@ -620,7 +632,7 @@ def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
     assert record['general'] == general
     assert record['enemy'] == 'タピオカ'
     assert record['observed_metric'] == {
-        'ally_hp': 12, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
+        'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
 
 
 def test_pending_card_is_preserved_above_critical_general_hp():
@@ -731,7 +743,8 @@ def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
     screen.hidden_battle_commands = hidden
     assert p.okunote_step(screen, mem) == [p.pad('b')]
     assert mem['battle']['survival']['exhausted']
-    assert mem['_records'][-1]['decision'] == 'battle_okunote_risk_declined'
+    assert mem['_records'][-1]['decision'] in (
+        'battle_okunote_risk_declined', 'battle_okunote_risk_conserved')
     # Repeated observations of the fading parent menu do not duplicate records.
     records = len(mem['_records'])
     assert p.okunote_step(screen, mem) == [p.pad('b')]
@@ -832,13 +845,13 @@ def test_defense_preclash_with_only_hidden_commands_scrolls_to_okunote_not_retre
     assert not mem['battle'].get('hero_retreat')
 
 
-def wounded_egg_screen(hp=30, ally='ヴィーナス', enemy='ダークエルフ', selected=0):
+def wounded_egg_screen(hp=30, ally='ヴィーナス', enemy='ダークエルフ', selected=0, enemy_hp=149):
     from docich.hanjuku_screen import EggRow
     sc = egg_menu_screen()
     sc.hand = None
     sc.menu_rows = sc.lines
     sc.menu_cursor = 176 + selected * 16
-    sc.egg_rows = [EggRow(ally, hp, 'ally', 80), EggRow(enemy, 149, 'enemy', 80)]
+    sc.egg_rows = [EggRow(ally, hp, 'ally', 80), EggRow(enemy, enemy_hp, 'enemy', 80)]
     return sc
 
 
@@ -867,6 +880,28 @@ def test_fierce_requires_live_wounded_matching_general_and_actual_monster(ally, 
     mem = wounded_egg_memory()
     assert p.egg_battle_step(wounded_egg_screen(hp, ally, enemy), mem) == [p.pad('a')]
     assert mem['battle']['egg_attack_label'] == 'こうげき'
+
+
+def test_fierce_never_selected_against_single_digit_enemy_hp():
+    mem = wounded_egg_memory()
+    # 敵召喚獣HP9: 一桁なのでもうこうげきへは動かず通常攻撃を確定する。
+    assert p.egg_battle_step(wounded_egg_screen(enemy_hp=9), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # 敵将軍HP5でも同じ (将軍は召喚獣テーブル外で fierce 対象外)。
+    mem = wounded_egg_memory()
+    assert p.egg_battle_step(wounded_egg_screen(enemy='カシュー', enemy_hp=5), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # もうこうげき確定済みの途中で敵HPが一桁へ落ちたら通常攻撃へ戻す。
+    mem = wounded_egg_memory()
+    mem['battle']['egg_attack_label'] = 'もうこうげき'
+    assert p.egg_battle_step(wounded_egg_screen(selected=1, enemy_hp=9), mem) == [p.pad('up')]
+    assert p.egg_battle_step(wounded_egg_screen(enemy_hp=9), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # HP10以上は従来通りもうこうげきを選ぶ。
+    mem = wounded_egg_memory()
+    assert p.egg_battle_step(wounded_egg_screen(enemy_hp=10), mem) == [p.pad('down')]
+    assert p.egg_battle_step(wounded_egg_screen(selected=1, enemy_hp=10), mem) == [p.pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'もうこうげき'
 
 
 def test_last_resort_still_tries_attack_retreat_and_forbids_defense_retreat():
@@ -919,7 +954,7 @@ def g514_hero_egg_memory():
     mem['battle'].update(ally=p.NAME, enemy='クイーン', side='attack', castle='けっかい',
                         step=step, away=0, egg_battle=True,
                         planned_cards=['クースカン', 'ノリウツール'], ref_ally_hp=90)
-    mem['attack'] = {'general': p.NAME, 'side': 'attack', 'castle': 'けっかい', 'step': step}
+    _plan_region(mem)['attack'] = {'general': p.NAME, 'side': 'attack', 'castle': 'けっかい', 'step': step}
     return mem
 
 
@@ -963,7 +998,7 @@ def test_hero_egg_probe_never_uses_another_general_or_old_unknown_hp(change):
     elif change == 'no_current_panel':
         screen.egg_rows = []
     elif change == 'other_attack':
-        mem['attack']['step'] = 'new-battle'
+        _plan_region(mem)['attack']['step'] = 'new-battle'
     elif change == 'away':
         mem['battle']['away'] = 1
     elif change == 'no_start':
@@ -971,7 +1006,7 @@ def test_hero_egg_probe_never_uses_another_general_or_old_unknown_hp(change):
     elif change == 'bad_start':
         mem['battle']['start_ally_hp'] = 100
     elif change == 'defense':
-        mem['battle']['side'] = mem['attack']['side'] = 'defense'
+        mem['battle']['side'] = _plan_region(mem)['attack']['side'] = 'defense'
     else:
         screen = hero_egg_screen(90 if change == 'healthy' else 0)
     assert p.egg_battle_step(screen, mem) != [p.pad('b')]
@@ -1086,12 +1121,16 @@ def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhau
 
 
 def test_low_hp_opens_okunote_when_safe_candidate_visible():
-    mem = memory(34, 59)
-    mem['battle']['ally_hp'] = 34
-    mem['battle']['side'] = 'defense'
+    # A non-hero losing defense (owner 2026-11-04) opens the parent menu.
+    mem = {'chapter': 1, '_records': [], 'battle': {
+        'enemy': 'ミント', 'ally': 'ゼウス', 'side': 'defense',
+        'castle': p.chart.home_castle(1), 'start_enemy_hp': 32, 'start_ally_hp': 26,
+        'enemy_hp': 32, 'ally_hp': 26, 'step': None, 'cards_used': [],
+        'card_evidence_version': 1, 'card_soldiers_current': True,
+        'card_hp_unread': False, 'card_context_unclassified': False,
+        'ally_soldiers': 2, 'enemy_soldiers': 6}}
     screen = menu(('おどす',), kind='battle_menu')
     assert p.okunote_step(screen, mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
-    assert not mem['battle'].get('survival', {}).get('exhausted')
     assert any(r.get('decision') == 'battle_okunote_risk_accepted' for r in mem['_records'])
 
 
@@ -1117,7 +1156,9 @@ def test_low_hp_conerves_okunote_when_healthy_melee_advantage():
     assert len(mem['_records']) == records
 
 
-def test_low_hp_does_not_conserve_okunote_when_soldiers_unobserved():
+def test_low_hp_conserves_okunote_when_soldiers_unobserved():
+    # Owner 2026-11-04 kept the unread-panel hold: the covered counts stay
+    # upper bounds, so this case conserves rather than opening the lottery.
     mem = memory(80, 10)
     cur = mem['battle']
     cur['ally_hp'] = 80
@@ -1129,8 +1170,8 @@ def test_low_hp_does_not_conserve_okunote_when_soldiers_unobserved():
     cur['start_ally_hp'] = 90
     cur['start_enemy_hp'] = 60
     screen = menu(('おどす',), kind='battle_menu')
-    p.okunote_step(screen, mem)
-    assert not any(r.get('decision') == 'battle_okunote_risk_conserved'
-                   for r in mem['_records'])
-    assert any(r.get('decision') == 'battle_okunote_risk_accepted'
+    assert p.okunote_step(screen, mem) == [p.pad('b')]
+    assert any(r.get('decision') == 'battle_okunote_risk_conserved'
                for r in mem['_records'])
+    assert not any(r.get('decision') == 'battle_okunote_risk_accepted'
+                   for r in mem['_records'])

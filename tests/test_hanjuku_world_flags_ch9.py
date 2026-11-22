@@ -1,0 +1,22 @@
+"""Chapter 9's whole-island view is readable at the measured offset."""
+from pathlib import Path
+
+from docich.hanjuku.os_layer import readers
+from docich.hanjuku.os_layer.pixels import read_png
+from docich import hanjuku_chart as chart
+
+FIXTURE = Path(__file__).parent / "fixtures/hanjuku/g1190-ch9-y-view-flags.png"
+
+
+def test_chapter_nine_flags_are_all_read_at_the_measured_offset():
+    # Before 2026-11-15 chapter 9 had no WORLD_MAP_OFFSET, so world_flags
+    # returned {} and the R picker could never name a chapter-9 castle
+    # (every recall unconfirmed). The corridor Y view has all 12 flags at
+    # the chapter-1 family offset.
+    assert chart.WORLD_MAP_OFFSET[9] == (64.3, 45.0)
+    frame = read_png(FIXTURE).resized()
+    flags = readers.world_flags(frame, 9)
+    castles = {name for name in chart.castles(9) if not chart.is_boss_castle(name)}
+    assert len(castles) == 12
+    assert set(flags) == castles
+    assert set(flags.values()) == {"own"}

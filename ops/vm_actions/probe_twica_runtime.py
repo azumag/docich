@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import struct
 import sys
@@ -118,14 +119,34 @@ def descendant(pid: int, ancestor: int) -> bool:
     return False
 
 
+def is_docich_stream_runner(args) -> bool:
+    """`python3 -m docich.stream_supervisor [--root /home/ubuntu/soren] run` (ADR 0007).
+
+    Kept self-contained (this probe imports nothing from docich); a test pins it to
+    docich.stream_identity.is_docich_runner_args.
+    """
+    args = list(args)
+    if (len(args) < 4 or not re.fullmatch(r'python3(?:\.[0-9]+)?', Path(args[0]).name) or args[1] != '-m'
+            or args[2] != 'docich.stream_supervisor'):
+        return False
+    rest = args[3:]
+    if rest and rest[0] == '--root':
+        if len(rest) != 3 or Path(rest[1]) != SOREN:
+            return False
+        rest = rest[2:]
+    return rest == ['run']
+
+
 def native_gate(pipeline: dict, runner: dict) -> int | None:
     native = pipeline.get('encoder_pid')
     if not descendant(native, pipeline.get('pid')):
         return 37
     runner_pid = runner.get('pid')
     live_runner = process(runner_pid)
-    if (live_runner.get('cwd') != SOREN or not any(
-            Path(arg).name == 'direct_stream.py' for arg in live_runner.get('args', []))
+    runner_args = live_runner.get('args', [])
+    if (live_runner.get('cwd') != SOREN or not (
+            any(Path(arg).name == 'direct_stream.py' for arg in runner_args)
+            or is_docich_stream_runner(runner_args))
             or not descendant(pipeline.get('pid'), runner_pid)):
         return 38
     args = process(native).get('args', [])

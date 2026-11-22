@@ -522,3 +522,10 @@ class NethackTilesSupervisorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_proc_identity_treats_a_process_exiting_mid_read_as_gone():
+    from docich import nethack_tiles_supervisor as supervisor
+
+    with mock.patch.object(supervisor.Path, "read_text", side_effect=ProcessLookupError(3, "gone")):
+        assert supervisor._proc_identity(4242) is None

@@ -1,0 +1,23 @@
+"""The August vacation/bonus choice owns the foreground over a camp recall.
+
+g1190 2026-11-18 62-8: バカンスをやる/ボーナスをだす/まとめて… の選択で
+retreat_recheck_unconfirmed 123回 + no_input_fallback 94回が続き、10分以上
+画面が進まなかった。
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku import orchestrator as O
+
+
+def test_the_summer_choice_keeps_the_recall_out():
+    assert O._recall_owns_dialog('summer_bonus', True, False) is False
+    assert O._recall_owns_dialog('summer_bonus_message', False, True) is False
+
+
+def test_other_screens_still_hand_the_dialog_to_the_recall():
+    assert O._recall_owns_dialog('text', True, False) is True
+    assert O._recall_owns_dialog('map', False, True) is True
+    assert O._recall_owns_dialog('text', False, False) is False

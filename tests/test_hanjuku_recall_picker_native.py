@@ -12,9 +12,16 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
 
+
+
+def only_press(actions):
+    """The single pad button a picker step pressed (the hold varies by distance)."""
+    assert len(actions) == 1 and actions[0].get('type') == 'pad', actions
+    return actions[0]['buttons'][0]
 
 def load(name):
     frame = read_png(FIXTURES / f'g1075-ch3-recall-picker-{name}.png')
@@ -35,22 +42,26 @@ def test_native_picker_frames_replay_the_live_presses():
     mem = memory()
     screen, frame = load('almamoon')
     assert screen.kind == 'world_map'
-    assert policy.world_map_step(screen, mem, frame) == [policy.pad('down')]
-    assert mem['recall']['goal'] == 'メガパタ'
+    assert only_press(policy.world_map_step(screen, mem, frame)) == 'down'
+    assert _flow(mem)['recall']['goal'] == 'メガパタ'
     screen, frame = load('grin')
-    assert policy.world_map_step(screen, mem, frame) == [policy.pad('left')]
+    assert only_press(policy.world_map_step(screen, mem, frame)) == 'left'
     assert [(s['cursor'], s['press'], s['still']) for s in steps(mem)] == [
         ([151.0, 64.5], 'down', 0), ([169.0, 84.5], 'left', 0)]
 
 
-def test_native_ring_that_stays_on_home_tries_left_then_gives_up():
+def test_native_ring_that_stays_on_home_tries_left_then_confirms_home():
     mem = memory()
     screen, frame = load('almamoon')
     presses = [policy.world_map_step(screen, mem, frame) for _ in range(policy.PICKER_STILL_LIMIT)]
-    assert presses == ([[policy.pad('down')]] * policy.PICKER_AXIS_SWITCH
-                       + [[policy.pad('left')]] * (policy.PICKER_STILL_LIMIT - policy.PICKER_AXIS_SWITCH))
-    assert policy.world_map_step(screen, mem, frame) == [policy.pad('b')]
-    assert not mem.get('recall') and mem['recall_skip'] == {'tick': 100}
-    aborted = [r for r in mem['_records'] if r['decision'] == 'camp_recall_aborted']
-    assert [r['resulting_event'] for r in aborted] == ['picker_cursor_stationary']
+    assert [only_press(a) for a in presses] == (
+        ['down'] * policy.PICKER_AXIS_SWITCH
+        + ['left'] * (policy.PICKER_STILL_LIMIT - policy.PICKER_AXIS_SWITCH))
+    # Owner 2026-11-05: confirm the home castle the ring stands on, do not cancel.
+    assert policy.world_map_step(screen, mem, frame) == [
+        policy.pad('a'), {'type': 'wait', 'ms': 700}, policy.pad('a')]
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert not [r for r in mem['_records'] if r['decision'] == 'camp_recall_aborted']
+    fallback = [r for r in mem['_records'] if r['decision'] == 'camp_recall_picker_fallback']
+    assert len(fallback) == 1 and fallback[0]['observed_metric']['castle'] == 'アルマムーン'
     assert [s['still'] for s in steps(mem)] == list(range(policy.PICKER_STILL_LIMIT + 1))

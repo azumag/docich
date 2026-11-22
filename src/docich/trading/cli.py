@@ -104,6 +104,12 @@ def configure_parser(parser) -> None:
     improve.add_argument("--date", default=None, metavar="YYYY-MM-DD", help="対象コーナー日 (記録用)")
     improve.add_argument("--agents", default=None, metavar="CSV", help="LLM委任先 (既定は [paper_corner] improve_agents)")
     improve.add_argument("--dry-run", action="store_true", help="AIを呼ばずプロンプトだけ確認する")
+    scheduled = sub.add_parser(
+        "paper-improve-scheduled",
+        help="timer起動の戦略改善。安価なgate(停止ファイル/実行中/保留候補/1日1回の上限)を通った時だけ1回実行する",
+    )
+    scheduled.add_argument("--agents", default=None, metavar="CSV", help="LLM委任先 (既定は [paper_corner] improve_agents)")
+    scheduled.add_argument("--dry-run", action="store_true", help="gateを通さずAIも呼ばずプロンプトだけ確認する")
 
 
 def _state_dir(
@@ -540,6 +546,17 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
             dry_run=bool(args.dry_run),
         )
         _json_print(summary)
+        return 0
+    if command == "paper-improve-scheduled":
+        if global_config is None:
+            raise TradingCliError("paper-improve-scheduled requires resolved docich global config")
+        from ..paper_improve_retry import run_scheduled_improve
+        agents = args.agents
+        if agents is None:
+            agents = _paper_corner_improve_agents(global_config)
+        _json_print(run_scheduled_improve(
+            global_config, state_dir, agents or "", bool(args.dry_run),
+        ))
         return 0
     if command == "dashboard-watch":
         from .dashboard import watch_loop, render_dashboard, load_snapshot

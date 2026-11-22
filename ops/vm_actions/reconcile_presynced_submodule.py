@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 import os
 import re
 import stat
@@ -35,10 +36,18 @@ REASON_PROJECTION_UNSUPPORTED = 62
 REASON_PROJECTION_UNKNOWN_STATE = 63
 REASON_PROJECTION_MUTATION_FAILED = 64
 REASON_PROJECTION_POSTVERIFY_FAILED = 65
+REASON_AB_GATE_REFUSED = 66  # #4412: mirrors gateway.py AB_GATE_HELPER_RC
 
 # 71..85: mask of unknown paths in 2-4 path diffs. Else generic 63.
 REASON_PROJECTION_UNKNOWN_MASK_BASE = 70
 PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
+
+# #4412 A/B gate: this helper is loaded from the reviewed commit and run via
+# stdin, so it cannot import ops.vm_actions.ab_gate_preflight. Keep this block
+# in sync with that module. Minimal env: no AB_* override can force "clear".
+AB_GATE_SCRIPT_REL = "strategy/ab_gate_on_merge.sh"
+AB_GATE_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+AB_GATE_TIMEOUT = 20
 
 # 90+bit*3+class for one unknown: 0 absent, 1 unreviewed length, 2 same length.
 # Pruned .github/ files heal to old; other unknowns stay fail-closed.
@@ -342,7 +351,80 @@ def _set_projection(path, target):
         _atomic_projection_write(path, target["data"], target["mode"])
 
 
+def _ab_state_verdict(root):
+    """Self-contained mirror of ab_gate_preflight._independent_verdict.
+
+    A legacy gate can report clear for a malformed ab_state.json, so validate
+    the state here too. Returns (active, reason) or None.
+    """
+    state = root / "tmp" / "state"
+    try:
+        raw = (state / "ab_state.json").read_bytes()
+    except FileNotFoundError:
+        raw = None
+    except OSError:
+        return True, "state_unreadable"
+    if raw:
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return True, "state_invalid"
+        if (isinstance(data, dict) and (data.get("a_hash") or data.get("b_hash"))
+                and not (state / "ab_abort").exists()):
+            return True, "active_ab"
+    try:
+        env = (root / ".env").read_bytes()[:1 << 20]
+    except FileNotFoundError:
+        env = b""
+    except OSError:
+        return True, "env_unreadable"
+    if re.search(rb"^REGRESSION_DISABLED=(?:1|true|TRUE)", env, re.M):
+        return True, "env_gate_enabled"
+    if (state / "improve_daemon.paused").exists():
+        return True, "improve_paused"
+    return None
+
+
+def _assert_ab_gate_clear(destination):
+    """#4412: fail-closed before the first live projection byte write.
+
+    Mirrors ops/vm_actions/ab_gate_preflight.check(). A refusal is a numeric
+    ReconcileError so the VM-side log records it without leaking paths or env
+    values; gateway.py owns the durable refusal marker for this operation.
+    """
+    root = Path(destination)
+    script = root / AB_GATE_SCRIPT_REL
+    reason = None
+    state_verdict = None if not root.is_dir() else _ab_state_verdict(root)
+    if state_verdict is not None:
+        reason = state_verdict[1]
+    elif not root.is_dir():
+        reason = "root_missing"
+    elif not script.is_file() or not os.access(script, os.X_OK):
+        reason = "gate_missing"
+    else:
+        try:
+            proc = subprocess.run(
+                [str(script), "check"],
+                cwd=str(root), env=dict(AB_GATE_ENV),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=AB_GATE_TIMEOUT,
+            )
+            rc = proc.returncode
+        except (OSError, subprocess.TimeoutExpired):
+            reason = "execution_error"
+        else:
+            if rc == 0:
+                return
+            reason = "active_ab" if rc == 1 else (
+                "unknown_state" if rc == 2 else f"unexpected_rc_{rc}")
+    print(f"ab-gate: refused reason={reason} (no live projection write)", file=sys.stderr)
+    raise ReconcileError(REASON_AB_GATE_REFUSED, f"ab gate refused: {reason}")
+
+
 def _normalize_projection(repo, old_sub, new_sub, destination):
+    _assert_ab_gate_clear(destination)
     plans = []
     verifies = []
     states = []
@@ -376,6 +458,9 @@ def _normalize_projection(repo, old_sub, new_sub, destination):
     if 2 in states:
         raise ReconcileError(_projection_unknown_reason(states, unknowns), "unknown projection content")
 
+    # #4412: re-check immediately before the first live byte is written. The
+    # experiment may have started while the plan above was being built.
+    _assert_ab_gate_clear(destination)
     applied = []
     try:
         for path, old_meta, original_live in plans:

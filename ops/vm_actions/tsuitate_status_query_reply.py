@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import sys
 
-RUN_ID_RE = re.compile(r"hourly-[0-9]{10}\Z")
+RUN_ID_RE = re.compile(r"(?:hourly-[0-9]{10}|background-[0-9]{20})\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 TEXT_RE = re.compile(r"[A-Za-z0-9_.:+/-]{1,128}\Z")
 STATES = {"stopped", "queued", "playing", "draining", "finished", "queue_timeout", "paused"}

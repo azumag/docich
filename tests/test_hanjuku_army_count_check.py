@@ -444,3 +444,65 @@ def test_skipped_egg_priority_refills_a_measured_positive_but_insufficient_army(
     assert mem['shop']['soldiers']==40 and mem['shop']['soldiers_done'] is False
     assert mem['shop']['reserve']==0 and mem['shop']['egg']=='skipped'
     assert mem['soldiers_seen']==10 and not mem['shop'].get('soldier_receipt')
+
+
+def test_closing_stage_advances_leftover_plain_text_with_a():
+    # g1097 43-3: the closing stage pressed its bounded Bs against a leftover
+    # plain-text message over the month menu, then held [] forever. A is the
+    # only key that dismisses such a message; choices/unread stay guarded.
+    from test_hanjuku_month_text_advance import menu as text_menu
+    mem = memory()
+    mem['month'] = '1-11'
+    s = text_menu(on='へいしほじゅう')
+    assert s.kind == 'month_menu' and monthly._month_dialog_body(s)
+    scope = economy._soldier_count_scope(mem, s.header)
+    mem['army_count_check'] = {'scope': scope, 'stage': 'closing',
+                               'result': 'unverified', 'exit_presses': 4}
+    for _ in range(3):
+        assert monthly._month_army_count_check(s, mem, mem['shop']) == [p.pad('a')]
+    assert any(r['decision'] == 'month_text_advance' for r in mem['_records'])
+    # A real choice is never confirmed by this recovery path.
+    mem2 = memory()
+    mem2['month'] = '1-11'
+    s2 = text_menu(on='へいしほじゅう', choices=True)
+    scope2 = economy._soldier_count_scope(mem2, s2.header)
+    mem2['army_count_check'] = {'scope': scope2, 'stage': 'closing',
+                                'result': 'unverified', 'exit_presses': 4}
+    assert monthly._month_army_count_check(s2, mem2, mem2['shop']) == []
+
+
+def test_closing_stage_releases_an_unclosable_screen():
+    # g1105 43-5: a foreground screen the check can neither close nor advance
+    # stayed owned forever; army_count_owned then suppressed the no-input
+    # escape and the menu froze until screen_stalled. The tick still holds,
+    # but the check releases the screen afterwards.
+    from test_hanjuku_month_text_advance import menu as text_menu
+    mem = memory()
+    mem['month'] = '1-11'
+    s = text_menu(on='へいしほじゅう', choices=True)
+    scope = economy._soldier_count_scope(mem, s.header)
+    mem['army_count_check'] = {'scope': scope, 'stage': 'closing',
+                               'result': 'unverified', 'exit_presses': 4}
+    assert monthly._month_army_count_check(s, mem, mem['shop']) == []
+    assert mem['army_count_check']['stage'] == 'unverified'
+    assert monthly._month_army_count_check(s, mem, mem['shop']) is None
+
+
+def test_stalled_month_menu_releases_the_army_check_with_b():
+    """g1107 46-9: army_count_owned suppressed the no-input escape for 300 s
+    and the run ended screen_stalled. The month menu must close with B."""
+    from docich.hanjuku_bot import decide
+    mem = memory()
+    p.month_step(screen(), mem)
+    p.month_step(observe_count(mem, 0), mem)
+    assert p.month_step(screen(), mem) == [p.pad('a')]
+    assert monthly.army_count_owned(mem)
+    frame = month_canvas(72, month=8, on='へいしほじゅう')
+    state = {'policy': mem, 'phase': 'month_menu', 'no_input_streak': 1000,
+             'no_input_frames': [frame.digest()]}
+    actions, out = decide(frame, state, run_identity=IDENTITY)
+    assert actions == [p.pad('b')]
+    assert 'army_count_check' not in out['policy']
+    assert out['policy']['shop']['soldiers_done'] is True
+    assert not out['policy']['shop'].get('soldier_receipt')
+    assert any(r['decision'] == 'month_menu_stall_release' for r in out['_records'])

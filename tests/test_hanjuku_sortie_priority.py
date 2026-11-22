@@ -12,8 +12,18 @@ from docich.hanjuku.flows import house
 from docich.hanjuku.flows import map as map_flow
 from docich.hanjuku.os_layer import navigation, phase as phase_module
 from docich.hanjuku.os_layer.pixels import read_png
-from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.os_layer.screen import castle_roofs, parse
 from docich.hanjuku.strategy import goals
+
+# The production default pauses repair goals (EGG_REPAIR_DISABLED); these
+# tests exercise the repair machinery, so they opt back in.
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _repair_goals_enabled(monkeypatch):
+    monkeypatch.setattr(goals, 'EGG_REPAIR_DISABLED', False)
+
 from docich.hanjuku_screen import Screen
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
@@ -43,14 +53,28 @@ def starved_frame():
     return frame, parse(frame, phase=phase_module.classify(frame))
 
 
-def test_lifetime_alignment_count_blocks_every_later_repair():
-    """The measured frame: a 838-step history leaves the cursor unmoved."""
+def test_lifetime_alignment_count_blocks_every_later_repair(monkeypatch):
+    """An exhausted budget cannot send another correction to a far roof."""
     frame, screen = starved_frame()
     assert screen.kind == 'map'
+    # Pin the former offset as a synthetic servo input. The real Lv5 sprite
+    # now produces one lower-centred target, tested separately below.
+    monkeypatch.setattr(navigation, 'castle_roofs', lambda _: [
+        {'kind': 'own', 'box': (98, 83, 127, 101), 'clipped': False, 'target': (112, 93)}])
     stale = {'align_steps': {'HOUSE:source': 838}}
     assert navigation._align_on_roof(screen, stale, frame, {'own'}, 'HOUSE:source') is None
     fresh = {'align_steps': {}}
     assert navigation._align_on_roof(screen, fresh, frame, {'own'}, 'HOUSE:source')
+
+
+def test_native_large_castle_within_arrival_tolerance_clears_stale_budget():
+    frame, screen = starved_frame()
+    roofs = castle_roofs(frame)
+    assert [(r['kind'], r['level'], r['target']) for r in roofs] == [('own', 5, (112, 111))]
+    assert screen.cursor == (108, 104)
+    stale = {'align_steps': {'HOUSE:source': 838}}
+    assert navigation._align_on_roof(screen, stale, frame, {'own'}, 'HOUSE:source') == 'on'
+    assert 'HOUSE:source' not in stale['align_steps']
 
 
 @pytest.mark.parametrize('next_phase, key', [

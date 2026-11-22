@@ -6,6 +6,7 @@ from docich.hanjuku.flows import camp_recheck
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import _camp_frame, camp_menu
 from test_hanjuku_house import status
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'probe-test', 'generation': 1, 'lease_id': 'lease-test'}
 MAP = Screen([], None, '', kind='map', cursor=(26, 66))
@@ -79,7 +80,7 @@ def test_read_limit_is_respected(probe_on):
 
 def test_active_recall_is_never_touched(probe_on):
     mem = memory()
-    mem['recall'] = {'stage': 'menu', 'general': 'ゼウス'}
+    _flow(mem)['recall'] = {'stage': 'menu', 'general': 'ゼウス'}
     assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None
 
 
@@ -109,11 +110,11 @@ def test_aborted_probe_is_not_retried_in_same_camp(probe_on):
 
 def test_backoff_blocks_idle_start(probe_on):
     mem = memory()
-    mem['recall_skip'] = {'tick': 100}
+    _flow(mem)['recall_skip'] = {'tick': 100}
     assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None
     assert 'camp_hp_probe' not in mem
-    mem.pop('recall_skip')
-    mem['recall_skip_target'] = {'camp': TARGET}
+    _flow(mem).pop('recall_skip')
+    _flow(mem)['recall_skip_target'] = {'camp': TARGET}
     assert camp_recheck.camp_hp_probe_step(MAP, mem, FRAME) is None
     assert 'camp_hp_probe' not in mem
 

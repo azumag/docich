@@ -39,7 +39,7 @@ CARD_ROLES = frozenset({'nonlethal_egg_risk', 'damage_or_egg_risk_unclassified',
                        'single_card_lethal', 'healing_not_a_kill', 'no_autonomous_egg_trigger',
                        'egg_drop_candidate_not_a_kill', 'inspect_live_inventory_before_selection',
                        'observed_control_chain_not_a_kill', 'control_has_no_observed_followup',
-                       'summon_already_observed'})
+                       'halving_not_a_kill', 'summon_already_observed'})
 TARGET_KINDS = frozenset({'general', 'boss_general', 'egg_monster', 'boss_monster', 'unknown'})
 ESTIMATE_NUMBERS = ('raw_damage_min', 'enemy_soldier_hp_upper', 'damage_lower_bound',
                     'remaining_hp_upper')
@@ -145,6 +145,12 @@ def fact(record):
         if any(value is None for value in values.values()) or record.get('outcome') not in {'win', 'loss'}:
             return None
         result.update(values, outcome=record['outcome'])
+        # A bare 'win'/'loss' left the direction ambiguous — the narrator
+        # misread it as the named general losing (g1207: バタール won vs
+        # ヴィーナス but was announced as the loser). Name both sides.
+        winner, loser = (values['ally'], values['enemy']) if record['outcome'] == 'win' \
+            else (values['enemy'], values['ally'])
+        result.update(winner=winner, loser=loser)
         for key in ('ally_hp', 'enemy_hp'):
             value = number(observed.get(key), 999)
             if value is not None:

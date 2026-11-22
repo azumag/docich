@@ -15,6 +15,10 @@ def refused_card(monkeypatch):
     The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
     """
     monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+    # #4411: the boss wear-down rule is also isolated here; its contracts live
+    # in test_hanjuku_card_wear_down.py.
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._boss_card_wears_down_enemy',
+                        lambda estimate, cur: False)
 
 
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',
@@ -207,7 +211,8 @@ def test_health_need_decides_whether_healing_precedes_a_lethal_card(hp, choice):
 
 
 def test_control_without_attack_follows_a_visible_heal_instead():
-    mem = memory('クースカン')
+    # ally 10 vs enemy 27: halving (14 left) would still leave us behind.
+    mem = memory('クースカン', ally_hp=10)
     assert p.card_list_step(cards(['クースカン', 'エンジェリン']), mem) == [p.pad('down')]
     assert p.card_list_step(cards(['クースカン', 'エンジェリン'], 1), mem) == [p.pad('a')]
     assert mem['battle']['cards_selected'] == ['エンジェリン']

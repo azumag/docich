@@ -120,3 +120,17 @@ class LiveProgressTests(TitleContextTests):
         runtime=self.live()
         moved=runtime.with_name('other');runtime.rename(moved);runtime.symlink_to(moved)
         self.assertIsNone(self.phrase('hanjuku-hero'))
+
+    def test_progress_marker_changes_only_with_the_clear_count(self):
+        from docich.stream_title_context import hanjuku_progress_marker
+        runtime = self.live()
+        self.assertEqual(hanjuku_progress_marker(self.root), '9:2')
+        progress = runtime/'hanjuku_progress.json'
+        data = json.loads(progress.read_text()); data['cleared'] = 3
+        progress.write_text(json.dumps(data))
+        self.assertEqual(hanjuku_progress_marker(self.root), '9:3')
+        # An untrusted observation has no marker, so it cannot look like a change.
+        run = json.loads((runtime/'hanjuku_run.json').read_text())
+        run['observed_at'] = 1
+        (runtime/'hanjuku_run.json').write_text(json.dumps(run))
+        self.assertIsNone(hanjuku_progress_marker(self.root))

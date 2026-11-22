@@ -85,7 +85,7 @@ def test_summon_answer_rejects_zero_even_with_a_saved_egg_intention(monkeypatch,
     if saved:
         mem.update(egg_battle=True, egg_action='use_egg', egg_needed=False)
     screen = menu('egg_battle_menu', cursor=208)
-    assert policy.egg_battle_step(screen, mem) == [policy.pad('up')]
+    assert policy.egg_battle_step(screen, mem) == [policy.pad('up'),{'type':'wait','ms':60},policy.pad('up')]
     assert mem['egg_action'] == 'attack'
     assert mem['egg_needed'] is True  # unavailable does not mean healthy
     assert 'egg_recheck' not in mem

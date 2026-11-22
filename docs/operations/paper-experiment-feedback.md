@@ -23,17 +23,62 @@
 2. [`worker.py`](../../src/docich/trading/worker.py) は通常の取引周期の売買判断前、売り処理後の最初の買い注文前、約定処理後に評価する。売却で停止条件が成立した周期には、その後の買いを通さない。途中で実験が交代した場合も旧実験で計画した買いを破棄する。
 3. 交代準備中は新規エントリーを止め、読み取り可能な旧実験の exit ルールで残存建玉を決済する。建玉ゼロ（flat）を確認して pending を採用し、次の評価期間を開始する。
 
-以下の閾値自体は既存値を維持する。決済数は評価対象の売り約定数 `closed_sells` であり、部分売却も含む。
+決済数は評価対象の売り約定数 `closed_sells` であり、部分売却も含む。
 
 | 条件 | 理由 | 動作 |
 | --- | --- | --- |
-| 8 決済以上、実現損益が負、PF が非 null かつ 0.75 未満 | `early-stop` | 候補の有無によらず新規停止。旧 exit を継続し、flat で候補がなければ `waiting-candidate` |
 | 20 決済以上 | `sample-complete` | 候補があれば新規停止して交代準備 |
 | 開始後 48 時間以上 | `max-age` | 候補があれば新規停止して交代準備 |
 
-20 決済と 48 時間は **いずれか** でよい。早期停止に該当せず候補もなければ、通常の実験は観測を継続する。一度交代準備へ入った同じ実験は、停止理由を control に保存するため、一時的な評価失敗や残存建玉の損益改善では新規エントリーを再開しない。
+20 決済と 48 時間は **いずれか** でよい。候補がなければ、損益によらず実験は観測を継続する。
+
+損失だけを理由に新規を止める早期停止（旧 `early-stop`: 8 決済以上・実現損失・PF 0.75 未満）は 2026-11-12 に廃止した。PAPER の損益は仮想で守る資金が無く、候補は 1 日 1 回しか来ない（[`paper_improve_schedule.py`](../../src/docich/trading/paper_improve_schedule.py)）ため、止めても翌朝まで PAPER のデータが増えないだけだった（2026-11-11 に `snapback_harvest_v27` が 8 決済で止まり、約 19 時間売買が止まった）。8 決済では偶然の負けと区別できない。実損失を止める仕組みは LIVE 側の停止ルール（Issue #3623 §2.6）で扱う。control に既に `early-stop` で書かれた交代準備は読める理由として残し、次の候補まで旧 exit での決済を続ける。一度交代準備へ入った同じ実験は、停止理由を control に保存するため、一時的な評価失敗や残存建玉の損益改善では新規エントリーを再開しない。
 
 既知の実験の active ファイル欠落・破損、control 破損、評価不能、原価不足は新規停止に倒す。旧ルールが読めれば exit は継続し、ルール自体が不明なら legacy exit に置き換えない。実験を一度も開始していない legacy 状態は区別する。現行と同じ ID でルールだけ変える候補は拒否し、同一候補の再提出でも評価開始時刻をリセットしない。AI 処理中に現行実験が変わった場合は `baseline-changed` で古い基準からの書き込みを止める。
+
+## 銘柄別スロット（Issue #3623 §2.9）
+
+銘柄ごとに別の実験を動かすための置き場。**専用スロットが 1 つも無い間は、上の動作から何も変わらない。** 専用スロットは、下の「銘柄ごとの AI 改善」が候補を保存したときに作られる。
+
+- **共通スロット** = 今の `trading/`。専用スロットを持たない銘柄をすべて受け持つ。
+- **専用スロット** = `trading/slots/<BASE>_<QUOTE>/`。`slot.json` が銘柄を宣言し、実験・保留・control・評価の各ファイルを同じ名前で持つ。台帳は共有（[`symbol_slots.py`](../../src/docich/trading/symbol_slots.py)）。
+- **評価**：専用スロットはその銘柄の決済と保有だけ、共通スロットは専用を持たない銘柄だけを数える。
+- **交代**：専用スロットは **10 決済、または 7 日**（銘柄ごとの AI 改善の対象条件と同じ日数）（共通は 20 決済 / 48 時間のまま）。交代準備はその銘柄だけで、ほかの銘柄は止めない。
+- **売買**（[`slot_runtime.py`](../../src/docich/trading/slot_runtime.py)）：専用スロットの銘柄は、買いも売りもそのスロットの実験のルールで判断する。ほかの戦略（相対価値など）がその銘柄を買うかどうかも、そのスロットの新規可否に従う。
+- **最初の実験を待つスロット**（保留だけある）：その銘柄の新規を止め、保有は共通スロットの売りルールで手じまいし、保有が 0 になってから保留を採用する。
+- **壊れたとき**：スロットの実験が読めないときは、その銘柄だけ新規も決済も止める（他人のルールで売らない）。`slots/` に読めない項目があるときは、どの銘柄の持ち主か分からないので、全スロットの新規を止めて決済だけ続ける。
+
+### 銘柄ごとの AI 改善
+
+毎日 1 回の定期実行（`paper-improve-scheduled`）の中で、共通スロットの改善のあとに動く（[`paper_improve_slots.py`](../../src/docich/trading/paper_improve_slots.py)）。コーナー終了時の `paper-improve` では動かない。
+
+- **対象**：銘柄数の上限は無い。スロットに保留の候補が無く、次のどれかに当たる銘柄をすべて対象にする。(1) 銘柄向けの候補をまだ一度も受け取っていない、(2) 前回の候補から **10 決済**、(3) 前回の候補から **7 日**。売買の少ない戦略も日数で対象になる。
+- **AI に渡す事実**（銘柄ごと）：直近 14 日の決済数・1 日あたりの決済数・勝ち数・実現損益、直近の決済、現行の買い条件が直近の 5 分足で成立した本数（`market_cache.json` の履歴でルールを再生した頻度の見積もりで、損益のバックテストではない）、値動きの大きさ。決済が少ない銘柄では、買い条件が成立する回数を増やすことも目的として明示する。共通スロットの改善にも `trade_activity`（決済の頻度と買い条件の成立本数）を渡す。
+- **呼び出し**：1 回の呼び出しは最大 4 銘柄。対象が多い日は同じ実行の中で呼び出しを分ける。開始から 30 分を過ぎたら新しい呼び出しを始めず、残りは翌日に回す（決済の多い銘柄から先に処理する）。AI の失敗が 2 回続いたら、その日は打ち切る。
+- **検証と保存**：候補は銘柄ごとに検証し、1 つが不正でも、ほかは通す。実験 ID はシステムが付ける（`<銘柄>_<日付>`）。保有時間だけで決済する条件が無い候補には `hold_minutes >= 360` を足す（スロットは保有が 0 にならないと交代できないため）。通った候補はその銘柄の専用スロットに保留として入り、スロットが無ければここで作る。
+- **1 日 1 回**：`paper_improve_slots_status.json` の開始時刻で数える（20 時間）。AI を呼ばなかった回は数えない。停止用のファイル `paper_improve_scheduled.disabled` は、この処理も止める。
+- **共通スロットが空になったら**：売買している銘柄がすべて専用スロットを持つと、共通の実験はどの銘柄も受け持たないので、共通の候補の生成（AI 呼び出し）を飛ばす。
+- 記録：`paper_improve_slots_status.json`（件数と銘柄ごとの結果）、`paper_improve_slots_state.json`（銘柄ごとの前回の候補の時刻）。
+
+### 表示（画面・放送・診断）
+
+`status.json` の `worker_summary` にある `experiment_status` / `experiment_reason_code` / `experiment_entries_allowed` は、**共通スロットだけ**の状態である。専用スロットの様子は次の場所で見る（読み取りだけで、売買の判断には使わない。[`slot_overview.py`](../../src/docich/trading/slot_overview.py)）。
+
+- **`worker_summary`**：`slot_count`（専用スロットの数）、`slot_active_count`、`slot_entries_allowed_count`、`slot_blocked_count`、`slot_layout_invalid`、`common_owned_symbol_count`（共通スロットが受け持つ銘柄の数）。
+- **放送の状態表示**：`Slots: <数> on=<買い可> blocked=<停止> common=<共通の受け持ち>`。共通スロットの受け持ちが 0 銘柄のときは、共通の `Experiment:` 行を出さない。
+- **画面（ダッシュボード）**：「銘柄別戦略」の欄に、スロットの数と買い可の数、直近に約定した銘柄の戦略名と、交代までの進み具合（決済 n/10、経過 n/7 日）を出す。表示枠の都合で 1 行だけ。
+- **放送の「戦略」の説明**：専用スロットがあると、その銘柄の戦略（名前と `thesis`）を AI に渡し、共通の既定パラメータ（`policy`）を銘柄の戦略として語らないよう指示する。AI を使えないときの定型文は、戦略名と決済件数だけを読む（`thesis` は改善 AI の作業メモで、bps や特徴量の名前が多いため）。
+- **診断**（`collect_diagnostics.py` の `paper_slots`）：状態ごとの数、買い可の数、決済数の合計、止まっているスロットと交代が近いスロットを最大 3 件、銘柄ごとの AI 改善の件数。戦略の名前やルールは出さない。
+- 決済の理由は、約定の `signal_context.rule_id`（例 `exit-3`）と、そのスロットの `exit_rules` を突き合わせると分かる。
+
+### 昇格の判定器（シャドー、Issue #3623 §2.6・ルール v3）
+
+[`promotion_shadow.py`](../../src/docich/trading/promotion_shadow.py) は、専用スロットの実験（`<銘柄>_<yymmdd>`）のセルごとに、「PAPER で成績が良いか」を判定して**報告するだけ**の読み取り専用の判定器である。台帳は `mode=ro` で読み、何も書かず、LIVE にもスロットにも触れない。LIVE はまだ存在しない。
+
+- 方式はルール v2（Issue #3623 §2.8）の e-process と同じ。日本時間の日ごとの純リターン（手数料補正後）から、昇格の証拠 E を更新する。
+- v2 との違いは、しきい値が **5**（v2 は 430）であることと、評価に使う日が 2026-11-17 以降の日だけであること。専用スロットの実験は7日で替わり、日ブロックが最大7個なので、430 では、効果が大きくても昇格しない（日ごとの標準偏差 0.5% のシミュレーション）。しきい値 5 なら、日ごとの効果 +1.9% は約100%、+1% は約60%、+0.5% は約1%、損益ゼロ近辺は約0% が7日以内に昇格する。
+- 理論の保証は、「実質トントン以下の戦略が昇格する確率はセルごとに 1/5 以下」まで。多数のセルを順に評価するので、偶然の昇格は少し混ざる。LIVE の資金が約1万円であることを前提に受け入れている（オーナー決定 2026-11-16）。シミュレーションは日ブロックの独立を仮定しており、実データでは未検証。
+- 実行：`python3 -m docich.trading.promotion_shadow --state-dir <trading dir>`（trading dir そのもの）。出力は JSON 1行で、判定したセルの数、最小ブロック数を満たしたセル、昇格できるセル（最大10件）、E の最大値。
 
 ## 戦略判断と成績の補正
 
@@ -44,6 +89,26 @@
 [`strategy_metrics.py`](../../src/docich/trading/strategy_metrics.py) の評価は schema 2。SQLite の単一スナップショットから全履歴を平均原価方式で再構成し、他戦略の売買も在庫・原価の更新へ反映する。評価対象は現行実験の開始後に、その実験の exit 判断で売却した約定（`accounting_scope=experiment_exit_decisions`）。損益を今回の実験が買った分 `self_entry_realized_pnl_jpy` と、前期間・他戦略由来の分 `carry_in_realized_pnl_jpy` に比例配分し、両者の合計を `realized_pnl_jpy` とする。
 
 混合原価の売却は self/carry 両方の内訳件数に含まれるので、内訳件数の単純合計は総決済数とは限らない。原価が復元できないときは `partial / ledger_incomplete_basis` とし、ゼロ損益の正常評価にしない。PF とドローダウンもこの実現損益の範囲であり、含み損益や戦略全体のリターンを表さない。carry の利益を今回の entry の成果とみなさない。今回確認したのは会計・制御の整合性であり、将来の収益改善は継続観測が必要。
+
+## 定時改善 timer（1日1回、コーナー非依存）
+
+コーナー終了時の改善起動（`paper_corner.py::_spawn_improve_once`）は変更しない。PAPERコーナーが長期間完了しないと改善が止まるため、別系統として user timer `docich-paper-improve.timer` を追加した（毎日 06:20 JST、`Persistent=true`、`AccuracySec=1min`。05:10 JST の `docich-nethack-daily-improve.timer` と重ねない）。`docich-paper-improve.service` は `ops/vm_actions/run_paper_improve_with_ai_env.sh` 経由で `docich trading paper-improve-scheduled` を1回実行する oneshot（`TimeoutStartSec=3600`）。production deploy 時に `ops/vm_actions/ensure_paper_improve_timer.sh` が配置・enable する。
+
+`paper-improve-scheduled` は AI を呼ぶ前に、ローカル状態だけを読む次のgateを上から順に評価し、最初に該当した理由でスキップする（`reason` を JSON 出力。`trading/` 配下 = `<state_dir>/trading/`）。
+
+| 順 | `reason` | 条件 |
+| --- | --- | --- |
+| 1 | `disabled` | 緊急停止ファイル `trading/paper_improve_scheduled.disabled` が存在する |
+| 2 | `already-running` | `paper_improve_status.json` が `running` で `updated_at` が70分以内 |
+| 3 | `pending-exists` | 検証済みの有効な pending 候補が既にある（採用は常駐 worker の `assess_experiment` が行う） |
+| 4 | `daily-limit` | `paper_improve_status.json` の `started_at` が20時間以内（`skipped` と `dry-run` は試行に数えない） |
+| 5 | `run` | 上記以外。コーナー終了時と同じ `trading paper-improve` の経路（検証エラー1回修復リトライ込み）を1回実行 |
+
+`daily-limit` は状態ファイルだけで判定するため、コーナー起動の改善も数え、AIの呼び出しは全体で概ね1日1回に収まる。失敗した日は翌日まで待つ（別のbackoff状態は持たない）。コーナー起動との重複は既存の singleflight lock と improve lane が防ぐ。
+
+**停止方法（unit変更・再deploy不要）:** `touch <state_dir>/trading/paper_improve_scheduled.disabled` で次回tickからAIを呼ばない。再開は同ファイルを削除する。完全に外す場合は `systemctl --user disable --now docich-paper-improve.timer`。手動確認は `docich --config config/docich.soren-live.toml trading paper-improve-scheduled --dry-run`（gateを通さずAIも呼ばない）。
+
+注意: この timer が再開すると、評価待ちが解消した現行実験は建玉が flat になった後に交代する。ルール v2 セルの前向き評価（Issue #3623 §2.8）はその時点で終わる。
 
 ## 次回の観測手順
 

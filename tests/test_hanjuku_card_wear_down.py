@@ -111,3 +111,82 @@ def test_a_finishing_card_still_comes_before_a_plain_hit():
     mem = memory('ミックミー', enemy_hp=27, soldiers=(0, 0))
     names = ['ゼンマイン', 'ダイチスイム']
     assert rules._card_gate_choice(mem, mem['battle'], names, names) == 'ゼンマイン'
+
+
+# --- #4411: boss generals whittle down even when one 100-HP soldier survives ---
+
+
+def test_boss_general_hit_below_one_soldier_is_a_whittle_down():
+    """キャトルミュー 90 vs one 100-HP boss soldier: the pool drops to 10."""
+    mem = memory('キャトルミュー', enemy='プリンス', enemy_hp=500,
+                 ally='リースリング', ally_hp=37, soldiers=(6, 1))
+    result = gate(mem, 'キャトルミュー')
+    estimate = result['estimate']
+    assert estimate['target_kind'] == 'boss_general'
+    assert estimate['raw_damage_min'] == 90
+    assert estimate['enemy_soldier_hp_upper'] == 100
+    assert estimate['damage_lower_bound'] == 0
+    assert estimate['remaining_hp_upper'] == 500
+    assert 'boss_damage_no_soldier_bonus' in estimate['basis']
+    assert (result['allowed'], result['role']) == (True, 'damage_not_a_kill')
+
+
+@pytest.mark.parametrize('soldiers', [(6, 1), (None, None)])
+def test_boss_whittle_allows_readable_and_unread_soldier_counts(soldiers):
+    """#4411: unread counts use the model's upper bound but still take a hit."""
+    mem = memory('キャトルミュー', enemy='せいめいたい', enemy_hp=500,
+                 ally='リースリング', ally_hp=37, soldiers=soldiers)
+    result = gate(mem, 'キャトルミュー')
+    assert result['estimate']['target_kind'] == 'boss_general'
+    assert result['estimate']['raw_damage_min'] == 90
+    assert (result['allowed'], result['role']) == (True, 'damage_not_a_kill')
+
+
+def test_boss_whittle_keeps_the_egg_flags_visible():
+    """The new permission is added next to, not instead of, the egg risk."""
+    mem = memory('キャトルミュー', enemy='プリンス', enemy_hp=500,
+                 ally='リースリング', ally_hp=37, soldiers=(6, 1))
+    result = gate(mem, 'キャトルミュー')
+    assert result['enemy_egg_threat'] is True
+    assert result['egg_drop'] is None
+    assert result['egg_reach'] is None
+    assessment = mem['battle']['card_assessment']
+    assert assessment['allowed'] is True
+    assert assessment['reason'] == 'damage_not_a_kill'
+
+
+def test_pending_control_chain_does_not_authorize_a_boss_hit():
+    """Two unconfirmed half cards must not authorize ゼンマイン (#4411)."""
+    mem = memory('ゼンマイン', enemy='プリンス', enemy_hp=25, ally_hp=90, soldiers=(6, 1))
+    cur = mem['battle']
+    cur['cards_selected'] = ['クースカン', 'クースカン']
+    cur['cards_unclassified'] = ['クースカン', 'クースカン']
+    result = gate(mem, 'ゼンマイン')
+    assert result['estimate']['target_kind'] == 'boss_general'
+    assert result['allowed'] is False
+    assert result['role'] == 'nonlethal_egg_risk'
+
+
+@pytest.mark.parametrize('card', ['デッドガン', 'バグストーム', 'ファバード', 'ブラックホール'])
+def test_self_harm_cards_are_not_boss_whittle_permissions(card):
+    mem = memory(card, enemy='プリンス', enemy_hp=500, ally_hp=37, soldiers=(6, 1))
+    result = gate(mem, card)
+    assert result['allowed'] is False
+    assert rules._card_wears_down_enemy(result['estimate']) is False
+
+
+def test_boss_lethal_still_precedes_the_whittle_permission():
+    mem = memory('マグネガキン', enemy='クイーン', enemy_hp=70, soldiers=(0, 0))
+    result = gate(mem, 'マグネガキン')
+    assert (result['allowed'], result['role']) == (True, 'single_card_lethal')
+
+
+def test_control_chain_does_not_withdraw_the_ordinary_boss_permission():
+    """Devin #4471: a re-observed zero-soldier boss still takes a plain hit."""
+    mem = memory('キャトルミュー', enemy='プリンス', enemy_hp=250, ally_hp=37, soldiers=(0, 0))
+    mem['battle']['cards_selected'] = ['クースカン']
+    mem['battle']['cards_unclassified'] = ['クースカン']
+    result = gate(mem, 'キャトルミュー')
+    assert result['estimate']['target_kind'] == 'boss_general'
+    assert rules._card_wears_down_enemy(result['estimate']) is True
+    assert (result['allowed'], result['role']) == (True, 'damage_not_a_kill')

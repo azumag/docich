@@ -5,16 +5,22 @@ adapter = "retroarch"
 
 [retroarch]
 rom = "games/roms/hanjuku-hero.sfc"   # 著作権物のためGit追跡外。自己吸い出しROMはVMのこの相対位置にのみ配置
+# 画面比率はコア既定の4:3(299x224)を維持する（配信レイアウト規則）。
+# 生ピクセル(256x224)にすると配信の見た目が縦長になり、2026-11-10 に
+# オーナー指摘を受けて差し戻した。OCR側の改善は取得画像の扱いで行う。
 core = "auto"                          # or コア .so の絶対パス
 audio_enabled = true
 audio_sink = "soren_null"               # 既存の配信busへゲームBGM・効果音を出す
 audio_latency_ms = 289                  # CPU負荷時の音切れ軽減。本番で改善確認した値
-audio_volume_percent = 80               # 半熟英雄のゲーム音声streamだけを80%にする(共通bus・読み上げ・他ゲームは不変)
+audio_volume_percent = 75               # 半熟英雄のゲーム音声streamだけを75%にする(2026-11-16 オーナー指示。共通bus・読み上げ・他ゲームは不変)
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [lifecycle]
 require_round_boundary = true
 boundary_timeout_s = 300
+# 15分ごとにエミュレータのセーブステートを取る。コーナーが落ちても直近の状態から
+# 再開できる（2026-11-10: 9時間ぶんの進行が23:14の状態しか残っていなかった）。
+periodic_savestate_s = 900
 
 [agent]
 enabled = true

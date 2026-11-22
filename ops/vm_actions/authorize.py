@@ -11,7 +11,7 @@ OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct',
      'disable_jev_route','status','bootstrap','diagnostics','cpu_profile','audio_gap_measure','reclaim','rebaseline','market_paper','paper_ai_canary','paper_ai_enable','paper_ai_disable',
      'restart_chat_kick_workers','restart_webui',
      'recover_soren_game','recover_soren_round','recover_bgm_mute','recover_hanjuku_projection',
-     'release_soren_loop_pause'}
+     'release_soren_loop_pause','browser_profile_reclaim'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -83,6 +83,11 @@ def main():
             fail('recover_bgm_mute requires production/main')
         if op=='release_soren_loop_pause' and (target!='production' or ref!='main'):
             fail('release_soren_loop_pause requires production/main')
+        # browser_profile_reclaim is wired for phase 1 only (read-only
+        # dry-run plan); like diagnostics it needs owner gating but no
+        # separate production confirmation.
+        if op=='browser_profile_reclaim' and (target!='production' or ref!='main'):
+            fail('browser_profile_reclaim requires production/main')
         if op=='configure_jev' and target!='production': fail('configure_jev is production-only')
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')

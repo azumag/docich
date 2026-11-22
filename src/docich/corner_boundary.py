@@ -69,15 +69,77 @@ def _worker_running(root, name):
     return _pid_is_alive(_read_pid_file(root / f'{name}.pid'))
 
 
-def _prediction_in_flight(state_dir: Path) -> bool:
-    """True only while the prediction worker runs an ACTIVE/LOCKED prediction."""
+def _prediction_int(value, *, upper):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= upper else None
+
+
+def _prediction_snapshot(state_dir: Path) -> dict:
+    """Bounded view of the unresolved prediction, or an empty snapshot.
+
+    docich#3335 (B): the soviet_now writer never puts ``status`` in the state
+    file — it only writes one after verifying the remote prediction is
+    ACTIVE, and it deletes the file at resolution. So a well-formed file
+    (non-empty ``prediction_id`` plus at least two ``outcome_ids``; a
+    ``created_at`` of 0 is fine because the recovered state writes that) is
+    itself an in-flight record. When ``status`` IS present the strict
+    contract applies: only ACTIVE/LOCKED counts, so a future writer that
+    records terminal statuses (RESOLVED/CANCELED) stays correct.
+
+    ``remaining_games`` is the round's own count (``round_version=2``). A
+    legacy record without that counter has no bounded remaining value, so the
+    notice falls back to a plain ``予想終了後`` label. Every field is bounded:
+    the projection is read by the broadcast and must not publish state values
+    it did not validate.
+    """
+    empty = {
+        'in_flight': False,
+        'worker_running': False,
+        'remaining_games': None,
+        'max_games': None,
+        'games_completed': None,
+        'started_at': None,
+    }
     if not _worker_running(state_dir, PREDICTION_WORKER):
-        return False
+        return empty
+    empty['worker_running'] = True
     try:
         state = json.loads((state_dir / PREDICTION_STATE_FILE).read_text())
     except (OSError, ValueError):
-        return False
-    return isinstance(state, dict) and state.get('status') in PREDICTION_ACTIVE_STATUSES
+        return empty
+    if not isinstance(state, dict):
+        return empty
+    if 'status' in state:
+        in_flight = state.get('status') in PREDICTION_ACTIVE_STATUSES
+    else:
+        outcomes = state.get('outcome_ids')
+        prediction_id = state.get('prediction_id')
+        in_flight = (isinstance(prediction_id, str) and bool(prediction_id)
+                     and isinstance(outcomes, list) and len(outcomes) >= 2)
+    if not in_flight:
+        return empty
+    max_games = _prediction_int(state.get('max_games'), upper=100)
+    completed = _prediction_int(state.get('games_completed'), upper=100)
+    remaining = None
+    if max_games is not None and completed is not None:
+        remaining = max(0, min(100, max_games - completed))
+    started_at = state.get('created_at')
+    if (type(started_at) not in (int, float) or isinstance(started_at, bool)
+            or not math.isfinite(started_at) or started_at <= 0):
+        started_at = None
+    return {
+        'in_flight': True,
+        'worker_running': True,
+        'remaining_games': remaining,
+        'max_games': max_games,
+        'games_completed': completed,
+        'started_at': started_at,
+    }
+
+
+def _prediction_in_flight(state_dir: Path) -> bool:
+    return _prediction_snapshot(Path(state_dir))['in_flight']
 
 
 def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
@@ -102,13 +164,35 @@ def _audio_queue_quiet(state_dir: Path) -> bool:
     return is_quiet(comment_queue_dir(Path(state_dir).parent.parent))
 
 
+def prediction_in_flight(state_dir: Path) -> bool:
+    """True while a Soren prediction holds the corner boundary (public view).
+
+    The advance notice uses this gate only: while the 48-game prediction is
+    waiting to settle, the exact corner start cannot be promised. The audio
+    queue is deliberately not part of this probe (it delays a corner that is
+    already starting, it does not move the scheduled time).
+    """
+    return _prediction_in_flight(Path(state_dir))
+
+
+def prediction_snapshot(state_dir: Path) -> dict:
+    """Bounded prediction state for the notice (in-flight flag + remaining)."""
+    return _prediction_snapshot(Path(state_dir))
+
+
+def prediction_worker_running(state_dir: Path) -> bool:
+    """True while the prediction worker can still create a prediction."""
+    return _worker_running(Path(state_dir), PREDICTION_WORKER)
+
+
 def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
     """Confirmed prediction and audio boundary before a corner may start.
 
     Two conditions hold a corner back:
 
     - an in-flight prediction (only while the prediction worker actually runs,
-      so a stopped worker never blocks the corners forever), and
+      so a stopped worker never blocks the corners forever; a well-formed
+      state file without ``status`` counts as in-flight per docich#3335), and
     - a non-empty shared comment/audio queue (queued or playing item).
 
     Improvement cycles and interleaved A/B are not gated: the match/round

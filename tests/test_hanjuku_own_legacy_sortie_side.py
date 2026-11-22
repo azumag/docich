@@ -5,11 +5,12 @@ The mis-read ``side='enemy'`` switched off the value-aware retreat policy
 """
 from docich import hanjuku_policy as p
 from test_hanjuku_sortie_interruption import screen
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def entry(mem):
     p.message_step(screen('attack_started', ['アマンディーヌしょうぐんがドミノーラじょうにのりこんだ']), mem)
-    return mem['attack']
+    return _plan_region(mem)['attack']
 
 
 def test_own_launched_record_without_a_step_is_our_attack_not_an_enemy_one():

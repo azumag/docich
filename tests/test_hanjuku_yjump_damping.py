@@ -1,0 +1,87 @@
+"""Y-jump halves hold gain on axis overshoot so fast cursors converge (#4853).
+
+Live g1190-ch1v4 ch9 (42-9..42-10): a 2.65 px/frame world-map cursor caused
+``_y_jump_step`` to bounce +26.5 <-> -26.5 (left+up 333ms/167ms <-> right+down
+333ms/167ms) for all 64 moves and fail with ``y_jump_failed`` /
+``y_jump_unreachable``.
+"""
+from docich.hanjuku.os_layer import navigation as nav
+
+
+def test_y_jump_overshoot_halves_gain_and_converges_instead_of_oscillating(monkeypatch):
+    goal_world = (568, 212)  # goal view = (568/8 + 63, 212/8 + 47.5) = (134.0, 74.0)
+    ox, oy = nav.Y_JUMP_OFFSET[9]
+    goal_view = [goal_world[0] / 8 + ox, goal_world[1] / 8 + oy]
+    pos = [goal_view[0] - 26.5, goal_view[1] - 10.5]  # (107.5, 63.5)
+    speed_x, speed_y = 2.65, 2.10  # fast cursor that used to 2-cycle forever
+
+    monkeypatch.setattr(nav, 'boss_probe_cell', lambda mem, goal, step=None: goal_world)
+    monkeypatch.setattr(nav, 'world_cursor', lambda frame, chapter=None: tuple(pos))
+    monkeypatch.setattr(nav, 'world_flags', lambda *a, **k: {})
+
+    class DummyFrame:
+        def __init__(self, idx):
+            self._idx = idx
+        def digest(self):
+            return f'frame-{self._idx}'
+
+    mem = {
+        'chapter': 9,
+        'tick': 100,
+        '_records': [],
+        'y_jump': {'goal': 'ボス', 'mode': 'target', 'step': 'A:1:M1', 'wait': 0, 'moves': 0},
+    }
+
+    confirmed = False
+    for step_idx in range(12):
+        acts = nav._y_jump_step(mem, DummyFrame(step_idx))
+        if any(r['decision'] == 'y_jump_confirm' for r in mem['_records']):
+            confirmed = True
+            break
+        assert not any(r['decision'] == 'y_jump_failed' for r in mem['_records'])
+        for act in acts:
+            frames = round(act['hold_ms'] * 60 / 1000)
+            btn = act['buttons'][0]
+            if btn == 'right':
+                pos[0] += frames * speed_x
+            elif btn == 'left':
+                pos[0] -= frames * speed_x
+            elif btn == 'down':
+                pos[1] += frames * speed_y
+            elif btn == 'up':
+                pos[1] -= frames * speed_y
+
+    assert confirmed, f'Expected y_jump_confirm within 12 moves, got pos={pos}, goal={goal_view}'
+    assert not any(r['decision'] == 'y_jump_failed' for r in mem['_records'])
+
+
+def test_y_jump_damping_only_scales_overshooting_axis(monkeypatch):
+    goal_world = (568, 212)
+    ox, oy = nav.Y_JUMP_OFFSET[9]
+    goal_view = [goal_world[0] / 8 + ox, goal_world[1] / 8 + oy]
+    # X overshoots (+20 -> -10), Y moves monotonically (+20 -> +12)
+    positions = iter([
+        (goal_view[0] - 20.0, goal_view[1] - 20.0),
+        (goal_view[0] + 10.0, goal_view[1] - 12.0),
+    ])
+
+    monkeypatch.setattr(nav, 'boss_probe_cell', lambda mem, goal, step=None: goal_world)
+    monkeypatch.setattr(nav, 'world_cursor', lambda frame, chapter=None: next(positions))
+    monkeypatch.setattr(nav, 'world_flags', lambda *a, **k: {})
+
+    class DummyFrame:
+        def __init__(self, idx):
+            self._idx = idx
+        def digest(self):
+            return f'frame-{self._idx}'
+
+    mem = {
+        'chapter': 9,
+        'tick': 100,
+        '_records': [],
+        'y_jump': {'goal': 'ボス', 'mode': 'target', 'step': 'A:1:M1', 'wait': 0, 'moves': 0},
+    }
+    nav._y_jump_step(mem, DummyFrame(0))
+    assert mem['y_jump']['axis_scale'] == [1.0, 1.0]
+    nav._y_jump_step(mem, DummyFrame(1))
+    assert mem['y_jump']['axis_scale'] == [0.5, 1.0]

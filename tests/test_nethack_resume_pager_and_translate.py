@@ -198,8 +198,11 @@ def test_live_nethack_shell_disables_translation_before_frames_arrive():
                                  presentation_epoch="viewer-1")
     assert_notranslate(document)
     # The viewer remains read-only, with unchanged message text and polling.
-    assert "tty.textContent = payload.tty_lines.join" in document
+    # Non-map screens are inserted as text only (never markup), whether they
+    # render as the fitted TTY or the item panel.
+    assert "tty.textContent = lines.join" in document
     assert "location.reload" not in document
+    assert "innerHTML" not in document
 
 
 def test_playerless_pager_without_resume_evidence_holds():

@@ -1,0 +1,117 @@
+"""docich#4755 (DSH 方針1): the open recall picker delegates to the Y route.
+
+The whole-map Y jump (``y_route``) never fired because the hero_focus goal
+resolution kept failing and every camp return fell back to the picker, whose
+ring was then walked castle by castle for tens of observations. When the
+destination goal AND the camp's world cell are already measured, the open
+whole-island picker now hands steering to ``_y_route_step`` — the same jump
+the hero_focus route uses. The layer is additive: it spends the
+``RECALL:target`` budget the map_target route uses (recall.py:1516), never
+starts while another jump is in flight, and falls back to the ordinary picker
+walk whenever it cannot act.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich import hanjuku_policy as p
+from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import flow as _flow
+from test_hanjuku_camp_receipts import picker
+
+VIEW = Screen([], None, '', kind='world_map')
+
+
+def only_press(actions):
+    """The single pad button a picker step pressed (the hold varies by distance)."""
+    assert len(actions) == 1 and actions[0].get('type') == 'pad', actions
+    return actions[0]['buttons'][0]
+
+
+def memory(**recall):
+    return {'chapter': 1, 'tick': 100, '_records': [],
+            'captured': ['キカンドン', 'ジョンリギ', 'ゴーメン'],
+            'recall': {'stage': 'dest', 'steps': 0, **recall}}
+
+
+def bound_goal():
+    """A destination this picker episode already selected."""
+    return {'goal': 'キカンドン', 'destination_selected': True, 'picker_goal': 'キカンドン'}
+
+
+def at(monkeypatch, castle, flags=None):
+    x, y = p.chart.castles(1)[castle]; ox, oy = p.WORLD_MAP_OFFSET[1]
+    monkeypatch.setattr(p, 'world_cursor', lambda _: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(p, 'world_flags', lambda *_: flags or {
+        'アルマムーン': 'own', 'キカンドン': 'own', 'ジョンリギ': 'own', 'ゴーメン': 'own'})
+    monkeypatch.setattr(p, 'world_markers', lambda _: [])
+
+
+def test_measured_goal_and_camp_world_delegate_to_the_y_route(monkeypatch):
+    mem = memory(camp_world=[200, 300], **bound_goal())
+    at(monkeypatch, 'アルマムーン')
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('y')]
+    assert mem['y_jump']['step'] == 'RECALL' and mem['y_jump']['mode'] == 'target'
+    assert mem['y_jump']['goal'] == 'キカンドン'
+    assert mem['y_jumps']['RECALL:target'] == 1
+    assert _flow(mem)['recall']['goal'] == 'キカンドン'
+    assert any(r['decision'] == 'camp_recall_picker_y_route' for r in mem['_records'])
+
+
+def test_a_measured_jump_receipt_confirms_the_picker(monkeypatch):
+    mem = memory(camp_world=[200, 300], **bound_goal())
+    mem['y_jumped'] = {'RECALL': 'キカンドン'}
+    at(monkeypatch, 'キカンドン')
+    assert p.world_map_step(VIEW, mem, picker()) == [p.pad('a')]
+    done = _flow(mem)['recall']
+    assert done['stage'] == 'await_dispatch' and done['goal'] == 'キカンドン'
+    assert any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
+
+
+def test_an_unmeasured_camp_world_keeps_the_picker_walk(monkeypatch):
+    mem = memory(**bound_goal())
+    at(monkeypatch, 'アルマムーン')
+    assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
+    assert 'y_jump' not in mem
+
+
+def test_an_unresolved_goal_keeps_the_picker(monkeypatch):
+    mem = memory(camp_world=[200, 300])
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, '_recall_goal', lambda *_a, **_k: None)
+    actions = p.world_map_step(VIEW, mem, picker())
+    assert actions != [p.pad('y')] and 'y_jump' not in mem
+
+
+def test_the_spent_jump_budget_keeps_the_picker_walk(monkeypatch):
+    mem = memory(camp_world=[200, 300], **bound_goal())
+    mem['y_jumps'] = {'RECALL:target': 2}
+    at(monkeypatch, 'アルマムーン')
+    assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
+    assert 'y_jump' not in mem
+
+
+def test_a_castle_jump_in_flight_keeps_the_picker_walk(monkeypatch):
+    mem = memory(camp_world=[200, 300], **bound_goal())
+    mem['castle_jump'] = {'step': '1-A1', 'source': 'キカンドン', 'mode': 'source'}
+    at(monkeypatch, 'アルマムーン')
+    assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
+    assert 'y_jump' not in mem
+
+
+def test_a_delegation_that_cannot_act_falls_back_to_the_walk(monkeypatch):
+    mem = memory(camp_world=[200, 300], **bound_goal())
+    at(monkeypatch, 'アルマムーン')
+    monkeypatch.setattr(p, '_y_route_step', lambda *_a, **_k: [])
+    assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
+    assert 'y_jump' not in mem
+
+def test_an_origin_without_camp_world_keeps_the_native_picker_walk(monkeypatch):
+    """The actual world_map picker has only origin in the native/receipt
+    fixtures; the picker receipts and native ring must keep their walk.  The
+    bare map_target marker still uses origin (see the nameless picker test)."""
+    mem = memory(origin=list(p.chart.castles(1)['キカンドン']), **bound_goal())
+    at(monkeypatch, 'アルマムーン')
+    assert only_press(p.world_map_step(VIEW, mem, picker())) == 'left'
+    assert 'y_jump' not in mem

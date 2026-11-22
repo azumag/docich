@@ -16,6 +16,7 @@ import time
 from copy import deepcopy
 
 from .. import procs
+from . import telemetry as telemetry_mod
 from ..actions import Action, ActionError, extract_json, parse_actions
 from ..adapters import AdapterError, Observation
 from ..config import GameConfig, GlobalConfig
@@ -72,6 +73,7 @@ class CommandBrain:
                 "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": match_index,
             }
         try:
+            telemetry_mod.active().count("brain_spawns")
             result = procs.run(
                 self.cmd,
                 env_extra=env_extra,
@@ -95,6 +97,17 @@ class CommandBrain:
                 file=sys.stderr,
             )
             return []
+
+        # #4422: the hanjuku bot reports every dropped cache on stderr. A
+        # successful command used to discard that stream, so a vanished
+        # status cache could never be attributed to compaction vs. a run
+        # identity reset from the parent's log. Forward only the tagged lines;
+        # the rest of the bot's stderr stays captured as before.
+        if self.game.name == "hanjuku-hero":
+            from ..hanjuku.state_budget import DROP_LOG_TAG
+            for line in (result.stderr or "").splitlines():
+                if DROP_LOG_TAG in line:
+                    print(line, file=sys.stderr, flush=True)
 
         try:
             actions = parse_actions(result.stdout)

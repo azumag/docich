@@ -227,45 +227,86 @@ def test_boundary_timeout_override_extends_request_deadline():
     override, only the boundary wait is extended (canonical deadline_at
     included); a boundary ack arriving after the request deadline still
     commits the switch.
+
+    docich#4485: the previous 0.6s request / 3s override / ``sleep(0.8)``
+    version measured the deadline from *before* the worker thread started
+    and gave the post-ack steps only the sub-second budget left when the
+    wait began.  On a loaded runner the thread-per-adapter-call fixture
+    consumed that budget before ``readiness`` and the switch returned
+    ``rolled_back`` (receipt error_code ``timeout`` / ``quiesce_failed``).
+    The production deadline restore is intentional; this test just needs
+    a request budget that survives scheduling jitter and an ack gate tied
+    to the *actual* request deadline instead of a fixed wall-clock sleep.
     """
+    import datetime as _dt
+
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
-        factory = BoundaryFactory(boundary_timeout_s=3.0)
+        request_timeout_s = 2.0
+        boundary_override_s = 5.0
+        factory = BoundaryFactory(boundary_timeout_s=boundary_override_s)
         store, coordinator = _coordinator(factory, state_dir)
         _assert_started(coordinator)
         old = factory.adapters[("nethack", 1)]
         request_id = str(uuid.uuid4())
         result_box = []
+        switch_started: list[float] = []
 
-        worker = threading.Thread(
-            target=lambda: result_box.append(
-                coordinator.switch("robots", request_id=request_id, timeout_s=0.6)
+        def run_switch() -> None:
+            # ``_execute`` derives its monotonic deadline when the switch is
+            # actually entered, so record that instant here.  The ack gate
+            # below is then relative to the real request deadline, not to
+            # worker-thread startup scheduling.
+            switch_started.append(time.monotonic())
+            result_box.append(
+                coordinator.switch(
+                    "robots", request_id=request_id, timeout_s=request_timeout_s
+                )
             )
-        )
-        started = time.monotonic()
+
+        worker = threading.Thread(target=run_switch)
         worker.start()
         _wait_for_phase(store, "draining")
-        assert old.boundary_entered.wait(1.0)
-        # The canonical deadline was extended beyond the 0.6s request: the
-        # waiter would otherwise already have been cancelled.
-        import datetime as _dt
+        assert old.boundary_entered.wait(2.0)
+        assert switch_started, "switch worker did not enter"
 
+        # The canonical deadline was extended beyond the request deadline:
+        # the waiter would otherwise already have been cancelled.
         state, _ = store.canonical.load()
         extended = _dt.datetime.fromisoformat(
             state["deadline_at"].replace("Z", "+00:00")
         )
         request_deadline = _dt.datetime.fromtimestamp(
-            started + 0.6, tz=_dt.timezone.utc
+            switch_started[0] + request_timeout_s, tz=_dt.timezone.utc
         )
-        assert extended > request_deadline + _dt.timedelta(seconds=1.0)
+        assert extended > request_deadline + _dt.timedelta(seconds=0.5), (
+            state["deadline_at"],
+            request_deadline.isoformat(),
+        )
 
-        # Ack arrives after the original request deadline: still commits.
-        time.sleep(0.8)
+        # Synchronization condition this contract needs: release the ack
+        # only after the *actual* request deadline has elapsed.  Without
+        # the override the boundary wait would already have timed out; with
+        # it the late ack must still commit.  A deadline-derived wait (with
+        # a small margin) replaces the old fixed sleep so a slow runner
+        # cannot move the ack to the wrong side of the deadline.
+        ack_wait_s = (
+            switch_started[0] + request_timeout_s + 0.1 - time.monotonic()
+        )
+        assert ack_wait_s < boundary_override_s, (
+            "scheduler stall pushed the ack past the override window",
+            ack_wait_s,
+        )
+        time.sleep(max(ack_wait_s, 0.0))
         old.boundary_release.set()
         worker.join(5.0)
         assert not worker.is_alive()
-        assert result_box[0].status == "succeeded"
-        assert time.monotonic() - started > 0.6
+        assert result_box[0].status == "succeeded", (
+            result_box[0].error_code,
+            result_box[0].detail,
+            store.receipts.load(request_id),
+        )
+        assert time.monotonic() - switch_started[0] > request_timeout_s
 
 
 def test_boundary_timeout_override_respects_explicit_hard_cap():
@@ -950,6 +991,187 @@ def test_fifo_replay_keeps_head_queued_when_writer_wins_claim(monkeypatch, tmp_p
     assert store.canonical.load()[0]["active"]["game"] == "nethack"
 
 
+def test_resume_queued_requeues_orphaned_accepted_receipt():
+    # Production wedge (#4168 diag): a request died after accept, leaving an
+    # "accepted" receipt while canonical went back to stable with no owner.
+    # That non-terminal receipt blocks every later claim through the
+    # nonterminal-receipts gate and nobody ever requeues it, so the whole
+    # FIFO deadlocks. resume_queued must migrate it into the queue first.
+    with tempfile.TemporaryDirectory() as tmp:
+        store, coordinator = _coordinator(
+            BoundaryFactory(), Path(tmp) / "run"
+        )
+        _assert_started(coordinator)
+        orphan_id = str(uuid.uuid4())
+        orphan = store.accept_request(orphan_id, "switch", "robots")
+        assert orphan.status == "accepted"
+        # The driver died after accept; a later stable write left canonical
+        # ownerless while the receipt stayed "accepted" forever.
+        state, _ = store.canonical.load()
+        cleared = dict(state)
+        cleared["phase"] = "ready"
+        cleared["request_id"] = None
+        cleared["operation"] = None
+        store.canonical.save(cleared)
+
+        queued_id = str(uuid.uuid4())
+        store.enqueue_request(queued_id, "switch", "hanjuku")
+        # The orphan blocks the queued head too — the same gate applies.
+        blocked = store.accept_request(queued_id, "switch", "hanjuku")
+        assert blocked.status == "queued"
+
+        resumed = coordinator.resume_queued(timeout_s=1.0)
+        assert resumed.request_id == orphan_id
+        assert resumed.status in {"succeeded", "failed"}
+        # Once the orphan drains, the queued follower can be claimed again.
+        remaining = [item["request_id"] for item in store.receipts.queued()]
+        assert orphan_id not in remaining
+
+
+def test_queued_hanjuku_replay_terminalizes_when_decision_lost(monkeypatch, tmp_path):
+    # docich#4356 (g1211/g1215): a queued hanjuku-hero switch replays below
+    # the corner's prepare_start(); once the durable boundary decision is
+    # gone, claim() can only fail inside materialize_runtime and every
+    # replay leaves a doomed candidate plus a retiring runtime.  The
+    # coordinator must terminalize the replay before staging anything.
+    store, coordinator = _coordinator(BoundaryFactory(), tmp_path / "run")
+    _assert_started(coordinator)
+    monkeypatch.setattr(
+        "docich.hanjuku_resume.start_claimable",
+        lambda adapter, request_id: False,
+    )
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+    resumed = coordinator.resume_queued(timeout_s=1.0)
+    assert resumed.request_id == head.request_id
+    assert resumed.status == "failed"
+    assert resumed.error_code == game_switch.ERROR_TIMEOUT
+    receipt = store.receipts.load(head.request_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    assert state.get("retiring") in (None, [])
+    # The doomed head must not wedge the FIFO: the follower stays claimable.
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+
+
+@pytest.mark.parametrize("probe_error", [
+    PermissionError("boundary record unreadable"),
+    ValueError("boundary record malformed"),
+    OSError("boundary record inaccessible"),
+])
+def test_queued_hanjuku_replay_probe_error_fails_closed(
+    monkeypatch, tmp_path, probe_error
+):
+    # docich#4361: a probe exception is not evidence that claim() can
+    # succeed.  Do not stage a doomed candidate or retire the active game.
+    factory = BoundaryFactory()
+    store, coordinator = _coordinator(factory, tmp_path / "run")
+    _assert_started(coordinator)
+
+    def broken_probe(adapter, request_id):
+        raise probe_error
+
+    monkeypatch.setattr("docich.hanjuku_resume.start_claimable", broken_probe)
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+    result = coordinator.resume_queued(timeout_s=1.0)
+
+    assert result.request_id == head.request_id
+    assert result.status == "failed"
+    assert result.error_code == game_switch.ERROR_TIMEOUT
+    receipt = store.receipts.load(head.request_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    assert state.get("retiring") in (None, [])
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+    # No exception details (including paths) should reach durable receipts.
+    assert str(probe_error) not in str(receipt)
+
+
+def test_queued_hanjuku_replay_runs_when_decision_claimable(monkeypatch, tmp_path):
+    # The gate must not block a replay whose decision is still claimable:
+    # the switch runs to completion.  The drain waits on the old game's
+    # round boundary, so drive resume_queued in a worker and release the
+    # boundary like the fifo maintenance tests do (round_boundary_s=5.0
+    # keeps the step timeout out of the race).
+    factory = BoundaryFactory()
+    store, coordinator = _coordinator(factory, tmp_path / "run", round_boundary_s=5.0)
+    _assert_started(coordinator)
+    monkeypatch.setattr(
+        "docich.hanjuku_resume.start_claimable",
+        lambda adapter, request_id: True,
+    )
+    head = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku-hero")
+    old = factory.adapters[("nethack", 1)]
+    resumed_box = []
+    worker = threading.Thread(
+        target=lambda: resumed_box.append(coordinator.resume_queued(timeout_s=30.0))
+    )
+    worker.start()
+    assert old.boundary_entered.wait(5.0)
+    old.boundary_release.set()
+    worker.join(5.0)
+    assert not worker.is_alive()
+    resumed = resumed_box[0]
+    assert resumed.request_id == head.request_id
+    assert resumed.status == "succeeded"
+    state, _ = store.canonical.load()
+    assert state["active"]["game"] == "hanjuku-hero"
+
+
+def test_resume_queued_terminalizes_expired_orphaned_accepted_receipt(tmp_path):
+    # docich#4356 follow-up: a capped request died after claim and its
+    # accepted receipt outlived its hard deadline.  The orphan sweep must
+    # not replay a request whose absolute cap already passed; requeueing it
+    # into the durable FIFO lets the exact-head deadline check terminalize
+    # it before any adapter is constructed.
+    factory = BoundaryFactory()
+    store, coordinator = _coordinator(factory, tmp_path / "run")
+    _assert_started(coordinator)
+    orphan_id = str(uuid.uuid4())
+    store.enqueue_request(
+        orphan_id,
+        "switch",
+        "robots",
+        allow_boundary_timeout_extension=False,
+        hard_deadline_at="2999-01-01T00:00:00Z",
+    )
+    orphan = dict(store.receipts.load(orphan_id))
+    orphan["status"] = "accepted"
+    orphan["hard_deadline_at"] = "2000-01-01T00:00:00Z"
+    store.receipts.save(orphan)
+    following = store.enqueue_request(str(uuid.uuid4()), "switch", "robots")
+
+    resumed = coordinator.resume_queued(timeout_s=1.0)
+    assert resumed.request_id == orphan_id
+    assert resumed.status == "failed"
+    assert resumed.error_code == game_switch.ERROR_TIMEOUT
+    receipt = store.receipts.load(orphan_id)
+    assert receipt["status"] == "failed"
+    state, _ = store.canonical.load()
+    assert state["phase"] == "ready"
+    assert state["active"]["game"] == "nethack"
+    assert state.get("candidate") is None
+    # The expired head never staged a candidate; the follower drains next.
+    assert not any(
+        adapter.spec.game == "robots"
+        for adapter in factory.adapters.values()
+    )
+    assert [item["request_id"] for item in store.receipts.queued()] == [
+        following.request_id
+    ]
+
+
 def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
@@ -1485,3 +1707,95 @@ def test_boundary_cancel_claim_invokes_the_adapter_once_for_concurrent_callers()
         assert not first.is_alive() and not second.is_alive()
         assert calls == [request_id]
         assert results == [(True, None), (True, None)]
+
+
+class ExitedBoundaryAdapter(BoundaryAdapter):
+    """Old runtime dies mid-drain before terminal evidence (docich#3521).
+
+    The boundary request is recorded so the failure path cancels it exactly
+    like a live drain, then the runtime is reported dead and the boundary
+    wait raises the same AdapterError the RetroArch adapter raises for
+    "exited before terminal evidence".
+    """
+
+    def request_round_boundary(self, request_id, deadline, cancel):
+        self.boundary_request_ids.append(request_id)
+        self.runtime.alive = False
+        raise game_switch.AdapterError("exited before terminal evidence")
+
+
+class ExitedBoundaryFactory(BoundaryFactory):
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters:
+            self.adapters[key] = ExitedBoundaryAdapter(spec)
+        return self.adapters[key]
+
+
+def test_dead_active_is_retired_after_boundary_failure():
+    """docich#3521: quiesce_failed on a dead runtime must not retain it as
+    ``active`` -- the corpse is collected and the request still fails."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = ExitedBoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        _assert_started(coordinator)
+        old = factory.adapters[("nethack", 1)]
+
+        result = coordinator.switch("robots", timeout_s=30.0)
+
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_QUIESCE_FAILED
+        assert result.cleanup_pending is False
+        final, _ = store.canonical.load()
+        assert final["phase"] == "idle"
+        assert final["active"] is None
+        assert final["retiring"] == []
+        receipt = store.receipts.load(result.request_id)
+        assert receipt["status"] == "failed"
+        assert receipt["result"]["failure_phase"] == "round_boundary"
+        assert receipt["result"]["active_retired"] is True
+        assert receipt["result"]["retained_active"] is None
+        # The dead runtime was actually collected, not just untracked.
+        assert "stop_agent" in old.runtime.events
+        assert "cleanup" in old.runtime.events
+
+
+class UndeadCorpseAdapter(ExitedBoundaryAdapter):
+    """Dead runtime whose agent refuses to die (teardown unconfirmed)."""
+
+    def stop_agent(self, deadline, cancel):
+        raise game_switch.AdapterError("agent window kill failed")
+
+
+class UndeadCorpseFactory(BoundaryFactory):
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters:
+            self.adapters[key] = UndeadCorpseAdapter(spec)
+        return self.adapters[key]
+
+
+def test_dead_active_stays_tracked_in_retiring_when_teardown_unconfirmed():
+    """docich#3521: an unconfirmed teardown keeps the runtime in ``retiring``
+    for recovery instead of re-publishing the corpse as active."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = UndeadCorpseFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        _assert_started(coordinator)
+
+        result = coordinator.switch("robots", timeout_s=30.0)
+
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_QUIESCE_FAILED
+        assert result.cleanup_pending is True
+        final, _ = store.canonical.load()
+        assert final["phase"] == "idle"
+        assert final["active"] is None
+        assert len(final["retiring"]) == 1
+        assert final["retiring"][0]["runtime_id"] == "g1-00000000" or \
+            final["retiring"][0]["cleanup_role"] == "failed_boundary_active"
+        receipt = store.receipts.load(result.request_id)
+        assert receipt["result"]["active_retired"] is True
+        assert receipt["result"]["cleanup_pending"] is True

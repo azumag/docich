@@ -11,6 +11,7 @@ it cannot record coordinates or confirm a menu before calibration.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from ... import hanjuku_chart as chart, hanjuku_map_sources as sources
 from ..decision_log import _record
@@ -19,6 +20,7 @@ from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import CASTLE_STATUS, STATUS_NAMES
 from ..os_layer.roster import run_identity
 from ..os_layer.screen import castle_roofs
+from ..state.regions import world as _world, flow as _flow, plan as _plan_region
 
 SCHEMA = chart.MAP_SCHEMA
 verified_castles = chart.verified_castles
@@ -50,6 +52,21 @@ def translation(previous, current, *, limit=None):
     return winners[0] if best >= 2 and len(winners) == 1 else None
 
 
+def _fold(text):
+    """Fold a screen label to a width-insensitive form for name matching.
+
+    The font draws '!' as a full-width glyph but the reader returns ASCII
+    '!' (measured live, chapter 9: the native status panel reads
+    ``しゅつげきイデ!じょうステータスしゅうにゅう...`` while the source
+    catalog spells the castle ``イデ！``). Comparing raw strings made
+    every イデ！ location check unprovable, so the bot retried the same
+    general three times each month and dropped him from the sortie plan.
+    Only the folded forms are compared; callers still receive the
+    catalog's canonical key.
+    """
+    return unicodedata.normalize('NFKC', text).replace(' ', '')
+
+
 def _label(screen, chapter):
     if screen.kind == 'castle_info' and CASTLE_STATUS.search(screen.text) is None:
         # Native enemy info has no ステータス word. Match its foreground
@@ -65,7 +82,7 @@ def _label(screen, chapter):
             return None
         label = header[0][1]
         label = next((n for n in sources.SOURCE_CASTLES.get(chapter, {})
-                      if STATUS_NAMES.get(n, n) == label), label)
+                      if _fold(STATUS_NAMES.get(n, n)) == _fold(label)), label)
         return label if label in sources.SOURCE_CASTLES.get(chapter, {}) else None
     if screen.kind not in {'castle_menu', 'castle_info'} or CASTLE_STATUS.search(screen.text) is None:
         return None
@@ -80,7 +97,7 @@ def _label(screen, chapter):
         if match:
             label = match[1]
             label = next((n for n in sources.SOURCE_CASTLES.get(chapter, {})
-                          if STATUS_NAMES.get(n, n) == label), label)
+                          if _fold(STATUS_NAMES.get(n, n)) == _fold(label)), label)
             if label in sources.SOURCE_CASTLES.get(chapter, {}):
                 names.append(label)
     return names[0] if len(names) == 1 else None
@@ -150,7 +167,8 @@ def _ownership(mem, name, kind):
         if (name == home or was_owned) and name not in lost:
             lost.append(name)
         if was_owned:
-            (mem.get('garrison') or {}).pop(name, None)
+            from ..os_layer.world import garrison_lost
+            garrison_lost(mem, name)
             (mem.get('castle_defenders') or {}).pop(name, None)
 
 
@@ -256,8 +274,11 @@ def step(screen, mem, frame):
                     'reanchor_stationary'):
             state.pop(key, None)
     state['last_tick'] = tick
-    if any(mem.get(k) for k in ('battle', 'recall', 'month_sub', 'house', 'active',
-                               'sortie_attempt', 'y_jump', 'resume_egg_ritual')):
+    if (any(mem.get(k) for k in ('battle', 'month_sub', 'house',
+                                'y_jump', 'resume_egg_ritual'))
+            # 'active' lives in the plan region (#3193 P2) (#3923).
+            or _plan_region(mem).get('active')
+            or any(_flow(mem).get(k) for k in ('recall', 'sortie_attempt'))):
         state.pop('probe', None)
         state.pop('roof_world', None)
         state.pop('cursor_world', None)

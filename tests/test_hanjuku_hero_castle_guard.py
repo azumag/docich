@@ -4,23 +4,30 @@ Owner (2026-10-29): 主人公のいる城が手薄になるのはよくない、
 ゲームオーバー. g1075 16:26:36 sent ラズベリー from アルマムーン
 (どうし, ラズベリー, タピオカ) to retake パタゴーヌ, leaving the hero with one
 general, and the next interim order would have taken タピオカ too.
+
+Owner (2026-11-17): 城はしゅじんこうでも一人残して出撃できるように -- the hero
+alone now satisfies the castle guard (HERO_CASTLE_GUARD = 0), so every other
+general may sortie while the hero stays. An emptied castle — the hero leaving
+too — remains forbidden by the separate one-defender rules, since an empty
+castle falls to the next enemy.
 """
 import pytest
 
 from docich import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 HERO = chart.HERO
 
 
 @pytest.mark.parametrize('names,general,short', [
-    ([HERO, 'ラズベリー', 'タピオカ'], 'ラズベリー', True),
+    ([HERO, 'ラズベリー', 'タピオカ'], 'ラズベリー', False),
     ([HERO, 'ラズベリー', 'タピオカ', 'ミルフィーユ'], 'ラズベリー', False),
-    ([HERO, 'タピオカ'], 'タピオカ', True),
-    ([HERO, 'ラズベリー', 'タピオカ'], HERO, False),          # the hero leaving is another rule
-    (['ラズベリー', 'タピオカ'], 'ラズベリー', False),          # not the hero's castle
-    ([HERO, 'ラズベリー', 'タピオカ', 'ミルフィーユ'], None, False),  # a spare picked on the list
-    ([HERO, 'ラズベリー', 'タピオカ'], None, True),
+    ([HERO, 'タピオカ'], 'タピオカ', False),                     # the hero alone suffices
+    ([HERO, 'ラズベリー', 'タピオカ'], HERO, False),             # the hero leaving is another rule
+    (['ラズベリー', 'タピオカ'], 'ラズベリー', False),            # not the hero's castle
+    ([HERO, 'ラズベリー', 'タピオカ', 'ミルフィーユ'], None, False),
+    ([HERO, 'タピオカ'], None, False),
 ])
 def test_hero_guard_counts_the_others_who_stay(names, general, short):
     assert chart_adjust.hero_guard_short(names, general) is short
@@ -28,20 +35,21 @@ def test_hero_guard_counts_the_others_who_stay(names, general, short):
 
 def test_a_marching_general_does_not_guard_the_hero():
     names = [HERO, 'ラズベリー', 'タピオカ', 'ミルフィーユ']
-    assert chart_adjust.hero_guard_short(names, 'ラズベリー', {'ミルフィーユ'}) is True
+    assert chart_adjust.hero_guard_short(names, 'ラズベリー', {'ミルフィーユ'}) is False
 
 
 def _order(general, source='アルマムーン', target='ジョンリギ'):
     return {'step': 'A:x:1', 'general': general, 'source': source, 'target': target}
 
 
-def test_startable_refuses_an_order_that_thins_the_hero_castle():
+def test_startable_allows_a_sortie_leaving_the_hero_alone():
     request = {'garrison': {'アルマムーン': [HERO, 'ゼウス', 'アルテミス']}, 'en_route': []}
-    assert chart_adjust.startable(_order('ゼウス'), request) == 'hero_castle_guard'
-    request['garrison']['アルマムーン'].append('クミン')
     assert chart_adjust.startable(_order('ゼウス'), request) is None
-    request['en_route'] = [{'general': 'クミン'}]
-    assert chart_adjust.startable(_order('ゼウス'), request) == 'hero_castle_guard'
+    assert chart_adjust.startable(_order('アルテミス'), request) is None
+    request['en_route'] = [{'general': 'アルテミス'}]
+    # The marching general is not available, but ゼウス may still leave the
+    # hero alone in the castle.
+    assert chart_adjust.startable(_order('ゼウス'), request) is None
 
 
 def _retake_memory(home):
@@ -50,11 +58,13 @@ def _retake_memory(home):
             'garrison': {'アルマムーン': home, 'カストーラ': ['ヴィーナス'], 'キカンドン': ['ココット']}}
 
 
-def test_interim_retake_never_takes_a_guard_from_the_hero():
+def test_interim_retake_may_take_a_general_leaving_the_hero_alone():
     mem = _retake_memory([HERO, 'ゼウス', 'アルテミス'])
-    assert all(o['source'] != 'アルマムーン' for o in policy.interim_candidates(mem).values())
-    # The hero is not sent instead while his guards stay.
-    assert all(o['general'] != HERO for o in policy.interim_candidates(mem).values())
+    cands = policy.interim_candidates(mem).values()
+    assert any(o['target'] == 'ジョンリギ' and o['source'] == 'アルマムーン'
+               for o in cands)
+    # The hero is still never sent instead while his guards stay.
+    assert all(o['general'] != HERO for o in cands)
 
 
 def test_interim_retake_takes_a_spare_when_two_others_stay():
@@ -64,37 +74,86 @@ def test_interim_retake_takes_a_spare_when_two_others_stay():
     assert retake and (retake[0]['source'], retake[0]['general']) == ('アルマムーン', 'ゼウス')
 
 
-def test_a_lone_hero_keeps_the_existing_sole_fallback():
+def test_a_lone_hero_is_never_sent_from_the_only_castle():
+    # Owner 2026-11-06: an emptied castle falls to the next enemy; the guard
+    # is never lifted, not even for our only castle. The hero himself is
+    # never dispatched, so a castle holding only him has nothing to send.
     mem = _retake_memory([HERO])
     assert policy._interim_source(mem, 'ジョンリギ', None, {'アルマムーン'}, set(),
-                                  allow_sole=True) == ('アルマムーン', HERO)
+                                  allow_sole=True) is None
 
 
-# Owner (2026-10-29): 自城が一つだけのときは、攻める手立てがなくなってしまうため、
-# しゅじんこう一人になるのを許容する.
+# Owner (2026-11-17): 城はしゅじんこうでも一人残して出撃できるように.
 
-def test_a_single_castle_of_ours_may_leave_the_hero_alone():
+def test_the_guard_accepts_the_hero_alone_at_our_only_castle():
     assert chart_adjust.hero_guard_short([HERO, 'タピオカ'], 'タピオカ', sole_castle=True) is False
 
 
-def test_startable_lifts_the_guard_for_a_single_castle():
+def test_startable_accepts_the_hero_alone_for_a_single_castle():
     home = chart.home_castle(1)
     request = {'chapter': 1, 'captured': [], 'home_lost': False,
                'garrison': {home: [HERO, 'ゼウス']}, 'en_route': []}
     assert chart_adjust.startable(_order('ゼウス', source=home), request) is None
     request['captured'] = ['キカンドン']
-    assert chart_adjust.startable(_order('ゼウス', source=home), request) == 'hero_castle_guard'
+    assert chart_adjust.startable(_order('ゼウス', source=home), request) is None
     assert chart_adjust.startable(_order('ゼウス', source=home),
                                   {**request, 'owned': [home]}) is None
 
 
-def test_interim_from_our_only_castle_sends_the_spare():
+def test_interim_from_our_only_castle_may_send_the_spare():
     home = chart.home_castle(1)
     mem = {'chapter': 1, 'tick': 100, 'orders': {}, '_records': [], 'captured': [],
            'garrison': {home: [HERO, 'ゼウス']}}
-    attacks = [o for o in policy.interim_candidates(mem).values() if o['source'] == home]
-    assert attacks and attacks[0]['general'] == 'ゼウス'
-    mem['captured'] = ['キカンドン']
-    mem['garrison']['キカンドン'] = ['ココット']
-    assert all(o['source'] != home or o['general'] == policy.MOVE_ANY_GENERAL
+    assert any(o['source'] == home and o['general'] != HERO
                for o in policy.interim_candidates(mem).values())
+    mem['captured'] = ['キカンドン']
+    _world(mem)['garrison']['キカンドン'] = ['ココット']
+    assert any(o['source'] == home and o['general'] != HERO
+               for o in policy.interim_candidates(mem).values())
+
+
+def _plan_memory(present, general='ゼウス', owned=('アルマムーン', 'ジョンリギ')):
+    chapter = 1
+    home = chart.home_castle(chapter)
+    return {'chapter': chapter, 'tick': 100, 'orders': {}, '_records': [],
+            'captured': [c for c in owned],
+            'lost': [],
+            'world': {'garrison': {home: list(present)}},
+            'chart_plan': {'orders': [{'step': 'A:x:1', 'general': general,
+                                       'source': home, 'target': 'ジョンリギ'}]}}
+
+
+@pytest.mark.parametrize('present,general,short', [
+    ([HERO, 'ゼウス', 'ピオーネ'], 'ゼウス', False),           # the hero alone suffices
+    ([HERO, 'ゼウス', 'ピオーネ', 'ミント'], 'ゼウス', False),
+    ([HERO, 'ゼウス', 'ピオーネ'], HERO, False),               # the hero leaving is another rule
+])
+def test_the_planner_does_not_start_a_sortie_the_hero_guard_would_cancel(
+        present, general, short):
+    from docich.hanjuku.strategy.orders import _source_spare_missing
+    mem = _plan_memory(present, general)
+    assert _source_spare_missing(_plan_region(mem)['chart_plan']['orders'][0], mem, allow_probe=True) is short
+
+
+def test_another_castle_keeps_its_own_spare_rule():
+    from docich.hanjuku.strategy.orders import _source_spare_missing
+    mem = _plan_memory([HERO, 'ゼウス', 'ピオーネ'])
+    mem['world']['garrison']['ジョンリギ'] = ['タピオカ', 'クミン']
+    order = {'step': 'A:x:2', 'general': 'タピオカ', 'source': 'ジョンリギ', 'target': 'カストーラ'}
+    assert _source_spare_missing(order, mem, allow_probe=True) is False
+
+
+def test_a_source_probe_still_reads_a_thin_hero_castle():
+    """The probe must read the list: deploy records the roster before the guard.
+
+    g1075 11:04-11:48 (test_hanjuku_roster_unplaced): the only way to find the
+    unplaced joiners was to open アルマムーン's list. Blocking the probe before
+    the read recreated that hold.
+    """
+    from docich.hanjuku.strategy.orders import _source_spare_missing
+    mem = _plan_memory([HERO, 'ゼウス', 'ピオーネ'])
+    order = {'step': 'I:x:1', 'general': 'しょうぐん', 'source': chart.home_castle(1),
+             'target': 'ジョンリギ', 'source_probe': True}
+    assert _source_spare_missing(order, mem, allow_probe=True) is False
+    order['source_probe'] = False
+    assert _source_spare_missing(order, mem, allow_probe=True) is False

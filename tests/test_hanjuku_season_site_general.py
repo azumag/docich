@@ -8,6 +8,7 @@ fights as a summoned monster from the first turn with no きりふだ row
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 NORMAL = [c for c in chart.CASTLE_NAMES[4] if c not in ('アルマムーン', 'ボス')]
 HOME = chart.home_castle(4)
@@ -37,15 +38,16 @@ def test_g1075_lists_read_the_heros_castle_before_sending_a_weak_lone_general():
 def test_the_strongest_companion_of_every_read_list_goes():
     mem = memory(アルカ=['ヴィーナス', 'ブカティーニ'])
     assert orders._boss_companion_source(site_order(), mem) == 'アルカ'
-    mem['garrison'][HOME] = [chart.HERO, 'アポロン', 'ゼウス', 'ココット', 'アテナ']
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'アポロン', 'ゼウス', 'ココット', 'アテナ']
     assert orders._boss_companion_source(site_order(), mem) == HOME
-    assert orders._order_hero_alternatives(site_order(), mem, mem['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
+    assert orders._order_hero_alternatives(site_order(), mem, _world(mem)['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
 
 
-def test_a_read_heros_castle_without_a_strong_spare_falls_back_to_the_best_read_list():
+def test_a_read_heros_castle_may_send_a_spare_leaving_the_hero_alone():
     mem = memory(ミヒラギアン=['アルテミス', 'ブカティーニ'])
-    mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']      # ゼウス would leave one guard
-    assert orders._boss_companion_source(site_order(), mem) == 'ミヒラギアン'
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
+    # Owner 2026-11-17: the hero alone satisfies the guard, so ゼウス goes.
+    assert orders._boss_companion_source(site_order(), mem) == HOME
 
 
 def test_a_lone_general_never_leaves_its_castle_for_a_site():
@@ -55,16 +57,20 @@ def test_a_lone_general_never_leaves_its_castle_for_a_site():
     assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス']) == []
     assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'ブカティーニ'])[0] == 'アルテミス'
     # A marching general is no defender.
-    mem['sorties'] = {'x': {'general': 'ブカティーニ', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
+    _world(mem)['sorties'] = {'x': {'general': 'ブカティーニ', 'status': 'en_route', 'tick': 90, 'target': 'アルカ'}}
     assert orders._order_hero_alternatives(site_order(), mem, ['アルテミス', 'ブカティーニ']) == []
     # Every read list lone: the strict pool is empty, so a relaxed egg-holder
     # still goes while the hero keeps one other defender (owner 2026-10-30:
     # 定常的にボス城へ進行).
     mem = memory()
-    mem['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
     assert orders._boss_companion_source(site_order(), mem) == HOME
-    # A lone hero still holds his castle: nobody else remains to defend.
-    mem['garrison'][HOME] = [chart.HERO, 'ゼウス']
+    # Owner 2026-11-17: a single companion may leave the hero alone; the hero
+    # himself stays to defend.
+    _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス']
+    assert orders._boss_companion_source(site_order(), mem) == HOME
+    # But the hero alone with nobody to send still has no companion source.
+    _world(mem)['garrison'][HOME] = [chart.HERO]
     assert orders._boss_companion_source(site_order(), mem) is None
     assert not orders._ready(site_order(), mem)
 
@@ -95,10 +101,10 @@ def test_an_unconfirmed_site_launch_binds_its_entry_after_a_long_march():
     screen = Screen(lines=[], hand=None, text='カペリーニしょうぐんがボスじょうにせめこんだ!!')
     screen.kind = classify_text(screen)
     mem = {'chapter': 4, 'tick': 132152, 'orders': {'4-B2': 'launched'},
-           'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'status': 'en_route',
-                                'target': None, 'planned_target': '四季王城(南東)', 'tick': 131676}}}
+           'world': {'sorties': {'4-B2': {'general': 'カペリーニ', 'source': 'ネクスドリア', 'status': 'en_route',
+                                'target': None, 'planned_target': '四季王城(南東)', 'tick': 131676}}}}
     assert policy.message_step(screen, mem) == [policy.pad('a')]
-    assert mem['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
+    assert _plan_region(mem)['attack'] == {'general': 'カペリーニ', 'castle': '四季王城(南東)', 'side': 'attack',
                              'step': '4-B2', 'entry_evidence': 'measured_boss_entry'}
 
 
@@ -112,15 +118,15 @@ def test_the_same_site_entry_on_the_next_frame_keeps_its_site_and_step():
         screen.kind = classify_text(screen)
         return screen
     mem = {'chapter': 4, 'tick': 132700, 'orders': {'4-B4': 'launched'},
-           'sorties': {'4-B4': {'general': 'ヴィーナス', 'source': 'アルカ', 'status': 'en_route',
-                                'target': '四季王城(北西)', 'tick': 131798}}}
+           'world': {'sorties': {'4-B4': {'general': 'ヴィーナス', 'source': 'アルカ', 'status': 'en_route',
+                                'target': '四季王城(北西)', 'tick': 131798}}}}
     bound = {'general': 'ヴィーナス', 'castle': '四季王城(北西)', 'side': 'attack',
              'step': '4-B4', 'entry_evidence': 'measured_boss_entry'}
     assert policy.message_step(entry(), mem) == [policy.pad('a')]
-    assert mem['attack'] == bound and mem['sorties']['4-B4']['status'] == 'arrived'
+    assert _plan_region(mem)['attack'] == bound and _world(mem)['sorties']['4-B4']['status'] == 'arrived'
     for _ in range(policy.BOSS_ENTRY_HOLD_LIMIT + 1):
         assert policy.message_step(entry(), mem) == [policy.pad('a')]
-    assert mem['attack'] == bound
+    assert _plan_region(mem)['attack'] == bound
     assert 'situation_held' not in [r['decision'] for r in mem['_records']]
 
 
@@ -149,12 +155,12 @@ def test_an_overdue_site_march_still_binds_its_late_entry():
     screen = Screen(lines=[], hand=None, text='ソーピニヨンしょうぐんがボスじょうにせめこんだ!!')
     screen.kind = classify_text(screen)
     mem = {'chapter': 4, 'tick': 155900, 'orders': {'4-B3': 'launched'},
-           'sorties': {'4-B3': {'general': 'ソーピニヨン', 'source': 'アルマムーン',
-                                'target': '四季王城(北東)', 'status': 'overdue', 'tick': 155587}}}
+           'world': {'sorties': {'4-B3': {'general': 'ソーピニヨン', 'source': 'アルマムーン',
+                                'target': '四季王城(北東)', 'status': 'overdue', 'tick': 155587}}}}
     assert policy.message_step(screen, mem) == [policy.pad('a')]
-    assert mem['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',
+    assert _plan_region(mem)['attack'] == {'general': 'ソーピニヨン', 'castle': '四季王城(北東)', 'side': 'attack',
                              'step': '4-B3', 'entry_evidence': 'measured_boss_entry'}
-    assert mem['sorties']['4-B3']['status'] == 'arrived'
+    assert _world(mem)['sorties']['4-B3']['status'] == 'arrived'
 
 
 def test_an_unmeasured_egg_holder_is_a_valid_attrition_last_seat():
@@ -187,16 +193,16 @@ def test_an_exhausted_site_step_rearms_after_a_long_stale_wait():
     order = site_order()
     step = order['step']
     mem = memory()
-    mem['orders'][step] = 'launched'
-    mem['sorties'] = {step: {'general': 'カペリーニ', 'source': 'ミヒラギアン',
+    _plan_region(mem)['orders'][step] = 'launched'
+    _world(mem)['sorties'] = {step: {'general': 'カペリーニ', 'source': 'ミヒラギアン',
                              'target': order['target'], 'status': 'overdue', 'tick': 100}}
     mem['boss_relaunch'] = {step: 2}
     mem['tick'] = 100 + orders.BOSS_STALE_COOLDOWN - 1
     orders._relaunch_overdue_boss(mem)
-    assert mem['orders'][step] == 'launched'              # still cooling down
+    assert _plan_region(mem)['orders'][step] == 'launched'              # still cooling down
     mem['tick'] = 100 + orders.BOSS_STALE_COOLDOWN
     orders._relaunch_overdue_boss(mem)
-    assert mem['orders'][step] == 'pending' and mem['boss_relaunch'][step] == 1
+    assert _plan_region(mem)['orders'][step] == 'pending' and mem['boss_relaunch'][step] == 1
 
 
 def test_a_measured_boss_entry_rearms_the_relaunch_budget():
@@ -206,8 +212,8 @@ def test_a_measured_boss_entry_rearms_the_relaunch_budget():
     step = order['step']
     mem = memory()
     mem['boss_relaunch'] = {step: 2}
-    mem['sorties'] = {step: {'general': 'ヴィーナス', 'source': 'アルカ',
+    _world(mem)['sorties'] = {step: {'general': 'ヴィーナス', 'source': 'アルカ',
                              'target': order['target'], 'status': 'en_route', 'tick': 50}}
     orders._bind_sortie(mem, step, order['target'])
-    assert mem['sorties'][step]['status'] == 'arrived'
+    assert _world(mem)['sorties'][step]['status'] == 'arrived'
     assert mem['boss_relaunch'].get(step) is None

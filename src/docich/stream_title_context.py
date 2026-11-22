@@ -67,8 +67,13 @@ def challenge_phrase(game: str) -> str:
     return CHALLENGES.get(game, 'AIはどこまで進めるか？ 試行錯誤のゲーム挑戦')
 
 
-def _active_hanjuku_progress(state_dir: Path) -> str | None:
-    """A past clear in this live run, fenced by identity and a fresh observer."""
+def _live_hanjuku_progress(state_dir: Path) -> tuple[str, str] | None:
+    """This live run's phrase and change marker, fenced by identity and freshness.
+
+    The marker changes only when the cleared count (or the runtime generation)
+    changes, so callers re-announce the title when a chapter is cleared without
+    polling Twitch every tick.
+    """
     from .naming import runtime_id_generation
     state = _json(state_dir / 'game_switch.json')
     active = state.get('active')
@@ -113,11 +118,33 @@ def _active_hanjuku_progress(state_dir: Path) -> str | None:
         return None
     if _json(state_dir / 'game_switch.json') != state:
         return None
+    marker = f'{generation}:{cleared}'
     if cleared == 12:
-        return 'この冒険で全12話突破！ AIと将軍たちの冒険を見届けよう'
+        return 'この冒険で全12話突破！ AIと将軍たちの冒険を見届けよう', marker
     if cleared == 0:
-        return '第1話の突破を目指す！ AIが将軍と卵で城を攻略'
-    return f'この冒険で第{cleared}話まで突破！ AIと将軍たちは第{cleared + 1}話の先へ進めるか'
+        return '第1話の突破を目指す！ AIが将軍と卵で城を攻略', marker
+    return (f'この冒険で第{cleared}話まで突破！ '
+            f'AIと将軍たちは第{cleared + 1}話の先へ進めるか', marker)
+
+
+def _active_hanjuku_progress(state_dir: Path) -> str | None:
+    """A past clear in this live run, fenced by identity and a fresh observer."""
+    current = _live_hanjuku_progress(state_dir)
+    return current[0] if current else None
+
+
+def hanjuku_progress_marker(state_dir: Path) -> str | None:
+    """A bounded marker that changes only when the live run's clear count does.
+
+    ``None`` means there is no trusted live progress, so callers must not treat
+    a missing marker as a change. The runtime generation keeps a restarted or
+    replaced run from looking like the previous one.
+    """
+    try:
+        current = _live_hanjuku_progress(Path(state_dir))
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        return None
+    return current[1] if current else None
 
 
 def progress_phrase(game: str, state_dir: Path, soren_root: Path) -> str | None:

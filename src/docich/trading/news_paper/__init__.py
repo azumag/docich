@@ -83,6 +83,7 @@ from .manager import (
     ReceiptView,
 )
 from .risk import FIXTURE_RISK_POLICY_V1, RiskDecision, RiskPolicy
+from . import replay  # noqa: F401
 
 __all__ = [
     "ArmMetrics",

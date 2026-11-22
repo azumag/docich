@@ -54,7 +54,15 @@ schedule_mode = "interval"
 # 目標間隔（分）。60 = 1時間ごとに1本。未設定なら 24h/N（N=13 なら約1時間51分）。
 interval_minutes = 60
 # 同一cornerの再選択を許すまでのrolling窓。予約・実開始・終了・手動使用を数える。
+# 全eligible cornerがcooldown中になった場合だけ、残りが最短のcornerを次の枠で開始する
+# （24h cooldownの唯一の例外、2026-11-22 オーナー決定）。
 cooldown_hours = 24.0
+# 予想がin-flightの間、dueになったコーナーを通常の10分boundaryでexpireさせず、
+# 予想終了まで待つ上限。予想が固まった場合の安全弁（0-180分）。
+prediction_hold_wait_minutes = 90
+# コーナー直後、次の予想を先に開始するための猶予。この間の掲示は
+# 「予想開始待ち」で、時刻は約束しない。0で無効（0-900秒）。
+prediction_handoff_seconds = 180
 # 唯一のproduction corner catalog。選択・実行履歴はrolling 24hで除外。
 # 候補数Nは実行可能・非休止の件数（24h/Nはinterval_minutes未設定時の目標）。
 # adapter設定のstart_hourは互換用のみ。
@@ -82,7 +90,7 @@ corners = [
   # 2026-10-15 オーナー判断で manual_only を解除し、24時間 rolling rotation の
   # 自動抽選に組み入れる（WebUI からの手動予約も従来どおり可能）。
   # コーナー紹介と上位3名のrankingを、共有 audio worker の既定音声で2発話する。
-  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true },
+  { id = "yosou-oh", adapter = "yoso", game = "yosou-view", enabled = true, audio_enabled = true, duration_minutes = 4 },
   # 同志カード大賞: TwiCaの opt-in 済みランキングから集計済みの4部門を表示する。
   # 公開は配信者単位の opt-in（既定OFF・設定UI無し）で、未 opt-in は 404 になり
   # 当該コーナーは開始しない。privacy 方針（周知・非表示申請は行わない。不適切名は
@@ -116,6 +124,11 @@ corners = [
   # 2026-10-24 オーナー指示により manual_only を解除し、rolling rotation の
   # 自動抽選対象へ戻す。WebUI からの手動予約も引き続き可能。
   { id = "communist-law-simulator", adapter = "lawsim", game = "lawsim-view", enabled = true, audio_enabled = true },
+  # チャート解説コーナー (#659): corner_659.py が決定論的に生成した音声原稿・
+  # 注文実況・約定時シグナル・アニメーションを loopback HTML view で配信する。
+  # 自動抽選は owner 承認前のため manual_only。音声は将来の読み上げ用 opt-in
+  # で、既定は false。外部API取得 (fetch_on_start) は行わない。
+  { id = "chart-659", adapter = "chart", game = "chart-659", enabled = true, manual_only = true, live_eligible = false, audio_enabled = false },
 ]
 
 [nethack_corner]
@@ -154,7 +167,7 @@ start_window_minutes = 30
 improve_agents = "opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor,opencode:mimo-v2.6-flash-free,opencode-go:mimo-v2.6-flash"
 # DOCICH_PAPER_IMPROVE_DIRECT_ENABLED=1 のときだけ使うdirect-only候補。
 # 未設定/0では従来improve_agentsを維持。本番flagはこのPRでは変更しない。
-improve_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+improve_direct_agents = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 improve_matches = 2
 improve_margin_pct = 10.0
 
@@ -173,13 +186,13 @@ dashboard_port = 8799
 script_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:muse-spark-1.3-contributor,opencode:mimo-v2.6-flash-free,opencode-go:mimo-v2.6-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash"
 # DOCICH_PAPER_SCRIPT_DIRECT_ENABLED=1 のときだけ使うdirect-only候補。
 # 未設定/0では上の既存script_agentsを維持する。本番flagはこのPRでは変更しない。
-direct_script_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+direct_script_agents = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 script_timeout_s = 240
 # 終了後の戦略パラメータ改善の委任先。非空で改善ジョブを切り離し起動する。
 improve_agents = "opencode-go:longcat-2.5-preview-free,opencode-go:space-bunny-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor,opencode:mimo-v2.6-flash-free,opencode-go:mimo-v2.6-flash"
 # DOCICH_PAPER_IMPROVE_DIRECT_ENABLED=1 のときだけ使うdirect-only候補。
 # 未設定/0では従来improve_agentsを維持。本番flagはこのPRでは変更しない。
-improve_direct_agents = "cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8"
+improve_direct_agents = "cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 # メリケン実行adapter。共通catalogでPAPER/各ゲームと同列に選択される。
 # start_hourは共通rotation有効時には選択時刻へ影響しない旧daily互換値。

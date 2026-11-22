@@ -15,6 +15,7 @@ from .semantic_decision import transport as _transport
 from .semantic_decision.routes import resolve_route
 from .semantic_decision.validator import dumps
 
+from docich.hanjuku.state.regions import plan as _plan_region
 from . import hanjuku_policy as policy
 
 QUESTION = 'interim_action'
@@ -43,7 +44,7 @@ def build_request(mem, candidates: dict, model: str) -> dict:
                             if c not in captured and c != policy.chart.home_castle(chapter)],
              'gold': mem.get('gold') if type(mem.get('gold')) is int else None,
              'month': mem.get('month') if isinstance(mem.get('month'), str) else None,
-             'orders': {k: v for k, v in (mem.get('orders') or {}).items()
+             'orders': {k: v for k, v in (_plan_region(mem).get('orders') or {}).items()
                         if isinstance(k, str) and v in ('launched', 'failed', 'pending')}}
     request = {'model': model, 'state': state, 'questions': {QUESTION: {
         'type': 'choice',

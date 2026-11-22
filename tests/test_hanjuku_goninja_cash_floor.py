@@ -15,6 +15,7 @@ from docich.hanjuku_bot import NO_INPUT_HOLD_MAX, decide
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas, GREEN, MONTH_GRID, _goninja_offer, paid_recruit_screen
 from test_hanjuku_month_foreground import monthly_canvas, monthly_memory
+from docich.hanjuku.state.regions import world as _world
 
 
 def offer(gold, *, background=False, cursor='accept', both_choices=True,
@@ -46,7 +47,7 @@ def owned_state(owner):
     # Old readable funds never substitute for this offer's unreadable header.
     mem['gold'] = 7572
     mem['tick'] = 100
-    mem['garrison'] = {'アルマムーン': ['どうし', 'ゼウス']}
+    _world(mem)['garrison'] = {'アルマムーン': ['どうし', 'ゼウス']}
     mem['recruit_roster'] = {'chapter': 1, 'month': '2-11', 'tick': 95,
                              'names': ['どうし', 'ゼウス'],
                              'wages': {'どうし': 0, 'ゼウス': 4}, 'complete': True}

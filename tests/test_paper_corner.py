@@ -232,7 +232,7 @@ def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
     state.mkdir(parents=True, exist_ok=True)
     # An in-flight prediction is what the boundary must confirm.
     (state/'prediction_worker.pid').write_text(str(os.getpid()))
-    (state/'current_prediction.json').write_text(json.dumps({'status':'ACTIVE'}))
+    (state/'current_prediction.json').write_text(json.dumps({'prediction_id':'p1','outcome_ids':['o1','o2'],'created_at':1}))
     def sleep(seconds):
         if now[0] == due:
             now[0]+=35*60
@@ -622,7 +622,7 @@ def test_production_profile_initializes_paper_and_full_rotation_offline(tmp_path
     monkeypatch.setattr(subprocess, 'Popen', reject_runtime)
     config = ROOT / 'config/docich.soren-live.toml'
     g = replace(load_global(ROOT, config), state_dir=tmp_path / 'state')
-    expected = ('cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8' if flag == '1'
+    expected = ('cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast' if flag == '1'
                 else tomllib.loads(config.read_text())['paper_corner']['improve_agents'])
     paper = manager(g)
     rotation = CornerRotationManager(g)

@@ -6,6 +6,7 @@ import pytest
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import house
 from docich.hanjuku.os_layer import commands, navigation, readers, world
+from docich.hanjuku.state.regions import world as _world
 
 
 @pytest.fixture
@@ -17,7 +18,7 @@ def route(monkeypatch):
     monkeypatch.setattr(house, 'HOUSE_TARGET', {1: (140, 140)})
     monkeypatch.setattr(world, '_owned', lambda mem: set(mem['owned']))
     monkeypatch.setattr(commands, 'menu_to', lambda *args, **kwargs: 'here')
-    monkeypatch.setattr(readers, '_empty_sortie_inventory', lambda screen: True)
+    monkeypatch.setattr(readers, '_empty_sortie_inventory', lambda screen, **_: True)
     monkeypatch.setattr(house, 'general_status', lambda screen: {
         'general': 'ゼウス', 'broken': True, 'hp': 85, 'max_hp': 85})
     monkeypatch.setattr(house, '_record', lambda mem, event, **fields:
@@ -58,7 +59,7 @@ def test_enemy_on_repair_route_cannot_be_confirmed(route, phase):
     assert mem['last_house_deferral']['code'] == 'route_unverified'
     assert mem['last_house_deferral']['phase'] == phase
     assert not mem['house'].get('departure_pending')
-    assert mem['garrison']['source'] == ['ゼウス', 'どうし']
+    assert _world(mem)['garrison']['source'] == ['ゼウス', 'どうし']
     assert not mem.get('sorties')
     assert any(r['decision'] == 'house_route_deferred' and 'crossing' in r['observed_metric']['blocked_castles']
                for r in mem['_records'])

@@ -1,0 +1,18 @@
+"""#4410: the list scroll arrow right of the map panel never queues a castle check."""
+from types import SimpleNamespace
+
+from docich.hanjuku.flows import house
+
+
+def test_scroll_arrow_marker_is_dropped_before_binding():
+    state, mem = {}, {'chapter': 9, 'tick': 1}
+    frame = object()
+    import docich.hanjuku.os_layer.readers as readers
+    old = readers.selection_marker
+    try:
+        readers.selection_marker = lambda f: {'box': (192, 161, 198, 167),
+                                              'center': (195, 164), 'tip': (195, 167)}
+        house._capture_selection_marker(state, mem, frame, 'どうし')
+    finally:
+        readers.selection_marker = old
+    assert 'pending_marker' not in state

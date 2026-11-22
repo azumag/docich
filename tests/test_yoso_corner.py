@@ -141,13 +141,15 @@ def test_production_catalog_enables_yosou_oh_for_the_automatic_rotation():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本（13+ぷよ+mystery+lawsim）。
-    assert len(catalog) == 17
+    assert len(catalog) == 18
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
     # 2026-10-15 オーナー判断: 手動専用を解除し、自動抽選＋手動予約の両方を使う。
     assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
-    assert row.duration_minutes is None and row.audio_enabled is True
+    # 2026-11-07: 5部門を順に読み上げるため上限を2分から4分へ（早く読み終われば
+    # audio-complete で終わる）。
+    assert row.duration_minutes == 4 and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None
 
 

@@ -22,13 +22,101 @@ class Frame:
     def resized(self, width=256, height=224):
         if self.width == width and self.height == height:
             return self
-        data = bytearray()
-        for y in range(height):
-            sy = min(self.height-1, (2*y+1)*self.height//(2*height))
-            for x in range(width):
-                sx = min(self.width-1, (2*x+1)*self.width//(2*width))
-                i = (sy*self.width+sx)*3
-                data.extend(self.rgb[i:i+3])
+        if len(self.rgb) < self.width * self.height * 3:
+            raise IndexError('frame has fewer bytes than its dimensions')
+        # 面積重み付きの2クラスタ平均（コントラスト保持型ボックスフィルタ）で
+        # リサンプリングする。
+        # 旧実装の最近傍サンプリングは 299x224 -> 256x224 のような非整数倍の縮小で
+        # ソース列を等間隔に間引くため、フォントの縦線が間引き位置に落ちると
+        # 文字が潰れて OCR が誤読する（チコリ HP 18 -> 8、ハードロボ 610 -> 0）。
+        # 単純なボックス平均は列欠落を防げるが、明と暗が混ざる画素に
+        # ソースに存在しない中間調を作り、ビットマップ照合型のフォントOCRを
+        # 壊す（後述）。そこで各出力画素では、覆うソース画素を輝度で2群に
+        # 分け、重み多数決側だけを面積重み付きで平均する。少数側のにじみを
+        # 排して文字エッジのコントラストを保ちつつ、間引きはしないため
+        # 列欠落も起きない。平坦領域では通常の面積平均と同じ結果になる。
+        # 座標計算は浮動小数点を使わず、分母を出力解像度とした整数の分子で扱い、
+        # 丸め誤差を完全に排除する（stdlib オンリー・決定論的であることが要件）。
+        # 拡大時も同じ式で、各出力画素が覆う範囲がほぼ1ソース画素に収まるため
+        # 実質最近傍相当の結果になる。
+        x_spans = _resize_axis(self.width, width)
+        y_spans = _resize_axis(self.height, height)
+        data = bytearray(width * height * 3)
+        o = 0
+        for y_pairs in y_spans:
+            for x_pairs in x_spans:
+                # At native capture height (299x224 -> 256x224), each
+                # output pixel covers one or two source pixels. For two
+                # different luminances the weighted mean lies between them,
+                # so the majority cluster is simply the heavier sample;
+                # equal weights choose the brighter one. Preserve the exact
+                # weighted colour average when luminances are equal.
+                if len(y_pairs) == 1 and len(x_pairs) <= 2:
+                    base = y_pairs[0][0] * self.width * 3
+                    sx, w0 = x_pairs[0]
+                    i = base + sx * 3
+                    if len(x_pairs) == 1:
+                        data[o:o+3] = self.rgb[i:i+3]
+                    else:
+                        sx, w1 = x_pairs[1]
+                        j = base + sx * 3
+                        l0 = self.rgb[i] + self.rgb[i+1] + self.rgb[i+2]
+                        l1 = self.rgb[j] + self.rgb[j+1] + self.rgb[j+2]
+                        if l0 == l1:
+                            total = w0 + w1
+                            half = total // 2
+                            for channel in range(3):
+                                data[o+channel] = (self.rgb[i+channel] * w0
+                                                   + self.rgb[j+channel] * w1 + half) // total
+                        else:
+                            chosen = i if (w0 > w1 or (w0 == w1 and l0 > l1)) else j
+                            data[o:o+3] = self.rgb[chosen:chosen+3]
+                    o += 3
+                    continue
+                # 寄与するソース画素と重みを集める。
+                contribs = []
+                for sy, wy in y_pairs:
+                    base = sy * self.width * 3
+                    for sx, wx in x_pairs:
+                        i = base + sx * 3
+                        contribs.append((i, wx * wy))
+                # まず全面積平均を計算し、その輝度を境に寄与画素を
+                # 明側・暗側の2クラスタに分ける。重みの大きい側の
+                # クラスタだけで加重平均を取り直す。
+                # 理由: ボックス平均をそのまま出力すると、文字の縁のように
+                # 明と暗が混ざる画素で「ソースに存在しない中間調」が生まれ、
+                # ビットマップ照合型のフォントOCRや色帯判定が壊れる
+                # （g698-resume-starter.png のstarter一覧、g1097-fort-menu
+                # のメニュー文字とドーム色で実測）。多数決側だけで平均すれば
+                # 少数側（背景または細い輪郭）のにじみを排しつつ、クラスタ内は
+                # 平滑化されるため、最近傍より列欠落しにくい。
+                # 1クラスタしかない平坦領域では全面積平均と同じ結果になる。
+                tot = sum(w for _, w in contribs)
+                mlum = sum((self.rgb[i] + self.rgb[i+1] + self.rgb[i+2]) * w
+                           for i, w in contribs)
+                hw = lw = 0
+                for i, w in contribs:
+                    if (self.rgb[i] + self.rgb[i+1] + self.rgb[i+2]) * tot >= mlum:
+                        hw += w
+                    else:
+                        lw += w
+                use_hi = hw >= lw
+                r = g = b = total = 0
+                for i, w in contribs:
+                    lum = self.rgb[i] + self.rgb[i+1] + self.rgb[i+2]
+                    if (lum * tot >= mlum) != use_hi:
+                        continue
+                    r += self.rgb[i] * w
+                    g += self.rgb[i+1] * w
+                    b += self.rgb[i+2] * w
+                    total += w
+                # 重み総和は必ず正（多数決側は重み総和の半分以上を持つ）。
+                # +total//2 で四捨五入し、輝度の系統的な暗転を防ぐ。
+                half = total // 2
+                data[o] = (r + half) // total
+                data[o+1] = (g + half) // total
+                data[o+2] = (b + half) // total
+                o += 3
         return Frame(width,height,bytes(data))
 
     def digest(self) -> str:
@@ -36,6 +124,11 @@ class Frame:
 
     def fraction(self, rect, predicate) -> float:
         x0,y0,x1,y1 = rect
+        # Clamp to the frame: a marker near the edge gives _cliff_open_side a
+        # box that runs off-screen, where pixel() returns () and predicate(*())
+        # raises TypeError (g1190 ch9 edge camp -> invalid observation).
+        x0,y0 = max(0, x0), max(0, y0)
+        x1,y1 = min(self.width, x1), min(self.height, y1)
         samples = [self.pixel(x,y) for y in range(y0,y1,2) for x in range(x0,x1,2)]
         return sum(predicate(*p) for p in samples)/max(1,len(samples))
 
@@ -48,6 +141,22 @@ class Frame:
         return (b'\x89PNG\r\n\x1a\n'
                 +chunk(b'IHDR',struct.pack('>IIBBBBB',self.width,self.height,8,2,0,0,0))
                 +chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b''))
+
+
+@lru_cache(maxsize=16)
+def _resize_axis(src_len: int, dst_len: int):
+    """Immutable geometry only; never cache observations or recognition."""
+    spans = []
+    for d in range(dst_len):
+        lo, hi = d * src_len, (d + 1) * src_len
+        pairs = []
+        i = lo // dst_len
+        while i * dst_len < hi and i < src_len:
+            overlap = min(hi, (i + 1) * dst_len) - max(lo, i * dst_len)
+            pairs.append((i, overlap))
+            i += 1
+        spans.append(tuple(pairs))
+    return tuple(spans)
 
 
 @lru_cache(maxsize=128)

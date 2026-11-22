@@ -5,6 +5,7 @@ import pytest
 
 from docich import hanjuku_house as house
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(phase='castle_view'):
@@ -51,7 +52,7 @@ def test_recheck_uses_changed_castle_ownership_and_placement_after_defense():
     step(mem, 'defense_started')
     mem['lost'] = ['スペランザ']
     mem['captured'].remove('スペランザ')
-    mem['garrison'] = {'アウスパジア': ['ココット', 'ゼウス']}
+    _world(mem)['garrison'] = {'アウスパジア': ['ココット', 'ゼウス']}
     step(mem, 'map')
     step(mem, 'map')
     assert mem['house']['castles'] == ['アウスパジア', 'アルマムーン']
@@ -162,7 +163,7 @@ def test_restarted_route_still_protects_the_last_castles_sole_defender():
     mem = memory()
     step(mem, 'defense_started')
     mem['captured'] = []
-    mem['garrison'] = {'アルマムーン': ['ココット']}
+    _world(mem)['garrison'] = {'アルマムーン': ['ココット']}
     step(mem, 'map')
     step(mem, 'map')
     assert mem['house']['castles'] == ['アルマムーン']

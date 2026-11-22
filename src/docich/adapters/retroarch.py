@@ -39,6 +39,10 @@ HANJUKU_MIRROR_FRAMERATE = 15
 NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
 RA_READY_IO_TIMEOUT_S = 0.1
+# Dead-runtime proof needs two spaced probes: one lost 0.1 s UDP round trip
+# under CPU saturation (load 25+ in docich#4144) must not release a live
+# runtime without a boundary (docich#4193, follow-up of #4190).
+DEAD_PROBE_SPACING_S = 2.0
 MANUAL_SAVE_TIMEOUT_S = 10.0
 STALLED_TERMINAL_REASONS = frozenset({'screen_stalled', 'input_stalled'})
 
@@ -213,14 +217,28 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         lines += ['video_fullscreen = "false"', 'video_scale = "3.0"',
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
+    # [retroarch] force_aspect = false asks for the core's raw pixels (Snes9x
+    # 256x224) instead of the 4:3 window (299x224). The deterministic screen
+    # signatures match 8-pixel glyph cells exactly, so a horizontally stretched
+    # 299-wide capture reads as zero text (g1163 2026-11-10 04:39: live card
+    # select parsed to ''; the 256x224 fixture parsed in full).
+    force_aspect = retroarch_raw(game).get("force_aspect")
+    if force_aspect is not None:
+        if type(force_aspect) is not bool:
+            raise AdapterError("[retroarch] force_aspect は真偽値である必要があります")
+        value = "true" if force_aspect else "false"
+        lines = [line for line in lines if not line.startswith('video_force_aspect')]
+        lines.append(f'video_force_aspect = "{value}"')
     from ..hanjuku_hotload import enabled as scripted_hanjuku
     if scripted_hanjuku(game):
         if d.viewport_width > 0:
             # Keep the core's aspect ratio at the small window scale (Snes9x:
-            # 299x224). Disabling force_aspect produces a 256x224 window with
-            # vertically compressed content, breaking exact-tile recognition.
+            # 299x224). An explicit [retroarch] force_aspect overrides this.
             lines = [line for line in lines if not line.startswith('video_scale =')]
             lines.append('video_scale = "1.0"')
+            if force_aspect is False:
+                lines = [line for line in lines if not line.startswith('video_force_aspect')]
+                lines.append('video_force_aspect = "false"')
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
                   # Paused LOAD/SAVE/slot OSD persists over native dialogue
@@ -343,6 +361,10 @@ class RetroArchAdapter(Adapter):
         scripted = hanjuku_hotload.enabled(self.ctx.game) and runtime_dir is not None
         if scripted:
             out_path = runtime_dir / 'screenshots' / 'latest.png'
+            # Honour the brain's autosave request here too: a held screen sends
+            # no action, so act() alone would never perform the save (g1163
+            # 2026-11-10 20:38: the request sat unread for minutes).
+            self._honor_autosave(runtime_dir)
         meta = {}
         # Both the agent and the corner monitor observe. Serialize capture,
         # decode and terminal evidence with actual pad input for this runtime.
@@ -395,12 +417,35 @@ class RetroArchAdapter(Adapter):
             return
         self.ctx.xkit.focus(self._window_id)
 
+    def _honor_autosave(self, runtime_dir) -> None:
+        """Perform a save the brain asked for (see hanjuku_run.request_autosave)."""
+        from ..hanjuku_run import AUTOSAVE_REQUEST
+        request = runtime_dir / AUTOSAVE_REQUEST
+        try:
+            if not request.exists():
+                return
+        except OSError:
+            return
+        try:
+            # The live adapter is the legacy adapter: it has no _network_port,
+            # so derive the port from the generation exactly like observe().
+            port = retroarch_network_port(self.ctx.fence.generation)
+            send_ra_cmd('SAVE_STATE', port=port, wait_reply_s=.2)
+        except Exception as exc:
+            print(f"docich: 警告: autosave に失敗しました: {exc}", file=sys.stderr)
+            return
+        try:
+            request.unlink()
+        except OSError:
+            pass
+
     def act(self, action: Action) -> None:
         self._check_fence()
         runtime_dir = self._runtime_dir()
         from .. import hanjuku_hotload
         with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
             if runtime_dir:
+                self._honor_autosave(runtime_dir)
                 require_input_open(runtime_dir)
                 if hanjuku_hotload.enabled(self.ctx.game):
                     run = hanjuku_hotload.load(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence))
@@ -684,6 +729,53 @@ class RetroArchCoordinatorAdapter:
                 raise AdapterError("RetroArch child shutdown is not confirmed")
         return not any(pane.dead for pane in states)
 
+    def runtime_provably_dead(self, deadline: float, cancel) -> bool:
+        """True when nothing of this contained runtime can still be saved.
+
+        The safe-boundary contract protects a *live* game from being killed
+        without a save.  A runtime whose tmux game/agent windows are gone and
+        whose RetroArch command port no longer answers (two probes separated
+        by ``DEAD_PROBE_SPACING_S``, so one lost round trip is not proof) has
+        no state left to protect.  This probe exists so recovery can
+        distinguish "the boundary has not arrived yet" from "the runtime died
+        before it arrived" — the latter strands canonical in ``failed``
+        forever because the missing boundary can never be produced (#4187,
+        2026-11-14 tmux death; #4193 double probe).
+        """
+        if not self._contained():
+            return False
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        if self.tmux.window_target_exists(self._game_window_target()):
+            return False
+        if self.tmux.window_target_exists(self._agent_window_target()):
+            return False
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        # The command port is the last survivor when a presenter or a detached
+        # RetroArch process outlives the window; a reply proves it is alive.
+        # One unanswered 0.1 s probe is not proof of death: a saturated CPU can
+        # drop a single round trip, and releasing a live runtime without its
+        # boundary is destructive (#4193). Only two probes separated in time,
+        # both unanswered, prove the runtime is gone.
+        port = self._network_port()
+        for attempt in range(2):
+            if attempt:
+                remaining = deadline - time.monotonic()
+                if remaining <= DEAD_PROBE_SPACING_S + RA_READY_IO_TIMEOUT_S:
+                    # No budget for a properly spaced second probe: death stays
+                    # unproven, so the caller keeps the normal boundary path.
+                    return False
+                if cancel is not None:
+                    if cancel.wait(DEAD_PROBE_SPACING_S):
+                        raise DeadlineExceededError("adapter call はcancelされました")
+                else:
+                    time.sleep(DEAD_PROBE_SPACING_S)
+                self._check_active(deadline, cancel, "runtime_provably_dead")
+            reply = send_ra_cmd("GET_STATUS", port=port, wait_reply_s=.1)
+            self._check_active(deadline, cancel, "runtime_provably_dead")
+            if reply is not None:
+                return False
+        return True
+
     def _require_safe_cleanup(self, deadline: float, cancel) -> None:
         if self._contained():
             from ..agent.fence import read_canonical
@@ -691,6 +783,10 @@ class RetroArchCoordinatorAdapter:
             committed = any(isinstance(state.get(slot), dict) and
                             state[slot].get("runtime_id") == self.spec.runtime_id
                             for slot in ("active", "previous"))
+            if committed and self.runtime_provably_dead(deadline, cancel):
+                # Nothing can be saved any more, so the boundary requirement
+                # would only make the dead runtime unreleasable.
+                return
             if committed:
                 record = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
                 if not matches(record, self.spec, record.get("request_id")) or record.get("status") != "reached":
@@ -729,6 +825,19 @@ class RetroArchCoordinatorAdapter:
             return False
         self._require_safe_cleanup(deadline, cancel)
         return True
+
+    def can_release_dead_previous(self, deadline: float, cancel) -> bool:
+        """A committed Hanjuku runtime that is provably gone may be released.
+
+        Only the *absence* of every live part of the runtime (game window,
+        agent window, RetroArch command port) authorises this.  A runtime that
+        still answers is never released here: it owes a boundary first.
+        """
+        self._check_active(deadline, cancel, "can_release_dead_previous")
+        from .. import hanjuku_run
+        if not self._contained() or not hanjuku_run.enabled(self.game):
+            return False
+        return self.runtime_provably_dead(deadline, cancel)
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         self._require_safe_cleanup(deadline, cancel)

@@ -5,6 +5,7 @@ Read-only over ``mem``: no screen, no input, no decisions.
 from __future__ import annotations
 
 from .os_layer.world import NAME
+from .state.regions import plan as _plan_region
 
 
 def summary(mem: dict | None) -> dict:
@@ -12,9 +13,9 @@ def summary(mem: dict | None) -> dict:
     mem = mem if isinstance(mem, dict) else {}
     stats = mem.get('stats') if isinstance(mem.get('stats'), dict) else {}
     tally = mem.get('tally') if isinstance(mem.get('tally'), dict) else {}
-    orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
+    orders = _plan_region(mem).get('orders') if isinstance(_plan_region(mem).get('orders'), dict) else {}
     battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
-    chart_step = battle.get('step') if battle else mem.get('active')
+    chart_step = battle.get('step') if battle else _plan_region(mem).get('active')
     strategy_variant = battle.get('strategy_variant') if battle else mem.get('variant')
     as_int = lambda v: v if type(v) is int and 0 <= v <= 10**6 else None
     battles_started = as_int(tally.get('battles_started'))

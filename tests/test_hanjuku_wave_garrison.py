@@ -1,0 +1,22 @@
+"""An empty garrison must not keep the field deferred.
+
+Live g1288 2026-11-21 13:0x: every general stood camped, the garrisons were
+empty and the chart went starved for hours; the camp recall that rebuilds the
+garrisons was deferred by wave_active.
+"""
+from docich.hanjuku.flows import boss_pursuit as bp
+
+
+def memory(garrison, launched=10000):
+    return {'chapter': 9, 'tick': 10000,
+            bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': launched}},
+            'world': {'garrison': garrison}}
+
+
+def test_an_empty_garrison_hands_the_field_back():
+    assert bp.wave_active(memory({'イデ！': []})) is False
+    assert bp.wave_active(memory({'イデ！': ['どうし']})) is False
+
+
+def test_a_staffed_garrison_keeps_the_wave_active():
+    assert bp.wave_active(memory({'イデ！': ['どうし', 'ゼウス']})) is True

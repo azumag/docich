@@ -338,6 +338,447 @@ ARCHITECTURE_SPEC = CornerRuntimeSpec(
     labels=("fact", "analysis", "caveat"),
 )
 
+MERIKEN_ECONOMICS_SPEC = CornerRuntimeSpec(
+    corner_id="meriken-economics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "meriken_economics_corner",
+        "fixed_meriken_economics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todayQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todayQuestion", "fact", "今日の問い"),
+        Section("merikenView", "analysis", "メリケンの見方"),
+        Section("economicModel", "analysis", "経済学上のモデル"),
+        Section("dataEvidence", "fact", "データ/実証"),
+        Section("counterArguments", "analysis", "反対論・条件"),
+        Section("distributionalImpact", "analysis", "誰が得て誰が負担するか"),
+        Section("newsApplication", "forecast", "現実のニュースへの適用"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "todayQuestion",
+        "merikenView",
+        "economicModel",
+        "dataEvidence",
+        "counterArguments",
+        "distributionalImpact",
+        "newsApplication",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+MERIKEN_BUSINESS_SPEC = CornerRuntimeSpec(
+    corner_id="meriken-business",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "meriken_business_corner",
+        "fixed_meriken_business_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="businessQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("businessQuestion", "fact", "今日の問い"),
+        Section("merikenView", "analysis", "メリケンの見方"),
+        Section("customer", "fact", "顧客は誰か"),
+        Section("offering", "fact", "何を売るか"),
+        Section("revenueModel", "analysis", "どう課金するか"),
+        Section("costStructure", "fact", "主なコスト"),
+        Section("competitiveAdvantage", "analysis", "競争優位・moat"),
+        Section("unitEconomics", "analysis", "ユニットエコノミクス"),
+        Section("scalingDynamics", "forecast", "成長すると何が変わるか"),
+        Section("vulnerabilities", "caveat", "弱点・規制・競合"),
+        Section("counterArguments", "analysis", "反対論・制約"),
+        Section("stakeholderImpact", "analysis", "ステークホルダー影響"),
+        Section("newsApplication", "forecast", "現実のニュースへの適用"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "businessQuestion",
+        "merikenView",
+        "customer",
+        "offering",
+        "revenueModel",
+        "costStructure",
+        "competitiveAdvantage",
+        "unitEconomics",
+        "scalingDynamics",
+        "vulnerabilities",
+        "counterArguments",
+        "stakeholderImpact",
+        "newsApplication",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+MEGA_INFRASTRUCTURE_SPEC = CornerRuntimeSpec(
+    corner_id="mega-infrastructure",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "mega_infrastructure_corner",
+        "fixed_mega_infrastructure_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="infrastructureTheme",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("infrastructureTheme", "fact", "今日のインフラ"),
+        Section("whatItSupports", "fact", "何を支えるインフラか"),
+        Section("demand", "fact", "需要と必要能力"),
+        Section("geographyAndSite", "fact", "地理・立地条件"),
+        Section("scaleAndCapacity", "fact", "規模と能力"),
+        Section("structureAndMethod", "analysis", "構造と工法"),
+        Section("operation", "analysis", "運用"),
+        Section("bottleneck", "analysis", "ボトルネック"),
+        Section("redundancy", "analysis", "冗長性"),
+        Section("failureAndDisaster", "analysis", "故障・災害時の挙動"),
+        Section("maintenanceAndRenewal", "analysis", "保守・更新"),
+        Section("socialEconomicImpact", "analysis", "社会・経済への影響"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "infrastructureTheme",
+        "whatItSupports",
+        "demand",
+        "geographyAndSite",
+        "scaleAndCapacity",
+        "structureAndMethod",
+        "operation",
+        "bottleneck",
+        "redundancy",
+        "failureAndDisaster",
+        "maintenanceAndRenewal",
+        "socialEconomicImpact",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "mapAndDiagramHandling",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "materialContract",
+        "sourceAccessNote",
+        "url",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
+PHYSICS_SPEC = CornerRuntimeSpec(
+    corner_id="physics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "physics_corner",
+        "fixed_physics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todaysQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todaysQuestion", "fact", "今日の問い"),
+        Section("intuitivePrediction", "fact", "直感の予想"),
+        Section("observedPhenomenon", "fact", "実際に観測される現象"),
+        Section("physicalLaw", "fact", "物理法則"),
+        Section("formulaAndModel", "analysis", "最も単純な式・モデル"),
+        Section("experimentAndTechnologyApplication", "analysis", "実験と技術応用"),
+        Section("intuitionFailurePoint", "analysis", "直感が外れる点"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "physicsField",
+        "todaysQuestion",
+        "intuitivePrediction",
+        "observedPhenomenon",
+        "physicalLaw",
+        "formulaAndModel",
+        "experimentAndTechnologyApplication",
+        "intuitionFailurePoint",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "figureAndFormulaHandling",
+        "formulaEntries",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+        "materialContract",
+        "sourceAccessNote",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+ENGLISH_SPEC = CornerRuntimeSpec(
+    corner_id="english",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "english_corner",
+        "fixed_english_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todayExample",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todayExample", "fact", "今日の実例"),
+        Section("keyPhrases", "fact", "キーフレーズ"),
+        Section("meaning", "analysis", "意味"),
+        Section("grammarUsage", "analysis", "文法・用法"),
+        Section("nuance", "analysis", "ニュアンス"),
+        Section("differenceFromSimilar", "analysis", "類似表現との違い"),
+        Section("alternativeExample", "application", "もう一つの自然な例文"),
+        Section("sourceMaterialBrief", "fact", "出典素材の概要"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "sourceType",
+        "sourceTitle",
+        "url",
+        "publishedDate",
+        "domainCategory",
+        "todayExample",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "sourceMaterialBrief",
+        "keyPhrases",
+        "keyExpressions",
+        "meaning",
+        "grammarUsage",
+        "nuance",
+        "similarExpressions",
+        "differenceFromSimilar",
+        "alternativeExample",
+        "limitations",
+        "uncertainty",
+        "citationKeepUrl",
+        "citationRange",
+        "quotePolicy",
+        "shortQuote",
+        "primarySources",
+        "sourcePriority",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "application"),
+)
+
+INTERNATIONAL_POLITICS_SPEC = CornerRuntimeSpec(
+    corner_id="international-politics",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "international_politics_corner",
+        "fixed_international_politics_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="whatHappened",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("whatHappened", "fact", "何が起きたか"),
+        Section("partyClaims", "fact", "当事者の主張"),
+        Section("institutionalLegalPosition", "analysis", "制度・国際法上の位置づけ"),
+        Section("historicalBackground", "analysis", "歴史的背景"),
+        Section("geoEconomicSecurityConditions", "analysis", "地理・経済・安全保障条件"),
+        Section("keyDisputes", "analysis", "主要な争点"),
+        Section("japanImpact", "analysis", "日本への影響"),
+        Section("indicatorsAndEvents", "forecast", "見るべき指標・イベント"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "eventDate",
+        "geography",
+        "actors",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "whatHappened",
+        "partyClaims",
+        "institutionalLegalPosition",
+        "historicalBackground",
+        "geoEconomicSecurityConditions",
+        "keyDisputes",
+        "opposingViewpoints",
+        "japanImpact",
+        "indicatorsAndEvents",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+        "materialContract",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+GEOGRAPHY_WORLD_SPEC = CornerRuntimeSpec(
+    corner_id="geography-world",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "geography_world_corner",
+        "fixed_geography_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="mapFocus",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("mapFocus", "fact", "地図"),
+        Section("terrainClimate", "fact", "地形と気候"),
+        Section("population", "fact", "人口"),
+        Section("resources", "fact", "資源"),
+        Section("transportRoutes", "fact", "交通路"),
+        Section("industry", "fact", "産業"),
+        Section("historyPoliticsImpact", "analysis", "歴史・政治への影響"),
+        Section("currentMeaning", "analysis", "現在の意味"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "region",
+        "mapFocus",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "terrainClimate",
+        "population",
+        "resources",
+        "transportRoutes",
+        "industry",
+        "historyPoliticsImpact",
+        "currentMeaning",
+        "mapHandling",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+    ),
+    caveat_keys=("mapHandling", "limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
+MATHEMATICS_SPEC = CornerRuntimeSpec(
+    corner_id="math",
+    fixture_parts=(
+        "tests",
+        "fixtures",
+        "math_corner",
+        "fixed_math_example.json",
+    ),
+    container="topic",
+    title_key="title",
+    question_key="todaysQuestion",
+    summary_key="thirtySecondSummary",
+    sections=(
+        Section("todaysQuestion", "fact", "今日の問い"),
+        Section("intuitivePrediction", "fact", "直感の予想"),
+        Section("observedPhenomenon", "fact", "実際に観測される現象"),
+        Section("smallExample", "fact", "小さい例で確かめる"),
+        Section("mathematicalModel", "analysis", "数学的モデル"),
+        Section("generalization", "analysis", "一般化"),
+        Section("realWorldApplication", "analysis", "実世界への応用"),
+        Section("intuitiveSummary", "analysis", "直感的なまとめ"),
+    ),
+    required_fields=(
+        "title",
+        "topicId",
+        "mathField",
+        "mathematicsField",
+        "todaysQuestion",
+        "intuitivePrediction",
+        "observedPhenomenon",
+        "smallExample",
+        "mathematicalPrinciple",
+        "mathematicalModel",
+        "mathematicalLaw",
+        "formulaAndModel",
+        "generalization",
+        "experimentAndTechnologyApplication",
+        "application",
+        "realWorldApplication",
+        "intuitionFailurePoint",
+        "intuitiveSummary",
+        "thirtySecondSummary",
+        "oneLineSummary",
+        "requirementsAndConstraints",
+        "formulaEntries",
+        "figureAndFormulaHandling",
+        "labelsPolicy",
+        "segmentLabels",
+        "limitations",
+        "uncertainty",
+        "figureOrDiagram",
+        "youtubeIndependentDraft",
+        "primarySources",
+        "sourcePriority",
+        "citationKeepUrl",
+        "url",
+        "materialContract",
+        "sourceAccessNote",
+    ),
+    caveat_keys=("limitations", "uncertainty"),
+    labels=("fact", "analysis", "forecast"),
+)
+
+
 CORNER_SPECS = {
     WORLD_HISTORY_SPEC.corner_id: WORLD_HISTORY_SPEC,
     RESEARCH_PAPER_SPEC.corner_id: RESEARCH_PAPER_SPEC,
@@ -345,6 +786,14 @@ CORNER_SPECS = {
     INFORMATION_ENGINEERING_SPEC.corner_id: INFORMATION_ENGINEERING_SPEC,
     ELECTRONICS_SPEC.corner_id: ELECTRONICS_SPEC,
     ARCHITECTURE_SPEC.corner_id: ARCHITECTURE_SPEC,
+    MERIKEN_ECONOMICS_SPEC.corner_id: MERIKEN_ECONOMICS_SPEC,
+    MERIKEN_BUSINESS_SPEC.corner_id: MERIKEN_BUSINESS_SPEC,
+    INTERNATIONAL_POLITICS_SPEC.corner_id: INTERNATIONAL_POLITICS_SPEC,
+    PHYSICS_SPEC.corner_id: PHYSICS_SPEC,
+    ENGLISH_SPEC.corner_id: ENGLISH_SPEC,
+    GEOGRAPHY_WORLD_SPEC.corner_id: GEOGRAPHY_WORLD_SPEC,
+    MEGA_INFRASTRUCTURE_SPEC.corner_id: MEGA_INFRASTRUCTURE_SPEC,
+    MATHEMATICS_SPEC.corner_id: MATHEMATICS_SPEC,
 }
 
 
@@ -532,6 +981,7 @@ def render_overlay(data: dict, corner_id: str | None = None) -> dict:
         "caveats": _caveats(data, spec),
         "limits": container.get("limitations"),
         "uncertainty": container.get("uncertainty"),
+        "figureOrDiagram": container.get("figureOrDiagram"),
     }
 
 
@@ -652,3 +1102,88 @@ def validate_status(data: dict, frames=None, corner_id: str | None = None) -> di
     if sorted(frames[-1]["caveats"]) != entry["caveatKeys"]:
         raise CornerRuntimeError("corner caveats do not match the status overlay")
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Theme candidate management (「構造と原理」 corner: issue #1707)
+#
+# A small, passive data layer: load the fixed theme-candidate list, enumerate
+# candidates, and select one as ``本日のテーマ`` (today's theme).  No network,
+# no LLM, no clock, no writes outside the process.  A production scheduler or
+# WebUI can call these behind its own gates to pick the theme shown by the
+# engineering corner each day.
+# ---------------------------------------------------------------------------
+
+def theme_candidate_path(corner_id: str = "engineering", root: Path | None = None) -> Path:
+    root = root or repo_root()
+    spec = spec_for(corner_id)
+    # theme_candidates.json sits alongside the corner's fixed fixture.
+    parts = list(spec.fixture_parts[:-1]) + ["theme_candidates.json"]
+    return root.joinpath(*parts)
+
+
+def load_theme_candidates(corner_id: str = "engineering", root: Path | None = None) -> dict:
+    """Load the fixed theme-candidate list and validate its envelope.
+
+    Returns the parsed JSON object with a ``candidates`` list.  Each candidate
+    carries ``id``, ``title``, ``domain``, ``description`` and an optional
+    ``fixtureId`` referencing the fixed fixture that supplies its draft data.
+    """
+    path = theme_candidate_path(corner_id, root)
+    if not path.is_file():
+        raise FileNotFoundError(f"missing theme candidate list: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise CornerRuntimeError("theme candidate list must be a JSON object")
+    if data.get("isSyntheticFixture") is not True:
+        raise CornerRuntimeError("theme candidate list must be marked as synthetic")
+    if data.get("corner") != corner_id:
+        raise CornerRuntimeError(
+            f"theme candidate list corner {data.get('corner')!r} does not match {corner_id!r}"
+        )
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise CornerRuntimeError("theme candidate list must contain at least one candidate")
+    seen: set[str] = set()
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            raise CornerRuntimeError("each theme candidate must be an object")
+        cid = cand.get("id")
+        if not isinstance(cid, str) or not cid or cid in seen:
+            raise CornerRuntimeError("each theme candidate needs a unique non-empty id")
+        seen.add(cid)
+        for key in ("title", "domain", "description"):
+            if not isinstance(cand.get(key), str) or not cand.get(key).strip():
+                raise CornerRuntimeError(f"theme candidate {cid!r} needs non-empty {key}")
+    return data
+
+
+def list_theme_candidates(corner_id: str = "engineering", root: Path | None = None) -> list[dict]:
+    """Return a copy of the theme-candidate summaries (id, title, domain, description)."""
+    data = load_theme_candidates(corner_id, root)
+    return [
+        {
+            "id": cand["id"],
+            "title": cand["title"],
+            "domain": cand["domain"],
+            "description": cand["description"],
+            "fixtureId": cand.get("fixtureId"),
+        }
+        for cand in data["candidates"]
+    ]
+
+
+def select_theme(candidate_id: str, corner_id: str = "engineering", root: Path | None = None) -> dict:
+    """Select one theme candidate by id and return its full record.
+
+    Raises ``CornerRuntimeError`` when the id is unknown.  The caller then
+    resolves the candidate's ``fixtureId`` (if any) through ``load_corner_fixture``
+    to obtain the draft data for the selected theme.
+    """
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise CornerRuntimeError("theme candidate id must be a non-empty string")
+    data = load_theme_candidates(corner_id, root)
+    for cand in data["candidates"]:
+        if cand.get("id") == candidate_id:
+            return dict(cand)
+    raise CornerRuntimeError(f"unknown theme candidate id: {candidate_id!r}")

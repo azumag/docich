@@ -17,6 +17,7 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse, castle_roofs
 from test_hanjuku_chart_bot import Canvas, HAND, UNKNOWN
 from test_hanjuku_sortie_evidence import actor_panel, measured_loaded_sortie
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 @pytest.fixture(autouse=True)
 def unmeasured_chapter_three(monkeypatch):
@@ -122,13 +123,14 @@ def caller_adopted_interim():
     positions.update(アルマムーン=HOME, グリン=GRIN)
     mem['map_registration']['castles'] = {
         n: {**proof, 'name': n, 'position': list(p)} for n, p in positions.items()}
-    mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
-    assert not mem.get('active') and not mem.get('chart_plan') and not mem.get('chart_adjust')
+    _plan_region(mem)['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
+    # Owner 2026-11-06: the hero's castle keeps two others beside him.
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
+    assert not _plan_region(mem).get('active') and not _plan_region(mem).get('chart_plan') and not mem.get('chart_adjust')
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
-    active = state['policy']['active']
+    active = _plan_region(state['policy']).get('active')
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
-    assert state['policy']['chart_plan']['orders'][0]['step'] == active
+    assert _plan_region(state['policy'])['chart_plan']['orders'][0]['step'] == active
     assert any(r['decision'] == 'chart_adjust_applied' for r in state['_records'])
     return state, active
 
@@ -139,9 +141,9 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
     state, active = caller_adopted_interim()
     actions, updated = decide(field(), state, run_identity=identity)
     assert actions == []
-    assert updated['policy'].get('active') is None
-    assert updated['policy']['orders'].get(active) in (None, 'pending')
-    assert not updated['policy'].get('sorties')
+    assert _plan_region(updated['policy']).get('active') is None
+    assert (_plan_region(updated['policy']).get('orders') or {}).get(active) in (None, 'pending')
+    assert not _world(updated['policy']).get('sorties')
     with chart.map_context(updated['policy']):
         assert not chart.castles(3)
 
@@ -149,7 +151,7 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
 def test_real_interim_caller_keeps_registered_order_with_the_same_valid_identity():
     state, active = caller_adopted_interim()
     _, updated = decide(field(), state, run_identity=IDENTITY)
-    assert updated['policy']['active'] == active
+    assert _plan_region(updated['policy']).get('active') == active
     with chart.map_context(updated['policy']):
         assert len(chart.castles(3)) == 9
 
@@ -161,8 +163,8 @@ def test_adopted_interim_target_never_indexes_an_identity_invalidated_map():
     screen = Screen([], None, '', kind='map_target', marker=GRIN)
     with chart.map_context(mem):
         assert policy.target_step(screen, mem, field()) == []
-    assert mem['active'] is None and mem['_map_registration_hold'] is True
-    assert mem['orders'].get(active) in (None, 'pending')
+    assert _plan_region(mem)['active'] is None and mem['_map_registration_hold'] is True
+    assert _plan_region(mem)['orders'].get(active) in (None, 'pending')
     assert mem['_records'][-1]['decision'] == 'map_coordinates_unavailable'
 
 
@@ -171,14 +173,14 @@ def test_follow_general_never_overrides_to_an_unregistered_observed_castle():
     mem.update(captured=['メガパタ'], garrison={'メガパタ': ['ゼウス']})
     with chart.map_context(mem):
         order = policy.next_order(mem)
-        assert mem.get('source_override', {}).get('3-Z1') != 'メガパタ'
+        assert _plan_region(mem).get('source_override', {}).get('3-Z1') != 'メガパタ'
         assert order is None or policy._source(order, mem) in chart.castles(3)
         policy.map_step(parse(field()), mem, field())  # never KeyError
 
 
 def test_runtime_ready_checks_the_effective_source_override():
     mem = initial_route_receipt()
-    mem['source_override'] = {'3-Z1': 'メガパタ'}
+    _plan_region(mem)['source_override'] = {'3-Z1': 'メガパタ'}
     with chart.map_context(mem):
         assert not policy._ready(chart.CHAPTER_3_ORDERS[0], mem)
 
@@ -186,12 +188,12 @@ def test_runtime_ready_checks_the_effective_source_override():
 @pytest.mark.parametrize('scenario', ['empty', 'lost', 'general_at_unregistered_castle'])
 def test_unselectable_partial_order_does_not_preempt_discovery(scenario):
     mem = initial_route_receipt()
-    mem['garrison'] = {'アルマムーン': []}
+    _world(mem)['garrison'] = {'アルマムーン': []}
     if scenario == 'lost':
         mem['home_lost'] = True
     elif scenario == 'general_at_unregistered_castle':
         mem['captured'] = ['メガパタ']
-        mem['garrison']['メガパタ'] = ['ゼウス']
+        _world(mem)['garrison']['メガパタ'] = ['ゼウス']
     for _ in range(5):
         actions = feed(mem, field(GRIN))
         assert actions is not None
@@ -236,9 +238,9 @@ def test_orchestrator_uses_the_run_map_to_start_the_existing_chapter_three_sorti
     for frame in (status('グリン'), status('グリン'), field(GRIN)):
         _, state = decide(frame, state, run_identity=IDENTITY)
     _, state = decide(field(GRIN), state, run_identity=IDENTITY)
-    assert state['policy']['active'] == '3-Z1'
+    assert _plan_region(state['policy']).get('active') == '3-Z1'
     assert state['policy']['variant'] == 'chart'
-    assert not state['policy'].get('sorties')
+    assert not _world(state['policy']).get('sorties')
     assert chart.castles(3) == {}
 
 
@@ -286,7 +288,7 @@ def test_centered_single_roof_bootstrap_reaches_two_roof_calibration_and_chapter
         if first_calibrated_frame is None:
             assert not mem.get('map_registration')
             assert not (mem.get('map_discovery') or {}).get('origin_frame')
-        if mem.get('active') == '3-Z1':
+        if _plan_region(mem).get('active') == '3-Z1':
             break
     else:
         pytest.fail('single-roof bootstrap never reached a valid chapter-3 order')
@@ -631,7 +633,7 @@ def test_new_run_discards_the_old_native_map_and_adopted_active_order():
     mem.update(chart_plan={'orders': [order]}, active=order['step'])
     _, updated = decide(field(), {'policy': mem}, run_identity={**IDENTITY, 'lease_id': 'new-lease'})
     assert not updated['policy'].get('map_registration')
-    assert not updated['policy'].get('chart_plan') and not updated['policy'].get('active')
+    assert not _plan_region(updated['policy']).get('chart_plan') and not _plan_region(updated['policy']).get('active')
     assert not chart.castles(3)
 
 
@@ -649,7 +651,7 @@ def test_complete_synthetic_registration_returns_exhausted_orders_to_the_existin
     mem['map_registration']['castles'] = {
         n: {**proof, 'name': n, 'position': [60+32*i, 28+48*i]}
         for i, n in enumerate(SOURCE_CASTLES[3])}
-    mem['orders'] = {o['step']: 'launched' for o in chart.all_orders(3)}
+    _plan_region(mem)['orders'] = {o['step']: 'launched' for o in chart.all_orders(3)}
     assert len(survey.verified_castles(mem, 3)) == 9
     assert feed(mem, field()) is None
 
@@ -695,7 +697,7 @@ def test_four_distinct_season_king_wins_are_not_owned_castles_or_a_single_boss_w
         king_battle(mem, king)
     assert set(mem['boss_victories']) == SEASON_KINGS
     assert mem['boss_defeated'] == 4 and mem['chapter'] == 4
-    assert mem['captured'] == ['マラコビア'] and mem['garrison'] == {}
+    assert mem['captured'] == ['マラコビア'] and _world(mem)['garrison'] == {}
     assert mem['boss_victories'][kings[-1]]['site'] is None
 
 
@@ -706,7 +708,7 @@ def test_unproven_season_king_result_is_never_victory_or_ownership(changes):
     king_battle(mem, 'サマカンテ', **changes)
     assert not mem.get('boss_victories') and not mem.get('boss_defeated')
     assert not mem.get('captured')
-    assert not mem.get('garrison')
+    assert not _world(mem).get('garrison')
     assert not any((r.get('resulting_event') or '').startswith(('captured:', 'lost:'))
                    for r in mem.get('_records', []))
 
@@ -718,7 +720,7 @@ def adopted_interim_confirm_frame():
     and actor plus the measured hand block; no order is planted by hand.
     """
     state, active = caller_adopted_interim()
-    order = state['policy']['chart_plan']['orders'][0]
+    order = _plan_region(state['policy'])['chart_plan']['orders'][0]
     panel = actor_panel(measured_loaded_sortie(tuple(order['cards'])), order['general'])
     canvas = Canvas()
     for line in panel.lines:
@@ -747,9 +749,9 @@ def test_deploy_continuation_stops_unsent_order_when_identity_fails(identity):
     state, active, frame = adopted_interim_confirm_frame()
     actions, updated = decide(frame, state, run_identity=identity)
     assert actions == []
-    assert updated['policy']['active'] is None
-    assert updated['policy']['orders'].get(active) in (None, 'pending')
-    assert not updated['policy'].get('sorties')
+    assert _plan_region(updated['policy']).get('active') is None
+    assert (_plan_region(updated['policy']).get('orders') or {}).get(active) in (None, 'pending')
+    assert not _world(updated['policy']).get('sorties')
     assert any(r['decision'] == 'order_precondition_lost' for r in updated['_records'])
     with chart.map_context(updated['policy']):
         assert not chart.castles(3)
@@ -757,7 +759,7 @@ def test_deploy_continuation_stops_unsent_order_when_identity_fails(identity):
     # order-less path, so the hold cannot wedge the screen forever.
     follow, followup = decide(frame, updated, run_identity=identity)
     assert follow == [policy.pad('b')]
-    assert followup['policy']['active'] is None
+    assert _plan_region(followup['policy']).get('active') is None
 
 
 def test_deploy_continuation_confirms_with_valid_identity_control():
@@ -765,7 +767,7 @@ def test_deploy_continuation_confirms_with_valid_identity_control():
     state, active, frame = adopted_interim_confirm_frame()
     actions, updated = decide(frame, state, run_identity=IDENTITY)
     assert actions == [policy.pad('a')]
-    assert updated['policy']['active'] == active
+    assert _plan_region(updated['policy']).get('active') == active
 
 
 @pytest.mark.parametrize('kind', ['castle_menu', 'general_list', 'card_select',
@@ -778,8 +780,8 @@ def test_deploy_screens_recheck_endpoints_per_observation(kind):
     screen = Screen(lines=[], hand=None, text='')
     screen.kind = kind
     assert policy.deploy_step(screen, mem) == []
-    assert mem['active'] is None
-    assert mem['orders'].get(active) in (None, 'pending')
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders'].get(active) in (None, 'pending')
     assert mem.get('_map_registration_hold') is True
     assert any(r['decision'] == 'order_precondition_lost' for r in mem['_records'])
 
@@ -815,11 +817,12 @@ def test_discovery_yields_the_field_to_a_startable_interim_retake():
     mem = initial_route_receipt()
     assert set(survey.verified_castles(mem, 3)) == {'アルマムーン', 'グリン'}
     mem['lost'] = ['グリン']
-    mem['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
-    mem['garrison'] = {'アルマムーン': ['ゼウス', 'どうし']}
+    _plan_region(mem)['orders'] = {o['step']: 'failed' for o in chart.all_orders(3)}
+    # Owner 2026-11-06: the hero's castle keeps two others beside him.
+    _world(mem)['garrison'] = {'アルマムーン': ['ゼウス', 'どうし', 'アルテミス', 'クミン']}
     with chart.map_context(mem):
         assert survey.step(parse(field()), mem, field()) is None
     _, state = decide(field(), {'policy': mem}, run_identity=IDENTITY)
-    active = state['policy']['active']
+    active = _plan_region(state['policy']).get('active')
     assert isinstance(active, str) and (active.startswith('I:') or ':M' in active)
-    assert state['policy']['chart_plan']['orders'][0]['target'] == 'グリン'
+    assert _plan_region(state['policy'])['chart_plan']['orders'][0]['target'] == 'グリン'

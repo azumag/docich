@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import hanjuku_policy as policy
+from docich.hanjuku.strategy.economy import MONTH_SUB_ABANDON_BACKS
 from docich.hanjuku_screen import parse
 from test_hanjuku_chart_bot import Canvas
 
@@ -37,9 +38,10 @@ def test_unread_header_after_payment_does_not_abort():
 
 def test_a_paid_introduction_past_the_bound_still_gets_a_bounded_advance():
     mem = recruit_memory()
-    buttons = [policy.month_sub_step(text_frame(94), mem)[0]['buttons'][0] for _ in range(40)]
+    buttons = [policy.month_sub_step(text_frame(94), mem)[0]['buttons'][0]
+               for _ in range(MONTH_SUB_ABANDON_BACKS)]
     assert buttons[:5] == ['a'] * 5          # 8-press bound (3 used before)
-    assert 'a' in buttons[20:]               # B is ignored on plain text -> A again
+    assert 'a' in buttons[13:]               # B is ignored on plain text -> A again
 
 
 def test_hotloaded_g662_state_recovers_from_the_abort():
@@ -77,4 +79,7 @@ def test_abort_never_escalates_on_a_yes_no():
     c.text(184, 183, 'うむッ!'); c.text(184, 199, 'いかんッ!')
     c.hand(162, 177)
     screen = parse(c.frame())
-    assert all(policy.month_sub_step(screen, mem) == [policy.pad('b')] for _ in range(40))
+    # Every press is a plain B until the bounded abandonment drops the sub.
+    assert all(policy.month_sub_step(screen, mem) == [policy.pad('b')]
+               for _ in range(MONTH_SUB_ABANDON_BACKS))
+    assert 'month_sub' not in mem

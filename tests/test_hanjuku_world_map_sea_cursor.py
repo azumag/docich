@@ -22,7 +22,7 @@ LAND = FIXTURES / 'g1075-world-map-land-cursor.png'
 SEA = FIXTURES / 'g1075-world-map-sea-cursor.png'
 FADE = FIXTURES / 'g1075-world-map-fade.png'
 
-# Every saved Y view in the repository (chapters 1-4). No other PNG is one.
+# Every saved whole-island Y/R view in the repository. No other PNG is one.
 WORLD_VIEWS = {
     'g1075-world-map-land-cursor.png', 'g1075-world-map-sea-cursor.png',
     'g1075-world-map-ring-west-edge.png', 'g1075-world-map-ring-top-edge.png',
@@ -35,6 +35,17 @@ WORLD_VIEWS = {
     'hanjuku_recall_picker_20260929.png', 'g464-frame-022.png',
     'g1075-ch3-y-view-face-over-boss-skull.png',
     'g1075-ch4-y-view-season-skulls.png',
+    'g1133-ch6-y-view-grey-sea.png',
+    'g1163-ch4-y-view-cleared-sites.png',
+    'g1163-ch9-y-view-g-at-west-edge-lake-icon.png', 'g1163-ch9-y-view-g-near-hayaku.png',
+    # A production-state Y view captured through the 16-bit RGB565 path: the
+    # gold frame's (57,40,16) reads as (56,40,16).
+    'g1190-ch9-y-view-quantized.png',
+    'g1190-ch9-y-view-flags.png',
+    # Isolated chapter-11 recall picker: the R ring cycles owned castles.
+    'g1190-ch11-recall-home.png', 'g1190-ch11-recall-gondal.png',
+    'g1190-ch11-recall-maranma.png',
+    'ch11-recall-picker-tempo-jansenia.png',
 }
 
 
@@ -60,6 +71,14 @@ def test_the_view_with_the_cursor_on_land_is_still_the_world_map():
     frame = read_png(LAND)
     assert parse(frame).kind == 'world_map'
     assert world_cursor(frame) == (170.5, 87.5)
+
+
+def test_a_16bit_quantized_gold_frame_is_still_the_world_map():
+    """The 1.61 core's RGB565 capture shifts the measured gold by one step."""
+    frame = read_png(FIXTURES / 'g1190-ch9-y-view-quantized.png')
+    assert frame.pixel(128, 10) == (56, 40, 16)
+    assert frame.pixel(128, 10) != WORLD_BORDER
+    assert parse(frame).kind == 'world_map'
 
 
 def test_the_fade_into_the_view_is_not_read_as_the_world_map():
@@ -162,3 +181,35 @@ def test_a_battle_between_two_view_runs_does_not_carry_the_episode():
     assert actions == [pad('a')]
     assert 'y_jump_unknown_hold' not in decisions(state)
     assert state['policy']['y_jump']['unknown_holds'] == 1
+
+
+# --- chapter 6 paints the sea grey-green: no WORLD_SEA pixel at all (g1133) ---
+
+CH6 = FIXTURES / 'g1133-ch6-y-view-grey-sea.png'
+
+
+def test_the_chapter_6_view_with_a_grey_green_sea_is_the_world_map():
+    """g1133 2026-11-04 22:23: the Y view read 'unknown', so every target jump
+    closed after six unreadable frames and no castle owner was read for an hour.
+
+    The fixture is a live stream capture (299 px wide) resampled to the 256 px
+    frame the bot reads. It has the gold frame and 1008/1008 backdrop samples
+    but not one WORLD_SEA pixel.
+    """
+    frame = read_png(CH6)
+    assert not any(frame.pixel(x, y) == WORLD_SEA
+                   for x in range(60, 200, 2) for y in range(60, 180, 2))
+    assert is_world_map(frame)
+    assert parse(frame).kind == 'world_map'
+
+
+def test_the_chapter_6_view_reads_its_cursor_and_flags():
+    from docich.hanjuku.os_layer.readers import world_flags
+    frame = read_png(CH6)
+    cursor = world_cursor(frame)
+    assert cursor is not None
+    # The cursor opens on the home castle アルマムーン (cell 392,144).
+    assert abs(cursor[0] - (392 / 8 + 63.0)) <= 2 and abs(cursor[1] - (144 / 8 + 47.5)) <= 2
+    flags = world_flags(frame, 6, cursor)
+    assert flags.get('オケアナ') == 'enemy' and flags.get('イカリア') == 'enemy'
+    assert 'アルマムーン' not in flags          # under the cursor: never read

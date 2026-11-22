@@ -7,11 +7,17 @@ recruit joined at 01:29; A:dd76b62b:J2 was cancelled 15 times before it.
 The cancel gate stored the list as a tuple and the policy came back from
 JSON as a list, so the gate never matched; and the third cancel's
 ``failed`` was put back to ``pending`` for an adjusted step.
+
+Owner 2026-11-17: the hero alone satisfies the guard (HERO_CASTLE_GUARD=0),
+so these tests pin the hold machinery itself by restoring the pre-change
+guard size inside the gate under test.
 """
 import json
 from types import SimpleNamespace
 
+from docich import hanjuku_chart_adjust as chart_adjust
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 HOME = 'アルマムーン'
 PRESENT = ['どうし', 'ピスタチオ', 'アンディーブ']
@@ -30,6 +36,7 @@ def reload(mem):
 
 
 def hold(mem, monkeypatch, present=PRESENT):
+    monkeypatch.setattr(chart_adjust, 'HERO_CASTLE_GUARD', 2)
     monkeypatch.setattr(policy, '_present_generals', lambda screen: list(present))
     return policy._keep_hero_guard(SimpleNamespace(), mem, dict(ORDER))
 
@@ -46,7 +53,7 @@ def test_a_joiner_on_the_list_releases_the_hold(monkeypatch):
     mem = memory()
     assert hold(mem, monkeypatch)
     mem = reload(mem)
-    mem['garrison'][HOME] = [*PRESENT, 'タピオカ']
+    _world(mem)['garrison'][HOME] = [*PRESENT, 'タピオカ']
     assert policy._source_defender_suppressed(ORDER, mem) is False
 
 
@@ -56,4 +63,4 @@ def test_the_third_hold_retires_an_adjusted_step(monkeypatch):
         mem = reload(mem)
         mem['month'] = month
         assert hold(mem, monkeypatch)
-    assert mem['orders'][ORDER['step']] == 'failed'
+    assert _plan_region(mem)['orders'][ORDER['step']] == 'failed'

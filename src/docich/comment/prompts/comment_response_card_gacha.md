@@ -51,6 +51,7 @@ ${comment_thumbnail_ocr_context}
 - Always reply to comments in top-to-bottom order.
 - Reply length should fit the request; do not add filler to meet a sentence minimum. Preserve explicit category-specific guidance below.
 - All replies, including replies to English comments, MUST use Japanese polite style (です・ます) in this generation stage. English translations are produced separately after the Japanese reply is complete.
+- Avoid over-polite forms (でございます / でございまして / ております). Use ordinary です・ます (e.g. 〜でございます → 〜です); ありがとうございます is fine.
 - Do not use markdown or symbols. Plain text only.
 - No preamble or supplemental explanation needed. Output only the comment reply body.
 

@@ -26,6 +26,12 @@ def _queue_dispatch(g) -> bool:
 
 TERMINAL_IMPROVEMENT_STATUSES = frozenset({
     "promoted", "kept", "improved", "dry-run", "skipped", "ab-staged",
+    # A policy rejection is a terminal attempt: ninvaders.improve logs it to
+    # history.jsonl and the bridge only records completed_at once the try has
+    # ended. Leaving it out wedges interval-mode rotation on
+    # "other-corner-needs-finish-or-recovery" until an operator edits state
+    # (2026-11-15 production incident, ninvaders policy-invalid).
+    "rejected",
 })
 
 
@@ -480,6 +486,7 @@ class RetiredCornerObserver:
         "puyo": "puyo_program.json",
         "mystery": "mystery_corner.json",
         "lawsim": "lawsim_corner.json",
+        "chart": "chart_corner_659_runtime.json",
         "trpg": "trpg_corner_state.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
@@ -911,6 +918,9 @@ class MysteryCornerAdapter:
             return False
         return self.manager.reconcile_failed_start(request_id)
 
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
     def resources_released(self):
         return self.manager.resources_released()
 
@@ -960,6 +970,53 @@ class LawSimCornerAdapter:
     def resources_released(self):
         return self.manager.resources_released()
 
+
+class ChartCornerAdapter:
+    """Bounded チャート解説コーナー display through the shared slot.
+
+    The content is generated fail-closed by the program adapter before the
+    switch commits. Speech is an opt-in via audio_enabled (future narration).
+    """
+
+    def __init__(self, g, corner):
+        from .chart_corner_runtime import DEFAULT_DURATION_MINUTES, ChartCornerManager
+        from .chart_view import VIEW_NAME
+
+        if corner.game != VIEW_NAME or corner.live_eligible is not False:
+            raise CornerExecutionError("Chart identity/safety contract mismatch")
+        if type(corner.audio_enabled) is not bool:
+            raise CornerExecutionError("Chart corner requires a boolean audio_enabled")
+        self.audio_enabled = corner.audio_enabled
+        self.g, self.corner = g, corner
+        self.manager = ChartCornerManager(
+            g,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -973,6 +1030,7 @@ ADAPTERS = {
     "trpg": TrpgCornerAdapter,
     "mystery": MysteryCornerAdapter,
     "lawsim": LawSimCornerAdapter,
+    "chart": ChartCornerAdapter,
 }
 
 

@@ -47,7 +47,9 @@ Observed sources (all read-only):
     paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
-    trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
+    trading/paper_strategy_evaluation.json, trading/paper_improve_slots_status.json,
+    trading/slots/<BASE>_<QUOTE>/{slot,paper_experiment_control,
+    paper_strategy_evaluation}.json): lifecycle statuses, timestamps,
     counters and finite PAPER result totals only. Strategy identity, rules,
     announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
@@ -154,7 +156,9 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.stream_identity import is_docich_runner_args as _is_docich_stream_runner  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
+from docich.hanjuku.state.regions import plan as _plan_region  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
 
@@ -221,7 +225,18 @@ _HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
 # the production envelope stays above the ceiling the 予想王 ledger can only be
 # observed from a run that happened to fit. ``prediction`` duplicates the same
 # already-bounded dicts under a key the whole-section drops never take away.
-_HARD_KEEP = ("meta", "prediction", "lawsim")
+_HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers")
+# Fixed tokens that let a reduced ``hanjuku_tactical`` section still say why
+# its detail is missing (live status otherwise collapses every cause into
+# ``output_omitted``: g1163 2026-11-14 13:38 could not tell a stopped game
+# loop from a bot that had not written its record).
+_HANJUKU_DETAIL_STATUSES = frozenset({
+    "ok", "stale", "unavailable", "unsupported_chapter", "identity_changed",
+})
+_HANJUKU_DETAIL_REASONS = frozenset({
+    "record_not_ready", "record_unbound", "identity_mismatch", "terminal",
+    "unsupported_policy", "record_stale",
+})
 # Production thresholds of the 予想王 boards, kept in sync with
 # ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
 # ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
@@ -283,6 +298,30 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+# File-stage retention status projection (azumag/docich#3140). The helper
+# writes only these fixed fields; anything else is dropped, so a compromised
+# or future status file can never widen the diagnostics payload.
+SESSION_FILE_STATUS_SCHEMA = 1
+SESSION_FILE_MAX_AGE_SEC = 3 * 60 * 60
+SESSION_FILE_ENUMS = {
+    "status": {"completed", "failed", "gate_timeout"},
+    "mode": {"dry-run", "apply"},
+    "reason": {
+        "ok", "gate_timeout", "invalid_batch", "invalid_gate_wait",
+        "invalid_mode", "state_required", "manifest_required",
+        "state_in_store", "manifest_in_store", "state_unreadable",
+        "state_invalid", "state_policy_mismatch", "state_write",
+        "manifest_invalid", "manifest_write", "plan_mismatch",
+        "source_changed", "unsafe_entry", "tree_scan", "tree_scan_limit",
+        "top_scan_limit", "io_error",
+    },
+}
+SESSION_FILE_NUMBERS = (
+    "completed_at", "cutoff_seconds", "entries_planned",
+    "entries_confirmed", "entries_selected", "bytes_planned",
+    "bytes_removed",
+)
+SESSION_FILE_BOOLEANS = ("auto_apply", "truncated", "state_written")
 # Fixed on-disk formats of the strategy permanent archive (by_hash). "plain" is
 # what the soviet_now readers open today; "compressed" is what a reviewed
 # reclaim step may produce once every reader can fall back to it. Bounded
@@ -519,6 +558,32 @@ def _storage_base_result():
         "symlink_entries": 0,
         "hardlink_duplicates": 0,
     }
+
+
+def _storage_remaining_usage(total, parts):
+    """Derived remainder of disjoint fixed parts of one measured tree.
+
+    ``parts`` must be non-overlapping children (or the db family at the root)
+    of ``total``. The result is clamped at zero so a scan that lost entries
+    cannot manufacture negative bytes. Completeness is true only when the
+    total and every part completed, so the caller can tell a real zero from a
+    partial scan.
+    """
+    complete = isinstance(total, dict) and total.get("scan_complete") is True
+    remaining = _storage_base_result()
+    remaining["present"] = bool(isinstance(total, dict) and total.get("present"))
+    count = int(total.get("count", 0)) if isinstance(total, dict) else 0
+    allocated = int(total.get("allocated_bytes", 0)) if isinstance(total, dict) else 0
+    for part in parts:
+        if not isinstance(part, dict) or part.get("scan_complete") is not True:
+            complete = False
+            continue
+        count -= int(part.get("count", part.get("present_count", 0)) or 0)
+        allocated -= int(part.get("allocated_bytes", 0) or 0)
+    remaining["scan_complete"] = complete
+    remaining["count"] = max(0, count)
+    remaining["allocated_bytes"] = max(0, allocated)
+    return remaining
 
 
 def _storage_tree_usage(path, *, max_entries=STORAGE_MAX_ENTRIES):
@@ -1054,6 +1119,51 @@ def _sweep_sys_tmp_reclaim_candidates(
     return result
 
 
+def _collect_opencode_session_file(soren, now):
+    """Project the file-stage status file with fixed fields only.
+
+    The helper writes ``tmp/state/opencode_session_file_retention.json`` with
+    enums and non-negative integers only (never plan paths or content). A
+    missing/old/foreign file degrades to ``present``/``readable`` booleans, so
+    an old collector or a pre-deploy VM stays complete.
+    """
+    path = Path(soren) / "tmp" / "state" / "opencode_session_file_retention.json"
+    result = {"present": False, "readable": False}
+    try:
+        st = path.lstat()
+        result["present"] = True
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > 4096:
+            return result
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                raise ValueError()
+            data = json.loads(handle.read(4097))
+        if not isinstance(data, dict) or data.get("schema") != SESSION_FILE_STATUS_SCHEMA:
+            return result
+        result["readable"] = True
+        for key, allowed in SESSION_FILE_ENUMS.items():
+            value = data.get(key)
+            if isinstance(value, str):
+                result[key] = value if value in allowed else "unknown"
+        for key in SESSION_FILE_NUMBERS:
+            value = data.get(key)
+            if type(value) is int and 0 <= value < 2**63:
+                result[key] = value
+        for key in SESSION_FILE_BOOLEANS:
+            value = data.get(key)
+            if type(value) is bool:
+                result[key] = value
+        stamp = result.get("completed_at")
+        if stamp is not None:
+            result["age_sec"] = max(0, int(now - stamp))
+            result["stale"] = stamp > now + 60 or now - stamp > SESSION_FILE_MAX_AGE_SEC
+    except (OSError, ValueError):
+        pass
+    return result
+
+
 def _collect_storage_breakdown(
     soren,
     prod_root,
@@ -1089,31 +1199,46 @@ def _collect_storage_breakdown(
     swap_file = Path(swap_file)
     default_db = home / ".local" / "share" / "opencode" / "opencode.db"
     worker_db = soren / "tmp" / "state" / "xdg_data" / "opencode" / "opencode.db"
+    default_total = _storage_tree_usage(default_db.parent, max_entries=max_entries)
+    default_family = _storage_db_family(default_db)
+    default_snapshot = _storage_tree_usage(
+        default_db.parent / "snapshot", max_entries=max_entries
+    )
+    default_storage = _storage_tree_usage(
+        default_db.parent / "storage", max_entries=max_entries
+    )
+    default_tool_output = _storage_tree_usage(
+        default_db.parent / "tool-output", max_entries=max_entries
+    )
+    default_log = _storage_tree_usage(
+        default_db.parent / "log", max_entries=max_entries
+    )
 
     return {
         "version": 2,
         "categories_overlap": True,
         "max_entries_per_tree": int(max_entries),
-        "opencode_default": _storage_db_family(default_db),
+        "opencode_default": default_family,
         "opencode_worker": _storage_db_family(worker_db),
-        "opencode_default_total": _storage_tree_usage(default_db.parent, max_entries=max_entries),
+        "opencode_default_total": default_total,
         "opencode_worker_total": _storage_tree_usage(worker_db.parent, max_entries=max_entries),
         # Subtrees of the opencode default data dir (azumag/docich#3140): the
         # session-file store outside opencode.db, split per fixed sub-path so
         # the retention baseline attributes growth without SSH. Same opt-in
         # shape as the gateway_state subtrees (optional keys, never charged
         # to the shared incomplete flag).
-        "opencode_default_snapshot": _storage_tree_usage(
-            default_db.parent / "snapshot", max_entries=max_entries
-        ),
-        "opencode_default_storage": _storage_tree_usage(
-            default_db.parent / "storage", max_entries=max_entries
-        ),
-        "opencode_default_tool_output": _storage_tree_usage(
-            default_db.parent / "tool-output", max_entries=max_entries
-        ),
-        "opencode_default_log": _storage_tree_usage(
-            default_db.parent / "log", max_entries=max_entries
+        "opencode_default_snapshot": default_snapshot,
+        "opencode_default_storage": default_storage,
+        "opencode_default_tool_output": default_tool_output,
+        "opencode_default_log": default_log,
+        # Derived remainder (DSH review, azumag/docich#3140): total minus the
+        # known subtrees and the db family. It makes a new opencode data-dir
+        # sub-path visible before an upgrade silently grows it, and is a
+        # precondition for enabling automatic file retention.
+        "opencode_default_other": _storage_remaining_usage(
+            default_total,
+            (default_family, default_snapshot, default_storage,
+             default_tool_output, default_log),
         ),
         "soren_logs": _storage_tree_usage(soren / "logs", max_entries=max_entries),
         "soren_tmp": _storage_tree_usage(soren / "tmp", max_entries=max_entries),
@@ -1797,6 +1922,16 @@ CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
 CPU_PROFILE_MAX_BYTES = 32768
 CPU_PROFILE_MAX_COMPONENTS = 30
 CPU_PROFILE_MAX_SPAWNS = 30
+CPU_PROFILE_MAX_TELEMETRY = 8
+CPU_PROFILE_TELEMETRY_COUNTERS = (
+    "cycles", "awaits", "observes", "decides", "acts", "waits",
+    "actions_completed", "hotload_publish_failures",
+    "captures", "capture_spawns", "brain_spawns",
+)
+CPU_PROFILE_TELEMETRY_TIMERS = (
+    "fence_lock_s", "observe_s", "decide_s", "act_s", "hotload_publish_s",
+    "capture_s",
+)
 # Output-pressure caps. The producer already orders both lists busiest-first,
 # so only the tail is dropped, and the omitted counts stay visible.
 CPU_PROFILE_BUDGET_COMPONENTS = 10
@@ -1871,6 +2006,13 @@ def _cpu_profile_label(value):
 
 def _cpu_profile_comm_label(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", value):
+        return None
+    return value
+
+
+def _cpu_profile_safe_label(value):
+    """Fixed-shape label for telemetry game/brain names (no paths/argv)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
         return None
     return value
 
@@ -1990,6 +2132,41 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
                 continue
             spawns.append({"component": component, "spawner": spawner, "count": int(count)})
 
+    telemetry = []
+    raw_telemetry = data.get("telemetry")
+    if isinstance(raw_telemetry, dict):
+        raw_snapshots = raw_telemetry.get("snapshots")
+        if isinstance(raw_snapshots, list):
+            for item in raw_snapshots[:CPU_PROFILE_MAX_TELEMETRY]:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                if role not in ("agent", "corner"):
+                    continue
+                game = _cpu_profile_safe_label(item.get("game"))
+                brain = _cpu_profile_safe_label(item.get("brain"))
+                if game is None or brain is None:
+                    continue
+                row = {"role": role, "game": game, "brain": brain,
+                       "counters": {}, "seconds": {}}
+                counters = item.get("counters")
+                if isinstance(counters, dict):
+                    for key in CPU_PROFILE_TELEMETRY_COUNTERS:
+                        value = _cpu_profile_number(counters.get(key), maximum=10**9)
+                        if value is not None:
+                            row["counters"][key] = int(value)
+                seconds = item.get("seconds")
+                if isinstance(seconds, dict):
+                    for key in CPU_PROFILE_TELEMETRY_TIMERS:
+                        value = _cpu_profile_number(seconds.get(key), maximum=10**6)
+                        if value is not None:
+                            row["seconds"][key] = value
+                written_at = _cpu_profile_number(item.get("written_at"),
+                                                maximum=253402300799)
+                if written_at is not None:
+                    row["written_at"] = int(written_at)
+                telemetry.append(row)
+
     # Compact summary that survives output pressure: even when the per-row
     # lists are trimmed to nothing, the top CPU consumers and spawn paths stay
     # visible (azumag/docich#970). The byte size is not a fixed cap: in the
@@ -2060,6 +2237,7 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "cpu_top": cpu_top,
         "spawn_top": spawn_top,
         "other_top": other_top,
+        "telemetry": telemetry,
     }
 
 
@@ -2574,19 +2752,33 @@ def _browser_owner_label(argv):
         return None
     joined = "\0".join(argv)
     exe = os.path.basename(argv[0])
+    normalized = joined.lower().replace("-", "_")
     if ("shared_overlay.mjs" in joined
             or "start_shared_overlay_service.sh" in joined
-            or "soren-shared-overlay" in joined):
+            or "soren-shared-overlay" in joined
+            or "shared_overlay" in normalized
+            or "soren_shared_overlay" in normalized):
         return "soren-shared-overlay"
-    if "soviet_local" in joined:
+    if ("soviet_local" in joined
+            or "soviet_local" in normalized
+            or "soren_game" in normalized
+            or "soren-game" in joined
+            or "soren game" in joined.lower()):
         return "soren-game"
-    if "twica" in joined:
+    if "twica" in normalized:
         return "twica"
-    if "nethack_tiles" in joined:
+    if ("nethack_tiles" in normalized
+            or "nethack-tiles" in joined
+            or "nethack tiles" in joined.lower()):
         return "nethack-tiles"
-    if exe in {"obs", "obs-studio", "obs-browser-page"} or "obs-browser" in joined:
+    if (exe in {"obs", "obs-studio", "obs-browser-page", "obs64"}
+            or "obs_browser" in normalized
+            or "obs-browser" in joined
+            or "obs browser" in joined.lower()):
         return "obs"
-    if "docich-webui" in joined or "webui" in joined:
+    if ("docich_webui" in normalized
+            or "docich-webui" in joined
+            or "webui" in normalized):
         return "webui"
     return None
 
@@ -2622,7 +2814,7 @@ def _browser_owner_for_pid(proc_root, pid, stat, cmdlines):
     # Ancestors win over the Chromium process' own argv: a URL in the page
     # arguments must not re-label a browser launched by a known subsystem.
     current = stat["ppid"]
-    for _ in range(6):
+    for _ in range(10):
         if current <= 1:
             break
         argv = cmdlines.get(current)
@@ -5433,6 +5625,131 @@ def _collect_tracked_drift(root):
     return classify_tracked_drift(scan_complete, parent_dirty, submodule_drift)
 
 
+# The direct broadcast template (next-corner card, rails) is served either from
+# the docich production checkout or from the Soren runtime copy, depending on
+# SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE. A deploy that changes the docich
+# file can therefore leave the live rails on the old template (#4284/#4289).
+# This read-only probe reports, per fixed candidate, the bounded identity and
+# the next-corner font sizes so the served file is observable without exposing
+# file contents, paths or the override value.
+BROADCAST_TEMPLATE_REL = "overlays/direct_broadcast_overlay.html"
+BROADCAST_TEMPLATE_MAX_BYTES = 8 * 1024 * 1024
+BROADCAST_TEMPLATE_ENV_KEYS = (
+    "SOREN_STREAM_BACKEND",
+    "SOREN_DIRECT_STAGE_LAYOUT",
+    "SOREN_DIRECT_OVERLAY_ENABLED",
+    "SOREN_DIRECT_BROADCAST_OVERLAY_ENABLED",
+    "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE",
+)
+
+
+def _env_file_value(path, key):
+    """Read one ``KEY=value`` from an env file without sourcing it."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line.startswith(key + "="):
+            continue
+        value = line.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value
+    return None
+
+
+def _broadcast_template_probe(path, now):
+    result = {"present": False}
+    try:
+        info = path.stat()
+    except OSError:
+        return result
+    # stat() may succeed while the follow-up metadata checks still fail on a
+    # protected production checkout; keep diagnostics best-effort (PR #4307
+    # found the same residual path after the v883 collector guard).
+    try:
+        if path.is_symlink() or not path.is_file():
+            return result
+    except OSError:
+        return result
+    result["present"] = True
+    result["size"] = info.st_size
+    result["mtime_age_sec"] = max(0, int(now - info.st_mtime))
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(BROADCAST_TEMPLATE_MAX_BYTES)
+    except OSError:
+        result["readable"] = False
+        return result
+    result["readable"] = True
+    result["sha256_16"] = hashlib.sha256(data).hexdigest()[:16]
+    result["has_next_corner_card"] = b'id="next-corner"' in data
+    for label in ("label", "when"):
+        match = re.search(
+            rb"\.next-corner-" + label.encode() + rb"\s*\{[^}]*font-size:\s*([0-9.]+)px",
+            data,
+        )
+        result[f"next_corner_{label}_font_px"] = (
+            float(match.group(1)) if match else None
+        )
+    return result
+
+
+def _safe_is_file(path):
+    """is_file() that treats an unreadable parent as absent.
+
+    The diagnostics collector always probes the production docich path; on a
+    runner where /home/ubuntu exists but is not readable, Path.is_file()
+    raises PermissionError and crashed every collector test (security-
+    regressions on PRs, 2026-11-15).
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _collect_broadcast_template(soren, docich_root=None, now=None):
+    """Fixed-category view of the resolved broadcast template identity."""
+    soren = Path(soren)
+    docich_root = Path(docich_root) if docich_root is not None else Path("/home/ubuntu/docich")
+    now = time.time() if now is None else now
+    env = {}
+    for key in BROADCAST_TEMPLATE_ENV_KEYS:
+        value = _env_file_value(soren / ".env", key)
+        # Only the template path is classified below; never emit its value.
+        env[key] = value if key != "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE" else None
+    override = _env_file_value(soren / ".env", "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE") or ""
+    override = override.strip()
+    docich_template = docich_root / BROADCAST_TEMPLATE_REL
+    soren_template = soren / BROADCAST_TEMPLATE_REL
+    if override:
+        if override == BROADCAST_TEMPLATE_REL:
+            resolved = "override-soren-relative"
+        elif Path(override).is_absolute() and Path(override) == docich_template:
+            resolved = "override-docich-absolute"
+        else:
+            resolved = "override-other"
+    elif _safe_is_file(docich_template):
+        resolved = "docich"
+    else:
+        resolved = "soren-fallback"
+    return {
+        "backend": env.get("SOREN_STREAM_BACKEND"),
+        "layout": env.get("SOREN_DIRECT_STAGE_LAYOUT"),
+        "overlay_enabled": env.get("SOREN_DIRECT_OVERLAY_ENABLED"),
+        "broadcast_enabled": env.get("SOREN_DIRECT_BROADCAST_OVERLAY_ENABLED"),
+        "override_present": bool(override),
+        "resolved_source": resolved,
+        "docich_template": _broadcast_template_probe(docich_template, now),
+        "soren_template": _broadcast_template_probe(soren_template, now),
+    }
+
+
 # Corner/program state filenames under the docich production state_dir. These
 # are the only files read by _collect_programs; announcement/script bodies are
 # deliberately never surfaced (statuses, timestamps and counters only).
@@ -5451,6 +5768,7 @@ CORNER_STATE_FILES = {
     "nethack_corner": "nethack_corner.json",
     "nethack_corner_manual": "nethack_corner_manual.json",
     "soren91_corner": "soren91_corner.json",
+    "chart": "chart_corner_659_runtime.json",
 }
 
 # Fixed enum of the switch result a corner recorded in its own state file.
@@ -5551,12 +5869,35 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
     "execution-or-state-unverified",
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
 })
 ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
+# Bounded terminal-phase plane recovery replayed by the rotation timer
+# (#4349).  Keep in sync with docich.corner_rotation.
+ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT = 3
+ROTATION_AUTO_PLANE_RECOVERY_STATUSES = ROTATION_AUTO_RESTORE_STATUSES | frozenset({
+    "busy", "rolled_back",
+})
 ROTATION_FAILED_CORNER_MAX = 8
+# A corner whose own state file is already terminal while game-switch still
+# holds its game as the canonical active owner is an operator action item,
+# not an overlay rendering bug: the shared card correctly reports the corner
+# as unavailable, and only diagnostics can say why the game stayed (#4226).
+# The reason comes only from the fixed failed_corners vocabulary; an
+# unexplained retention falls back to the fixed generic token.
+CORNER_RETAINED_TERMINAL_STATUSES = frozenset({
+    "idle", "completed", "interrupted", "expired", "failed",
+})
+CORNER_RETAINED_REASONS = ROTATION_FAILED_CORNER_REASONS | frozenset({
+    "corner-terminal-game-retained",
+})
 
 WEATHER_CORNER_STATUSES = frozenset({
     "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
@@ -5889,6 +6230,55 @@ def _rotation_evidence_file(state_dir, relative):
         return True, False, None
 
 
+def _chart_corner_projection(state_dir, state):
+    """Read chart corner runtime state and project only status/time/end_reason/runtime ownership.
+
+    Projects exactly: status, started_at, completed_at, end_reason, runtime_identity (game only).
+    Never emits: generated manuscript, secrets, payload bodies, or arbitrary runtime fields.
+    """
+    if not isinstance(state, dict):
+        return {
+            "status": "unknown",
+            "started_at": None,
+            "completed_at": None,
+            "end_reason": None,
+            "runtime_identity": None,
+        }
+
+    # Status - bounded status string
+    status = state.get("status")
+    if status not in frozenset({"idle", "ready", "starting", "active", "restoring",
+                                 "preparing", "recovery_required", "failed",
+                                 "completed", "interrupted", "expired", "running",
+                                 "promoted", "kept", "improved", "dry-run", "skipped",
+                                 "ab-staged"}):
+        status = "unknown"
+
+    # Runtime identity - only game field, never secrets or manuscript
+    identity = state.get("chart_runtime_identity") if isinstance(state.get("chart_runtime_identity"), dict) else None
+    runtime_game = identity.get("game") if identity and isinstance(identity.get("game"), str) and identity["game"] else None
+
+    # Time fields - use _rotation_time for consistent formatting
+    started_at = _rotation_time(state.get("started_at"))
+    completed_at = _rotation_time(state.get("completed_at"))
+
+    # End reason - only allow known values, unknown otherwise
+    end_reason = state.get("end_reason")
+    if end_reason not in frozenset({"duration", "manual", "switch-terminal-before-corner-active",
+                                      "released-failure-before-retry", "operator-moved-after-start",
+                                      "operator-moved-during-chart", "operator-moved-before-restore",
+                                      "operator-stopped-before-start", "unknown", None}):
+        end_reason = "unknown"
+
+    return {
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "end_reason": end_reason,
+        "runtime_identity": runtime_game,
+    }
+
+
 def _rotation_enum(value, allowed):
     return value if isinstance(value, str) and value in allowed else "unknown"
 
@@ -6187,12 +6577,97 @@ def _collect_audio_queue(soren, now):
     }
 
 
+def _collect_prediction_round(root, now, boundary_completed):
+    """Progress of the Soren prediction round that holds the corner boundary.
+
+    A contested prediction runs for the advertised 48 games, which can take
+    hours, while the boundary file only carries ``completed_at``. Without the
+    round's own counters an operator cannot tell "still counting" from
+    "completed but the settlement never reached the boundary", and a corner
+    that waits at the boundary looks stuck. Only fixed counters, enums and
+    ages are emitted; the prediction id and outcome ids stay private.
+    """
+    path = root / "current_prediction.json"
+    present, readable, data = _load_state_file(path)
+    if not present:
+        # No prediction round is running: emit no subsection at all so the
+        # envelope is byte-identical to the pre-#4719 shape and cannot push
+        # another section over the diagnostics budget.
+        return None
+    retry_present, retry_readable, retry = _load_state_file(
+        root / "prediction_retry" / "resolve.json"
+    )
+    retry_next = _finite_number(retry.get("next_retry_at")) if retry_readable else None
+    http_code = retry.get("http_code") if retry_readable else None
+    fence = root / "regression_check_in_progress"
+    entry = {
+        "present": present,
+        "readable": readable,
+        "round_version": None,
+        "games_completed": None,
+        "max_games": None,
+        "remaining_games": None,
+        "target_first_game": None,
+        "last_game_num": None,
+        "created_age_sec": -1,
+        "progress_age_sec": _file_age_sec(path, now),
+        "fence_present": fence.is_file(),
+        "fence_age_sec": _file_age_sec(fence, now),
+        "retry": {
+            "present": retry_present,
+            "readable": retry_readable,
+            "attempt": _bounded_int(retry.get("attempt")) if retry_readable else None,
+            "next_retry_at": int(retry_next) if retry_next is not None else None,
+            "retry_active": (retry_next is not None and retry_next > now),
+            "http_code": (str(http_code)[:16] if http_code is not None else None),
+        },
+        "complete": None,
+        "settlement_pending": None,
+        "settlement_pending_sec": None,
+    }
+    if not readable:
+        return entry
+
+    def _counter(key, limit=1_000_000):
+        value = _bounded_int(data.get(key))
+        return value if value is not None and 0 <= value <= limit else None
+
+    version = _counter("round_version", 99)
+    completed = _counter("games_completed")
+    maximum = _counter("max_games")
+    entry.update(
+        round_version=version,
+        games_completed=completed,
+        max_games=maximum,
+        remaining_games=(max(0, maximum - completed)
+                         if completed is not None and maximum is not None else None),
+        target_first_game=_counter("target_first_game"),
+        last_game_num=_counter("last_game_num"),
+        created_age_sec=_bounded_age(data.get("created_at"), now),
+    )
+    if completed is not None and maximum is not None and maximum > 0 and completed >= maximum:
+        entry["complete"] = True
+        try:
+            wrote_at = path.stat().st_mtime
+        except OSError:
+            wrote_at = None
+        if wrote_at is not None:
+            pending = boundary_completed is None or boundary_completed < wrote_at
+            entry["settlement_pending"] = bool(pending)
+            if pending:
+                entry["settlement_pending_sec"] = max(0, int(now - wrote_at))
+    elif completed is not None and maximum is not None:
+        entry["complete"] = False
+    return entry
+
+
 def _collect_boundary(root, now):
     """Freshness of the confirmed cycle boundaries the corners gate on.
 
     The boundary is published in the Soren state dir (see
-    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). Only the
-    completion timestamp and its age are surfaced.
+    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). The
+    completion timestamp and its age are surfaced, plus the prediction round's
+    own progress so a long contest can be told apart from a stalled settlement.
     """
     result = {}
     for kind in ("improvement", "prediction"):
@@ -6204,6 +6679,11 @@ def _collect_boundary(root, now):
             "completed_at": completed,
             "age_sec": int(now - completed) if completed is not None else -1,
         }
+    round_state = _collect_prediction_round(
+        root, now, result["prediction"]["completed_at"]
+    )
+    if round_state is not None:
+        result["prediction"]["round"] = round_state
     # root is <soren>/tmp/state, so the Soren root is two levels up.
     result["audio"] = _collect_audio_queue(root.parent.parent, now)
     return result
@@ -6486,7 +6966,18 @@ def _project_corner_state(data):
                            "audio-complete",
                            "operator-moved-after-start",
                            "operator-moved-before-restore",
-                           "operator-stopped-before-start"} else None),
+                           "operator-stopped-before-start",
+                           # #3174: the admission gate expires a hanjuku start
+                           # whose remaining budget cannot cover drain+probe;
+                           # without this entry the refusal would project as
+                           # null and be indistinguishable from an
+                           # unregistered reason.
+                           "start-budget-insufficient",
+                           # #3174 follow-up: the queued-start expiry writes
+                           # this reason when the slot deadline itself has
+                           # elapsed; it predates the admission gate but was
+                           # never allowlisted and would project as null.
+                           "start-deadline-expired"} else None),
         "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
@@ -6551,6 +7042,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v276-chapter-three-relays",
             "hanjuku-chart-v277-nav-motion-continuity",
             "hanjuku-chart-v278-chapter-three-boss-cell",
+            "hanjuku-chart-v279-jump-foreground-retry",
             "hanjuku-chart-v280-approx-fallback-source-chapters",
             "hanjuku-chart-v281-probe-empty-relay",
             "hanjuku-chart-v282-world-map-sea-cursor",
@@ -6621,6 +7113,956 @@ def _project_corner_state(data):
             "hanjuku-chart-v356-status-reads-only-changes",
             "hanjuku-chart-v357-cards-wear-down",
             "hanjuku-chart-v358-mechanical-conquest",
+            "hanjuku-chart-v359-okunote-spent-egg-summon",
+            "hanjuku-chart-v360-batch-recruit-no-rescan",
+            "hanjuku-chart-v361-jump-foreground-retry",
+            "hanjuku-chart-v362-summon-okunote-scroll",
+            "hanjuku-chart-v363-summon-unconfirmed-scroll",
+            "hanjuku-chart-v365-okunote-committed-menu",
+            "hanjuku-chart-v366-okunote-parent-resend",
+            "hanjuku-chart-v367-okunote-committed-select",
+            "hanjuku-chart-v368-merchant-exit-log",
+            "hanjuku-chart-v369-house-entry-retry",
+            "hanjuku-chart-v370-move-overdue-settle",
+            "hanjuku-chart-v371-probe-moved-into-castle",
+            "hanjuku-chart-v372-plan-step-identity",
+            "hanjuku-chart-v373-launch-marker-probe",
+            "hanjuku-chart-v374-cheap-vendor-pass",
+            "hanjuku-chart-v375-closing-text-advance",
+            "hanjuku-chart-v376-plan-spare-reservation",
+            "hanjuku-chart-v377-plan-exhausted-interim",
+            "hanjuku-chart-v378-fort-menu-handover",
+            "hanjuku-chart-v379-garrison-rotation",
+            "hanjuku-chart-v380-fort-nearest-castle",
+            "hanjuku-chart-v381-strong-card-first",
+            "hanjuku-chart-v382-boss-wave-double",
+            "hanjuku-chart-v383-boss-step-rearm",
+            "hanjuku-chart-v384-boss-damage-cards",
+            "hanjuku-chart-v385-boss-wave-past-stalled-retake",
+            "hanjuku-chart-v386-ch6-world-map-grey-sea",
+            "hanjuku-chart-v387-cards-open-proactively",
+            "hanjuku-chart-v388-ch6-slate-enemy-castle",
+            "hanjuku-chart-v389-recall-picker-fallback-egg-margin",
+            "hanjuku-chart-v390-launch-roster-evidence",
+            "hanjuku-chart-v391-country-status-after-recruit",
+            "hanjuku-chart-v392-ch6-march-arrival",
+            "hanjuku-chart-v393-recall-picker-axis-alternate",
+            "hanjuku-chart-v394-merchant-recruit-reserve",
+            "hanjuku-chart-v395-ch6-boss-cell",
+            "hanjuku-chart-v396-recall-picker-cycle",
+            "hanjuku-chart-v397-picker-visit-budget",
+            "hanjuku-chart-v398-decision-record-dedupe",
+            "hanjuku-chart-v399-house-idle-escape",
+            "hanjuku-chart-v400-dedupe-json-signature",
+            "hanjuku-chart-v401-boss-march-window",
+            "hanjuku-chart-v402-boss-cell-evidence",
+            "hanjuku-chart-v403-boss-cell-probe",
+            "hanjuku-chart-v404-boss-probe-rotation",
+            "hanjuku-chart-v405-plan-purpose",
+            "hanjuku-chart-v406-plan-stale",
+            "hanjuku-chart-v407-boss-wave-solo",
+            "hanjuku-chart-v408-order-start-backoff",
+            "hanjuku-chart-v409-stale-plan-once",
+            "hanjuku-chart-v410-boss-marker-confirm",
+            "hanjuku-chart-v411-stale-record-once",
+            "hanjuku-chart-v412-stale-tally",
+            "hanjuku-chart-v413-plan-readopt",
+            "hanjuku-chart-v414-stale-active",
+            "hanjuku-chart-v415-retry-suppress",
+            "hanjuku-chart-v416-source-content-key",
+            "hanjuku-chart-v417-source-mismatch",
+            "hanjuku-chart-v418-giveup-fallback",
+            "hanjuku-chart-v419-giveup-probe",
+            "hanjuku-chart-v420-code-probe",
+            "hanjuku-chart-v421-fallback-tally",
+            "hanjuku-chart-v422-miss-reset",
+            "hanjuku-chart-v423-giveup-gate",
+            "hanjuku-chart-v424-stale-yjump",
+            "hanjuku-chart-v425-yjump-active-only",
+            "hanjuku-chart-v426-yjump-budget",
+            "hanjuku-chart-v427-yjump-budget-hard",
+            "hanjuku-chart-v428-unknown-hold",
+            "hanjuku-chart-v429-select-centered",
+            "hanjuku-chart-v430-cursor-still",
+            "hanjuku-chart-v431-cursor-still-6",
+            "hanjuku-chart-v432-nav-continuity",
+            "hanjuku-chart-v433-map-no-cursor",
+            "hanjuku-chart-v434-y-jump-block-lapses",
+            "hanjuku-chart-v435-nav-last-seed",
+            "hanjuku-chart-v436-stationary-budget-retry",
+            "hanjuku-chart-v438-brain-exit-location",
+            "hanjuku-chart-v439-drive-after-recenter",
+            "hanjuku-chart-v440-mixed-key-state",
+            "hanjuku-chart-v441-recall-skip-per-camp",
+            "hanjuku-chart-v442-friendly-entry-after-long-march",
+            "hanjuku-chart-v443-card-select-hand-left-edge",
+            "hanjuku-chart-v444-boss-probe-rotation-key",
+            "hanjuku-chart-v445-boss-march-plan-window",
+            "hanjuku-chart-v446-boss-launch-kept",
+            "hanjuku-chart-v447-surplus-card-buy",
+            "hanjuku-chart-v448-boss-priority-moves",
+            "hanjuku-chart-v449-boss-probe-shift",
+            "hanjuku-chart-v450-boss-approx-cells",
+            "hanjuku-chart-v451-boss-wave-volume",
+            "hanjuku-chart-v452-lampkin-boss-forms",
+            "hanjuku-chart-v453-boss-probe-source",
+            "hanjuku-chart-v454-spent-sortie-expiry",
+            "hanjuku-chart-v455-forget-defeated-unknown",
+            "hanjuku-chart-v456-sortie-outcome",
+            "hanjuku-chart-v457-boss-first-waves",
+            "hanjuku-chart-v458-zombie-sortie-expiry",
+            "hanjuku-chart-v459-post-month-status",
+            "hanjuku-chart-v460-release-clears-sortie",
+            "hanjuku-chart-v461-zombie-hard-expiry",
+            "hanjuku-chart-v462-castle-jump",
+            "hanjuku-chart-v463-post-month-marker",
+            "hanjuku-chart-v464-locate-status-panel",
+            "hanjuku-chart-v465-dialogue-yield",
+            "hanjuku-chart-v466-castle-select-occluded-roof",
+            "hanjuku-chart-v467-observed-march-end",
+            "hanjuku-chart-v468-live-march-refresh",
+            "hanjuku-chart-v469-boss-wave-nearest",
+            "hanjuku-chart-v470-boss-wave-egg-rank",
+            "hanjuku-chart-v471-boss-entry-no-return",
+            "hanjuku-chart-v472-boss-hp-note",
+            "hanjuku-chart-v473-house-entry-own-cell",
+            "hanjuku-chart-v474-concert-text-advance",
+            "hanjuku-chart-v475-event-text-advance",
+            "hanjuku-chart-v476-house-entry-verified",
+            "hanjuku-chart-v477-recall-interruption",
+            "hanjuku-chart-v478-recruit-wage-headroom",
+            "hanjuku-chart-v479-summon-monster-hp-9999",
+            "hanjuku-chart-v480-recruit-partial-roster",
+            "hanjuku-chart-v481-recruit-partial-gate",
+            "hanjuku-chart-v482-recruit-partial-cash",
+            "hanjuku-chart-v483-no-empty-castle",
+            "hanjuku-chart-v484-recruit-month-count-carry",
+            "hanjuku-chart-v485-recruit-garrison-lower-bound",
+            "hanjuku-chart-v486-reanchor-resume",
+            "hanjuku-chart-v487-shop-holding-limit",
+            "hanjuku-chart-v488-card-hold-cap",
+            "hanjuku-chart-v489-post-month-stray-menu",
+            "hanjuku-chart-v490-reanchor-owner-resume",
+            "hanjuku-chart-v491-post-month-battle-resume",
+            "hanjuku-chart-v492-align-stall",
+            "hanjuku-chart-v493-concert-trade-guard",
+            "hanjuku-chart-v494-move-honors-plan-general",
+            "hanjuku-chart-v495-sortie-stops-at-named-general",
+            "hanjuku-chart-v496-align-limit-2",
+            "hanjuku-chart-v497-castle-jump-hand-blink",
+            "hanjuku-chart-v498-month-locate-ownership",
+            "hanjuku-chart-v499-semantic-hold-key",
+            "hanjuku-chart-v500-boss-roster-probe",
+            "hanjuku-chart-v505-post-month-blocked-release",
+            "hanjuku-chart-v506-roster-end-stall",
+            "hanjuku-chart-v507-trade-result-release",
+            "hanjuku-chart-v508-unknown-location-recheck",
+            "hanjuku-chart-v509-month-status-counts-and-recruit-priority",
+            "hanjuku-chart-v510-broken-boss-camp-recall",
+            "hanjuku-chart-v511-month-status-single-read-and-counts",
+            "hanjuku-chart-v512-month-status-page1-marker",
+            "hanjuku-chart-v513-chapter-end-save-party",
+            "hanjuku-chart-v514-plan-failed-step-rearm",
+            "hanjuku-chart-v515-plan-identity-compare",
+            "hanjuku-chart-v516-singleton-roster-probe",
+            "hanjuku-chart-v517-summon-attack-data",
+            "hanjuku-chart-v518-input-tempo",
+            "hanjuku-chart-v519-carry-manifest",
+            "hanjuku-chart-v520-recall-task-retry",
+            "hanjuku-chart-v521-powerless-return",
+            "hanjuku-chart-v522-hero-not-planned",
+            "hanjuku-chart-v523-manifest-json-state",
+            "hanjuku-chart-v524-menu-cursor-feedback",
+            "hanjuku-chart-v525-card-scroll-catalogue",
+            "hanjuku-chart-v526-completed-season-sites",
+            "hanjuku-chart-v527-season-site-markers",
+            "hanjuku-chart-v528-season-site-terrain",
+            "hanjuku-chart-v529-site-step-rearm",
+            "hanjuku-chart-v530-chapter-scope-clear",
+            "hanjuku-chart-v531-endgame-boss-probes",
+            "hanjuku-chart-v532-hero-guard-preflight",
+            "hanjuku-chart-v534-probe-preflight-exemption",
+            "hanjuku-chart-v535-adjust-part-salvage",
+            "hanjuku-chart-v536-moving-boss-y-view",
+            "hanjuku-chart-v537-launch-marker-size",
+            "hanjuku-chart-v538-y-view-boss-cell",
+            "hanjuku-chart-v539-boss-cell-diagnostics",
+            "hanjuku-chart-v540-strongest-attacker",
+            "hanjuku-chart-v541-chapter-scope-hygiene",
+            "hanjuku-chart-v542-empty-garrison-read",
+            "hanjuku-chart-v543-capped-card-skip",
+            "hanjuku-chart-v544-boss-probe-fine-ring",
+            "hanjuku-chart-v545-boss-probe-diagnostics",
+            "hanjuku-chart-v546-boss-probe-diagonal",
+            "hanjuku-chart-v547-static-roster-marker",
+            "hanjuku-chart-v548-house-read-reuse",
+            "hanjuku-chart-v549-march-rate",
+            "hanjuku-chart-v550-post-month-diagnostics",
+            "hanjuku-chart-v551-card-scroll-hold",
+            "hanjuku-chart-v552-card-scroll-taps",
+            "hanjuku-chart-v554-post-month-result-fix",
+            "hanjuku-chart-v555-boss-phantom-step",
+            "hanjuku-chart-v556-ch6-boss-cell-up",
+            "hanjuku-chart-v557-battle-unknown-advance",
+            "hanjuku-chart-v558-boss-wave-egg-first",
+            "hanjuku-chart-v559-boss-panel-entry-bind",
+            "hanjuku-chart-v562-boss-egg-unusable",
+            "hanjuku-chart-v563-boss-egg-row-log",
+            "hanjuku-chart-v564-ch6-boss-cell-revert",
+            "hanjuku-chart-v565-boss-probe-scope",
+            "hanjuku-chart-v566-live-status-region",
+            "hanjuku-chart-v567-current-hp-sortie",
+            "hanjuku-chart-v568-ch9-corridor",
+            "hanjuku-chart-v569-general-label",
+            "hanjuku-chart-v570-minimap-port",
+            "hanjuku-chart-v571-march-blocked-settle",
+            "hanjuku-chart-v572-gap-region-read",
+            "hanjuku-chart-v573-ch9-hero-retreat-only",
+            "hanjuku-chart-v576-defense-loss-record",
+            "hanjuku-chart-v577-post-month-clean-reuse",
+            "hanjuku-chart-v578-post-month-clean-reuse",
+            "hanjuku-chart-v579-month-elapsed",
+            "hanjuku-chart-v580-roster-end-assumed",
+            "hanjuku-chart-v581-launch-probe-window",
+            "hanjuku-chart-v582-loss-garrison-known",
+            "hanjuku-chart-v583-unread-garrison-reinforce",
+            "hanjuku-chart-v574-castle-cursor-feedback",
+            "hanjuku-chart-v577-status-open-feedback",
+            "hanjuku-chart-v584-map-cursor-alignment",
+            "hanjuku-chart-v585-boss-hp-history",
+            "hanjuku-chart-v586-probe-actor-token",
+            "hanjuku-chart-v587-boss-hurtless-wave",
+            "hanjuku-chart-v588-monster-all-attack",
+            "hanjuku-chart-v589-monster-menu-identity",
+            "hanjuku-chart-v590-marker-hint",
+            "hanjuku-chart-v591-slot-egg-stop",
+            "hanjuku-chart-v592-garrison-deficit-first",
+            "hanjuku-chart-v593-empty-castle-staffing",
+            "hanjuku-chart-v594-plan-superseded",
+            "hanjuku-chart-v595-probe-dash",
+            "hanjuku-chart-v596-marker-reason",
+            "hanjuku-chart-v597-march-rate-default",
+            "hanjuku-chart-v598-marker-fallback-cause",
+            "hanjuku-chart-v599-marker-window",
+            "hanjuku-chart-v600-marker-tolerance-hint",
+            "hanjuku-chart-v601-rare-scan-jump",
+            "hanjuku-chart-v602-actor-name-guard",
+            "hanjuku-chart-v603-actor-ocr-slip",
+            "hanjuku-chart-v604-unreadable-name-slip",
+            "hanjuku-chart-v605-actor-slip-crash",
+            "hanjuku-chart-v606-short-name-slip",
+            "hanjuku-chart-v608-card-skip-departure",
+            "hanjuku-chart-v609-substitute-nonboss",
+            "hanjuku-chart-v610-confirm-blind-approve",
+            "hanjuku-chart-v611-confirm-double-a",
+            "hanjuku-chart-v612-hold-text-yield",
+            "hanjuku-chart-v613-card-name-table",
+            "hanjuku-chart-v614-rare-rewind-batch",
+            "hanjuku-chart-v615-jump-across-replan",
+            "hanjuku-chart-v616-jump-any-actor",
+            "hanjuku-chart-v617-jump-survives-replan",
+            "hanjuku-chart-v618-jump-orphan-hold",
+            "hanjuku-chart-v619-jump-unresolved-hold",
+            "hanjuku-chart-v620-wave-nearest-source",
+            "hanjuku-chart-v621-card-note-tolerant",
+            "hanjuku-chart-v622-kit-hold-shape",
+            "hanjuku-chart-v623-periodic-savestate",
+            "hanjuku-chart-v624-card-list-escape",
+            "hanjuku-chart-v625-ordinary-card-escape",
+            "hanjuku-chart-v626-confirm-unreadable-short",
+            "hanjuku-chart-v627-wave-strongest",
+            "hanjuku-chart-v628-wave-six",
+            "hanjuku-chart-v629-native-pixels",
+            "hanjuku-chart-v630-aspect-restored",
+            "hanjuku-chart-v632-clear-terminal-cli",
+            "hanjuku-chart-v633-okunote-exhausted-latch",
+            "hanjuku-chart-v634-okunote-exhausted-confirm",
+            "hanjuku-chart-v635-blind-confirm-top-row",
+            "hanjuku-chart-v636-empty-egg-card-fallback",
+            "hanjuku-chart-v637-rescue-exhausted-fallthrough",
+            "hanjuku-chart-v638-brain-autosave",
+            "hanjuku-chart-v639-autosave-on-observe",
+            "hanjuku-chart-v640-autosave-port",
+            "hanjuku-chart-v642-game-over-grace",
+            "hanjuku-chart-v643-cleared-stamp-kept",
+            "hanjuku-chart-v644-chapter-running-memory",
+            "hanjuku-chart-v645-dual-decode",
+            "hanjuku-chart-v646-chapterless-status-probe",
+            "hanjuku-chart-v647-card-batch-feedback",
+            "hanjuku-chart-v648-hero-castle-select-jump",
+            "hanjuku-chart-v649-road-defeat-settles",
+            "hanjuku-chart-v651-roster-marker-over-scroll-arrow",
+            "hanjuku-chart-v652-visible-castle-batch",
+            "hanjuku-chart-v654-sortie-retry-budget",
+            "hanjuku-chart-v655-repair-panel-sprite",
+            "hanjuku-chart-v656-target-close-settle",
+            "hanjuku-chart-v657-ch9-y-cursor",
+            "hanjuku-chart-v658-post-month-target-picker",
+            "hanjuku-chart-v659-manifest-wait-release",
+            "hanjuku-chart-v660-ch9-road-waves",
+            "hanjuku-chart-v661-ch9-front-staging",
+            "hanjuku-chart-v662-sortie-retry-deferral",
+            "hanjuku-chart-v663-ch9-all-forward",
+            "hanjuku-chart-v664-camp-recall-first",
+            "hanjuku-chart-v665-ch9-cursor-order-sortie",
+            "hanjuku-chart-v666-ch9-retake-waves",
+            "hanjuku-chart-v667-castle-status-not-list",
+            "hanjuku-chart-v668-ch9-mechanical-march",
+            "hanjuku-chart-v669-ch9-listed-is-present",
+            "hanjuku-chart-v670-status-check-on-list-kind",
+            "hanjuku-chart-v671-ch9-squads",
+            "hanjuku-chart-v672-okunote-candidate-close",
+            "hanjuku-chart-v673-hold-and-chapter",
+            "hanjuku-chart-v674-ch9-squad-not-reserved",
+            "hanjuku-chart-v675-state-budget",
+            "hanjuku-chart-v676-state-budget-bytes",
+            "hanjuku-chart-v677-drained-on-arrival",
+            "hanjuku-chart-v678-status-labels-not-generals",
+            "hanjuku-chart-v679-garrison-sanitized",
+            "hanjuku-chart-v680-location-unknown-ttl",
+            "hanjuku-chart-v681-month-sub-abandon",
+            "hanjuku-chart-v682-expire-on-observe",
+            "hanjuku-chart-v683-drained-recheck-inflight",
+            "hanjuku-chart-v684-hero-post-behind-front",
+            "hanjuku-chart-v685-drained-probe",
+            "hanjuku-chart-v686-present-generals-kinds",
+            "hanjuku-chart-v687-attack-company",
+            "hanjuku-chart-v688-settled-marches-pruned",
+            "hanjuku-chart-v689-stale-orders-retired",
+            "hanjuku-chart-v690-trade-song-tildes",
+            "hanjuku-chart-v691-tolerable-display-reads",
+            "hanjuku-chart-v693-recall-resume-after-scene",
+            "hanjuku-chart-v694-battle-menu-hold-escape",
+            "hanjuku-chart-v695-menu-hold-escape-kinds",
+            "hanjuku-chart-v696-menu-hold-blink",
+            "hanjuku-chart-v697-drained-across-months",
+            "hanjuku-chart-v698-drained-probe-rotates",
+            "hanjuku-chart-v699-yjump-unreachable-goal",
+            "hanjuku-chart-v700-owner-change-values",
+            "hanjuku-chart-v701-corridor-kit-approve",
+            "hanjuku-chart-v702-flip-prone-company",
+            "hanjuku-chart-v703-partial-page-residents",
+            "hanjuku-chart-v704-drained-min-hold",
+            "hanjuku-chart-v705-partial-page-candidates",
+            "hanjuku-chart-v705-owner-confirm-twice",
+            "hanjuku-chart-v706-company-deadline",
+            "hanjuku-chart-v707-partial-page-candidates",
+            "hanjuku-chart-v707-probe-budget",
+            "hanjuku-chart-v708-hero-move-refused",
+            "hanjuku-chart-v709-partial-page-candidates",
+            "hanjuku-chart-v710-idle-probe",
+            "hanjuku-chart-v711-march-no-refill",
+            "hanjuku-chart-v712-partial-launch-settle",
+            "hanjuku-chart-v713-idle-probe-spacing",
+            "hanjuku-chart-v714-stale-attempt-ttl",
+            "hanjuku-chart-v715-idle-tour-kept",
+            "hanjuku-chart-v716-wait-for-company",
+            "hanjuku-chart-v717-attack-defeat-cooldown",
+            "hanjuku-chart-v718-road-defeat-ledger",
+            "hanjuku-chart-v719-strongest-attacker",
+            "hanjuku-chart-v720-attack-hero-row",
+            "hanjuku-chart-v721-march-skips-chikujou",
+            "hanjuku-chart-v722-wounded-attacker",
+            "hanjuku-chart-v723-status-close-tempo",
+            "hanjuku-chart-v724-front-guard",
+            "hanjuku-chart-v725-attack-underpowered",
+            "hanjuku-chart-v726-egg-retry",
+            "hanjuku-chart-v727-wave-attacks",
+            "hanjuku-chart-v728-overdue-retention",
+            "hanjuku-chart-v729-capture-guard",
+            "hanjuku-chart-v730-wave-keeps-probe-away",
+            "hanjuku-chart-v731-idle-probe-reuse",
+            "hanjuku-chart-v732-wave-first",
+            "hanjuku-chart-v733-thin-front-refill",
+            "hanjuku-chart-v734-front-guard",
+            "hanjuku-chart-v735-front-guard-timeout",
+            "hanjuku-chart-v736-idle-step-stale",
+            "hanjuku-chart-v737-hero-mark-yield",
+            "hanjuku-chart-v738-plain-text-hold",
+            "hanjuku-chart-v739-repeat-hold-shorter",
+            "hanjuku-chart-v740-idle-tour-back",
+            "hanjuku-chart-v741-jump-verifies-source",
+            "hanjuku-chart-v742-flip-keep-two",
+            "hanjuku-chart-v743-capture-keep-two",
+            "hanjuku-chart-v744-wounded-front",
+            "hanjuku-chart-v745-healthy-mover",
+            "hanjuku-chart-v746-fresh-recruit-forward",
+            "hanjuku-chart-v747-whole-general-leads",
+            "hanjuku-chart-v748-finish-the-defender",
+            "hanjuku-chart-v749-front-two-can-attack",
+            "hanjuku-chart-v750-defender-hp",
+            "hanjuku-chart-v751-panel-finish",
+            "hanjuku-chart-v752-retake-not-held",
+            "hanjuku-chart-v753-battle-menu-soldiers",
+            "hanjuku-chart-v754-okunote-only-box",
+            "hanjuku-chart-v755-plan-step-map-budget",
+            "hanjuku-chart-v756-ch9-empty-front-probe-reuse",
+            "hanjuku-chart-v757-front-mass-wait",
+            "hanjuku-chart-v758-probe-rearm-names",
+            "hanjuku-chart-v759-retake-pair-wait",
+            "hanjuku-chart-v760-destination-roster-probe",
+            "hanjuku-chart-v761-due-probe-budget",
+            "hanjuku-chart-v762-strongest-full-hp-leader",
+            "hanjuku-chart-v763-owner-veto-order",
+            "hanjuku-chart-v764-owned-target-settle",
+            "hanjuku-chart-v765-defended-front-keep",
+            "hanjuku-chart-v766-partial-tick-order",
+            "hanjuku-chart-v767-finish-20",
+            "hanjuku-chart-v768-own-target-marker",
+            "hanjuku-chart-v769-guard-expiry-sticky",
+            "hanjuku-chart-v770-flag-owner-confirm",
+            "hanjuku-chart-v771-keep-defender",
+            "hanjuku-chart-v772-recall-roster-due",
+            "hanjuku-chart-v773-roster-due-ttl",
+            "hanjuku-chart-v774-recall-read-delay",
+            "hanjuku-chart-v775-capture-roster-read",
+            "hanjuku-chart-v776-mass-hold-reset",
+            "hanjuku-chart-v777-partial-on-move",
+            "hanjuku-chart-v778-mass-retract-active",
+            "hanjuku-chart-v779-front-hold-reinforcements",
+            "hanjuku-chart-v780-receipt-during-wave",
+            "hanjuku-chart-v781-defended-last-resident",
+            "hanjuku-chart-v782-last-resort-stall",
+            "hanjuku-chart-v783-front-marks-clean",
+            "hanjuku-chart-v784-partial-move-update",
+            "hanjuku-chart-v785-empty-front-reset",
+            "hanjuku-chart-v786-hold-consistency",
+            "hanjuku-chart-v787-panel-finish-precedence",
+            "hanjuku-chart-v788-battle-start-defense-seen",
+            "hanjuku-chart-v789-step-id-collision",
+            "hanjuku-chart-v790-defense-seen-clean",
+            "hanjuku-chart-v791-finish-pending-shopping",
+            "hanjuku-chart-v792-lost-castle-page",
+            "hanjuku-chart-v793-recruit-roster-due",
+            "hanjuku-chart-v794-nonowned-page-clean",
+            "hanjuku-chart-v795-camp-world-anchor",
+            "hanjuku-chart-v796-camp-loss-record",
+            "hanjuku-chart-v797-recruit-at-cap",
+            "hanjuku-chart-v798-camp-occluded-tolerance",
+            "hanjuku-chart-v799-camp-enter-record",
+            "hanjuku-chart-v800-scene-abandon-record",
+            "hanjuku-chart-v801-interrupt-record",
+            "hanjuku-chart-v802-month-defer-recall",
+            "hanjuku-chart-v803-month-default-estimate",
+            "hanjuku-chart-v804-month-margin",
+            "hanjuku-chart-v805-camp-timing-record",
+            "hanjuku-chart-v806-recall-month-priority",
+            "hanjuku-chart-v807-recall-roof-goal",
+            "hanjuku-chart-v808-camp-origin-record",
+            "hanjuku-chart-v809-interrupt-month-estimate",
+            "hanjuku-chart-v810-camp-hunt-log",
+            "hanjuku-chart-v811-hunt-timing",
+            "hanjuku-chart-v812-jump-camps",
+            "hanjuku-chart-v813-jump-camp-priority",
+            "hanjuku-chart-v814-jump-camp-skip",
+            "hanjuku-chart-v815-recall-battle-log",
+            "hanjuku-chart-v816-hunt-origin",
+            "hanjuku-chart-v817-camp-cursor-cell",
+            "hanjuku-chart-v818-hunt-roof-detail",
+            "hanjuku-chart-v819-picker-progress",
+            "hanjuku-chart-v820-roof-support",
+            "hanjuku-chart-v821-hunt-chart-cells",
+            "hanjuku-chart-v822-picker-own",
+            "hanjuku-chart-v823-hunt-chart-all",
+            "hanjuku-chart-v824-picker-fallback-nearby",
+            "hanjuku-chart-v825-picker-hero",
+            "hanjuku-chart-v826-hero-status-goal",
+            "hanjuku-chart-v827-picker-hero-status",
+            "hanjuku-chart-v828-picker-hero-read",
+            "hanjuku-chart-v829-picker-fallback-home",
+            "hanjuku-chart-v830-picker-month-timing",
+            "hanjuku-chart-v831-picker-no-goal-confirm",
+            "hanjuku-chart-v832-retired-step-context",
+            "hanjuku-chart-v833-picker-cpu-rollback",
+            "hanjuku-chart-v834-picker-restored",
+            "hanjuku-chart-v835-map-unsteerable-nudge",
+            "hanjuku-chart-v836-camp-dest-yjump",
+            "hanjuku-chart-v837-run-bot-version-live",
+            "hanjuku-chart-v838-boss-camp-remarch",
+            "hanjuku-chart-v839-recall-hp-priority",
+            "hanjuku-chart-v840-roster-count-mismatch",
+            "hanjuku-chart-v841-map-blind-advance",
+            "hanjuku-chart-v842-visible-general-batch",
+            "hanjuku-chart-v843-soldier-quantity-feedback",
+            "hanjuku-chart-v844-hero-post-advance",
+            "hanjuku-chart-v845-map-roof-feedback",
+            "hanjuku-chart-v846-ch9-direct-resupply",
+            "hanjuku-chart-v847-world-survey-reuse",
+            "hanjuku-chart-v848-month-event-release",
+            "hanjuku-chart-v849-map-terrain-phases",
+            "hanjuku-chart-v850-discharge-border-row",
+            "hanjuku-chart-v851-world-map-quantized",
+            "hanjuku-chart-v853-camp-colour-quantized",
+            "hanjuku-chart-v854-duel-hp-decline",
+            "hanjuku-chart-v855-camp-cliff-goal",
+            "hanjuku-chart-v856-omedetori-menu-latch",
+            "hanjuku-chart-v857-duel-always-accept",
+            "hanjuku-chart-v858-ch9-carried-cards",
+            "hanjuku-chart-v859-plain-battle-menu",
+            "hanjuku-chart-v860-plain-battle-fade",
+            "hanjuku-chart-v861-version-transient-migrate",
+            "hanjuku-chart-v863-load-screen",
+            "hanjuku-chart-v864-camp-body-retry",
+            "hanjuku-chart-v865-ch9-chikujou",
+            "hanjuku-chart-v866-hero-post-priority",
+            "hanjuku-chart-v867-clipped-dome",
+            "hanjuku-chart-v868-picker-recover",
+            "hanjuku-chart-v869-carried-cards-actor",
+            "hanjuku-chart-v870-capture-guard-two",
+            "hanjuku-chart-v871-battle-panel-tint",
+            "hanjuku-chart-v872-battle-menu-hold",
+            "hanjuku-chart-v873-orphan-command",
+            "hanjuku-chart-v877-fight-to-the-end",
+            "hanjuku-chart-v878-menu-close-b",
+            "hanjuku-chart-v879-camp-recall-picker",
+            "hanjuku-chart-v880-ch9-red-eye-boss",
+            "hanjuku-chart-v881-camp-approach",
+            "hanjuku-chart-v882-camp-menu-jump-retry",
+            "hanjuku-chart-v883-castle-list-chapter",
+            "hanjuku-chart-v884-boss-field-recall",
+            "hanjuku-chart-v885-boss-home-recall-guard",
+            "hanjuku-chart-v886-occluded-camp-probe",
+            "hanjuku-chart-v887-occluded-camp-any",
+            "hanjuku-chart-v888-camp-edge-scroll",
+            "hanjuku-chart-v889-occluded-fort-pass",
+            "hanjuku-chart-v890-camp-revisit",
+            "hanjuku-chart-v891-chikujou-staff",
+            "hanjuku-chart-v892-camp-gather",
+            "hanjuku-chart-v895-shop-reenter-closed",
+            "hanjuku-chart-v893-castle-check-current",
+            "hanjuku-chart-v896-gather-marker-concert",
+            "hanjuku-chart-v898-capture-reset",
+            "hanjuku-chart-v899-recall-corridor",
+            "hanjuku-chart-v900-cliff-detour",
+            "hanjuku-chart-v901-battle-fact-winner",
+            "hanjuku-chart-v902-tmux-persistent-session",
+            "hanjuku-chart-v905-retiring-dead-dismiss",
+            "hanjuku-chart-v903-boss-gather-moves",
+            "hanjuku-chart-v904-boss-gather-no-cell",
+            "hanjuku-chart-v906-gather-nearest-first",
+            "hanjuku-chart-v907-camp-home-return",
+            "hanjuku-chart-v908-blocked-reads",
+            "hanjuku-chart-v909-field-recall-off",
+            "hanjuku-chart-v910-boss-source-last",
+            "hanjuku-chart-v911-boss-two-generals",
+            "hanjuku-chart-v912-boss-no-unplaced",
+            "hanjuku-chart-v914-corridor-boss-two",
+            "hanjuku-chart-v915-yjump-digest",
+            "hanjuku-chart-v916-gather-last-hop",
+            "hanjuku-chart-v917-neighbour-no-yjump",
+            "hanjuku-chart-v918-boss-home-detour",
+            "hanjuku-chart-v919-boss-ide-north-house",
+            "hanjuku-chart-v920-castle-scroll-wait",
+            "hanjuku-chart-v921-waypoint-cell",
+            "hanjuku-chart-v922-title-continue",
+            "hanjuku-chart-v923-chapter-from-yview",
+            "hanjuku-chart-v924-month-blind-nav",
+            "hanjuku-chart-v925-month-hint-guard",
+            "hanjuku-chart-v926-yview-anchor",
+            "hanjuku-chart-v927-month-blind-wide",
+            "hanjuku-chart-v928-month-blind-target",
+            "hanjuku-chart-v929-month-blind-wait",
+            "hanjuku-chart-v930-month-amount-back",
+            "hanjuku-chart-v931-amount-quantity",
+            "hanjuku-chart-v932-target-cell-accept",
+            "hanjuku-chart-v933-cell-accept-action",
+            "hanjuku-chart-v934-concert-b-total-cap",
+            "hanjuku-chart-v935-concert-phase-budget",
+            "hanjuku-chart-v936-cliff-detour-rearm",
+            "hanjuku-chart-v937-fraction-clamp",
+            "hanjuku-chart-v938-cliff-escape-move",
+            "hanjuku-chart-v939-front-roster-stale",
+            "hanjuku-chart-v940-portrait-march-kept",
+            "hanjuku-chart-v941-cliff-escape-fort-565",
+            "hanjuku-chart-v942-target-cell-evidence",
+            "hanjuku-chart-v943-battle-menu-fallback-b",
+            "hanjuku-chart-v944-ch9-retreat-menu-loop",
+            "hanjuku-chart-v910-egg-drop-dedupe",
+            "hanjuku-chart-v908-switch-rollback",
+            "hanjuku-chart-v907-castle-jump-scroll",
+            "hanjuku-chart-v909-castle-jump-scroll",
+            "hanjuku-chart-v945-ch9-merge-main",
+            "hanjuku-chart-v946-ch9-merge-fixes",
+            "hanjuku-chart-v947-cliff-detour-sticky",
+            "hanjuku-chart-v948-clipped-roof-confirm",
+            "hanjuku-chart-v949-yjump-rough-then-tune",
+            "hanjuku-chart-v950-corridor-one-hop",
+            "hanjuku-chart-v951-yjump-goldg-only",
+            "hanjuku-chart-v952-ch9-merge",
+            "hanjuku-chart-v953-cliff-detour-cap",
+            "hanjuku-chart-v954-reprobe-cooldown",
+            "hanjuku-chart-v954-castle-shapes",
+            "hanjuku-chart-v955-stale-attempt-claim",
+            "hanjuku-chart-v957-boss-waypoint",
+            "hanjuku-chart-v958-boss-waypoint-north",
+            "hanjuku-chart-v959-boss-pocket-entry",
+            "hanjuku-chart-v960-boss-waypoint-yjump",
+            "hanjuku-chart-v961-boss-redirect-leg",
+            "hanjuku-chart-v962-roster-walk-cap",
+            "hanjuku-chart-v963-interim-retire",
+            "hanjuku-chart-v964-waypoint-west",
+            "hanjuku-chart-v965-waypoint-right-heart",
+            "hanjuku-chart-v966-waypoint-grass-row",
+            "hanjuku-chart-v967-waypoint-east",
+            "hanjuku-chart-v968-waypoint-ne-field",
+            "hanjuku-chart-v969-boss-pursuit",
+            "hanjuku-chart-v970-second-leg",
+            "hanjuku-chart-v971-second-leg-wave",
+            "hanjuku-chart-v972-pursuit-gate",
+            "hanjuku-chart-v973-month-nav",
+            "hanjuku-chart-v974-pursuit-month-gate",
+            "hanjuku-chart-v975-merchant-confirm",
+            "hanjuku-chart-v976-merchant-blind",
+            "hanjuku-chart-v977-cards-released",
+            "hanjuku-chart-v978-cursor-corner",
+            "hanjuku-chart-v979-merchant-skip",
+            "hanjuku-chart-v980-blindexit",
+            "hanjuku-chart-v981-cursor-allwin",
+            "hanjuku-chart-v986-pursuit-yjump",
+            "hanjuku-chart-v987-pursuit-fort",
+            "hanjuku-chart-v988-wave-camped",
+            "hanjuku-chart-v989-first-leg-forced",
+            "hanjuku-chart-v990-pursuit-north-gate",
+            "hanjuku-chart-v991-pursuit-own-skull",
+            "hanjuku-chart-v992-pursuit-redirect-log",
+            "hanjuku-chart-v993-boss-wave-eggless",
+            "hanjuku-chart-v994-review-fixes",
+            "hanjuku-chart-v995-egg-count-kept",
+            "hanjuku-chart-v996-house-bookkeeping-reverted",
+            "hanjuku-chart-v997-hero-alone-guard",
+            "hanjuku-chart-v998-egg-observation-memory",
+            "hanjuku-chart-v999-castle-label-width",
+            "hanjuku-chart-v1000-title-continue-guided",
+            "hanjuku-chart-v1002-recall-interrupt-budget",
+            "hanjuku-chart-v1003-roster-resident",
+            "hanjuku-chart-v1004-ch11-gateway",
+            "hanjuku-chart-v1005-hub-gather",
+            "hanjuku-chart-v1006-hub-gather-rate",
+            "hanjuku-chart-v1007-picker-goal-bind",
+            "hanjuku-chart-v1008-recall-yields-sortie",
+            "hanjuku-chart-v1009-attack-min-hp",
+            "hanjuku-chart-v1010-recall-same-side",
+            "hanjuku-chart-v1011-recall-side-flags",
+            "hanjuku-chart-v1012-camp-row-stale",
+            "hanjuku-chart-v1013-recall-goal-retry",
+            "hanjuku-chart-v1014-goal-retry-flags",
+            "hanjuku-chart-v1015-recall-to-hub",
+            "hanjuku-chart-v1016-hub-retake-order",
+            "hanjuku-chart-v1017-revert-hub-recall",
+            "hanjuku-chart-v1018-recall-side-source",
+            "hanjuku-chart-v1019-target-cursor-tempo",
+            "hanjuku-chart-v1020-recall-picker-cycle",
+            "hanjuku-chart-v1021-recall-picker-feedback",
+            "hanjuku-chart-v1022-plan-invalid-source",
+            "hanjuku-chart-v1023-hub-guard",
+            "hanjuku-chart-v1024-staging-first",
+            "hanjuku-chart-v1025-stage-rate",
+            "hanjuku-chart-v1026-recall-from-target",
+            "hanjuku-chart-v1027-launch-evidence",
+            "hanjuku-chart-v1028-move-dedup",
+            "hanjuku-chart-v1029-phantom-camp",
+            "hanjuku-chart-v1030-revert-phantom-camp",
+            "hanjuku-chart-v1031-hub-recall-default",
+            "hanjuku-chart-v1032-gather-all-hub",
+            "hanjuku-chart-v1033-hero-to-hub",
+            "hanjuku-chart-v1034-fine-yjump",
+            "hanjuku-chart-v1035-blue-g-cursor",
+            "hanjuku-chart-v1036-hero-flag",
+            "hanjuku-chart-v1037-hero-alone",
+            "hanjuku-chart-v1039-picker-hold",
+            "hanjuku-chart-v1040-plan-drop-foreign",
+            "hanjuku-chart-v1044-recall-picker-tempo",
+            "hanjuku-chart-v1046-back-half-relay",
+            "hanjuku-chart-v1101-level-visit-count",
+            "hanjuku-chart-v1102-level-visit-count",
+            "hanjuku-chart-v1103-relay-from-picker",
+            "hanjuku-chart-v1104-relay-menu-grace",
+            "hanjuku-chart-v1105-relay-picker-hold",
+            "hanjuku-chart-v1106-relay-vs-recheck",
+            "hanjuku-chart-v1107-quote-decline",
+            "hanjuku-chart-v1108-phase-a-escape",
+            "hanjuku-chart-v1109-recheck-backoff",
+            "hanjuku-chart-v1110-relay-road",
+            "hanjuku-chart-v1111-concert-b",
+            "hanjuku-chart-v1112-hub-roof",
+            "hanjuku-chart-v1113-recruit-shortage",
+            "hanjuku-chart-v1114-army-recheck",
+            "hanjuku-chart-v1115-boss-moved-reaim",
+            "hanjuku-chart-v1116-boss-relaunch-free",
+            "hanjuku-chart-v1117-hero-hub-move",
+            "hanjuku-chart-v1118-boss-chase-camp",
+            "hanjuku-chart-v1119-password-entry",
+            "hanjuku-chart-v1120-boss-near-gate",
+            "hanjuku-chart-v1121-summer-bonus-choice",
+            "hanjuku-chart-v1122-boss-measure-gated",
+            "hanjuku-chart-v1123-boss-gate-revert",
+            "hanjuku-chart-v1124-quantity-confirm",
+            "hanjuku-chart-v1130-road-defeat-settle",
+            "hanjuku-chart-v1140-plan-starve-rearm",
+            "hanjuku-chart-v1141-chikujou-prompt",
+            "hanjuku-chart-v1142-chikujou-prompt",
+            "hanjuku-chart-v1143-mainmenu-roster",
+            "hanjuku-chart-v1131-dead-general-order",
+            "hanjuku-chart-v1132-dead-general-order",
+            "hanjuku-chart-v1133-plan-starve-rearm",
+            "hanjuku-chart-v1125-camp-boss-wave",
+            "hanjuku-chart-v1131-camp-open-field",
+            "hanjuku-chart-v1133-camp-revisit-aimed",
+            "hanjuku-chart-v1141-corridor-revisit",
+            "hanjuku-chart-v1144-general-jump",
+            "hanjuku-chart-v1145-general-self-jump",
+            "hanjuku-chart-v1146-general-jump-map",
+            "hanjuku-chart-v1147-battle-menu-empty-hold",
+            "hanjuku-chart-v1148-reanchor-backoff",
+            "hanjuku-chart-v1149-house-scan-month",
+            "hanjuku-chart-v1150-yview-anchor",
+            "hanjuku-chart-v1155-launch-probe-world",
+            "hanjuku-chart-v1151-goal-expiry",
+            "hanjuku-chart-v1152-order-hold-tally",
+            "hanjuku-chart-v1153-unverified-launch",
+            "hanjuku-chart-v1154-launch-probe-world",
+            "hanjuku-chart-v1156-password-sweep",
+            "hanjuku-chart-v1157-discharge-removal-skip",
+            "hanjuku-chart-v1158-sortie-month-floor",
+            "hanjuku-chart-v1159-dead-plan-rearm",
+            "hanjuku-chart-v1159-battle-retreat",
+            "hanjuku-chart-v1160-frontier-multi-fill",
+            "hanjuku-chart-v1161-frontier-multi-fill",
+            "hanjuku-chart-v1162-unstartable-plan-rearm",
+            "hanjuku-chart-v1163-resolved-source-gate",
+            "hanjuku-chart-v1164-integration",
+            "hanjuku-chart-v1165-yesno-accept-settle",
+            "hanjuku-chart-v1166-shop-exit-unowned",
+            "hanjuku-chart-v1165-battle-card-selection",
+            "hanjuku-chart-v1167-battle-card-selection",
+            "hanjuku-chart-v1168-open-menu-retry",
+            "hanjuku-chart-v1169-menu-blind-nav",
+            "hanjuku-chart-v1170-menu-ownership",
+            "hanjuku-chart-v1171-jump-menu-wait",
+            "hanjuku-chart-v1172-jump-field-unstable",
+            "hanjuku-chart-v1173-jump-hud-gate",
+            "hanjuku-chart-v1174-revert-hud-gate",
+            "hanjuku-chart-v1175-menu-fail-y-route",
+            "hanjuku-chart-v1176-scan-menu-walk",
+            "hanjuku-chart-v1177-scan-menu-priority",
+            "hanjuku-chart-v1178-scan-menu-override",
+            "hanjuku-chart-v1179-attack-hp-floor",
+            "hanjuku-chart-v1180-scan-retry-visits",
+            "hanjuku-chart-v1181-scan-open-giveup",
+            "hanjuku-chart-v1169-hub-reinforce-near",
+            "hanjuku-chart-v1182-hub-reinforce",
+            "hanjuku-chart-v1183-card-row-walk",
+            "hanjuku-chart-v1184-stuck-recall",
+            "hanjuku-chart-v1185-scan-open-backoff",
+            "hanjuku-chart-v1186-orphan-active",
+            "hanjuku-chart-v1187-scan-giveup-early",
+            "hanjuku-chart-v1188-army-floor",
+            "hanjuku-chart-v1189-roster-label",
+            "hanjuku-chart-v1190-scan-skip-five",
+            "hanjuku-chart-v1191-stock-cards",
+            "hanjuku-chart-v1192-hand-row-offset",
+            "hanjuku-chart-v1193-recruit-stuck",
+            "hanjuku-chart-v1194-home-probe",
+            "hanjuku-chart-v1195-probe-ready",
+            "hanjuku-chart-v1196-probe-first",
+            "hanjuku-chart-v1197-panel-owner",
+            "hanjuku-chart-v1199-recall-y-fallback",
+            "hanjuku-chart-v1200-picker-progress",
+            "hanjuku-chart-v1202-unknown-hold-4",
+            "hanjuku-chart-v1203-card-hp-evidence",
+            "hanjuku-chart-v1203-relay-menu-guard",
+            "hanjuku-chart-v1204-frontier-probe",
+            "hanjuku-chart-v1205-boss-reinforce",
+            "hanjuku-chart-v1205-relay-menu-guard",
+            "hanjuku-chart-v1206-card-delayed-confirm",
+            "hanjuku-chart-v1207-relay-menu-guard",
+            "hanjuku-chart-v1208-enroute-call",
+            "hanjuku-chart-v1209-own-castle-x-only",
+            "hanjuku-chart-v1209-relay-menu-guard",
+            "hanjuku-chart-v1210-y-anchor-cap",
+            "hanjuku-chart-v1211-general-reselect",
+            "hanjuku-chart-v1212-stale-plan-rebuild",
+            "hanjuku-chart-v1212-relay-menu-guard",
+            "hanjuku-chart-v1213-bounded-deploy-hold",
+            "hanjuku-chart-v1214-camp-recall-y",
+            "hanjuku-chart-v1214-relay-menu-guard",
+            "hanjuku-chart-v1215-monster-no-damage",
+            "hanjuku-chart-v1215-relay-menu-guard",
+            "hanjuku-chart-v1216-castle-jump-abandon",
+            "hanjuku-chart-v1217-castle-jump-center",
+            "hanjuku-chart-v1218-soldier-topup",
+            "hanjuku-chart-v1220-stable-interim-step",
+            "hanjuku-chart-v1220",
+            "hanjuku-chart-v1221-interim-step-rid",
+            "hanjuku-chart-v1222-y-anchor-24",
+            "hanjuku-chart-v1223-recall-y-all",
+            "hanjuku-chart-v1223",
+            "hanjuku-chart-v1224",
+            "hanjuku-chart-v1225",
+            "hanjuku-chart-v1226-stall-return",
+            "hanjuku-chart-v1198-stuck-roster-probe",
+            "hanjuku-chart-v1227-roster-probe",
+            "hanjuku-chart-v1228-month-menu-release",
+            "hanjuku-chart-v1229-house-roof-match",
+            "hanjuku-chart-v1230-marker-diag",
+            "hanjuku-chart-v1231-house-entry-door",
+            "hanjuku-chart-v1232-xmenu-close-guard",
+            "hanjuku-chart-v1233-ch9-skull-hold",
+            "hanjuku-chart-v1234-gjump-diag-text",
+            "hanjuku-chart-v1235-recall-goal-campworld",
+            "hanjuku-chart-v1236-fort-list-row",
+            "hanjuku-chart-v1237-month-audit",
+            "hanjuku-chart-v1238-recall-goal-float",
+            "hanjuku-chart-v1239-gjump-global-roster",
+            "hanjuku-chart-v1240-map-idle-bound",
+            "hanjuku-chart-v1241-gjump-missing-diag",
+            "hanjuku-chart-v1242-gjump-roster-fallback",
+            "hanjuku-chart-v1243-gjump-text-grace",
+            "hanjuku-chart-v1244-gjump-scroll-limit",
+            "hanjuku-chart-v1245-gjump-seen-names",
+            "hanjuku-chart-v1246-recall-goal-diag",
+            "hanjuku-chart-v1247-recall-unconfirmed",
+            "hanjuku-chart-v1248-unowned-scene-settle",
+            "hanjuku-chart-v1249-text-menu-settle",
+            "hanjuku-chart-v1250-month-audit-world",
+            "hanjuku-chart-v1251-pursuit-start-gap",
+            "hanjuku-chart-v1252-boss-phase-audit",
+            "hanjuku-chart-v1253-recall-idou",
+            "hanjuku-chart-v1254-pursuit-own-yjump",
+            "hanjuku-chart-v1255-unowned-recenter-periodic",
+            "hanjuku-chart-v1256-event-hold-release",
+            "hanjuku-chart-v1258-boss-wave-stale",
+            "hanjuku-chart-v1259-stale-wave-defer",
+            "hanjuku-chart-v1260-pursuit-skip-stale",
+            "hanjuku-chart-v1257-issue-on-seal",
+            "hanjuku-chart-v1260-marker-est-tol",
+            "hanjuku-chart-v1261-pursuit-skip-stale",
+            "hanjuku-chart-v1262-recruit-own-screen",
+            "hanjuku-chart-v1263-scroll-arrow",
+            "hanjuku-chart-v1264-pursuit-pick-escape",
+            "hanjuku-chart-v1265-resume-unknown",
+            "hanjuku-chart-v1266-pursuit-suspend",
+            "hanjuku-chart-v1267-pursuit-stale-cell",
+            "hanjuku-chart-v1268-pursuit-lead",
+            "hanjuku-chart-v1269-password-sweep",
+            "hanjuku-chart-v1270-house-scroll-arrow",
+            "hanjuku-chart-v1271-boss-ambush-track",
+            "hanjuku-chart-v1272-house-marker-hint",
+            "hanjuku-chart-v1273-ambush-contact",
+            "hanjuku-chart-v1274-boss-jump-moves",
+            "hanjuku-chart-v1275-ambush-wait",
+            "hanjuku-chart-v1276-interim-failed-skip",
+            "hanjuku-chart-v1277-unit-world",
+            "hanjuku-chart-v1278-audit-unconfirmed",
+            "hanjuku-chart-v1279-dense-boss-track",
+            "hanjuku-chart-v1280-pursuit-origin-cell",
+            "hanjuku-chart-v1281-unconfirmed-rearm",
+            "hanjuku-chart-v1282-no-ambush-wait",
+            "hanjuku-chart-v1283-boss-jump-64",
+            "hanjuku-chart-v1284-pursuit-6h",
+            "hanjuku-chart-v1285-boss-panel-kit",
+            "hanjuku-chart-v1286-contact-pos",
+            "hanjuku-chart-v1287-friendly-fire",
+            "hanjuku-chart-v1288-revert-friendly-fire-guard",
+            "hanjuku-chart-v1290-frozen-boss-aim",
+            "hanjuku-chart-v1290-boss-unit-contact",
+            "hanjuku-chart-v1291-gjump-absent",
+            "hanjuku-chart-v1293-chikujou-refusal-cache",
+            "hanjuku-chart-v1294-gjump-skip-map",
+            "hanjuku-chart-v1295-chikujou-orch-refused",
+            "hanjuku-chart-v1296-boss-panel-hp",
+            "hanjuku-chart-v1297-clear-stale-general-override",
+            "hanjuku-chart-v1298-arrival-probe-incoming",
+            "hanjuku-chart-v1299-yjump-overshoot-damping",
+            "hanjuku-chart-v1300-boss-seimeitai-balmung",
+            "hanjuku-chart-v1301-gjump-pursuit-isolation",
+            "hanjuku-chart-v1303-pursuit-cliff-detour",
+            "hanjuku-chart-v1304-recall-picker-yroute",
+            "hanjuku-chart-v1305-recovery-dead-proof",
+            "hanjuku-chart-v1306-world-cursor-blue-g-priority",
+            "hanjuku-chart-v1307-event-duel-no-menu",
+            "hanjuku-chart-v1308-boss-wave-arrival-probe",
+            "hanjuku-chart-v1309-cliff-detour-yview-origin",
+            "hanjuku-chart-v1310-card-zero-live-stock",
+            "hanjuku-chart-v1311-cattlemyu-stock-reuse",
+            "hanjuku-chart-v1312-defense-no-stale-cards",
+            "hanjuku-chart-v1313-camp-recheck-idou-dest",
+            "hanjuku-chart-v1326-picker-from-menu",
+            "hanjuku-chart-v1320-camp-body-retry-keep",
+            "hanjuku-chart-v1319-castle-verify-paged",
+            "hanjuku-chart-v1318-strong-stock-opener",
+            "hanjuku-chart-v1317-post-month-task-yield",
+            "hanjuku-chart-v1316-card-scroll-speed",
+            "hanjuku-chart-v1158-progress-regress",
+            "hanjuku-chart-v1161-refill-collapse",
+            "hanjuku-chart-v1160-chapter-probe-field",
+            "hanjuku-chart-v1020-recall-giveup",
+            "hanjuku-chart-v1021-plan-invalid-source",
+            "hanjuku-chart-v1041-egg-receipt-presence",
+            "hanjuku-chart-v1043-recall-picker-evidence",
+            "hanjuku-chart-v1045-battle-menu-cursor-nudge",
+            "hanjuku-chart-v1100-defense-egg-menu-kit",
+            "hanjuku-chart-v1101-relay-over-visible",
+            "hanjuku-chart-v1327-no-move-reaim",
+            "hanjuku-chart-v1328-recall-jump-skip",
+            "hanjuku-chart-v1329-hold-limit-bisect",
+            "hanjuku-chart-v1330-blind-nav-release",
+            "hanjuku-chart-v1331-egg-repair-disabled",
+            "hanjuku-chart-v1332-camp-issue",
+            "hanjuku-chart-v1333-sortie-issue",
+            "hanjuku-chart-v1334-recall-roofs-yjump",
+            "hanjuku-chart-v1335-battle-resource-issue",
+            "hanjuku-chart-v1337-road-stalemate",
+            "hanjuku-chart-v1338-camp-abandon",
+            "hanjuku-chart-v1340-whitehouse-south-gate",
+            "hanjuku-chart-v1339-boss-first",
+            "hanjuku-chart-v1341-boss-no-onehit",
+            "hanjuku-chart-v1342-fort-picker-from-menu",
+            "hanjuku-chart-v1343-ch10-wh-wall-detour",
+            "hanjuku-chart-v1342-onehit-soldiers",
+            "hanjuku-chart-v1344-ch9-recall-cliff-fort",
+            "hanjuku-chart-v1345-unconfirmed-overdue-relaunch",
+            "hanjuku-chart-v1343-planned-busy-partial",
+            "hanjuku-chart-v1347-chikujou-issue",
+            "hanjuku-chart-v1354-card-announce-evidence",
+            "hanjuku-chart-v1348-summon-scroll-batch",
+            "hanjuku-chart-v1349-card-panel-scroll-arrows",
+            "hanjuku-chart-v1350-recall-dispatched",
+                "hanjuku-chart-v1351-duel-dim-mash",
+                "hanjuku-chart-v1352-password-measured-order",
+            "hanjuku-chart-v1355-math-corner",
+            "hanjuku-chart-v1356-scan-floor-idle-cap",
+            "hanjuku-chart-v1352-card-ledger-diff",
+            "hanjuku-chart-v1357-card-ledger-census",
+            "hanjuku-chart-v1358-boss-month-issue",
+            "hanjuku-chart-v1365-chikujou-list-limit",
+            "hanjuku-chart-v1366-summon-scroll-rearm",
+            "hanjuku-chart-v1369-egg-quote-owned",
+            "hanjuku-chart-v1371-launch-interrupted-battle",
+            "hanjuku-chart-v1360-spend-resources-before-retreat",
+            "hanjuku-chart-v1362-camp-recall-ch2",
+            "hanjuku-chart-v1363-chikujou-at-month-end",
+            "hanjuku-chart-v1367-camp-arrival-timeout",
+            "hanjuku-chart-v1370-chikujou-tried-ledger",
+            "hanjuku-chart-v1372-card-census-owner-title",
+            "hanjuku-chart-v1373-egg-receipt-settle",
+            "hanjuku-chart-v1374-rich-merchant-entry",
+            "hanjuku-chart-v1375-boss-dispatch-guarantee",
+            "hanjuku-chart-v1376-unconfirmed-sortie-forget",
+            "hanjuku-chart-v1377-recall-kikan-issue",
+            "hanjuku-chart-v1378-corner-stall-issue",
+            "hanjuku-chart-v985-roster-lost",
+            "hanjuku-chart-v982-gbox",
+            "hanjuku-chart-v984-roster-map-anchor",
+            "hanjuku-chart-v864-shop-list-batch",
+            "hanjuku-chart-v862-camp-field-move",
+            "hanjuku-chart-v852-visible-menu-batches",
+            "hanjuku-chart-v560-castle-list-scroll",
+            "hanjuku-chart-v561-post-month-repair-status",
+            "hanjuku-chart-v501-idle-reanchor",
+            "hanjuku-chart-v502-idle-and-roster-joins",
+            "hanjuku-chart-v503-month-start-counts",
+            "hanjuku-chart-v504-namaste-dialogue",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -6649,7 +8091,8 @@ def _project_corner_state(data):
                 "hanjuku-chart-v168-general-repair-budget",
                 "hanjuku-chart-v169-repair-interruption",
                 "hanjuku-chart-v170-chapter-two-boss",
-                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety", "hanjuku-chart-v215-roster-known-members", "hanjuku-chart-v216-roster-selected-name", "hanjuku-chart-v218-egg-before-retreat", "hanjuku-chart-v219-boss-and-army-refill", "hanjuku-chart-v220-finishing-resources", "hanjuku-chart-v221-recall-status-proof"} else None),
+                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety", "hanjuku-chart-v215-roster-known-members", "hanjuku-chart-v216-roster-selected-name", "hanjuku-chart-v218-egg-before-retreat", "hanjuku-chart-v219-boss-and-army-refill", "hanjuku-chart-v220-finishing-resources",
+            "hanjuku-chart-v221-recall-status-proof"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -6790,6 +8233,20 @@ _TSUITATE_SETTLE_REFUSALS = frozenset({
     # (docich#1992). Only these are published; an unknown string is null.
     "not-failed", "other-owner", "became-active", "canonical-unstable",
     "canonical-busy", "canonical-owns-view", "receipt-open",
+})
+
+_RETRO_RESTORING_SETTLE_CODES = frozenset({
+    # Fixed vocabulary of why the timer-safe restoring settle could not finish
+    # (#4155/#4158/#4159). The restoring-finish-* suffixes are the fixed
+    # CornerResult statuses. Only these are published; an unknown string is
+    # null.
+    "restoring-owner-unverified", "restoring-request-unverified",
+    "restoring-finish-unverified", "restoring-finish-pending",
+    "restoring-finish-unknown",
+    "restoring-finish-queued", "restoring-finish-waiting",
+    "restoring-finish-busy", "restoring-finish-accepted",
+    "restoring-finish-in_progress", "restoring-finish-stopping",
+    "restoring-finish-switching",
 })
 
 
@@ -6956,7 +8413,12 @@ def _project_bot_chart(value):
 
 
 FIFO_OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
-FIFO_MAX_RECEIPTS = 512
+# The store prunes terminal receipts to 1000, so a full scan of the receipt
+# directory stays small; the old 512-file window hid a non-terminal receipt
+# that sorted past it (g1163 2026-11-14: the wedge blocked the corner restore
+# while the projection reported no pending row). 4096 is the bound that keeps a
+# pathological directory from unbounded reads.
+FIFO_MAX_RECEIPTS = 4096
 
 
 def _receipt_age_sec(value, now):
@@ -6969,6 +8431,52 @@ def _receipt_age_sec(value, now):
         return max(0, int(now - parsed.timestamp()))
     except (TypeError, ValueError, OverflowError, OSError):
         return -1
+
+
+def _receipt_deadline_expired(value, now):
+    """Tri-state check for a receipt's optional ISO hard deadline.
+
+    ``hard_deadline_at`` is only present on hard-capped requests; None keeps
+    the field distinguishable from a live (False) or elapsed (True) cap.
+    """
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    try:
+        return parsed.timestamp() <= now
+    except (OverflowError, OSError):
+        return None
+
+
+# Fixed stages a previous-runtime restore can refuse at (mirrors
+# game_switch.RESTORE_STAGES). Never free text.
+GAME_SWITCH_RESTORE_STAGES = frozenset({
+    "unquiesced-runtime", "adapter-unavailable", "singleton-restart-refused",
+    "alive-probe-failed", "readiness-failed", "singleton-recheck-failed",
+    "agent-restart-failed", "continuation-unproven", "rollback-adapter-failed",
+    "rollback-start-failed", "rollback-materialize-failed",
+    "rollback-readiness-failed", "rollback-agent-start-failed",
+})
+
+
+def _collect_game_switch_restore(state_dir, now):
+    """Fixed-token evidence of the last refused previous-runtime restore."""
+
+    path = Path(state_dir) / "game-switch" / "restore_stage.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "stage": None, "age_sec": None}
+    if not readable or not isinstance(data, dict):
+        return entry
+    stage = data.get("stage")
+    entry["stage"] = stage if isinstance(stage, str) and stage in GAME_SWITCH_RESTORE_STAGES else None
+    entry["age_sec"] = _receipt_age_sec(data.get("updated_at"), now)
+    return entry
 
 
 def _collect_game_switch_fifo(state_dir, now):
@@ -6984,6 +8492,8 @@ def _collect_game_switch_fifo(state_dir, now):
         "terminal_count": 0,
         "malformed_count": 0,
         "head": None,
+        "pending_count": 0,
+        "pending": [],
     }
     try:
         if not directory.is_dir():
@@ -6999,6 +8509,7 @@ def _collect_game_switch_fifo(state_dir, now):
         paths = paths[:FIFO_MAX_RECEIPTS]
 
     queued = []
+    pending = []
     for path in paths:
         present, readable, data = _load_state_file(path)
         if not present or not readable or not isinstance(data, dict):
@@ -7011,6 +8522,12 @@ def _collect_game_switch_fifo(state_dir, now):
             result["queued_count"] += 1
         elif status in {"succeeded", "failed", "rolled_back"}:
             result["terminal_count"] += 1
+        elif status in {"accepted", "allocating"}:
+            # A receipt that never landed makes every later switch refuse with
+            # busy (g1163 2026-11-10: an accepted receipt wedged the retro
+            # corner restore for days). Project the pending rows so the wedge
+            # is visible without the private ledger.
+            pending.append(data)
 
     queued.sort(
         key=lambda item: (
@@ -7018,6 +8535,26 @@ def _collect_game_switch_fifo(state_dir, now):
             int(item.get("generation", 0)) if isinstance(item.get("generation"), int) else 0,
         )
     )
+    pending.sort(key=lambda item: str(item.get("updated_at", "")))
+    if pending:
+        result["pending_count"] = len(pending)
+        result["pending"] = [
+            {
+                "status": row.get("status") if row.get("status") in {"accepted", "allocating"} else None,
+                "operation": row.get("operation") if row.get("operation") in FIFO_OPERATIONS else None,
+                "target": _bounded_str(row.get("target"), 64),
+                "generation": row.get("generation")
+                if isinstance(row.get("generation"), int) else None,
+                "age_sec": _receipt_age_sec(row.get("updated_at"), now),
+                # #4356: an accepted receipt left past its hard cap is the
+                # wedge the watchdog must terminalize; surface the flag so a
+                # stuck one is visible without the private ledger.
+                "hard_deadline_expired": _receipt_deadline_expired(
+                    row.get("hard_deadline_at"), now
+                ),
+            }
+            for row in pending[:5]
+        ]
     if queued:
         head = queued[0]
         operation = head.get("operation")
@@ -7026,6 +8563,9 @@ def _collect_game_switch_fifo(state_dir, now):
             "operation": operation if operation in FIFO_OPERATIONS else None,
             "target": _bounded_str(head.get("target"), 64),
             "age_sec": _receipt_age_sec(head.get("created_at"), now),
+            "hard_deadline_expired": _receipt_deadline_expired(
+                head.get("hard_deadline_at"), now
+            ),
         }
     return result
 
@@ -7146,6 +8686,120 @@ def _collect_paper_experiment(state_dir, now):
     return entry
 
 
+PAPER_SLOT_SYMBOL_RE = re.compile(r"[A-Z0-9]{1,16}/[A-Z0-9]{1,16}")
+PAPER_SLOT_DIR_RE = re.compile(r"[A-Z0-9]{1,16}_[A-Z0-9]{1,16}")
+PAPER_SLOT_MAX_DIRS = 256
+# The production envelope sits ~4.7 KiB under HARD_JSON_BYTES (headroom monitor,
+# 2026-11-16); keep this section well under 1 KiB.
+PAPER_SLOT_LISTED = 3
+PAPER_SLOT_ROTATION_CLOSED_SELLS = 10
+PAPER_SLOT_ROTATION_AGE_S = 7 * 86400
+PAPER_SLOT_IMPROVE_STATUSES = frozenset({"running", "improved", "skipped", "failed", "dry-run"})
+PAPER_SLOT_IMPROVE_REASON_CODES = frozenset({
+    "disabled", "daily-limit", "already-running", "ledger-unavailable",
+    "slot-layout-invalid", "facts-error", "no-targets", "no-agents",
+    "lane-busy", "no-candidate-staged", "slots-error",
+}) | PAPER_IMPROVE_REASON_CODES
+
+
+def _collect_paper_slot(directory, now):
+    """One dedicated slot: fixed enums and counts only, never rule text."""
+    present, readable, data = _load_state_file(directory / "paper_experiment_control.json")
+    entry = {"status": "unknown", "entries_allowed": False, "closed_sells": None, "age_sec": None,
+             "reason_code": None, "evaluation_status": None, "open_position_count": None,
+             "control_readable": readable}
+    if not readable:
+        return entry
+    activated_at = _paper_observed_number(data.get("activated_at"), nonnegative=True)
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_EXPERIMENT_STATUSES),
+        reason_code=_rotation_enum(data.get("reason_code"), PAPER_EXPERIMENT_REASON_CODES),
+        entries_allowed=data.get("entries_allowed") is True,
+        evaluation_status=_rotation_enum(data.get("evaluation_status"), PAPER_EVALUATION_STATUSES),
+        open_position_count=_paper_observed_count(data.get("open_position_count")),
+        age_sec=None if activated_at is None else max(0, int(now - activated_at)),
+    )
+    evaluation = _collect_paper_experiment_evaluation(directory, data, now)
+    if evaluation.get("matches_active") is True:
+        entry["closed_sells"] = evaluation.get("closed_sells")
+    return entry
+
+
+def _collect_paper_slots_improve(trading_dir, now):
+    path = trading_dir / "paper_improve_slots_status.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if not readable:
+        return entry
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_SLOT_IMPROVE_STATUSES),
+        reason_code=(None if data.get("reason_code") is None
+                     else _rotation_enum(data.get("reason_code"), PAPER_SLOT_IMPROVE_REASON_CODES)),
+        started_at=_bounded_time(data.get("started_at")),
+        completed_at=_bounded_time(data.get("completed_at")),
+    )
+    for key in ("targets", "calls", "queued", "activated", "rejected", "deferred"):
+        entry[key] = _paper_observed_count(data.get(key))
+    return entry
+
+
+def _collect_paper_slots(state_dir, now):
+    """Aggregate dedicated per-symbol slots (Issue #3623 §2.9).
+
+    Counts by status plus the few slots nearest rotation; 40+ full entries
+    would not fit the diagnostics budget and are not needed to triage.
+    """
+    trading_dir = Path(state_dir) / "trading"
+    root = trading_dir / "slots"
+    entry = {"present": root.is_dir(), "slot_count": 0, "invalid_count": 0,
+             "status_counts": {}, "entries_allowed_count": 0, "closed_sells_total": 0,
+             "nearest_rotation": [],
+             "improve": _collect_paper_slots_improve(trading_dir, now)}
+    if not entry["present"]:
+        return entry
+    try:
+        children = sorted(root.iterdir())[:PAPER_SLOT_MAX_DIRS]
+    except OSError:
+        entry["invalid_count"] = None
+        return entry
+    slots = []
+    for child in children:
+        if child.is_symlink() or not child.is_dir() or not PAPER_SLOT_DIR_RE.fullmatch(child.name):
+            entry["invalid_count"] += 1
+            continue
+        _, meta_readable, meta = _load_state_file(child / "slot.json")
+        symbol = meta.get("symbol") if meta_readable else None
+        if (not isinstance(symbol, str) or not PAPER_SLOT_SYMBOL_RE.fullmatch(symbol)
+                or symbol.replace("/", "_") != child.name):
+            entry["invalid_count"] += 1
+            continue
+        slot = _collect_paper_slot(child, now)
+        slot["symbol"] = symbol
+        slots.append(slot)
+    counts = {}
+    for slot in slots:
+        counts[slot["status"]] = counts.get(slot["status"], 0) + 1
+    entry["slot_count"] = len(slots)
+    entry["status_counts"] = dict(sorted(counts.items()))
+    entry["entries_allowed_count"] = sum(1 for slot in slots if slot["entries_allowed"])
+    entry["closed_sells_total"] = sum(slot["closed_sells"] or 0 for slot in slots)
+
+    def progress(slot):
+        sells = (slot["closed_sells"] or 0) / PAPER_SLOT_ROTATION_CLOSED_SELLS
+        age = (slot["age_sec"] or 0) / PAPER_SLOT_ROTATION_AGE_S
+        return max(sells, age)
+
+    # Slots that are not trading normally come first, then the nearest rotation.
+    ranked = sorted(slots, key=lambda slot: (slot["status"] == "active" and slot["entries_allowed"],
+                                             -progress(slot), slot["symbol"]))
+    entry["nearest_rotation"] = [
+        {key: slot[key] for key in ("symbol", "status", "reason_code", "entries_allowed",
+                                    "closed_sells", "age_sec")}
+        for slot in ranked[:PAPER_SLOT_LISTED]
+    ]
+    return entry
+
+
 def _rotation_policy():
     """Fixed projection of the configured dispatch policy (no secrets).
 
@@ -7255,6 +8909,62 @@ def _rotation_auto_restore_projection(data):
     out["auto_restore_status"] = (status if status in ROTATION_AUTO_RESTORE_STATUSES
                                   else ("unknown" if status is not None else None))
     return out
+
+
+def _rotation_auto_plane_recovery_projection(data):
+    """Bounded view of the timer's terminal-phase plane recovery (#4349).
+
+    A failed switch can park the shared game-switch plane in ``failed`` /
+    ``recovery_required``; the timer then replays the reviewed coordinator
+    recovery a few times.  The 2026-11-16 hanjuku incident recovered through
+    this path, but the durable record was invisible in diagnostics.
+    """
+
+    record = data.get("auto_plane_recovery")
+    out = {"auto_plane_recovery_corner": None, "auto_plane_recovery_attempts": None,
+           "auto_plane_recovery_attempt_limit": ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT,
+           "auto_plane_recovery_next_at": None, "auto_plane_recovery_status": None}
+    if not isinstance(record, dict):
+        return out
+    out["auto_plane_recovery_corner"] = _bounded_str(record.get("corner"), 64)
+    attempts = record.get("attempts")
+    out["auto_plane_recovery_attempts"] = (
+        attempts if type(attempts) is int and 0 <= attempts <= 100 else None
+    )
+    out["auto_plane_recovery_next_at"] = _bounded_time(record.get("next_attempt_at"))
+    status = record.get("last_status")
+    out["auto_plane_recovery_status"] = (
+        status if status in ROTATION_AUTO_PLANE_RECOVERY_STATUSES
+        else ("unknown" if status is not None else None)
+    )
+    return out
+
+
+def _retained_corner_reason(rotation_data, game):
+    """Newest fixed failed-corner reason recorded for this corner's game (#4226).
+
+    The corner state file names its game, not the catalog id, so the ledger's
+    ``known_corners`` map is what links a ``failed_corners`` row back to the
+    state file being projected. Only the fixed reason vocabulary is returned;
+    anything else stays None and the caller uses the generic retained token.
+    """
+    if not isinstance(rotation_data, dict) or not isinstance(game, str):
+        return None
+    rows = rotation_data.get("failed_corners")
+    known = rotation_data.get("known_corners")
+    if not isinstance(rows, list) or not isinstance(known, dict):
+        return None
+    reason = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        corner_id = row.get("corner")
+        if not isinstance(corner_id, str):
+            continue
+        record = known.get(corner_id)
+        if isinstance(record, dict) and record.get("game") == game:
+            reason = row.get("reason_code")
+    return reason if reason in CORNER_RETAINED_REASONS else None
 
 
 def _rotation_pending_projection(state_dir, data, now):
@@ -7517,9 +9227,22 @@ def _collect_corner_files(state_dir, payload, now):
                 isinstance(data.get("pending"), dict)
                 or isinstance(data.get("manual_pending"), dict)):
             scheduled_blocked_reason = "waiting_slot"
+        try:
+            from docich.corner_rotation import overdue_wait
+            overdue = overdue_wait(data, now)
+        except Exception:
+            # An older deployed docich may not carry the probe yet; absence of
+            # the helper must never break the diagnostics collection itself.
+            overdue = None
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
             reason=_bounded_str(data.get("reason"), 64),
+            reason_since=_bounded_time(data.get("reason_since")),
+            # ``waiting_overdue`` is the #4333 wedge signal: next_due_at long
+            # past while one unchanged reason keeps holding the wait.
+            waiting_overdue=overdue is not None,
+            overdue_sec=overdue.get("overdue_sec") if overdue else None,
+            reason_age_sec=overdue.get("reason_age_sec") if overdue else None,
             next_due_at=_bounded_time(data.get("next_due_at")),
             last_seen_at=_bounded_time(data.get("last_seen_at")),
             last_slot_at=_bounded_time(data.get("last_slot_at")),
@@ -7547,13 +9270,20 @@ def _collect_corner_files(state_dir, payload, now):
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
         rotation.update(_rotation_failed_corners_projection(data))
         rotation.update(_rotation_auto_restore_projection(data))
+        rotation.update(_rotation_auto_plane_recovery_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
+    active_game = None
+    switch_settled = False
     if readable:
         active = data.get("active") if isinstance(data.get("active"), dict) else {}
+        active_game = active.get("game")
+        # Only a settled switch can *retain* a corner game; mid-flight phases
+        # still legitimately name it.
+        switch_settled = data.get("phase") in {"idle", "ready"}
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
         deadline_at = data.get("deadline_at")
         deadline_expired = None
@@ -7581,11 +9311,30 @@ def _collect_corner_files(state_dir, payload, now):
             }
         )
     payload["game_switch"] = entry
+
+    # Chart corner runtime projection (docich#4640)
+    chart_present, chart_readable, chart_data = _load_state_file(
+        state_dir / CORNER_STATE_FILES["chart"]
+    )
+    chart_projection = _chart_corner_projection(state_dir, chart_data) if chart_readable else {
+        "status": "unknown",
+        "started_at": None,
+        "completed_at": None,
+        "end_reason": None,
+        "runtime_identity": None,
+    }
+    payload["chart_corner"] = {
+        "present": chart_present,
+        "readable": chart_readable,
+        **chart_projection,
+    }
+
     payload["weather_corner"] = _weather_corner_projection(
         state_dir, rotation_data, rotation_data is not None
     )
     payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
+    payload["game_switch_restore"] = _collect_game_switch_restore(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
 
@@ -7615,6 +9364,26 @@ def _collect_corner_files(state_dir, payload, now):
                 entry["counters"] = _project_lawsim_counters(data)
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
+                settle_code = data.get("last_error_code")
+                entry["restoring_settle_code"] = (
+                    settle_code if isinstance(settle_code, str)
+                    and settle_code in _RETRO_RESTORING_SETTLE_CODES else None)
+                entry["lock_state"] = _probe_retro_lock(state_dir)
+            # Game-switch retaining a corner's game while the corner itself is
+            # already terminal is an operator action item (#4226): the shared
+            # overlay card can only report the corner as unavailable, so the
+            # fixed reason lives here instead.
+            retained = (
+                switch_settled
+                and isinstance(data.get("game"), str)
+                and data["game"] == active_game
+                and data.get("status") in CORNER_RETAINED_TERMINAL_STATUSES
+            )
+            entry["retained_active"] = retained
+            entry["retained_reason"] = (
+                (_retained_corner_reason(rotation_data, data["game"])
+                 or "corner-terminal-game-retained") if retained else None
+            )
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
@@ -7629,6 +9398,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
+    payload["paper_slots"] = _collect_paper_slots(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
@@ -7990,7 +9760,10 @@ def _collect_hanjuku_predictions(state_dir):
                                 and 1 <= row["window"] <= 1800 else None),
              "status": choice(row.get("status"), {
                  "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
-             "cleared": chapter(result.get("cleared")),
+             # A goal settled at achievement carries no terminal result; its
+             # verified count is `achieved` (2026-11-09). Counts only, no prose.
+             "cleared": chapter(result.get("cleared") if result.get("cleared") is not None
+                                else row.get("achieved")),
              "next_poll_at": _finite_number(data.get("next_poll_at"))}
     health = _collect_hanjuku_prediction_health(state_dir, errors)
     if health is not None:
@@ -8226,6 +9999,54 @@ def _bounded_age(value, now):
     return age if 0 <= age <= 10 ** 9 else -1
 
 
+def _prediction_round_copy(value):
+    """Bounded copy of ``corners.boundary.prediction.round`` for the exempt section.
+
+    ``_collect_prediction_round`` already bounds its fields; this keeps the
+    fixed key shape for the top-level duplicate and never passes an unexpected
+    value through when an older collector shape is read.
+    """
+    value = value if isinstance(value, dict) else {}
+    if not value:
+        return None
+    retry = value.get("retry")
+    retry = retry if isinstance(retry, dict) else {}
+
+    def _int(raw, low, high):
+        return (raw if isinstance(raw, int) and not isinstance(raw, bool)
+                and low <= raw <= high else None)
+
+    def _bool(raw):
+        return raw if isinstance(raw, bool) else None
+
+    http_code = retry.get("http_code")
+    return {
+        "present": value.get("present") is True,
+        "readable": value.get("readable") is True,
+        "round_version": _int(value.get("round_version"), 0, 99),
+        "games_completed": _int(value.get("games_completed"), 0, 1_000_000),
+        "max_games": _int(value.get("max_games"), 0, 1_000_000),
+        "remaining_games": _int(value.get("remaining_games"), 0, 1_000_000),
+        "target_first_game": _int(value.get("target_first_game"), 0, 10 ** 12),
+        "last_game_num": _int(value.get("last_game_num"), 0, 10 ** 12),
+        "created_age_sec": _int(value.get("created_age_sec"), -1, 10 ** 9),
+        "progress_age_sec": _int(value.get("progress_age_sec"), -1, 10 ** 9),
+        "fence_present": _bool(value.get("fence_present")),
+        "fence_age_sec": _int(value.get("fence_age_sec"), -1, 10 ** 9),
+        "retry": {
+            "present": retry.get("present") is True,
+            "readable": retry.get("readable") is True,
+            "attempt": _int(retry.get("attempt"), 0, 1000),
+            "next_retry_at": _int(retry.get("next_retry_at"), 0, 10 ** 12),
+            "retry_active": _bool(retry.get("retry_active")),
+            "http_code": (http_code[:16] if isinstance(http_code, str) else None),
+        },
+        "complete": _bool(value.get("complete")),
+        "settlement_pending": _bool(value.get("settlement_pending")),
+        "settlement_pending_sec": _int(value.get("settlement_pending_sec"), 0, 10 ** 9),
+    }
+
+
 def _prediction_projection(corners, now):
     """The 予想王 evidence as a top-level section the ceiling drops keep (#2805).
 
@@ -8271,7 +10092,7 @@ def _prediction_projection(corners, now):
     def _text(value):
         return value if isinstance(value, str) else None
 
-    return {
+    result = {
         "state_dir_found": corners.get("state_dir_found") is True,
         "leaderboard": dict(leaderboard),
         "soren_handoff": dict(handoff),
@@ -8306,6 +10127,10 @@ def _prediction_projection(corners, now):
             "age_sec": _bounded_age(prediction.get("completed_at"), now),
         },
     }
+    round_state = _prediction_round_copy(prediction.get("round"))
+    if round_state is not None:
+        result["boundary"]["round"] = round_state
+    return result
 
 
 # Fixed lawsim_corner.json status enum (lawsim_corner.py); anything else is None.
@@ -8340,6 +10165,34 @@ def _lawsim_projection(corners, now):
         "narration": counters.get("narration"),
         "overlay_announcements": counters.get("overlay_announcements"),
     }
+
+
+def _probe_retro_lock(state_dir):
+    """Whether the retro corner's exclusive lock is free, without writing.
+
+    The timer-safe restore driver (``RetroCornerManager.recover_failed_restore``)
+    runs under ``locks/retro-corner.lock``; a stuck ``restoring`` row with no
+    ``last_error_code`` means the driver's exception (typically a busy lock) is
+    swallowed by the rotation. A shared, non-blocking probe distinguishes a
+    held lock from a missing one and never creates the file or waits.
+    """
+    path = Path(state_dir) / "locks" / "retro-corner.lock"
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "held"
+        except OSError:
+            return "unreadable"
+        return "free"
+    finally:
+        os.close(fd)
 
 
 def _collect_programs(state_dir, soren, now):
@@ -8390,6 +10243,7 @@ def _collect_programs(state_dir, soren, now):
             "present": False, "readable": False, "age_sec": -1,
             "evaluation": {"present": False, "readable": False, "age_sec": -1},
         },
+        "paper_slots": {"present": False, "slot_count": 0},
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
@@ -8412,6 +10266,7 @@ def _collect_programs(state_dir, soren, now):
     payload["ab"] = _collect_ab(soren, now)
     payload["retro_scores"] = _collect_retro_scores(state_dir, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
+    payload["soren_gameover"] = _collect_soren_gameover(soren, now)
     return payload
 
 
@@ -8829,8 +10684,9 @@ HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
     "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
-    "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
-    "map_target", "monster_menu", "monster_menu_pending", "month_menu", "name_entry", "okunote_menu",
+    "egg_choice_menu", "field_card_list", "general_list", "gift_request", "main_menu", "map",
+    "map_target", "monster_menu", "monster_menu_pending", "month_menu", "name_entry", "okunote_menu", "password_entry",
+    "password_entry",
     "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
     "shop_quantity_prompt", "sortie_confirm", "summer_bonus",
     "summer_bonus_message", "text", "unknown", "world_map", "yes_no",
@@ -9081,6 +10937,147 @@ def _collect_soren_game(soren, now):
     return result
 
 
+# Per-match Soren game-over projection.  Each finished match leaves one
+# ``game_history/<end_ts>_score<N>.jsonl`` turn log; the last record carries
+# the final board in ``state_snapshot.pieces``.  Reviewing every match-end
+# board (top-type histogram, unmerged high pairs, end reason) is the input
+# the strategy-improvement loop needs to find recurring bottlenecks, so the
+# owner-only diagnostics exposes a bounded summary instead of the raw log.
+# Only numeric fields, booleans, the fixed strategy-hash token and a
+# charset-filtered end reason are ever projected.
+SOREN_GAMEOVER_MAX_GAMES = 3
+SOREN_GAMEOVER_TAIL_BYTES = 96 * 1024
+SOREN_GAMEOVER_MAX_REASON_LEN = 80
+SOREN_GAMEOVER_MAX_PIECES = 100000
+SOREN_GAMEOVER_REASON_RE = re.compile(r"[^A-Za-z0-9_|:+\-.]")
+SOREN_GAMEOVER_NAME_RE = re.compile(
+    r"^(?:wildcard_parallel_\d+_game\d+_|\d{8}_\d{6}_)score\d{1,9}\.jsonl$")
+
+
+def _soren_gameover_reason(record):
+    reason = record.get("decision_reason")
+    if not isinstance(reason, str) or not reason:
+        return None
+    cleaned = SOREN_GAMEOVER_REASON_RE.sub("", reason)[:SOREN_GAMEOVER_MAX_REASON_LEN]
+    return cleaned or None
+
+
+def _soren_gameover_piece(entry):
+    """Project one board piece to (bounded type, bounded x)."""
+    if not isinstance(entry, dict):
+        return None
+    piece_type = entry.get("type")
+    piece_x = entry.get("x")
+    if type(piece_type) is not int or not 1 <= piece_type <= 64:
+        return None
+    if type(piece_x) not in (int, float) or not -64.0 <= piece_x <= 64.0:
+        return None
+    return piece_type, round(float(piece_x), 3)
+
+
+def _soren_gameover_pair_gap(pieces):
+    """Min horizontal separation of the highest type that still exists in
+    duplicate on the end board — the 'two Russias never merged' bottleneck."""
+    by_type = {}
+    for piece_type, piece_x in pieces:
+        if piece_type >= 10:
+            by_type.setdefault(piece_type, []).append(piece_x)
+    for piece_type in sorted(by_type, reverse=True):
+        xs = sorted(by_type[piece_type])
+        if len(xs) < 2:
+            continue
+        gap = round(min(b - a for a, b in zip(xs, xs[1:])), 3)
+        return {"type": piece_type, "count": len(xs), "min_dx": gap}
+    return None
+
+
+def _collect_soren_gameover_one(path, now):
+    entry = {"present": True, "readable": False, "age_sec": _file_age_sec(path, now),
+             "turns": None, "score": None, "strategy_hash": None,
+             "russia_created": None, "type_hist": {}, "top_pair": None,
+             "end_reason": None, "deadline_crossed": None,
+             "danger_pieces": None, "truncated": False}
+    try:
+        size = path.stat().st_size
+    except OSError:
+        entry["present"] = False
+        return entry
+    try:
+        with open(path, "rb") as handle:
+            if size > SOREN_GAMEOVER_TAIL_BYTES:
+                handle.seek(size - SOREN_GAMEOVER_TAIL_BYTES)
+                entry["truncated"] = True
+            raw = handle.read(SOREN_GAMEOVER_TAIL_BYTES)
+    except OSError:
+        return entry
+    lines = raw.split(b"\n")
+    if entry["truncated"]:
+        lines = lines[1:]
+    lines = [line for line in lines if line.strip()]
+    entry["readable"] = True
+    if not lines:
+        return entry
+    try:
+        record = json.loads(lines[-1].decode("utf-8", "replace"))
+    except ValueError:
+        return entry
+    if not isinstance(record, dict):
+        return entry
+    turn = record.get("turn")
+    if type(turn) is int and 0 <= turn <= 1000000:
+        entry["turns"] = turn
+    score = record.get("score")
+    if type(score) is int and 0 <= score <= 10**9:
+        entry["score"] = score
+    strategy_hash = record.get("strategy_hash")
+    if isinstance(strategy_hash, str) and re.fullmatch(r"[0-9a-f]{6,16}", strategy_hash):
+        entry["strategy_hash"] = strategy_hash
+    russia = record.get("russia_created")
+    if isinstance(russia, bool):
+        entry["russia_created"] = russia
+    if isinstance(record.get("deadline_crossed"), bool):
+        entry["deadline_crossed"] = record["deadline_crossed"]
+    danger = record.get("danger_piece_count")
+    if type(danger) is int and 0 <= danger <= 100000:
+        entry["danger_pieces"] = danger
+    entry["end_reason"] = _soren_gameover_reason(record)
+    snapshot = record.get("state_snapshot")
+    pieces_raw = snapshot.get("pieces") if isinstance(snapshot, dict) else None
+    if isinstance(pieces_raw, list) and len(pieces_raw) <= SOREN_GAMEOVER_MAX_PIECES:
+        pieces = [p for p in (_soren_gameover_piece(e) for e in pieces_raw) if p]
+        hist = {}
+        for piece_type, _x in pieces:
+            if piece_type >= 10:
+                key = str(piece_type)
+                hist[key] = hist.get(key, 0) + 1
+        entry["type_hist"] = hist
+        entry["top_pair"] = _soren_gameover_pair_gap(pieces)
+    return entry
+
+
+def _collect_soren_gameover(soren, now):
+    """Bounded tail of the newest finished Soren match logs (#gameover-review)."""
+    result = {"present": False, "games": []}
+    history_dir = Path(soren) / "game_history"
+    try:
+        candidates = []
+        for child in history_dir.iterdir():
+            try:
+                if (not child.is_file() or child.is_symlink()
+                        or not SOREN_GAMEOVER_NAME_RE.fullmatch(child.name)):
+                    continue
+                candidates.append(child)
+            except OSError:
+                continue
+    except OSError:
+        return result
+    candidates.sort(key=lambda p: (p.name, p.stat().st_mtime), reverse=True)
+    for child in candidates[:SOREN_GAMEOVER_MAX_GAMES]:
+        result["games"].append(_collect_soren_gameover_one(child, now))
+        result["present"] = True
+    return result
+
+
 # Opt-in stocks/FX paper-trading corners (src/docich/trading/markets/). Both
 # markets default to enabled=false; this section only ever reads the same
 # fixed config, systemd --user unit state and the worker's own health/
@@ -9270,21 +11267,35 @@ def _probe_cc_adapter(port, timeout=1.0):
         body.get("upstream"), str
     ):
         return {"state": "invalid"}
-    return {"state": "ok", "upstream": body["upstream"]}
+    health = {"state": "ok", "upstream": body["upstream"]}
+    failures = body.get("consecutive_failures")
+    if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+        health["consecutive_failures"] = failures
+    kind = body.get("last_failure_kind")
+    if isinstance(kind, str) and kind:
+        health["last_failure_kind"] = kind
+    return health
 
 
 def _collect_cc_translation_adapter():
     """Read-only healthz of the CC translation adapter (docich#2894).
 
-    Reports the probe state and the upstream name the adapter advertises only;
-    no prompt, key, or response body is read into the envelope.
+    Reports the probe state, the upstream name the adapter advertises, and its
+    failure counters only; no prompt, key, or response body is read into the
+    envelope.
     """
     port = CC_ADAPTER_DEFAULT_PORT
     raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
     if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
         port = int(raw_port)
     health = _probe_cc_adapter(port)
-    return {"port": port, "state": health["state"], "upstream": health.get("upstream")}
+    return {
+        "port": port,
+        "state": health["state"],
+        "upstream": health.get("upstream"),
+        "consecutive_failures": health.get("consecutive_failures"),
+        "last_failure_kind": health.get("last_failure_kind"),
+    }
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -9752,65 +11763,145 @@ def _worker_down_severity(workers, lifecycle_pause=None):
     return "warn"
 
 
-def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+# Fixed names for every condition that can raise ``status`` above ``ok``
+# (#3658). The map is emitted under ``severity_triggers`` so the public runtime
+# summary can name the branch that fired instead of showing ``warn`` next to
+# all-zero actionable counters. It is computed at severity time -- before
+# ``_diagnostics_budget`` may stub the evidence sections -- and the key is in
+# ``_HARD_KEEP`` so the trigger names survive even when the section that
+# caused them does not.
+SEVERITY_TRIGGERS = (
+    "hanjuku_resume_detached_claim",
+    "retro_corner_recovery_required",
+    "corner_rotation_recovery_required",
+    "corner_rotation_overdue",
+    "required_worker_stale",
+    "required_worker_down",
+    "paused_workers_actionable",
+    "unregistered_workers_actionable",
+    "worker_duplicates",
+    "worker_zombies",
+    "stale_locks",
+    "ai_all_failed",
+    "ai_queue_giveups",
+    "improvement_stale",
+    "improvement_retry_pending",
+    "improvement_persist_fail",
+    "improvement_persist_stale",
+    "improvement_persist_unreadable",
+    "improvement_persist_failure",
+    "improvement_persist_clone_disappeared",
+)
+
+
+def _positive_count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _nonnegative_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    """Evaluate every severity condition and name the branches that fired.
+
+    Returns ``{"status": ..., "triggers": {name: bool}}``. Unlike the former
+    early-return ladder, every warn condition is evaluated so the payload can
+    carry all contributing triggers; ``status`` keeps the exact same value as
+    before.
+    """
+    triggers = {name: False for name in SEVERITY_TRIGGERS}
     worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
-    if worker_down_sev == "critical":
-        return "critical"
+    workers = workers if isinstance(workers, dict) else {}
+    queues = queues if isinstance(queues, dict) else {}
+    ai = ai if isinstance(ai, dict) else {}
+    improvement = improvement if isinstance(improvement, dict) else {}
+    triggers["required_worker_stale"] = bool(workers.get("required_stale"))
+    triggers["required_worker_down"] = bool(workers.get("required_down"))
     # A detached resume claim is an actionable operational condition: raise it
     # through the runtime health alert so the owner is notified within hours
     # (#2870). Normal claimed/queued/verified transitions must not trigger.
-    if isinstance(hanjuku_resume, dict) and hanjuku_resume.get("status") == "detached_claim":
-        return "warn"
+    triggers["hanjuku_resume_detached_claim"] = (
+        isinstance(hanjuku_resume, dict)
+        and hanjuku_resume.get("status") == "detached_claim"
+    )
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
-    if isinstance(retro, dict) and retro.get("recovery_required") is True:
-        return "warn"
+    triggers["retro_corner_recovery_required"] = (
+        isinstance(retro, dict) and retro.get("recovery_required") is True
+    )
     # A latched common rotation stops every automatic corner while the shared
     # plane stays healthy, so it must reach the runtime health alert (#986).
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
-    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
-        return "warn"
-    if worker_down_sev == "warn":
-        return "warn"
-    if (
-        _paused_workers_actionable(workers)
-        or _unregistered_workers_actionable(workers)
-        or workers["duplicates"]
-        or workers["zombies"]
-        or queues["stale_locks"] > 0
-        or ai["all_failed"] > 0
-        or ai["queue_giveups"] > 0
-        or improvement["stale"]
-        or improvement["retry_pending"]
-    ):
-        return "warn"
+    triggers["corner_rotation_recovery_required"] = (
+        isinstance(rotation, dict) and rotation.get("status") == "recovery_required"
+    )
+    # A wait held on one unchanged reason well past next_due_at is the wedge
+    # symptom from #4333: the slot wants to fire but cannot. The ledger
+    # reason itself is ambiguous, so the projection pre-ages it.
+    triggers["corner_rotation_overdue"] = (
+        isinstance(rotation, dict) and rotation.get("waiting_overdue") is True
+    )
+    triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
+    triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)
+    triggers["worker_duplicates"] = bool(workers.get("duplicates"))
+    triggers["worker_zombies"] = bool(workers.get("zombies"))
+    triggers["stale_locks"] = _positive_count(queues.get("stale_locks"))
+    # radio_prepass is an optional pre-pass: its all_failed / budget_exhausted
+    # iterations are structural (8-candidate chain vs 60s/30s cap, docich#3657)
+    # and only cost a skipped corner generation, so they must not raise WARN.
+    # budget_exhausted never feeds this gate anyway; only the all_failed count
+    # needs the prepass contribution subtracted. queue_giveups and every other
+    # component's all_failed still signal real provider outages (docich#3661).
+    all_failed_components = ai.get("all_failed_components")
+    all_failed_components = all_failed_components if isinstance(all_failed_components, dict) else {}
+    raw_all_failed = ai.get("all_failed")
+    prepass_all_failed = all_failed_components.get("radio_prepass", 0)
+    actionable_all_failed = (
+        raw_all_failed - prepass_all_failed
+        if _nonnegative_int(raw_all_failed) and _nonnegative_int(prepass_all_failed)
+        else 0
+    )
+    triggers["ai_all_failed"] = actionable_all_failed > 0
+    triggers["ai_queue_giveups"] = _positive_count(ai.get("queue_giveups"))
+    triggers["improvement_stale"] = bool(improvement.get("stale"))
+    triggers["improvement_retry_pending"] = bool(improvement.get("retry_pending"))
     # An adopted strategy that never reached the reviewed lineage (docich#657,
     # #2489) is an actionable regression even while the loop itself keeps
     # running. A later successful/no-change persist overwrites the status and
     # clears the durable failure record.
     persist = improvement.get("persist")
-    clone_disappeared = (
-        isinstance(persist, dict)
-        and persist.get("clone_present") is False
+    persist = persist if isinstance(persist, dict) else {}
+    triggers["improvement_persist_fail"] = persist.get("result") == "fail"
+    triggers["improvement_persist_stale"] = bool(persist.get("stale"))
+    triggers["improvement_persist_unreadable"] = (
+        bool(persist.get("present")) and not persist.get("readable")
+    )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure")
+    triggers["improvement_persist_failure"] = (
+        isinstance(failure, dict)
+        and (failure.get("reason") != "clone_missing" or bool(improvement.get("running")))
+    )
+    triggers["improvement_persist_clone_disappeared"] = (
+        persist.get("clone_present") is False
         and (
             bool(improvement.get("running"))
             or persist.get("last_success_at") is not None
         )
     )
-    # clone_missing is only actionable while the improve loop is running; a
-    # projection deployment without soren-persist is normal when it is idle.
-    failure = persist.get("last_failure") if isinstance(persist, dict) else None
-    failure_actionable = isinstance(failure, dict) and (
-        failure.get("reason") != "clone_missing" or bool(improvement.get("running"))
+    status = (
+        "critical" if worker_down_sev == "critical"
+        else "warn" if any(triggers.values())
+        else "ok"
     )
-    if isinstance(persist, dict) and (
-        persist.get("result") == "fail"
-        or persist.get("stale")
-        or (persist.get("present") and not persist.get("readable"))
-        or failure_actionable
-        or clone_disappeared
-    ):
-        return "warn"
-    return "ok"
+    return {"status": status, "triggers": triggers}
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    return _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )["status"]
 
 
 # Fixed v1 Soren91 sent-to-sent metrics, never game acceptance or raw records.
@@ -10493,6 +12584,7 @@ _BOUNDARY_DIAG_REASONS = frozenset(
         "post_key_probe_failed",
         "post_key_capture_failed",
         "wait_timeout",
+        "runtime_processes_gone",
     }
 )
 _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
@@ -11122,6 +13214,45 @@ def _collect_hanjuku_projection_recovery(state_dir):
         return {**result, 'status': 'unverified'}
 
 
+def _hanjuku_runtime_terminal(root, runtime_id):
+    """Fixed-enemy projection of a rolled-back/failed Hanjuku runtime dir:
+    which reviewed terminal markers are present. Enums and booleans only;
+    no bytes, paths beyond the fixed layout, or private state escape."""
+    result = {
+        'runtime_present': False, 'presentation_status': None,
+        'receipt_status': None, 'gameplay_files': None,
+        'states_files': None,
+    }
+    try:
+        runtime = root / 'runtimes' / runtime_id
+        if not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', runtime_id) or not runtime.is_dir():
+            return result
+        result['runtime_present'] = True
+        presentation, _ = _read_hanjuku_record(runtime / 'presentation.json')
+        status = presentation.get('status')
+        if status in {'prepared', 'ready', 'stopped', 'presentation_failed',
+                      'cleanup_failed', 'failed'}:
+            result['presentation_status'] = status
+        elif status is not None:
+            result['presentation_status'] = 'other'
+        receipt, _ = _read_hanjuku_record(runtime / 'hanjuku_resume.json')
+        rstatus = receipt.get('status')
+        if rstatus in {'prepared', 'claimed', 'queued'}:
+            result['receipt_status'] = rstatus
+        elif rstatus is not None:
+            result['receipt_status'] = 'other'
+        result['gameplay_files'] = sorted(
+            name for name in ('hanjuku_bot.json', 'hanjuku_run.json',
+                              'hanjuku_events.jsonl')
+            if (runtime / name).exists())
+        states = runtime / 'states'
+        if states.is_dir():
+            result['states_files'] = sorted(entry.name for entry in states.iterdir())
+    except (OSError, ValueError, TypeError):
+        pass
+    return result
+
+
 def _collect_hanjuku_resume(state_dir):
     """Fixed metadata projection; does not read checkpoint/ROM bytes."""
     unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
@@ -11174,7 +13305,9 @@ def _collect_hanjuku_resume(state_dir):
             digest = hashlib.sha256(json.dumps(request, sort_keys=True,
                 separators=(',', ':'), allow_nan=False).encode()).hexdigest()
             return {**unavailable, 'status': 'detached_claim',
-                    'reservation_fingerprint': digest}
+                    'reservation_fingerprint': digest,
+                    'runtime_terminal': _hanjuku_runtime_terminal(
+                        root, request['runtime_id'])}
         if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'
                 or not isinstance(owner.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', owner['runtime_id'])
@@ -11409,8 +13542,8 @@ def _compact_hanjuku_house_deferral(value):
                 'castle_confirm', 'house_view', 'house_confirm') else 'other'}
 
 
-def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
-    """Last fixed decision/event names from the active runtime's own log.
+def _hanjuku_decision_rows(runtime, active, clock):
+    """Parsed decision/event rows from the active runtime's own log tail.
 
     Only allowlisted tokens, fixed screen kinds and ages leave this reader.
     Reasons, chart steps, general/castle names, frame hashes and identities
@@ -11462,7 +13595,107 @@ def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
                 continue
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return []
-    return out[-limit:]
+    return out
+
+
+def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
+    """Last fixed decision/event names from the active runtime's own log."""
+    return _hanjuku_decision_rows(runtime, active, clock)[-limit:]
+
+
+def _hanjuku_sortie_launch(rows):
+    """Bounded launch-vs-repick signal from the decision tail itself.
+
+    A picked order fires ``order_start``; a sortie that actually leaves fires
+    ``order_launched``. Repeated picks with no launch in the same tail window
+    is the observed select-then-cancel loop (order_start → castle_menu → map),
+    which carried no signal until now and read as a healthy map walk.
+    """
+    counts = {}
+    for row in rows:
+        decision = row.get('decision')
+        if isinstance(decision, str):
+            counts[decision] = counts.get(decision, 0) + 1
+    starts = counts.get('order_start', 0)
+    launched = counts.get('order_launched', 0)
+    return {'order_start': starts,
+            'order_launched': launched,
+            'stalled': starts >= 3 and launched == 0}
+
+
+HANJUKU_CAMP_DECISIONS = frozenset({
+    'camp_found', 'camp_enter', 'camp_menu_not_opened', 'camp_menu_unread',
+    'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
+    'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
+    'camp_recall_picker_not_open', 'camp_recall_scene_abandoned',
+    'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',
+    'retreat_recheck_invalidated', 'camp_fort_sortie', 'camp_hp_observation',
+})
+
+
+def _hanjuku_camp_tail(rows):
+    """Bounded camp events in the same decision tail as ``sortie_launch``.
+
+    The last-eight window is dominated by ``action_plan`` rows, so a camp that
+    keeps being found, entered and given up on was invisible: "the bot ignores
+    the tent" and "the bot is inside a bounded retry window" read the same.
+    """
+    counts = {}
+    for row in rows:
+        decision = row.get('decision')
+        if isinstance(decision, str) and decision in HANJUKU_CAMP_DECISIONS:
+            counts[decision] = counts.get(decision, 0) + 1
+    return {'counts': counts}
+
+
+HANJUKU_RECALL_STAGES = frozenset({
+    'to_camp', 'hero_focus', 'hero_open', 'menu', 'dest', 'await_dispatch',
+    'recheck_roster_open', 'recheck_roster_read', 'recheck_status', 'recheck_read',
+    'recheck_close', 'fort_menu', 'fort_list', 'fort_status', 'fort_status_read',
+})
+
+
+def _compact_hanjuku_recall(mem):
+    """Bounded camp-recall state: why a visible camp is or is not recalled.
+
+    Only fixed stage tokens, bounded counts and the cursor-cell target leave
+    this reader; generals, castles and reasons stay in the private log. The
+    retry window is the reason a still-visible tent can sit for hundreds of
+    observations, so its age and length are projected beside the state.
+    """
+    flow = mem.get('flow') if isinstance(mem.get('flow'), dict) else {}
+    out = {'state': 'idle'}
+    state = flow.get('recall')
+    if isinstance(state, dict):
+        stage = state.get('stage')
+        target = state.get('target')
+        steps = state.get('steps')
+        out = {'state': 'recalling',
+               'stage': stage if stage in HANJUKU_RECALL_STAGES else 'other',
+               'steps': steps if type(steps) is int and 0 <= steps <= 1000 else None,
+               'named': state.get('retreat_recheck') is True,
+               'hero': state.get('hero') is True,
+               'target': (list(target) if isinstance(target, (list, tuple)) and len(target) == 2
+                          and all(type(axis) is int for axis in target) else None)}
+    skip = flow.get('recall_skip')
+    if isinstance(skip, dict):
+        tick, armed = mem.get('tick'), skip.get('tick')
+        window = flow.get('recall_skip_ticks')
+        window = window if type(window) is int and 0 < window <= 100000 else 400
+        age = tick - armed if type(tick) is int and type(armed) is int else None
+        retry = flow.get('recall_retry')
+        count = retry.get('count') if isinstance(retry, dict) else None
+        out['skip'] = {'age': age if age is not None and 0 <= age <= 100000 else None,
+                       'window': window,
+                       'retry': count if type(count) is int and 0 <= count <= 100 else None}
+    queue = flow.get('retreat_rechecks')
+    if isinstance(queue, dict):
+        out['queue'] = len(queue) if len(queue) <= 64 else None
+    budget = flow.get('retreat_anonymous_budget')
+    if isinstance(budget, dict):
+        reads = budget.get('reads')
+        out['anonymous_reads'] = reads if type(reads) is int and 0 <= reads <= 1000 else None
+    return out
 
 
 # Mirror of strategy/orders.BOSS_RELAUNCH_LIMIT: the bot re-sends a boss
@@ -11474,6 +13707,51 @@ HANJUKU_MARCH_RELAUNCH_LIMIT = 2
 # become a channel for arbitrary text; only these reviewed labels are emitted.
 HANJUKU_SEASON_SITES = frozenset({
     '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
+
+
+def _compact_post_month(last):
+    """The month's status-walk outcome: fixed tokens and counts only.
+
+    The walk records ``complete``, ``failed`` and the hero-castle manifest
+    result; there is no free-text result token (v550 projected one that the
+    policy never writes, so it always read null).
+    """
+    if not isinstance(last, dict):
+        return None
+    carry = last.get('carry')
+    manifest = last.get('manifest') if isinstance(last.get('manifest'), dict) else {}
+    return {'complete': last.get('complete') is True,
+            'failed': last.get('failed') if isinstance(last.get('failed'), str) else None,
+            'manifest_done': manifest.get('done') is True,
+            'manifest_arrived': (len(manifest['arrived'])
+                                 if isinstance(manifest.get('arrived'), (list, tuple)) else None),
+            'carry': len(carry) if isinstance(carry, (list, tuple)) else None}
+
+
+def _compact_boss_probes(probes):
+    """Which boss-cell candidates the adopted plan rotates (v544): counts only."""
+    if not isinstance(probes, dict) or not probes:
+        return None
+    indices = sorted({v for v in probes.values() if type(v) is int and v >= 0})
+    return {'steps': len(probes), 'indices': indices[:12]}
+
+
+def _compact_boss_cell(reading, now):
+    """The Y-view measured boss cell (v538): fixed chapter/cell/counts only."""
+    if not isinstance(reading, dict):
+        return None
+    chapter = reading.get('chapter')
+    cell = reading.get('cell')
+    tick = reading.get('tick')
+    readings = reading.get('readings')
+    point = None
+    if isinstance(cell, (list, tuple)) and len(cell) == 2 and all(type(v) is int for v in cell):
+        point = [cell[0], cell[1]]
+    age = tick if type(tick) is int and type(now) is int else None
+    return {'chapter': chapter if type(chapter) is int else None,
+            'cell': point,
+            'readings': readings if type(readings) is int and readings > 0 else None,
+            'age_ticks': (max(0, now - age) if age is not None else None)}
 
 
 def _compact_hanjuku_policy(mem, state=None):
@@ -11493,13 +13771,16 @@ def _compact_hanjuku_policy(mem, state=None):
                 if isinstance(value, list) else None)
     def count(value, maximum=1_000_000):
         return value if type(value) is int and 0 <= value <= maximum else None
-    orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
-    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else {}
-    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else {}
+    orders = _plan_region(mem).get('orders') if isinstance(_plan_region(mem).get('orders'), dict) else {}
+    world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else world.get('sorties', {})
     relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
     victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
     retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
     lost = mem.get('lost') if isinstance(mem.get('lost'), list) else None
+    unknown = mem.get('general_location_unknown')
+    unknown = unknown if isinstance(unknown, list) else None
     discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
     registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
     chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
@@ -11526,7 +13807,7 @@ def _compact_hanjuku_policy(mem, state=None):
     exhausted = [step for step, row in rows
                  if row['status'] == 'overdue'
                  and (row['relaunch'] or 0) >= HANJUKU_MARCH_RELAUNCH_LIMIT]
-    active = text(mem.get('active'), 32)
+    active = text(_plan_region(mem).get('active'), 32)
     if active:
         march_state = 'active'
     elif not rows and not orders:
@@ -11549,7 +13830,7 @@ def _compact_hanjuku_policy(mem, state=None):
         'no_input_streak': (state.get('no_input_streak')
                             if type(state.get('no_input_streak')) is int else None),
         'variant': text(mem.get('variant'), 32),
-        'active': text(mem.get('active'), 32),
+        'active': text(_plan_region(mem).get('active'), 32),
         'tick': tick if type(tick) is int and tick >= 0 else None,
         'month': text(mem.get('month'), 16),
         'orders': {text(step, 32) or '?': text(status, 32) or '?'
@@ -11564,6 +13845,7 @@ def _compact_hanjuku_policy(mem, state=None):
                     for step, value in list(retries.items())[:20] if isinstance(step, str)},
         'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
                      for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'unknown_generals': (len(unknown) if unknown is not None and len(unknown) <= 64 else None),
         'sorties': dict(rows[:12]),
         # Direct march-stall evidence: whether a launched sortie is overdue,
         # how long it has gone unmeasured and whether its bounded relaunch
@@ -11576,6 +13858,9 @@ def _compact_hanjuku_policy(mem, state=None):
                                             if row['status'] == 'overdue'
                                             and row['age_ticks'] is not None), default=None)},
         'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
+        'boss_cell': _compact_boss_cell(mem.get('boss_cell'), mem.get('tick')),
+        'boss_probes': _compact_boss_probes(mem.get('boss_step_probe')),
+        'post_month': _compact_post_month(mem.get('post_month_status_last')),
         'cursor': ([item for item in cursor[:2] if type(item) is int]
                    if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
         'uncertain': mem.get('uncertain') is True,
@@ -11594,8 +13879,13 @@ def _compact_hanjuku_policy(mem, state=None):
         'map_registration_castles': (len(registration.get('castles'))
                                      if isinstance(registration.get('castles'), dict) else None),
         'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
-                          'has_plan': isinstance(mem.get('chart_plan'), dict)}
+                          'has_plan': isinstance(_plan_region(mem).get('chart_plan'), dict)}
                          if chart_adjust else None),
+        # A visible tent nobody acts on had no projection at all. Project the
+        # flow's own bounded recall state beside it so the reason (no
+        # detection, an armed retry window, a queue budget or a stuck recall)
+        # is readable without the private decision log.
+        'recall': _compact_hanjuku_recall(mem),
         # A long battle looks like a frozen month/capture count. Project the
         # bounded HP evidence so diagnostics can say whether it is progressing.
         'battle': ({'enemy': text(battle.get('enemy'), 32),
@@ -11742,23 +14032,40 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not isinstance(active.get('lease_id'), str) or not active['lease_id']
                 or not isinstance(active.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', active['runtime_id'])):
-            return out
+            return {**out, 'reason': 'record_not_ready'}
         runtime = root / 'runtimes' / active['runtime_id']
         out['chart_worker'] = _project_hanjuku_chart_worker(runtime, now)
         bot, modified = _read_hanjuku_record(runtime / 'hanjuku_bot.json')
         run, _ = _read_hanjuku_record(runtime / 'hanjuku_run.json')
         trace = bot.get('decision_trace')
-        if (not isinstance(trace, dict)
-                or any(trace.get(k) != active.get(k) or run.get(k) != active.get(k) for k in HANJUKU_TACTICAL_KEYS)
-                or run.get('terminal_reason') or run.get('terminal_candidate')):
-            return out
+        if not isinstance(trace, dict):
+            return {**out, 'reason': 'record_unbound'}
+        if any(trace.get(k) != active.get(k) or run.get(k) != active.get(k)
+               for k in HANJUKU_TACTICAL_KEYS):
+            return {**out, 'reason': 'identity_mismatch'}
+        if run.get('terminal_reason') or run.get('terminal_candidate'):
+            return {**out, 'reason': 'terminal'}
         age = now - modified
         if not 0 <= age <= 30:
-            return {**out, 'status': 'stale'}
+            # Keep a bounded age: live status must tell "the bot stopped
+            # writing" from "the record is unreadable" without the detail.
+            # The last written chapter/month/phase stay available, explicitly
+            # under ``status: stale``: during a stalled game (g1163
+            # 2026-11-14, bot silent >1 h) the operator needs the last known
+            # position to decide the recovery, and the live status prints the
+            # stale label beside it.
+            stale = {**out, 'status': 'stale', 'reason': 'record_stale',
+                     'age_sec': min(int(age), 3600)}
+            last = bot.get('policy')
+            if (isinstance(last, dict) and type(last.get('chapter')) is int
+                    and 1 <= last['chapter'] <= 12):
+                stale['chapter'] = last['chapter']
+                stale['policy'] = _compact_hanjuku_policy(last, bot)
+            return stale
         mem = bot.get('policy')
         if (not isinstance(mem, dict) or type(mem.get('chapter')) is not int
                 or not 1 <= mem['chapter'] <= 12):
-            return {**out, 'status': 'unsupported_chapter'}
+            return {**out, 'status': 'unsupported_chapter', 'reason': 'unsupported_policy'}
         assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
         refill = _project_hanjuku_refill(mem, active)
         house_deferral = _project_hanjuku_house_deferral(mem, active)
@@ -11766,15 +14073,19 @@ def _collect_hanjuku_tactical(state_dir, now):
             again, _ = _read_hanjuku_record(root / 'game_switch.json')
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
+            rows = _hanjuku_decision_rows(runtime, active, now)
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
                     'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
-                               'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
+                               'recent_decisions': rows[-8:],
+                               'sortie_launch': _hanjuku_sortie_launch(rows),
+                               'camp': _hanjuku_camp_tail(rows)},
                     'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
-        garrison = mem.get('garrison', {})
-        sorties = mem.get('sorties', {})
+        world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+        garrison = mem.get('garrison', world.get('garrison', {}))
+        sorties = mem.get('sorties', world.get('sorties', {}))
         tick = mem.get('tick')
-        unknown = mem.get('general_location_unknown', [])
+        unknown = mem.get('general_location_unknown', world.get('general_location_unknown', []))
         if (not isinstance(captured, list) or not isinstance(garrison, dict)
                 or not isinstance(sorties, dict) or not isinstance(unknown, list)
                 or type(tick) is not int or tick < 0):
@@ -11801,9 +14112,12 @@ def _collect_hanjuku_tactical(state_dir, now):
         again, _ = _read_hanjuku_record(root / 'game_switch.json')
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
+        dec_rows = _hanjuku_decision_rows(runtime, active, now)
         out.update(status='ok', age_sec=int(age), chapter=1,
                    policy={**_compact_hanjuku_policy(mem, bot),
-                           'recent_decisions': _recent_hanjuku_decisions(runtime, active, now)},
+                           'recent_decisions': dec_rows[-8:],
+                           'sortie_launch': _hanjuku_sortie_launch(dec_rows),
+                           'camp': _hanjuku_camp_tail(dec_rows)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
                    last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
@@ -12673,6 +14987,7 @@ def _collect_nethack_boundary(state_dir, now):
         "process_alive": None,
         "save_signature_changed": None,
         "boundary_outcome": None,
+        "orphan_processes_present": None,
         "generation": None,
         "age_sec": None,
     }
@@ -12715,6 +15030,9 @@ def _collect_nethack_boundary(state_dir, now):
         value = diag.get(key)
         if isinstance(value, bool):
             result[key] = value
+    orphan_count = diag.get("orphan_processes_present")
+    if type(orphan_count) is int and orphan_count >= 0:
+        result["orphan_processes_present"] = orphan_count
     recorded = diag.get("recorded_at")
     if isinstance(recorded, str):
         try:
@@ -13933,6 +16251,10 @@ _CORNER_STUB_KEYS = (
     "present", "readable", "status", "game", "previous_game",
     "end_reason", "finish_reason", "last_error_code", "completed_at",
     "updated_at", "phase", "active_game",
+    # Retro-corner wedges are diagnosed from these two evidence fields alone
+    # (g1163 2026-11-14: the whole entry was stubbed at the hard ceiling and
+    # both the settle code and the lock probe disappeared).
+    "restoring_settle_code", "lock_state",
 )
 # Corners entries that never stub individually: ``game_switch`` is the
 # identity of what is actually on screen and ``corner_rotation`` is the
@@ -13961,6 +16283,19 @@ def _section_omission_stub(key, value):
         for keep in _CORNER_HARD_KEEP:
             entry = value.get(keep)
             if isinstance(entry, dict):
+                stub[keep] = entry
+    elif key == "hanjuku_tactical" and isinstance(value, dict):
+        # #4152: keep the same small projections the soft budget keeps, so a
+        # fat envelope cannot blank the chapter/month/phase evidence an
+        # operator reads to tell whether the game is still moving.
+        stub["basis"] = "bot_record"
+        for keep in ("policy", "chart_worker"):
+            entry = value.get(keep)
+            if isinstance(entry, dict):
+                stub[keep] = entry
+        for keep in ("chapter", "age_sec"):
+            entry = value.get(keep)
+            if type(entry) is int:
                 stub[keep] = entry
     return stub
 
@@ -14025,6 +16360,54 @@ def _corners_hard_trim(payload, text):
     return text
 
 
+# Per-section byte accounting (#3341, Phase 0 measurement only). The map is
+# reported under ``meta`` after ``_diagnostics_budget`` has already reduced the
+# payload, so it is excluded from the soft budget target by construction. Its
+# own footprint is bounded: the ``top`` map holds at most
+# ``_SECTION_BYTES_TOP_N`` key names with integer byte counts, plus the two
+# integer totals, and serializes to a few hundred bytes. The public boundary
+# carries key names and byte counts only -- never section contents, paths or
+# values -- matching the monitor's existing aggregate-only contract.
+_SECTION_BYTES_TOP_N = 5
+
+
+def _compute_section_bytes(payload):
+    """Measure the serialized UTF-8 byte share of each top-level section.
+
+    Every top-level key -- ``meta`` included, since ``section_bytes`` is not
+    yet present when this runs -- is serialized with the same settings as the
+    final envelope (``sort_keys=True, ensure_ascii=False,
+    separators=(",", ":")``) and measured including the quoted key name and
+    the ``:`` separator, so ``total`` tracks the real envelope size (differing
+    only by the outer braces, commas and the ``section_bytes`` entry itself,
+    which is injected after measurement). ``total`` is a collector-side
+    measurement: the headroom monitor publishes the gateway's re-serialized
+    output, which differs by the sanitizer's truncation and the sections the
+    gateway appends, so these two numbers are not expected to match. Returns
+    ``{"top": {name: bytes,
+    ...}, "others": n, "total": n}`` where ``top`` holds the largest
+    ``_SECTION_BYTES_TOP_N`` sections and ``others`` sums the rest.
+    Serialization failure cannot occur in practice -- the caller runs this on
+    a payload ``_diagnostics_budget`` already serialized -- but such a
+    section is counted at 0 bytes so it folds into ``others`` instead of
+    crashing the collector.
+    """
+    byte_sizes = {}
+    for key, value in payload.items():
+        try:
+            entry = json.dumps(key) + ":" + json.dumps(
+                value, sort_keys=True, ensure_ascii=False,
+                separators=(",", ":"))
+        except (TypeError, ValueError):
+            byte_sizes[key] = 0
+            continue
+        byte_sizes[key] = len(entry.encode("utf-8"))
+    ranked = sorted(byte_sizes.items(), key=lambda item: item[1], reverse=True)
+    top = {key: size for key, size in ranked[:_SECTION_BYTES_TOP_N]}
+    total = sum(byte_sizes.values())
+    return {"top": top, "others": total - sum(top.values()), "total": total}
+
+
 def _diagnostics_budget(payload):
     """Keep latest history through existing detail reductions, then bound it."""
     text = _nethack_history_budget(payload, keep_latest=True)
@@ -14069,7 +16452,15 @@ def _diagnostics_budget(payload):
         policy = summary.get('policy') if isinstance(summary, dict) else None
         chapter = summary.get('chapter') if isinstance(summary, dict) else None
         age_sec = summary.get('age_sec') if isinstance(summary, dict) else None
+        detail_status = summary.get('status') if isinstance(summary, dict) else None
+        detail_reason = summary.get('reason') if isinstance(summary, dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
+        # The omission says "detail reduced", not "game state unknown". Keep
+        # the collector's fixed cause tokens so live status can still name it.
+        if detail_status in _HANJUKU_DETAIL_STATUSES:
+            payload['hanjuku_tactical']['detail_status'] = detail_status
+        if detail_reason in _HANJUKU_DETAIL_REASONS:
+            payload['hanjuku_tactical']['detail_reason'] = detail_reason
         if isinstance(policy, dict):
             payload['hanjuku_tactical']['policy'] = policy
         worker = summary.get('chart_worker') if isinstance(summary, dict) else None
@@ -14419,6 +16810,14 @@ def _shared_runtime_process(soren, proc_root, role, pid):
                 process_kind = 'native'
             else:
                 raise ValueError('unexpected encoder')
+        elif role == 'shared_stream' and _is_docich_stream_runner([os.fsdecode(arg) for arg in argv], soren):
+            # ADR 0007: docich-stream.service owns the encoder. Exact argv shape only
+            # (`python3 -m docich.stream_supervisor [--root <soren>] run`), same user,
+            # same working directory as the legacy runner.
+            if not python:
+                raise ValueError('unexpected interpreter')
+            if cwd != str(soren):
+                raise ValueError('unexpected working directory')
         else:
             expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
             if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)
@@ -14651,11 +17050,15 @@ def main(argv):
     corners = _collect_programs(_program_state_dir(), soren, now)
     hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
     lifecycle_pause = _collect_lifecycle_pause(soren, now, workers)
+    severity_report = _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )
     title_sync = _collect_stream_title_sync(
         soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
     )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause),
+        "status": severity_report["status"],
+        "severity_triggers": severity_report["triggers"],
         "meta": meta,
         "stream_title_sync": title_sync,
         "twitch_oauth": _collect_twitch_oauth(now),
@@ -14664,6 +17067,7 @@ def main(argv):
             soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
+        "broadcast_template": _collect_broadcast_template(soren),
         # The ring lives in the runtime user's home. Resolve it with the same
         # rule the sampler uses (the passwd entry), not the checkout location
         # and not a config/state_dir value (#2578: reboot-persistent evidence).
@@ -14721,6 +17125,7 @@ def main(argv):
             now,
         ),
         "opencode_retention": _collect_opencode_retention(soren, now),
+        "opencode_session_file": _collect_opencode_session_file(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
         "cc_translation_adapter": _collect_cc_translation_adapter(),
@@ -14734,6 +17139,26 @@ def main(argv):
     ):
         payload["status"] = "warn"
     text = _diagnostics_budget(payload)
+    # Per-section byte accounting (#3341): measured on the post-budget payload
+    # and injected under ``meta`` (a _HARD_KEEP section), so it is excluded
+    # from the budget target by construction rather than competing with
+    # evidence for bytes. Re-serialize with the same compact separators the
+    # budget path emits. Only the gateway's hard ceiling is re-checked: the
+    # production envelope legitimately sits above the softer MAX_JSON_BYTES,
+    # and dropping the accounting there would blank the measurement the Phase
+    # 0 issue exists to collect. If the injection itself pushes the envelope
+    # past the hard ceiling -- only possible within a few hundred bytes of it
+    # -- the accounting is dropped instead of failing the whole operation.
+    # ``meta`` is built as a dict in this collector. If that contract ever
+    # changes, skip optional accounting rather than breaking diagnostics output.
+    if isinstance(payload.get("meta"), dict):
+        payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"))
+        if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+            del payload["meta"]["section_bytes"]
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                              separators=(",", ":"))
     sys.stdout.write(text + "\n")
     return 0
 

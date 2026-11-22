@@ -7,9 +7,11 @@ from ...hanjuku_egg_reference import general_max_hp
 from ...hanjuku_egg_stock import observed_uses
 from ..decision_log import _record
 from ..judgment.battle import _own_egg_empty
-from ..os_layer.commands import menu_to, pad
+from ..os_layer.commands import egg_recovery_list_batch, menu_to, pad
 from ..os_layer.readers import _current, _options, month_menu_ready
+from ..os_layer.screen import egg_ritual_recitation_panel
 from ..os_layer.world import NAME
+from ..state import egg_memory
 from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, WAGE_SPEND_HOLD,
                                 _depleted_eggs, _egg_measured_cost, _egg_recovery_targets,
                                 _month_key)
@@ -69,6 +71,8 @@ def _observe_recovery_list_quantities(screen, mem, sub):
         observed_member(mem, [actor])
         quantity = int(readings[0])
         mem.setdefault('egg_uses', {})[actor] = quantity
+        egg_memory.observe(mem, actor, egg=(mem.get('egg_types') or {}).get(actor),
+                           uses=quantity, present=True, source=egg_memory.RECOVERY)
         if quantity == 0:
             mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
         else:
@@ -95,7 +99,11 @@ def _individual_egg_candidate(screen, mem, sub):
         actor, quantity = cells.get(32), cells.get(104)
         if (actor in (None, NAME, 'しゅじんこう') or actor in paid or not 47 < line.y <= 199
                 or general_max_hp(actor) is None or quantity not in ('0', '1')
-                or (quantity == '1' and (mem.get('egg_types') or {}).get(actor) in ('いっぱつエッグ', 'キングエッグ'))):
+                # #4439: the one-shot kind reads through the egg_memory port,
+                # so a measured newer observation (たまごなし included) decides
+                # instead of a stale flat egg_types mirror.
+                or (quantity == '1' and egg_memory.egg_type(mem, actor)
+                    in ('いっぱつエッグ', 'キングエッグ'))):
             continue
         candidates.append((int(quantity), line.y, actor))
     return min(candidates)[2] if candidates else None
@@ -123,7 +131,7 @@ def resume_egg_ritual_step(screen, mem):
     if screen.has('うむッ') or screen.has('いかんッ'):
         return []  # no purchase ownership/fee authority survives restoration
     current = _current(screen)
-    if screen.hand:
+    if screen.hand and not egg_ritual_recitation_panel(screen):
         return [pad('b')] if current and current[0] == 32 and 47 <= current[1] <= 199 else []
     if screen.has('どのしょうぐんのたまごを') and screen.has('おはらいしますか?'):
         return []
@@ -303,7 +311,7 @@ def _egg_recovery_step(screen, mem, sub):
                                 '卵のない主人公は召喚獣の即死攻撃でゲームオーバーになる'
                                 '(g604 ダークエルフ)ため、主人公の卵だけを回復する'))
                 return [pad('a')]
-            return [move] if move else []
+            return (egg_recovery_list_batch(screen, NAME) or [move]) if move else []
         actor = sub.get('individual_actor') if _individual_egg_selected(mem, sub) else _individual_egg_candidate(screen, mem, sub)
         if actor:
             move = menu_to(screen, actor)
@@ -317,6 +325,8 @@ def _egg_recovery_step(screen, mem, sub):
                 # This is the actual list quantity, not a planned use/payment.
                 quantity = int(readings[0])
                 mem.setdefault('egg_uses', {})[actor] = quantity
+                egg_memory.observe(mem, actor, egg=(mem.get('egg_types') or {}).get(actor),
+                                   uses=quantity, present=True, source=egg_memory.RECOVERY)
                 if quantity == 0:
                     mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
                 else:
@@ -329,7 +339,7 @@ def _egg_recovery_step(screen, mem, sub):
                                          'cost_pending_quote': EGG_RECOVER_COST},
                         reason='全回復を払えないため、実一覧の残数0・少数の将軍の卵だけを選び費用を確認する')
                 return [pad('a')]
-            return [move] if move else []
+            return (egg_recovery_list_batch(screen, actor) or [move]) if move else []
         if sub.get('full_quote_short'):
             sub['aborted'] = True
             return [pad('b')]  # no measured eligible row; never repeat the full quote
@@ -339,8 +349,11 @@ def _egg_recovery_step(screen, mem, sub):
             _record(mem, 'egg_recover_select', choice='ぜんかいふく',
                     reason='残数が0でない卵も含めて全回復を選択し、次画面で費用を確認')
             return [pad('a')]
-        return [move] if move else []
-    if screen.hand:
+        return (egg_recovery_list_batch(screen, 'ぜんかいふく') or [move]) if move else []
+    # The measured Namaste line has a false hand in the priest artwork.
+    # Its strict text/header match survives animation that changes the sprite
+    # hash; other hands and unread/paid options must still hold.
+    if screen.hand and not egg_ritual_recitation_panel(screen):
         return []  # unknown option, including paid fades: never default A
     if (sub.get('stage') == 'recovering' and full_rows
             and screen.has('どのしょうぐんのたまごを') and screen.has('おはらいしますか?')):

@@ -55,15 +55,13 @@ class FakeGh:
                 (["issue", "create"], ["issue", "edit"], ["issue", "close"])]
 
 
-def run_detector(fake, lookback=alert.DEFAULT_LOOKBACK_MINUTES):
+def run_detector(fake):
     lines = []
     code = alert.run(
         fake,
         repo="azumag/docich",
         server="https://github.com",
         run_id="12345",
-        lookback_minutes=lookback,
-        now=NOW,
         log=lines.append,
     )
     return code, lines
@@ -117,21 +115,24 @@ class ClassificationTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
-    def test_failed_run_inside_the_window_blocks(self):
+    def test_recent_failed_run_blocks(self):
         runs = [failed_run(minutes_ago=5)]
-        self.assertEqual(alert.select_blocking_failure(runs, NOW, 90)["id"], 9001)
+        self.assertEqual(alert.select_blocking_failure(runs)["id"], 9001)
 
     def test_newer_success_supersedes_the_failure(self):
         runs = [success_run(minutes_ago=1), failed_run(minutes_ago=5)]
-        self.assertIsNone(alert.select_blocking_failure(runs, NOW, 90))
+        self.assertIsNone(alert.select_blocking_failure(runs))
 
-    def test_old_failure_outside_the_window_does_not_block(self):
+    def test_old_failure_still_blocks_until_superseded(self):
+        # docich#3666: a blocked deploy is a state, not an event -- the failure
+        # keeps blocking even after the old 90-minute window has elapsed,
+        # until a newer main push deploy succeeds.
         runs = [failed_run(minutes_ago=300)]
-        self.assertIsNone(alert.select_blocking_failure(runs, NOW, 90))
+        self.assertEqual(alert.select_blocking_failure(runs)["id"], 9001)
 
     def test_in_progress_run_does_not_block_by_itself(self):
         runs = [{"id": 7, "created_at": iso(1), "conclusion": None, "head_sha": "c" * 40, "url": "u"}]
-        self.assertIsNone(alert.select_blocking_failure(runs, NOW, 90))
+        self.assertIsNone(alert.select_blocking_failure(runs))
 
 
 class DetectorTests(unittest.TestCase):
@@ -208,7 +209,8 @@ class WorkflowContractTests(unittest.TestCase):
     def test_runs_the_fixed_detector_with_the_workflow_token(self):
         self.assertIn("ops/vm_actions/reconcile_refused_alert.py", self.text)
         self.assertIn("GH_TOKEN: ${{ github.token }}", self.text)
-        self.assertIn("RECONCILE_ALERT_LOOKBACK_MINUTES: '90'", self.text)
+        # docich#3666: selection is age-unbounded; the lookback knob is gone.
+        self.assertNotIn("RECONCILE_ALERT_LOOKBACK_MINUTES", self.text)
         # never executes anything on the VM
         self.assertNotIn("exec docich production", self.text)
         self.assertNotIn("ssh ", self.text)
@@ -219,7 +221,6 @@ class WorkflowContractTests(unittest.TestCase):
             server="https://github.com",
             run=failed_run(),
             reason="reconcile_refused",
-            lookback_minutes=90,
             run_id="12345",
         )
         self.assertIn("`reconcile_refused`", body)

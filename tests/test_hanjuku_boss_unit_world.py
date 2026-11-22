@@ -1,0 +1,60 @@
+"""Record the general's world cell and its distance to the ambush aim.
+
+Owner 2026-11-21: the placement on the orbit was only ever an aim, never a
+measured unit position, so "not on the track" could not be told from a bad
+ambush point. The SELECT jump's view centre is the general's cell.
+"""
+from types import SimpleNamespace
+
+from docich.hanjuku.flows import boss_pursuit as bp
+
+
+def memory(**extra):
+    mem = {
+        'chapter': 9,
+        'tick': 10000,
+        'world': {'sorties': {}, 'garrison': {}},
+        bp.LIST_KEY: {'ミント': {'step': 'A', 'launched': 9500}},
+        'boss_cell': {'chapter': 9, 'cell': [810, 645], 'tick': 9990, 'readings': 2},
+        'plan': {'active': None},
+        'boss_pursuit': {'general': 'ミント', 'step': 'A', 'phase': 'field_open',
+                         'reads': 3, 'seeks': 0, 'x_retries': 0},
+    }
+    mem.update(extra)
+    return mem
+
+
+def test_the_field_open_frame_keeps_the_general_cell():
+    mem = memory(cursor=[700, 640])
+    screen = SimpleNamespace(kind='map', marker=None, cursor=None, text='',
+                             hand=None, selected=None)
+    assert bp.step(screen, mem, None) == [bp.pad('a')]
+    assert mem['boss_pursuit']['unit_world'] == [700, 640]
+    assert mem['boss_pursuit']['phase'] == 'unit_move'
+
+
+def test_the_redirect_metric_compares_the_unit_with_the_aim(monkeypatch):
+    mem = memory(boss_pursuit={'general': 'ミント', 'step': 'A', 'phase': 'dest',
+                               'reads': 4, 'seeks': 0, 'x_retries': 0,
+                               'unit_world': [700, 640], 'aim_cell': [794, 853]})
+    monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (810, 645))
+    import docich.hanjuku.flows.map as m
+    monkeypatch.setattr(m, '_target_roof_under_marker', lambda *a, **k: True)
+    picker = SimpleNamespace(kind='map_target', marker=(132, 113), cursor=None,
+                             text='', hand=None, selected=None)
+    assert bp.step(picker, mem, object()) == [bp.pad('a')]
+    record = [r for r in mem.get('_records', [])
+              if r['decision'] == 'boss_pursuit_redirected'][-1]
+    assert record['observed_metric']['unit_world'] == [700, 640]
+    assert record['observed_metric']['unit_to_aim'] == [94, 213]
+
+
+def test_the_origin_cursor_of_the_y_jump_is_the_unit_cell():
+    # The first world-map cursor reading sits on the field view centre (the
+    # general). Convert it with the Y-view offset: (163.5,93.5) -> (804,368).
+    mem = memory()
+    probe = {'general': 'ミント', 'step': 'A', 'phase': 'dest',
+             'origin_cursor': [163.5, 93.5], 'aim_cell': [770, 853]}
+    metric = bp._redirect_metric(mem, probe, (132, 113))
+    assert metric['unit_world'] == [804, 368]
+    assert metric['unit_to_aim'] == [-34, 485]

@@ -5,6 +5,7 @@ import pytest
 
 from docich import hanjuku_policy as policy
 from docich.hanjuku_screen import Battle, Screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory():
@@ -37,8 +38,8 @@ def test_successor_restarts_inputs_and_preserves_castle_without_inheriting_contr
     assert mem['egg_battle'] is False
     assert all(key not in mem for key in ('egg_key', 'egg_choice', 'indep_menu', 'monster_panel'))
     assert mem['captured'] == ['ジョンリギ'] and not mem.get('lost')
-    assert mem['garrison']['ジョンリギ'] == ['ヴィーナス', 'ミント']
-    assert mem['general_location_unknown'] == ['クミン']
+    assert _world(mem)['garrison']['ジョンリギ'] == ['ヴィーナス', 'ミント']
+    assert _world(mem)['general_location_unknown'] == ['クミン']
     result = next(r for r in mem['_records'] if r['decision'] == 'battle_result')
     assert result['ally'] == 'クミン' and result['outcome'] == 'loss'
     assert result['resulting_event'] == 'defense_continues:ジョンリギ'

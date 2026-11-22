@@ -1,0 +1,17 @@
+"""docich#4681: a starving army must not attack.
+
+ch2 famine 2026-11-19: soldiers 2, gold 0, three early sorties and then only
+アルマムーン plus one castle. An attack spends the army that keeps castles.
+"""
+from docich.hanjuku.strategy import replan
+
+
+def test_a_thin_army_is_below_the_floor():
+    assert replan._army_below_floor({'soldiers_seen': 2})
+    assert replan._army_below_floor({'soldiers_seen': replan.ARMY_FLOOR - 1})
+
+
+def test_a_healthy_army_or_an_unread_count_is_not():
+    assert not replan._army_below_floor({'soldiers_seen': replan.ARMY_FLOOR})
+    assert not replan._army_below_floor({'soldiers_seen': 124})
+    assert not replan._army_below_floor({})

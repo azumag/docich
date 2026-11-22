@@ -87,7 +87,9 @@ if ! systemctl --user restart "$unit"; then
 fi
 
 active=0
-for _ in $(seq 1 20); do
+# 10 s: the user manager can be slow to report a just-restarted unit under
+# load. The following readiness probe remains the actual gate.
+for _ in $(seq 1 40); do
   state="$(systemctl --user show "$unit" --property=ActiveState --value 2>/dev/null || true)"
   if [[ "$state" == "active" ]]; then active=1; break; fi
   sleep 0.25
@@ -148,17 +150,27 @@ try:
 except (OSError, ValueError, TypeError, AttributeError):
     sys.exit(12)
 
-deadline = time.monotonic() + 6.0
+# The restart can return while the new process is still importing on a busy
+# VM. g1163 2026-11-14 12:37 JST: the unit was active and the deployed HTML
+# was correct, but the port did not answer within 6 s and this helper exited
+# 13, which made every later deploy step (worker restarts, projection) skip.
+# The same webui served the deployed HTML at the next diagnostics. Wait a
+# bounded 20 s for the readiness gate instead of 6 s; the wait is bounded so a
+# genuinely broken webui still fails closed.
+READY_TIMEOUT_SEC = 20.0
+deadline = time.monotonic() + READY_TIMEOUT_SEC
 while True:
     for host in hosts:
         url = f"http://{host}:{port}/"
         try:
-            served = urllib.request.urlopen(url, timeout=2).read()
+            served = urllib.request.urlopen(url, timeout=5).read()
         except Exception:
             continue
         print(f"served: {url}", file=sys.stderr)
         sys.exit(0 if hashlib.sha256(served).digest() == expected else 14)
     if time.monotonic() >= deadline:
+        print(f"local webui did not answer within {READY_TIMEOUT_SEC:.0f} s",
+              file=sys.stderr)
         sys.exit(13)
     time.sleep(0.2)
 PY
