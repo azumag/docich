@@ -143,18 +143,17 @@ def test_a_hudless_map_is_not_held_as_a_fade():
     assert 'hold_since' not in state and state['steps'] == 6
 
 
-def test_a_battle_return_restarts_the_to_camp_budget_after_resumable_text():
-    """A non-map status frame must not consume the battle-return reset marker."""
+def test_a_battle_return_restarts_the_to_camp_budget():
+    """Combat pulls the field cursor back to the battle site, so the steps
+    burned before it are debt on a position that no longer exists. The first
+    operable map frame restarts the budget instead of aborting on it."""
     mem = memory(stage='to_camp')
     mem['chapter'] = 6
     state = _flow(mem)['recall']
-    state['steps'] = 89                              # text takes this to 90; map would abort at 91
+    state['steps'] = 90                              # the next counted frame used to abort
     battle = Screen([], None, '', kind='battle')
     assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
     assert state['battle_return'] is True
-    status = Screen([], None, 'ステータス', kind='text')
-    assert recall_flow.camp_recall_step(status, mem, FRAME) == []
-    assert state['steps'] == 90 and state['battle_return'] is True
     field = _camp_frame()                            # the tent is back in view
     actions = recall_flow.camp_recall_step(
         Screen([], None, '', kind='map', cursor=(80, 90)), mem, field)
@@ -164,16 +163,21 @@ def test_a_battle_return_restarts_the_to_camp_budget_after_resumable_text():
     assert any(r['decision'] == 'camp_recall_battle_reset' for r in mem['_records'])
 
 
-def test_a_battle_return_restarts_the_menu_budget():
+def test_a_battle_return_marker_survives_resumable_text_until_map():
     mem = memory(stage='menu')
     state = _flow(mem)['recall']
-    state['steps'] = 80
+    state['steps'] = 89                              # text takes this to 90; map would abort at 91
     battle = Screen([], None, '', kind='battle')
     assert recall_flow.camp_recall_step(battle, mem, FRAME) is None
+    assert state['battle_return'] is True
+    status = Screen([], None, 'ステータス', kind='text')
+    assert recall_flow.camp_recall_step(status, mem, FRAME) == []
+    assert state['steps'] == 90 and state['battle_return'] is True
     field = _camp_frame()
     assert recall_flow.camp_recall_step(
         Screen([], None, '', kind='map', cursor=(80, 90)), mem, field) == []
     assert state['steps'] == 1 and state['battle_resets'] == 1
+    assert 'battle_return' not in state
 
 
 def test_battle_resets_do_not_stretch_a_recall_forever():
