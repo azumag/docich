@@ -93,8 +93,15 @@ def test_early_rescue_preserves_chart_boss_event_and_critical_policies(monkeypat
 
 def test_battle_step_opens_the_bounded_early_rescue_before_melee(monkeypatch):
     _set_balance(monkeypatch)
+    # Keep this integration test on the carried-card path: a positive egg is
+    # already handled by the established _egg_before_retreat branch.
     cur = _battle(hp=70, enemy_hp=75)
-    mem = _memory(cur)
+    cur['own_egg_positive_observed'] = False
+    mem = _memory(cur, egg_uses=None)
+    monkeypatch.setattr(judgment, '_confirmed_carried_kit',
+                        lambda memory, battle: ['エンジェリン'])
+    monkeypatch.setattr(judgment, '_card_damage_gate',
+                        lambda memory, battle, card: {'allowed': False, 'needs_live_list': True})
     screen = Screen([], None, '', kind='battle',
                     battle=Battle(cur['enemy'], cur['enemy_hp'], cur['ally'], cur['ally_hp']))
 
