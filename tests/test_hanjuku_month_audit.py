@@ -742,6 +742,62 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_month_end_held_for_unresolved_egg_is_not_high_confidence(runtime_dir):
+    """docich#5094 / #5045: a fail-closed hold is not a silent loss.
+
+    The month ended with a buildable castle list only because the egg
+    recovery payment was unverified, so the card/castle rows stayed held.
+    The audit keeps the occurrence countable, but must not file it as a
+    high-confidence missed build (the filer defaults to min_confidence=high).
+    """
+    value = _chikujou_state()
+    value['policy']['shop'].update({'cards_held': 'recruit_pending',
+                                    'chikujou_held': True,
+                                    'recruit': 'deferred_egg',
+                                    'egg': 'unverified'})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_cards_held_for_recruit', 'month': '1-1', 'at': 999},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_held_for_egg_unverified']
+    assert record['chikujou_event']['held_for'] == 'egg_unverified'
+    assert record['chikujou_held_for'] == 'egg_unverified'
+    assert '保留' in audit.render(record)
+
+
+def test_chikujou_month_end_held_for_unresolved_recruit_names_the_recruit(runtime_dir):
+    value = _chikujou_state()
+    value['policy']['shop'].update({'cards_held': 'recruit_pending',
+                                    'chikujou_held': True,
+                                    'recruit': 'pending', 'egg': 'done'})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_held_for_recruit_pending']
+
+
+def test_chikujou_month_end_after_released_hold_stays_high_confidence(runtime_dir):
+    value = _chikujou_state()
+    value['policy']['shop'].update({'chikujou': 'check', 'recruit': 'pending',
+                                    'egg': 'done'})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_event']['held_for'] is None
+
+
 def test_chikujou_month_end_without_resources_is_not_recorded(runtime_dir):
     value = _chikujou_state(gold=0)
     audit.observe(runtime_dir, audit.capture(value), value,
