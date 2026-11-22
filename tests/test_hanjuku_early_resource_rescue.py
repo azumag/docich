@@ -69,6 +69,9 @@ def test_early_rescue_requires_a_confirmed_egg_or_damage_gated_carried_card(monk
                         lambda mem, battle, card: {'allowed': False, 'needs_live_list': True})
     cur['cards_selected'] = ['エンジェリン']
     assert not judgment._early_resource_rescue_needed(_memory(cur, egg_uses=None), cur)
+    monkeypatch.setattr(judgment, '_confirmed_carried_kit',
+                        lambda mem, battle: ['エンジェリン', 'エンジェリン'])
+    assert judgment._early_resource_rescue_needed(_memory(cur, egg_uses=None), cur)
 
 
 def test_early_rescue_preserves_chart_boss_event_and_critical_policies(monkeypatch):
