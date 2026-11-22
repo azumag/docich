@@ -2146,6 +2146,15 @@ def _recall_dispatch_step(screen, mem, state):
                     'interrupted': interrupted,
                     'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
                     reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
+        if (status == 'arrival_unconfirmed' and isinstance(state.get('goal'), str)
+                and state.get('input_sent')):
+            # docich#5127 (owner 2026-11-23): an input that was sent but whose
+            # picker did not close inside the window may still be walking. Give
+            # it the same bounded destination-roster read an accepted dispatch
+            # gets, so arrival can be confirmed instead of ending "unconfirmed"
+            # and leaving the general unknown.
+            mem.setdefault('roster_read_due', {})[state['goal']] = (
+                int(mem.get('tick') or 0) + RECALL_READ_DELAY)
         if status == 'arrival_unconfirmed' and not state.get('picker_closed'):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
