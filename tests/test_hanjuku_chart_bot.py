@@ -2341,11 +2341,20 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
-    # A blind walk only positions the cursor. It must not confirm while the
-    # old frame still shows しょうにん; the next fresh frame must show the
-    # exact intended row under the hand before A is sent.
+    # g1190: the hand can remain on the じゅうじキー hint below the menu.
+    # A blind walk only positions the cursor; that hint is not proof that the
+    # target row is selected. A fresh frame must show the exact row under hand.
+    c = Canvas()
+    c.text(48, 15, '1ねん 11のつき 163G')
+    for label, (x, y) in MONTH_GRID.items():
+        c.text(x, y, label)
+    c.text(176, 199, 'じゅうじキー')
+    c.hand(180, 191)
+    hint = parse(c.frame())
+    assert hint.kind == 'month_menu' and hint.hand and hint.hand[1] >= 175
+
     blind = ['up'] * 4 + ['left', 'down']
-    plan = policy.month_step(parse(frame), mem)
+    plan = policy.month_step(hint, mem)
     assert [a['buttons'][0] for a in plan if a['type'] == 'pad'] == blind
     assert 'month_blind_opened' not in mem
     assert [r['decision'] for r in mem['_records']][-1] == 'month_blind_nav'
