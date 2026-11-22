@@ -8056,6 +8056,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1381-sortie-cards-issue",
             "hanjuku-chart-v1382-merchant-defer-buy-record",
             "hanjuku-chart-v1383-ch4-boss-stale-roster",
+            "hanjuku-chart-v1384-empty-card-list-nanimomottenai",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
