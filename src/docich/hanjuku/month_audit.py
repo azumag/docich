@@ -53,6 +53,7 @@ CAMP_ISSUE_COOLDOWN_SECONDS = 900
 SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
 CAMP_ABANDON_MONTHS = 3
+RECALL_KIKAN_COOLDOWN_SECONDS = 900
 CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
@@ -133,6 +134,8 @@ SIGNAL_LABELS = {
     'chikujou_candidate': '未試行の築城候補',
     'boss_month_zero_sortie': 'ボスフェーズで月内ボス出撃ゼロ',
     'boss_sortie_missing': 'ボスへの出撃がない',
+    'recall_kikan_selected': '帰還で「きかん」を選択',
+    'recall_y_jump_expected': 'Yジャンプが必要',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -191,9 +194,12 @@ PRIMARY_LABELS = {
     'chikujou_candidate': '未試行の築城候補',
     'boss_month_zero_sortie': 'ボスフェーズで月内ボス出撃ゼロ',
     'boss_sortie_missing': 'ボスへの出撃がない',
+    'recall_kikan_selected': '帰還で「きかん」を選択',
+    'recall_y_jump_expected': 'Yジャンプが必要',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('recall_kikan_selected', ('recall_kikan_selected',)),
     ('boss_month_zero_sortie', ('boss_month_zero_sortie',)),
     ('chikujou_available_at_end', ('chikujou_available_at_end',)),
     ('chikujou_cancelled_with_resources', ('chikujou_cancelled_with_resources',)),
@@ -1729,6 +1735,151 @@ def _track_chikujou(runtime, state, before, after, records, now, on_sealed=None)
     watch['kind'] = incident.get('kind')
 
 
+
+def _recall_kikan_event(record):
+    if not isinstance(record, dict) or record.get('decision') != 'camp_recall_cursor':
+        return None
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    if metric.get('choice') != 'きかん':
+        return None
+    if metric.get('move') not in (None, 'here'):
+        return None
+    current = metric.get('current')
+    if not (isinstance(current, list) and len(current) == 3
+            and all(type(value) is int for value in current[:2])
+            and isinstance(current[2], str)):
+        current = None
+    return {
+        'decision': 'camp_recall_cursor',
+        'choice': 'きかん',
+        'current': current,
+        'move': metric.get('move'),
+        'at': record.get('at') if type(record.get('at')) in (int, float) else None,
+        'reason': _bounded_text(record.get('reason'), 200),
+    }
+
+
+def _build_recall_kikan_incident(runtime, state, after, event, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    recall = ((mem.get('flow') or {}).get('recall') or {})
+    recall = recall if isinstance(recall, dict) else {}
+    signals = ['recall_kikan_selected', 'recall_y_jump_expected']
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    observed = state.get('observed') if isinstance(state.get('observed'), dict) else None
+    if observed is not None:
+        month = _month_summary(observed, now)
+    else:
+        month = {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                 'first_at': now, 'last_at': now, 'closed_at': now,
+                 'duration_s': 0.0, 'first_tick': mem.get('tick'),
+                 'last_tick': mem.get('tick'), 'duration_ticks': None,
+                 'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    identity = state.get('identity') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': 'recall_kikan_selected',
+        'kind': 'recall_kikan_selected',
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': month,
+        'recall_event': {
+            **event,
+            'goal': _bounded_text(recall.get('goal'), 48),
+            'camp': (list(recall['target']) if isinstance(recall.get('target'), (list, tuple))
+                     and len(recall['target']) == 2 else None),
+            'general': _bounded_text(recall.get('general') or recall.get('actor'), 48),
+            'stage': _bounded_text(recall.get('stage'), 32),
+            'fort': recall.get('fort') is True,
+            'boss': recall.get('boss') is True,
+            'y_jumps': copy.deepcopy(mem.get('y_jumps') or {}),
+            'y_jumped': copy.deepcopy(mem.get('y_jumped') or {}),
+        },
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"recall_kikan_selected|{record['recall_event'].get('goal')}|"
+           f"{record['recall_event'].get('general')}|{int(float(now))}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = 'recall_kikan_selected'
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), 'recall_kikan_selected',
+                                         ['recall_kikan_selected'])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_recall_kikan(runtime, state, after, records, now, on_sealed=None):
+    events = [event for event in (_recall_kikan_event(record) for record in records or ())
+              if event]
+    if not events:
+        return
+    event = events[0]
+    mem = after.get('policy') or {}
+    chapter = mem.get('chapter')
+    recall = ((mem.get('flow') or {}).get('recall') or {})
+    recall = recall if isinstance(recall, dict) else {}
+    key = '|'.join(str(part or '') for part in (
+        chapter, recall.get('goal'), recall.get('general') or recall.get('actor'),
+        tuple(recall.get('target') or ())))
+    table = state.setdefault('recall_kikan_events', {})
+    if not isinstance(table, dict):
+        table = state['recall_kikan_events'] = {}
+    last = table.get(key)
+    if isinstance(last, dict) and float(now) - float(last.get('at') or 0) < RECALL_KIKAN_COOLDOWN_SECONDS:
+        last['count'] = int(last.get('count') or 1) + 1
+        last['last_at'] = float(now)
+        return
+    incident = _build_recall_kikan_incident(runtime, state, after, event, now)
+    _append_incident(runtime, incident, on_sealed)
+    table[key] = {'at': float(now), 'kind': 'recall_kikan_selected', 'count': 1}
+    if len(table) > 30:
+        for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
+            table.pop(stale, None)
+
+
 def _track_camp_abandon(runtime, state, after, now, on_sealed=None):
     mem = after.get('policy') or {}
     chapter, month = mem.get('chapter'), mem.get('month')
@@ -2638,6 +2789,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_battle_resources(runtime, state, after, records, now, on_sealed)
     _track_camp_abandon(runtime, state, after, now, on_sealed)
     _track_chikujou(runtime, state, before, after, records, now, on_sealed)
+    _track_recall_kikan(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -2715,6 +2867,7 @@ def render(record):
     chikujou = record.get('chikujou_event') or {}
     boss_month = record.get('boss_month') or {}
     boss = record.get('boss_phase') or {}
+    recall = record.get('recall_event') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
@@ -2729,6 +2882,18 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if recall:
+        body += [
+            '### 帰還手段',
+            '',
+            f"- 選択: {recall.get('choice')} / 期待: 全体マップ（Y）で自軍城へ直接戻る",
+            f"- 現在: {recall.get('current')} / move: {recall.get('move')}",
+            f"- 将軍: {recall.get('general') or '不明'} / 帰還先: {recall.get('goal') or '不明'}"
+            f" / 野営: {recall.get('camp')} / stage: {recall.get('stage') or '不明'}",
+            f"- Yジャンプ: y_jumps {recall.get('y_jumps')} / y_jumped {recall.get('y_jumped')}",
+            f"- 理由: {recall.get('reason') or '不明'}",
+            '',
+        ]
     if boss_month:
         body += [
             '### ボスフェーズ月次',
@@ -2820,7 +2985,7 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou) else
+    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall) else
                 ('### ボスフェーズの決定' if kind in ('boss_month_zero_sortie',
                                                      'boss_month_zero_unverified')
                  else '### フェーズ中の決定' if kind == 'boss_phase_no_battle'
@@ -2836,7 +3001,7 @@ def render(record):
     ]
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
-    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou
+    body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou or recall
                                      or boss_month or kind == 'boss_phase_no_battle')
              else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
@@ -2905,8 +3070,12 @@ def render_comment(record):
     battle = record.get('battle_event') or {}
     stay = record.get('camp_stay') or {}
     chikujou = record.get('chikujou_event') or {}
+    recall = record.get('recall_event') or {}
     boss_month = record.get('boss_month') or {}
-    if record.get('kind') in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
+    if record.get('kind') == 'recall_kikan_selected':
+        lines.insert(5, f"- 帰還: {recall.get('choice')} / goal {recall.get('goal')}"
+                        f" / {recall.get('general') or '不明'}")
+    elif record.get('kind') in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
         lines.insert(5, f"- ボス月次: {boss_month.get('departures')}"
                         f" / {boss_month.get('boss_name') or 'ボス'}")
     elif record.get('kind') in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
@@ -2938,6 +3107,10 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'recall_kikan_selected':
+        recall = record.get('recall_event') or {}
+        who = recall.get('general') or recall.get('goal') or '将軍不明'
+        return (f"[半熟英雄] 帰還で「きかん」を選択: ch{record.get('chapter')} {who}")[:100]
     if kind in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
         boss_month = record.get('boss_month') or {}
         boss = boss_month.get('boss_name') or 'ボス'
