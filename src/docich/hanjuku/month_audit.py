@@ -1382,6 +1382,41 @@ def _chikujou_staffed(mem):
     return staffed
 
 
+_CHIKUJOU_HOLD_LABELS = {
+    'egg_unverified': '卵回復の支払いが未確認',
+    'recruit_pending': '将軍募集が未決',
+}
+
+
+def _chikujou_hold(shop, records, month):
+    """Why this month never opened 築城, when the hold is by design.
+
+    docich#5045: an unresolved egg payment or recruit question freezes the
+    card/castle rows (flows.month._hold_month_cards) until it settles.
+    That is a fail-closed hold, not a silent loss, so the audit names the
+    reason and keeps the loss countable instead of reporting an unexplained
+    month end (docich#5094). A released hold sets chikujou back to check,
+    so a skipped row here still means nobody got to open it.
+    """
+    if not isinstance(shop, dict) or shop.get('chikujou') not in ('skipped', None):
+        return None
+    held = bool(shop.get('cards_held') or shop.get('chikujou_held'))
+    for row in reversed(records or ()):
+        if not isinstance(row, dict) or row.get('decision') != 'month_cards_held_for_recruit':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        held = True
+        break
+    if not held:
+        return None
+    egg, recruit = shop.get('egg'), shop.get('recruit')
+    if egg == 'unverified' or (recruit == 'deferred_egg'
+                               and egg not in ('done', 'not_needed', 'skipped', None)):
+        return 'egg_unverified'
+    return 'recruit_pending'
+
+
 def _chikujou_snapshot(after, before, record, records):
     from .strategy import economy
     month = record.get('month') if isinstance(record.get('month'), str) else None
@@ -1467,6 +1502,7 @@ def _chikujou_snapshot(after, before, record, records):
         'unavailable': sorted(unavailable)[:8],
         'affordable': affordable,
         'refusal_covered': refusal_covered,
+        'held_for': _chikujou_hold(shop, records, month),
         'buildable': bool(affordable and staffed_candidates and not refusal_covered),
     }
 
@@ -1511,6 +1547,16 @@ def _build_chikujou_incident(runtime, state, after, event, now):
                        if name.startswith('battle_') or name == 'monster_menu_choice')
     kind = ('chikujou_available_at_end' if event.get('outcome') == 'ended'
             else 'chikujou_cancelled_with_resources')
+    # docich#5045 option 3: a month that ended while the card/castle rows were
+    # held for an unresolved egg/recruit question is a fail-closed hold, not a
+    # silent loss. Keep the occurrence in the ledger so the redesign can be
+    # judged on counts, but do not file it as a high-confidence alarm (the
+    # issue filer defaults to min_confidence=high).
+    held_for = event.get('held_for') if event.get('outcome') == 'ended' else None
+    confidence, confidence_reasons = 'high', []
+    if held_for:
+        confidence = 'medium'
+        confidence_reasons = [f'chikujou_held_for_{held_for}']
     signals = [kind, 'chikujou_candidate']
     for name in _signals(context, counts, confirmed, departures, battle_count):
         if name not in signals:
@@ -1530,8 +1576,9 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'schema': SCHEMA,
         'event': kind,
         'kind': kind,
-        'confidence': 'high',
-        'confidence_reasons': [],
+        'confidence': confidence,
+        'confidence_reasons': confidence_reasons,
+        'chikujou_held_for': held_for,
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': month,
@@ -2624,6 +2671,9 @@ def render(record):
             f"- 未試行の候補: {chikujou.get('staffed_candidates') or chikujou.get('candidates')}",
             f"- 試行済み: {chikujou.get('tried')} / 増築済み: {chikujou.get('upgrades')}",
             f"- 理由: {chikujou.get('reason') or '不明'}",
+            *([f"- 保留: {_CHIKUJOU_HOLD_LABELS.get(chikujou['held_for'], chikujou['held_for'])}"
+                '（卵/募集の未決で築城を開かない fail-closed 設計・docich#5045）']
+               if chikujou.get('held_for') else []),
             '',
         ]
     if stay:
@@ -2779,7 +2829,8 @@ def render_comment(record):
     elif record.get('kind') in ('chikujou_available_at_end', 'chikujou_cancelled_with_resources'):
         lines.insert(5, f"- 築城: {chikujou.get('outcome')} / gold {chikujou.get('gold')}"
                         f" / reserve {chikujou.get('reserve')}"
-                        f" / 候補 {chikujou.get('staffed_candidates')}")
+                        f" / 候補 {chikujou.get('staffed_candidates')}"
+                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else ''))
     elif record.get('kind') == 'camp_abandoned':
         lines.insert(5, f"- 野営: {stay.get('months')}ヶ月 / {stay.get('general')}"
                         f" / first {stay.get('first_tick')}")
