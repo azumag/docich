@@ -57,16 +57,32 @@ def test_defence_summon_egg_holds_when_cursor_unread():
     assert egg_battle_step(screen, mem) == []
 
 
-def test_crying_summon_box_reads_as_egg_battle_menu():
-    screen = Screen([], None, 'こうげきたいきゃく')
-    screen.menu_rows = [
+def test_crying_summon_box_stays_battle_menu_and_attacks_in_active_battle():
+    from docich.hanjuku.flows.battle_menus import battle_menu_step
+    from docich.hanjuku.os_layer.commands import pad
+
+    rows = [
         TextLine(192, tuple((176 + 8 * i, ch) for i, ch in enumerate('こうげき'))),
         TextLine(208, tuple((176 + 8 * i, ch) for i, ch in enumerate('たいきゃく'))),
     ]
+    screen = Screen(rows, None, 'こうげきたいきゃく')
+    screen.menu_rows = rows
     screen.menu_cursor = 192
     screen.egg_rows = [EggRow('ペコリーノ', 88, 'ally', 176),
                        EggRow('キャンドロー', 231, 'enemy', 200)]
-    assert classify_text(screen) == 'egg_battle_menu'
+    screen.kind = classify_text(screen)
+    assert screen.kind == 'battle_menu'
+    mem = {
+        'indep_menu': True,
+        'indep_menu_action': 'pass',
+        'battle': {'ally': 'ペコリーノ', 'enemy': 'ヘーゼル',
+                   'ally_hp': 88, 'enemy_hp': 14},
+        '_records': [],
+    }
+    assert battle_menu_step(screen, mem) == [pad('a')]
+    assert mem['_records'][-1]['decision'] == 'battle_menu_plain_command'
+    screen.menu_cursor = 208
+    assert battle_menu_step(screen, mem) == [pad('up')]
 
 
 def test_crying_summon_box_attacks_even_when_wounded():
@@ -82,7 +98,7 @@ def test_crying_summon_box_attacks_even_when_wounded():
     screen.menu_cursor = 192
     screen.egg_rows = [EggRow('ペコリーノ', 30, 'ally', 176),
                        EggRow('キャンドロー', 231, 'enemy', 200)]
-    screen.kind = classify_text(screen)
+    screen.kind = 'egg_battle_menu'
     mem = {
         'egg_battle': True,
         'egg_action': 'attack',

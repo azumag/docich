@@ -1503,12 +1503,6 @@ def classify_text(s: Screen) -> str:
         # おくのてが見える。おくのてだけの救済メニューや敵将軍の左箱 (x40) と
         # 誤認しないよう、両行が自軍の箱位置 x176 のときだけ認める (v362)。
         return 'egg_battle_menu'
-    if (s.egg_rows and any(r.spans() == [(176, 'こうげき')] for r in s.menu_rows)
-            and any(r.spans() == [(176, 'たいきゃく')] for r in s.menu_rows)):
-        # 召喚獣戦で「ないている!!」等の赤字状態表示が1行目に出ると、
-        # 2・3行目が こうげき / たいきゃく になり、_human_commands の たいきゃく
-        # 判定が battle_menu へ吸って B 連打で停止する (g1190 ch6 60-4 ペコリーノ vs キャンドロー)。
-        return 'egg_battle_menu'
     if s.mixed_item_box and s.egg_rows:
         # g1190 2026-11-18 04:55-07:25: a castle-defence summon battle shows the
         # egg-battle box (もうこうげき / たまごをつかう / grey きりふだ) over the

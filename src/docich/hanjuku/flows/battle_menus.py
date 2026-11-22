@@ -1017,6 +1017,8 @@ def battle_menu_step(screen: Screen, mem):
             if isinstance(cur, dict) and isinstance(cur.get('independent'), dict):
                 cur['independent']['action'] = 'use_egg'
     _labels = {word for _, _, word in _options(screen)}
+    _plain_attack_box = ('こうげき' in _labels and 'たいきゃく' in _labels
+                         and not _labels.intersection({'おくのて', 'たまごをつかう', 'きりふだ'}))
     _sha = getattr(screen, 'frame_sha256', None)
     _recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
     cur['menu_same'] = int(cur.get('menu_same') or 0) + 1 if _sha in _recent else 0
@@ -1034,7 +1036,7 @@ def battle_menu_step(screen: Screen, mem):
         return [pad('b')]
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
-    if _one_hit_lethal(cur):
+    if _one_hit_lethal(cur) and not _plain_attack_box:
         # A menu that is already open (or opened before the HP fell): close it
         # unused. battle_step opens none while the enemy is one push from death.
         if (cur.get('card_flow') or {}).get('stage') != 'announce':
@@ -1138,7 +1140,25 @@ def battle_menu_step(screen: Screen, mem):
                             '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'))
             return [pad('a')] if move == 'here' else _emit_moves(move)
     if cur.get('survival') or _survival_needed(cur):
-        return _survival_menu(screen, mem, cur)
+        res = _survival_menu(screen, mem, cur)
+        if res is not None or not _plain_attack_box:
+            return res
+    if _plain_attack_box:
+        # 召喚獣戦の状態異常（「ないている!!」「ネバネバ!!」等）で表示される
+        # こうげき / たいきゃく のみの箱は B で閉じられない (g1190 ch6 60-4
+        # ペコリーノ vs キャンドロー)。退却・救済の判定後に残った場合はこうげきで進める。
+        move = _battle_menu_move(screen, mem, 'こうげき')
+        if move == 'here':
+            _record(mem, 'battle_menu_plain_command', **_battle_labels(cur),
+                    observed_metric={'cursor_y': screen.menu_cursor, 'words': sorted(_labels)},
+                    reason='Bで閉じられないこうげき・たいきゃくのみの戦闘メニューのため、こうげきで戦闘を進める')
+            return [pad('a')]
+        if move is not None:
+            return _emit_moves(move)
+        _record(mem, 'battle_menu_plain_command', **_battle_labels(cur),
+                observed_metric={'cursor_y': screen.menu_cursor, 'words': sorted(_labels)},
+                reason='カーソル未読でもこうげき・たいきゃくのみの戦闘メニューのため、既定のこうげきをAで確定する')
+        return [pad('a')]
     # Chart has no card due this frame: independent judgment under the chart,
     # mapped from the original six melee patterns (①③ pass / ⑥ egg; ②④⑤ are
     # chart-directed cards and never chosen blindly here).
