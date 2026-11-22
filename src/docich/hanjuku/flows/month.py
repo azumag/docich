@@ -527,6 +527,8 @@ def month_step(screen: Screen, mem):
     # 卵回復待ち (deferred_egg) の間は、募集の要否が決まる前に商人の札・築城へ
     # 進まない。卵回復と兵士補充は別扱い。人数未確認 (deferred_roster) の月は
     # 従来の購入順位を保ち、翌月の国ステータスで人数を読む。
+    if shop:
+        _settle_unverified_egg(mem, shop, screen.header)
     if shop and not mem.get('month_sub') and _recruit_precedes_cards(shop):
         extra = _month_extra(screen, mem, shop, recruit_only=True)
         if extra is not None:
@@ -738,6 +740,99 @@ def _recruit_precedes_cards(shop):
         # sub-screen opening until that question resolves.
         return shop.get('egg') not in ('done', 'not_needed', 'skipped', None)
     return shop.get('recruit') in RECRUIT_BEFORE_CARDS
+
+
+def _keep_egg_receipt(shop, sub):
+    """docich#5045: remember an unverified recovery's payment expectation.
+
+    An interrupted sub cannot supply a receipt: its own guard already
+    refuses every later balance change as evidence, so nothing is kept.
+    A sub that never left the month menu cannot have paid either: its
+    balance delta is a stale background, not a receipt
+    (test_payment_delta_on_a_stale_background_is_not_a_recovery_completion_receipt).
+    While the sub stayed tracked it owned the screen, so every debit since
+    ``gold_before`` is either its own fee or a spend recorded after the
+    mark - each baselined here for ``_settle_unverified_egg``.
+    """
+    if (sub.get('kind') != 'egg' or sub.get('payment_interrupted')
+            or sub.get('key') != shop.get('key')
+            or sub.get('left_menu') is not True
+            or type(sub.get('gold_before')) is not int):
+        return
+    cost = sub.get('quoted_cost')
+    shop['egg_receipt'] = {
+        'before': sub['gold_before'],
+        'cost': cost if type(cost) is int and cost > 0 else None,
+        'bought': len(shop.get('bought') or []),
+        'refill_status': (shop.get('soldier_receipt') or {}).get('status'),
+        'upgrades': len(shop.get('chikujou_upgrades') or []),
+        'recruit': shop.get('recruit')}
+
+
+def _settle_unverified_egg(mem, shop, header):
+    """docich#5045: settle an unverified recovery against the later balance.
+
+    A tracked sub owned the screen until the mark, so the only debit it
+    could make is its own fee; afterwards the recruit/cards/castle freeze
+    leaves only spends the ledger records. Subtracting those recorded
+    spends from the balance delta isolates the recovery's answer:
+
+    - rest == 0: the fee never left - unpaid, so 'skipped', the same
+      terminal a pre-quote abandon uses. ``egg_recheck_settled`` keeps the
+      month's re-pending paths from reopening it (no retry loop).
+    - rest == quoted_cost: the fee is the only debit left - 'done', the
+      same receipt standard ``_finish_month_sub`` uses.
+    - anything else stays 'unverified': never retried, never claimed done.
+    """
+    if (shop.get('egg') != 'unverified' or shop.get('egg_recheck_settled')
+            or mem.get('month_sub')):
+        return
+    receipt = shop.get('egg_receipt')
+    before = (receipt or {}).get('before')
+    gold = (header or {}).get('gold')
+    if type(before) is not int or type(gold) is not int or gold > before:
+        return
+    others = 0
+    refill = shop.get('soldier_receipt') or {}
+    if refill.get('status') != receipt.get('refill_status'):
+        # The receipt row cannot be replaced once present, so a changed status
+        # is a refill that ran after the mark and shares the delta.
+        if refill.get('status') != 'paid':
+            return  # a post-mark refill with an unread spend
+        qty = refill.get('qty')
+        if type(qty) is not int or qty <= 0:
+            return  # a paid refill whose cost cannot be read shares the delta
+        others += qty   # the refill receipt is exact: 1G per soldier
+    bought, start = shop.get('bought') or [], receipt.get('bought')
+    if type(start) is not int or len(bought) < start:
+        return
+    for row in bought[start:]:
+        if (not isinstance(row, (list, tuple)) or len(row) < 3
+                or type(row[1]) is not int or type(row[2]) is not int):
+            return  # an unpriced merchant row shares the delta
+        others += row[1] * row[2]  # [name, qty, unit_price] as bought records it
+    if (len(shop.get('chikujou_upgrades') or []) != receipt.get('upgrades')
+            or (shop.get('recruit') in ('done', 'unverified')
+                and shop.get('recruit') != receipt.get('recruit'))):
+        return  # a castle upgrade or a recruit fee could share the delta
+    rest = before - gold - others
+    if rest == 0:
+        settled = 'skipped'
+    elif type(receipt.get('cost')) is int and rest == receipt['cost']:
+        settled = 'done'
+    else:
+        return
+    shop['egg_recheck_settled'] = True
+    shop['egg'] = settled
+    _record(mem, 'egg_unverified_settled', month=shop.get('key'),
+            observed_metric={'gold_before': before, 'gold_after': gold,
+                             'quoted_cost': receipt.get('cost'), 'others': others,
+                             'settled': settled},
+            reason=('放棄した卵回復は残金変動を他の出費で説明し尽くせたため支払い不成立と確定し、'
+                    '当月は未実施として切り札・築城の保留を解放する'
+                    if settled == 'skipped' else
+                    '放棄した卵回復の残金減少が提示額と一致したため支払い済みと確定し、'
+                    '切り札・築城の保留を解放する'))
 
 
 def _hold_month_cards(mem, shop):
@@ -1443,6 +1538,8 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                      else _egg_recovery_targets(mem), fields=('egg',))
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'skipped' if unpaid_egg else 'unverified'
+        if sub['kind'] == 'egg' and shop[sub['kind']] == 'unverified':
+            _keep_egg_receipt(shop, sub)
     if sub['kind'] == 'recruit':
         from ..os_layer.roster import invalidate
         invalidate(mem)  # payment/return never proves an extra general
@@ -1844,6 +1941,8 @@ def month_sub_step(screen: Screen, mem):
                       and sub.get('stage') == 'recovering' else 'skipped')
             if isinstance(shop, dict) and sub.get('kind') in shop:
                 shop[sub['kind']] = status
+                if status == 'unverified':
+                    _keep_egg_receipt(shop, sub)
             _note_chikujou_tried(shop, sub)
             mem.pop('month_sub', None)
             _record(mem, 'month_sub_abandoned', screen=kind,
