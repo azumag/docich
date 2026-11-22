@@ -991,6 +991,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
     return _month_chikujou(screen, mem, shop)
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
+CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
 
 
 LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
@@ -1115,7 +1116,29 @@ def _month_chikujou(screen, mem, shop):
     if isinstance(move, list) and not opened:
         return move
     if move is None:
+        # The month menu can be unreadable for a frame or two while the
+        # month's earlier purchases settle. Closing ちくじょう on the first
+        # unread frame spent the month's only build slot silently: live g1190
+        # ch1 9-1 (docich#5076) ended with every castle still buildable, no
+        # ちくじょう record at all and the audit reason empty. Re-read the
+        # menu a bounded number of times instead, then record why the month
+        # ended without building so the next audit names the cause.
+        waits = int(shop.get('chikujou_menu_wait') or 0) + 1
+        shop['chikujou_menu_wait'] = waits
+        if waits <= CHIKUJOU_MENU_WAIT:
+            _record(mem, 'chikujou_menu_unreadable', month=shop.get('key'),
+                    observed_metric={'waits': waits, 'gold': gold, 'reserve': reserve,
+                                     'screen': screen.kind,
+                                     'options': [word for _, _, word in _options(screen)][:8]},
+                    reason='月メニューのちくじょう行を読めないため、当月の築城を閉じずに再観測する')
+            return []
         shop['chikujou'] = 'skipped'
+        _record(mem, 'chikujou_menu_unreadable', month=shop.get('key'),
+                observed_metric={'waits': waits, 'gold': gold, 'reserve': reserve,
+                                 'screen': screen.kind, 'skipped': True,
+                                 'options': [word for _, _, word in _options(screen)][:8]},
+                deviation_reason='menu_row_unreadable',
+                reason='有限回待ってもちくじょう行を読めないため、当月は築城せずに月を終える')
         return None
     if not opened:
         return [move]
