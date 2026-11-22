@@ -549,7 +549,7 @@ def _is_quantity_confirm(kind, text):
             and 'うむッ' in text and 'いかんッ' in text)
 
 
-def _shop_owns_quantity_confirm(mem):
+def _shop_owns_quantity_confirm(mem, kind, screen):
     """The merchant's quote belongs to flows/shop.py, not to the generic A.
 
     ``want`` exists only after the shop flow chose one planned row at its real
@@ -558,9 +558,21 @@ def _shop_owns_quantity_confirm(mem):
     ``items`` intact: the next list asked for the same card again and the
     holding-limit refusal was misread as a pre-confirmation refusal
     (prod v1374 93-9: 494G spent, buy 0, refusal 3).
+
+    The mark alone is not enough: it outlived the visit on the B exits, and a
+    later quote with the same wording (g1190 63-5) then belonged to nobody.
+    Only the two kinds shop_step routes to quantity_step's confirmation branch
+    can be the merchant's screen, the quote must actually be visible there,
+    and a finished visit (``merchant_done``) never owns another quote.
     """
     shop = mem.get('shop') if isinstance(mem, dict) else None
-    return isinstance(shop, dict) and bool(shop.get('want'))
+    if not isinstance(shop, dict) or not shop.get('want'):
+        return False
+    if shop.get('merchant_done'):
+        return False
+    if kind not in ('shop_quantity', 'shop_quantity_prompt'):
+        return False
+    return shop_flow._quote_prompt_visible(screen)
 
 
 PLAN_STARVE_TICKS = 900   # observations (~15 min) of a plan that cannot rebuild
@@ -1606,7 +1618,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # money without any of them.
     if (_is_quantity_confirm(kind, screen.text)
             and not (isinstance(month_sub, dict) and month_sub.get('kind') == 'egg')
-            and not _shop_owns_quantity_confirm(mem)):
+            and not _shop_owns_quantity_confirm(mem, kind, screen)):
         # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
         # overlays the quantity menu; the quantity step waits on its own
         # overlay and never answers it (g1190 2026-11-18 63-5: the frame was

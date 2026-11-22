@@ -269,3 +269,94 @@ def test_the_generic_accept_still_fires_when_no_flow_owns_the_quote():
                             run_identity=dict(IDENTITY))
     assert actions == [policy.pad('a')]
     assert 'quantity_confirm_accept' in decisions(state)
+
+
+def test_a_stale_want_does_not_block_the_generic_accept_on_shop_quantity():
+    # merchant_done=True with a want left by an older observation (the state
+    # the exit confirmation used to leave behind). The visit is over, so this
+    # quote is not the merchant's: A and its record must still happen.
+    mem = buy_memory()
+    mem['shop']['merchant_done'] = True
+    actions, state = decide(merchant_confirm(qty=1, price=50),
+                            {'policy': mem}, run_identity=dict(IDENTITY))
+    assert actions == [policy.pad('a')]
+    assert 'quantity_confirm_accept' in decisions(state)
+
+
+def test_a_stale_want_does_not_block_the_generic_accept_on_month_menu(monkeypatch):
+    # classify_text sends any legible quote to shop_quantity, so force the
+    # month_menu kind the generic rule also lists; month_flow never handles a
+    # purchase confirmation, and the generic A must stay the owner.
+    real_parse = parse
+
+    def as_month_menu(frame, phase=None):
+        screen = real_parse(frame, phase=phase)
+        screen.kind = 'month_menu'
+        return screen
+
+    monkeypatch.setattr('docich.hanjuku.os_layer.screen.parse', as_month_menu)
+    mem = buy_memory()
+    mem['shop']['merchant_done'] = True
+    actions, state = decide(merchant_confirm(qty=1, price=50),
+                            {'policy': mem}, run_identity=dict(IDENTITY))
+    assert actions == [policy.pad('a')]
+    assert 'quantity_confirm_accept' in decisions(state)
+
+
+def test_a_replanned_empty_list_clears_the_stale_want():
+    # The list was entered with a want from the previous observation, then no
+    # row can be asked for (the ledger says the kind is at its cap). The final
+    # B abandons that selection and must not leave the want behind.
+    mem = buy_memory()
+    shop = mem['shop']
+    shop['items'] = [['ノリウツール', 5]]
+    shop['want'] = ['ノリウツール', 5, 18]
+    mem['card_stock']['ノリウツール'] = bargains.HOLD_CAP
+    actions, state = decide(shop_listing(9999), {'policy': mem},
+                            run_identity=dict(IDENTITY))
+    assert actions == [policy.pad('b')]
+    assert state['policy']['shop']['want'] is None
+
+    # The same observation after the B: another owner's quote (the 63-5
+    # wording) must now reach the generic A, not the merchant's flow.
+    actions, state = decide(merchant_confirm(qty=1, price=50), state,
+                            run_identity=dict(IDENTITY))
+    assert actions == [policy.pad('a')]
+    assert 'quantity_confirm_accept' in decisions(state)
+
+
+def test_the_shop_exit_confirmation_clears_the_stale_want():
+    c = Canvas()
+    c.text(48, 15, '1ねん 5のつき 9999G')
+    c.text(24, 135, 'みせじまい して よろしいでっか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    mem = buy_memory()
+    mem['shop']['want'] = ['ノリウツール', 5, 18]
+    actions, state = decide(c.frame(), {'policy': mem},
+                            run_identity=dict(IDENTITY))
+    assert state['policy']['shop']['want'] is None
+    assert state['policy']['shop']['merchant_done'] is True
+
+
+def prompt_confirm(gold=9999, qty=99, price=18):
+    """The same quote with the underlying 「おいくつ」 prompt still legible."""
+    c = Canvas()
+    c.text(48, 15, f'1ねん 5のつき {gold}G')
+    c.text(24, 151, 'おいくつ おかいになりますか?')
+    c.text(24, 167, f'{qty}こで{qty * price}Gになりまんな!')
+    c.text(24, 183, 'よろしいでっか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    return c.frame()
+
+
+def test_a_quote_classified_as_the_quantity_prompt_is_recorded_by_the_shop_flow():
+    frame = prompt_confirm()
+    assert parse(frame).kind == 'shop_quantity_prompt'
+    actions, state = decide(frame, {'policy': buy_memory()},
+                            run_identity=dict(IDENTITY))
+    assert actions == [policy.pad('a')]
+    assert_buy_recorded(state)

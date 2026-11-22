@@ -262,21 +262,33 @@ def shop_step(screen: Screen, mem):
         move = menu_to(screen, 'うむッ!')
         if shop:
             shop['merchant_done'] = True
+            # Leaving the shop abandons any unconfirmed selection: a want left
+            # here kept the generic A away from another owner's quote for the
+            # rest of the month (g1190 63-5 shape).
+            shop['want'] = None
         # Without a readable hand, the measured default cursor is うむッ (#960).
         return [move] if move and move != 'here' else [pad('a')]
     if kind == 'shop_quantity_prompt':
+        if _quote_prompt_visible(screen):
+            # The quote can be classified as the underlying "how many?" prompt
+            # when that text is still legible. quantity_step records the row
+            # before A; the blind A here spent the money without the buy.
+            return quantity_step(screen, mem)
         return [pad('a')]
     if kind == 'shop_quantity':
         return quantity_step(screen, mem)
     # shop_list
     gold = (screen.header or {}).get('gold')
     if not shop or shop.get('key') != _month_key(screen.header):
+        if isinstance(shop, dict):
+            shop['want'] = None   # the list is from another month; no quote is pending
         _record_shop_exit(mem, shop, screen, 'month_key_mismatch')
         return [pad('b')]
     spendable = _merchant_spendable(mem, shop, screen.header)
     if spendable is None:
         # A faded header is not permission or evidence of missing stock. Log
         # the silent exit: a quiet 'b' here once left a planned purchase unbought.
+        shop['want'] = None       # B abandons the unconfirmed selection
         _record_shop_exit(mem, shop, screen, 'spendable_unreadable')
         return [pad('b')]
     listed = {}
@@ -339,6 +351,11 @@ def shop_step(screen: Screen, mem):
                                          'listed': dict(listed or {})},
                         reason='購入完了済みの商人へ予定品なしで再入したため、当月起こさないよう閉じる')
             shop['closed'] = True
+    # B leaves the list: no planned row was chosen, so an older want (from a
+    # row the previous observation selected) is not a live quote any more.
+    # Keeping it would block the generic A on another owner's purchase
+    # confirmation for the rest of the month (g1190 63-5 shape).
+    shop['want'] = None
     return [pad('b')]
 
 
