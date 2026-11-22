@@ -34,7 +34,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _egg_drop_trace, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
-                               _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
+                               _early_resource_rescue_needed, _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
@@ -915,6 +915,25 @@ def battle_step(screen: Screen, mem):
                 observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
                                  'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
                 reason='本人の卵残数が正数で未試行のため、退却より先に実メニューの召喚可否を確認')
+        return _human_menu_open(cur, 'survival', mem)
+    # #5157: do not wait for the old 40%-of-opening-HP/critical gate when a
+    # measured losing trade has already consumed 30% and a real resource remains.
+    if not dropper_due and not melee_followup and _early_resource_rescue_needed(mem, cur):
+        rescue = _survival_state(mem, cur)
+        rescue['early_resource_triggered'] = True
+        rescue['opens'] = int(rescue.get('opens') or 0) + 1
+        rescue['pending_opens'] = int(rescue.get('pending_opens') or 0) + 1
+        rescue['menu_ticks'] = 0
+        hp, start = cur.get('ally_hp'), cur.get('start_ally_hp')
+        _record(mem, 'battle_survival_early_resource', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                observed_metric={'ally_hp': hp, 'start_ally_hp': start,
+                                 'hp_lost': start - hp,
+                                 'remaining_tenths': hp * 10 // start,
+                                 'threshold_remaining_tenths': 7,
+                                 'melee_balance': _melee_balance(cur)},
+                expected_metric='damage gateを通る実携行札または本人の正数卵',
+                reason='白兵劣勢かつ開始HPから30%以上減少し、即死帯より前に実資源の救済メニューを確認')
         return _human_menu_open(cur, 'survival', mem)
     retreat = None if melee_followup or dropper_due else _hero_retreat_open(mem, cur)
     if retreat is not None:
