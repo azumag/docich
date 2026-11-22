@@ -2156,7 +2156,8 @@ def step(screen, mem, frame):
             if (type(interrupted_at) is not int and isinstance(verification, dict)
                     and verification.get('status') == 'dispatch_unconfirmed'
                     and verification.get('input_sent') is not True
-                    and verification.get('interrupted') is True):
+                    and verification.get('interrupted') is True
+                    and verification.get('general') == name):
                 requested = verification.get('requested_tick')
                 recorded = verification.get('interrupted_tick')
                 started = state.get('started_tick')
