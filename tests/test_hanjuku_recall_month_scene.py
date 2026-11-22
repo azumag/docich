@@ -89,6 +89,17 @@ def test_a_dispatched_recall_waits_out_the_scene_and_ends_on_the_month_screen():
     assert 'recall' not in state['policy']
 
 
+def test_a_sent_but_unclosed_recall_schedules_the_destination_roster_read():
+    # docich#5127 (owner 2026-11-23): input_sent + picker_closed=False ended as
+    # "unconfirmed" and never asked the destination roster, so the general's
+    # arrival could not be confirmed. The bounded read is scheduled instead.
+    state = recall_state(stage='await_dispatch', input_sent=True, goal='ファルゲ')
+    _, state = decide(read_png(MONTH_MENU), state)
+    assert 'camp_recall_unconfirmed' in decisions(state)
+    due = state['policy']['roster_read_due']['ファルゲ']
+    assert 70400 + recall_flow.RECALL_READ_DELAY <= due <= 70400 + recall_flow.RECALL_READ_DELAY + 10
+
+
 @pytest.mark.parametrize('flag', ['retreat_recheck', 'anonymous_recheck'])
 def test_a_recheck_recall_is_left_to_its_own_flow(flag):
     # The recheck validates its own identity and scope (this minimal state is
