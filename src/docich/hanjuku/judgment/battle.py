@@ -1519,7 +1519,7 @@ def _early_resource_rescue_needed(mem, cur):
     return egg_ready or cards_ready
 
 
-def _unarmed_wall_risk(cur)
+def _unarmed_wall_risk(cur):
     """Inspect initially eggless attackers before a wall-triggered summon.
 
     g684 Trevis66 vs Alfalfa38 carried a card but had no timed chart tactic.
