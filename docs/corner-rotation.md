@@ -437,6 +437,12 @@ latch中かどうかを問わず出す）、latch自体を総合 `warn` とし�
 固定投影する。`resolution=released-unverified` は「記録して他cornerのローテーションを継続した」、
 `recovery-required` は「共有slotの安全が証明できずlatchを維持した」を表し、
 request identity・例外本文は出さない。
+この固定投影を入力に、10分ごとの監視workflowがコーナー不正終了とローテーション異常
+（latch・overdue・解放済みownerの未退役・timer停止など）を固定タイトルのIssueへ
+自動起票し、解消時に自動closeする。判定・重複排除・本文の固定fieldは
+`ops/vm_actions/corner_health.py`、運用手順は
+[`corner-health-monitor.md`](operations/corner-health-monitor.md) を正本とする。
+復旧操作はこの監視に含めない。
 復旧後の `tick()` のcooldown再検証は `phase=="selected"` の予約だけで、
 `dispatched` の復元はdispatch時の履歴行がcooldownを担保する。
 

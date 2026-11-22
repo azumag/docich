@@ -19,6 +19,7 @@ on:
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
       - '.github/workflows/vm-deploy-blocker-alert.yml'
+      - '.github/workflows/vm-corner-monitor.yml'
       - '.github/workflows/gameswitch-adopt.yml'
       - '.github/workflows/pr-merge-audio-report.yml'
 
@@ -41,6 +42,7 @@ on:
       - '.github/workflows/gameswitch-recover.yml'
       - '.github/workflows/vm-monitor-silence-alert.yml'
       - '.github/workflows/vm-deploy-blocker-alert.yml'
+      - '.github/workflows/vm-corner-monitor.yml'
       - '.github/workflows/gameswitch-adopt.yml'
       - '.github/workflows/pr-merge-audio-report.yml'
 
@@ -112,6 +114,7 @@ jobs:
           ops/vm_actions/release_soren_loop_pause.py
           ops/vm_actions/recover_bgm_mute.py
           ops/vm_actions/monitor_silence.py
+          ops/vm_actions/corner_health.py
           ops/vm_actions/realign_hanjuku_presentation.py
           ops/vm_actions/runtime_registry.py
           ops/vm_actions/nethack_canary_production_smoke.py
