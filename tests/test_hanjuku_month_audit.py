@@ -604,6 +604,20 @@ def test_battle_resource_events_are_classified():
         metric={'ally_hp': 55, 'enemy_hp': 63,
                 'cards_selected': ['イッテツーン'], 'cards_used': []},
         general='アニス'))['resources'] == ['card']
+    # docich#5130 (owner 2026-11-23): 即死帯では札を使わず退却するのが設計。
+    # その退却を「資源を残した無駄」として起票しない。
+    for floor_hp in (1, 2, 4):
+        assert audit._battle_resource_event(_battle_record(
+            'battle_hero_retreat_select', choice='たいきゃく',
+            metric={'ally_hp': floor_hp, 'enemy_hp': 8,
+                    'cards_selected': ['クースカン'], 'cards_used': []},
+            general='リースリング')) is None
+    # 即死帯の外では従来どおり起票する。
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 5, 'enemy_hp': 8,
+                'cards_selected': ['クースカン'], 'cards_used': []},
+        general='リースリング'))['resources'] == ['card']
     # docich#5117: 実一覧で不在が確認できた札は、残り札として起票しない。
     assert audit._battle_resource_event(_battle_record(
         'battle_hero_retreat_select', choice='たいきゃく',
