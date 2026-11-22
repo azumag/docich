@@ -258,6 +258,27 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
         if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
             _plan_region(mem).setdefault('orders', {})[step] = None
         return False
+    # docich#5107: suppression must expire. While the general is still at
+    # home the gate keeps _ready() False, and that retry is the only thing
+    # that increments the cancellation count which fails the order at
+    # SORTIE_CANCELLED_OBSERVED_LIMIT. A gate that never expires therefore
+    # held the order 'pending' for the rest of the month after a single
+    # cancelled departure (observed: order_start 0 / launched 0 / stalled
+    # march). Release it after a bounded window so the retry — and its own
+    # limit — can proceed.
+    tick = mem.get('tick')
+    gate_tick = gate.get('tick')
+    if isinstance(tick, int) and isinstance(gate_tick, int):
+        if tick - gate_tick >= SORTIE_CANCELLED_RETRY_TICKS:
+            gates.pop(step, None)
+            return False
+    else:
+        # Older/hotloaded state has no gate tick: count holds instead.
+        holds = int(gate.get('holds') or 0) + 1
+        gate['holds'] = holds
+        if holds >= SORTIE_CANCELLED_RETRY_HOLDS:
+            gates.pop(step, None)
+            return False
     count = gate.get('count', 0)
     if count >= SORTIE_CANCELLED_OBSERVED_LIMIT:
         gates.pop(step, None)
@@ -380,7 +401,8 @@ def _record_sortie_cancelled_observed(mem, order, sortie):
         _mark_order_failed(mem, step)
     else:
         gates[step] = {'general': general, 'source': source, 'month': month,
-                       'count': count, 'target': sortie.get('target')}
+                       'count': count, 'target': sortie.get('target'),
+                       'tick': mem.get('tick')}
 
 
 
@@ -2157,6 +2179,10 @@ def _arrival_castle(mem, owned):
 
 SOURCE_LOCATION_RECHECK_LIMIT = 3
 SORTIE_CANCELLED_OBSERVED_LIMIT = 3
+# docich#5107: observation ticks a presence-cancelled sortie stays suppressed
+# before the retry is allowed again (the retry is what advances the count).
+SORTIE_CANCELLED_RETRY_TICKS = 200
+SORTIE_CANCELLED_RETRY_HOLDS = 200
 SOURCE_DEFENDER_CANCEL_LIMIT = 3
 HERO_BROKEN_SORTIE_CANCEL_LIMIT = 3
 
