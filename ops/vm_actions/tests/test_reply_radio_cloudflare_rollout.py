@@ -32,6 +32,7 @@ class ReplyRadioCloudflareRolloutTests(unittest.TestCase):
 
     def test_secret_free_capability_diagnostics_precede_network(self):
         text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('python3 -P - <<\'PY\' || capability_rc=$?', text)
         diagnostic = text.index("from docich.trading.paper_ai_canary import readiness")
         comment = text.index("from docich.comment_classifier import web_batch")
         radio = text.index("python3 -P -m docich.radio.consumer")
