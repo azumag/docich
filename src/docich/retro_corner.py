@@ -1216,7 +1216,15 @@ class RetroCornerManager:
                     try:
                         restore_receipt = self.store.receipts.load(switch_id)
                     except StateCorruptError:
-                        restore_receipt = None
+                        # A corrupt receipt is not the same as an absent one.
+                        # Admission refusal may legitimately leave no receipt,
+                        # but an unreadable existing receipt cannot prove that
+                        # the restore is terminal. Keep the owner pinned and
+                        # retry after the receipt is repaired.
+                        return CornerResult(
+                            "queued", game=target, previous_game=previous,
+                            detail="recorded restore request receiptを安全に読み取れないため確定を待っています",
+                        )
                     if (isinstance(restore_receipt, dict)
                             and restore_receipt.get("status")
                             not in TERMINAL_RECEIPT_STATUSES):
