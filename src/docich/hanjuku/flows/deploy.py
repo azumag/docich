@@ -1670,6 +1670,7 @@ def _check_source_castle(screen, mem, order):
         label = next((c for c in cells if _castle_key(c) == _castle_key(label)), label)
     if label in cells:
         mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
+        _observe_status_garrison(screen, mem, name=label)
     misses = _count_source_mismatch(mem, step, label)
     _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
             observed_metric={'castle': name, 'misses': misses},
@@ -1695,6 +1696,7 @@ def _observe_status_garrison(screen, mem, name):
     if not count or len(names) != int(count[1]) or any(UNKNOWN in g for g in names):
         return
     world = _world(mem)
+    world.setdefault('garrison_tick', {})[name] = int(mem.get('tick') or 0)
     if world.setdefault('garrison', {}).get(name) != names:
         world['garrison'][name] = names
         _record(mem, 'garrison_seen', castle=name,

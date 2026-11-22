@@ -262,3 +262,19 @@ def test_a_changed_text_starts_a_new_episode():
         assert O.scene_hold_forced_step(_scene('text', 'さようなら'), mem, 'event',
                                       'text', [], guarded=False,
                                       blocked=False) is None
+
+def test_a_field_event_map_gets_a_bounded_a():
+    # Owner 2026-11-22: the field map was visible but a held event message
+    # never got A because scene_hold_advance only accepted 'unknown'.
+    mem = {}
+    for _ in range(O.SCENE_UNKNOWN_ADVANCE - 1):
+        assert O.scene_hold_advance(mem, 'event', 'map', 'frozen', [], False) is None
+    assert O.scene_hold_advance(mem, 'event', 'map', 'frozen', [], False) == [O.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'scene_hold_advance'
+
+def test_a_held_world_map_gets_a_bounded_y():
+    mem = {}
+    for _ in range(O.SCENE_UNKNOWN_ADVANCE - 1):
+        assert O.scene_hold_advance(mem, 'event', 'world_map', 'frozen', [], False) is None
+    assert O.scene_hold_advance(mem, 'event', 'world_map', 'frozen', [], False) == [O.pad('y')]
+    assert mem['_records'][-1]['decision'] == 'scene_hold_advance'

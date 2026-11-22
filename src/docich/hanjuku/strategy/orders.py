@@ -855,8 +855,10 @@ def _source_list_open(order, mem) -> bool:
     source = _source(order, mem)
     if (_world(mem).get('garrison') or {}).get(source) != []:
         return True
-    if order.get('roster_probe') is True and source in (mem.get('roster_read_due') or {}):
-        return True   # docich#3515: a blind launch asks for one roster read
+    if order.get('roster_probe') is True and (
+            source in (mem.get('roster_read_due') or {})
+            or order.get('source_probe') is True):
+        return True   # docich#3515: a blind launch or stale-roster probe reads the list
     return order.get('source_probe') is True and routes.probe_due(mem, source)
 
 
@@ -1857,6 +1859,10 @@ def next_order(mem):
                 and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
         if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and (order.get('purpose') == 'move'
+                     or chart.is_boss_castle(order.get('target'))
+                     or order.get('target') not in owned
+                     or order.get('roster_probe') is True)
                 and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
@@ -1931,8 +1937,18 @@ def _order(mem):
         plan = _plan_region(mem).get('chart_plan') or {}
         if plan.get('source') == 'mechanical':
             chapter = mem.get('chapter') or 0
+            status = _plan_region(mem).get('orders') or {}
+            owned = _owned(mem)
+            plan_steps = {o.get('step') for o in (plan.get('orders') or ())
+                          if isinstance(o, dict)}
             try:
-                if any(_ready(o, mem) for o in chart.orders(chapter)):
+                if any(status.get(o['step']) in (None, 'pending')
+                       and o['step'] not in plan_steps
+                       and (o.get('purpose') == 'move'
+                            or chart.is_boss_castle(o.get('target'))
+                            or o.get('target') not in owned)
+                       and _ready(o, mem)
+                       for o in chart.orders(chapter)):
                     _plan_region(mem)['chart_plan'] = None
             except Exception:
                 pass

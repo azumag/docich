@@ -308,7 +308,12 @@ def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
     transaction or a battle still owns: those keep their own answer budget
     and get no blind key from here either.
     """
-    if (guarded or blocked or actions or kind != 'unknown'
+    # A field event after a battle draws its message over the bare map
+    # ('map'); the owner held it without an input and the A was never sent
+    # (owner 2026-11-22: フィールド出てるのに dialog hold).  Keep the same
+    # unchanged-frame bound as an unreadable scene.
+    if (guarded or blocked or actions
+            or kind not in ('unknown', 'map', 'world_map')
             or phase not in EVENT_TEXT_ADVANCE_PHASES):
         mem.pop('scene_hold_watch', None)
         return None
@@ -333,7 +338,10 @@ def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
                          observed_metric={'press': presses + 1,
                                           'frame_sha256': digest},
                          reason='場面の読めない画面を所有者が入力なしに保留し続けているため、同一画像の確認のうえAを1回送って進める')
-    return [pad('a')]
+    # The whole-map view is toggled with Y; A would select a castle and B did
+    # not close it.  A held world-map inspection otherwise keeps the field
+    # plan from ever reaching next_order (owner 2026-11-22 ch4 47-x).
+    return [pad('y')] if kind == 'world_map' else [pad('a')]
 
 
 # docich#4632: a scripted concert/event scene a foreground owner keeps
@@ -585,9 +593,40 @@ def plan_starved_rearm(mem, phase, kind):
     the plan at its old tick for an hour and order_start at 0 while the
     back-half castles stayed enemy (g1190 2026-11-18 65-10..66-10 — #4584).
     """
-    if kind in ('map', 'map_target', 'world_map') or phase in ('title', 'title_or_intro'):
-        return False
     plan = mem.get('plan') or {}
+    if kind in ('map', 'map_target', 'world_map') and phase == 'field':
+        # A mechanical boss plan is built while battles/menus keep the map
+        # flow away.  When the field map is finally foreground (not an event
+        # dialogue drawn over the map), set its first pending step active so
+        # the ordinary launch flow can start it; the map decision alone does
+        # not always reach next_order (ch4 47-x).
+        chart_plan = plan.get('chart_plan') or {}
+        status = plan.get('orders') or {}
+        if chart_plan.get('source') == 'mechanical' and not plan.get('active'):
+            from .strategy import orders as order_mod
+            owned = order_mod._owned(mem)
+            for order in chart_plan.get('orders') or ():
+                step = order.get('step')
+                if status.get(step) not in (None, 'pending'):
+                    continue
+                full = order_mod._order_for_step(mem, step) or order
+                if (isinstance(full, dict) and 'source' in full and 'target' in full
+                        and (not order_mod._ready(full, mem)
+                             or order_mod._source(full, mem) not in owned
+                             or not order_mod._source_list_open(full, mem)
+                             or order_mod._retake_reserved(full, mem)
+                             or order_mod._source_spare_missing(full, mem, allow_probe=True))):
+                    continue
+                plan['active'] = step
+                decision_log._record(mem, 'plan_map_activate', screen=kind, phase=phase,
+                                     chart_step=step,
+                                     reason='機械ボス計画の先頭手順をフィールドで active にして出撃へ渡す')
+                return True
+        if phase in ('title', 'title_or_intro'):
+            return False
+        return False
+    if phase in ('title', 'title_or_intro'):
+        return False
     if plan.get('active'):
         return False
     # A plan whose orders all went 'failed' (or completed) is dead the same

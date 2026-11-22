@@ -1368,7 +1368,22 @@ def _start_reanchor_jump(mem, *, owner=None):
     """
     home = 'アルマムーン'
     chapter = mem.get('chapter') or 0
-    if (not mem.get('nav_search') or home not in chart.castles(chapter)
+    # Anchor at the active order's source castle when it is named: the X
+    # list's SELECT to that castle puts the cursor where the sortie's source
+    # list opens.  Home is only the fallback (ch4 53-x: the hardcoded home
+    # reanchor looped while 4-B1 waited for ミヒラギアン).
+    target = home
+    active = _plan_region(mem).get('active')
+    if active:
+        try:
+            from ..strategy.orders import _order_for_step
+            order = _order_for_step(mem, active)
+            source = order.get('source') if isinstance(order, dict) else None
+            if isinstance(source, str) and source in chart.castles(chapter):
+                target = source
+        except Exception:
+            target = home
+    if (not mem.get('nav_search') or target not in chart.castles(chapter)
             or mem.get('castle_jump') or mem.get('y_jump') or mem.get('expect_menu')):
         return None
     skip = mem.get('castle_jump_skip') or {}
@@ -1385,15 +1400,15 @@ def _start_reanchor_jump(mem, *, owner=None):
                  'active_step': _plan_region(mem).get('active'),
                  'stage': monthly.get('stage') if isinstance(monthly, dict) else None,
                  'scope': list(monthly.get('scope') or []) if isinstance(monthly, dict) else None}
-    mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': home,
+    mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': target,
                           'phase': 'menu', 'age': 0, 'total': 0, 'tick': tick,
                           'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0,
                           'return_to': return_to}
     mem.pop('select_centered', None)
-    _record(mem, 'cursor_reanchor_open', target=home,
+    _record(mem, 'cursor_reanchor_open', target=target,
             observed_metric={'cursor_before': mem.get('cursor'), 'chapter': chapter,
                              'return_to': return_to},
-            reason='中断元を保存しX→しろ→アルマムーン→SELECTでカーソル基準点を復旧する')
+            reason='中断元を保存しX→しろ→出撃元の城→SELECTでカーソル基準点を復旧する')
     return [pad('x')]
 
 
