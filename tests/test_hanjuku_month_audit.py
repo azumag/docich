@@ -990,6 +990,47 @@ def test_chikujou_month_end_with_unreadable_menu_row_is_medium_confidence(runtim
     assert '築城行の読取り: 不可' in audit.render(record)
 
 
+def test_chikujou_cost_decline_in_prior_observation_suppresses_alarm(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_declined', month='1-1',
+         chapter=1, reason=audit._CHIKUJOU_COST_DECLINE)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_prior_decline_followed_by_reopen_still_reports(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 998, 'chikujou_declined', month='1-1',
+         chapter=1, reason=audit._CHIKUJOU_COST_DECLINE)
+    note(runtime_dir, 999, 'chikujou_confirm', month='1-1', chapter=1)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_unreadable_in_prior_observation_downgrades(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_menu_unreadable', month='1-1',
+         chapter=1, observed_metric={'skipped': True})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['confidence'] == 'medium'
+
+
+def test_chikujou_prior_other_month_does_not_suppress(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_declined', month='1-0',
+         chapter=1, reason=audit._CHIKUJOU_COST_DECLINE)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['confidence'] == 'high'
+
+
 def test_chikujou_menu_unreadable_retry_without_skip_stays_high(runtime_dir):
     value = _chikujou_state()
     audit.observe(runtime_dir, audit.capture(value), value,
