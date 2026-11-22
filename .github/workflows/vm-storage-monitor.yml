@@ -106,6 +106,22 @@ jobs:
           python3 ops/vm_actions/summarize_runtime_queue_attribution.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
           python3 ops/vm_actions/summarize_worker_state.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
+      - name: Assess shared overlay renderer memory
+        id: shared_overlay_memory
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'severity=unknown'
+              echo 'warn_threshold_mb=4096'
+              echo 'critical_threshold_mb=8192'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 ops/vm_actions/shared_overlay_memory_alert.py "$file" >> "$GITHUB_OUTPUT"
+
       - name: Summarize storage breakdown
         id: storage_breakdown
         run: |
@@ -369,6 +385,642 @@ jobs:
             echo "::error::VM runtime health is critical (${SUMMARY})."
           else
             echo "::warning::VM runtime health is degraded (${SUMMARY})."
+          fi
+
+      - name: Update deduplicated shared overlay memory alert
+        env:
+          AVAILABLE: ${{ steps.shared_overlay_memory.outputs.available }}
+          SEVERITY: ${{ steps.shared_overlay_memory.outputs.severity }}
+          RENDERER_RSS_MB: ${{ steps.shared_overlay_memory.outputs.renderer_rss_mb }}
+          WARN_THRESHOLD_MB: ${{ steps.shared_overlay_memory.outputs.warn_threshold_mb }}
+          CRITICAL_THRESHOLD_MB: ${{ steps.shared_overlay_memory.outputs.critical_threshold_mb }}
+        run: |
+          set -euo pipefail
+          prefix='[VM shared overlay]'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM shared overlay] WARN renderer RSS alert" or .title == "[VM shared overlay] CRITICAL renderer RSS alert") | "\(.number)\\t\(.title)"')
+          if [[ "$AVAILABLE" != '1' ]]; then
+            echo "Shared overlay renderer memory is unknown; existing alerts are left unchanged."
+            exit 0
+          fi
+          if [[ "$SEVERITY" == ok ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%        id: twitch_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('twitch_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Twitch OAuth alert
+        env:
+          TWITCH_OAUTH_ALERT: ${{ steps.twitch_oauth.outputs.alert }}
+          TWITCH_OAUTH_STATUS: ${{ steps.twitch_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Twitch OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Twitch OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$TWITCH_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Twitch OAuth recovered (status=${TWITCH_OAUTH_STATUS})."
+            done
+            echo "Twitch OAuth: ${TWITCH_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Twitch broadcaster token refresh requires owner action.
+
+          - status: ${TWITCH_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/twitch-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Twitch OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Twitch OAuth requires reauth (status=${TWITCH_OAUTH_STATUS})."
+
+      - name: Assess Kick OAuth
+        id: kick_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('kick_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Kick OAuth alert
+        env:
+          KICK_OAUTH_ALERT: ${{ steps.kick_oauth.outputs.alert }}
+          KICK_OAUTH_STATUS: ${{ steps.kick_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Kick OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Kick OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$KICK_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Kick OAuth recovered (status=${KICK_OAUTH_STATUS})."
+            done
+            echo "Kick OAuth: ${KICK_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Kick broadcaster token refresh requires owner action.
+
+          - status: ${KICK_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/kick-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Kick OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
+\\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Shared overlay renderer RSS recovered below ${WARN_THRESHOLD_MB} MiB."
+            done
+            echo "Shared overlay renderer RSS ${RENDERER_RSS_MB} MiB: no alert."
+            exit 0
+          fi
+          if [[ "$SEVERITY" != warn && "$SEVERITY" != critical ]]; then
+            echo "::warning::Shared overlay renderer memory severity is unrecognized; no alert mutation."
+            exit 0
+          fi
+          upper="$(printf '%s' "$SEVERITY" | tr '[:lower:]' '[:upper:]')"
+          title="${prefix} ${upper} renderer RSS alert"
+          body="$(cat <<EOF
+          Shared overlay Chromium renderer memory crossed the fixed read-only monitoring threshold.
+
+          - Severity: ${upper}
+          - Renderer RSS: ${RENDERER_RSS_MB} MiB
+          - Warning threshold: ${WARN_THRESHOLD_MB} MiB
+          - Critical threshold: ${CRITICAL_THRESHOLD_MB} MiB
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The measurement is a complete /proc scan aggregated under the fixed owner label `soren-shared-overlay`. Only the renderer RSS total is published; PIDs, command lines, URLs, paths, process details, raw diagnostics and command output are never published. This monitor is read-only and does not restart services.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%        id: twitch_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('twitch_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Twitch OAuth alert
+        env:
+          TWITCH_OAUTH_ALERT: ${{ steps.twitch_oauth.outputs.alert }}
+          TWITCH_OAUTH_STATUS: ${{ steps.twitch_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Twitch OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Twitch OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$TWITCH_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Twitch OAuth recovered (status=${TWITCH_OAUTH_STATUS})."
+            done
+            echo "Twitch OAuth: ${TWITCH_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Twitch broadcaster token refresh requires owner action.
+
+          - status: ${TWITCH_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/twitch-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Twitch OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Twitch OAuth requires reauth (status=${TWITCH_OAUTH_STATUS})."
+
+      - name: Assess Kick OAuth
+        id: kick_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('kick_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Kick OAuth alert
+        env:
+          KICK_OAUTH_ALERT: ${{ steps.kick_oauth.outputs.alert }}
+          KICK_OAUTH_STATUS: ${{ steps.kick_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Kick OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Kick OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$KICK_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Kick OAuth recovered (status=${KICK_OAUTH_STATUS})."
+            done
+            echo "Kick OAuth: ${KICK_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Kick broadcaster token refresh requires owner action.
+
+          - status: ${KICK_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/kick-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Kick OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
+\\t'*}"; existing="${entry#*        id: twitch_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('twitch_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Twitch OAuth alert
+        env:
+          TWITCH_OAUTH_ALERT: ${{ steps.twitch_oauth.outputs.alert }}
+          TWITCH_OAUTH_STATUS: ${{ steps.twitch_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Twitch OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Twitch OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$TWITCH_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Twitch OAuth recovered (status=${TWITCH_OAUTH_STATUS})."
+            done
+            echo "Twitch OAuth: ${TWITCH_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Twitch broadcaster token refresh requires owner action.
+
+          - status: ${TWITCH_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/twitch-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Twitch OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Twitch OAuth requires reauth (status=${TWITCH_OAUTH_STATUS})."
+
+      - name: Assess Kick OAuth
+        id: kick_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('kick_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Kick OAuth alert
+        env:
+          KICK_OAUTH_ALERT: ${{ steps.kick_oauth.outputs.alert }}
+          KICK_OAUTH_STATUS: ${{ steps.kick_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Kick OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Kick OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$KICK_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Kick OAuth recovered (status=${KICK_OAUTH_STATUS})."
+            done
+            echo "Kick OAuth: ${KICK_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Kick broadcaster token refresh requires owner action.
+
+          - status: ${KICK_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/kick-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Kick OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
+\\t'}"
+            if [[ "$existing" == "$title" ]]; then
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+              echo "Existing shared overlay memory alert #${number} refreshed."
+              exit 0
+            fi
+          done
+          for entry in "${alerts[@]}"; do
+            number="${entry%%        id: twitch_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('twitch_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Twitch OAuth alert
+        env:
+          TWITCH_OAUTH_ALERT: ${{ steps.twitch_oauth.outputs.alert }}
+          TWITCH_OAUTH_STATUS: ${{ steps.twitch_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Twitch OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Twitch OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$TWITCH_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Twitch OAuth recovered (status=${TWITCH_OAUTH_STATUS})."
+            done
+            echo "Twitch OAuth: ${TWITCH_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Twitch broadcaster token refresh requires owner action.
+
+          - status: ${TWITCH_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/twitch-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Twitch OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Twitch OAuth requires reauth (status=${TWITCH_OAUTH_STATUS})."
+
+      - name: Assess Kick OAuth
+        id: kick_oauth
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'alert=0'
+              echo 'status=unknown'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              data = json.load(open(path, encoding='utf-8'))
+          except Exception:
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          diagnostics = data.get('diagnostics') if isinstance(data, dict) else None
+          oauth = diagnostics.get('kick_oauth') if isinstance(diagnostics, dict) else None
+          if not isinstance(oauth, dict):
+              print('available=0')
+              print('alert=0')
+              print('status=unknown')
+              raise SystemExit(0)
+          status = oauth.get('status')
+          if not isinstance(status, str):
+              status = 'unknown'
+          alert = 1 if status not in {'ok', 'not_configured', 'unknown'} else 0
+          print('available=1')
+          print(f'alert={alert}')
+          print(f'status={status}')
+          PY
+
+      - name: Update deduplicated Kick OAuth alert
+        env:
+          KICK_OAUTH_ALERT: ${{ steps.kick_oauth.outputs.alert }}
+          KICK_OAUTH_STATUS: ${{ steps.kick_oauth.outputs.status }}
+        run: |
+          set -euo pipefail
+          title='[VM Kick OAuth] reauth required alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM Kick OAuth] reauth required alert") | "\(.number)\t\(.title)"')
+          if [[ "$KICK_OAUTH_ALERT" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Kick OAuth recovered (status=${KICK_OAUTH_STATUS})."
+            done
+            echo "Kick OAuth: ${KICK_OAUTH_STATUS}; no alert."
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Kick broadcaster token refresh requires owner action.
+
+          - status: ${KICK_OAUTH_STATUS}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The refresh timer exited with a non-recoverable status (reauth_required or sustained failure). Re-run the authorization flow per docs/operations/kick-oauth-refresh.md. No token, secret or authorization code is published by this alert.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing Kick OAuth alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Kick OAuth requires reauth (status=${KICK_OAUTH_STATUS})."
+\\t'*}"
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Shared overlay renderer RSS severity changed to ${upper}."
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          if [[ "$SEVERITY" == critical ]]; then
+            echo "::error::Shared overlay renderer RSS is critical (${RENDERER_RSS_MB} MiB)."
+          else
+            echo "::warning::Shared overlay renderer RSS is high (${RENDERER_RSS_MB} MiB)."
           fi
 
       - name: Assess Twitch OAuth
