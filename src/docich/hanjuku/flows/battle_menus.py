@@ -45,6 +45,14 @@ from ..strategy.economy import _egg_recheck
 
 
 LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
+EMPTY_CARD_LIST_TEXTS = ('きりふだはありません', 'きりふだなし', 'なにももってない')
+CARD_LIST_SAME_FRAME_LIMIT = 12
+
+
+def _is_empty_card_list_text(screen: Screen) -> bool:
+    """True when the battle card box explicitly states no cards are carried."""
+    compact = ''.join((screen.text or '').split())
+    return any(token in compact for token in EMPTY_CARD_LIST_TEXTS)
 
 
 def _okunote_last_resort_gate(cur, last_resort, now=None):
@@ -1650,6 +1658,15 @@ def _defense_card_kit_read(screen, mem, cur, flow, names):
         _defense_kit_read_unread(mem, cur, '読取上限までに一致する実一覧を確認できない')
         return [pad('b'), pad('b')]
     if not names:
+        if _is_empty_card_list_text(screen):
+            cur['defense_card_menu'] = {**scope, 'cards': [], 'readings': flow['list_ticks']}
+            cur['defense_egg_kit_read']['read_done'] = True
+            cur['card_flow'] = None
+            _record(mem, 'battle_defense_kit_read', **_battle_labels(cur),
+                    observed_metric={**scope, 'cards': [], 'observations': flow['list_ticks']},
+                    resulting_event='kit_read_no_selection',
+                    reason='防衛戦の実切り札一覧が空表示のため、携行札なしとして戻る')
+            return [pad('b'), pad('b')]
         flow.pop('kit_names', None)
         return []
     cards = list(dict.fromkeys(names))
@@ -1713,20 +1730,25 @@ def card_list_step(screen: Screen, mem):
             # empty OCR list). An unreadable frame is not a missing-card
             # receipt. Explicit absence stays immediate; other readable
             # lists must agree twice, and unreadable lists back out boundedly.
-            absent = any(text in ''.join(screen.text.split()) for text in
-                         ('きりふだはありません', 'きりふだなし'))
+            absent = _is_empty_card_list_text(screen)
             # docich#4977: an unchanged frame is the same observation, not a
             # new one — identical sha256 repeats must not spend the bounded
             # wait that exists to give the list time to become readable.
+            # Bound identical static repeats separately so an unrecognised
+            # text screen cannot freeze forever.
             list_sha = getattr(screen, 'frame_sha256', None)
             if list_sha is None or list_sha != flow.get('list_obs_sha'):
                 flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+                flow['list_same_observations'] = 1
+            else:
+                flow['list_same_observations'] = int(flow.get('list_same_observations', 0)) + 1
             if list_sha is not None:
                 flow['list_obs_sha'] = list_sha
             previous = flow.get('missing_list_names')
             flow['missing_list_names'] = names
             if not absent and (not names or previous != names):
-                if flow['list_observations'] < 4:
+                if (flow['list_observations'] < 4
+                        and int(flow.get('list_same_observations', 0)) < CARD_LIST_SAME_FRAME_LIMIT):
                     return []
                 _record(mem, 'battle_card_list_unclassified', **_battle_labels(cur),
                         card=flow['card'], observed_metric={'listed_cards': names,
@@ -1806,8 +1828,7 @@ def card_list_step(screen: Screen, mem):
         # The visible rows must stay inside the list seen at selection: a
         # scrolled window or a misread into another real card name is not a
         # consumption receipt.
-        absent_text = any(text in ''.join(screen.text.split()) for text in
-                          ('きりふだはありません', 'きりふだなし'))
+        absent_text = _is_empty_card_list_text(screen)
         sha = getattr(screen, 'frame_sha256', None)
         at_select = flow.get('names_at_select')
         card = flow.get('card')
@@ -1870,7 +1891,7 @@ def card_list_step(screen: Screen, mem):
                 flow['announce_retried'] = True
                 flow.update(stage='list', selection_planned=False,
                             announce_ticks=0, cursor_ticks=0, list_observations=0,
-                            list_obs_sha=None, announce_absent_frames=[])
+                            list_same_observations=0, list_obs_sha=None, announce_absent_frames=[])
                 _record(mem, 'battle_card_announce_retry', **_battle_labels(cur),
                         card=flow['card'],
                         expected_metric='実使用告知または一覧からの消失',
