@@ -10,7 +10,7 @@ def _battle(hp=70, enemy_hp=75, start_hp=100):
         'ally': 'カシュー', 'enemy': 'チコリ',
         'ally_hp': hp, 'enemy_hp': enemy_hp,
         'start_ally_hp': start_hp, 'start_enemy_hp': 90,
-        'side': 'attack', 'planned_cards': [],
+        'side': 'attack', 'planned_cards': [], 'own_egg_positive_observed': True,
         'cards_used': [], 'cards_selected': [], 'cards_missing': [],
         'card_evidence_version': 1,
         'card_soldiers_current': True, 'ally_soldiers': 0, 'enemy_soldiers': 0,
@@ -76,6 +76,10 @@ def test_early_rescue_preserves_chart_boss_event_and_critical_policies(monkeypat
     spent = _battle(hp=70); spent['survival'] = {'early_resource_triggered': True}; cases.append(spent)
     for cur in cases:
         assert not judgment._early_resource_rescue_needed(_memory(cur), cur)
+
+    normal = _battle(hp=70)
+    monkeypatch.setattr(judgment, '_boss_tactics_allowed', lambda mem, battle: True)
+    assert not judgment._early_resource_rescue_needed(_memory(normal), normal)
 
 
 def test_battle_step_opens_the_bounded_early_rescue_before_melee(monkeypatch):
