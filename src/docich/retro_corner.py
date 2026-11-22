@@ -2847,7 +2847,8 @@ class RetroCornerManager:
                                 reason=run.get('terminal_reason'),
                                 run=run,
                                 identity=owned_identity,
-                                rotation_request_id=latest.get('rotation_request_id'))
+                                rotation_request_id=latest.get('rotation_request_id'),
+                                terminal_evidence=latest.get('terminal_evidence'))
                         except Exception as exc:
                             print(
                                 f"[hanjuku-stall-audit] status=failed error={type(exc).__name__}",

@@ -2810,7 +2810,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
 
 
 def record_corner_stall(runtime, *, reason, run, identity, rotation_request_id=None,
-                        now=None, spawn=True):
+                        terminal_evidence=None, now=None, spawn=True):
     """Append one screen/input-stall corner stop incident and file it.
 
     Called by the corner owner before the slot is released to rotation. The
@@ -2824,7 +2824,7 @@ def record_corner_stall(runtime, *, reason, run, identity, rotation_request_id=N
     run = run if isinstance(run, dict) else {}
     identity = identity if isinstance(identity, dict) else {}
     mem = run.get('policy') if isinstance(run.get('policy'), dict) else {}
-    evidence = run.get('terminal_evidence')
+    evidence = terminal_evidence if isinstance(terminal_evidence, dict) else run.get('terminal_evidence')
     evidence = evidence if isinstance(evidence, dict) else {}
     raw_id = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
               f"{reason}|{evidence.get('frame_sha256')}")
