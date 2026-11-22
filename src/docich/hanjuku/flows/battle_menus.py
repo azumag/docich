@@ -405,6 +405,10 @@ def _hero_retreat_menu(screen, mem, cur):
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_used': cur.get('cards_used', []),
+                             # docich#5117: the live list proved these are not
+                             # carried, so they are neither spendable nor a
+                             # "left behind" resource.
+                             'cards_missing': list(cur.get('cards_missing') or ()),
                              # docich#5101: a card the bot already tried (or
                              # spent its one bounded retry on) is not "left
                              # unused" — the audit needs the attempt receipts

@@ -1965,7 +1965,14 @@ def _retreat_remaining_cards(cur):
 
     Unclassified selections stay in the remainder: an unconfirmed use is
     not a receipt (month_audit._remaining_cards applies the same rule).
+
+    Owner decision 2026-11-23 (#5117): a card the live list proved missing
+    (`battle_card_missing`) is not carried, so it is not a remaining resource.
+    Counting it asked the bot to spend a card that was not there and made the
+    audit file "left card behind" for a card the inventory no longer held.
     """
+    missing = {card for card in (cur.get('cards_missing') or ())
+               if isinstance(card, str)}
     used = [card for card in (cur.get('cards_used') or ()) if isinstance(card, str)]
     remaining = []
     for card in cur.get('cards_selected') or ():
@@ -1973,7 +1980,7 @@ def _retreat_remaining_cards(cur):
             continue
         if card in used:
             used.remove(card)
-        else:
+        elif card not in missing:
             remaining.append(card)
     return remaining
 
