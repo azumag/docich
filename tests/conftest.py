@@ -7,7 +7,13 @@ are unchanged; this is not a timeout reduction or a mocked network response.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Never let a regression test spawn a real gh issue filer. Production and
+# manual runs leave this unset and keep the normal detached filing path.
+os.environ.setdefault('DOCICH_DISABLE_ISSUE_FILER', '1')
 
 _HTTP_API_TEST_FILES = frozenset({
     'test_webui.py',

@@ -136,6 +136,9 @@ SIGNAL_LABELS = {
     'boss_sortie_missing': 'ボスへの出撃がない',
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
+    'corner_stalled': '画面停滞でコーナー停止',
+    'screen_stalled': '画面が停止した',
+    'input_stalled': '入力が停滞した',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -196,9 +199,13 @@ PRIMARY_LABELS = {
     'boss_sortie_missing': 'ボスへの出撃がない',
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
+    'corner_stalled': '画面停滞でコーナー停止',
+    'screen_stalled': '画面が停止した',
+    'input_stalled': '入力が停滞した',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('corner_stalled', ('corner_stalled',)),
     ('recall_kikan_selected', ('recall_kikan_selected',)),
     ('boss_month_zero_sortie', ('boss_month_zero_sortie',)),
     ('chikujou_available_at_end', ('chikujou_available_at_end',)),
@@ -2576,6 +2583,8 @@ def spawn_issue_filer(runtime, record):
     """
     if not isinstance(record, dict) or record.get('auto_file') is not True:
         return False
+    if os.environ.get('DOCICH_DISABLE_ISSUE_FILER') == '1':
+        return False
     incident_id = record.get('incident_id')
     if not isinstance(incident_id, str) or not incident_id:
         return False
@@ -2799,6 +2808,101 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     return state
 
 
+
+def record_corner_stall(runtime, *, reason, run, identity, rotation_request_id=None,
+                        now=None, spawn=True):
+    """Append one screen/input-stall corner stop incident and file it.
+
+    Called by the corner owner before the slot is released to rotation. The
+    helper is deliberately independent of the open-month state: the corner is
+    already terminal, and the bot will not observe another month.
+    """
+    if reason not in ('screen_stalled', 'input_stalled'):
+        return None
+    now = time.time() if now is None else float(now)
+    runtime = Path(runtime)
+    run = run if isinstance(run, dict) else {}
+    identity = identity if isinstance(identity, dict) else {}
+    mem = run.get('policy') if isinstance(run.get('policy'), dict) else {}
+    evidence = run.get('terminal_evidence')
+    evidence = evidence if isinstance(evidence, dict) else {}
+    raw_id = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+              f"{reason}|{evidence.get('frame_sha256')}")
+    incident_id = hashlib.sha256(raw_id.encode('utf-8')).hexdigest()[:20]
+    for existing in load_incidents(runtime):
+        if existing.get('incident_id') == incident_id:
+            return existing
+    context = _context(run) if run else None
+    rows = _read_decisions(runtime, max(0.0, now - 120), now, identity)
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    kind = 'corner_stalled'
+    signals = [kind, reason]
+    for name in _signals(context, counts, None, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    record = {
+        'schema': SCHEMA,
+        'event': 'corner_stalled',
+        'kind': kind,
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter') if isinstance(mem, dict) else None,
+        'month': mem.get('month') if isinstance(mem, dict) else None,
+        'corner_stall': {
+            'reason': reason,
+            'unchanged_seconds': _bounded_int(run.get('unchanged_seconds'), 0, 10 ** 7),
+            'actions_sent': _bounded_int(run.get('actions_sent'), 0, 10 ** 9),
+            'phase': _bounded_text(run.get('phase'), 32),
+            'bot_version': _bounded_text(run.get('bot_version'), 80),
+            'chapter': mem.get('chapter') if isinstance(mem, dict) else None,
+            'month': mem.get('month') if isinstance(mem, dict) else None,
+            'runtime_id': _bounded_text(identity.get('runtime_id'), 64),
+            'generation': _bounded_int(identity.get('generation'), 0, 10 ** 9),
+            'rotation_request_id': _bounded_text(rotation_request_id, 64),
+            'terminal_evidence': {
+                'reason': _bounded_text(evidence.get('terminal_reason'), 32),
+                'frame_sha256': _bounded_text(evidence.get('frame_sha256'), 64),
+                'tick': _bounded_int(evidence.get('tick'), 0, 10 ** 9),
+            } if evidence else None,
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(runtime.name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': run.get('bot_version'),
+            'identity': identity,
+        },
+        'created_at': now,
+    }
+    record['incident_id'] = incident_id
+    record['signature'] = kind
+    record['fingerprint'] = _fingerprint(record.get('chapter'), kind, [reason])
+    record['auto_file'] = True
+    record = _shrink(record)
+    _append_incident(runtime, record)
+    if spawn:
+        spawn_issue_filer(runtime, record)
+    return record
+
+
 def load_incidents(runtime):
     """Sealed incidents, oldest first; never raises on a malformed line."""
     runtime = Path(runtime)
@@ -2868,6 +2972,7 @@ def render(record):
     boss_month = record.get('boss_month') or {}
     boss = record.get('boss_phase') or {}
     recall = record.get('recall_event') or {}
+    stall = record.get('corner_stall') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
@@ -2882,6 +2987,19 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    if stall:
+        body += [
+            '### コーナー停止',
+            '',
+            f"- 理由: {stall.get('reason')} / 無変化 {stall.get('unchanged_seconds')}秒"
+            f" / actions {stall.get('actions_sent')} / phase {stall.get('phase') or '不明'}",
+            f"- ラン: {stall.get('runtime_id')} / generation {stall.get('generation')}"
+            f" / bot {stall.get('bot_version') or '不明'}",
+            f"- 章/月: ch{stall.get('chapter')} {stall.get('month')}"
+            f" / rotation_request_id {stall.get('rotation_request_id') or 'なし'}",
+            f"- terminal evidence: {stall.get('terminal_evidence')}",
+            '',
+        ]
     if recall:
         body += [
             '### 帰還手段',
@@ -2985,7 +3103,7 @@ def render(record):
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
             '',
         ]
-    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall) else
+    body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall or stall) else
                 ('### ボスフェーズの決定' if kind in ('boss_month_zero_sortie',
                                                      'boss_month_zero_unverified')
                  else '### フェーズ中の決定' if kind == 'boss_phase_no_battle'
@@ -3002,7 +3120,7 @@ def render(record):
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
     body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou or recall
-                                     or boss_month or kind == 'boss_phase_no_battle')
+                                     or stall or boss_month or kind == 'boss_phase_no_battle')
              else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
              '| --- | --- | --- | --- | --- | --- |']
@@ -3071,8 +3189,13 @@ def render_comment(record):
     stay = record.get('camp_stay') or {}
     chikujou = record.get('chikujou_event') or {}
     recall = record.get('recall_event') or {}
+    stall = record.get('corner_stall') or {}
     boss_month = record.get('boss_month') or {}
-    if record.get('kind') == 'recall_kikan_selected':
+    if record.get('kind') == 'corner_stalled':
+        lines.insert(5, f"- 停止: {stall.get('reason')}"
+                        f" / 無変化 {stall.get('unchanged_seconds')}秒"
+                        f" / g{stall.get('generation')}")
+    elif record.get('kind') == 'recall_kikan_selected':
         lines.insert(5, f"- 帰還: {recall.get('choice')} / goal {recall.get('goal')}"
                         f" / {recall.get('general') or '不明'}")
     elif record.get('kind') in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
@@ -3107,6 +3230,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'corner_stalled':
+        stall = record.get('corner_stall') or {}
+        label = ('画面停滞' if stall.get('reason') == 'screen_stalled' else '入力停滞')
+        return (f"[半熟英雄] {label}でコーナー停止: ch{record.get('chapter')} "
+                f"g{stall.get('generation')}")[:100]
     if kind == 'recall_kikan_selected':
         recall = record.get('recall_event') or {}
         who = recall.get('general') or recall.get('goal') or '将軍不明'

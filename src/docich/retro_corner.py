@@ -2835,6 +2835,23 @@ class RetroCornerManager:
                                 runtime_identity(fence))
                         except Exception as exc:
                             latest['chart_review'] = {'error': type(exc).__name__}
+                    if run.get('terminal_reason') in {'screen_stalled', 'input_stalled'}:
+                        # A screen/input stall ends this corner and releases the
+                        # slot to rotation. Record the stop before teardown so
+                        # the fix issue carries the measured terminal evidence;
+                        # never let filing failure block the teardown.
+                        try:
+                            from . import month_audit
+                            month_audit.record_corner_stall(
+                                runtime_dir,
+                                reason=run.get('terminal_reason'),
+                                run=run,
+                                identity=owned_identity,
+                                rotation_request_id=latest.get('rotation_request_id'))
+                        except Exception as exc:
+                            print(
+                                f"[hanjuku-stall-audit] status=failed error={type(exc).__name__}",
+                                file=sys.stderr)
                     return self._finish_locked(latest, self._local_now())
                 if time.monotonic() >= next_repair:
                     self._repair_active_agent(latest)

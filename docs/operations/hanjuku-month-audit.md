@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1377）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1378）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1377）
+## ボスフェーズ無戦闘（v1378）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1377）
+## キャンプ帰還の失敗・キャンセル（v1378）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -84,7 +84,7 @@ issue化の既定は `high` のみ。
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 出撃失敗・キャンセル（v1377）
+## 出撃失敗・キャンセル（v1378）
 
 terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
 
@@ -103,7 +103,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   `order_retry`（戦闘再試行）はterminalでないため対象外。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 卵・切り札を残した退却/敗北（v1377）
+## 卵・切り札を残した退却/敗北（v1378）
 
 戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
 残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
@@ -123,7 +123,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
 - 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
 
-## 野営放置（3ヶ月以上連続）（v1377）
+## 野営放置（3ヶ月以上連続）（v1378）
 
 `general_statuses.statuses` で `location=camp` の将軍を月ごとに追跡し、
 同じ将軍が**3ヶ月以上連続**で野営のままなら `camp_abandoned` を1回保存する。
@@ -141,7 +141,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 野営放置: ch<章> <将軍> (<n>ヶ月)`。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 築城可能なのにキャンセル/月一終了（v1377）
+## 築城可能なのにキャンセル/月一終了（v1378）
 
 月一メニューの `month_done` / `month_confirm`、または terminal な
 `chikujou_declined` / `chikujou_leftover` の時点で、**資金・将軍・未試行の
@@ -161,7 +161,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 築城可能なまま月一終了: ch<章> <月>` または
   `築城可能なのにキャンセル: ...`。
 
-## ボスフェーズで月内ボス出撃ゼロ（v1377）
+## ボスフェーズで月内ボス出撃ゼロ（v1378）
 
 月を閉じた時点で `_boss_phase` が成立している（通常城をすべて確保し、ボス城が
 残っている）のに、その月の **ボス向け出撃が0** の場合、
@@ -178,7 +178,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] ボスフェーズで月内ボス出撃ゼロ: ch<章> <ボス名>`。
 - 既存の「ボスフェーズでボス戦闘ゼロ（600秒）」とは別シグネチャ。
 
-## 帰還で「きかん」を選択（v1377）
+## 帰還で「きかん」を選択（v1378）
 
 野営からの帰還は owner 指示（2026-11-19）で **きかんを使わず、全体マップ（Y）で
 自軍城へ直接戻る**。`camp_recall_cursor` の実カーソルが `choice='きかん'` かつ
@@ -190,6 +190,21 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 同じ `(chapter, goal, general, camp)` は900秒cooldown。
 - 題名は `[半熟英雄] 帰還で「きかん」を選択: ch<章> <将軍または帰還先>`。
 - 期待する帰還手段（Yジャンプ）を本文に明記する。
+
+## 画面停滞でコーナー停止（v1378）
+
+`screen_stalled` / `input_stalled` でHanjukuコーナーが終了し、スロットが
+ローテーションへ戻る直前に、`corner_stalled` のrecordを1件保存する。
+
+- コーナーownerの `retro_corner` が terminal evidence を検証した後、
+  `_finish_locked` の直前に `month_audit.record_corner_stall` を呼ぶ。
+- 画面停止の理由・無変化秒・actions_sent・phase・bot_version・章/月・
+  runtime/generation・rotation_request_id・terminal evidence（frame/tick）・
+  現在のflow/計画/在城/統計・直前120秒の決定を1件32KB以内で保存。
+- 題名は `[半熟英雄] 画面停滞でコーナー停止: ch<章> g<generation>`
+  （input_stalledは「入力停滞」）。同じruntime/reason/frameは1回だけ。
+- 記録・issue発行の失敗はteardownを止めず、stderrへ固定コードを出す。
+- 既存の「ボス戦闘ゼロ」「月内出撃ゼロ」などとは別シグネチャ。
 
 ## 保存先
 
@@ -262,7 +277,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1377）
+## botからの自動発行（v1378）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで

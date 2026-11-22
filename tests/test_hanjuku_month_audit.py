@@ -202,7 +202,8 @@ def test_observe_reports_the_sealed_incident_to_the_caller(runtime_dir):
     assert seen[0]['auto_file'] is True
 
 
-def test_spawn_issue_filer_detaches_with_the_incident_id(runtime_dir):
+def test_spawn_issue_filer_detaches_with_the_incident_id(runtime_dir, monkeypatch):
+    monkeypatch.delenv('DOCICH_DISABLE_ISSUE_FILER', raising=False)
     record = {'auto_file': True, 'incident_id': 'abc123'}
     with patch.object(audit.subprocess, 'Popen') as popen:
         assert audit.spawn_issue_filer(runtime_dir, record) is True
@@ -1152,6 +1153,57 @@ def test_recall_with_idou_is_not_recorded(runtime_dir):
     audit.observe(runtime_dir, audit.capture(value), value,
                   [_kikan_record(choice='いどう')], now=1000)
     assert audit.load_incidents(runtime_dir) == []
+
+
+def test_corner_stall_is_recorded_and_titled(runtime_dir):
+    value = state(10, '1-1', 0)
+    value['terminal_reason'] = 'screen_stalled'
+    value['unchanged_seconds'] = 300
+    value['actions_sent'] = 17
+    value['phase'] = 'field'
+    value['bot_version'] = 'synthetic-v1'
+    value['terminal_evidence'] = {'terminal_reason': 'screen_stalled',
+                                  'frame_sha256': 'a' * 64, 'tick': 99}
+    record = audit.record_corner_stall(
+        runtime_dir, reason='screen_stalled', run=value, identity=IDENTITY,
+        rotation_request_id='req-1', now=1000, spawn=False)
+    assert record['kind'] == 'corner_stalled'
+    assert record['auto_file'] is True
+    assert record['corner_stall']['unchanged_seconds'] == 300
+    assert record['corner_stall']['rotation_request_id'] == 'req-1'
+    assert '画面停滞でコーナー停止' in audit._issue_title(record)
+    assert '### コーナー停止' in audit.render(record)
+    stored = audit.load_incidents(runtime_dir)
+    assert len(stored) == 1
+
+
+def test_corner_stall_is_recorded_once(runtime_dir):
+    value = state(10, '1-1', 0)
+    value['terminal_reason'] = 'input_stalled'
+    value['terminal_evidence'] = {'frame_sha256': 'b' * 64}
+    first = audit.record_corner_stall(
+        runtime_dir, reason='input_stalled', run=value, identity=IDENTITY,
+        now=1000, spawn=False)
+    second = audit.record_corner_stall(
+        runtime_dir, reason='input_stalled', run=value, identity=IDENTITY,
+        now=1100, spawn=False)
+    assert first['incident_id'] == second['incident_id']
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_non_stall_corner_reason_is_not_recorded(runtime_dir):
+    value = state(10, '1-1', 0)
+    assert audit.record_corner_stall(
+        runtime_dir, reason='game_over', run=value, identity=IDENTITY,
+        now=1000, spawn=False) is None
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_retro_corner_records_screen_stall_before_teardown():
+    text = (Path(__file__).resolve().parents[1] / 'src/docich/retro_corner.py').read_text(
+        encoding='utf-8')
+    assert 'record_corner_stall' in text
+    assert "screen_stalled', 'input_stalled'" in text
 
 
 def test_capture_reads_unmigrated_world_fields():
