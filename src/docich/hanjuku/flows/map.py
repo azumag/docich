@@ -39,7 +39,7 @@ from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _bro
                                drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
-                               next_order, parked_boss_steps)
+                               next_order, order_dispatch_starved, parked_boss_steps)
 from ..strategy.replan import _off_chart
 from .result import FlowResult
 
@@ -2383,7 +2383,8 @@ def map_step(screen: Screen, mem, frame):
         last = mem.get('select_focus_tick')
         if last is None:
             mem['select_focus_tick'] = tick
-        elif tick - int(last) >= SELECT_FOCUS_INTERVAL:
+        elif (tick - int(last) >= SELECT_FOCUS_INTERVAL
+                and not order_dispatch_starved(mem)):
             mem['select_focus_tick'] = tick
             mem['nav_last'] = None
             mem['uncertain'] = True
@@ -2421,12 +2422,15 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = _order(mem) or next_order(mem) or order
     if order is None and _cursor(screen) and not screen.marker and _world_map_wanted(mem):
-        # Before choosing what to do next, read every castle's owner at once.
-        mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
-        mem.pop('world_map_due', None)
-        _record(mem, 'world_map_open', screen=screen.kind,
-                reason='全城の所有を全体マップで確認するためYを押す')
-        return [pad('y')]
+        # Before choosing what to do next, read every castle's owner at once —
+        # unless a boss-phase order is starved for dispatch (docich#5077):
+        # the repeated survey then yields one frame to the block below.
+        if not order_dispatch_starved(mem):
+            mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
+            mem.pop('world_map_due', None)
+            _record(mem, 'world_map_open', screen=screen.kind,
+                    reason='全城の所有を全体マップで確認するためYを押す')
+            return [pad('y')]
     if order is None:
         from ..strategy import corridor
         # Chapter 9's march does not reopen a source list to settle an
@@ -2444,9 +2448,13 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = next_order(mem) or order
         if order is None:
+            # docich#5077: nothing startable ends the dispatch wait; a pending
+            # but unstartable order re-arms the bound on the next check.
+            mem.pop('order_dispatch_since', None)
             update_world(screen, mem, frame)
             goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
+        mem.setdefault('order_dispatch_since', int(mem.get('tick') or 0))
         if not _order_start_due(mem, order['step']):
             _tally(mem, 'map_hold_order_due')
             return []
@@ -2505,6 +2513,7 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('castle_verified', None)
         if order.get('source_probe') is True:
             mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
+        mem.pop('order_dispatch_since', None)   # docich#5077: the wait ends at dispatch
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),

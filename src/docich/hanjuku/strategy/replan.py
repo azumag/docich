@@ -1279,6 +1279,26 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             )
             if arrivals:
                 return arrivals[0], MOVE_ANY_GENERAL
+        # docich#5077: every measured castle fails ``need`` while an unread
+        # castle may hold the pair — g1190 ch1 9-10 held six one-general
+        # fronts and a never-read アルマムーン, so no wave could ever be
+        # minted and no probe was armed either (roster_read_due and
+        # arrival_probe_due both require their own trigger). When at least
+        # one roster is known (the all-unread case is handled below), read
+        # one unread castle: the sortie menu opens its list and the next
+        # plan sends the wave from it if a pair is there. The last probe's
+        # start tick throttles re-issue while a read is still walking.
+        if allow_probe and any(garrison.get(c) for c in owned):
+            now = int(mem.get('tick') or 0)
+            asked = mem.get('arrival_probe_tick') or {}
+            unread = sorted(
+                (c for c in owned
+                 if garrison.get(c) is None and c not in prefer_not
+                 and (type(asked.get(c)) is not int
+                      or now - int(asked[c]) >= routes.PROBE_INTERVAL)),
+                key=lambda c: (c == home, c))
+            if unread:
+                return unread[0], MOVE_ANY_GENERAL
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
         # (general_list_scanned) and the deploy step then picks a measured

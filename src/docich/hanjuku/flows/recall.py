@@ -10,7 +10,8 @@ from ..os_layer.navigation import _start_y_jump
 from ..os_layer.readers import (_canonical_general, _current, _cursor, _options,
                                 fort_list_open, is_camp_menu, is_fort_menu)
 from ..os_layer.world import NAME, _owned
-from ..strategy.orders import _fort_recall_goal, _recall_goal, _recall_owned
+from ..strategy.orders import (_fort_recall_goal, _recall_goal, _recall_owned,
+                               order_dispatch_starved)
 from ..state.regions import flow as _flow, journal as _journal, sorties as _sorties
 
 
@@ -1120,6 +1121,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             return None
         if _month_end_soon(mem):
             return None     # the month-start scene would cut the destination picker
+        if order_dispatch_starved(mem):
+            # docich#5077: a starved boss-phase dispatch takes the map first;
+            # only a NEW recall/hunt yields — one in flight still owns its menu.
+            return None
         camps = own_camps(frame) if observed_camps is None else observed_camps
         camps = _filter_recall_skip(mem, camps)
         if camps and isinstance(frame, Frame):
