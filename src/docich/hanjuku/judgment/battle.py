@@ -1438,7 +1438,81 @@ def _survival_needed(cur):
             or (not cur.get('planned_cards') and _combat_behind(cur)))
 
 
-def _unarmed_wall_risk(cur):
+# Open a measured, one-shot rescue before the ordinary low-HP/retreat gates.
+# 70% remaining means at least 30% of the HP brought into this battle has
+# already been lost. The live menu still owns the final card damage gate.
+EARLY_RESOURCE_RESCUE_REMAINING_TENTHS = 7
+
+
+def _early_resource_rescue_needed(mem, cur):
+    """Open one bounded resource inspection after a meaningful losing HP trade.
+
+    Only current, named evidence can license this: the actor is behind, has
+    lost at least 30% of its opening HP, and a positive personal egg or a
+    confirmed carried survival card still has a path through the damage gate.
+    Charted/boss fights, event duels, critical HP and already-spent rescue
+    budgets keep their existing timing.
+    """
+    if not isinstance(mem, dict) or not isinstance(cur, dict):
+        return False
+    hp, start, enemy = (cur.get(k) for k in ('ally_hp', 'start_ally_hp', 'enemy_hp'))
+    if (type(hp) is not int or type(start) is not int or type(enemy) is not int
+            or hp <= GENERAL_CRITICAL_RETREAT_HP or start <= 0 or enemy <= 0
+            or hp <= RETREAT_RESOURCE_FLOOR_HP
+            or hp * 10 > start * EARLY_RESOURCE_RESCUE_REMAINING_TENTHS):
+        return False
+    if (cur.get('event_duel') or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('planned_cards')
+            or cur.get('card_flow') or cur.get('command_open_pending')):
+        return False
+    if (cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS):
+        return False
+    if not _behind(cur):
+        return False
+
+    rescue = cur.get('survival')
+    rescue = rescue if isinstance(rescue, dict) else {}
+    if rescue.get('early_resource_triggered') or rescue.get('exhausted'):
+        return False
+    opens, pending = rescue.get('opens', 0), rescue.get('pending_opens', 0)
+    if (type(opens) is not int or type(pending) is not int
+            or opens < 0 or pending < 0 or opens >= 12 or pending >= 3):
+        return False
+
+    attempts = rescue.get('egg_attempts', 0)
+    if type(attempts) is not int or attempts < 0:
+        attempts = EGG_ATTEMPT_LIMIT
+    egg_ready = (not rescue.get('egg_attempted') and not rescue.get('egg_pending')
+                 and attempts < EGG_ATTEMPT_LIMIT
+                 and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur))
+
+    cards_ready = False
+    checked = rescue.get('cards_checked', 0)
+    if not rescue.get('cards_exhausted') and type(checked) is int and 0 <= checked < 3:
+        kit = _confirmed_carried_kit(mem, cur)
+        attempted = {c for c in (rescue.get('cards_attempted') or ()) if isinstance(c, str)}
+        selected = {c for c in (cur.get('cards_selected') or ()) if isinstance(c, str)}
+        if isinstance(kit, (list, tuple)):
+            for card in kit:
+                if card not in SURVIVAL_CARDS or card in attempted or card in selected:
+                    continue
+                try:
+                    gate = _card_damage_gate(mem, cur, card)
+                except Exception:
+                    continue
+                if gate.get('allowed') is True or gate.get('needs_live_list') is True:
+                    cards_ready = True
+                    break
+        if not cards_ready:
+            try:
+                cards_ready = _retreat_cards_to_spend(cur)
+            except (TypeError, ValueError):
+                cards_ready = False
+    return egg_ready or cards_ready
+
+
+def _unarmed_wall_risk(cur)
     """Inspect initially eggless attackers before a wall-triggered summon.
 
     g684 Trevis66 vs Alfalfa38 carried a card but had no timed chart tactic.
