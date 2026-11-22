@@ -77,6 +77,10 @@ BATTLE_MENU_IGNORED_CLOSES = frozenset({
 })
 
 BATTLE_MENU_ISSUE_COOLDOWN_SECONDS = 900
+SORTIE_CARDS_ISSUE_COOLDOWN_SECONDS = 900
+SORTIE_CARD_PURPOSES = frozenset({'attack', 'retake', 'boss', 'invade'})
+NON_SORTIE_CARD_PURPOSES = frozenset({'move', 'house', 'repair', 'defend', 'recall'})
+
 CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
@@ -164,6 +168,8 @@ SIGNAL_LABELS = {
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
     'battle_menu_no_resource': '卵・切り札・退却・奥の手を実行せず閉じた',
+    'sortie_without_cards': '切り札在庫があるのに非携行で出撃',
+    'card_inventory_ignored': '切り札在庫を携行していない',
     'unknown': '原因未分類',
 }
 SIGNAL_ORDER = tuple(SIGNAL_LABELS)
@@ -229,9 +235,12 @@ PRIMARY_LABELS = {
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
     'battle_menu_no_resource': '卵・切り札・退却・奥の手を実行せず閉じた',
+    'sortie_without_cards': '切り札在庫があるのに非携行で出撃',
+    'card_inventory_ignored': '切り札在庫を携行していない',
     'unknown': '原因未分類',
 }
 PRIMARY_SIGNALS = (
+    ('sortie_without_cards', ('sortie_without_cards',)),
     ('battle_menu_wasted', ('battle_menu_wasted',)),
     ('corner_stalled', ('corner_stalled',)),
     ('recall_kikan_selected', ('recall_kikan_selected',)),
@@ -2078,6 +2087,187 @@ def _track_battle_menu(runtime, state, before, after, records, now, on_sealed=No
             watch['actions'].append(action)
 
 
+
+def _positive_card_stock(mem):
+    stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else {}
+    positive = {}
+    for name, count in stock.items():
+        if isinstance(name, str) and type(count) is int and count > 0:
+            positive[name] = count
+    return positive
+
+
+def _sortie_plan_order(mem, step):
+    plan = mem.get('plan') if isinstance(mem.get('plan'), dict) else {}
+    chart = plan.get('chart_plan') if isinstance(plan.get('chart_plan'), dict) else {}
+    orders = chart.get('orders') if isinstance(chart.get('orders'), list) else []
+    for order in orders:
+        if isinstance(order, dict) and order.get('step') == step:
+            return order
+    return {}
+
+
+def _sortie_carried_cards(mem, step, record):
+    carried = []
+    rare = (mem.get('rare_card_kit') or {}).get(step)
+    if isinstance(rare, list):
+        carried += [card for card in rare if isinstance(card, str)]
+    elif isinstance(rare, str):
+        carried.append(rare)
+    strong = (mem.get('strong_card_kit') or {}).get(step)
+    if isinstance(strong, str):
+        carried.append(strong)
+    dropper = (mem.get('dropper_card_kit') or {}).get(step)
+    if isinstance(dropper, dict) and isinstance(dropper.get('card'), str):
+        carried.append(dropper['card'])
+    for key in ('cards', 'card', 'cards_selected'):
+        value = record.get(key)
+        if isinstance(value, str):
+            carried.append(value)
+        elif isinstance(value, list):
+            carried += [card for card in value if isinstance(card, str)]
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    for key in ('cards', 'card', 'cards_selected'):
+        value = metric.get(key)
+        if isinstance(value, str):
+            carried.append(value)
+        elif isinstance(value, list):
+            carried += [card for card in value if isinstance(card, str)]
+    return carried
+
+
+def _sortie_cards_event(record, mem):
+    if not isinstance(record, dict) or record.get('decision') not in LAUNCH_DECISIONS:
+        return None
+    step = record.get('chart_step')
+    if not isinstance(step, str) or not step:
+        return None
+    order = _sortie_plan_order(mem, step)
+    purpose = record.get('purpose') or order.get('purpose')
+    if purpose in NON_SORTIE_CARD_PURPOSES:
+        return None
+    if purpose not in SORTIE_CARD_PURPOSES and order.get('target') is None:
+        return None
+    stock = _positive_card_stock(mem)
+    if not stock:
+        return None
+    carried = _sortie_carried_cards(mem, step, record)
+    if carried:
+        return None
+    return {
+        'decision': record.get('decision'),
+        'step': step,
+        'purpose': _bounded_text(purpose, 32),
+        'general': _bounded_text(record.get('general') or order.get('general'), 48),
+        'source': _bounded_text(record.get('source') or order.get('source'), 48),
+        'target': _bounded_text(record.get('target') or order.get('target'), 48),
+        'inventory': dict(sorted(stock.items())[:12]),
+        'planned_cards': [card for card in (order.get('cards') or [])
+                          if isinstance(card, str)][:12],
+        'carried': [],
+        'reason': _bounded_text(record.get('reason'), 200),
+        'at': record.get('at') if type(record.get('at')) in (int, float) else None,
+    }
+
+
+def _build_sortie_cards_incident(runtime, state, after, event, now):
+    mem = after.get('policy') or {}
+    context = _context(after)
+    rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
+                           state.get('identity'))
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    signals = ['sortie_without_cards', 'card_inventory_ignored']
+    for name in _signals(context, counts, confirmed, departures, battle_count):
+        if name not in signals:
+            signals.append(name)
+    signals = signals[:8]
+    identity = state.get('identity') or {}
+    record = {
+        'schema': SCHEMA,
+        'event': 'sortie_without_cards',
+        'kind': 'sortie_without_cards',
+        'confidence': 'high',
+        'confidence_reasons': [],
+        'chapter': mem.get('chapter'),
+        'month': mem.get('month'),
+        'month_summary': _month_summary(state.get('observed'), now)
+        if isinstance(state.get('observed'), dict) else None,
+        'sortie_event': dict(event),
+        'sorties': {
+            'confirmed': confirmed,
+            'departures': departures,
+            'launch_events': launch_events,
+            'order_start': counts.get('order_start', 0),
+            'order_launched': counts.get('order_launched', 0),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': signals,
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'evidence': {
+            'runtime_dir': str(Path(runtime).name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': after.get('bot_version'),
+            'identity': identity,
+        },
+        'context_missing': context is None,
+        'created_at': float(now),
+    }
+    raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
+           f"sortie_without_cards|{event.get('step')}|{event.get('general')}|"
+           f"{int(float(now))}")
+    record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+    record['signature'] = 'sortie_without_cards'
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), 'sortie_without_cards',
+                                         ['sortie_without_cards'])
+    record['auto_file'] = True
+    return _shrink(record)
+
+
+def _track_sortie_cards(runtime, state, after, records, now, on_sealed=None):
+    mem = after.get('policy') or {}
+    events = [event for event in
+              (_sortie_cards_event(record, mem) for record in records or ())
+              if event]
+    if not events:
+        return
+    event = events[0]
+    chapter = mem.get('chapter')
+    key = '|'.join(str(part or '') for part in (
+        chapter, event.get('step'), event.get('general')))
+    table = state.setdefault('sortie_cards_events', {})
+    if not isinstance(table, dict):
+        table = state['sortie_cards_events'] = {}
+    last = table.get(key)
+    if (isinstance(last, dict)
+            and float(now) - float(last.get('at') or 0) < SORTIE_CARDS_ISSUE_COOLDOWN_SECONDS):
+        last['count'] = int(last.get('count') or 1) + 1
+        return
+    incident = _build_sortie_cards_incident(runtime, state, after, event, now)
+    _append_incident(runtime, incident, on_sealed)
+    table[key] = {'at': float(now), 'kind': 'sortie_without_cards', 'count': 1}
+    if len(table) > 30:
+        for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
+            table.pop(stale, None)
+
+
 def _track_camp_abandon(runtime, state, after, now, on_sealed=None):
     mem = after.get('policy') or {}
     chapter, month = mem.get('chapter'), mem.get('month')
@@ -2991,6 +3181,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_chikujou(runtime, state, before, after, records, now, on_sealed)
     _track_recall_kikan(runtime, state, after, records, now, on_sealed)
     _track_battle_menu(runtime, state, before, after, records, now, on_sealed)
+    _track_sortie_cards(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -3166,6 +3357,7 @@ def render(record):
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
     battle_menu = record.get('battle_menu') or {}
+    sortie_cards = record.get('sortie_event') or {}
     body = [
         f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
         f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
@@ -3247,6 +3439,19 @@ def render(record):
             f" / 最終観測tick: {stay.get('last_tick')}",
             '',
         ]
+    if sortie_cards:
+        body += [
+            '### 切り札の非携行',
+            '',
+            f"- 将軍: {sortie_cards.get('general') or '不明'} / step: {sortie_cards.get('step') or '不明'}"
+            f" / purpose: {sortie_cards.get('purpose') or '不明'}",
+            f"- 出撃元: {sortie_cards.get('source') or '不明'}"
+            f" / 対象: {sortie_cards.get('target') or '不明'}",
+            f"- 在庫: {sortie_cards.get('inventory')} / 携行: なし"
+            f" / 計画cards: {sortie_cards.get('planned_cards')}",
+            f"- 決定: {sortie_cards.get('decision')} / 理由: {sortie_cards.get('reason') or '不明'}",
+            '',
+        ]
     if battle_menu:
         body += [
             '### 戦闘Bメニュー',
@@ -3310,7 +3515,7 @@ def render(record):
             '',
         ]
     body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall
-                                     or stall or battle_menu) else
+                                     or stall or battle_menu or sortie_cards) else
                 ('### ボスフェーズの決定' if kind in ('boss_month_zero_sortie',
                                                      'boss_month_zero_unverified')
                  else '### フェーズ中の決定' if kind == 'boss_phase_no_battle'
@@ -3327,7 +3532,7 @@ def render(record):
     for row in rows:
         body.append(f"| {_clock(row.get('at'))} | {_cell(row.get('decision'))} | {_cell(row.get('chart_step'))} | {_md(row.get('general'))} | {_md(row.get('target'))} | {_md(row.get('reason'))} |")
     body += ['', '### 現在の計画' if (camp or sortie or battle or stay or chikujou or recall
-                                     or stall or battle_menu or boss_month
+                                     or stall or battle_menu or sortie_cards or boss_month
                                      or kind == 'boss_phase_no_battle')
              else '### 前月の計画', '',
              '| step | 状態 | 目的 | 出撃元 | 対象 | 将軍 |',
@@ -3399,8 +3604,12 @@ def render_comment(record):
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
     battle_menu = record.get('battle_menu') or {}
+    sortie_cards = record.get('sortie_event') or {}
     boss_month = record.get('boss_month') or {}
-    if record.get('kind') == 'battle_menu_wasted':
+    if record.get('kind') == 'sortie_without_cards':
+        lines.insert(5, f"- 切り札: 在庫 {sortie_cards.get('inventory')}"
+                        f" / 携行なし / {sortie_cards.get('general') or '不明'}")
+    elif record.get('kind') == 'battle_menu_wasted':
         lines.insert(5, f"- 戦闘Bメニュー: {battle_menu.get('duration_s')}秒"
                         f" / 実行なし / {battle_menu.get('general') or '不明'}"
                         f" / close {battle_menu.get('close_decision')}")
@@ -3443,6 +3652,10 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'sortie_without_cards':
+        event = record.get('sortie_event') or {}
+        who = event.get('general') or event.get('step') or '将軍不明'
+        return (f"[半熟英雄] 切り札在庫があるのに非携行で出撃: ch{record.get('chapter')} {who}")[:100]
     if kind == 'battle_menu_wasted':
         menu = record.get('battle_menu') or {}
         who = menu.get('general') or menu.get('step') or '将軍不明'
