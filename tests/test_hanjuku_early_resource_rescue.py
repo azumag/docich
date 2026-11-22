@@ -55,6 +55,10 @@ def test_early_rescue_requires_a_confirmed_egg_or_damage_gated_carried_card(monk
     monkeypatch.setattr(judgment, '_card_damage_gate',
                         lambda mem, battle, card: {'allowed': False, 'needs_live_list': True})
     assert judgment._early_resource_rescue_needed(_memory(cur, egg_uses=None), cur)
+    near_floor = _battle(hp=5)
+    assert judgment._early_resource_rescue_needed(_memory(near_floor, egg_uses=None), near_floor)
+    floor = _battle(hp=4)
+    assert not judgment._early_resource_rescue_needed(_memory(floor, egg_uses=None), floor)
 
     monkeypatch.setattr(judgment, '_card_damage_gate',
                         lambda mem, battle, card: {'allowed': False, 'needs_live_list': False})
