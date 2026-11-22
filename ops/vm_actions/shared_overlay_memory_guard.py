@@ -76,7 +76,12 @@ def _store_state(path, value):
 def run_guard(*, limit=DEFAULT_LIMIT_BYTES, cooldown=DEFAULT_COOLDOWN_SECONDS,
               memory=memory_current, reload=None, now=time.time, state_path=STATE_PATH):
     if reload is None:
-        from .reload_shared_overlay import reload_shared_overlay as reload
+        # Imported as a package in tests, executed as a sibling script by the
+        # systemd wrapper, so accept both import roots.
+        try:
+            from .reload_shared_overlay import reload_shared_overlay as reload
+        except ImportError:
+            from reload_shared_overlay import reload_shared_overlay as reload
     used = memory()
     state = _load_state(state_path)
     last = state.get('reloaded_at')

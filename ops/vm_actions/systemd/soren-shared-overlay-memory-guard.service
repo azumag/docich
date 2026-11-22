@@ -1,0 +1,12 @@
+[Unit]
+Description=Reload the shared overlay browser when its memory exceeds the limit (docich#5112)
+Documentation=https://github.com/azumag/docich/issues/5112
+After=soren-shared-overlay.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+# The guard reads the unit's cgroup memory and calls the existing
+# reload_shared_overlay path only above the limit and outside the cooldown.
+ExecStart=/home/ubuntu/docich/ops/vm_actions/shared_overlay_memory_guard.sh
+TimeoutStartSec=180
