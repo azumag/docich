@@ -1279,6 +1279,65 @@ def test_battle_menu_waste_is_cooled_down(runtime_dir):
     assert len(audit.load_incidents(runtime_dir)) == 1
 
 
+def _cards_state(*, stock=None, purpose='attack', cards=None):
+    value = state(10, '1-1', 0)
+    value['policy']['card_stock'] = {'ノリウツール': 96} if stock is None else stock
+    value['policy']['plan'] = {'orders': {}, 'chart_plan': {'orders': [{
+        'step': 'A:1:M1', 'purpose': purpose, 'source': 'アルマムーン',
+        'target': 'タタール', 'general': 'カシュー', 'cards': cards or [],
+    }]}}
+    return value
+
+
+def _launch_record(purpose='attack'):
+    return {'decision': 'order_launched', 'chart_step': 'A:1:M1',
+            'general': 'カシュー', 'purpose': purpose, 'target': 'タタール',
+            'reason': '出撃', 'at': 1000}
+
+
+def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
+    value = _cards_state()
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'sortie_without_cards'
+    assert record['sortie_event']['inventory'] == {'ノリウツール': 96}
+    assert record['auto_file'] is True
+    assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
+    assert '### 切り札の非携行' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):
+    value = _cards_state()
+    value['policy']['rare_card_kit'] = {'A:1:M1': ['ノリウツール']}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_move_without_cards_is_not_recorded(runtime_dir):
+    value = _cards_state(purpose='move')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_launch_record(purpose='move')], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_no_card_stock_is_not_recorded(runtime_dir):
+    value = _cards_state(stock={})
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_sortie_without_cards_is_reported_once(runtime_dir):
+    value = _cards_state()
+    for now in (1000, 1100):
+        audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=now)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
 def test_capture_reads_unmigrated_world_fields():
     state_value = state(1, '1-1', 10)
     state_value['policy']['world']['gold'] = None
