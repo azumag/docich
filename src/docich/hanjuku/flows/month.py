@@ -1310,7 +1310,7 @@ def _chikujou_step(screen, mem, sub):
             sub['confirm_gold'] = gold
             sub['confirm_sent'] = True
             sub['build_wait'] = 0
-            _record(mem, 'chikujou_confirm',
+            _record(mem, 'chikujou_confirm', month=key,
                     observed_metric={'castle': chosen, 'cost': cost, 'gold': gold, 'reserve': reserve},
                     reason=f'{chosen}を{cost}Gで増築し、実際の支払いを照合して次の城へ進む')
             return [pad('a')]
