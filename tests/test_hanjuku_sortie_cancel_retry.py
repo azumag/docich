@@ -7,6 +7,7 @@ cancelled が 1 回記録された後、在城ゲートが _ready() を False �
 """
 from __future__ import annotations
 
+from docich.hanjuku.flows import sortie_retry_guard  # noqa: F401  (本番と同じパッチを入れる)
 from docich.hanjuku.strategy import orders
 
 STEP = 'A:e82075e7:M5b0e2f'
@@ -16,7 +17,7 @@ TARGET = 'アルマムーン'
 
 
 def _order():
-    return {'step': STEP, 'target': TARGET, 'purpose': 'sortie'}
+    return {'step': STEP, 'source': SOURCE, 'target': TARGET, 'purpose': 'sortie'}
 
 
 def _sortie(status='cancelled'):
