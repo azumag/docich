@@ -546,11 +546,18 @@ def month_step(screen: Screen, mem):
                 observed_metric={'recruit': shop.get('recruit'),
                                  'chikujou': shop.get('chikujou')},
                 reason='将軍募集が当月実行不能に確定したため、保留していた切り札・商人・築城を解放する')
-    if shop and not shop.get('merchant_done') and not shop.get('items'):
+    if (shop and not shop.get('merchant_done') and not shop.get('items')
+            and not shop.get('bargain_deferred')):
         # Nothing to buy: the merchant gate below needs shop['items'], so with an
         # empty list the merchant never runs and merchant_done never clears — the
         # month then refuses to exit and loops (g1190 41-1). A month with no
         # purchase list is a month whose merchant is already done.
+        #
+        # A deferred plan is not an empty month: the egg recovery / recruitment
+        # still owns the menu and plan_bargains will fill the list once it is
+        # settled (v1376 93-12 / 94-1 closed the merchant here before either
+        # ran). plan_bargains clears the mark when it can plan again, so the
+        # ordinary no-purchase month still closes here.
         shop['merchant_done'] = True
         _record(mem, 'month_merchant_skipped', month=shop.get('key'),
                 observed_metric={'gold': shop.get('gold_start')},
@@ -661,6 +668,14 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
+    if shop and shop.get('bargain_deferred'):
+        # Closing the month: the mark only delays the empty-items close while
+        # an egg/recruit step is still pending. The exit below (month_done and
+        # も〜おしまい!) is not gated on the merchant, but a month whose
+        # necessity never resolves must not carry the mark into the next
+        # frame's empty-items close. Nothing was planned, so dropping it here
+        # is the same "no purchase list" close as above.
+        shop.pop('bargain_deferred', None)
     # 月一の将軍人数は国ステータスから直接取得するため、一覧巡回待ちは不要。
     if shop and not shop.get('closed') and _await_level_scan(mem, shop):
         return []
