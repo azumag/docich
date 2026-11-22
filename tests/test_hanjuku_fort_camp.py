@@ -289,15 +289,20 @@ def test_a_fort_picker_closed_to_the_map_holds_the_fort_back():
     assert 'recall' not in _flow(mem) and _flow(mem)['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
 
 
-def test_a_tent_picker_closed_to_the_map_holds_the_tent_back():
+def test_a_tent_return_uses_y_route_when_the_field_map_is_visible(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
     mem = memory(recall={'stage': 'dest', 'steps': 0, 'target': [150, 120]})
-    assert p.camp_recall_step(MAP, mem, object()) == []
-    assert _flow(mem)['recall_skip_ticks'] == recall.LOST_CAMP_RETRY_TICKS
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'y_route'
+    assert mem['y_jump']['goal'] == 'アルマムーン'
+    assert 'recall_skip' not in _flow(mem)
 
 
-def test_the_heros_return_never_arms_a_hold_on_every_camp():
+def test_the_heros_return_uses_y_without_arming_a_camp_wide_hold(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
     mem = memory(recall={'stage': 'dest', 'steps': 0, 'hero': True})
-    assert p.camp_recall_step(MAP, mem, object()) == []
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('y')]
+    assert mem['y_jump']['goal'] == 'アルマムーン'
     assert 'recall_skip' not in _flow(mem)
 
 
