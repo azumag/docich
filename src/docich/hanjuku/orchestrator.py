@@ -602,7 +602,7 @@ def plan_starved_rearm(mem, phase, kind):
         # not always reach next_order (ch4 47-x).
         chart_plan = plan.get('chart_plan') or {}
         status = plan.get('orders') or {}
-        if chart_plan.get('source') == 'mechanical' and not plan.get('active'):
+        if chart_plan.get('source') == 'mechanical' and not plan.get('active') and not mem.get('_adjusted'):
             from .strategy import orders as order_mod
             owned = order_mod._owned(mem)
             for order in chart_plan.get('orders') or ():

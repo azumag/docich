@@ -3008,7 +3008,13 @@ def _off_chart(mem):
     rid = chart_adjust.request_id(mem)
     if not chart.speedrun_enabled(mem.get('chapter') or 0):
         return _off_chart_mechanical(mem, state, rid, gate)
-    orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
+    plan = _plan_region(mem).get('chart_plan') or {}
+    # A mechanical chart is only a stand-in while waiting for an adjusted chart,
+    # so its orders must not replace the base chart when computing blocked/reason
+    # and the request digest (just as INTERIM_PREFIX orders are excluded).
+    source_orders = (chart.orders(mem.get('chapter') or 0)
+                     if plan.get('source') == 'mechanical' else _orders(mem))
+    orders = [o for o in source_orders if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
     status = _plan_region(mem).get('orders') or {}
     blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
                if status.get(o['step']) in (None, 'pending')]
