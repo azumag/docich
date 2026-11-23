@@ -34,15 +34,19 @@ from .strategy_store import load_strategy_policy
 
 SCHEMA_VERSION = 1
 
-TIMEFRAMES: tuple[str, ...] = ("1d", "1h", "15m", "1m")
-TIMEFRAME_LABELS = {"1d": "日足", "1h": "1時間足", "15m": "15分足", "1m": "1分足"}
+TIMEFRAMES: tuple[str, ...] = ("1d", "1h", "15m", "5m", "1m")
+TIMEFRAME_LABELS = {
+    "1d": "日足", "1h": "1時間足", "15m": "15分足",
+    "5m": "5分足（公開OHLC）", "1m": "1分足",
+}
 # One request per UTC day on bitbank. Keep the lookback bounded: enough bars for
 # a 20-period Bollinger band on the daily chart without unbounded history.
-TIMEFRAME_DAYS = {"1d": 22, "1h": 3, "15m": 2, "1m": 2}
-# Bars kept per timeframe (display + narration).
-TIMEFRAME_BARS = {"1d": 30, "1h": 48, "15m": 60, "1m": 60}
+TIMEFRAME_DAYS = {"1d": 22, "1h": 3, "15m": 2, "5m": 2, "1m": 2}
+# Bars kept per timeframe (display + narration). 24 five-minute bars are about
+# two hours; do not present that window as a 24-hour change.
+TIMEFRAME_BARS = {"1d": 30, "1h": 48, "15m": 60, "5m": 24, "1m": 60}
 # Per-timeframe refresh TTL. Daily history barely moves; intraday is livelier.
-TIMEFRAME_TTL_S = {"1d": 600.0, "1h": 120.0, "15m": 30.0, "1m": 20.0}
+TIMEFRAME_TTL_S = {"1d": 600.0, "1h": 120.0, "15m": 30.0, "5m": 60.0, "1m": 20.0}
 MAX_BARS = 90
 BB_PERIOD = 20
 BB_K = 2.0
@@ -51,8 +55,8 @@ MOMENTUM_LOOKBACK = 5
 # bitbank's public candlestick endpoint currently serves intraday types only
 # (1min/5min/15min/30min/1hour). The daily chart is therefore aggregated from
 # hourly bars; see ``aggregate_ohlcv``.
-_FETCH_TIMEFRAME = {"1d": "1h", "1h": "1h", "15m": "15m", "1m": "1m"}
-_TIMEFRAME_SECONDS = {"1d": 86400, "1h": 3600, "15m": 900, "1m": 60}
+_FETCH_TIMEFRAME = {"1d": "1h", "1h": "1h", "15m": "15m", "5m": "5m", "1m": "1m"}
+_TIMEFRAME_SECONDS = {"1d": 86400, "1h": 3600, "15m": 900, "5m": 300, "1m": 60}
 
 # Fill-symbol spotlight: give the last mock trades chart context without
 # fetching a full daily history for every position.
@@ -70,7 +74,7 @@ STRATEGY_BARS = 24
 # daily chart costs one request per UTC day; if a transient public-API failure
 # lands at the end of that batch it must not drop the 1-minute chart from the
 # one-shot corner narration.
-_FETCH_PRIORITY = {"1m": 0, "15m": 1, "1h": 2, "1d": 3}
+_FETCH_PRIORITY = {"1m": 0, "5m": 1, "15m": 2, "1h": 3, "1d": 4}
 _FETCH_RETRY_DELAY_S = 0.5
 
 
@@ -291,22 +295,33 @@ def build_timeframe_view(
     tf_seconds = _TIMEFRAME_SECONDS.get(timeframe, 0)
     age_sec = max(0.0, float(now) - timestamps[-1])
     stale = bool(tf_seconds) and age_sec > tf_seconds * max(1, int(stale_after_intervals))
+    bars = []
+    previous_timestamp = None
+    for timestamp, open_, high, low, close, volume in cleaned:
+        bars.append({
+            "t": _round(timestamp, 3),
+            "o": _round(open_, 8),
+            "h": _round(high, 8),
+            "l": _round(low, 8),
+            "c": _round(close, 8),
+            "v": _round(volume, 8),
+            # Bar start time and fetch time are deliberately separate. A
+            # current five-minute candle is forming until its interval ends.
+            "closed": bool(tf_seconds and timestamp + tf_seconds <= float(now)),
+            # Preserve missing intervals instead of implying continuous data.
+            "gap_before": bool(
+                previous_timestamp is not None and tf_seconds
+                and timestamp - previous_timestamp > tf_seconds * 1.5
+            ),
+        })
+        previous_timestamp = timestamp
     view: dict[str, object] = {
         **base,
         "available": True,
-        "bars": [
-            {
-                "t": _round(timestamp, 3),
-                "o": _round(open_, 8),
-                "h": _round(high, 8),
-                "l": _round(low, 8),
-                "c": _round(close, 8),
-                "v": _round(volume, 8),
-            }
-            for timestamp, open_, high, low, close, volume in cleaned
-        ],
+        "bars": bars,
         "bar_count": len(cleaned),
         "as_of": _round(timestamps[-1], 3),
+        "fetched_at": _round(float(now), 3),
         "last_close": _round(closes[-1], 8),
         "open": _round(opens[0], 8),
         "high": _round(max(highs), 8),
