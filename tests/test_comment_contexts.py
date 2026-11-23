@@ -298,6 +298,39 @@ def test_provider_reads_its_allowlisted_env_not_os_environ(tmp_path, monkeypatch
     assert 'LLMの動的判断は有効' in text and '止めていて' not in text
 
 
+def test_yosou_corner_context_names_the_leader_and_round_count(tmp_path):
+    # owner 2026-11-23: コーナー中の返答が画面（予想王のボード）と噛み合うようにする。
+    from docich import prediction_leaderboard as lb
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    ledger = lb.new_ledger()
+    lb.record(ledger, {'id': 'p1', 'title': 't', 'status': 'RESOLVED',
+                       'winning_outcome_id': 'o1', 'ended_at': '2026-11-01T00:00:00Z',
+                       'outcomes': [{'id': 'o1', 'title': 'a', 'users': 1, 'channel_points': 100,
+                                     'top_predictors': [{'user_id': 'u1', 'user_login': 'alice',
+                                                         'user_name': 'アリス',
+                                                         'channel_points_used': 10,
+                                                         'channel_points_won': 200}]},
+                                    {'id': 'o2', 'title': 'b', 'users': 0, 'channel_points': 0,
+                                     'top_predictors': None}]},
+              corner='hanjuku')
+    lb.save(root / lb.FILE, ledger)
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '予想王' in text
+    assert '確定した予想は1件' in text
+    assert 'アリス' in text
+    assert len(text) <= 600
+
+
+def test_yosou_corner_falls_back_without_a_ledger(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert isinstance(text, str) and text
+
+
 def test_mystery_corner_context_names_the_case_and_phase(tmp_path):
     # owner 2026-11-23: ミステリー中のコメント返しが画面と無関係だった。
     # ケース（被害者・場所・容疑者）と段階を返答コンテキストに含める。
