@@ -1362,9 +1362,10 @@ def _hero_locate_order(mem, routes_by, target, lost, visited=()):
 
     # The post first (that is where a working rule keeps him), then the front
     # he may have been left in, then the rear castles.
+    post_len = 2 if (mem.get('chapter') or 0) == 9 else HERO_POST_HOPS
     candidates = sorted(
         (source for source in routable if not fresh(source)),
-        key=lambda source: (0 if len(routable[source]) == HERO_POST_HOPS
+        key=lambda source: (0 if len(routable[source]) == post_len
                             else 1 if len(routable[source]) == 2 else 2,
                             len(routable[source]), source))
     if not candidates:
@@ -1400,10 +1401,16 @@ def _hero_post_order(mem, routes_by, hero_at, wave):
     # Owner 2026-11-16: ボスフェーズのみ最前線の「イデ」に主人公をおいてよい —
     # once every road castle is ours the post advances to the front itself,
     # so the hero gathers at イデ！ with the wave instead of staying behind.
-    boss_phase = (bool(chart.corridor(mem.get('chapter') or 0))
-                  and chart.corridor_next(mem.get('chapter') or 0, _owned(mem)) is None)
-    post = (min(dists.values()) if boss_phase
-            else next((d for d in sorted(set(dists.values())) if d >= HERO_POST_HOPS), None))
+    chapter = mem.get('chapter') or 0
+    boss_phase = (bool(chart.corridor(chapter))
+                  and chart.corridor_next(chapter, _owned(mem)) is None)
+    # Owner 2026-11-24: in chapter 9 the hero follows the captured castle to
+    # the front itself, not one castle behind it.
+    if chapter == 9:
+        post = min(dists.values())
+    else:
+        post = (min(dists.values()) if boss_phase
+                else next((d for d in sorted(set(dists.values())) if d >= HERO_POST_HOPS), None))
     if post is None:
         return None                       # only the front and the target: stay
     if here > post:
