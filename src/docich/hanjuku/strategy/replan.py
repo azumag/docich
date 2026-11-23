@@ -1903,8 +1903,21 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     if not out and not _army_below_floor(mem):
         home = chart.home_castle(chapter)
         garrison_map = _world(mem).get('garrison') or {}
-        located = sum(len(names) for names in garrison_map.values()
-                      if isinstance(names, (list, tuple)))
+        # Count each known general once. A general still marching is already
+        # accounted for; it is not an unlocated recruit that warrants another
+        # roster probe (docich#5153: 72 read-only probes while a single march
+        # was still in flight).
+        located_names = {
+            general
+            for names in garrison_map.values()
+            if isinstance(names, (list, tuple))
+            for general in names
+            if isinstance(general, str) and general
+        }
+        in_flight, _ = _en_route(mem)
+        located_names.update(general for general in in_flight
+                             if isinstance(general, str) and general)
+        located = len(located_names)
         totals = mem.get('country_general_count')
         total = totals.get('count') if isinstance(totals, dict) else None
         enemies = [c for c in castles if c not in owned and not chart.is_boss_castle(c)]
@@ -1914,29 +1927,62 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             probe = _stale_boss_roster_probe(mem, chapter, castles, owned, busy_sources)
             if probe is not None:
                 out['probe_stuck_1'] = probe
-        else:
-            # docich#4705: the probe must open the castle that can actually send.
-            # ch4 17-x held 17 generals at home, but every 四季王城 is blocked from
-            # there (march_blocked) and only the frontier castles can reach them;
-            # their lists were never read, so startable answered
-            # 'general_unconfirmed_at_source' and no order was ever offered. Prefer
-            # a source that owns a spare and can march to some enemy, home on ties.
-            source = None
-            target = None
-            for candidate_source in sorted(
-                    owned,
-                    key=lambda c: (c != home,
-                                   -len(set(garrison_map.get(c) or ())), c)):
-                reachable = [e for e in enemies
-                             if not routes.is_road(chapter)
-                             or not chart.march_blocked(chapter, candidate_source, e, owned)]
-                if reachable:
-                    source, target = candidate_source, reachable[0]
-                    break
-            already = any(o.get('source') == source
-                          for o in (*sorties['retake'], *sorties['attack'], *moves))
-            if (source in owned and target and not already
-                    and type(total) is int and total > located):
+        elif type(total) is int and total > located:
+            # A due arrival is stronger evidence than a stale home roster:
+            # open the castle whose unread dispatch is waiting to be reconciled.
+            # Otherwise probe the stalest eligible roster, but never reread the
+            # same castle inside the shared 300-tick cooldown.
+            garrison_tick = _world(mem).get('garrison_tick') or {}
+            now = int(mem.get('tick') or 0)
+            candidates = []
+            # Prefer a castle not already used by a planned order, because
+            # that order may later be rejected by a source/defender guard.
+            # Keep planned sources as a last-resort read-only fallback, though:
+            # if every other castle is recent/unreachable, excluding the only
+            # source entirely erases the only way to discover its roster
+            # (Devin follow-up on #5182, 2026-11-23).
+            already_sources = {
+                order.get('source')
+                for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
+                              *attacks, *stage_more, *rotation, *wave_orders)
+                if isinstance(order.get('source'), str)
+            }
+            for candidate_source in owned:
+                planned_source = candidate_source in already_sources
+                reachable = [
+                    e for e in enemies
+                    if routes.allowed(mem, candidate_source, e)
+                    and (not routes.is_road(chapter)
+                         or not chart.march_blocked(chapter, candidate_source, e, owned))
+                ]
+                if not reachable:
+                    continue
+                unread = routes.unread_dispatches(mem, candidate_source)
+                arrival_due = bool(unread) and routes.arrival_probe_due(
+                    mem, candidate_source, cooldown=True)
+                # An unread transfer that is still marching, or whose arrival
+                # probe cooldown has not elapsed, must not redirect this fallback.
+                if unread and not arrival_due:
+                    continue
+                last_tick = garrison_tick.get(candidate_source)
+                recently_read = (type(last_tick) is int
+                                 and 0 <= now - last_tick < STALE_ROSTER_PROBE_INTERVAL)
+                if recently_read and not arrival_due:
+                    continue
+                if arrival_due:
+                    unread_ticks = [row.get('tick') for _, row in unread
+                                    if isinstance(row, dict) and type(row.get('tick')) is int]
+                    priority = (0, 1 if planned_source else 0,
+                                min(unread_ticks, default=now),
+                                candidate_source != home, candidate_source)
+                else:
+                    priority = (1, 1 if planned_source else 0,
+                                last_tick if type(last_tick) is int else -1,
+                                candidate_source != home, candidate_source)
+                candidates.append((priority, candidate_source, reachable[0]))
+            candidates.sort(key=lambda row: row[0])
+            if candidates:
+                _, source, target = candidates[0]
                 out['probe_stuck_1'] = {
                     'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
                     'cards': [], 'after': None, 'purpose': 'attack',
