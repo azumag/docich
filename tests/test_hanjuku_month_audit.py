@@ -442,6 +442,9 @@ def test_camp_terminal_decisions_are_classified():
     assert audit._camp_event(_camp_record(
         'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
         metric={'escape_move': False})) is None
+    assert audit._camp_event(_camp_record(
+        'camp_escape_move_dispatched', event='field_move_accepted',
+        metric={'escape_move': True})) is None
     group = audit._camp_event(_camp_record(
         'camp_group_screen', event='unclassified_screen_closed', reason='未分類'))
     assert group['kind'] == 'camp_recall_cancelled'
@@ -493,6 +496,7 @@ def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
     kinds = [row['kind'] for row in audit.load_incidents(runtime_dir)]
     assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
 
+
 def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -512,6 +516,7 @@ def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
     body = audit.render(record)
     assert 'status: dispatch_unconfirmed' in body
     assert 'escape_move: False' in body
+
 
 def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
     value = state(9, '1-1', 0)
