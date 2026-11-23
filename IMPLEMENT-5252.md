@@ -14,7 +14,7 @@ Issue #5252（ch9 12-5、砦帰還が `fort_status` で91 stepsを消費して�
 - `fort_status_reads`: 選択対象将軍と一致したstatus panelの読取回数。
 - 期待将軍と、最後にstatus panelから読めた将軍名を分離。
 - 最後のscreen kindと、空白・改行を正規化して最大120文字に制限した画面文言。
-- month audit projectionと生成Issue本文にも同じallowlisted fieldsを投影。OCR全文・raw frame・座標は追加しない。
+- month audit projectionと生成Issue本文にも同じallowlisted fieldsを投影。OCR全文・raw frame・画面座標は追加せず、#5248の崖離脱先だけは2整数のgame-grid `target_cell` としてbounded projectionする。
 
 ## Hot-load marker
 
