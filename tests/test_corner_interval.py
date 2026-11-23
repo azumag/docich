@@ -60,6 +60,23 @@ def test_cursor_roundtrip(db):
     assert ci.get_cursor(db, "paper") == (1200.0, "s1")
 
 
+def test_get_cursor_is_read_only_when_database_or_state_table_is_missing(tmp_path):
+    from docich.trading import corner_interval as ci
+
+    missing = tmp_path / "missing.sqlite3"
+    assert ci.get_cursor(missing) is None
+    assert not missing.exists()
+
+    empty = tmp_path / "empty.sqlite3"
+    sqlite3.connect(empty).close()
+    assert ci.get_cursor(empty) is None
+    with sqlite3.connect(empty) as con:
+        tables = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    assert tables == []
+
+
 def test_fills_in_interval_excludes_cursor_and_before(db):
     from docich.trading import corner_interval as ci
 
