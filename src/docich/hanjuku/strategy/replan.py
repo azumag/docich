@@ -2909,6 +2909,7 @@ def _adopt_plan(mem, doc, rid):
         # launches empty (#5282). Explicitly cardless orders, staging moves,
         # and boss kits retain their dedicated behavior.
         if (cards and o.get('purpose') != 'move'
+                and not o.get('source_probe') and not o.get('roster_probe')
                 and not chart.is_boss_castle(o['target'])):
             cards = _stock_cards(mem, cards)
         orders.append({**o, 'step': chart_adjust.execution_step(rid, o['step']),
