@@ -170,7 +170,7 @@ def test_next_news_prompt_distinguishes_body_headline_and_failure(research, expe
         target_key="news",
     )
     assert expected in prompt
-    assert "ニュース枠は省略せず" in prompt
+    assert "この枠を省略せず" in prompt
 
 
 def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
