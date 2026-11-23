@@ -3178,7 +3178,9 @@ def monster_menu_step(screen: Screen, mem):
     special_cycle = balloon_cycle or akematsu_cycle or omedetori_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
     # Re-evaluate old cached choices on the first new-policy observation.
-    special_epoch = '20261029-omedetori-v1' if omedetori_cycle else '20261016-balloon-akematsu-v2'
+    special_epoch = ('20261029-omedetori-v1' if omedetori_cycle
+                     else '20261124-balloon-final-jelly-v1' if balloon_cycle
+                     else '20261016-balloon-akematsu-v2')
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
             or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
@@ -3317,7 +3319,14 @@ def monster_menu_step(screen: Screen, mem):
                    '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す')
         elif balloon_cycle:
             label = second if action == 'skill2' else first
-            if balloon['rule'] == 'survival_buffer':
+            if balloon['rule'] == 'final_jelly_shout':
+                why = ('ファイナルゼリー戦でHP1000以上に達したため、以降も'
+                       '「シャウト」を続けて相手を削り切る（オーナー 2026-11-24）')
+            elif balloon['rule'] == 'final_jelly_inflate':
+                why = (f'ファイナルゼリー戦でシャウトへ移るため、HP{ally_hp}を'
+                       f'目標{balloon["target_hp"]}以上へ「ふくらむ」で引き上げる'
+                       '（オーナー 2026-11-24）')
+            elif balloon['rule'] == 'survival_buffer':
                 why = (f"シャウト後HP{balloon['post_shout_hp']}が、被ダメージ推定"
                        f"{balloon['incoming_damage']}に25%の余裕を加えた"
                        f"{balloon['survival_hits']}回分を超えるため全回復を待たず攻撃")

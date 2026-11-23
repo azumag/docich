@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from docich.hanjuku.judgment.balloon import (
-    BALLOON_SURVIVAL_HITS, balloon_assessment, balloon_command_selected,
+    BALLOON_FINAL_JELLY_SHOUT_HP, BALLOON_SURVIVAL_HITS,
+    balloon_assessment, balloon_command_selected,
 )
 
 CAP = 9999
@@ -246,3 +247,55 @@ def test_fractional_damage_buffer_rounds_up():
     assert proof['incoming_damage'] == 201
     assert proof['buffered_damage'] == 252
     assert proof['target_hp'] == 1514
+
+
+# Owner 2026-11-24: against ファイナルゼリー, inflate once to 1000 HP and then
+# keep shouting instead of alternating back to ふくらむ after our own half.
+
+def test_final_jelly_inflates_below_the_owner_threshold():
+    proof = assess(state(), 999, enemy='ファイナルゼリー')
+    assert proof['action'] == 'skill1'
+    assert proof['rule'] == 'final_jelly_inflate'
+    assert proof['target_hp'] == BALLOON_FINAL_JELLY_SHOUT_HP == 1000
+
+
+def test_final_jelly_shouts_at_the_threshold():
+    proof = assess(state(), 1000, enemy='ファイナルゼリー')
+    assert proof['action'] == 'skill2'
+    assert proof['rule'] == 'final_jelly_shout'
+    assert proof['post_shout_hp'] == 500
+
+
+def test_final_jelly_keeps_shouting_after_shout_halves_our_hp():
+    mem = state()
+    assert assess(mem, 1223, enemy='ファイナルゼリー')['action'] == 'skill2'
+    # The generic survival rule would re-inflate at 500 HP; the final-jelly
+    # latch keeps the shout route as the owner requested.
+    for hp in (500, 250, 120, 60):
+        proof = assess(mem, hp, enemy='ファイナルゼリー')
+        assert proof['action'] == 'skill2'
+        assert proof['rule'] == 'final_jelly_shout'
+
+
+def test_final_jelly_threshold_does_not_apply_to_other_enemies():
+    mem = state()
+    assert assess(mem, 1000, enemy='ファイナルゼリー')['action'] == 'skill2'
+    other = assess(mem, 1000, enemy='ヒュドラ')
+    assert other['action'] == 'skill1'
+    assert other['target_hp'] == 6144
+    assert other['rule'] == 'recover_unmeasured'
+    assert not mem['battle']['balloon_finch_survival'].get('final_jelly_shout')
+
+
+def test_final_jelly_latch_is_scoped_to_the_battle_and_survives_json():
+    mem = state()
+    assess(mem, 1500, enemy='ファイナルゼリー')
+    mem = json.loads(json.dumps(mem))
+    proof = assess(mem, 600, enemy='ファイナルゼリー')
+    assert proof['action'] == 'skill2'
+    assert proof['rule'] == 'final_jelly_shout'
+    # A new headline enemy (general) is a different battle scope.
+    mem['battle'] = {'ally': 'ヴィーナス', 'enemy': 'ヘーゼル'}
+    fresh = assess(mem, 600, enemy='ファイナルゼリー')
+    assert fresh['action'] == 'skill1'
+    assert fresh['rule'] == 'final_jelly_inflate'
