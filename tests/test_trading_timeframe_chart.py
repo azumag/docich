@@ -170,6 +170,8 @@ def test_reader_fetches_real_five_minute_ohlc_for_about_two_hours():
     assert view["bars"][-1]["closed"] is False
     assert view["fetched_at"] == NOW
     assert view["as_of"] == NOW
+    assert view["window_label"] == "約2時間"
+    assert view["window_seconds"] == 7200
 
 
 def test_five_minute_view_distinguishes_closed_forming_and_missing_bars():

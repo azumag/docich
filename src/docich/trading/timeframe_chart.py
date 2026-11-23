@@ -295,6 +295,12 @@ def build_timeframe_view(
     tf_seconds = _TIMEFRAME_SECONDS.get(timeframe, 0)
     age_sec = max(0.0, float(now) - timestamps[-1])
     stale = bool(tf_seconds) and age_sec > tf_seconds * max(1, int(stale_after_intervals))
+    window_seconds = len(cleaned) * tf_seconds
+    window_label = None
+    if timeframe == "5m":
+        window_label = (f"約{window_seconds // 3600}時間"
+                        if window_seconds >= 3600 and window_seconds % 3600 == 0
+                        else f"約{max(1, round(window_seconds / 60))}分")
     bars = []
     previous_timestamp = None
     for timestamp, open_, high, low, close, volume in cleaned:
@@ -322,6 +328,8 @@ def build_timeframe_view(
         "bar_count": len(cleaned),
         "as_of": _round(timestamps[-1], 3),
         "fetched_at": _round(float(now), 3),
+        "window_seconds": window_seconds,
+        "window_label": window_label,
         "last_close": _round(closes[-1], 8),
         "open": _round(opens[0], 8),
         "high": _round(max(highs), 8),
@@ -579,6 +587,8 @@ def _compact_timeframe(view: Mapping[str, object]) -> dict[str, object]:
         "high": view.get("high"),
         "low": view.get("low"),
         "as_of": view.get("as_of"),
+        "fetched_at": view.get("fetched_at"),
+        "window_label": view.get("window_label"),
         "stale": bool(view.get("stale")),
     }
 

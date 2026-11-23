@@ -215,13 +215,17 @@
       if (!view || !view.timeframe) continue;
       const cell = cellFor(strip, String(view.timeframe), shortLabel(String(view.label || view.timeframe)));
       const available = view.available === true;
-      cell.change.textContent = available ? `${view.trend || ""} ${fmtPct(view.range_change_pct)}` : "取得待ち";
+      cell.change.textContent = available
+        ? (view.window_label ? view.window_label + " " : "") + (view.trend || "") + " " + fmtPct(view.range_change_pct)
+        : "取得待ち";
       cell.change.className = `tf-change ${available ? trendClass(view.trend) : "muted"}`;
       const latest = symbolFills[0];
       const signal = latest ? signalText(latest.signal_context) : "";
       cell.root.title = available
         ? `${view.label}: ${view.bar_count || 0}本 ${view.bb_phrase || ""}` +
           " / 足開始 " + timeText(view.as_of) + " / 取得 " + timeText(view.fetched_at) +
+          (view.window_label ? " / 対象 " + view.window_label : "") +
+          (Array.isArray(view.bars) && view.bars.some((bar) => bar.gap_before === true) ? " / 欠測区間あり" : "") +
           (signal ? ` / 直近約定の根拠: ${signal}` : "") +
           (view.stale ? "（更新遅延）" : "")
         : `${view.label}: 公開データを取得できませんでした`;
