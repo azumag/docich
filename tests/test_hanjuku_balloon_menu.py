@@ -138,8 +138,33 @@ def test_old_cached_full_hp_only_choice_is_invalidated_on_hotloaded_policy(recor
     )
     assert menus.monster_menu_step(screen(6144), mem) == [menus.pad('down')]
     assert mem['monster_menu_choice'] == 'skill2'
-    assert mem['monster_menu_choice_policy_epoch'] == '20261016-balloon-akematsu-v2'
+    assert mem['monster_menu_choice_policy_epoch'] == '20261124-balloon-final-jelly-v1'
     assert records[-1][1]['observed_metric']['balloon_survival']['rule'] == 'unmeasured_reserve'
+
+
+def test_final_jelly_inflates_to_1000_then_shouts_consecutively(records):
+    mem = memory()
+    # 999 HP: still inflating toward the owner's 1000 threshold.
+    assert menus.monster_menu_step(
+        screen(999, enemy='ファイナルゼリー'), mem) == [menus.pad('a')]
+    assert mem['monster_menu_choice'] == 'skill1'
+    assert (records[-1][1]['observed_metric']['balloon_survival']['rule']
+            == 'final_jelly_inflate')
+    # The threshold is reached: shout.
+    assert menus.monster_menu_step(
+        screen(1000, enemy='ファイナルゼリー'), mem) == [menus.pad('down')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert (records[-1][1]['observed_metric']['balloon_survival']['rule']
+            == 'final_jelly_shout')
+    assert menus.monster_menu_step(
+        screen(1000, 176, enemy='ファイナルゼリー'), mem) == [menus.pad('a')]
+    # Shout halved our own HP below 1000; the next turn must shout again
+    # instead of waiting for another inflation.
+    assert menus.monster_menu_step(
+        screen(500, 176, enemy='ファイナルゼリー'), mem) == [menus.pad('a')]
+    assert mem['monster_menu_choice'] == 'skill2'
+    assert (records[-1][1]['observed_metric']['balloon_survival']['rule']
+            == 'final_jelly_shout')
 
 
 @pytest.mark.parametrize('skills', [
