@@ -281,3 +281,23 @@ def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
     assert 'recall_verification' not in flow
     assert 'camp_verify' not in flow
     assert not mem.get('uncertain')
+
+
+@pytest.mark.parametrize('decision', [
+    'camp_escape_move_dispatched', 'camp_escape_move_unconfirmed'])
+def test_cliff_escape_decisions_keep_their_frame_and_input_context(tmp_path, decision):
+    module = command_bot()
+    frame = picker()
+    state = {'step': 242, 'screen_kind': 'text',
+             'policy': {'active': 'unrelated'}}
+    record = {'decision': decision, 'chart_step': 'camp_escape',
+              'strategy_variant': 'escape_move',
+              'deviation_reason': 'cliff_exit'}
+    module.persist(tmp_path, state, [record], {'hanjuku': ID},
+                   actions=[], frame_sha256=frame.digest(), frame=frame)
+    plan = json.loads((tmp_path / 'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    assert plan['chart_step'] == 'camp_escape'
+    assert plan['strategy_variant'] == 'escape_move'
+    assert plan['deviation_reason'] == 'cliff_exit'
+    assert plan['snapshot'] == 'decision-002.png'
+    assert (tmp_path / 'hanjuku_frames' / 'decision-002.png').exists()
