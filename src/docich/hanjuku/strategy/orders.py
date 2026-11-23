@@ -1215,13 +1215,21 @@ def _redirect_blocked_sources(mem):
     seen = set()
     for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
         step = order.get('step')
-        if (not step or step in seen or step in overrides
-                or status.get(step) != 'pending'):
+        if not step or step in seen or status.get(step) != 'pending':
             continue
         seen.add(step)
         source, target = order.get('source'), order.get('target')
         blocker = (source and target
                    and chart.march_blocker(chapter, source, target, owned))
+        if order.get('purpose') == 'move':
+            general = order.get('general')
+            garrison = _world(mem).get('garrison') or {}
+            if (blocker and overrides.get(step) == blocker
+                    and (not general or general not in (garrison.get(blocker) or ()))):
+                overrides.pop(step, None)
+            continue
+        if step in overrides:
+            continue
         if blocker:
             overrides[step] = blocker
             _record(mem, 'sortie_source_march_block', chart_step=step,

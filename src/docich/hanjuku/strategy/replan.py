@@ -1228,7 +1228,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 pass
         choices = []
         for c in owned:
-            free = [g for g in garrison.get(c) or () if g not in busy]
+            free = [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             if len(set(free)) < need:
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
