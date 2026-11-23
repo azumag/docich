@@ -70,11 +70,22 @@ def test_a_count_matching_walk_is_assumed_enumerated():
     assert P._roster_end_assumable(mem, state) is True
     # A genuinely truncated walk (fewer names than the country reports), a
     # still-dirty name, a duplicate OCR row or a foreign scope are not proven.
+    malformed_statuses = dict(state['statuses'], g3=None)
     for changed in (dict(names=names[:-1]),
                     dict(dirty=['g3']),
                     dict(statuses={n: {} for n in names[:-1]}),
+                    dict(statuses=malformed_statuses),
                     dict(names=names + ['g0'])):
         assert P._roster_end_assumable(mem, dict(state, **changed)) is False, changed
+    assert P._complete_scan_blocked(dict(state, statuses=malformed_statuses)) == 'status_unread'
+    empty_state = dict(state, names=[])
+    mem['country_general_count']['count'] = 0
+    assert P._roster_end_assumable(mem, empty_state) is False
+    mem['country_general_count']['count'] = 12
+    saved_country = mem['country_general_count']
+    mem['country_general_count'] = ['malformed']
+    assert P._roster_end_assumable(mem, state) is False
+    mem['country_general_count'] = saved_country
     mem['country_general_count']['count'] = 13
     assert P._roster_end_assumable(mem, state) is False
     mem['country_general_count']['count'] = 12
