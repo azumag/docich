@@ -55,3 +55,76 @@ def test_defence_summon_egg_holds_when_cursor_unread():
     screen.menu_cursor = None
     mem = {'egg_battle': True, 'egg_action': 'use_egg', 'egg_menu_stage': 2}
     assert egg_battle_step(screen, mem) == []
+
+
+def test_crying_summon_box_stays_battle_menu_and_attacks_in_active_battle():
+    from docich.hanjuku.flows.battle_menus import battle_menu_step
+    from docich.hanjuku.os_layer.commands import pad
+
+    rows = [
+        TextLine(192, tuple((176 + 8 * i, ch) for i, ch in enumerate('こうげき'))),
+        TextLine(208, tuple((176 + 8 * i, ch) for i, ch in enumerate('たいきゃく'))),
+    ]
+    screen = Screen(rows, None, 'こうげきたいきゃく')
+    screen.menu_rows = rows
+    screen.menu_cursor = 192
+    screen.egg_rows = [EggRow('ペコリーノ', 88, 'ally', 176),
+                       EggRow('キャンドロー', 231, 'enemy', 200)]
+    screen.kind = classify_text(screen)
+    assert screen.kind == 'battle_menu'
+    mem = {
+        'indep_menu': True,
+        'indep_menu_action': 'pass',
+        'battle': {'ally': 'ペコリーノ', 'enemy': 'ヘーゼル',
+                   'ally_hp': 88, 'enemy_hp': 14},
+        '_records': [],
+    }
+    assert battle_menu_step(screen, mem) == [pad('a')]
+    assert mem['_records'][-1]['decision'] == 'battle_menu_plain_command'
+    screen.menu_cursor = 208
+    assert battle_menu_step(screen, mem) == [pad('up')]
+
+
+def test_crying_summon_box_attacks_even_when_wounded():
+    from docich.hanjuku.flows.battle_menus import egg_battle_step
+    from docich.hanjuku.os_layer.commands import pad
+
+    rows = [
+        TextLine(192, tuple((176 + 8 * i, ch) for i, ch in enumerate('こうげき'))),
+        TextLine(208, tuple((176 + 8 * i, ch) for i, ch in enumerate('たいきゃく'))),
+    ]
+    screen = Screen(rows, None, 'こうげきたいきゃく')
+    screen.menu_rows = rows
+    screen.menu_cursor = 192
+    screen.egg_rows = [EggRow('ペコリーノ', 30, 'ally', 176),
+                       EggRow('キャンドロー', 231, 'enemy', 200)]
+    screen.kind = 'egg_battle_menu'
+    mem = {
+        'egg_battle': True,
+        'egg_action': 'attack',
+        'battle': {'ally': 'ペコリーノ', 'enemy': 'キャンドロー',
+                   'ally_hp': 30, 'enemy_hp': 231, 'side': 'attack',
+                   'planned_cards': [], 'egg_retreat_attempts': 3},
+        '_records': [],
+    }
+    assert egg_battle_step(screen, mem) == [pad('a')]
+    assert mem['battle']['egg_attack_label'] == 'こうげき'
+
+
+def test_dimmed_knight_cursor_is_detected():
+    from docich.hanjuku_pixels import Frame
+    from docich.hanjuku.os_layer.screen import _menu_cursor
+
+    w, h = 256, 224
+    buf = bytearray([16, 72, 56] * (w * h))
+    colors = ((160, 132, 88), (160, 80, 64), (176, 104, 112))
+    for i in range(12):
+        px = 156 + (i % 6)
+        py = 190 + (i // 6)
+        off = (py * w + px) * 3
+        buf[off:off + 3] = bytes(colors[i % len(colors)])
+    rows = [
+        TextLine(192, tuple((176 + 8 * i, ch) for i, ch in enumerate('こうげき'))),
+        TextLine(208, tuple((176 + 8 * i, ch) for i, ch in enumerate('たいきゃく'))),
+    ]
+    assert _menu_cursor(Frame(w, h, bytes(buf)), rows) == 192

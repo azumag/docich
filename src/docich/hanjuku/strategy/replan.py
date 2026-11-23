@@ -20,7 +20,8 @@ from .orders import (RETIRED_ORDER_STATES,
                                _whitehouse_open,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
-                               _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets, _source,
+                               _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets,
+                               _site_king_down, _source,
                                _defense_move_pick, _defense_priority_castles, _defense_score,
                                _garrison_plan, _post_conquest_wait,
                                _source_list_open, _source_location_recheck, _source_location_recheck_due,
@@ -1227,7 +1228,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 pass
         choices = []
         for c in owned:
-            free = [g for g in garrison.get(c) or () if g not in busy]
+            free = [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             if len(set(free)) < need:
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
@@ -1279,6 +1280,26 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             )
             if arrivals:
                 return arrivals[0], MOVE_ANY_GENERAL
+        # docich#5077: every measured castle fails ``need`` while an unread
+        # castle may hold the pair — g1190 ch1 9-10 held six one-general
+        # fronts and a never-read アルマムーン, so no wave could ever be
+        # minted and no probe was armed either (roster_read_due and
+        # arrival_probe_due both require their own trigger). When at least
+        # one roster is known (the all-unread case is handled below), read
+        # one unread castle: the sortie menu opens its list and the next
+        # plan sends the wave from it if a pair is there. The last probe's
+        # start tick throttles re-issue while a read is still walking.
+        if allow_probe and any(_known_residents(mem, garrison, c) for c in owned):
+            now = int(mem.get('tick') or 0)
+            asked = mem.get('arrival_probe_tick') or {}
+            unread = sorted(
+                (c for c in owned
+                 if _known_residents(mem, garrison, c) is None and c not in prefer_not
+                 and (type(asked.get(c)) is not int
+                      or now - int(asked[c]) >= routes.PROBE_INTERVAL)),
+                key=lambda c: (c == home, c))
+            if unread:
+                return unread[0], MOVE_ANY_GENERAL
         # Owner 2026-11-05 (差分管理): when no castle knows a spare, read one
         # castle's list instead of idling. The sortie menu opens the roster
         # (general_list_scanned) and the deploy step then picks a measured
@@ -1288,9 +1309,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # Probe at most one castle per plan, and only when the bookkeeping
         # knows nobody at all: a castle that is merely unread while other
         # generals are known is not worth a blind sortie.
-        if allow_probe and not any(garrison.get(c) for c in owned):
+        if allow_probe and not any(_known_residents(mem, garrison, c) for c in owned):
             for c in sorted((c for c in owned
-                             if garrison.get(c) is None and c not in prefer_not),
+                             if _known_residents(mem, garrison, c) is None and c not in prefer_not),
                             key=lambda c: (c == home, c)):
                 return c, MOVE_ANY_GENERAL
         return None
@@ -1820,7 +1841,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # generals: the one-general castles can send nobody and home cannot march
     # to the sites, so no candidate was ever offered and the chapter waited.
     # Move one spare into each starved boss source while the rest is settled.
-    if not out and not _army_below_floor(mem):
+    if not out and not _army_below_floor(mem) and _boss_source_staffing_needed(mem, chapter, owned):
         garrison_map = _world(mem).get('garrison') or {}
         boss_sources = []
         for order in chart.all_orders(chapter):
@@ -1870,41 +1891,151 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         totals = mem.get('country_general_count')
         total = totals.get('count') if isinstance(totals, dict) else None
         enemies = [c for c in castles if c not in owned and not chart.is_boss_castle(c)]
-        # docich#4705: the probe must open the castle that can actually send.
-        # ch4 17-x held 17 generals at home, but every 四季王城 is blocked from
-        # there (march_blocked) and only the frontier castles can reach them;
-        # their lists were never read, so startable answered
-        # 'general_unconfirmed_at_source' and no order was ever offered. Prefer
-        # a source that owns a spare and can march to some enemy, home on ties.
-        source = None
-        target = None
-        for candidate_source in sorted(
-                owned,
-                key=lambda c: (c != home,
-                               -len(set(garrison_map.get(c) or ())), c)):
-            reachable = [e for e in enemies
-                         if not routes.is_road(chapter)
-                         or not chart.march_blocked(chapter, candidate_source, e, owned)]
-            if reachable:
-                source, target = candidate_source, reachable[0]
-                break
-        already = any(o.get('source') == source
-                      for o in (*sorties['retake'], *sorties['attack'], *moves))
-        if (source in owned and target and not already
-                and type(total) is int and total > located):
-            out['probe_stuck_1'] = {
-                'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
-                'cards': [], 'after': None, 'purpose': 'attack',
-                'source_probe': True,
-                # docich#4696: mark it a read-only roster probe as well, so the
-                # deploy flow reads the source list with _observe_garrison and
-                # backs out (B,B) instead of trying to send a general the bot
-                # has not read. ch3 14-x: the source probe reached the list but
-                # the plain source_probe path kept going to a sortie it could
-                # not resolve, and the garrison stayed at four castles.
-                'roster_probe': True,
-                'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する'}
+        if not enemies:
+            busy_sources = {o.get('source') for o in (*sorties['retake'], *sorties['attack'], *moves)
+                            if o.get('source')}
+            probe = _stale_boss_roster_probe(mem, chapter, castles, owned, busy_sources)
+            if probe is not None:
+                out['probe_stuck_1'] = probe
+        else:
+            # docich#4705: the probe must open the castle that can actually send.
+            # ch4 17-x held 17 generals at home, but every 四季王城 is blocked from
+            # there (march_blocked) and only the frontier castles can reach them;
+            # their lists were never read, so startable answered
+            # 'general_unconfirmed_at_source' and no order was ever offered. Prefer
+            # a source that owns a spare and can march to some enemy, home on ties.
+            source = None
+            target = None
+            for candidate_source in sorted(
+                    owned,
+                    key=lambda c: (c != home,
+                                   -len(set(garrison_map.get(c) or ())), c)):
+                if (len(set(garrison_map.get(candidate_source) or ()))
+                        < chart.sender_min(chapter)):
+                    # A one-general castle cannot sortie; opening its sortie
+                    # confirmation only hit the source-defender hold and the
+                    # plan re-issued the same probe forever (ch6 8-10).
+                    continue
+                reachable = [e for e in enemies
+                             if not routes.is_road(chapter)
+                             or not chart.march_blocked(chapter, candidate_source, e, owned)]
+                if reachable:
+                    source, target = candidate_source, reachable[0]
+                    break
+            already = any(o.get('source') == source
+                          for o in (*sorties['retake'], *sorties['attack'], *moves))
+            now = int(mem.get('tick') or 0)
+            # garrison_tick lives in the WORLD region, not at the top level.
+            last_read = (_world(mem).get('garrison_tick') or {}).get(source)
+            recently_read = (type(last_read) is int
+                             and 0 <= now - last_read < STALE_ROSTER_PROBE_INTERVAL)
+            if (source in owned and target and not already and not recently_read
+                    and type(total) is int and total > located):
+                out['probe_stuck_1'] = {
+                    'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
+                    'cards': [], 'after': None, 'purpose': 'attack',
+                    'source_probe': True,
+                    # docich#4696: mark it a read-only roster probe as well, so the
+                    # deploy flow reads the source list with _observe_garrison and
+                    # backs out (B,B) instead of trying to send a general the bot
+                    # has not read. ch3 14-x: the source probe reached the list but
+                    # the plain source_probe path kept going to a sortie it could
+                    # not resolve, and the garrison stayed at four castles.
+                    'roster_probe': True,
+                    'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する'}
     return out
+
+
+STALE_ROSTER_PROBE_INTERVAL = 300
+
+
+def _unblocked_boss_source_ready(mem, chapter, owned, boss_targets):
+    """True when an open boss target already has a reachable assault source."""
+    garrison = _world(mem).get('garrison') or {}
+    if chapter == 4:
+        for order in chart.orders(chapter):
+            if order.get('target') not in boss_targets:
+                continue
+            src = _boss_companion_source(order, mem)
+            if src in owned and not _march_blocked(chapter, src, order['target'], owned):
+                return True
+        return False
+    busy, _ = _en_route(mem)
+    unavailable = busy | set(_world(mem).get('general_location_unknown') or ()) | {NAME}
+    for castle in owned:
+        names = [g for g in (garrison.get(castle) or ()) if g not in unavailable]
+        if len(set(names)) >= 1 and len(set(garrison.get(castle) or ())) >= 2:
+            if any(not _march_blocked(chapter, castle, target, owned) for target in boss_targets):
+                return True
+    return False
+
+
+def _stale_boss_roster_probe(mem, chapter, castles, owned, busy_sources):
+    """Return a read-only roster probe for the stalest reachable owned castle
+    when normal conquests are finished, no boss sortie source is ready, and
+    country_general_count exceeds located garrison members.
+    """
+    totals = mem.get('country_general_count')
+    total = totals.get('count') if isinstance(totals, dict) else None
+    garrison_map = _world(mem).get('garrison') or {}
+    located = sum(len(names) for names in garrison_map.values()
+                  if isinstance(names, (list, tuple)))
+    if type(total) is not int or total <= located:
+        return None
+    if chapter == 4:
+        boss_targets = [c for c in chart.boss_sites(4)
+                        if c in castles and not _site_king_down(mem, c)]
+    else:
+        boss_targets = [c for c in castles
+                        if chart.is_boss_castle(c) and c not in owned
+                        and not (mem.get('boss_victories') or {})]
+    if not boss_targets or _unblocked_boss_source_ready(mem, chapter, owned, boss_targets):
+        return None
+    garrison_tick = _world(mem).get('garrison_tick') or {}
+    now = int(mem.get('tick') or 0)
+    spare_min = chart.sender_min(chapter)
+    any_spare = any(len(set(garrison_map.get(c) or ())) >= spare_min for c in owned)
+    eligible = []
+    for castle in owned:
+        if castle in busy_sources:
+            continue
+        # A read-only roster probe may open a one-general castle when the whole
+        # known roster is stalled at singletons: deploy reads the list and backs
+        # out (B,B) without confirming a sortie, and the completed-read cooldown
+        # stops the reopened-plan loop (deploy.py arrival_probe_tick).  Unread
+        # castles stay for the empty-bookkeeping path; a roster that already has
+        # a spare keeps the old sender_min rule.
+        names = garrison_map.get(castle)
+        known = list(names) if isinstance(names, (list, tuple)) else None
+        if not known:
+            continue
+        if any_spare and len(set(known)) < spare_min:
+            continue
+        last_tick = garrison_tick.get(castle)
+        if type(last_tick) is int and 0 <= now - last_tick < STALE_ROSTER_PROBE_INTERVAL:
+            continue
+        reachable = [t for t in boss_targets if not _march_blocked(chapter, castle, t, owned)]
+        if not reachable:
+            continue
+        eligible.append((last_tick if type(last_tick) is int else -1, castle, reachable[0]))
+    if not eligible:
+        return None
+    eligible.sort()
+    _, source, target = eligible[0]
+    return {
+        'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
+        'cards': [], 'after': None, 'purpose': 'attack',
+        'source_probe': True, 'roster_probe': True,
+        'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する',
+    }
+
+
+def _boss_source_staffing_needed(mem, chapter, owned):
+    if chapter == 4:
+        boss_targets = [c for c in chart.boss_sites(4)
+                        if c in chart.castles(chapter) and not _site_king_down(mem, c)]
+        return bool(boss_targets) and not _unblocked_boss_source_ready(mem, chapter, owned, boss_targets)
+    return True
 
 
 DEFENSE_WAIT_MAX_CYCLES = 2     # absolute cap on monthly evaluations before a break
@@ -2249,6 +2380,212 @@ def _grant_stored_hero_permission(mem, stored):
     return changed
 
 
+def _mechanical_boss_plan(mem, rid):
+    """A deterministic boss plan once every non-boss castle is owned.
+
+    The base chart's boss orders are gated on the hero standing at their
+    source castles (non-site chapters) or on an unblocked companion source
+    (Chapter 4 四季王 sites); when prerequisite moves failed or stale overrides
+    pinned an empty home castle, next_order skipped them and interim
+    candidates were empty. Build the open base boss orders (plus hero moves only
+    on non-site chapters), clear stale conquest/override state, and let
+    next_order/launch run them.
+    """
+    chapter = mem.get('chapter') or 0
+    castles = set(chart.castles(chapter))
+    if not castles:
+        return False
+    normal = {c for c in castles if not chart.is_boss_castle(c)}
+    owned = _owned(mem)
+    existing = _plan_region(mem).get('chart_plan') or {}
+    if not normal or not normal <= owned:
+        # Losing a normal castle must retire a boss plan built when every
+        # normal castle was ours; otherwise the bot insists on the boss while
+        # the missing castle waits (ch2 3-x: スペランザ lost, B:2:ボス stuck).
+        if (existing.get('source') == 'mechanical'
+                and any(chart.is_boss_castle(o.get('target'))
+                        for o in existing.get('orders') or ())):
+            _plan_region(mem)['chart_plan'] = None
+            _record(mem, 'mechanical_boss_plan_dropped', chart_step=None,
+                    observed_metric={'missing': sorted(normal - owned)[:6]},
+                    reason='通常城を失ったため、全確保前提の機械ボス計画を破棄して通常城の奪還へ戻す')
+        return False
+    if (existing.get('source') == 'mechanical'
+            and any(chart.is_boss_castle(o.get('target'))
+                    for o in existing.get('orders') or ())):
+        # Keep the synthesized boss plan stable; rebuilding it with a new
+        # request id every observation changed the step id and no sortie could
+        # start (ch1 19-x B:<rid>:けっかい loop).  Prune the stale B steps the
+        # loop left in plan.orders so they cannot pin _plan_pending.
+        keep = {o.get('step') for o in existing.get('orders') or ()}
+        status = _plan_region(mem).setdefault('orders', {})
+        for step in list(status):
+            if step.startswith('B:') and step not in keep:
+                status.pop(step, None)
+        # A kept boss plan whose only step failed must be retried after the
+        # normal cooldown, or the plan pins the field forever (ch2 4-x
+        # B:2:ボス failed while the hero was at the source).
+        tick = int(mem.get('tick') or 0)
+        month = mem.get('month')
+        rearmed = mem.setdefault('boss_step_rearm', {})
+        for order in existing.get('orders') or ():
+            step = order.get('step')
+            if not isinstance(step, str) or status.get(step) != 'failed':
+                continue
+            entry = rearmed.get(step)
+            if not isinstance(entry, dict) or entry.get('month') != month:
+                entry = {'month': month, 'count': 0,
+                         'tick': tick - BOSS_STEP_REARM_COOLDOWN}
+            if entry.get('count', 0) >= BOSS_STEP_REARM_LIMIT:
+                continue
+            if tick - int(entry.get('tick') or 0) < BOSS_STEP_REARM_COOLDOWN:
+                continue
+            entry['count'] = int(entry.get('count') or 0) + 1
+            entry['tick'] = tick
+            rearmed[step] = entry
+            status[step] = 'pending'
+            _record(mem, 'mechanical_boss_step_rearmed', chart_step=step,
+                    observed_metric={'count': entry['count'], 'month': month},
+                    reason='保持中の機械ボス計画の失敗stepを月内上限付きで再試行に戻す')
+        return True
+    base = list(chart.orders(chapter))
+    boss_orders = [o for o in base if chart.is_boss_castle(o.get('target'))
+                   and not _site_king_down(mem, o.get('target'))]
+    if not boss_orders:
+        # Chapter 1's base chart has no boss order (chart.orders(1) == []),
+        # so all normal castles owned used to leave only staging moves.  Make
+        # the deterministic boss attack itself.
+        boss = chart.boss_castle(chapter)
+        if not boss or boss in owned:
+            return False
+        source = next((castle for castle, names in
+                       (_world(mem).get('garrison') or {}).items()
+                       if NAME in (names or ())), None) or chart.home_castle(chapter)
+        if not source or source not in owned:
+            return False
+        boss_orders = [{'step': f'B:{chapter}:{boss}', 'source': source,
+                        'general': NAME, 'target': boss, 'purpose': 'attack',
+                        'cards': [], 'after': None,
+                        'note': f'機械ボス攻撃 {source}→{boss}'}]
+    plan_region = _plan_region(mem)
+    status = plan_region.setdefault('orders', {})
+    live = {step for step, sortie in ((mem.get('world') or {}).get('sorties') or {}).items()
+            if isinstance(sortie, dict)
+            and sortie.get('status') in ('en_route', 'launched_unconfirmed')}
+    for order in base:
+        step = order.get('step')
+        if step in live:
+            continue
+        if (order.get('purpose') != 'move'
+                and not chart.is_boss_castle(order.get('target'))
+                and order.get('target') in owned
+                and status.get(step) in (None, 'pending', 'launched')):
+            # Already-conquered non-move conquest steps (e.g. 4-A1 once
+            # ミヒラギアン is owned) must be settled done so neither _order nor
+            # next_order re-attacks an owned castle.
+            status[step] = 'done'
+            continue
+        if status.get(step) != 'launched':
+            continue
+        general = order.get('general')
+        garrison = _world(mem).get('garrison') or {}
+        at_target = (isinstance(general, str)
+                     and general in (garrison.get(order.get('target')) or ()))
+        if order.get('target') in owned and at_target:
+            status[step] = 'done'
+            _record(mem, 'mechanical_boss_step_settled', chart_step=step,
+                    observed_metric={'target': order.get('target'), 'general': general},
+                    reason='ボス前提移動は行先の在城名簿に本人を確認できたため到着済みとして閉じる')
+        else:
+            status[step] = 'pending'
+    boss_actors = {o.get('general') for o in boss_orders if o.get('general')}
+    boss_sources = {o.get('source') for o in boss_orders}
+    moves = [o for o in base
+             if o.get('purpose') == 'move'
+             and o.get('target') in boss_sources
+             and o.get('general') in boss_actors]
+    site_bosses = (chapter == 4 and all(o.get('target') in chart.boss_sites(4)
+                                        for o in boss_orders))
+    chosen = []
+    seen = set()
+    hero = next((o.get('general') for o in boss_orders if o.get('general')), None)
+    garrison = _world(mem).get('garrison') or {}
+    current = next((castle for castle, names in garrison.items()
+                    if hero and hero in (names or ())), None)
+    if not site_bosses and isinstance(hero, str) and isinstance(current, str):
+        for boss in boss_orders:
+            source = boss.get('source')
+            if not isinstance(source, str):
+                continue
+            if current and current != source:
+                move_step = f"M:{rid}:{current}>{source}"
+                if move_step not in seen:
+                    seen.add(move_step)
+                    chosen.append({'step': move_step, 'source': current,
+                                   'general': hero, 'target': source,
+                                   'purpose': 'move', 'cards': [], 'after': None,
+                                   'note': f'機械ボス移動 {current}→{source}'})
+            step = boss.get('step')
+            if isinstance(step, str) and step not in seen:
+                seen.add(step)
+                chosen.append(boss)
+            current = source
+    else:
+        for order in (*(() if site_bosses else moves), *boss_orders):
+            step = order.get('step')
+            if not isinstance(step, str) or step in seen:
+                continue
+            seen.add(step)
+            chosen.append(order)
+    if not any(chart.is_boss_castle(o.get('target')) for o in chosen):
+        return False
+    plan_region = _plan_region(mem)
+    plan_region['chart_plan'] = {
+        'request_id': rid, 'source': 'mechanical',
+        'orders': [{**o, 'cards': list(o.get('cards') or ()),
+                    'after': o.get('after')} for o in chosen],
+        'purchases': None, 'recruitment': None,
+    }
+    status = plan_region.setdefault('orders', {})
+    override = plan_region.get('source_override')
+    live = {step for step, sortie in ((mem.get('world') or {}).get('sorties') or {}).items()
+            if isinstance(sortie, dict)
+            and sortie.get('status') in ('en_route', 'launched_unconfirmed')}
+    for order in chosen:
+        step = order['step']
+        if status.get(step) in (None, 'failed'):
+            status[step] = 'pending'
+        elif status.get(step) == 'launched' and step not in live:
+            general = order.get('general')
+            garrison = _world(mem).get('garrison') or {}
+            at_target = (isinstance(general, str)
+                         and general in (garrison.get(order.get('target')) or ()))
+            if order.get('target') in owned and at_target:
+                status[step] = 'done'
+                _record(mem, 'mechanical_boss_step_settled', chart_step=step,
+                        observed_metric={'target': order.get('target'), 'general': general},
+                        reason='ボス前提移動は行先の在城名簿に本人を確認できたため到着済みとして閉じる')
+            else:
+                status[step] = 'pending'
+        if isinstance(override, dict) and chart.is_boss_castle(order.get('target')):
+            over = override.get(step)
+            if over and (over not in owned or garrison.get(over) == []
+                         or _march_blocked(chapter, over, order['target'], owned)):
+                override.pop(step, None)
+    # Keep a map-activated chosen step; a rebuild must not clear the active
+    # step between the activation hook and the launch.
+    if plan_region.get('active') not in {o['step'] for o in chosen}:
+        plan_region['active'] = None
+    plan_region['attack'] = None
+    mem['chart_plan_tick'] = int(mem.get('tick') or 0)
+    _record(mem, 'mechanical_boss_plan', strategy_variant='mechanical_boss',
+            chart_step=None,
+            observed_metric={'chapter': chapter,
+                             'steps': [o['step'] for o in chosen]},
+            reason='通常城を全て確保済みのため、基本チャートのボス注文と将軍移動を機械的に計画する')
+    return True
+
+
 def _mechanical_chart(mem, state, rid, digest):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _grant_stored_hero_permission(mem, _plan_region(mem).get('chart_plan') or {}):
@@ -2270,15 +2607,23 @@ def _mechanical_chart(mem, state, rid, digest):
         # ch6 20-x held オケアナ→ボス(エシャロット) for many minutes while the
         # castle's list read ビーツ/ポセイドン/ゼウス, so the boss never started.
         # Drop it so the rebuilt plan re-picks a measured actor (v1211).
-        _record(mem, 'chart_plan_stale_request',
-                observed_metric={'stored': stored.get('request_id'),
-                                 'current': rid},
-                reason='計画のrequest_idが現在の状態と一致しないため破棄して組み直す')
-        _plan_region(mem)['chart_plan'] = None
-        stored = {}
-    if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
+        # A deterministic boss attack is different: its synthetic request id
+        # changes every observation, but the attack must stay put.
+        if not all(chart.is_boss_castle(o.get('target'))
+                   for o in stored.get('orders') or ()):
+            _record(mem, 'chart_plan_stale_request',
+                    observed_metric={'stored': stored.get('request_id'),
+                                     'current': rid},
+                    reason='計画のrequest_idが現在の状態と一致しないため破棄して組み直す')
+            _plan_region(mem)['chart_plan'] = None
+            stored = {}
+    if (stored.get('request_id') == rid and stored.get('source') == 'mechanical'
+            and not all(chart.is_boss_castle(o.get('target'))
+                        for o in stored.get('orders') or ())):
         # Even within the same month, rebuild an exhausted mechanical chart
         # against the current garrison and in-flight sorties (keep defenders).
+        # A deterministic boss attack is kept: clearing it every observation
+        # changed B:<rid> and no sortie ever started (ch1 19-x).
         _plan_region(mem)['chart_plan'] = None
     # A previously adopted LLM chart with no startable orders must also be
     # replaced by a new full mechanical plan, not just one interim sortie.
@@ -2292,8 +2637,14 @@ def _mechanical_chart(mem, state, rid, digest):
     # ``local_step`` — the execution id is derived from the request and never
     # equals the local id the rebuild produces (#3729).
     previous_local = [o.get('local_step') for o in stored.get('orders') or ()]
+    # The normal interim candidates include the boss waves (every spare
+    # general, hero excluded).  Only fall back to the single deterministic
+    # boss plan when no candidate at all exists (ch1/ch2 with no chart boss
+    # order used to bypass the 11-wave plan and send the hero alone).
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
+        if _mechanical_boss_plan(mem, rid):
+            return
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
     chapter = mem.get('chapter') or 0
@@ -2391,7 +2742,11 @@ def _mechanical_step(order, used, mem=None):
         if mem is not None:
             ticks = [s.get('tick') for _, s in routes.unread_dispatches(mem, order.get('source'))
                      if isinstance(s, dict)]
-            key += ':' + str(max((t for t in ticks if type(t) is int), default=0))
+            stamp = max((t for t in ticks if type(t) is int), default=None)
+            if stamp is None:
+                read_tick = (_world(mem).get('garrison_tick') or {}).get(order.get('source'))
+                stamp = read_tick if type(read_tick) is int else 0
+            key += ':' + str(stamp)
     if (mem is not None and chart.is_boss_castle(order.get('target'))
             and _boss_wave_in_flight(mem, order.get('target')) >= 1):
         # 章末のボスは行軍中でも次の隊を出す（owner 2026-11-04）。同じ出撃元と
@@ -2680,6 +3035,10 @@ def _drop_stale_plan(mem):
     if any(o.get('step') in live or status.get(o.get('step')) == 'launched_unconfirmed'
            for o in plan['orders']):
         return
+    if all(chart.is_boss_castle(o.get('target')) for o in plan['orders']):
+        # A deterministic boss attack is never stale by tick alone; it waits
+        # for the hero/source instead of being rebuilt every PLAN_STALE_TICKS.
+        return
     _plan_region(mem)['chart_plan'] = None
     mem.pop('chart_plan_tick', None)
     mem.pop('plan_stale_signature', None)
@@ -2704,7 +3063,10 @@ def _off_chart_mechanical(mem, state, rid, gate):
         state['request_id'] = rid
     if state.get('request_digest') != digest:
         state['request_digest'] = digest
-        if (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical':
+        plan = _plan_region(mem).get('chart_plan') or {}
+        if (plan.get('source') == 'mechanical'
+                and not all(chart.is_boss_castle(o.get('target'))
+                            for o in plan.get('orders') or ())):
             _plan_region(mem)['chart_plan'] = None     # built for an older situation
     if _plan_pending(mem):
         return
@@ -2753,7 +3115,13 @@ def _off_chart(mem):
     rid = chart_adjust.request_id(mem)
     if not chart.speedrun_enabled(mem.get('chapter') or 0):
         return _off_chart_mechanical(mem, state, rid, gate)
-    orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
+    plan = _plan_region(mem).get('chart_plan') or {}
+    # A mechanical chart is only a stand-in while waiting for an adjusted chart,
+    # so its orders must not replace the base chart when computing blocked/reason
+    # and the request digest (just as INTERIM_PREFIX orders are excluded).
+    source_orders = (chart.orders(mem.get('chapter') or 0)
+                     if plan.get('source') == 'mechanical' else _orders(mem))
+    orders = [o for o in source_orders if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
     status = _plan_region(mem).get('orders') or {}
     blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
                if status.get(o['step']) in (None, 'pending')]

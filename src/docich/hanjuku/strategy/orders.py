@@ -152,6 +152,21 @@ def _boss_companion_unfit(mem, name):
                 and hp * 10 < maximum * 6))
 
 
+def _known_roster(mem, garrison, castle):
+    """Complete roster when known, else the partial page minus confirmed moves."""
+    names = garrison.get(castle)
+    if names is not None:
+        return names
+    partial = (_world(mem).get('garrison_partial') or {}).get(castle)
+    if not isinstance(partial, list) or not partial:
+        return None
+    elsewhere = {name for other, members in garrison.items()
+                 if other != castle and isinstance(members, list)
+                 for name in members}
+    remaining = [g for g in partial if g not in elsewhere]
+    return remaining or None
+
+
 def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = _world(mem).get('garrison') or {}
@@ -179,13 +194,23 @@ def _boss_companion_source(order, mem):
         return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
                    default=None)
     castles = [source] + sorted(owned - {source})
-    return next((castle for castle in castles if castle in owned
-                 and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
+    need = chart.sender_min(chapter)
+    sole = len(owned) <= 1
+    for castle in castles:
+        if castle not in owned:
+            continue
+        names = _known_roster(mem, garrison, castle)
+        if not _order_hero_alternatives(order, mem, names):
+            continue
+        if castle == source or sole or len(set(names or ())) >= need:
+            return castle
+    return None
 
 
 def _hero_source_alternative(order, mem):
+    garrison = _world(mem).get('garrison') or {}
     return (order.get('general') == NAME
-            and bool(_order_hero_alternatives(order, mem, (_world(mem).get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, _known_roster(mem, garrison, _source(order, mem)))))
 
 
 def _gate_dicts(mem, *keys):
@@ -833,8 +858,10 @@ def _source_list_open(order, mem) -> bool:
     source = _source(order, mem)
     if (_world(mem).get('garrison') or {}).get(source) != []:
         return True
-    if order.get('roster_probe') is True and source in (mem.get('roster_read_due') or {}):
-        return True   # docich#3515: a blind launch asks for one roster read
+    if order.get('roster_probe') is True and (
+            source in (mem.get('roster_read_due') or {})
+            or order.get('source_probe') is True):
+        return True   # docich#3515: a blind launch or stale-roster probe reads the list
     return order.get('source_probe') is True and routes.probe_due(mem, source)
 
 
@@ -1191,13 +1218,33 @@ def _redirect_blocked_sources(mem):
     seen = set()
     for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
         step = order.get('step')
-        if (not step or step in seen or step in overrides
-                or status.get(step) != 'pending'):
+        if not step or step in seen or status.get(step) != 'pending':
             continue
         seen.add(step)
         source, target = order.get('source'), order.get('target')
         blocker = (source and target
                    and chart.march_blocker(chapter, source, target, owned))
+        if blocker == source:
+            # The source itself is not an intermediate blocker.  Treating it as
+            # one re-pointed the order to the same castle and re-issued the
+            # same cancelled sortie forever (ch5 8-4: カルーン→ジュメルズ,
+            # blocker カルーン).
+            blocker = None
+        if order.get('purpose') == 'move':
+            general = order.get('general')
+            garrison = _world(mem).get('garrison') or {}
+            if (blocker and overrides.get(step) == blocker
+                    and (not general or general not in (garrison.get(blocker) or ()))):
+                overrides.pop(step, None)
+            continue
+        if blocker and chart.is_boss_castle(target):
+            blocker_names = _known_roster(mem, _world(mem).get('garrison') or {}, blocker)
+            if blocker_names is not None and len(set(blocker_names)) < chart.sender_min(chapter):
+                if overrides.get(step) == blocker:
+                    overrides.pop(step, None)
+                continue
+        if step in overrides:
+            continue
         if blocker:
             overrides[step] = blocker
             _record(mem, 'sortie_source_march_block', chart_step=step,
@@ -1757,6 +1804,10 @@ def next_order(mem):
                 and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
         if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and (order.get('purpose') == 'move'
+                     or chart.is_boss_castle(order.get('target'))
+                     or order.get('target') not in owned
+                     or order.get('roster_probe') is True)
                 and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
@@ -1779,6 +1830,14 @@ def _follow_general(mem, order, garrison, owned):
     owned = owned & set(chart.castles(mem.get('chapter') or 0))
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
+        base_source = order.get('source')
+        if (general and general != NAME and base_source in owned
+                and general in (_known_roster(mem, garrison, base_source) or ())):
+            overrides = _plan_region(mem).get('source_override') or {}
+            override_src = overrides.get(order['step'])
+            if override_src and general not in (_known_roster(mem, garrison, override_src) or ()):
+                overrides.pop(order['step'], None)
+            return
         where = _boss_companion_source(order, mem)
         if where in owned and where != source:
             _plan_region(mem).setdefault('source_override', {})[order['step']] = where
@@ -1831,8 +1890,18 @@ def _order(mem):
         plan = _plan_region(mem).get('chart_plan') or {}
         if plan.get('source') == 'mechanical':
             chapter = mem.get('chapter') or 0
+            status = _plan_region(mem).get('orders') or {}
+            owned = _owned(mem)
+            plan_steps = {o.get('step') for o in (plan.get('orders') or ())
+                          if isinstance(o, dict)}
             try:
-                if any(_ready(o, mem) for o in chart.orders(chapter)):
+                if any(status.get(o['step']) in (None, 'pending')
+                       and o['step'] not in plan_steps
+                       and (o.get('purpose') == 'move'
+                            or chart.is_boss_castle(o.get('target'))
+                            or o.get('target') not in owned)
+                       and _ready(o, mem)
+                       for o in chart.orders(chapter)):
                     _plan_region(mem)['chart_plan'] = None
             except Exception:
                 pass

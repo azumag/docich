@@ -195,3 +195,37 @@ def test_unreadable_list_wait_counts_only_distinct_frames():
     outs = [p.card_list_step(_card_screen((), sha=_sha(i)), mem) for i in (2, 3, 4)]
     assert outs == [[], [], [p.pad('b'), p.pad('b')]]
     assert any(r['decision'] == 'battle_card_list_unclassified' for r in mem['_records'])
+
+
+def test_nanimomottenai_empty_card_list_backs_out_immediately():
+    from docich.hanjuku_screen import Screen
+    mem = memory(enemy_hp=37, soldiers=(0, 0))
+    mem['battle']['card_flow'] = {'card': 'クースカン', 'stage': 'list', 'list_observations': 0}
+    screen = Screen(lines=[], hand=None, text='なにももってない', kind='text', frame_sha256=_sha(1))
+    assert p.card_list_step(screen, mem) == [p.pad('b'), p.pad('b')]
+    assert mem['battle']['card_flow'] is None
+    assert 'クースカン' in mem['battle']['cards_missing']
+    assert any(r['decision'] == 'battle_card_missing' for r in mem['_records'])
+
+
+def test_nanimomottenai_defense_kit_read_backs_out_immediately():
+    from docich.hanjuku_screen import Screen
+    mem = memory(enemy_hp=37, soldiers=(0, 0))
+    mem['battle']['card_flow'] = {'card': None, 'stage': 'list', 'read_kit': True, 'list_ticks': 0}
+    screen = Screen(lines=[], hand=None, text='なにももってない', kind='text', frame_sha256=_sha(1))
+    assert p.card_list_step(screen, mem) == [p.pad('b'), p.pad('b')]
+    assert mem['battle']['card_flow'] is None
+    assert mem['battle']['defense_card_menu']['cards'] == []
+    assert mem['battle']['defense_egg_kit_read']['read_done'] is True
+
+
+def test_static_unreadable_card_list_is_bounded():
+    from docich.hanjuku.flows.battle_menus import CARD_LIST_SAME_FRAME_LIMIT
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    flow = mem['battle']['card_flow']
+    for _ in range(CARD_LIST_SAME_FRAME_LIMIT - 1):
+        assert p.card_list_step(_card_screen((), sha=_sha(1)), mem) == []
+    assert flow.get('list_observations') == 1
+    assert p.card_list_step(_card_screen((), sha=_sha(1)), mem) == [p.pad('b'), p.pad('b')]
+    assert mem['battle']['card_flow'] is None
+    assert any(r['decision'] == 'battle_card_list_unclassified' for r in mem['_records'])

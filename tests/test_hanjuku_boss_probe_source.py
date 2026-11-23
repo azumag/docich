@@ -44,12 +44,18 @@ def test_a_known_general_is_sent_instead_of_probing():
     assert [o['general'] for o in waves if not o.get('source_probe')] == ['ココット']
 
 
-def test_an_unread_castle_is_not_probed_while_other_generals_are_known():
+def test_one_unread_castle_is_probed_when_the_known_roster_is_stalled():
+    # 2026-11-23: with a boss phase waiting and only a lone known general (no
+    # spare anywhere), one unread castle is read so the roster can be refreshed;
+    # the all-unread bookkeeping case is handled by the path below.
     mem = memory({'カバルッサ': ['ココット']})
     for c in _world(mem)['garrison']:
         if c != 'カバルッサ':
             _world(mem)['garrison'][c] = None
-    assert not [o for o in boss_waves(mem) if o.get('source_probe')]
+    probes = [o for o in boss_waves(mem) if o.get('source_probe')]
+    assert len(probes) == 1
+    assert probes[0]['general'] == ANY
+    assert _world(mem)['garrison'].get(probes[0]['source']) is None
 
 
 def test_a_blind_boss_launch_mints_one_read_only_roster_probe():

@@ -989,10 +989,13 @@ def _y_route_step(screen, mem, state):
         return _finish_hero_recall(mem, state, goal)
     state['steps'] = int(state.get('steps') or 0) + 1
     if not mem.get('y_jump') and state['steps'] > Y_ROUTE_RETRIES:
-        # The view never produced a receipt: fall back to the menu route
-        # rather than holding the recall forever.
-        state['stage'], state['steps'] = 'hero_open', 0
-        return [pad('select')]
+        # Owner 2026-11-23: camp recall must never fall back to きかん.
+        # Re-arm the Y view instead and keep trying.
+        _record(mem, 'camp_recall_y_retry', observed_metric={'goal': goal,
+                                                            'steps': state['steps']},
+                reason='全体マップ（Y）の受領が得られないため、きかんへ戻さずYジャンプを再試行する')
+        state['steps'] = 0
+        return []
     if screen.kind in ('map', 'world_map'):
         return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
     return []
@@ -1365,8 +1368,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             'target': state.get('target'), 'fort': bool(state.get('fort')),
             'stage_from': state.get('stage')},
             reason='hero_focus で帰還goalが解決できず picker 経路へフォールバック')
-        state['stage'], state['steps'] = 'hero_open', 0
-        return [pad('select')]         # measured: SELECT centres the cursor on the hero
+        # Owner 2026-11-23: no きかん fallback.  Wait for a measurable goal and
+        # retry the Y jump; the picker/menu route is forbidden for camp recall.
+        state['steps'] = 0
+        return []
     if stage == 'y_route':
         return _y_route_step(screen, mem, state)
     if stage == 'hero_open':

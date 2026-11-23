@@ -546,7 +546,12 @@ def month_step(screen: Screen, mem):
                 observed_metric={'recruit': shop.get('recruit'),
                                  'chikujou': shop.get('chikujou')},
                 reason='将軍募集が当月実行不能に確定したため、保留していた切り札・商人・築城を解放する')
-    if shop and not shop.get('merchant_done') and not shop.get('items'):
+    rich_open = bool(shop and shop.get('rich_merchant')
+                     and type(shop.get('gold_start')) is int
+                     and shop['gold_start'] > 1000
+                     and not shop.get('event_planned')
+                     and not shop.get('closed'))
+    if shop and not shop.get('merchant_done') and not shop.get('items') and not rich_open:
         # Nothing to buy: the merchant gate below needs shop['items'], so with an
         # empty list the merchant never runs and merchant_done never clears — the
         # month then refuses to exit and loops (g1190 41-1). A month with no
@@ -556,8 +561,10 @@ def month_step(screen: Screen, mem):
                 observed_metric={'gold': shop.get('gold_start')},
                 reason='購入対象が無いため商人を完了扱いにして月を終わらせる')
     # Owner (2026-10-17): a low army's refill is bought before the cards.
+    # Owner 2026-11-23: a rich month (>1000G) must still enter the merchant even
+    # when the chart planned no cards; plan_bargains reads the real stock then.
     if (shop and not shop.get('cards_held') and not shop['merchant_done']
-            and shop['items'] and not low_army_first(shop)):
+            and (shop['items'] or rich_open) and not low_army_first(shop)):
         move = _month_menu_move(screen, mem, 'しょうにん')
         opened = _month_opened(move, mem, 'しょうにん')
         if isinstance(move, list) and not opened:

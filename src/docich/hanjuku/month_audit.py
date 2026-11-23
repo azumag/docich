@@ -63,6 +63,10 @@ MAX_STATE_BYTES = 128 * 1024
 MAX_TEXT = 160
 MAX_LIST = 20
 COMMENT_COOLDOWN_SECONDS = 3600
+COMMENT_COOLDOWN_BY_KIND = {
+    'battle_loss_with_resources': 900,
+    'battle_retreat_with_resources': 900,
+}
 MAX_ISSUES = 200
 DEFAULT_REPO = 'azumag/docich'
 BT = chr(96)
@@ -2267,6 +2271,68 @@ def _after_summary(rows, close_at, window_end):
     }
 
 
+def _track_card_miss(runtime, state, after, records, now, on_sealed):
+    """Seal a card_miss incident when a carried card was left unused.
+
+    The bot emits one `battle_boss_card_missed` decision per battle when it
+    attacks in an enemy summon-beast/boss battle while a carried 切り札 was
+    planned but never opened.  Filing goes through the same gh/scan path as
+    every other audit incident.
+    """
+    if not isinstance(records, (list, tuple)):
+        return False
+    mem = after.get('policy') if isinstance(after, dict) else None
+    mem = mem if isinstance(mem, dict) else {}
+    identity = _identity(after, mem)
+    seen = state.get('card_miss_ids')
+    seen = seen if isinstance(seen, list) else []
+    sealed = False
+    for row in records:
+        if not isinstance(row, dict) or row.get('decision') != 'battle_boss_card_missed':
+            continue
+        card = row.get('card')
+        if not isinstance(card, str) or not card:
+            continue
+        at = row.get('at') if type(row.get('at')) in (int, float) else now
+        raw = '|'.join(str(part) for part in (
+            identity.get('runtime_id'), mem.get('chapter'), int(float(at)), card))
+        incident_id = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+        if incident_id in seen:
+            continue
+        seen.append(incident_id)
+        state['card_miss_ids'] = seen[-20:]
+        battle = {'ally': row.get('ally'), 'enemy': row.get('enemy'),
+                  'castle': row.get('castle'), 'at': float(at),
+                  'reason': row.get('reason'), 'screen': row.get('screen_kind'),
+                  'cards_left': (row.get('observed_metric') or {}).get('cards_left')}
+        record = {
+            'schema': SCHEMA,
+            'kind': 'card_miss',
+            'confidence': 'high',
+            'confidence_reasons': ['carried_card_unused_in_boss_or_summon_battle'],
+            'chapter': mem.get('chapter'),
+            'month': mem.get('month'),
+            'card': card,
+            'battle_event': battle,
+            'month_summary': {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                              'observations': (state.get('observed') or {}).get('observations'),
+                              'duration_s': None, 'max_gap_s': None},
+            'evidence': {'runtime_dir': str(Path(runtime).name),
+                         'decisions': 'hanjuku_decisions.jsonl',
+                         'bot_version': (after.get('bot_version') or mem.get('bot_version')),
+                         'identity': identity},
+            'created_at': float(at),
+        }
+        record['incident_id'] = incident_id
+        record['signature'] = 'card_miss'
+        record['fingerprint'] = _fingerprint(mem.get('chapter'), 'card_miss',
+                                             [card, str(row.get('castle') or '')])
+        record['auto_file'] = True
+        _append_incident(runtime, record, on_sealed)
+        sealed = True
+    return sealed
+
+
 def _append_incident(runtime, record, on_sealed=None):
     from ..hanjuku_run import append_log
     append_log(Path(runtime), LOG_NAME, record)
@@ -2500,6 +2566,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_battle_resources(runtime, state, after, records, now, on_sealed)
     _track_camp_abandon(runtime, state, after, now, on_sealed)
     _track_chikujou(runtime, state, before, after, records, now, on_sealed)
+    _track_card_miss(runtime, state, after, records, now, on_sealed)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -2558,10 +2625,35 @@ def _timeline(record):
     return rows[-3:], True
 
 
+def _render_card_miss(record):
+    battle = record.get('battle_event') or {}
+    evidence = record.get('evidence') or {}
+    identity = evidence.get('identity') or {}
+    return '\n'.join([
+        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **card_miss** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{evidence.get('bot_version')}{BT}",
+        f"- 章: ch{record.get('chapter')} / 月: {record.get('month')}",
+        f"- 未使用の携行札: {record.get('card')}",
+        f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
+        f" / 城: {battle.get('castle') or '不明'}",
+        f"- 時刻: {_clock(battle.get('at'))}",
+        f"- 画面: {BT}{battle.get('screen')}{BT} / 理由: {battle.get('reason') or ''}",
+        '',
+        '敵召喚獣戦/ボス戦で、卵なし・奥の手不可のときに携行切り札を開かず攻撃へ進みました。',
+        '切り札を開けなかった画面遷移と、未使用のまま攻撃した判断を確認してください。',
+    ])
+
+
 def render(record):
     """Deterministic Markdown for one incident."""
     if not isinstance(record, dict):
         raise AuditError('invalid_incident')
+    if record.get('kind') == 'card_miss':
+        return _render_card_miss(record)
     month = record.get('month_summary') or {}
     sorties = record.get('sorties') or {}
     signals = record.get('signals') or []
@@ -2739,6 +2831,20 @@ def render(record):
 
 def render_comment(record):
     """Compact recurrence comment for an existing open issue."""
+    if record.get('kind') == 'card_miss':
+        battle = record.get('battle_event') or {}
+        return '\n'.join([
+            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            f"### 再発: 敵召喚獣戦/ボス戦で切り札未使用",
+            '',
+            f"- 札: {record.get('card')}",
+            f"- 章: ch{record.get('chapter')} {record.get('month')}",
+            f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
+            f" / 城: {battle.get('castle') or '不明'}",
+            f"- 時刻: {_clock(battle.get('at'))}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     month = record.get('month_summary') or {}
     sorties = record.get('sorties') or {}
     labels = [SIGNAL_LABELS.get(name, name) for name in record.get('signals') or []]
@@ -2794,6 +2900,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'card_miss':
+        battle = record.get('battle_event') or {}
+        where = battle.get('castle') or battle.get('enemy') or '戦闘'
+        return (f"[半熟英雄] 敵召喚獣戦/ボス戦で切り札未使用: {record.get('card')} "
+                f"(ch{record.get('chapter')} {where})")[:100]
     if kind in ('boss_month_zero_sortie', 'boss_month_zero_unverified'):
         boss_month = record.get('boss_month') or {}
         boss = boss_month.get('boss_name') or 'ボス'
@@ -2970,7 +3081,9 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
                 age = now - dt.datetime.fromisoformat(latest.replace('Z', '+00:00')).timestamp()
             except (TypeError, ValueError):
                 age = None
-            if age is not None and 0 <= age < COMMENT_COOLDOWN_SECONDS:
+            cooldown = COMMENT_COOLDOWN_BY_KIND.get(record.get('kind'),
+                                                     COMMENT_COOLDOWN_SECONDS)
+            if age is not None and 0 <= age < cooldown:
                 return {**result, 'status': 'cooldown', 'issue': number}
     with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False,
                                      encoding='utf-8') as stream:

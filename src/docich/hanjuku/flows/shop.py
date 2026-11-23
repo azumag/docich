@@ -12,10 +12,10 @@ from ..os_layer.commands import menu_to, merchant_list_batch, pad
 from ..os_layer.font import UNKNOWN
 from ..os_layer.readers import month_menu_ready
 from ..os_layer.roster import fixed_wage, run_identity
-from ..strategy.bargains import (HOLD_CAP, held, hold_room, merchant_card_spendable,
+from ..strategy.bargains import (HOLD_CAP, card_strength, held, hold_room, merchant_card_spendable,
                                  note_card_bought, plan_bargains)
 from ..strategy.boss_cards import UNSEEN, note_card_purchase
-from ..strategy.economy import (month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
+from ..strategy.economy import (KNOWN_PRICES, month_chart_step, MONTH_SUB_MENU_WAIT, SOLDIER_ENOUGH, _army_count_increment, _egg_before_soldiers, _limit_soldier_refill,
                                 _merchant_spendable, _month_key, _refresh_egg_priority, _reserve_general_repair,
                                 _soldier_count_current, _soldier_count_scope, _soldiers_enough, refill_outcome)
 
@@ -201,6 +201,131 @@ def _learn_holding_limit(screen: Screen, mem, shop):
     shop['items'] = items
 
 
+EVENT_CARD_FLOOR = 1000      # owner 2026-11-23: keep 1000G, spend the excess on cards
+RICH_CARD_FLOOR = 1000       # the monthly rich merchant keeps the same floor
+EVENT_CARD_RESERVE = 'event_card_floor'
+
+
+def _card_cash_floor(shop):
+    if not isinstance(shop, dict):
+        return 0
+    floor = shop.get(EVENT_CARD_RESERVE)
+    if type(floor) is int:
+        return floor
+    if shop.get('rich_merchant'):
+        return RICH_CARD_FLOOR
+    return 0
+EVENT_MERCHANT_LABELS = ('中華商人', '屋台の商人', '屋台')
+# Owner 2026-11-23: the Chinese merchant's line immediately before the card
+# choice is 「どれ　かてくれる　ちゅーか」.  It is a direct signal when the
+# merchant name itself is never drawn.
+EVENT_MERCHANT_LINES = ('かてくれる', 'ちゅーか')
+EVENT_MERCHANT_LINE_TICKS = 200
+EVENT_MERCHANT_IMAGE_DISTANCE = 22   # mean RGB distance from the monthly shop background
+
+
+def _image_distance(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0
+    return sum(abs(int(x) - int(y)) for x, y in zip(a, b)) / len(a)
+
+
+def _is_event_merchant(screen, mem):
+    text = (screen.text or '').replace(' ', '').replace('\u3000', '').replace('\n', '')
+    if any(label in text for label in EVENT_MERCHANT_LABELS):
+        return True
+    if any(line in text for line in EVENT_MERCHANT_LINES):
+        return True
+    pending = mem.get('event_merchant_pending')
+    if isinstance(pending, dict):
+        tick = int(mem.get('tick') or 0)
+        seen = int(pending.get('tick') or 0)
+        if 0 <= tick - seen <= EVENT_MERCHANT_LINE_TICKS:
+            return True
+    # The event merchants do not print their name in the OCR text.  Their
+    # scene background differs from the monthly shop's; compare the coarse
+    # frame signature captured in orchestrator.decide.
+    sig = mem.get('screen_image')
+    base = mem.get('month_shop_image')
+    return bool(sig and base
+                and _image_distance(sig, base) >= EVENT_MERCHANT_IMAGE_DISTANCE)
+
+
+def _remember_month_shop_image(mem, shop, screen):
+    sig = mem.get('screen_image')
+    if not isinstance(sig, (tuple, list)) or not sig:
+        return
+    if isinstance(shop, dict) and shop.get('key') and not shop.get('event_merchant'):
+        mem.setdefault('month_shop_image', tuple(sig))
+
+
+def _listed_prices(screen):
+    listed = {}
+    for line in screen.lines:
+        joined = ''.join(line.words(120, 256))
+        # Numeric cash headers (for example 300G) are not product names.
+        m = re.match(r'^([^\d\s]+)(\d+)G$', joined)
+        if m:
+            listed[m.group(1)] = int(m.group(2))
+    return listed
+
+
+def _event_card_items(listed, gold):
+    if type(gold) is not int:
+        return []
+    cards = [[name, 1] for name, price in (listed or {}).items()
+             if name in KNOWN_PRICES and type(price) is int and price > 0
+             and gold - price >= EVENT_CARD_FLOOR]
+    return sorted(cards, key=lambda row: (-((listed or {}).get(row[0]) or 0),
+                                          row[0]))
+
+
+def _plan_event_merchant_cards(mem, shop, key, gold, listed, *, event=False):
+    """Buy 切り札 from a random-event merchant (中華商人/屋台) with spare cash.
+
+    The monthly shop plan keeps priority.  Once it is done/empty, a later
+    merchant listing with cards and more than 1000G buys them while keeping
+    the 1000G floor (owner 2026-11-23).  A plain monthly merchant listing must
+    not be reopened after its pass, so the event screen label is required.
+    """
+    if not event:
+        return shop
+    if isinstance(shop, dict) and shop.get('event_planned'):
+        # The merchant menu is observed every frame. Re-planning there re-added
+        # the same first card after each purchase and bought it forever (ch5
+        # 8-2: event_merchant_cards 48x, gold -5G each time).
+        return shop
+    cards = _event_card_items(listed, gold)
+    if not cards:
+        return shop
+    if (isinstance(shop, dict) and shop.get('key') == key
+            and shop.get('items') and not shop.get('merchant_done')
+            and not shop.get('event_merchant')):
+        return shop                       # an active monthly plan is untouched
+    if not isinstance(shop, dict) or shop.get('key') != key:
+        shop = mem['shop'] = {
+            'key': key, 'items': [], 'soldiers': 0, 'merchant_done': False,
+            'event_merchant': True, EVENT_CARD_RESERVE: EVENT_CARD_FLOOR,
+            'variant': 'event_cards',
+            'plan': {'cards': [list(r) for r in cards], 'soldiers_provisional': 0,
+                     'unpriced_cards': False, 'event_merchant': True},
+        }
+    else:
+        shop['event_merchant'] = True
+        shop['merchant_done'] = False
+        shop['closed'] = False
+        shop[EVENT_CARD_RESERVE] = EVENT_CARD_FLOOR
+    have = {r[0] for r in shop.get('items') or () if isinstance(r, (list, tuple)) and r}
+    shop.setdefault('items', []).extend([r for r in cards if r[0] not in have])
+    shop['event_planned'] = True
+    _record(mem, 'event_merchant_cards', month=key,
+            observed_metric={'listed': dict(listed or {}), 'gold': gold,
+                             'cards': [r[0] for r in cards],
+                             'floor': EVENT_CARD_FLOOR},
+            reason='所持金が1000Gを超えているため、ランダムイベントの商人から切り札を購入する')
+    return shop
+
+
 def shop_step(screen: Screen, mem):
     shop = mem.get('shop')
     kind = screen.kind
@@ -220,7 +345,13 @@ def shop_step(screen: Screen, mem):
         return quantity_step(screen, mem)
     # shop_list
     gold = (screen.header or {}).get('gold')
-    if not shop or shop.get('key') != _month_key(screen.header):
+    key = _month_key(screen.header)
+    listed = _listed_prices(screen)
+    if kind == 'shop_list':
+        _remember_month_shop_image(mem, shop, screen)
+    shop = _plan_event_merchant_cards(mem, shop, key, gold, listed,
+                                      event=_is_event_merchant(screen, mem))
+    if not shop or shop.get('key') != key:
         _record_shop_exit(mem, shop, screen, 'month_key_mismatch')
         return [pad('b')]
     spendable = _merchant_spendable(mem, shop, screen.header)
@@ -229,14 +360,41 @@ def shop_step(screen: Screen, mem):
         # the silent exit: a quiet 'b' here once left a planned purchase unbought.
         _record_shop_exit(mem, shop, screen, 'spendable_unreadable')
         return [pad('b')]
-    listed = {}
-    for line in screen.lines:
-        joined = ''.join(line.words(120, 256))
-        # Numeric cash headers (for example 300G) are not product names.
-        m = re.match(r'^([^\d\s]+)(\d+)G$', joined)
-        if m:
-            listed[m.group(1)] = int(m.group(2))
     plan_bargains(mem, shop, screen.header, listed=listed)
+    # A pending selection (want) survives an empty items queue.  Without this
+    # the shop exited on 'nothing_planned', the month re-entered, and the same
+    # want looped forever (ch5 8-3: ノリウツール 11, gold 1093, shop_list_exit 4x).
+    want = shop.get('want')
+    if isinstance(want, (list, tuple)) and len(want) >= 3:
+        name, qty, price = want[0], want[1], want[2]
+        if (isinstance(name, str) and type(qty) is int and qty > 0
+                and type(price) is int and price > 0
+                and listed.get(name) == price):
+            floor = _card_cash_floor(shop)
+            if floor and type(gold) is int:
+                qty = min(qty, max(0, (gold - floor) // price))
+                if qty <= 0:
+                    _record(mem, 'buy_skip', card=name, price=price, gold=gold,
+                            deviation_reason='cash_floor',
+                            reason='所持金1000Gを下回らないよう、この商人の切り札購入をやめる')
+                    shop['want'] = None
+                    return [pad('b')]
+                want[1] = qty
+                shop['want'] = [name, qty, price]
+            if type(gold) is int and qty * price > gold:
+                qty = gold // price
+                if qty <= 0:
+                    _record(mem, 'buy_skip', card=name, price=price, gold=gold,
+                            deviation_reason='insufficient_cash',
+                            reason='所持金で買えないため商人の切り札選択をやめ、メッセージを閉じる')
+                    shop['want'] = None
+                    return [pad('b')]
+                want[1] = qty
+                shop['want'] = [name, qty, price]
+            move = menu_to(screen, name)
+            if move == 'here':
+                return [pad('a')]
+            return (merchant_list_batch(screen, name) or [move]) if move else []
     had_items = bool(shop['items'])
     while shop['items']:
         name, qty = shop['items'][0]
@@ -256,6 +414,14 @@ def shop_step(screen: Screen, mem):
             shop['items'].pop(0)
             continue
         price = listed.get(name)
+        floor = shop.get(EVENT_CARD_RESERVE)
+        if (type(floor) is int and type(gold) is int and type(price) is int
+                and price > 0 and gold - price < floor):
+            _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
+                    deviation_reason='event_card_floor',
+                    reason='所持金1000Gを下回らないよう、イベント商人の切り札購入を見送る')
+            shop['items'].pop(0)
+            continue
         available = merchant_card_spendable(mem, shop, screen.header, name, price)
         if (type(qty) is not int or qty <= 0 or price is None or price <= 0
                 or available is None or price > available):
@@ -267,6 +433,15 @@ def shop_step(screen: Screen, mem):
             shop['items'].pop(0)
             continue
         n = min(qty, available // price)
+        floor = _card_cash_floor(shop)
+        if floor and type(gold) is int:
+            n = min(n, max(0, (gold - floor) // price))
+        if n <= 0:
+            _record(mem, 'buy_skip', card=name, qty=qty, price=price, gold=gold,
+                    deviation_reason='cash_floor',
+                    reason='所持金1000Gを下回らないよう、この商人の切り札購入を見送る')
+            shop['items'].pop(0)
+            continue
         if room is not None:
             # A necessity (chart/rebuy) keeps its ask when the kind is unknown,
             # but a known kind never asks past its remaining room.
@@ -288,6 +463,10 @@ def shop_step(screen: Screen, mem):
                         observed_metric={'header_month': _month_key(screen.header),
                                          'listed': dict(listed or {})},
                         reason='購入完了済みの商人へ予定品なしで再入したため、当月起こさないよう閉じる')
+        # A rich merchant's empty visit must latch closed (ch5 8-3 loop), but
+        # an ordinary first visit may still gain a plan and must not be
+        # retired by this empty observation.
+        if shop.get('rich_merchant') or shop.get('merchant_done'):
             shop['closed'] = True
     return [pad('b')]
 
