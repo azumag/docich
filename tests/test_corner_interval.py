@@ -57,6 +57,7 @@ def test_cursor_roundtrip(db):
     from docich.trading import corner_interval as ci
 
     ci.set_cursor(db, "paper", 1200.0, "s1", 9999.0)
+    ci.set_cursor(db, "paper", 1000.0, "b1", 10000.0)
     assert ci.get_cursor(db, "paper") == (1200.0, "s1")
 
 
