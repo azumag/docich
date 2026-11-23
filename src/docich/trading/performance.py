@@ -551,6 +551,10 @@ def realized_pnl_for_fill(db_path: Path, fill_id: str) -> Decimal | None:
                 return None
             continue
         if amount > held:
+            # The unpaired excess invalidates this inventory lot. Retire the
+            # matched remainder so later buys start a fresh, correctly based
+            # lot instead of inheriting stale pre-oversell cost.
+            lots[symbol] = [ZERO, ZERO]
             if current_id == target:
                 return None
             continue

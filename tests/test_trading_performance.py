@@ -540,3 +540,18 @@ def test_performance_missing_fill_table_is_schema_invalid_not_empty(tmp_path):
     assert perf["ledger_reason_code"] == "ledger_schema_invalid"
     assert perf["realized_total_jpy"] is None
     assert perf["equity_jpy"] is None
+
+
+
+def test_realized_pnl_after_oversell_uses_the_next_fresh_inventory_lot(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("taint-buy", "buy", "1", "100"), timestamp=1000.0)
+    broker.fill(_decision("taint-oversell", "sell", "2", "120"), timestamp=1100.0)
+    later_buy = broker.fill(_decision("fresh-buy", "buy", "1", "200"), timestamp=1200.0)
+    later_sell = broker.fill(_decision("fresh-sell", "sell", "1", "210"), timestamp=1300.0)
+    ledger.close()
+
+    assert realized_pnl_for_fill(db, later_buy.fill_id) is None
+    assert realized_pnl_for_fill(db, later_sell.fill_id) == Decimal("10")
