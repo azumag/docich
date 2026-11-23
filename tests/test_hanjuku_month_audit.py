@@ -438,6 +438,9 @@ def test_camp_terminal_decisions_are_classified():
     assert escape['kind'] == 'camp_escape_move_unconfirmed'
     assert escape['reason_code'] == 'camp_escape_move_unconfirmed'
     assert escape['escape_move'] is True and escape['camp'] == [134, 120]
+    assert audit._camp_event(_camp_record(
+        'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+        metric={'escape_move': False})) is None
     group = audit._camp_event(_camp_record(
         'camp_group_screen', event='unclassified_screen_closed', reason='未分類'))
     assert group['kind'] == 'camp_recall_cancelled'
