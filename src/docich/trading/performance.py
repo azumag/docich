@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 import math
 from pathlib import Path
 import sqlite3
+import stat
 from typing import Mapping
 
 from .market_cache import load_cache
@@ -45,8 +46,17 @@ class _PerformanceLedgerError(RuntimeError):
 
 def _rows(db_path: Path) -> list[tuple[str, str, str, Decimal, Decimal, float]]:
     target = Path(db_path)
-    if not target.is_file():
-        raise _PerformanceLedgerError("ledger_missing")
+    try:
+        metadata = target.stat()
+    except FileNotFoundError as exc:
+        raise _PerformanceLedgerError("ledger_missing") from exc
+    except OSError as exc:
+        # Path.is_file() can collapse some access failures into False on newer
+        # Python versions.  stat() keeps a denied/unreadable ledger distinct
+        # from a genuinely absent file.
+        raise _PerformanceLedgerError("ledger_read_error") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise _PerformanceLedgerError("ledger_read_error")
 
     conn = None
     try:
