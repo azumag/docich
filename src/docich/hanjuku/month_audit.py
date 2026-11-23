@@ -797,7 +797,6 @@ def _camp_event(record):
         'screen_text': _bounded_text(metric.get('screen_text'), 120),
         'observed_general': _bounded_text(metric.get('observed_general'), 48),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
-        'screen': _bounded_text(record.get('screen_kind'), 32),
     }
 
 
