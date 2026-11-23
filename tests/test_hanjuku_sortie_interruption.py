@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku.strategy.orders import SORTIE_CANCELLED_OBSERVED_LIMIT
+from docich.hanjuku.flows.deploy import _verify_sortie_source
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow, journal as _journal
@@ -395,6 +396,10 @@ def test_resume_source_verification_skips_normal_cancel_suppression_before_map_s
     assert [r for r in mem['_records'] if r['decision'] == 'sortie_cancelled_observed']
     assert [r for r in mem['_records'] if r['decision'] == 'sortie_resume_source_confirmed']
 
+    # The chart's 1-A2 row requires キカンドン to be captured. Satisfy that
+    # ordinary prerequisite so this assertion isolates the resume gate rather
+    # than failing readiness and falling through to 1-A1.
+    mem['captured'] = ['キカンドン']
     # Exercise the real map gate: it must not clear the resumed order as a
     # normal cancellation suppressed by the generic retry guard.
     p.map_step(screen('map'), mem, None)
@@ -460,6 +465,10 @@ def test_closed_resumed_picker_does_not_recreate_an_attempt_on_map_return():
     assert _plan_region(mem)['active'] == '1-A2'
     assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
 
+    # The chart's 1-A2 row requires キカンドン to be captured; keep that
+    # prerequisite satisfied so the test exercises resume priority, not a
+    # legitimate readiness rejection.
+    mem['captured'] = ['キカンドン']
     # The owed step is selected ahead of newer chart orders, but still passes
     # the same source/defender/readiness gates as an ordinary dispatch.
     p.map_step(screen('map'), mem, None)
@@ -470,7 +479,7 @@ def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
     mem = memory()
     _flow(mem).pop('sortie_resume', None)
     order = {'step': '1-A2', 'source': 'アルマムーン', 'target': 'ジョンリギ',
-             'general': 'ゼウス', 'purpose': 'attack'}
+             'general': 'ゼウス', 'purpose': 'attack', 'cards': [], 'after': None}
     for count in range(1, SORTIE_CANCELLED_OBSERVED_LIMIT + 1):
         _plan_region(mem)['orders']['1-A2'] = 'launched_unconfirmed'
         _plan_region(mem)['active'] = '1-A2'
@@ -480,7 +489,8 @@ def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
             'status': 'launched_unconfirmed',
         }
         _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': True}
-        _verify_cancel(mem)
+        actions = _verify_sortie_source(screen('general_list', ['ゼウス', 'どうし']), mem, order)
+        assert actions == [p.pad('b'), p.pad('b')]
         expected = ('failed' if count == SORTIE_CANCELLED_OBSERVED_LIMIT else 'pending')
         assert _plan_region(mem)['orders']['1-A2'] == expected
     assert mem['sortie_cancelled_observed_counts']['1-A2'] == SORTIE_CANCELLED_OBSERVED_LIMIT
