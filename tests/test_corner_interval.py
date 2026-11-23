@@ -1,6 +1,5 @@
 import sqlite3
 import sys
-import tempfile
 from decimal import Decimal
 from pathlib import Path
 
