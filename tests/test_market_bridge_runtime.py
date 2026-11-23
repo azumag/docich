@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ from mbridge.linux.provider import MarketBridgeProvider  # noqa: E402
 from mbridge.windows.adapters import (KabuAdapter, Mt5Adapter,  # noqa: E402
                                       plan_registrations)
 from mbridge.windows.bridge import BridgeServer  # noqa: E402
+from mbridge.windows.mt5_child import run as run_mt5_child  # noqa: E402
 from mbridge.common.auth import parse_key  # noqa: E402
 
 NOW = 1_800_000_000.0
@@ -235,6 +237,50 @@ class Mt5AdapterTests(unittest.TestCase):
                 adapter = self.adapter(lambda: self.result(**changes))
                 self.assertEqual(adapter.read().reason, expected)
                 adapter.close()
+
+
+class Mt5ChildTests(unittest.TestCase):
+    def test_unknown_tick_time_is_not_published_as_a_fresh_quote(self):
+        class FakeMt5:
+            def __init__(self, tick):
+                self.tick = tick
+                self.shutdown_called = False
+
+            def initialize(self, **kwargs):
+                return True
+
+            def account_info(self):
+                return SimpleNamespace(server="Demo", login=123, trade_allowed=False)
+
+            def symbol_select(self, symbol, enabled):
+                return True
+
+            def symbol_info_tick(self, symbol):
+                return self.tick
+
+            def shutdown(self):
+                self.shutdown_called = True
+
+        ticks = (
+            SimpleNamespace(bid=1.1, ask=1.1002, time=0),
+            SimpleNamespace(bid=1.1, ask=1.1002, time=None),
+            SimpleNamespace(bid=1.1, ask=1.1002),
+        )
+        payload = {
+            "symbols": ["EURUSD"],
+            "expected_server": "Demo",
+            "expected_login": 123,
+        }
+        for tick in ticks:
+            with self.subTest(tick_time=getattr(tick, "time", "missing")):
+                fake = FakeMt5(tick)
+                result = run_mt5_child(payload, fake, clock=lambda: NOW)
+                self.assertEqual(result["quotes"], [])
+                self.assertFalse(result["symbols_ready"])
+                self.assertEqual(result["source_ts"], 0.0)
+                self.assertEqual(result["status"], "data_unavailable")
+                self.assertEqual(result["reason"], "upstream_unavailable")
+                self.assertTrue(fake.shutdown_called)
 
 
 class BridgeServerTests(unittest.TestCase):
