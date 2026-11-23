@@ -41,7 +41,8 @@ from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIM
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie,
                                _sortie_general, _sortie_resume_arm, _sortie_resume_due,
-                               _sortie_resume_reconcile, _sortie_resume_resumed, _source,
+                               _sortie_resume_reconcile, _sortie_resume_resumed,
+                               _sortie_resume_target_unverified, _source,
                                SORTIE_PICKER_RESUME_LIMIT,
                                next_order, order_dispatch_starved, parked_boss_steps,
                                arm_sortie_launch_priority)
@@ -3719,6 +3720,26 @@ def _unverified_target(screen, mem, order, frame=None):
                       if not k.startswith(f'{step}:')}
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
+    resume_failure = _sortie_resume_target_unverified(mem, step)
+    if resume_failure is not None:
+        # A resumed picker has already been reached after the source was
+        # verified. Its target miss belongs to the separate resume budget,
+        # not the ordinary per-target cancellation counter or arrival probe.
+        _flow(mem).pop('sortie_attempt', None)
+        observed = {'marker': list(_cursor(screen) or ()),
+                    'misses': misses.get(step), 'resume': resume_failure}
+        if resume_failure['outcome'] == 'retry':
+            _finish_order(mem, 'pending', target=order['target'],
+                          deviation_reason='resumed_picker_target_unverified',
+                          observed_metric=observed,
+                          reason='再開した出撃先を確認できないため、通常の目標取消回数を消費せず同月の残り再開枠で再試行する')
+            _plan_region(mem)['active'] = step
+        else:
+            _finish_order(mem, 'launched_unconfirmed', target=order['target'],
+                          deviation_reason='resumed_picker_target_unverified_exhausted',
+                          observed_metric=observed,
+                          reason='再開した出撃先を確認できない状態が上限に達したため、元の出撃未確定状態を保持して追加再駆動を止める')
+        return [pad('b')]
     cancels = mem.setdefault('target_cancel', {})
     boss = chart.is_boss_castle(order['target'])
     if boss:
