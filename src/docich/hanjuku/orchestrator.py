@@ -11,7 +11,7 @@ from __future__ import annotations
 from .os_layer.pixels import Frame
 import unicodedata
 
-from . import chart, decision_log
+from . import decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     card_census as card_census_flow,
                     deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
@@ -223,7 +223,7 @@ def _chikujou_partial_castle_label(text, chapter):
     if len(folded) < 2:
         return False
     labels = (month_flow.STATUS_NAMES.get(name, name)
-              for name in chart.CASTLE_NAMES.get(chapter or 1, ()))
+              for name in month_flow.chart.CASTLE_NAMES.get(chapter or 1, ()))
     for label in labels:
         native = ''.join(unicodedata.normalize('NFKC', label).split())
         if native.startswith(folded):
