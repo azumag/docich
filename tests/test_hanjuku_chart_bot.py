@@ -2354,7 +2354,7 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert hint.kind == 'month_menu' and hint.hand and hint.hand[1] >= 175
     assert hint.has('へいしほじゅう') and not hint.has('かわりますぞ')
     assert policy._month_menu_row_col(hint, 'へいしほじゅう') == (1, 0)
-    assert policy._month_menu_hint_only(hint)
+    assert policy._month_menu_hint_only(hint), repr(policy._month_dialog_body(hint))
 
     foreign = Canvas()
     foreign.text(48, 15, '1ねん 11のつき 163G')
