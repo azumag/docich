@@ -440,8 +440,53 @@ def recover(root: Path, declared_phase: str, declared_cleanup_pending: bool) -> 
     declared_matches(state, declared_phase, declared_cleanup_pending)
     verify_ownership(root, state)
     cli_code = run_canonical_recover(root)
-    load_canonical(root)
+    post_state = load_canonical(root)
     if cli_code == 0:
+        # The CLI exit status alone is not evidence that the canonical state
+        # was recovered. In particular, a failed/recovery_required latch must
+        # never be reported as a successful owner-only recovery.
+        if post_state["phase"] not in {"ready", "idle"}:
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT,
+                f"canonical recover exited 0 but phase remains {post_state['phase']}",
+            )
+        # A recovery cannot roll back the durable revision or allocate a
+        # different generation. Either suggests an unrelated state transition.
+        if (post_state["revision"] < state["revision"]
+                or post_state["next_generation"] != state["next_generation"]):
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT, "canonical recover changed the state lineage",
+            )
+        before_result = state.get("last_result")
+        after_result = post_state.get("last_result")
+        # Canonical stop recovery writes an anonymous success result.
+        active = state.get("active")
+        stopped_active = (
+            state["phase"] == "failed"
+            and state.get("previous") is None
+            and isinstance(active, dict)
+            and post_state["phase"] == "idle"
+            and post_state["revision"] > state["revision"]
+            and isinstance(after_result, dict)
+            and after_result.get("request_id") == ""
+            and after_result.get("operation") == "recover"
+            and after_result.get("status") == "succeeded"
+            and after_result.get("from_game") == active["game"]
+            and "to_game" in after_result
+            and after_result["to_game"] is None
+            and _is_int(after_result.get("generation"))
+            and after_result["generation"] == active["generation"]
+            and "error_code" in after_result
+            and after_result["error_code"] is None
+        )
+        if (isinstance(before_result, dict)
+                and _request_id_ok(before_result.get("request_id"))
+                and not stopped_active
+                and (not isinstance(after_result, dict)
+                     or after_result.get("request_id") != before_result["request_id"])):
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT, "canonical recover changed the request lineage",
+            )
         return 0
     if cli_code == 1:
         raise FixedRecoverExit(EX_RECOVERY_PENDING, "canonical recover is pending (busy/rolled_back)")
