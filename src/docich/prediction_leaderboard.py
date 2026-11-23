@@ -219,6 +219,17 @@ def extract(remote):
             if status == RESOLVED:
                 hit = outcome_id == winner
                 won = _count(row.get("channel_points_won"), "won points")
+                if hit and won == 0:
+                    # Twitch pays the whole winning pool to a sole winner. The
+                    # settled payload can still carry 0 for that row (live
+                    # 2026-11-23: users=1, pool=500, channel_points_won=0), so
+                    # derive the exact payout only when the outcome has exactly
+                    # one participant; with several winners the split needs
+                    # every stake and is left at the reported value.
+                    pool = next((o for o in outcomes if o["id"] == outcome_id), None)
+                    if (isinstance(pool, dict) and pool.get("users") == 1
+                            and pool.get("points", 0) > 0):
+                        won = pool["points"]
                 refunded = 0
             else:
                 # A canceled prediction distributes nothing. Twitch may omit
@@ -367,6 +378,16 @@ def _totals(ledger: dict, *, statuses=frozenset(STATUSES)) -> dict:
     return totals
 
 
+def _perfect(entry) -> bool:
+    """A graded record with no miss, however few rounds it has (owner 2026-11-23).
+
+    ``min_rounds`` kept one-shot appearances off the hit-rate board, but it also
+    hid a viewer who is 100% on the rounds that did resolve (live: three viewers
+    at 1/1 were absent from the board the screen showed).
+    """
+    return entry["rounds"] > 0 and entry["hits"] == entry["rounds"]
+
+
 def ranking(ledger: dict, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
             limit: int = DEFAULT_LIMIT) -> list:
     """Rank viewers by hit rate over the graded rounds.
@@ -383,7 +404,8 @@ def ranking(ledger: dict, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
             or type(limit) is not int or limit < 1):
         raise LeaderboardError("invalid ranking bound")
     totals = _totals(ledger, statuses=frozenset({RESOLVED}))
-    rows = [entry for entry in totals.values() if entry["rounds"] >= min_rounds]
+    rows = [entry for entry in totals.values()
+            if entry["rounds"] >= min_rounds or _perfect(entry)]
     rows.sort(key=_SORT["hit_rate"])
     return rows[:limit]
 
@@ -411,7 +433,8 @@ def boards(ledger: dict, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
         count_key = _MIN_COUNT[metric]
         value_key = _MIN_VALUE.get(metric)
         rows = [dict(entry, metric=metric) for entry in totals.values()
-                if entry[count_key] >= minimum
+                if (entry[count_key] >= minimum
+                    or (metric == "hit_rate" and _perfect(entry)))
                 and (value_key is None or entry[value_key] > 0)]
         rows.sort(key=_SORT[metric])
         result[metric] = rows[:limit]
@@ -443,8 +466,36 @@ def load(path) -> dict:
         raise LeaderboardError("leaderboard is unreadable") from exc
     if isinstance(ledger, dict) and ledger.get("schema") == LEGACY_SCHEMA:
         ledger = _upgrade_legacy(ledger)
+    _repair_sole_winner_payouts(ledger)
     _check_ledger(ledger)
     return ledger
+
+
+def _repair_sole_winner_payouts(ledger) -> None:
+    """Fill a sole winner's payout that an early settlement snapshot stored as 0.
+
+    The row is written once per prediction id, so a payload captured before
+    Twitch filled channel_points_won keeps the zero forever. A winning outcome
+    with exactly one participant pays that participant the whole pool, which is
+    the same number the settled payload should have carried; older rows are
+    repaired in memory on read and persisted by the next save.
+    """
+    rounds = ledger.get("rounds") if isinstance(ledger, dict) else None
+    if not isinstance(rounds, dict):
+        return
+    for round_ in rounds.values():
+        if not isinstance(round_, dict) or round_.get("status") != RESOLVED:
+            continue
+        winner = round_.get("winning_outcome_id")
+        outcome = next((o for o in round_.get("outcomes") or []
+                        if isinstance(o, dict) and o.get("id") == winner), None)
+        if (not isinstance(outcome, dict) or outcome.get("users") != 1
+                or (outcome.get("points") or 0) <= 0):
+            continue
+        for row in round_.get("predictors") or []:
+            if (isinstance(row, dict) and row.get("outcome_id") == winner
+                    and row.get("hit") is True and row.get("won") == 0):
+                row["won"] = outcome["points"]
 
 
 def save(path, ledger: dict) -> None:
