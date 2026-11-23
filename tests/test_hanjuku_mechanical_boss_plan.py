@@ -9,7 +9,7 @@ the real army roster is rediscovered before planning boss sorties.
 from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator as O
 from docich.hanjuku.flows import deploy as D, map as M
-from docich.hanjuku.strategy import orders as ORD, replan
+from docich.hanjuku.strategy import orders as ORD, replan, routes
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
 
@@ -249,3 +249,60 @@ def test_stuck_roster_probe_prioritizes_a_due_unread_arrival_over_home(monkeypat
     assert probe['source'] == arrival_castle
     assert probe['source_probe'] is True and probe['roster_probe'] is True
 
+
+
+def _stuck_road_memory():
+    chapter = 3
+    home = chart.home_castle(chapter)
+    owned = [home, 'グリン']
+    return {
+        'chapter': chapter, 'month': '7-11', 'tick': 20000,
+        'captured': owned, 'lost': [],
+        'country_general_count': {'count': 3},
+        'soldiers_seen': 100, 'house_eggs': {}, 'general_location_unknown': [],
+        'boss_victories': {'chapter': chapter},
+        '_records': [], 'plan': {'orders': {}}, 'orders': {},
+        'world': {
+            'garrison': {home: ['home-guard'], 'グリン': ['grin-guard']},
+            'garrison_tick': {home: 19000, 'グリン': 18000},
+            'sorties': {}, 'launched_orders': {},
+            'route_probe_read_tick': {}, 'arrival_probe_tick': {},
+        },
+    }
+
+
+def test_stuck_road_roster_probe_uses_a_route_legal_target(monkeypatch):
+    mem = _stuck_road_memory()
+    assert not routes.allowed(mem, 'グリン', 'コラダイン')
+    assert routes.allowed(mem, 'グリン', 'リグア')
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [])
+    monkeypatch.setattr(replan.chart, 'march_blocked', lambda *args, **kwargs: False)
+
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == 'グリン'
+    assert probe['target'] == 'リグア'
+    assert routes.allowed(mem, probe['source'], probe['target'])
+
+
+def test_stuck_roster_probe_tries_next_source_when_oldest_has_rejected_move(monkeypatch):
+    mem = _stuck_chapter_memory(owned_count=3)
+    home, rejected_source, next_source = mem['captured']
+    now = mem['tick']
+    mem['country_general_count']['count'] = 4
+    mem['world']['garrison_tick'].update({
+        home: now - 1000, rejected_source: now - 2000, next_source: now - 1500,
+    })
+    enemy = next(c for c in chart.castles(8)
+                 if not chart.is_boss_castle(c) and c not in mem['captured'])
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [
+        {'general': 'general-1', 'source': rejected_source, 'target': enemy,
+         'cards': [], 'after': None, 'purpose': 'move'},
+    ])
+    monkeypatch.setattr(replan.chart, 'march_blocked', lambda *args, **kwargs: False)
+    monkeypatch.setattr(replan, '_post_conquest_wait', lambda *args, **kwargs: False)
+
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == next_source
+    assert probe['source'] != rejected_source
