@@ -441,7 +441,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- 同じ文型・同じオチを各段落で繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
         "【損益の扱い】\n"
         "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
-        "- performance.interval_realized_pnl_jpy は区間の確定損益（前回説明から今回説明まで）として触れる。\n- facts.interval_fills は前回説明から今回説明までの約定母集団（区間 fills）、facts.interval_picks はその代表ピック（最大3件・根拠付き）です。review/fills セグメントで活用してください。\n"
+        "- performance.interval_realized_pnl_jpy は区間の確定損益（前回説明から今回説明まで）として触れる。\n- facts.interval_fills は前回説明から今回説明までの約定母集団（区間 fills）、facts.interval_picks はその代表ピック（最大3件・根拠付き）です。review/fills セグメントで活用してください。\n- 区間約定の扱い: 0件なら「約定0件」と明言。1〜5件なら時系列で全件。6件以上なら facts.interval_picks の代表3件を根拠（P&L最大・数量最大・状態変化・損切り/リスク）付きで選抜し、母集団件数も併記。\n"
         "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
         "- performance.theoretical_benchmark が status=ready または partial の場合、区間損益と理論値を比較する。\n"
         "  これは区間内の5分足終値だけを使い、1銘柄を1回だけ売買できた場合の後知恵比較であり、実績の目標値やバックテスト結果ではない。\n"
