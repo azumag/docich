@@ -23,7 +23,7 @@ Issue #5252（ch9 12-5、砦帰還が `fort_status` で91 stepsを消費して�
 ## #5248 のdispatch分類
 
 - `dispatch_unconfirmed` はA送信receipt未確認、`arrival_unconfirmed` は送信後の受理/到着未確認として、`resulting_event` を優先して分類する。
-- `escape_move=true` は帰還要求ではなく崖離脱のフィールド移動。受理/未確認を `camp_escape_move_*` として記録し、通常の `recall_verification`、帰還先拒否回数、名簿到着確認を更新しない。
+- `escape_move=true` は帰還要求ではなく崖離脱のフィールド移動。要求/受理/未確認を `camp_escape_move_*` として記録し、通常の `recall_verification`、帰還先拒否回数、名簿到着確認を更新しない。崖離脱要求では `roster_read_due` も作らない。
 - 未確認の崖離脱移動は専用audit kindで追跡し、キャンプ帰還未確認の誤起票を避ける。
 
 ## 回帰テスト
