@@ -2647,16 +2647,6 @@ def egg_battle_step(screen: Screen, mem):
                 return [pad('a')]
             if move is not None:
                 return _emit_moves(move)
-        missed = _carried_card_left(mem, battle)
-        if missed and cards_left and not battle.get('boss_card_missed_noted'):
-            battle['boss_card_missed_noted'] = True
-            _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
-                    observed_metric={'cards_left': list(cards_left),
-                                     'screen': screen.kind,
-                                     'text': (screen.text or '')[:80],
-                                     'scrolls': battle.get('summon_card_scroll'),
-                                     'cursor': screen.menu_cursor},
-                    reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         # g498: B did not leave the turn menu, yet the next observation
         # immediately chose A and Venus lost. Require a bounded return flow,
         # and actually request retreat if the normal command menu is reached.
@@ -2763,6 +2753,20 @@ def egg_battle_step(screen: Screen, mem):
                                      'enemy_hp': enemy_rows[0].hp if len(enemy_rows) == 1 else None},
                     reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
                             if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
+        if move == 'here' and label == 'こうげき':
+            # File only after the attack row is actually selected. An unread
+            # cursor or an in-progress walk is not evidence that the card was
+            # skipped in favour of an attack.
+            missed = _carried_card_left(mem, battle)
+            if missed and cards_left and not battle.get('boss_card_missed_noted'):
+                battle['boss_card_missed_noted'] = True
+                _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
+                        observed_metric={'cards_left': list(cards_left),
+                                         'screen': screen.kind,
+                                         'text': (screen.text or '')[:80],
+                                         'scrolls': battle.get('summon_card_scroll'),
+                                         'cursor': screen.menu_cursor},
+                        reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         return [pad('a')] if move == 'here' else _emit_moves(move)
     _egg_recheck(mem)
     if screen.hand:
