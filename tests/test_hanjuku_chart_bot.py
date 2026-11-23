@@ -4550,3 +4550,24 @@ def test_a_visible_cursor_resets_the_blind_map_streak():
     visible = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     policy.map_step(visible, mem, frame)
     assert mem.get('map_blind') is None
+
+
+def test_summon_menu_records_a_missed_carried_card_for_the_audit():
+    # When the summon turn attacks with a carried card still in hand, one
+    # battle_boss_card_missed decision feeds the month audit's card_miss issue.
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.hand(98, 169)
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': [], 'cards_selected': [],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    actions, state = decide(c.frame(), state)
+    assert state['policy']['battle'].get('boss_card_missed_noted') is True
+    assert actions and actions[0]['buttons'] in (['a'], ['b'])
