@@ -635,6 +635,32 @@ def test_plain_card_loss_stays_high_confidence(runtime_dir):
     assert incident['confidence'] == 'high'
 
 
+def test_unclassified_only_card_loss_is_not_high_confidence(runtime_dir):
+    # docich#5158: 選択したが使用告知の署名が未校正で確定できない札だけが残る敗北は、
+    # 検出限界シグナルとして medium に留める。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー'], 'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_unclassified_card_beside_a_plain_card_stays_high(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー', 'クースカン'],
+                                    'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
 def test_sortie_cancel_is_recorded(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
