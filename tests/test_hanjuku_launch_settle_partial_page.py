@@ -39,6 +39,11 @@ def decided(mem, name):
 
 def test_a_page_that_still_lists_the_general_rolls_the_launch_back():
     mem = memory()
+    # Legacy hotloads have no started_tick. Once tick was reset for roster
+    # wait, the original launch duration is unknowable and must stay unknown.
+    probe = (_flow(mem).get('launch_probe') or {})[STEP]
+    probe['tick'] = 160
+    mem['tick'] = 360
     settle_launch_probes_from_roster(mem, 'オシロガ', ['ブカティーニ', 'オレガノ'],
                                      complete=False)
     assert STEP not in (_flow(mem).get('launch_probe') or {})
@@ -93,3 +98,18 @@ def test_roster_marker_count_is_audit_only_and_does_not_widen_retry_budget():
     assert failed['observed_metric']['marker_count'] == 1
     assert failed['observed_metric']['misses'] == 2
     assert _plan_region(mem)['orders'][STEP] == 'failed'
+
+
+def test_roster_rollback_elapsed_includes_marker_probe_time():
+    mem = memory()
+    probe = (_flow(mem).get('launch_probe') or {})[STEP]
+    # Launch began at tick 100; the marker phase went blind at 160; the
+    # source-roster wait expires at 360. Audit duration must cover all 260 ticks.
+    probe.update({'started_tick': 100, 'tick': 160, 'last_marker_count': 1})
+    mem['tick'] = 360
+
+    settle_launch_probes_from_roster(mem, 'オシロガ', ['ブカティーニ'], complete=False)
+
+    failed = decided(mem, 'sortie_launch_unverified')[-1]
+    assert failed['observed_metric']['probe_elapsed_ticks'] == 260
+    assert failed['observed_metric']['marker_count'] == 1
