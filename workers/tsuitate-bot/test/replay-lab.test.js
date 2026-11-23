@@ -54,6 +54,12 @@ test("attack geometry follows the mover's forward direction and blockers", () =>
   assert.equal(attacks(position.squares, index("9i"), index("9h")), true, "lance step");
   assert.equal(attacks(position.squares, index("9i"), index("9e")), false, "own pawn blocks the lance");
   assert.equal(attacks(position.squares, index("2h"), index("2b")), false, "own pawn blocks the rook");
+  // A knight jumps two ranks diagonally, never straight ahead: a straight-line
+  // "attack" here was a false into_check in the replay judge.
+  const knight = parseSfen("4k4/9/9/9/4N4/9/9/9/4K4 b - 1");
+  assert.equal(attacks(knight.squares, index("5e"), index("5c")), false);
+  assert.equal(attacks(knight.squares, index("5e"), index("4c")), true);
+  assert.equal(attacks(knight.squares, index("5e"), index("6c")), true);
   assert.equal(blockerBetween(position.squares, index("2h"), index("2b")).square, "2g");
 });
 
