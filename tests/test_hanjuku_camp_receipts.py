@@ -276,6 +276,7 @@ def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
     assert row['observed_metric']['target_cell'] == [135, 121]
     assert row['observed_metric']['stage'] == 'await_dispatch'
     assert row['observed_metric']['steps'] == 6
+    assert row['observed_metric']['input_receipt_confirmed'] is False
     flow = _flow(mem)
     assert flow['escape_move_verification']['status'] == 'dispatch_unconfirmed'
     assert 'recall_verification' not in flow
@@ -295,6 +296,7 @@ def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
     assert [row['decision'] for row in mem['_records']] == [
         'camp_escape_move_dispatched']
     assert mem['_records'][0]['resulting_event'] == 'field_move_accepted'
+    assert mem['_records'][0]['observed_metric']['input_receipt_confirmed'] is True
     flow = _flow(mem)
     assert flow['escape_move_verification']['status'] == 'dispatched'
     assert 'recall_verification' not in flow
