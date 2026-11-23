@@ -1186,6 +1186,11 @@ def _battle_resource_event(record):
         'cards_used': resources['cards_used'],
         'cards_remaining': resources['cards_remaining'],
         'cards_unconfirmed_egg_drop': resources['cards_unconfirmed_egg_drop'],
+        # docich#5165: every remaining card is an egg-drop card whose use this
+        # audit cannot confirm without a calibrated signature. Such a loss is a
+        # detection-limit signal, not proof the bot wasted a usable card.
+        'cards_unconfirmed_only': bool(resources['cards_remaining'])
+        and sorted(resources['cards_unconfirmed_egg_drop']) == sorted(resources['cards_remaining']),
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -1227,13 +1232,21 @@ def _build_battle_resource_incident(runtime, state, after, event, now):
                  'duration_s': 0.0, 'first_tick': mem.get('tick'),
                  'last_tick': mem.get('tick'), 'duration_ticks': None,
                  'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    # docich#5165: an egg-drop-only remaining card cannot be confirmed by the
+    # current signatures, so keep the occurrence in the ledger at medium rather
+    # than filing it as a high-confidence loss. A real egg or a plain card keeps
+    # the high signal.
+    confidence, confidence_reasons = 'high', []
+    if event.get('cards_unconfirmed_only'):
+        confidence = 'medium'
+        confidence_reasons = ['cards_unconfirmed_signature']
     identity = state.get('identity') or {}
     record = {
         'schema': SCHEMA,
         'event': event['kind'],
         'kind': event['kind'],
-        'confidence': 'high',
-        'confidence_reasons': [],
+        'confidence': confidence,
+        'confidence_reasons': confidence_reasons,
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': month,
