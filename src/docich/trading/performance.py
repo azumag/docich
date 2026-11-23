@@ -47,7 +47,7 @@ def _rows(db_path: Path) -> list[tuple[str, str, str, Decimal, Decimal, float]]:
     try:
         raw = conn.execute(
             """SELECT fill_id, symbol, side, amount, price, filled_at
-                 FROM paper_fills ORDER BY filled_at, rowid"""
+                 FROM paper_fills ORDER BY filled_at, fill_id"""
         ).fetchall()
     except sqlite3.Error:
         return []
@@ -124,8 +124,8 @@ def _benchmark_unavailable(
         "coverage_ratio": None,
         "reason": reason,
         "definition": (
-            "当日5分足の終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
-            "元本全額、手数料とスリッページ込みで計算します。"
+            "指定区間（未指定時は当日）の5分足終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
+            "元本全額、手数料とスリッページ込みで計算します。実績の目標値やバックテスト結果ではありません。"
         ),
     }
 
@@ -151,6 +151,10 @@ def build_theoretical_benchmark(
     date = dt.datetime.fromtimestamp(moment, tz=dt.timezone.utc).astimezone(JST).date().isoformat()
     actual = _dec(actual_today_realized)
     capital = _dec(capital_reference)
+    if cache_path is None:
+        return _benchmark_unavailable(date=date, actual=actual, reason="history_not_configured")
+    if capital is None or capital <= 0:
+        return _benchmark_unavailable(date=date, actual=actual, reason="capital_unavailable")
     window_start = interval_start if interval_start is not None else _day_start_epoch(moment)
     day_end = window_start + 24 * 60 * 60
     target_end = min(moment, day_end)
@@ -296,7 +300,7 @@ def build_performance(
     prices: Mapping[str, object],
     now: float,
     market_cache_path: Path | None = None,
-    interval_start: float | None = None,
+    interval_start: float | tuple[float, str] | None = None,
 ) -> dict[str, object]:
     """Return bounded JPY P/L facts using average-cost accounting.
 
@@ -307,13 +311,18 @@ def build_performance(
     previous JST-midnight ``today_realized`` semantics apply.
     """
     capital = _dec(capital_reference)
-    interval_start = float(interval_start) if interval_start is not None else None
-    day_start = interval_start if interval_start is not None else _day_start_epoch(now)
+    interval_cursor = None
+    if isinstance(interval_start, tuple) and len(interval_start) == 2:
+        interval_cursor = (float(interval_start[0]), str(interval_start[1]))
+        interval_start_ts = interval_cursor[0]
+    else:
+        interval_start_ts = float(interval_start) if interval_start is not None else None
+    day_start = interval_start_ts if interval_start_ts is not None else _day_start_epoch(now)
     lots: dict[str, list[Decimal]] = {}
     realized_total = ZERO
     realized_interval = ZERO
 
-    for _fill_id, symbol, side, amount, price, filled_at in _rows(db_path):
+    for fill_id, symbol, side, amount, price, filled_at in _rows(db_path):
         held, cost = lots.setdefault(symbol, [ZERO, ZERO])
         if side == "buy":
             lots[symbol][0] = held + amount
@@ -325,7 +334,11 @@ def build_performance(
         average = cost / held
         pnl = sold * (price - average)
         realized_total += pnl
-        if filled_at >= day_start:
+        if interval_cursor is not None:
+            in_interval = (filled_at, fill_id) > interval_cursor
+        else:
+            in_interval = filled_at >= day_start
+        if in_interval:
             realized_interval += pnl
         lots[symbol][0] = held - sold
         lots[symbol][1] = max(ZERO, cost - average * sold)
@@ -388,6 +401,7 @@ def build_performance(
         "valued_positions": valued,
         "realized_total_jpy": str(realized_total),
         "interval_realized_pnl_jpy": str(realized_interval),
+        # Deprecated compatibility alias; remove after all consumers migrate.
         "today_realized_pnl_jpy": str(realized_interval),
         "unrealized_pnl_jpy": str(unrealized) if complete else None,
         "cumulative_pnl_jpy": None if cumulative is None else str(cumulative),
