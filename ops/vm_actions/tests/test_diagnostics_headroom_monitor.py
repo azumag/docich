@@ -48,11 +48,12 @@ class DiagnosticsHeadroomMonitorContractTest(unittest.TestCase):
 
 class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
     def test_only_bounded_ascii_names_and_numeric_counts_are_returned(self):
+        bad_key = "bad" + chr(10) + "::error::inject"
         document = {"diagnostics": {"meta": {"section_bytes": {
             "top": {
                 "corners": 10558,
                 "workers": 4000,
-                "bad\\n::error::inject": 999,
+                bad_key: 999,
                 "queues": "not-a-number",
                 "ai": 1200,
             },
