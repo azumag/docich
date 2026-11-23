@@ -102,6 +102,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
   `order_retry`（戦闘再試行）はterminalでないため対象外。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
+- **v1402**: `order_failed` のうち、理由文が明示的に「出撃要求が送信・受理されない」を示すものだけ `sortie_order_unaccepted` と分類する。同月の確定発射が1件以上ある場合は confidence を `medium` にして台帳へ残し、既定の high-confidence filer では起票しない。発射後の未確認、戦闘retry上限、出撃元メニュー不成立、未知理由は従来どおり `high`。
 
 ## 卵・切り札を残した退却/敗北（v1381）
 
