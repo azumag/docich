@@ -76,9 +76,21 @@ def test_classify_fresh_in_flight_and_missing():
     assert watchdog.classify([make_run(hours_ago=40)], NOW, 30)[0] == "missing"
     assert (
         watchdog.classify(
-            [make_run(hours_ago=40, status="in_progress", conclusion="")], NOW, 30
+            [make_run(hours_ago=2, status="in_progress", conclusion="")], NOW, 30
         )[0]
         == "in-flight"
+    )
+    assert (
+        watchdog.classify(
+            [make_run(hours_ago=40, status="in_progress", conclusion="")], NOW, 30
+        )[0]
+        == "missing"
+    )
+    assert (
+        watchdog.classify(
+            [make_run(hours_ago=40, status="queued", conclusion="")], NOW, 30
+        )[0]
+        == "missing"
     )
     assert watchdog.classify([make_run(hours_ago=40), make_run(hours_ago=2)], NOW, 30)[0] == "fresh"
 
