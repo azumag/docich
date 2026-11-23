@@ -1052,7 +1052,7 @@ def _hold_off_castle(screen, mem, order) -> bool:
 
 def _measured_goal(mem, order, castle):
     """Last coordinate boundary, including already-issued reconciliation."""
-    goal = chart.castles(mem.get('chapter') or 0).get(castle)
+    goal = chart.aim_cell(mem.get('chapter') or 0, _source(order, mem), castle)
     if goal is None:
         _plan_region(mem)['active'] = None
         forget_picked(mem)
