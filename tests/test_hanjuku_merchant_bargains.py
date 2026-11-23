@@ -28,11 +28,11 @@ def ready(monkeypatch):
     return mem
 
 
-def listing(gold=300, rows=(('ノリウツール', 18),)):
+def listing(gold=300, rows=(('ノリウツール', 18),), selected=0):
     c = Canvas(); c.text(48, 15, f'1ねん 5のつき {gold}G')
     for i, (name, price) in enumerate(rows):
         c.text(120, 175 + i * 16, name); c.text(216, 175 + i * 16, f'{price}G')
-    c.hand(98, 169)
+    c.hand(98, 169 + 16 * selected)
     screen = parse(c.frame()); screen.kind = 'shop_list'
     return screen
 
@@ -274,7 +274,9 @@ def month_pass_spent(mem):
 
 def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     month_pass_spent(ready)
-    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('a')]       # selects a card to buy
+    # 最強の可視札（ゼンマイン）へカーソルを下げてから選択する。
+    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('down')]
+    assert p.shop_step(listing(9987, HALF, selected=2), ready) == [p.pad('a')]
     shop = ready['shop']
     assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
     assert shop['cheap_vendor_planned'] is True
@@ -282,8 +284,10 @@ def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     # This synthetic four-row canvas clips the fourth (ミックミー) row; only the
     # three visible cards may be planned from the actual listing. v1352 puts
     # BARGAIN_TARGETS on the rich path too, so the two bargain targets go to 99
-    # with the rich budget instead of the cart's smaller caps.
-    for name in ('ノリウツール', 'クースカン', 'ゼンマイン'):
+    # with the rich budget instead of the cart's smaller caps. The strongest
+    # visible card is the cheap-vendor want (4 copies) and is not re-planned.
+    assert planned.get('ゼンマイン') == 4
+    for name in ('ノリウツール', 'クースカン'):
         assert planned.get(name) == b.RICH_MERCHANT_MAX_COPIES, name
     assert set(planned) <= {name for name, _ in HALF}
     ordinary = [(n, q) for n, q in shop['items']
