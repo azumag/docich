@@ -263,10 +263,17 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - `order_launched` / `sortie_departed_observed` / `sortie_launch_confirmed` /
   `sortie_launch_unconfirmed_kept` を対象。
 - move / house / repair / defend / recall は対象外。
-- 携行ありは `rare_card_kit` / `strong_card_kit` / `dropper_card_kit`、
-  recordの `cards` / `card` / `cards_selected` で判定。
+- 携行ありは実測kitで判定する。証拠は `rare_card_kit` / `strong_card_kit` /
+  `dropper_card_kit` の補助キット、発射recordの `cards` / `card` /
+  `cards_selected` に加え、出撃確認が保存した `order_context[step]` の
+  `observed_metric.cards`、確定出撃スナップショット
+  `world.launched_orders[step]` の `departure_binding.cards`
+  （binding付きsnapshotの `cards` も同じ実測値）、および同一stepの
+  `sortie_confirm` decision の `cards`（#5118/#5249）。
 - 在庫は `card_stock` の正数。計画 `chart_plan.orders[].cards` は
-  「計画」であり、実携行の証拠にはしない（計画だけあってkitが無ければissue）。
+  「計画」であり、実携行の証拠にはしない。`departure_binding` を持たない
+  `launched_orders` snapshot の `cards` も計画値の可能性があるため証拠にしない。
+  実測kitが空または未読（blind approve等）の出撃だけをissueにする。
 - 将軍・step・purpose・出撃元/対象・在庫・計画cards・flow/計画/在城/統計を
   1件32KB以内で保存。同じ章・step・将軍は900秒cooldown。
 - 題名は `[半熟英雄] 切り札在庫があるのに非携行で出撃: ch<章> <将軍>`。
