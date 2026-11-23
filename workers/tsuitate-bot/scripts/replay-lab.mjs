@@ -150,7 +150,7 @@ export function attacks(squares, from, to, ignoreBlockers = false) {
   const steps = new Map();
   const add = (list) => list.forEach(([dr, df]) => steps.set(`${dr},${df}`, true));
   if (role === "P") add([[1, 0]]);
-  else if (role === "N") add([[2, -1], [2, 0], [2, 1]]);
+  else if (role === "N") add([[2, -1], [2, 1]]);
   else if (role === "S") add([[1, -1], [1, 0], [1, 1], [-1, -1], [-1, 1]]);
   else if (role === "G" || role === "+P" || role === "+L" || role === "+N" || role === "+S") {
     add([[1, -1], [1, 0], [1, 1], [0, -1], [0, 1], [-1, 0]]);
