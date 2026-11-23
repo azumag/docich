@@ -1504,10 +1504,22 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             state.pop('battle_return', None)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
+    _observe_fort_frame(screen, state)
     state['steps'] = int(state.get('steps') or 0) + 1
     if state['steps'] > RECALL_LIMIT:
-        _record(mem, 'camp_recall_aborted',
-                observed_metric={'stage': state.get('stage'), 'steps': state['steps']},
+        metric = {'stage': state.get('stage'), 'steps': state['steps']}
+        if state.get('stage') in FORT_STAGES:
+            metric.update({
+                'general': state.get('general'),
+                'fort_status_reads': int(state.get('fort_status_reads') or 0),
+                'fort_status_observations': int(state.get('fort_status_observations') or 0),
+                'fort_list_observations': int(state.get('fort_list_observations') or 0),
+                'fort_menu_observations': int(state.get('fort_menu_observations') or 0),
+                'screen_kind': state.get('fort_last_screen_kind'),
+                'screen_text': state.get('fort_last_screen_text'),
+                'observed_general': state.get('fort_last_observed_general'),
+            })
+        _record(mem, 'camp_recall_aborted', observed_metric=metric,
                 reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
         _flow(mem).pop('recall', None)
         mem['uncertain'] = True
@@ -2133,6 +2145,34 @@ FORT_STAGES = ('fort_menu', 'fort_list', 'fort_status')
 
 def in_fort_route(state):
     return state.get('stage') in FORT_STAGES
+
+
+def _observe_fort_frame(screen, state):
+    """Keep bounded evidence for an unread 砦 route (docich#5154).
+
+    This is diagnostic only: it never changes the selected general or sends
+    input. The global recall limit remains the only retry bound.
+    """
+    stage = state.get('stage')
+    if stage not in FORT_STAGES:
+        return
+    key = f'{stage}_observations'
+    state[key] = min(RECALL_LIMIT + 1, int(state.get(key) or 0) + 1)
+    kind = getattr(screen, 'kind', None)
+    state['fort_last_screen_kind'] = kind[:32] if isinstance(kind, str) else 'unknown'
+    text = getattr(screen, 'text', None)
+    if isinstance(text, str):
+        excerpt = ' '.join(text.split())[:120]
+        if excerpt:
+            state['fort_last_screen_text'] = excerpt
+    if stage == 'fort_status':
+        from . import house
+        info = house.general_status(screen)
+        observed = info.get('general') if isinstance(info, dict) else None
+        if isinstance(observed, str) and observed:
+            state['fort_last_observed_general'] = observed[:48]
+        else:
+            state.pop('fort_last_observed_general', None)
 
 
 def enter_fort(mem, state):
