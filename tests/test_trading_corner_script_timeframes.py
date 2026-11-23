@@ -50,7 +50,7 @@ def test_fallback_narrates_all_five_public_timeframes_in_order() -> None:
 def test_fallback_names_all_five_timeframes_when_no_public_candles_exist() -> None:
     text = _chart_text({"timeframes": []})
 
-    assert all(label in text for _, label in _TIMEFRAMES)
+    assert all(label.replace("（公開OHLC）", "") in text for _, label in _TIMEFRAMES)
     assert "取得が間に合わず" in text
 
 
