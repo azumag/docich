@@ -817,6 +817,9 @@ def _camp_event(record):
         'fort_status_observations': _bounded_int(metric.get('fort_status_observations'), 0, 10 ** 6),
         'fort_list_observations': _bounded_int(metric.get('fort_list_observations'), 0, 10 ** 6),
         'fort_menu_observations': _bounded_int(metric.get('fort_menu_observations'), 0, 10 ** 6),
+        'input_receipt_confirmed': (
+            metric.get('input_receipt_confirmed') is True
+            if 'input_receipt_confirmed' in metric else metric.get('input_sent') is True),
         'input_sent': metric.get('input_sent') is True,
         'picker_closed': metric.get('picker_closed') is True,
         'escape_move': metric.get('escape_move') is True,
@@ -3805,7 +3808,7 @@ def render(record):
             f" / status: {camp.get('resulting_event') or '不明'}"
             f" / escape_move: {bool(camp.get('escape_move'))}"
             f" / target_cell: {camp.get('target_cell')}"
-            f" / input_sent: {bool(camp.get('input_sent'))}"
+            f" / input_receipt_confirmed: {bool(camp.get('input_receipt_confirmed'))}"
             f" / picker_closed: {bool(camp.get('picker_closed'))}"
             f" / interrupted: {bool(camp.get('interrupted'))}",
             *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
