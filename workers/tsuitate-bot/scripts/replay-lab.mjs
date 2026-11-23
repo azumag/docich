@@ -387,6 +387,41 @@ export function buildTurns(positions, moves, foulAttempts, side) {
     acceptedMoves.push(moves[index].usi);
     lastAfterOwn = new Set(ownPieces(positions[index + 1], side).map((piece) => piece.square));
   }
+  // A game can end on our foul limit with no accepted move for that turn. That
+  // final turn is part of the evidence too, so evaluate it as a synthetic turn
+  // at N+1 when the side to move is us.
+  const terminalNumber = moves.length + 1;
+  const nextIsOurs = (moves.length % 2 === 0 && side === "sente")
+    || (moves.length % 2 === 1 && side === "gote");
+  const terminalFouls = foulAttempts.filter((attempt) => attempt.byColor === side
+    && attempt.moveNumber === terminalNumber);
+  if (nextIsOurs && terminalFouls.length) {
+    const before = positions.at(-1);
+    const ownNow = new Set(ownPieces(before, side).map((piece) => piece.square));
+    const evidence = new Map();
+    for (const [square, lostAt] of discovered) {
+      if (ownNow.has(square)) continue;
+      evidence.set(square, Math.max(0, Math.floor((terminalNumber - lostAt) / 2)));
+    }
+    for (const [square, droppedAt] of carriedDrops) {
+      if (ownNow.has(square) || droppedAt >= terminalNumber) continue;
+      const age = Math.max(0, Math.floor((terminalNumber - droppedAt) / 2));
+      evidence.set(square, Math.min(evidence.get(square) ?? Infinity, age));
+    }
+    turns.push({
+      moveNumber: terminalNumber,
+      position: before,
+      ownPieces: ownPieces(before, side),
+      hand: { ...before.hands[side] },
+      inCheck: kingAttacked(before.squares, side),
+      knownEnemies: [...evidence.entries()].map(([square, age]) => ({ square, age }))
+        .sort((a, b) => a.age - b.age).slice(0, 40),
+      priorFouls: foulAttempts.filter((attempt) => attempt.byColor === side
+        && attempt.moveNumber < terminalNumber).length,
+      actualUsi: null,
+      recentMoves: [...acceptedMoves].slice(-64),
+    });
+  }
   return turns;
 }
 
@@ -445,7 +480,10 @@ export function evaluateReplay({ positions, moves, foulAttempts, color, brain, p
       outcome = "foul";
       report.fouls += 1;
       report.byReason[verdict.reason] = (report.byReason[verdict.reason] ?? 0) + 1;
-      turnFouls.push({ usi: choice.usi, reason: verdict.reason, blocker: verdict.blocker ?? null });
+      const role = choice.usi[1] === "*" ? `*${choice.usi[0]}`
+        : (turn.position.squares[squareIndex(choice.usi.slice(0, 2))] ?? "?");
+      turnFouls.push({ usi: choice.usi, role, reason: verdict.reason,
+        blocker: verdict.blocker ?? null, inCheck: turn.inCheck });
       if (verdict.blocker) {
         const known = evidence.some((item) => item.square === verdict.blocker);
         const key = known ? "blocked_known" : "blocked_unknown";
@@ -611,7 +649,14 @@ async function main(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
-    if (flag === "--replay") { args.replays.push(value); index += 1; }
+    if (flag === "--replay") {
+      index += 1;
+      while (index < argv.length && !argv[index].startsWith("--")) {
+        args.replays.push(argv[index]);
+        index += 1;
+      }
+      index -= 1;
+    }
     else if (flag === "--brain") { args.brain = value; index += 1; }
     else if (flag === "--compare") { args.compare = value; index += 1; }
     else if (flag === "--color") { args.color = value; index += 1; }
