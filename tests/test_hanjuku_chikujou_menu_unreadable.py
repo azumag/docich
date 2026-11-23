@@ -153,8 +153,9 @@ def test_malformed_or_negative_gold_waits_instead_of_confirming_a_shortage():
 def test_month_controller_retries_when_the_entire_hud_header_is_unreadable():
     """A torn gold digit must not bypass the scoped, unfinished build plan."""
     mem = memory()
-    mem.update(month='1-7', month_chapter=1)
     shop = mem['shop']
+    shop['key'] = '1-7'
+    mem.update(month='1-7', month_chapter=1)
     unread = month(150)
     unread.lines.append(line(0, 16, '1ねん7のつき1?0G'))
     unread.header = _header(unread.lines)
@@ -174,8 +175,9 @@ def test_month_controller_retries_when_the_entire_hud_header_is_unreadable():
 
 def test_month_controller_records_unread_header_after_the_bounded_wait():
     mem = memory()
-    mem.update(month='1-7', month_chapter=1)
     shop = mem['shop']
+    shop['key'] = '1-7'
+    mem.update(month='1-7', month_chapter=1)
     unread = month(150)
     unread.lines.append(line(0, 16, '1ねん7のつき1?0G'))
     unread.header = _header(unread.lines)
