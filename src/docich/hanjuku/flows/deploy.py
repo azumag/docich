@@ -192,7 +192,11 @@ def _verify_sortie_source(screen, mem, order):
                                   sortie.get('purpose'), 'cancelled_observed',
                                   _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
             _record_sortie_cancelled_observed(mem, order, sortie)
-        if status not in ('failed',):
+        # _record_sortie_cancelled_observed may have just reached its
+        # retry limit and marked the order failed. Re-read after that mutation;
+        # the pre-record status above is stale and must not resurrect the step.
+        current_status = (_plan_region(mem).get('orders') or {}).get(step)
+        if current_status != 'failed':
             _plan_region(mem).setdefault('orders', {})[step] = 'pending'
     else:
         _plan_region(mem).setdefault('orders', {})[step] = 'launched'
