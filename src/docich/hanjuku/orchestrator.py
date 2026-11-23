@@ -246,7 +246,7 @@ def _chikujou_menu_text_owned(mem, kind, key):
                    ('どのしろをぞうちく', 'どのしろをそうたく',
                     'これいじょうのぞうちく', 'うむッ', 'いかんッ',
                     'よろしいですかな', 'かかりますが',
-                    'おかねがたりません', 'しょうぐんがおりませなんだ'))
+                    'おかねがたりません', 'しょうぐんがおりませなんだ')))
 
 
 def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
