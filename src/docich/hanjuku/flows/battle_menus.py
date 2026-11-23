@@ -2166,23 +2166,67 @@ def _egg_retreat_return(screen, mem, battle):
 SUMMON_SCROLL_REARM_TICKS = 40      # observations (~60 s) before one more look
 SUMMON_SCROLL_REARM_LIMIT = 2       # extra looks per battle
 
+# Owner 2026-11-24: 城守り戦で敵の召喚獣が生きている間は、おくのて行が一度
+# 読めなかっただけで通常攻撃へ戻さない。live g1342 2026-11-24 02:59 フーリック
+# (ゼウス vs ビシソワーズ→ドラゴンフライ, 召喚獣HP263) は 17 回おくのてを
+# 引いた後、描画途中の箱で最後の 2 押しが反映されず「おくのて行なし」と判定して
+# こうげきへ戻り、城を失った。召喚獣が生きている間は短い間隔で読み直しを続ける
+# (押下・確定は従来どおり有界。確定は可視行のみ)。
+SUMMON_SCROLL_LIVE_REARM_TICKS = 8
+SUMMON_SCROLL_LIVE_REARM_LIMIT = 12
+# An unread cursor / a one-row redraw is not proof that おくのて is absent.
+SUMMON_SCROLL_UNREAD_WAITS = 3
+
+
+def _live_defense_summon(battle):
+    """A castle defense whose enemy summon still justifies drawing おくのて."""
+    if battle.get('side') != 'defense':
+        return False
+    if not (battle.get('enemy_summon_observed') or battle.get('card_summon_observed')):
+        return False
+    hp = battle.get('summon_enemy_hp')
+    if type(hp) is int:
+        # A summon one edge hit finishes needs no lottery (owner 2026-11-04).
+        return hp > EGG_WALL_DAMAGE
+    return True     # an unread summon HP is not evidence of the one-hit case
+
 
 def _summon_scroll_rearm(mem, battle, guard):
-    """Re-open the bounded scroll after a failed label read, at most twice."""
+    """Re-open the bounded scroll after a failed label read.
+
+    A live castle-defense summon keeps the route open with a short gap, so one
+    unread frame cannot end 奥の手 for the rest of the fight. Other fights keep
+    the finite two looks.
+    """
     if guard.get('exhausted_reason') != 'scroll_unread':
         return False
+    hp = battle.get('summon_enemy_hp')
+    if type(hp) is int and 0 < hp <= EGG_WALL_DAMAGE:
+        return False    # 一撃で倒せる残りHPでは奥の手を使わない (owner 2026-11-04)
+    if battle.get('zombie_melee'):
+        return False    # ゾンビ召喚は白兵で対処し、抽選を開かない (owner 2026-11-24)
+    live = _live_defense_summon(battle)
+    limit = SUMMON_SCROLL_LIVE_REARM_LIMIT if live else SUMMON_SCROLL_REARM_LIMIT
+    gap = SUMMON_SCROLL_LIVE_REARM_TICKS if live else SUMMON_SCROLL_REARM_TICKS
     rearms = int(guard.get('rearms') or 0)
-    if rearms >= SUMMON_SCROLL_REARM_LIMIT:
+    if rearms >= limit:
+        if not guard.get('rearm_limit_recorded'):
+            guard['rearm_limit_recorded'] = True
+            _record(mem, 'battle_okunote_summon_rearm_limit', **_battle_labels(battle),
+                    observed_metric={'rearms': rearms, 'limit': limit,
+                                     'summon_live': live,
+                                     'summon_enemy_hp': battle.get('summon_enemy_hp')},
+                    reason='おくのて行の読み直し上限に達したため、以後は実コマンドで応戦する')
         return False
     since = guard.get('exhausted_tick')
     now = int(mem.get('tick') or 0)
-    if type(since) is not int or now - since < SUMMON_SCROLL_REARM_TICKS:
+    if type(since) is not int or now - since < gap:
         return False
-    guard.update(exhausted=False, downs=0, stage='scroll_rearm',
+    guard.update(exhausted=False, downs=0, stage='scroll_rearm', unread_waits=0,
                  rearms=rearms + 1, exhausted_tick=0, exhausted_reason=None)
     _record(mem, 'battle_okunote_summon_rearm', **_battle_labels(battle),
-            observed_metric={'rearms': rearms + 1, 'limit': SUMMON_SCROLL_REARM_LIMIT,
-                             'waited_ticks': now - since},
+            observed_metric={'rearms': rearms + 1, 'limit': limit,
+                             'waited_ticks': now - since, 'summon_live': live},
             reason='おくのて行が読めないまま同一戦闘で打ち切っていたが、召喚獣が残っているため有界で読み直す')
     return True
 
@@ -2256,6 +2300,23 @@ def _defender_summon_egg_menu(screen, mem, battle):
                                  'down_attempt': downs + batch, 'batch': batch},
                 reason='たまごをつかう（灰色）の下のおくのて行へカーソルを下げる')
         return [pad('down') for _ in range(batch)]
+    # The scroll budget is spent. A frame whose cursor or rows are still
+    # unread (the box is redrawing) is not evidence that おくのて is absent:
+    # live g1342 02:59:05 sent the last pair into a redrawing defense box and
+    # the very next frame had an unread cursor, so the old code latched the
+    # route off and attacked with the summon still alive. Re-read first, then
+    # give the turn back only from a readable box.
+    waits = int(guard.get('unread_waits') or 0)
+    if ((screen.menu_cursor is None or len(labels) < 2)
+            and waits < SUMMON_SCROLL_UNREAD_WAITS):
+        guard['unread_waits'] = waits + 1
+        _record(mem, 'battle_okunote_summon_unread_box', **_battle_labels(battle),
+                observed_metric={'waits': waits + 1, 'limit': SUMMON_SCROLL_UNREAD_WAITS,
+                                 'cursor_y': screen.menu_cursor, 'visible': labels,
+                                 'down_attempts': downs},
+                reason='おくのて行の探索中に箱のカーソル/行が未読のため、行なしと断定せず再観測する')
+        return [{'type': 'wait', 'ms': 50}]
+    guard.pop('unread_waits', None)
     guard.update(exhausted=True, exhausted_reason='scroll_unread',
                  exhausted_tick=int(mem.get('tick') or 0))
     _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(battle),
