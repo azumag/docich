@@ -2726,6 +2726,34 @@ def _target_confirm_actions(mem, order):
     return [pad('a')]
 
 
+BOSS_COMPANION_WAIT_TICKS = 200   # ~5 min: then the hero sorties alone
+
+
+def _boss_companion_wait_expired(mem, order):
+    """Bound the hero-alone boss hold (issue #5275).
+
+    The boss order waits for a capable companion, but when no companion can
+    reach the source the wait was unbounded and the month launched no boss
+    sortie at all (ch9 ハデス 12-12: 0 sorties, 177 observations). After
+    BOSS_COMPANION_WAIT_TICKS the hero goes alone instead of waiting forever.
+    """
+    wait = _flow(mem).setdefault('boss_companion_wait', {})
+    step = order.get('step')
+    now = int(mem.get('tick') or 0)
+    started = wait.get(step)
+    if started is None:
+        wait[step] = now
+        return False
+    if now - int(started) >= BOSS_COMPANION_WAIT_TICKS:
+        wait.pop(step, None)
+        _record(mem, 'boss_companion_timeout', chart_step=step,
+                target=order.get('target'),
+                observed_metric={'waited_ticks': now - int(started)},
+                reason='十分な代役を待つ上限に達したため、主人公単独でボスへ出撃する')
+        return True
+    return False
+
+
 def target_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
         return []
@@ -2741,9 +2769,10 @@ def target_step(screen: Screen, mem, frame):
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
             and (_plan_region(mem).get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
         _flow(mem).pop('sortie_attempt', None)
-        return _hold_guarded_sortie(mem, order, 'boss_companion_required',
-            '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
-            {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
+        if not _boss_companion_wait_expired(mem, order):
+            return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+                '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
+                {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
