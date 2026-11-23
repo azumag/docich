@@ -192,6 +192,8 @@ def test_five_minute_view_distinguishes_closed_forming_and_missing_bars():
     assert view["bars"][0]["closed"] is True
     assert view["bars"][1]["closed"] is False
     assert view["bars"][1]["gap_before"] is True
+    assert view["window_seconds"] == 900
+    assert view["window_label"] == "約15分"
     assert view["as_of"] == NOW
     assert view["fetched_at"] == NOW
 

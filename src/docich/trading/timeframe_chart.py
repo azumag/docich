@@ -295,7 +295,9 @@ def build_timeframe_view(
     tf_seconds = _TIMEFRAME_SECONDS.get(timeframe, 0)
     age_sec = max(0.0, float(now) - timestamps[-1])
     stale = bool(tf_seconds) and age_sec > tf_seconds * max(1, int(stale_after_intervals))
-    window_seconds = len(cleaned) * tf_seconds
+    # Use the actual observed span so missing bars do not make the window look
+    # shorter than it was.
+    window_seconds = max(tf_seconds, timestamps[-1] - timestamps[0] + tf_seconds)
     window_label = None
     if timeframe == "5m":
         window_label = (f"約{window_seconds // 3600}時間"
