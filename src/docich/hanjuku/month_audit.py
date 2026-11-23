@@ -1152,6 +1152,20 @@ def _egg_drop_cards(cards):
 SAFETY_FLOOR_HP = 4
 
 
+def _hp_value(value):
+    """Bounded HP for the safety-floor check, accepting a digit string.
+
+    The retreat record normally carries an int, but a decoded screen value can
+    arrive as a numeric string; a silent None there would disable the floor and
+    file the designed safety valve as 'resources left behind' (docich#5202).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    return _bounded_int(value, -1, 10 ** 6)
+
+
 def _battle_resource_event(record):
     """Loss/retreat while eggs or cards remain, or None."""
     if not isinstance(record, dict):
@@ -1172,7 +1186,7 @@ def _battle_resource_event(record):
     else:
         return None
     if outcome == 'retreat':
-        hp = _bounded_int(metric.get('ally_hp'), -1, 10 ** 6)
+        hp = _hp_value(metric.get('ally_hp'))
         if hp is not None and 0 < hp <= SAFETY_FLOOR_HP:
             return None
     resources = _battle_resources(record)

@@ -5,3 +5,23 @@ from docich.hanjuku.judgment import battle as rules
 
 def test_the_audit_floor_tracks_the_retreat_floor():
     assert audit.SAFETY_FLOOR_HP == rules.RETREAT_RESOURCE_FLOOR_HP
+
+
+def _retreat_record(hp):
+    return {'decision': 'battle_hero_retreat_select', 'choice': 'たいきゃく',
+            'general': 'セルリアク',
+            'observed_metric': {'ally_hp': hp, 'enemy_hp': 69, 'egg_uses': None,
+                                'cards_selected': ['ノリウツール'], 'cards_used': [],
+                                'cards_missing': []}}
+
+
+def test_the_floor_holds_when_the_hp_arrives_as_a_numeric_string():
+    # docich#5202: 画面から復号した HP が数値文字列でも安全弁の退却は起票しない。
+    assert audit._battle_resource_event(_retreat_record('1')) is None
+    assert audit._battle_resource_event(_retreat_record(1)) is None
+
+
+def test_a_retreat_above_the_floor_still_reports_the_leftover_card():
+    event = audit._battle_resource_event(_retreat_record(20))
+    assert event is not None and event['kind'] == 'battle_retreat_with_resources'
+    assert event['cards_remaining'] == ['ノリウツール']
