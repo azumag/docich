@@ -938,6 +938,12 @@ def _sortie_event(record):
     target = _bounded_text(record.get('target') or metric.get('target'), 48)
     purpose = _bounded_text(record.get('purpose') or metric.get('purpose'), 32)
     reason = record.get('deviation_reason') or record.get('reason')
+    markers = metric.get('markers')
+    marker_count = min(len(markers), 32) if isinstance(markers, list) else None
+    roster = metric.get('roster_evidence')
+    roster = roster if isinstance(roster, dict) else None
+    settlement_source = metric.get('settlement_source')
+    settlement_source = settlement_source if settlement_source in ('marker_probe', 'source_roster') else None
     return {
         'kind': kind,
         'outcome': outcome,
@@ -951,6 +957,13 @@ def _sortie_event(record):
         'target': target,
         'purpose': purpose,
         'misses': _bounded_int(metric.get('misses'), 0, 10 ** 6),
+        'probe_reads': _bounded_int(metric.get('reads'), 0, 1000),
+        'marker_count': _bounded_int(marker_count, 0, 32),
+        'probe_elapsed_ticks': _bounded_int(metric.get('probe_elapsed_ticks'), 0, 10 ** 6),
+        'settlement_source': settlement_source,
+        'roster_general_present': (roster.get('general_present') is True if roster is not None else None),
+        'roster_complete': (roster.get('complete') is True if roster is not None else None),
+        'roster_count': (_bounded_int(roster.get('count'), 0, 1000) if roster is not None else None),
         'strategy_variant': _bounded_text(variant, 40),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
         'screen': _bounded_text(record.get('screen_kind'), 32),
@@ -3609,6 +3622,19 @@ def render(record):
             '',
         ]
     if sortie:
+        probe_lines = []
+        if any(sortie.get(key) is not None for key in
+               ('settlement_source', 'probe_reads', 'marker_count', 'probe_elapsed_ticks')):
+            probe_lines.append(
+                f"- launch probe: source={sortie.get('settlement_source') or '不明'}"
+                f" / reads={sortie.get('probe_reads')} / markers={sortie.get('marker_count')}"
+                f" / elapsed_ticks={sortie.get('probe_elapsed_ticks')}"
+            )
+        if sortie.get('roster_general_present') is not None:
+            probe_lines.append(
+                f"- source roster: general_present={sortie.get('roster_general_present')}"
+                f" / complete={sortie.get('roster_complete')} / entries={sortie.get('roster_count')}"
+            )
         body += [
             '### 出撃失敗 / キャンセル',
             '',
@@ -3618,6 +3644,7 @@ def render(record):
             f" / 対象: {sortie.get('target') or '不明'} / 目的: {sortie.get('purpose') or '不明'}",
             f"- 理由: {sortie.get('reason') or '不明'} ({sortie.get('reason_code')})"
             f" / misses: {sortie.get('misses')}",
+            *probe_lines,
             '',
         ]
     if camp:
