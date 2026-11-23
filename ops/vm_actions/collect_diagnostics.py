@@ -8129,6 +8129,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1431-boss-companion-timeout",
             "hanjuku-chart-v1431-sortie-yjump-after-battle",
             "hanjuku-chart-v1432-boss-companion-timeout",
+            "hanjuku-chart-v1433-fort-recall-evidence",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
