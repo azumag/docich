@@ -505,7 +505,13 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     audit.observe(runtime_dir, audit.capture(value), value,
                   [_sortie_record('sortie_launch_failed',
                                   reason='出撃確定後に部隊が現れない',
-                                  metric={'misses': 6}, general='キャンディー')],
+                                  metric={'misses': 6, 'reads': 5,
+                                          'markers': [[1, 2, 3, 4]],
+                                          'probe_elapsed_ticks': 200,
+                                          'settlement_source': 'source_roster',
+                                          'roster_evidence': {'general_present': True,
+                                                              'complete': False, 'count': 2}},
+                                  general='キャンディー')],
                   now=1000, on_sealed=seen.append)
     records = audit.load_incidents(runtime_dir)
     assert len(records) == 1
@@ -513,9 +519,53 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     assert record['kind'] == 'sortie_failed'
     assert record['auto_file'] is True
     assert record['sortie_event']['general'] == 'キャンディー'
+    assert record['sortie_event']['probe_reads'] == 5
+    assert record['sortie_event']['marker_count'] == 1
+    assert record['sortie_event']['probe_elapsed_ticks'] == 200
+    assert record['sortie_event']['settlement_source'] == 'source_roster'
+    assert record['sortie_event']['roster_general_present'] is True
+    assert record['sortie_event']['roster_complete'] is False
+    assert record['sortie_event']['roster_count'] == 2
     assert '出撃失敗' in audit._issue_title(record)
-    assert '### 出撃失敗 / キャンセル' in audit.render(record)
+    rendered = audit.render(record)
+    assert '### 出撃失敗 / キャンセル' in rendered
+    assert 'source_roster' in rendered and 'markers=1' in rendered
+    assert 'general_present=True' in rendered and 'complete=False' in rendered
+    recurrence = audit.render_comment(record)
+    assert 'source_roster' in recurrence and 'markers=1' in recurrence
+    assert 'general_present=True' in recurrence and 'complete=False' in recurrence
+    assert 'elapsed_ticks=200' in recurrence
     assert len(seen) == 1
+
+
+def test_file_comments_existing_sortie_issue_with_probe_evidence(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 2, 'reads': 5, 'markers': [],
+                                          'marker_count': 1,
+                                          'probe_elapsed_ticks': 200,
+                                          'settlement_source': 'source_roster',
+                                          'roster_evidence': {'general_present': True,
+                                                              'complete': False, 'count': 2}},
+                                  general='キャンディー')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    issue = {'number': 7,
+             'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
+    gh = FakeGh(issues=[issue], comments=[])
+
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True,
+                              now=time.time())
+
+    assert result['status'] == 'commented'
+    assert '### 再発' in gh.comment_body
+    assert 'source=source_roster' in gh.comment_body
+    assert 'markers=1' in gh.comment_body
+    assert 'elapsed_ticks=200' in gh.comment_body
+    assert 'general_present=True' in gh.comment_body
+    assert 'complete=False' in gh.comment_body
 
 
 def test_cancel_after_a_launch_in_the_month_is_not_filed(runtime_dir):

@@ -1854,7 +1854,9 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1398-egg-retry-on-hp-loss",
                  "hanjuku-chart-v1399-recall-map-hold",
                  "hanjuku-chart-v1402-sortie-audit-confidence",
+                 "hanjuku-chart-v1411-sortie-launch-evidence",
                  "hanjuku-chart-v1412-summon-card-resume",
+                 "hanjuku-chart-v1413-sortie-launch-evidence",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

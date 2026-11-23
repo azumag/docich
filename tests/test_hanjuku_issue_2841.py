@@ -8,7 +8,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku_font import TextLine
 from docich.hanjuku.flows.deploy import _verify_sortie_source
-from docich.hanjuku.state.regions import world as _world, plan as _plan_region
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, flow as _flow
 
 
 def _screen(words=()):
@@ -95,7 +95,8 @@ def _arm_unverified_launch(mem, step):
     mem.setdefault('launched', {})['ゴーメン'] = {'step': step, 'general': 'ゼウス'}
     _world(mem)['garrison']['アルマムーン'] = ['どうし']
     return {'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'ゴーメン',
-            'reads': p.LAUNCH_PROBE_READS, 'baseline': [], 'tick': mem['tick']}
+            'reads': p.LAUNCH_PROBE_READS, 'baseline': [], 'tick': mem['tick'],
+            'started_tick': mem['tick']}
 
 
 def _launch_misses(mem):
@@ -125,7 +126,11 @@ def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
     assert _plan_region(mem)['orders'][second] == 'failed'
     failed = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
     assert failed and failed[-1]['chart_step'] == second
-    assert failed[-1]['observed_metric']['misses'] == p.LAUNCH_MISS_LIMIT
+    metric = failed[-1]['observed_metric']
+    assert metric['misses'] == p.LAUNCH_MISS_LIMIT
+    assert metric['settlement_source'] == 'marker_probe'
+    assert metric['probe_elapsed_ticks'] == 0
+    assert metric['markers'] == []
 
 
 def test_a_single_hero_marker_does_not_fail_the_launch():
@@ -144,3 +149,48 @@ def test_a_single_hero_marker_does_not_fail_the_launch():
         p._rollback_unverified_launch(mem, step, _arm_unverified_launch(mem, step), hero_only)
     assert _plan_region(mem)['orders'][step] == 'pending'
     assert not [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
+
+
+
+def test_marker_probe_remembers_last_marker_count_and_original_start_tick():
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
+           'garrison': {'アルマムーン': ['どうし']},
+           'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
+    step = 'A:marker0001:Mabc123'
+    probe = _arm_unverified_launch(mem, step)
+    probe['reads'] = p.LAUNCH_PROBE_READS - 1
+    _flow(mem)['launch_probe'] = {step: probe}
+
+    mem['tick'] = 160
+    p._probe_launch_markers(mem, [(0, 0, 6, 6)])
+
+    assert probe['last_marker_count'] == 1
+    assert probe['blind'] is True
+    assert probe['tick'] == 160  # roster-wait deadline
+    assert probe['started_tick'] == 100
+
+
+def test_blind_probe_elapsed_uses_original_start_tick_after_roster_wait():
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
+           'garrison': {'アルマムーン': ['どうし']},
+           'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
+    step = 'A:elapsed0001:Mabc123'
+    probe = _arm_unverified_launch(mem, step)
+    probe.update(blind=True, tick=160)
+    mem['tick'] = 360
+    p._rollback_unverified_launch(mem, step, probe, [])
+    event = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified'][-1]
+    assert event['observed_metric']['probe_elapsed_ticks'] == 260
+
+
+def test_old_blind_hotload_without_original_start_tick_reports_elapsed_unknown():
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 360,
+           'garrison': {'アルマムーン': ['どうし']},
+           'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
+    step = 'A:oldblind0001:Mabc123'
+    probe = _arm_unverified_launch(mem, step)
+    probe.update(blind=True, tick=160)
+    probe.pop('started_tick', None)
+    p._rollback_unverified_launch(mem, step, probe, [])
+    event = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified'][-1]
+    assert event['observed_metric']['probe_elapsed_ticks'] is None

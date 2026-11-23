@@ -2883,7 +2883,8 @@ def _commit_departure(mem, order, context, snapshot):
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
-            'tick': int(mem.get('tick') or 0), 'roster_read': False}
+            'tick': int(mem.get('tick') or 0),
+            'started_tick': int(mem.get('tick') or 0), 'roster_read': False}
         mem['world_map_due'] = True
 
 
@@ -2968,6 +2969,10 @@ def _probe_launch_markers(mem, markers):
         if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
             probes.pop(step, None)
             continue
+        # Keep only a bounded count of the latest real map observation.  The
+        # marker list passed to rollback still controls the retry threshold.
+        probe['last_marker_count'] = (min(len(markers), 32)
+                                      if isinstance(markers, (list, tuple)) else None)
         if probe.get('blind'):
             if probe.get('kept'):
                 # A kept boss march waits for the source roster (or for
@@ -3102,8 +3107,14 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
         general = probe.get('general')
         if general in roster:
             probes.pop(step, None)
-            _rollback_unverified_launch(mem, step, probe, [],
-                                        reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
+            _rollback_unverified_launch(
+                mem, step, probe, [],
+                reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す',
+                roster_evidence={'general_present': True, 'complete': bool(complete),
+                                 'count': min(len(roster), 1000)},
+                audit_marker_count=probe.get('last_marker_count'),
+                audit_marker_count_supplied=True,
+            )
             continue
         if not complete and not probe.get('blind'):
             # One page is not the roster: while the marker survey may still
@@ -3127,7 +3138,8 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
                         else '出撃元の将軍一覧の1ページに出撃した将軍がいないため出撃成立とみなす'))
 
 
-def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
+def _rollback_unverified_launch(mem, step, probe, markers, reason=None, roster_evidence=None,
+                              audit_marker_count=None, audit_marker_count_supplied=False):
     """A committed departure produced no unit marker: return it to pending.
 
     Mirrors the march-overdue reset so the order re-confirms from scratch,
@@ -3153,9 +3165,32 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     garrison = _world(mem).get('garrison') or {}
     if general and isinstance(garrison.get(source), list) and general not in garrison[source]:
         garrison[source].append(general)
+    now = int(mem.get('tick') or 0)
+    started = probe.get('started_tick')
+    # Older hotloads may lack started_tick. Their tick is still the start only
+    # before the marker probe went blind; after that it was reset for roster wait.
+    if type(started) is not int and not probe.get('blind'):
+        started = probe.get('tick')
+    elapsed = now - started if type(started) is int and now >= started else None
+    if audit_marker_count_supplied:
+        marker_count = (audit_marker_count if type(audit_marker_count) is int
+                        and 0 <= audit_marker_count <= 32 else None)
+    else:
+        marker_count = (min(len(markers), 32)
+                        if isinstance(markers, (list, tuple)) else None)
     observed = {'general': general, 'source': source, 'target': probe.get('target'),
-                'markers': [list(b) for b in markers], 'reads': probe.get('reads'),
-                'misses': misses[step]}
+                'markers': [list(b) for b in (markers or ())], 'marker_count': marker_count,
+                'reads': probe.get('reads'), 'misses': misses[step], 'probe_elapsed_ticks': elapsed,
+                'settlement_source': 'source_roster' if isinstance(roster_evidence, dict)
+                                     else 'marker_probe'}
+    if isinstance(roster_evidence, dict):
+        observed['roster_evidence'] = {
+            'general_present': roster_evidence.get('general_present') is True,
+            'complete': roster_evidence.get('complete') is True,
+            'count': roster_evidence.get('count')
+                     if type(roster_evidence.get('count')) is int
+                     and roster_evidence.get('count') >= 0 else None,
+        }
     # A view that shows only the hero's own marker cannot distinguish a new
     # unit mark, so "no marker" is not evidence that the launch failed
     # (g1190 2026-11-18: タプロベイン→タタール failed twice on the same single
