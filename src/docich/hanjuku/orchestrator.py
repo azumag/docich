@@ -325,7 +325,6 @@ def field_idle_world_map_nudge(mem, phase, kind, streak):
         or type(identity.get('generation')) is not int
         or not isinstance(identity.get('runtime_id'), str) or not identity['runtime_id']
         or not isinstance(identity.get('lease_id'), str) or not identity['lease_id']
-        or mem.get('survey_run_identity') != identity
     ):
         return None
     from .state.regions import plan as _plan_region
@@ -335,18 +334,11 @@ def field_idle_world_map_nudge(mem, phase, kind, streak):
         isinstance(orders, dict) and any(value == 'pending' for value in orders.values())
     ):
         return None
-    discovery = mem.get('map_discovery')
-    if isinstance(discovery, dict):
-        registration = mem.get('map_registration')
-        castles = registration.get('castles') if isinstance(registration, dict) else None
-        if (
-            not isinstance(registration, dict)
-            or registration.get('identity') != identity
-            or registration.get('chapter') != mem.get('chapter')
-            or not isinstance(castles, dict)
-            or len(castles) < 2
-        ):
-            return None
+    # Native map discovery owns the field until its measured registration
+    # flow returns control. Do not interrupt the one-roof bootstrap or a
+    # partially registered chapter with an unsolicited Y.
+    if isinstance(mem.get('map_discovery'), dict):
+        return None
     if mem.get('world_map_due') or mem.get('world_map_pending') or mem.get('y_jump'):
         return None
     now = int(mem.get('tick') or 0)
