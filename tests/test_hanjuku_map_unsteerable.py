@@ -75,10 +75,17 @@ def test_decide_nudges_a_frozen_cursorless_map_before_the_generic_hold(monkeypat
     import docich.hanjuku.os_layer.screen as screen_module
     monkeypatch.setattr(screen_module, 'parse', lambda frame, phase=None: fake)
     frame = Frame(256, 224, bytes((40, 140, 20)) * (256 * 224))
-    state = {'policy': {'chapter': 1}}
+    identity = {
+        'game': 'hanjuku-hero', 'generation': 1,
+        'runtime_id': 'g1-field-idle-test', 'lease_id': 'field-idle-test',
+    }
+    state = {'policy': {
+        'chapter': 1, '_run_identity': dict(identity),
+        'survey_run_identity': dict(identity),
+    }}
     seen, decisions = [], []
     for _ in range(orchestrator.MAP_UNSTEERABLE_HOLD_MAX + 1):
-        actions, state = orchestrator.decide(frame, state)
+        actions, state = orchestrator.decide(frame, state, run_identity=identity)
         seen.append(actions)
         decisions += [r['decision'] for r in state.get('_records', [])]
     # Owner 2026-11-23: the idle field first gets a whole-map Y observation,

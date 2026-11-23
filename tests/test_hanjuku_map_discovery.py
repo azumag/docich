@@ -141,7 +141,7 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
     state, active = caller_adopted_interim()
     actions, updated = decide(field(), state, run_identity=identity)
     # The idle field may ask for the whole-map observation (owner 2026-11-23).
-    assert actions in ([], [policy.pad('y')])
+    assert actions == []
     assert _plan_region(updated['policy']).get('active') is None
     assert (_plan_region(updated['policy']).get('orders') or {}).get(active) in (None, 'pending')
     assert not _world(updated['policy']).get('sorties')
@@ -279,10 +279,6 @@ def test_centered_single_roof_bootstrap_reaches_two_roof_calibration_and_chapter
                 assert panel is not None
             elif button == 'b':
                 panel = None
-            elif button == 'y':
-                # Field-idle whole-map observation (owner 2026-11-23); the
-                # bootstrap models the native frame only, so ignore it here.
-                continue
             else:
                 pytest.fail(f'unexpected bootstrap input: {button}')
         frame = status(panel) if panel else field(tuple(cursor), roofs, tuple(camera))
