@@ -2259,8 +2259,11 @@ def _card_names(value):
         name = value.strip()
         return [name] if name else []
     if isinstance(value, list):
-        return [name for card in value
-                if isinstance(card, str) and (name := card.strip())]
+        names = []
+        for card in value:
+            if isinstance(card, str) and card.strip():
+                names.append(card.strip())
+        return names
     return []
 
 
