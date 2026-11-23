@@ -538,6 +538,36 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     assert len(seen) == 1
 
 
+def test_file_comments_existing_sortie_issue_with_probe_evidence(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 2, 'reads': 5, 'markers': [],
+                                          'marker_count': 1,
+                                          'probe_elapsed_ticks': 200,
+                                          'settlement_source': 'source_roster',
+                                          'roster_evidence': {'general_present': True,
+                                                              'complete': False, 'count': 2}},
+                                  general='キャンディー')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    issue = {'number': 7,
+             'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
+    gh = FakeGh(issues=[issue], comments=[])
+
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True,
+                              now=time.time())
+
+    assert result['status'] == 'commented'
+    assert '### 再発' in gh.comment_body
+    assert 'source=source_roster' in gh.comment_body
+    assert 'markers=1' in gh.comment_body
+    assert 'elapsed_ticks=200' in gh.comment_body
+    assert 'general_present=True' in gh.comment_body
+    assert 'complete=False' in gh.comment_body
+
+
 def test_cancel_after_a_launch_in_the_month_is_not_filed(runtime_dir):
     # docich#5136 (owner 2026-11-23): 同じ月に発射が成立しているキャンセルは
     # 再試行が効いた一過性の事象であり、停滞として起票しない。
