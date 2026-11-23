@@ -559,6 +559,16 @@ def test_failed_order_without_a_launch_stays_high(runtime_dir):
     assert record['confidence_reasons'] == []
 
 
+def test_unaccepted_order_with_stale_month_scope_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=2, scope=[9, '1-0'])
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
 def test_confirmed_launch_failure_stays_high_even_if_month_launched(runtime_dir):
     value = state(9, '1-1', 0, launches=2)
     audit.observe(runtime_dir, audit.capture(value), value,
