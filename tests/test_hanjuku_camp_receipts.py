@@ -231,3 +231,46 @@ def test_a_general_that_left_the_camp_confirms_the_arrival():
     assert recall_flow.camp_arrival_check(mem) is True
     assert any(r['decision'] == 'camp_recall_arrival_confirmed' for r in mem['_records'])
     assert 'camp_verify' not in _flow(mem)
+
+
+def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 5, 'goal': None,
+             'target': [134, 120], 'kind': 'camp', 'escape_move': True,
+             'a_inputs': 1}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='text'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_unconfirmed']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_unconfirmed'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['camp'] == [134, 120]
+    assert row['observed_metric']['stage'] == 'await_dispatch'
+    assert row['observed_metric']['steps'] == 6
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatch_unconfirmed'
+    assert 'recall_verification' not in flow
+    assert 'camp_recall_blocked' not in flow
+    assert mem['uncertain'] is True
+
+
+def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 0, 'goal': None,
+             'target': [134, 120], 'kind': 'camp', 'escape_move': True,
+             'a_inputs': 1, 'input_sent': True}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='map'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_dispatched']
+    assert mem['_records'][0]['resulting_event'] == 'field_move_accepted'
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatched'
+    assert 'recall_verification' not in flow
+    assert 'camp_verify' not in flow
+    assert not mem.get('uncertain')
