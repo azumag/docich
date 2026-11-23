@@ -1433,7 +1433,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # probes do not reserve a general and are deliberately excluded.
     boss_wave_sources = {
         order.get('source')
-        for order in (*sorties['attack'], *boss_wave_orders)
+        for order in (*sorties['attack'], *sorties['retake'], *boss_wave_orders)
         if chart.is_boss_castle(order.get('target'))
         and not order.get('source_probe')
         and isinstance(order.get('source'), str)
