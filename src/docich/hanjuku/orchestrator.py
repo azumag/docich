@@ -222,8 +222,15 @@ def _chikujou_partial_castle_label(text, chapter):
     folded = ''.join(unicodedata.normalize('NFKC', text or '').split())
     if len(folded) < 2:
         return False
-    return any(''.join(unicodedata.normalize('NFKC', name).split()).startswith(folded)
-               for name in chart.CASTLE_NAMES.get(chapter or 1, ()))
+    labels = (month_flow.STATUS_NAMES.get(name, name)
+              for name in chart.CASTLE_NAMES.get(chapter or 1, ()))
+    for label in labels:
+        native = ''.join(unicodedata.normalize('NFKC', label).split())
+        if native.startswith(folded):
+            return True
+        if folded.startswith(native) and folded[len(native):].startswith('じょう'):
+            return True
+    return False
 
 
 def _chikujou_menu_text_owned(mem, kind, key):
@@ -235,7 +242,6 @@ def _chikujou_menu_text_owned(mem, kind, key):
     text = key[5:] if isinstance(key, str) and key.startswith('text:') else ''
     return (_is_chikujou_prompt(text)
             or _chikujou_partial_castle_label(text, mem.get('chapter'))
-            or 'じょう' in text
             or any(token in text for token in
                    ('どのしろをぞうちく', 'どのしろをそうたく',
                     'これいじょうのぞうちく', 'うむッ', 'いかんッ',
