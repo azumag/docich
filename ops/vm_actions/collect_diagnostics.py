@@ -8117,6 +8117,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1420-chikujou-reserve-check",
             "hanjuku-chart-v1421-critical-card-spend",
             "hanjuku-chart-v1422-ch9-oshiroga-aim",
+            "hanjuku-chart-v1424-sortie-measured-kit",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
