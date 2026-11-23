@@ -8,7 +8,8 @@ month menu frame could not be read, and the month then closed with its only
 build slot unspent.
 """
 from docich.hanjuku.flows import month as month_flow
-from tests.test_hanjuku_multi_chikujou import HOME, OTHER, month
+from tests.test_hanjuku_multi_chikujou import HOME, OTHER, line, month
+from docich.hanjuku.os_layer.screen import _header
 
 
 def menu_without_build(gold=36):
@@ -146,3 +147,50 @@ def test_malformed_or_negative_gold_waits_instead_of_confirming_a_shortage():
         assert shop['chikujou'] == 'opened'
         assert 'chikujou_affordability_wait' not in shop
 
+
+
+
+def test_month_controller_retries_when_the_entire_hud_header_is_unreadable():
+    """A torn gold digit must not bypass the scoped, unfinished build plan."""
+    mem = memory()
+    mem.update(month='1-7', month_chapter=1)
+    shop = mem['shop']
+    unread = month(150)
+    unread.lines.append(line(0, 16, '1ねん7のつき1?0G'))
+    unread.header = _header(unread.lines)
+    assert unread.header is None
+
+    # The first unread header is a no-input wait, not an exit confirmation.
+    assert month_flow.month_step(unread, mem) == []
+    assert shop['chikujou'] == 'check'
+    assert shop['chikujou_affordability_wait'] == 1
+    assert not [row for row in mem['_records'] if row.get('decision') == 'month_done']
+
+    # A fresh, complete header restores the ordinary build path immediately.
+    assert month_flow.month_step(month(150), mem) == [month_flow.pad('a')]
+    assert shop['chikujou'] == 'opened'
+    assert 'chikujou_affordability_wait' not in shop
+
+
+def test_month_controller_records_unread_header_after_the_bounded_wait():
+    mem = memory()
+    mem.update(month='1-7', month_chapter=1)
+    shop = mem['shop']
+    unread = month(150)
+    unread.lines.append(line(0, 16, '1ねん7のつき1?0G'))
+    unread.header = _header(unread.lines)
+    assert unread.header is None
+
+    for _ in range(month_flow.CHIKUJOU_AFFORDABILITY_WAIT):
+        assert month_flow.month_step(unread, mem) == []
+    assert shop['chikujou'] == 'check'
+
+    month_flow.month_step(unread, mem)
+    assert shop['chikujou'] == 'unverified'
+    assert shop['chikujou_header_unverified'] is True
+    terminal = [row for row in mem['_records']
+                if row.get('decision') == 'chikujou_affordability_unverified']
+    assert len(terminal) == 1
+    assert terminal[0]['deviation_reason'] == 'month_header_unreadable'
+    assert terminal[0]['observed_metric']['header_readable'] is False
+    assert terminal[0]['observed_metric']['gold_readable'] is False
