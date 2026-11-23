@@ -171,12 +171,13 @@ def test_marker_probe_remembers_last_marker_count_and_original_start_tick():
 
 
 def test_blind_probe_elapsed_uses_original_start_tick_after_roster_wait():
-    mem = {'chapter': 1, 'month': '1-7', 'tick': 360,
+    mem = {'chapter': 1, 'month': '1-7', 'tick': 100,
            'garrison': {'アルマムーン': ['どうし']},
            'general_location_unknown': [], 'lost': [], 'captured': [], '_records': []}
     step = 'A:elapsed0001:Mabc123'
     probe = _arm_unverified_launch(mem, step)
     probe.update(blind=True, tick=160)
+    mem['tick'] = 360
     p._rollback_unverified_launch(mem, step, probe, [])
     event = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_unverified'][-1]
     assert event['observed_metric']['probe_elapsed_ticks'] == 260
