@@ -89,6 +89,7 @@ def _rows(db_path: Path) -> list[tuple[str, str, str, Decimal, Decimal, float]]:
         result.append((fill_id, symbol, side, amount, price, stamp))
     return result
 
+
 def _day_start_epoch(now: float) -> float:
     moment = dt.datetime.fromtimestamp(float(now), tz=dt.timezone.utc).astimezone(JST)
     start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -319,7 +320,6 @@ def build_theoretical_benchmark(
 
 
 def _unavailable_performance(
-    db_path: Path,
     *,
     reason_code: str,
     capital_reference: object,
@@ -409,7 +409,6 @@ def build_performance(
         fills = _rows(db_path)
     except _PerformanceLedgerError as exc:
         return _unavailable_performance(
-            db_path,
             reason_code=exc.reason_code,
             capital_reference=capital_reference,
             positions=positions,

@@ -25,10 +25,10 @@ _WORKER_SUMMARY_KEYS = {
     "slot_layout_invalid", "common_owned_symbol_count",
 }
 
-_PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions"}
+_PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions", "unpaired_sell_count"}
 _PERFORMANCE_MONEY_KEYS = {
     "realized_total_jpy", "interval_realized_pnl_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
-    "cumulative_pnl_jpy", "equity_jpy", "unpaired_sell_count",
+    "cumulative_pnl_jpy", "equity_jpy",
 }
 _PERFORMANCE_LEDGER_STATUS = {"ok", "partial", "unavailable", "invalid"}
 _PERFORMANCE_LEDGER_REASONS = {
