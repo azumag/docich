@@ -8102,6 +8102,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1397-recall-map-hold",
             "hanjuku-chart-v1398-egg-retry-on-hp-loss",
             "hanjuku-chart-v1399-recall-map-hold",
+            "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
