@@ -442,9 +442,14 @@ def month_step(screen: Screen, mem):
     shop = None
     if screen.kind == 'month_menu' and screen.header is None:
         shop = _pending_chikujou_header_shop(mem)
-        if shop and shop.get('chikujou') == 'check':
-            # Run the same bounded affordability gate before the exit row can
-            # be selected. Never use the saved balance as payment evidence.
+        receipt = shop.get('soldier_receipt') if isinstance(shop, dict) else None
+        receipt_pending = isinstance(receipt, dict) and receipt.get('status') == 'pending'
+        if shop and shop.get('chikujou') == 'check' and not receipt_pending:
+            # A refill's debit is not known until observe_events settles its
+            # receipt. Let the existing pending-receipt guard below own these
+            # frames; they must not consume the build affordability retry budget.
+            # Run the same bounded gate before the exit row can be selected.
+            # Never use the saved balance as payment evidence.
             result = _month_chikujou(screen, mem, shop)
             if result is not None:
                 return result
