@@ -335,95 +335,16 @@ def _retreat_forbidden(mem, cur):
 
 
 def _hero_retreat_menu(screen, mem, cur):
-    # A castle defense cannot retreat (owner 2026-09-29; the menu has no
-    # たいきゃく row there), so never try to select it.
-    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
-        return None
-    if _retreat_forbidden(mem, cur):
-        if not cur.get('retreat_forbidden_noted'):
-            cur['retreat_forbidden_noted'] = True
-            _record(mem, 'battle_retreat_forbidden', **_battle_labels(cur),
-                    general=cur.get('ally'), enemy=cur.get('enemy'),
-                    castle=cur.get('castle'), side=cur.get('side'),
-                    reason='第9話では主人公以外は退却しないため、卵・切り札・奥の手で応戦する')
-        return None
-    if _egg_rescue_pending(cur):
-        return []
-    if ('きりふだ' in {w for _, _, w in _options(screen)}
-            and _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True)):
-        return _survival_menu(screen, mem, cur)
-    if _egg_before_retreat(mem, cur, menu=True) and 'たまごをつかう' in {w for _, _, w in _options(screen)}:
-        if (cur.get('card_flow') or {}).get('stage') == 'announce':
-            _card_use_unclassified(mem, cur, '本人の未試行の卵を優先し、切り札の使用告知は未確認として保持')
-        else:
-            cur['card_flow'] = None
-        _survival_state(mem, cur)['egg_priority'] = True
-        return _survival_menu(screen, mem, cur)
-    flow = cur.setdefault('hero_retreat', {})
-    if flow.get('unavailable') or flow.get('exhausted'):
-        return None
-    # docich#4999 (owner 2026-11-22): spend resources before the retreat row.
-    # A pending selection on this menu screen means its announce already
-    # ended without a receipt — settle it honestly, then give remaining
-    # cards one bounded retry through the survival menu before choosing
-    # たいきゃく. Below the immediate-loss floor the detour stops.
-    card_flow = cur.get('card_flow') or {}
-    if card_flow.get('selection_planned'):
-        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘メニューへ戻ったため未分類として保持')
-    else:
-        cur['card_flow'] = None
-    if not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur):
-        return _survival_menu(screen, mem, cur)
-    if 'たいきゃく' not in {w for _, _, w in _options(screen)}:
-        flow['unavailable'] = True
-        _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
+    # Owner 2026-11-23: retreat is banned uniformly.  It was chosen in a pinch
+    # (often after cards/eggs ran out) and the menu then stalled the battle.
+    # Fight to the end with こうげき instead.  Record once per battle.
+    if not cur.get('retreat_banned_noted'):
+        cur['retreat_banned_noted'] = True
+        _record(mem, 'battle_retreat_banned', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'),
                 castle=cur.get('castle'), side=cur.get('side'),
-                reason='退却が有効な項目として読めないため卵・切り札・奥の手で対処')
-        return None
-    if flow.get('selected'):
-        flow['wait'] = flow.get('wait', 0) + 1
-        if flow['wait'] <= 3:
-            return []
-        if flow['selected'] >= 2:
-            flow['exhausted'] = True
-            return [pad('b')]
-    flow['menu_ticks'] = flow.get('menu_ticks', 0) + 1
-    if flow['menu_ticks'] > 8:
-        flow['exhausted'] = True
-        return [pad('b')]
-    move = _battle_menu_move(screen, mem, 'たいきゃく')
-    if move != 'here':
-        return _emit_moves(move)
-    cur['card_flow'] = None
-    flow['selected'] = flow.get('selected', 0) + 1
-    flow['wait'] = 0
-    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
-            general=cur.get('ally'), enemy=cur.get('enemy'),
-            castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
-            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
-                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
-                             'cards_selected': cur.get('cards_selected', []),
-                             'cards_used': cur.get('cards_used', []),
-                             # docich#5117: the live list proved these are not
-                             # carried, so they are neither spendable nor a
-                             # "left behind" resource.
-                             'cards_missing': list(cur.get('cards_missing') or ()),
-                             # docich#5101: a card the bot already tried (or
-                             # spent its one bounded retry on) is not "left
-                             # unused" — the audit needs the attempt receipts
-                             # to tell a designed post-attempt retreat from a
-                             # card that was never given a chance.
-                             'cards_attempted': list((cur.get('survival') or {})
-                                                     .get('cards_attempted') or []),
-                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
-                             'cards_spend_attempts': dict(cur.get('cards_spend_attempts') or {}),
-                             'card_pending': (cur.get('card_flow') or {}).get('card')
-                             if isinstance(cur.get('card_flow'), dict) else None,
-                             'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
-            resulting_event='retreat_selected_not_yet_confirmed',
-            reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')
-    return [pad('a')]
+                reason='退却は停滞の原因になるため一律禁止し、切り札・卵を使い切った後もそのまま戦い切る')
+    return None
 
 
 RESCUE_RECLOSE_WAIT = 3     # observations a spent rescue menu may stay open
@@ -2652,11 +2573,8 @@ def egg_battle_step(screen: Screen, mem):
         # and actually request retreat if the normal command menu is reached.
         # g460 安全弁は「卵か札か退却のどれもない」局面だけ。勝てそうなので
         # たまごを温存している間は、まず白兵で戦う (退却しない)。
-        if (not cards_left and battle.get('side') != 'defense'
-                and (wants_egg or empty_egg or 'たまごをつかう' not in screen.text)):
-            returning = _egg_retreat_return(screen, mem, battle)
-            if returning is not None:
-                return returning
+        # Owner 2026-11-23: retreat is banned; with no card the summon turn
+        # attacks instead of probing the retreat menu.
         # g508: after Excalibur fell, stale general HP82 concealed the
         # wounded Venus while blind A kept choosing the weakest attack.
         # Fierce attack adds lost HP to damage, but can miss/lose initiative;
