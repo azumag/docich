@@ -2161,10 +2161,11 @@ def _observe_fort_frame(screen, state):
     kind = getattr(screen, 'kind', None)
     state['fort_last_screen_kind'] = kind[:32] if isinstance(kind, str) else 'unknown'
     text = getattr(screen, 'text', None)
-    if isinstance(text, str):
-        excerpt = ' '.join(text.split())[:120]
-        if excerpt:
-            state['fort_last_screen_text'] = excerpt
+    excerpt = ' '.join(text.split())[:120] if isinstance(text, str) else ''
+    if excerpt:
+        state['fort_last_screen_text'] = excerpt
+    else:
+        state.pop('fort_last_screen_text', None)
     if stage == 'fort_status':
         from . import house
         info = house.general_status(screen)
