@@ -2370,10 +2370,20 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert 'month_blind_opened' not in mem
     assert [r['decision'] for r in mem['_records']][-1] == 'month_blind_nav'
 
+    # A fresh frame with the cursor still on another row must keep positioning;
+    # only the exact target row may send the confirmation.
+    wrong = parse(month_canvas(59, on='しょうにん'))
+    wrong_move = policy._month_menu_move(wrong, mem, 'へいしほじゅう')
+    assert policy.pad('a') not in wrong_move
+
     target = parse(month_canvas(59, on='へいしほじゅう'))
     move = policy._month_menu_move(target, mem, 'へいしほじゅう')
     assert move == [policy.pad('a')]
+    assert mem['month_blind_opened'] == 'へいしほじゅう'
+    assert 'month_blind_nav' not in mem
+    assert mem['_records'][-1]['decision'] == 'month_blind_nav_confirmed'
     assert policy._month_opened(move, mem, 'へいしほじゅう')
+    assert 'month_blind_opened' not in mem
 
 
 def test_menu_nav_guard_never_cuts_off_navigation_that_keeps_closing_in():
