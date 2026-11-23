@@ -97,6 +97,11 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 
 - 将軍・出撃元・対象・目的・step・misses・理由・直前120秒の決定・
   計画/在城/flow/statsを1件32KB以内で保存する。
+- `sortie_launch_failed` は最後のprobeの `reads` / `marker_count` / `probe_elapsed_ticks` と
+  `settlement_source`（`marker_probe` / `source_roster`）をissue本文に表示する。
+  出撃元名簿で失敗した場合は `general_present` / `complete` / `entries` も表示する。
+  生のマーカー座標・名簿の将軍名一覧はissue本文へ出さない。
+- **v1413**: 失敗確定時にsettlement source・probe reads・経過ticks・marker countを保存し、出撃元名簿での判定なら本人の存在・一覧完全性・件数だけを追加する。座標と名簿名は投影しない。
 - 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
 - issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
@@ -397,3 +402,10 @@ python3 -m docich.hanjuku.month_audit --runtime <runtime> file --incident <id>
 - 問題が出た場合は `brains/hanjuku/bot.py` の `month_audit.observe` 呼び出しを
   外すか、`src/docich/hanjuku/month_audit.py` を revert する。ゲーム入力には
   影響しない（effectは `month_audit_failed` として記録されるだけ）。
+
+## 出撃失敗の証拠（v1413）
+
+- `settlement_source` は marker probe / source roster を区別する。
+- `marker_count` は最後に実際に観測したマーカー数。source-roster rollback の再試行上限に使う `markers` 引数とは分離し、未観測は `null` とする。
+- `probe_elapsed_ticks` は出撃確定時の `started_tick` から計算する。blind probe へ移行したときの待機期限 `tick` とは別に保持する。古いhot-loadで開始tickを復元できないblind probeは不明として出力する。
+- 新規Issue本文と既存Issueへの再発コメントは同じbounded evidence formatterを使い、古いレコードに証拠がない場合は従来の表示を維持する。
