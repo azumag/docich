@@ -92,7 +92,8 @@ def test_theoretical_benchmark_compares_actual_with_best_single_round_trip(tmp_p
     assert benchmark["scope"] == "best_single_symbol_round_trip"
     assert benchmark["best_symbol"] == "BTC/JPY"
     assert benchmark["theoretical_pnl_jpy"] == str(D("1000") * (D("120") / D("90") - D("1")))
-    assert benchmark["actual_today_realized_pnl_jpy"] == "10"
+    assert benchmark["actual_interval_realized_pnl_jpy"] == "10"
+    assert benchmark["actual_today_realized_pnl_jpy"] == "10"  # deprecated alias
     assert benchmark["gap_jpy"] == str(D(benchmark["theoretical_pnl_jpy"]) - D("10"))
     assert D(benchmark["capture_rate_pct"]) == D("10") / D(benchmark["theoretical_pnl_jpy"]) * D("100")
     assert benchmark["coverage_complete_to_now"] is True
