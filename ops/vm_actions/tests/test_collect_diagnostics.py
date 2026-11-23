@@ -1628,6 +1628,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert output['bot_version']=='hanjuku-chart-v2'
     state['bot_version']='hanjuku-chart-v1433-fort-recall-evidence'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1433-fort-recall-evidence'
+    state['bot_version']='hanjuku-chart-v1434-camp-dispatch-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1434-camp-dispatch-evidence'
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
