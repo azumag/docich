@@ -938,6 +938,15 @@ def _sortie_event(record):
     target = _bounded_text(record.get('target') or metric.get('target'), 48)
     purpose = _bounded_text(record.get('purpose') or metric.get('purpose'), 32)
     reason = record.get('deviation_reason') or record.get('reason')
+    markers = metric.get('markers')
+    if 'marker_count' in metric:
+        marker_count = _bounded_int(metric.get('marker_count'), 0, 32)
+    else:
+        marker_count = min(len(markers), 32) if isinstance(markers, list) else None
+    roster = metric.get('roster_evidence')
+    roster = roster if isinstance(roster, dict) else None
+    settlement_source = metric.get('settlement_source')
+    settlement_source = settlement_source if settlement_source in ('marker_probe', 'source_roster') else None
     return {
         'kind': kind,
         'outcome': outcome,
@@ -951,6 +960,13 @@ def _sortie_event(record):
         'target': target,
         'purpose': purpose,
         'misses': _bounded_int(metric.get('misses'), 0, 10 ** 6),
+        'probe_reads': _bounded_int(metric.get('reads'), 0, 1000),
+        'marker_count': _bounded_int(marker_count, 0, 32),
+        'probe_elapsed_ticks': _bounded_int(metric.get('probe_elapsed_ticks'), 0, 10 ** 6),
+        'settlement_source': settlement_source,
+        'roster_general_present': (roster.get('general_present') is True if roster is not None else None),
+        'roster_complete': (roster.get('complete') is True if roster is not None else None),
+        'roster_count': (_bounded_int(roster.get('count'), 0, 1000) if roster is not None else None),
         'strategy_variant': _bounded_text(variant, 40),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
         'screen': _bounded_text(record.get('screen_kind'), 32),
@@ -3460,6 +3476,28 @@ def _timeline(record):
     return rows[-3:], True
 
 
+def _sortie_probe_lines(sortie):
+    """Bounded evidence lines shared by new issue bodies and recurrence comments."""
+    if not isinstance(sortie, dict):
+        return []
+    lines = []
+    if any(sortie.get(key) is not None for key in
+           ('settlement_source', 'probe_reads', 'marker_count', 'probe_elapsed_ticks')):
+        marker_count = sortie.get('marker_count')
+        marker_text = marker_count if type(marker_count) is int else '未観測'
+        lines.append(
+            f"- launch probe: source={sortie.get('settlement_source') or '不明'}"
+            f" / reads={sortie.get('probe_reads')} / markers={marker_text}"
+            f" / elapsed_ticks={sortie.get('probe_elapsed_ticks')}"
+        )
+    if sortie.get('roster_general_present') is not None:
+        lines.append(
+            f"- source roster: general_present={sortie.get('roster_general_present')}"
+            f" / complete={sortie.get('roster_complete')} / entries={sortie.get('roster_count')}"
+        )
+    return lines
+
+
 def render(record):
     """Deterministic Markdown for one incident."""
     if not isinstance(record, dict):
@@ -3609,6 +3647,7 @@ def render(record):
             '',
         ]
     if sortie:
+        probe_lines = _sortie_probe_lines(sortie)
         body += [
             '### 出撃失敗 / キャンセル',
             '',
@@ -3618,6 +3657,7 @@ def render(record):
             f" / 対象: {sortie.get('target') or '不明'} / 目的: {sortie.get('purpose') or '不明'}",
             f"- 理由: {sortie.get('reason') or '不明'} ({sortie.get('reason_code')})"
             f" / misses: {sortie.get('misses')}",
+            *probe_lines,
             '',
         ]
     if camp:
@@ -3766,6 +3806,7 @@ def render_comment(record):
     elif record.get('kind') in ('sortie_failed', 'sortie_cancelled'):
         lines.insert(5, f"- 出撃: {sortie.get('outcome')} / {sortie.get('reason_code')}"
                         f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
+        lines[6:6] = _sortie_probe_lines(sortie)
     elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
                                 'camp_recall_unconfirmed'):
         lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
