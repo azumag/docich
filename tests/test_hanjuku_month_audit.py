@@ -1667,6 +1667,20 @@ def test_sortie_with_empty_measured_kit_is_recorded(runtime_dir):
     assert records[0]['kind'] == 'sortie_without_cards'
 
 
+def test_empty_card_strings_do_not_count_as_measured_kit(runtime_dir):
+    value = _cards_state(cards=['クースカン'])
+    value['policy']['rare_card_kit'] = {'A:1:M1': ''}
+    value['policy']['strong_card_kit'] = {'A:1:M1': '  '}
+    value['policy']['plan']['order_context'] = {'A:1:M1': {
+        'observed_metric': {'general': 'カシュー', 'cards': ['']}}}
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'departure_binding': {'cards': ['  ']}}}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'sortie_without_cards'
+
+
 def test_sortie_with_planned_snapshot_cards_is_recorded(runtime_dir):
     # A snapshot without departure_binding may copy planned cards; it is not
     # evidence that the measured sortie actually carried them.
