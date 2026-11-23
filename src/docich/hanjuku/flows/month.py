@@ -1470,10 +1470,12 @@ def _chikujou_step(screen, mem, sub):
                     reason='実一覧でレベル5を確認した城は当月の選択を省き、未表示の増築候補へ進む')
         names = [c for c in _chikujou_candidates(mem) if c not in tried]
         for name in names:
-            label = _chikujou_screen_label(screen, name, mem.get('chapter') or 1)
-            if label is None:
-                continue
-            move = menu_to(screen, label)
+            move = menu_to(screen, name)
+            if move is None:
+                label = _chikujou_screen_label(screen, name, mem.get('chapter') or 1)
+                if label is None:
+                    continue
+                move = menu_to(screen, label)
             if move is None:
                 continue
             if move == 'here':
