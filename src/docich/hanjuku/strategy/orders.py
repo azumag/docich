@@ -2882,6 +2882,7 @@ def _sortie_resume_arm(mem, step):
         row = {'month': month, 'used': 0}
         ledger[step] = row
     row.pop('owed', None)
+    row.pop('picker_active', None)
     used = int(row.get('used') or 0)
     row['armed'] = month is not None and used < SORTIE_PICKER_RESUME_LIMIT
     return row['armed'], used
@@ -2901,6 +2902,7 @@ def _sortie_resume_owe(mem, step):
     row = _sortie_resume_row(mem, step)
     if isinstance(row, dict):
         row.pop('armed', None)
+        row.pop('picker_active', None)
         row['owed'] = True
 
 
@@ -2920,6 +2922,7 @@ def _sortie_resume_resumed(mem, step, *, driven):
         return
     row.pop('armed', None)
     row.pop('owed', None)
+    row['picker_active'] = True
     if driven:
         row['used'] = int(row.get('used') or 0) + 1
     # docich#5020: a resumed interruption made progress, so the cancellation
@@ -2938,6 +2941,30 @@ def _sortie_resume_resumed(mem, step, *, driven):
                                         'limit': SORTIE_PICKER_RESUME_LIMIT}},
             reason=('再駆動で行き先ピッカーが再オープンしたため再開を記録' if driven
                     else 'ゲーム側が出撃先マーカーを戻したため再開を記録'))
+
+
+def _sortie_resume_target_unverified(mem, step):
+    """Count a resumed picker that closed without a verified target.
+
+    Keep this budget separate from ordinary target-cancel limits: a failed
+    resumed picker may be reopened once more, but the second failure returns
+    the order to its original launched_unconfirmed terminal state.
+    """
+    row = _sortie_resume_row(mem, step)
+    if not isinstance(row, dict) or row.get('picker_active') is not True:
+        return None
+    row.pop('picker_active', None)
+    used = int(row.get('used') or 0)
+    result = {'used': used, 'limit': SORTIE_PICKER_RESUME_LIMIT}
+    if used >= SORTIE_PICKER_RESUME_LIMIT:
+        _sortie_resume_outcome(
+            mem, step, 'exhausted',
+            reason='再開した出撃先ピッカーで目標を確認できない状態が上限に達したため、通常の取消回数とは分離して再開を終了')
+        result['outcome'] = 'exhausted'
+    else:
+        row['owed'] = True
+        result['outcome'] = 'retry'
+    return result
 
 
 def _sortie_resume_outcome(mem, step, outcome, *, reason):
