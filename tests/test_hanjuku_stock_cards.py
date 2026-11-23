@@ -88,13 +88,16 @@ def test_generic_fallback_does_not_spend_boss_reserved_stock(monkeypatch):
     assert replan._stock_cards(mem, ['イッテツーン']) == ['クースカン', 'ノリウツール']
 
 
-def _adopt_adjusted_order(mem, cards, *, target='ウラノポリス', purpose='attack'):
+def _adopt_adjusted_order(mem, cards, *, target='ウラノポリス', purpose='attack',
+                          source_probe=False):
     """Adopt one validated adjusted order and return its stored form."""
     rid = 'abcd1234abcd1234'
-    raw = {'step': 'M1', 'general': 'チコリ', 'source': 'アルマムーン',
-           'target': target, 'cards': cards, 'after': None}
+    raw = {'step': 'M1', 'general': 'しょうぐん' if source_probe else 'チコリ',
+           'source': 'アルマムーン', 'target': target, 'cards': cards, 'after': None}
     if purpose is not None:
         raw['purpose'] = purpose
+    if source_probe:
+        raw['source_probe'] = True
     doc = replan.chart_adjust.validate({
         'schema': replan.chart_adjust.SCHEMA, 'chapter': mem['chapter'],
         'request_id': rid, 'orders': [raw],
@@ -138,6 +141,12 @@ def test_adjusted_moves_and_boss_orders_keep_their_existing_card_policy():
                 'card_stock': {'バグストーム': 3}}
     boss = _adopt_adjusted_order(boss_mem, ['ミックミー'], target=boss_target)
     assert boss['cards'] == ['ミックミー']
+
+    probe_mem = {'chapter': 2, 'tick': 100, '_records': [],
+                 'card_stock': {'バグストーム': 3}}
+    probe = _adopt_adjusted_order(probe_mem, ['ミックミー'],
+                                  purpose=None, source_probe=True)
+    assert probe['cards'] == ['ミックミー']
 
 
 def test_an_adopted_adjusted_order_without_purpose_uses_stock_fallback():
