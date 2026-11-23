@@ -433,11 +433,12 @@ def test_camp_terminal_decisions_are_classified():
         metric={'escape_move': True})) is None
     escape = audit._camp_event(_camp_record(
         'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
-        metric={'escape_move': True, 'camp': [134, 120],
+        metric={'escape_move': True, 'camp': [134, 120], 'target_cell': [135, 121],
                 'stage': 'await_dispatch', 'steps': 6, 'input_sent': False}))
     assert escape['kind'] == 'camp_escape_move_unconfirmed'
     assert escape['reason_code'] == 'camp_escape_move_unconfirmed'
     assert escape['escape_move'] is True and escape['camp'] == [134, 120]
+    assert escape['target_cell'] == [135, 121]
     assert audit._camp_event(_camp_record(
         'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
         metric={'escape_move': False})) is None
@@ -520,6 +521,7 @@ def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
                       reason='崖離脱のフィールド移動の送信・画面遷移を確認できず',
                       metric={'camp': [134, 120], 'castle': None,
                               'stage': 'await_dispatch', 'steps': 6,
+                              'target_cell': [135, 121],
                               'input_sent': False, 'picker_closed': False,
                               'escape_move': True, 'interrupted': False})],
                   now=1000)
@@ -527,6 +529,7 @@ def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
     assert record['kind'] == 'camp_escape_move_unconfirmed'
     assert '野営の崖離脱移動未確認' in audit._issue_title(record)
     assert '### 野営の崖離脱移動' in audit.render(record)
+    assert 'target_cell: [135, 121]' in audit.render(record)
 
 
 def test_camp_repeat_is_cooled_down(runtime_dir):
