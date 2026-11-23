@@ -138,6 +138,7 @@ SIGNAL_LABELS = {
     'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
     'camp_unclassified_screen': '未分類画面で帰還を取り消す',
     'camp_dispatch_unconfirmed': '帰還入力の送信を確認できない',
+    'camp_escape_move_unconfirmed': '崖離脱のフィールド移動を確認できない',
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
@@ -206,6 +207,7 @@ PRIMARY_LABELS = {
     'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
     'camp_unclassified_screen': '未分類画面で帰還を取り消す',
     'camp_dispatch_unconfirmed': '帰還入力の送信を確認できない',
+    'camp_escape_move_unconfirmed': '崖離脱のフィールド移動を確認できない',
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
@@ -732,11 +734,14 @@ CAMP_TERMINAL = {
     'camp_boss_redirect_aborted': ('camp_recall_failed', 'failed'),
     'camp_recall_skipped': ('camp_recall_cancelled', 'cancelled'),
     'camp_recall_unconfirmed': ('camp_recall_unconfirmed', 'unconfirmed'),
+    'camp_escape_move_unconfirmed': ('camp_escape_move_unconfirmed', 'unconfirmed'),
 }
 CAMP_OUTCOME_RANK = {'failed': 0, 'cancelled': 1, 'unconfirmed': 2}
 
 
 def _camp_reason_code(decision, event, reason):
+    if decision == 'camp_escape_move_unconfirmed':
+        return 'camp_escape_move_unconfirmed'
     # The explicit terminal event is authoritative. The shared Japanese
     # fallback sentence used to contain "到着" even when no A receipt existed,
     # so substring matching could label a pre-dispatch failure as an arrival
@@ -3784,7 +3789,7 @@ def render(record):
         ]
     if camp:
         body += [
-            '### キャンプ帰還',
+            ('### 野営の崖離脱移動' if camp.get('escape_move') else '### キャンプ帰還'),
             '',
             f"- 結果: {camp.get('outcome')} / 決定: {BT}{camp.get('decision')}{BT}",
             f"- 将軍: {camp.get('general') or '不明'} / 野営: {camp.get('camp')} / 帰還先: {camp.get('castle') or '不明'}",
@@ -3953,7 +3958,7 @@ def render_comment(record):
         lines.insert(5, f"- 出撃: {sortie.get('outcome')} / {sortie.get('reason_code')}"
                         f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
     elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
-                                'camp_recall_unconfirmed'):
+                                'camp_recall_unconfirmed', 'camp_escape_move_unconfirmed'):
         lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
                         f" / status {camp.get('resulting_event') or '不明'}"
                         f" / 将軍 {camp.get('general') or '不明'}")
@@ -4016,6 +4021,10 @@ def _issue_title(record):
         label = '出撃失敗' if kind == 'sortie_failed' else '出撃キャンセル'
         who = sortie.get('general') or sortie.get('step_local') or '不明'
         return f"[半熟英雄] {label}: ch{record.get('chapter')} {who}"[:100]
+    if kind == 'camp_escape_move_unconfirmed':
+        camp = record.get('camp_event') or {}
+        where = ','.join(str(value) for value in (camp.get('camp') or [])) or '位置不明'
+        return f"[半熟英雄] 野営の崖離脱移動未確認: ch{record.get('chapter')} {where}"[:100]
     if kind in ('camp_recall_failed', 'camp_recall_cancelled', 'camp_recall_unconfirmed'):
         camp = record.get('camp_event') or {}
         label = {'camp_recall_failed': 'キャンプ帰還失敗',
