@@ -1428,6 +1428,16 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 wave_busy = wave_busy | {general2}
                 planned_busy.add(general2)
             extra += 1
+    # A castle that already committed a concrete boss wave must keep its
+    # remaining non-hero defender out of optional staging. Read-only source
+    # probes do not reserve a general and are deliberately excluded.
+    boss_wave_sources = {
+        order.get('source')
+        for order in (*sorties['attack'], *boss_wave_orders)
+        if chart.is_boss_castle(order.get('target'))
+        and not order.get('source_probe')
+        and isinstance(order.get('source'), str)
+    }
     # #3266: a general already committed to a sortie above is busy for the
     # staging/refill moves below as well — one plan must not book him twice.
     busy = busy | planned_busy
@@ -1470,11 +1480,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 probe = routes.arrival_probe_due(mem, donor, cooldown=True)
                 stage_min = chart.sender_min(chapter)
                 spares = [g for g in _spares(free) if g != NAME]
-                # Once the boss is open, a staging move must not consume the
-                # home castle's last non-hero general after a boss wave has
-                # already reserved another one. Keep the hero plus one defender
-                # at home; other castles retain the ordinary sender-minimum rule.
-                if boss_open and donor == home and len(spares) < 2:
+                # Once the boss is open, a source that already sent a
+                # concrete boss wave must not spend its last non-hero spare on
+                # an optional staging move. Keep one defender at every source.
+                if boss_open and donor in boss_wave_sources and len(spares) < 2:
                     continue
                 if len(free) < stage_min and not probe:
                     continue
