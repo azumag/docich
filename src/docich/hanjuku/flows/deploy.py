@@ -174,21 +174,26 @@ def _verify_sortie_source(screen, mem, order):
     (mem.get('sortie_verify_open') or {}).pop(step, None)
     resume_owed = False
     if cancelled:
-        from .house import _sortie_state_sig, _tally_sortie_attempt
-        # Issue #3326 (34): roster presence proves the unit stayed behind.
-        _tally_sortie_attempt(mem, sortie.get('target') or sortie.get('planned_target'),
-                              sortie.get('purpose'), 'cancelled_observed',
-                              _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
-        _record_sortie_cancelled_observed(mem, order, sortie)
         status = (_plan_region(mem).get('orders') or {}).get(step)
-        if status not in ('failed',):
-            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
-        # docich#5020: the battle that cancelled this sortie still owes its
-        # same-month picker re-open; the re-drive keeps the step active so the
-        # same general/cards dispatch immediately after this verify closes.
-        resume_owed = _sortie_resume_due(mem, step)
+        # docich#5020: a battle-resume source check is not an ordinary failed
+        # launch. Do not increment the generic attempt/cancel suppression
+        # before the same-month re-open is driven (Devin review on #5150).
+        resume_owed = status != 'failed' and _sortie_resume_due(mem, step)
         if resume_owed:
             _sortie_resume_owe(mem, step)
+            _record(mem, 'sortie_resume_source_confirmed', chart_step=step,
+                    general=sortie['general'], source=sortie['source'],
+                    observed_metric=present,
+                    reason='再開対象の将軍が出撃元に残っていることを確認したため、通常取消抑止を使わず同じ指示のピッカー再開へ進む')
+        else:
+            from .house import _sortie_state_sig, _tally_sortie_attempt
+            # Issue #3326 (34): roster presence proves cancellation.
+            _tally_sortie_attempt(mem, sortie.get('target') or sortie.get('planned_target'),
+                                  sortie.get('purpose'), 'cancelled_observed',
+                                  _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
+            _record_sortie_cancelled_observed(mem, order, sortie)
+        if status not in ('failed',):
+            _plan_region(mem).setdefault('orders', {})[step] = 'pending'
     else:
         _plan_region(mem).setdefault('orders', {})[step] = 'launched'
         _sortie_resume_outcome(mem, step, 'established',
