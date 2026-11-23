@@ -450,8 +450,11 @@ def month_step(screen: Screen, mem):
         _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
         _limit_soldier_refill(mem, shop, screen.header)
     # The soldier plan must be sized first: the picker reads shop['soldiers'].
-    if (screen.has('じゅうじキー') and (not screen.has('へいしほじゅう')
-                                       or (hand and hand[1] >= 175))):
+    if (screen.has('じゅうじキー') and screen.has('かわりますぞ')
+            and (not screen.has('へいしほじゅう') or (hand and hand[1] >= 175)):
+        # The month menu itself also shows the じゅうじキー hint. A hand on
+        # that hint is not enough to identify the digit editor: require its
+        # measured quantity prompt before routing away from month navigation.
         return quantity_step(screen, mem, soldiers=True)
     if (mem.get('month_sub', {}).get('kind') == 'recruit'
             and month_menu_ready(screen) and _month_menu_quiet(screen)):
