@@ -110,6 +110,7 @@ def _benchmark_unavailable(
         "slippage_bps": None,
         "theoretical_pnl_jpy": None,
         "theoretical_return_pct": None,
+        "actual_interval_realized_pnl_jpy": None if actual is None else str(actual),
         "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
         "gap_jpy": None,
         "capture_rate_pct": None,
@@ -272,6 +273,7 @@ def build_theoretical_benchmark(
         "slippage_bps": str(slippage),
         "theoretical_pnl_jpy": str(theoretical_pnl),
         "theoretical_return_pct": str(theoretical_return_pct),
+        "actual_interval_realized_pnl_jpy": None if actual is None else str(actual),
         "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
         "gap_jpy": None if gap is None else str(gap),
         "capture_rate_pct": None if capture is None else str(capture),
@@ -286,7 +288,7 @@ def build_theoretical_benchmark(
         "coverage_ratio": coverage_ratio,
         "reason": "partial_intraday_coverage" if not best["coverage_complete"] else "",
         "definition": (
-            "当日5分足の終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
+            "指定区間（未指定時は当日）の5分足終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
             "元本全額、手数料とスリッページ込みで計算します。"
         ),
     }
