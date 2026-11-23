@@ -111,6 +111,7 @@ def _benchmark_unavailable(
         "theoretical_pnl_jpy": None,
         "theoretical_return_pct": None,
         "actual_interval_realized_pnl_jpy": None if actual is None else str(actual),
+        # Deprecated compatibility alias; remove after consumers migrate.
         "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
         "gap_jpy": None,
         "capture_rate_pct": None,
@@ -309,8 +310,9 @@ def build_performance(
     ``cumulative_pnl_jpy`` includes realized + current unrealized P/L only
     when every open position has both a usable public price and ledger cost
     basis. ``interval_realized`` is the realized P/L for fills since
-    ``interval_start`` (epoch seconds). When ``interval_start`` is None the
-    previous JST-midnight ``today_realized`` semantics apply.
+    ``interval_start`` (epoch seconds) or a strict (timestamp, fill_id)
+    cursor. When ``interval_start`` is None the previous JST-midnight
+    ``today_realized`` semantics apply.
     """
     capital = _dec(capital_reference)
     interval_cursor = None
