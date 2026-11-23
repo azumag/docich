@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import datetime as dt
+import sqlite3
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -68,6 +69,21 @@ def _write_status(trading_dir: Path, **overrides) -> None:
     (trading_dir / "market_cache.json").write_text(
         json.dumps({"symbols": {"btc_jpy": {"closes": [1, 2, 3, 4]}}}), encoding="utf-8"
     )
+
+
+def _write_paper_fills(trading_dir: Path) -> Path:
+    db = trading_dir / "paper.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE paper_fills("
+            "fill_id TEXT PRIMARY KEY, symbol TEXT, side TEXT, amount TEXT, "
+            "price TEXT, filled_at TEXT, reason_code TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO paper_fills VALUES(?,?,?,?,?,?,?)",
+            ("fill-1", "BTC/JPY", "sell", "0.01", "100", "1000", ""),
+        )
+    return db
 
 
 def test_build_facts_uses_status_policy_and_skip_context(tmp_path):
@@ -928,6 +944,38 @@ def test_generate_next_narration_reports_unusable_output_as_failure(tmp_path, mo
         timeframe_facts=_TIMEFRAME_FACTS,
     )
     assert result == {"status": "failed", "reason": "CornerScriptError:no-json-object"}
+
+
+
+def test_generate_next_narration_failure_does_not_advance_unexplained_fills(tmp_path, monkeypatch):
+    from docich.trading import corner_interval, corner_script
+
+    _write_status(tmp_path)
+    db = _write_paper_fills(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: "not json")
+
+    result = generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result == {"status": "failed", "reason": "CornerScriptError:no-json-object"}
+    assert corner_interval.get_cursor(db) is None
+
+
+def test_generate_corner_script_dry_run_does_not_advance_unexplained_fills(tmp_path, monkeypatch):
+    from docich.trading import corner_interval, corner_script
+
+    _write_status(tmp_path)
+    db = _write_paper_fills(tmp_path)
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+
+    result = generate_corner_script(
+        None, trading_dir=tmp_path, agents="opencode:x", dry_run=True, now=1010.0,
+    )
+    assert result["reason"] == "dry-run"
+    assert corner_interval.get_cursor(db) is None
 
 
 def test_build_next_prompt_news_slot_requests_hints_only_with_research(tmp_path):
