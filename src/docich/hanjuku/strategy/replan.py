@@ -1942,7 +1942,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             # on #5182, 2026-11-23).
             already_sources = {
                 order.get('source')
-                for order in (*sorties['retake'], *sorties['attack'], *moves)
+                for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
+                              *attacks, *stage_more, *rotation, *wave_orders)
                 if isinstance(order.get('source'), str)
             }
             for candidate_source in owned:
