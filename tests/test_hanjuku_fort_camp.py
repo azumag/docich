@@ -143,6 +143,28 @@ def test_a_fort_status_for_another_general_does_not_confirm_the_sortie():
     assert state.get('fort_status_reads') is None
 
 
+@pytest.mark.parametrize('stage,observed,counter', [
+    ('fort_menu', lambda: screen('g1097-fort-menu-over-dome.png'), 'fort_menu_observations'),
+    ('fort_list', lambda: screen('g1097-probe-fort-list.png'), 'fort_list_observations'),
+    ('fort_status', lambda: status_panel('エピィ'), 'fort_status_observations'),
+])
+def test_fort_recall_limit_records_bounded_stage_and_screen_evidence(stage, observed, counter):
+    current = observed()
+    mem = memory(recall=fort_recall(stage=stage, fort=True, general='ヴィーナス',
+                                    steps=recall.RECALL_LIMIT))
+    recall._camp_recall_step(current, mem, object())
+    metric = decisions(mem, 'camp_recall_aborted')[-1]['observed_metric']
+    assert metric['stage'] == stage
+    assert metric['steps'] == recall.RECALL_LIMIT + 1
+    assert metric[counter] == 1
+    assert metric['screen_kind'] == current.kind
+    if stage == 'fort_status':
+        assert metric['general'] == 'ヴィーナス'
+        assert metric['observed_general'] == 'エピィ'
+        assert metric['fort_status_reads'] == 0
+        assert metric['screen_text'] == 'しろのなかにいます'
+
+
 def test_the_named_general_is_the_one_who_leaves():
     mem = memory(recall=fort_recall(stage='fort_list', fort_actor='エピィ'))
     assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('down')]
