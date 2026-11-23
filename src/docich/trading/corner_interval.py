@@ -74,7 +74,7 @@ def _conn(db_path: Path) -> sqlite3.Connection:
 
 def _ensure_cursor_table(db_path: Path) -> None:
     """Create the explanation state table if it does not exist yet."""
-    uri = f"file:{str(db_path.resolve())}?mode=rw"
+    uri = f"file:{str(db_path.resolve())}?mode=rwc"
     conn = sqlite3.connect(uri, uri=True)
     try:
         conn.execute(

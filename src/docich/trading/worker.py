@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from ..config import GlobalConfig
 from .arbitrage import TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
+from .corner_interval import get_cursor
 from .events import append_public_event, build_fill_event, build_settlement_event
 from .experiment_control import ExperimentStep, assess_experiment, experiment_key, experiment_lock
 from .freshness import (
@@ -170,13 +171,17 @@ def _performance_summary(
 ) -> dict[str, object]:
     """Read-only performance calculation; failures keep the last safe summary."""
     try:
+        db_path = g.state_dir / "trading" / "paper.sqlite3"
+        cursor = get_cursor(db_path, "paper")
+        interval_start = cursor[0] if cursor is not None else None
         return build_performance(
-            g.state_dir / "trading" / "paper.sqlite3",
+            db_path,
             capital_reference=D(str(g.trading.paper_capital_jpy)),
             positions=ledger.positions(),
             prices=_cache_prices(market_cache),
             now=now,
             market_cache_path=g.state_dir / "trading" / "market_cache.json",
+            interval_start=interval_start,
         )
     except Exception:
         return dict(fallback or {})
