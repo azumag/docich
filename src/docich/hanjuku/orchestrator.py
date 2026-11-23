@@ -300,6 +300,58 @@ def map_unowned_input(kind, streak, *, guarded=False, army_owned=False,
     # The streak is not reset by this key, so gate on its period instead.
     return 'select' if streak % (MAP_UNOWNED_HOLD_MAX + 1) == 0 else None
 
+FIELD_IDLE_WORLD_MAP_STREAK = 1       # the field hold itself: one no-input observation
+FIELD_IDLE_WORLD_MAP_INTERVAL = 200   # ~5 min between whole-map observations
+
+
+def field_idle_world_map_nudge(mem, phase, kind, streak):
+    """Open the whole map with Y when the field is completely idle.
+
+    Owner 2026-11-23: a held field map should observe the whole board instead
+    of sitting still.  The world-map step reads every castle/flag and closes
+    again; a 200-tick interval keeps it from reopening continuously.
+    """
+    if phase != 'field' or kind not in ('map', 'map_target'):
+        return None
+    if streak < FIELD_IDLE_WORLD_MAP_STREAK:
+        return None
+    # The whole-map observation is only a bounded refresh for an established,
+    # unowned field. It must not bootstrap an unbound runtime or interrupt a
+    # map-discovery transaction / pending sortie.
+    identity = mem.get('_run_identity')
+    if (
+        not isinstance(identity, dict)
+        or identity.get('game') != 'hanjuku-hero'
+        or type(identity.get('generation')) is not int
+        or not isinstance(identity.get('runtime_id'), str) or not identity['runtime_id']
+        or not isinstance(identity.get('lease_id'), str) or not identity['lease_id']
+    ):
+        return None
+    from .state.regions import plan as _plan_region
+    plan = _plan_region(mem)
+    orders = plan.get('orders')
+    if plan.get('active') or (
+        isinstance(orders, dict) and any(value == 'pending' for value in orders.values())
+    ):
+        return None
+    # Native map discovery owns the field until its measured registration
+    # flow returns control. Do not interrupt the one-roof bootstrap or a
+    # partially registered chapter with an unsolicited Y.
+    if isinstance(mem.get('map_discovery'), dict):
+        return None
+    if mem.get('world_map_due') or mem.get('world_map_pending') or mem.get('y_jump'):
+        return None
+    now = int(mem.get('tick') or 0)
+    last = mem.get('world_map_tick')
+    if type(last) is int and 0 <= now - last < FIELD_IDLE_WORLD_MAP_INTERVAL:
+        return None
+    mem['world_map_due'] = True
+    decision_log._record(mem, 'field_idle_world_map', screen=kind, phase=phase,
+                         observed_metric={'streak': streak, 'tick': now},
+                         reason='フィールドが完全な待状態のためYで全体マップを開き、全城を観察する')
+    return [pad('y')]
+
+
 def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
                         blocked=False):
     """Bounded A for an unreadable scripted-scene frame an owner keeps held.
@@ -2377,7 +2429,23 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                      or mem.get('bijin_gift_hold') is True
                      or (mem.get('trade_guard') or {}).get('held') is True
                      or bool(mem.get('battle')))
-    if event_text_advance(mem, phase, kind, concert_key, actions, event_guarded):
+    # A stale battle record must not block a plain narration line: the
+    # reviewed battle menus are other kinds (yes_no/card/skill), while a
+    # dialogue/text screen can be advanced with A even just after a battle
+    # (ch2 3-x balloon-finch line held indefinitely).
+    named_hold = (trade_guard_hold or bijin_guard_hold
+                  or mem.get('bijin_gift_hold') is True
+                  or (mem.get('trade_guard') or {}).get('held') is True)
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    # A live summon scene keeps its paced A: only a stale battle record is
+    # allowed to be ignored for a plain dialogue line.
+    summon_scene = bool(battle.get('summon_scene') or mem.get('summon_scene'))
+    from .state.regions import plan as _plan_here
+    plan_active = bool(_plan_here(mem).get('active'))
+    text_guarded = event_guarded and not (
+        kind == 'text' and phase == 'dialogue' and screen.text
+        and not named_hold and not summon_scene and not plan_active)
+    if event_text_advance(mem, phase, kind, concert_key, actions, text_guarded):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
                                         'frame_sha256':digest},
@@ -2440,6 +2508,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         nudge = map_unsteerable_nudge(screen, mem, kind, phase, streak, digest)
         if nudge is not None:
             actions = nudge
+        if not actions:
+            idle = field_idle_world_map_nudge(mem, phase, kind, streak)
+            if idle is not None:
+                actions = idle
     hold_max = _no_input_hold_max(kind, phase, screen, bounded_wait)
     army_owned = month_flow.army_count_owned(mem)
     recruit_guard = month_flow.recruit_input_guard(screen, mem)

@@ -8111,6 +8111,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1410-battle-loss-cooldown",
             "hanjuku-chart-v1415-merchant-strong-first",
             "hanjuku-chart-v1416-card-miss-after-use",
+            "hanjuku-chart-v1417-stall-refresh",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
