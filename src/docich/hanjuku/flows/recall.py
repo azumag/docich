@@ -2391,9 +2391,12 @@ def _recall_dispatch_step(screen, mem, state):
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
                          else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
+        camp_target = state.get('target')
+        if isinstance(camp_target, tuple):
+            camp_target = list(camp_target)
         terminal_metric = {
             'castle': goal,
-            'camp': state.get('target'),
+            'camp': camp_target,
             'stage': state.get('stage'),
             'steps': state.get('steps'),
             'status': status,
