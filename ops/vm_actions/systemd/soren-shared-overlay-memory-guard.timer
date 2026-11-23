@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic shared overlay memory check (docich#5112)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=10min
+Persistent=false
+Unit=soren-shared-overlay-memory-guard.service
+
+[Install]
+WantedBy=timers.target

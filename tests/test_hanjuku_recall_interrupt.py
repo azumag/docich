@@ -46,6 +46,30 @@ def test_interrupted_unconfirmed_recall_retries_after_the_short_hold():
     assert 'recall' not in mem['flow']
 
 
+def test_targetless_interrupted_dispatch_uses_a_short_global_retry_hold():
+    # #5135: the event interrupted an await_dispatch recall before A was sent,
+    # but had no measured camp coordinate. A missing scope must not fall back
+    # to the ordinary 400-tick global cooldown.
+    state = {'stage': 'await_dispatch', 'steps': 6, 'goal': 'オケアナ',
+             'requested_tick': 100, 'input_sent': False}
+    mem = mem_with(state)
+    recall._mark_recall_interrupted(mem)
+    recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
+    verification = mem['flow']['recall_verification']
+    assert verification['status'] == 'dispatch_unconfirmed'
+    assert verification['input_sent'] is False
+    assert verification['interrupted'] is True
+    assert verification['interrupted_tick'] == 100
+    assert mem['flow']['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
+    assert 'recall_skip_target' not in mem['flow']
+    assert 'recall' not in mem['flow']
+    camp = [{'target': (139, 113), 'clipped': False}]
+    mem['tick'] = 119
+    assert recall._filter_recall_skip(mem, camp) == []
+    mem['tick'] = 120
+    assert recall._filter_recall_skip(mem, camp) == camp
+
+
 def test_a_stale_interruption_marker_does_not_shorten_the_next_recalls_hold():
     # #3544: the marker could outlive its recall (e.g. the month-scene drop)
     # and then shorten the retry hold of an unrelated later recall.

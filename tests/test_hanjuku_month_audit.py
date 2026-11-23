@@ -202,7 +202,8 @@ def test_observe_reports_the_sealed_incident_to_the_caller(runtime_dir):
     assert seen[0]['auto_file'] is True
 
 
-def test_spawn_issue_filer_detaches_with_the_incident_id(runtime_dir):
+def test_spawn_issue_filer_detaches_with_the_incident_id(runtime_dir, monkeypatch):
+    monkeypatch.delenv('DOCICH_DISABLE_ISSUE_FILER', raising=False)
     record = {'auto_file': True, 'incident_id': 'abc123'}
     with patch.object(audit.subprocess, 'Popen') as popen:
         assert audit.spawn_issue_filer(runtime_dir, record) is True
@@ -517,6 +518,149 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     assert len(seen) == 1
 
 
+def test_cancel_after_a_launch_in_the_month_is_not_filed(runtime_dir):
+    # docich#5136 (owner 2026-11-23): 同じ月に発射が成立しているキャンセルは
+    # 再試行が効いた一過性の事象であり、停滞として起票しない。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_cancel_without_any_launch_is_still_filed(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'sortie_cancelled'
+
+
+def test_failed_order_in_a_month_that_launched_is_not_high(runtime_dir):
+    # docich#5162 (owner 2026-11-23): 同月に発射が成立している単発の失敗は
+    # high で起票せず、台帳に medium として残す（0 発射の月は high のまま）。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_unaccepted'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['sortie_month_launched']
+
+
+def test_failed_order_without_a_launch_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unaccepted_order_with_stale_month_scope_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=2, scope=[9, '1-0'])
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_confirmed_launch_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 6})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_exhausted_battle_retry_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('situation_held', variant='attack_retry_exhausted')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_other_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃元で決定しても城メニューが3回開かない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unknown_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='unexpected order failure')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_failed'
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_egg_drop_only_loss_is_not_high_confidence(runtime_dir):
+    # docich#5165: 卵落とし型しか残っていない敗北は、署名未校正の検出限界として
+    # medium に留める（実際に札を無駄にした証拠ではない）。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['イッテツーン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_plain_card_loss_stays_high_confidence(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['クースカン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
+def test_unclassified_only_card_loss_is_not_high_confidence(runtime_dir):
+    # docich#5158: 選択したが使用告知の署名が未校正で確定できない札だけが残る敗北は、
+    # 検出限界シグナルとして medium に留める。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー'], 'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_unclassified_card_beside_a_plain_card_stays_high(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー', 'クースカン'],
+                                    'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
 def test_sortie_cancel_is_recorded(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -585,6 +729,70 @@ def test_battle_resource_events_are_classified():
         'battle_retreat_preempted_card', card='クースカン',
         metric={'ally_hp': 12, 'enemy_hp': 41}, general='マフィン'))
     assert preempted['resources'] == ['card']
+    # docich#5101: the remaining-card alert keeps firing (the retreat with a
+    # card left is the signal), but the record now says whether the card was
+    # already tried, so triage can separate a failed spend attempt from a card
+    # that was never used.
+    attempted = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン'], 'cards_used': [],
+                'cards_attempted': ['イッテツーン'],
+                'cards_spend_retry': ['イッテツーン']}, general='アニス'))
+    assert attempted['cards_remaining'] == ['イッテツーン']
+    assert attempted['cards_attempted'] == ['イッテツーン']
+    assert attempted['cards_spend_retry'] == ['イッテツーン']
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン'], 'cards_used': []},
+        general='アニス'))['resources'] == ['card']
+    # docich#5130 (owner 2026-11-23): 即死帯では札を使わず退却するのが設計。
+    # その退却を「資源を残した無駄」として起票しない。
+    for floor_hp in (1, 2, 4):
+        assert audit._battle_resource_event(_battle_record(
+            'battle_hero_retreat_select', choice='たいきゃく',
+            metric={'ally_hp': floor_hp, 'enemy_hp': 8,
+                    'cards_selected': ['クースカン'], 'cards_used': []},
+            general='リースリング')) is None
+    # 即死帯の外では従来どおり起票する。
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 5, 'enemy_hp': 8,
+                'cards_selected': ['クースカン'], 'cards_used': []},
+        general='リースリング'))['resources'] == ['card']
+    # docich#5165: 卵落とし型の残り札は「消費確定不能」として区別する。
+    # v129 の安全則（敵HP低下では消費を確定しない）は変えない。
+    egg_drop = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert egg_drop['cards_remaining'] == ['イッテツーン']
+    assert egg_drop['cards_unconfirmed_egg_drop'] == ['イッテツーン']
+    plain = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['クースカン'], 'cards_used': []}))
+    assert plain['cards_remaining'] == ['クースカン']
+    assert plain['cards_unconfirmed_egg_drop'] == []
+    event = audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert event['cards_unconfirmed_egg_drop'] == ['イッテツーン']
+    # docich#5117: 実一覧で不在が確認できた札は、残り札として起票しない。
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 16, 'enemy_hp': 4,
+                'cards_selected': ['クースカン'], 'cards_used': [],
+                'cards_missing': ['クースカン']}, general='ライム')) is None
+    mixed = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 16, 'enemy_hp': 4,
+                'cards_selected': ['クースカン', 'イッテツーン'],
+                'cards_used': [], 'cards_missing': ['クースカン']}))
+    assert mixed['cards_remaining'] == ['イッテツーン']
+    assert mixed['cards_missing'] == ['クースカン']
     assert audit._battle_resource_event(_battle_record(
         'battle_egg_before_retreat', metric={'egg_uses': 2})) is None
 
@@ -742,6 +950,77 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
+    # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
+    # issue 本文だけで判別できるよう、拒否の skips と対象城を記録に残す。
+    value = _chikujou_state()
+    home = chart.home_castle(10)
+    value['policy']['chikujou_refused'] = {'castles': [home], 'skips': 1}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['chikujou_refused_skips'] == 1
+    assert record['chikujou_refused_castles'] == [home]
+
+
+def test_chikujou_month_end_held_for_unresolved_egg_is_not_high_confidence(runtime_dir):
+    """docich#5094 / #5045: a fail-closed hold is not a silent loss.
+
+    The month ended with a buildable castle list only because the egg
+    recovery payment was unverified, so the card/castle rows stayed held.
+    The audit keeps the occurrence countable, but must not file it as a
+    high-confidence missed build (the filer defaults to min_confidence=high).
+    """
+    value = _chikujou_state()
+    value['policy']['shop'].update({'cards_held': 'recruit_pending',
+                                    'chikujou_held': True,
+                                    'recruit': 'deferred_egg',
+                                    'egg': 'unverified'})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_cards_held_for_recruit', 'month': '1-1', 'at': 999},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_held_for_egg_unverified']
+    assert record['chikujou_event']['held_for'] == 'egg_unverified'
+    assert record['chikujou_held_for'] == 'egg_unverified'
+    assert '保留' in audit.render(record)
+
+
+def test_chikujou_month_end_held_for_unresolved_recruit_names_the_recruit(runtime_dir):
+    value = _chikujou_state()
+    value['policy']['shop'].update({'cards_held': 'recruit_pending',
+                                    'chikujou_held': True,
+                                    'recruit': 'pending', 'egg': 'done'})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_held_for_recruit_pending']
+
+
+def test_chikujou_month_end_after_released_hold_stays_high_confidence(runtime_dir):
+    value = _chikujou_state()
+    value['policy']['shop'].update({'chikujou': 'check', 'recruit': 'pending',
+                                    'egg': 'done'})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_event']['held_for'] is None
+
+
 def test_chikujou_month_end_without_resources_is_not_recorded(runtime_dir):
     value = _chikujou_state(gold=0)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -826,6 +1105,166 @@ def test_chikujou_terminal_decline_ignores_other_month_sub(runtime_dir):
     assert records[0]['kind'] == 'chikujou_cancelled_with_resources'
 
 
+def _chikujou_candidates(mem):
+    from docich.hanjuku.strategy import economy
+    return sorted(economy._chikujou_candidates(mem))
+
+
+def test_chikujou_skip_after_matching_refusal_is_not_recorded(runtime_dir):
+    """month.py defers 築城 for up to two months after it read a refusal from
+    the native list with the same castle set, so that skipped month is not a
+    missed build (docich#5061)."""
+    value = _chikujou_state()
+    mem = value['policy']
+    mem['chikujou_refused'] = {'castles': _chikujou_candidates(mem), 'skips': 1}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_skip_after_refusal_rearms_when_a_castle_is_added(runtime_dir):
+    """A changed castle set no longer matches the refused set, so the month end
+    is a real missed build again."""
+    value = _chikujou_state()
+    mem = value['policy']
+    mem['chikujou_refused'] = {'castles': _chikujou_candidates(mem), 'skips': 1}
+    home = chart.home_castle(10)
+    extra = next(c for c in chart.CASTLE_NAMES[10]
+                 if c != home and c not in mem['captured'])
+    mem['captured'] = [*mem['captured'], extra]
+    mem['world']['garrison'][extra] = ['C']
+    mem['general_statuses']['statuses'][extra] = {'location': 'castle', 'castle': extra}
+    assert _chikujou_candidates(mem) != mem['chikujou_refused']['castles']
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_month_end_after_cost_decline_is_not_recorded(runtime_dir):
+    """docich#5081: the native quote the bot declined is not visible to the
+    gold>=reserve+spare heuristic, so that month end is not a missed build."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-1', 'at': 999,
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る',
+                    'observed_metric': {'cost': None, 'gold': 32, 'reserve': 30}},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_decline_followed_by_a_later_quote_still_records(runtime_dir):
+    """A reopened 築城 sub after the decline can still be a real missed build."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-1', 'at': 990,
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る'},
+                   {'decision': 'chikujou_confirm', 'month': '1-1', 'at': 995},
+                   {'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_cost_decline_from_another_month_still_records(runtime_dir):
+    """The 120 s decision window spans month boundaries; only this month's
+    decline may suppress the alert."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-0', 'at': 999,
+                    'reason': '築城の実費が不明か必要資金を割るため、支払わず見送る'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_terminal_decline_is_not_a_cost_decline(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_declined', 'month': '1-1', 'at': 999,
+                    'reason': '当月未試行で増築候補となる所有城がなくなったため、築城を終える'},
+                   {'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_month_end_with_unreadable_menu_row_is_medium_confidence(runtime_dir):
+    """docich#5097 / #5079: a bounded wait that still could not read ちくじょう
+    is a named, medium-confidence occurrence rather than a reason-less alarm."""
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_menu_unreadable', 'month': '1-1', 'at': 999,
+                    'observed_metric': {'skipped': True, 'waits': 4},
+                    'reason': '有限回待ってもちくじょう行を読めないため、当月は築城せずに月を終える'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_menu_unreadable']
+    assert record['chikujou_menu_unreadable'] is True
+    assert '築城行の読取り: 不可' in audit.render(record)
+
+
+def test_chikujou_cost_decline_in_prior_observation_suppresses_alarm(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_declined', month='1-1',
+         chapter=10, reason=audit._CHIKUJOU_COST_DECLINE)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_prior_decline_followed_by_reopen_still_reports(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 998, 'chikujou_declined', month='1-1',
+         chapter=10, reason=audit._CHIKUJOU_COST_DECLINE)
+    note(runtime_dir, 999, 'chikujou_confirm', month='1-1', chapter=10)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'chikujou_available_at_end'
+
+
+def test_chikujou_unreadable_in_prior_observation_downgrades(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_menu_unreadable', month='1-1',
+         chapter=10, observed_metric={'skipped': True})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['confidence'] == 'medium'
+
+
+def test_chikujou_prior_other_month_does_not_suppress(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_declined', month='1-0',
+         chapter=10, reason=audit._CHIKUJOU_COST_DECLINE)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1', 'at': 1000}],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['confidence'] == 'high'
+
+
+def test_chikujou_menu_unreadable_retry_without_skip_stays_high(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_menu_unreadable', 'month': '1-1', 'at': 999,
+                    'observed_metric': {'skipped': False, 'waits': 1}},
+                   {'decision': 'month_done', 'month': '1-1', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_menu_unreadable'] is False
+
+
 def test_chikujou_month_end_is_reported_once(runtime_dir):
     value = _chikujou_state()
     record = {'decision': 'month_done', 'month': '1-1', 'at': 1000}
@@ -882,6 +1321,265 @@ def test_boss_phase_month_with_a_boss_sortie_is_not_flagged(runtime_dir):
     saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
     assert saved['last_close']['kind'] == 'ok'
     assert saved['pending'] is None
+
+
+def _kikan_record(choice='きかん', move='here'):
+    return {'decision': 'camp_recall_cursor',
+            'observed_metric': {'current': [72, 31, choice],
+                                'choice': choice, 'move': move},
+            'reason': '野営の実手カーソルを帰還項目へ合わせる', 'at': 1000}
+
+
+def test_recall_kikan_selection_is_classified():
+    event = audit._recall_kikan_event(_kikan_record())
+    assert event is not None
+    assert event['choice'] == 'きかん'
+    assert audit._recall_kikan_event(_kikan_record(choice='いどう')) is None
+    assert audit._recall_kikan_event(_kikan_record(move='down')) is None
+
+
+def test_recall_kikan_selection_is_recorded_and_titled(runtime_dir):
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'menu', 'target': [135, 125],
+                                   'goal': 'アルマムーン', 'general': 'カシュー'}})
+    value['policy']['y_jumps'] = {'RECALL:target': 1}
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value, [_kikan_record()],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'recall_kikan_selected'
+    assert record['auto_file'] is True
+    assert record['recall_event']['goal'] == 'アルマムーン'
+    assert record['recall_event']['general'] == 'カシュー'
+    assert '「きかん」を選択' in audit._issue_title(record)
+    assert '### 帰還手段' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_recall_kikan_is_reported_once_per_episode(runtime_dir):
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'menu', 'target': [135, 125],
+                                   'goal': 'アルマムーン', 'general': 'カシュー'}})
+    record = _kikan_record()
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1100)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_recall_with_idou_is_not_recorded(runtime_dir):
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'menu', 'target': [135, 125],
+                                   'goal': 'アルマムーン'}})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_kikan_record(choice='いどう')], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_the_idou_y_route_emits_no_kikan_incident(runtime_dir):
+    """docich#5105: the real menu flow now confirms いどう for every recall
+    (owner 2026-11-19: きかん禁止・いどう→Y), so its camp_recall_cursor
+    records can never produce recall_kikan_selected."""
+    from docich.hanjuku.flows import recall as recall_flow
+    from test_hanjuku_chart_bot import camp_menu
+    mem = {'chapter': 10, 'tick': 100, '_records': [],
+           'recall': {'stage': 'menu', 'steps': 0, 'target': [135, 125],
+                      'general': 'カシュー'}}
+    for selected in (3, 2, 1, 0):
+        assert recall_flow.camp_recall_step(camp_menu(selected), mem, None)
+    assert not any((r.get('observed_metric') or {}).get('choice') == 'きかん'
+                   for r in mem['_records'])
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'dest', 'target': [135, 125],
+                                   'general': 'カシュー'}})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [r for r in mem['_records']
+                   if r['decision'] == 'camp_recall_cursor'], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_corner_stall_is_recorded_and_titled(runtime_dir):
+    value = state(10, '1-1', 0)
+    value['terminal_reason'] = 'screen_stalled'
+    value['unchanged_seconds'] = 300
+    value['actions_sent'] = 17
+    value['phase'] = 'field'
+    value['bot_version'] = 'synthetic-v1'
+    value['terminal_evidence'] = {'terminal_reason': 'screen_stalled',
+                                  'frame_sha256': 'a' * 64, 'tick': 99}
+    record = audit.record_corner_stall(
+        runtime_dir, reason='screen_stalled', run=value, identity=IDENTITY,
+        rotation_request_id='req-1', now=1000, spawn=False)
+    assert record['kind'] == 'corner_stalled'
+    assert record['auto_file'] is True
+    assert record['corner_stall']['unchanged_seconds'] == 300
+    assert record['corner_stall']['rotation_request_id'] == 'req-1'
+    assert '画面停滞でコーナー停止' in audit._issue_title(record)
+    assert '### コーナー停止' in audit.render(record)
+    stored = audit.load_incidents(runtime_dir)
+    assert len(stored) == 1
+
+
+def test_corner_stall_is_recorded_once(runtime_dir):
+    value = state(10, '1-1', 0)
+    value['terminal_reason'] = 'input_stalled'
+    value['terminal_evidence'] = {'frame_sha256': 'b' * 64}
+    first = audit.record_corner_stall(
+        runtime_dir, reason='input_stalled', run=value, identity=IDENTITY,
+        now=1000, spawn=False)
+    second = audit.record_corner_stall(
+        runtime_dir, reason='input_stalled', run=value, identity=IDENTITY,
+        now=1100, spawn=False)
+    assert first['incident_id'] == second['incident_id']
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_non_stall_corner_reason_is_not_recorded(runtime_dir):
+    value = state(10, '1-1', 0)
+    assert audit.record_corner_stall(
+        runtime_dir, reason='game_over', run=value, identity=IDENTITY,
+        now=1000, spawn=False) is None
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_retro_corner_records_screen_stall_before_teardown():
+    text = (Path(__file__).resolve().parents[1] / 'src/docich/retro_corner.py').read_text(
+        encoding='utf-8')
+    assert 'record_corner_stall' in text
+    assert "screen_stalled', 'input_stalled'" in text
+
+
+def _menu_state(menu=True):
+    value = state(10, '1-1', 0)
+    value['screen_kind'] = 'battle_menu' if menu else 'battle'
+    value['policy']['battle'] = {
+        'general': 'カシュー', 'step': 'A:1:M1',
+        'ally_hp': 30, 'enemy_hp': 40, 'side': 'attack',
+    }
+    return value
+
+
+def test_battle_menu_closed_without_action_is_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_egg_conserve', 'at': 1001,
+                    'reason': '卵を温存して戻る'}], now=1001,
+                  on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'battle_menu_wasted'
+    assert record['battle_menu']['close_decision'] == 'battle_egg_conserve'
+    assert record['auto_file'] is True
+    assert '戦闘Bメニューを無駄に開閉' in audit._issue_title(record)
+    assert '### 戦闘Bメニュー' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_battle_menu_with_action_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_card_selected', 'at': 1001},
+                   {'decision': 'battle_egg_conserve', 'at': 1001}], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_one_hit_close_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_one_hit_menu_close', 'at': 1001}], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_menu_close_without_close_decision_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed, [], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_menu_waste_is_cooled_down(runtime_dir):
+    for start in (1000, 1100):
+        before = _menu_state(False)
+        opened = _menu_state(True)
+        audit.observe(runtime_dir, audit.capture(before), opened, [], now=start)
+        closed = _menu_state(False)
+        audit.observe(runtime_dir, audit.capture(opened), closed,
+                      [{'decision': 'battle_egg_conserve', 'at': start + 1}],
+                      now=start + 1)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def _cards_state(*, stock=None, purpose='attack', cards=None):
+    value = state(10, '1-1', 0)
+    value['policy']['card_stock'] = {'ノリウツール': 96} if stock is None else stock
+    value['policy']['plan'] = {'orders': {}, 'chart_plan': {'orders': [{
+        'step': 'A:1:M1', 'purpose': purpose, 'source': 'アルマムーン',
+        'target': 'タタール', 'general': 'カシュー', 'cards': cards or [],
+    }]}}
+    return value
+
+
+def _launch_record(purpose='attack'):
+    return {'decision': 'order_launched', 'chart_step': 'A:1:M1',
+            'general': 'カシュー', 'purpose': purpose, 'target': 'タタール',
+            'reason': '出撃', 'at': 1000}
+
+
+def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
+    value = _cards_state()
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'sortie_without_cards'
+    assert record['sortie_event']['inventory'] == {'ノリウツール': 96}
+    assert record['auto_file'] is True
+    assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
+    assert '### 切り札の非携行' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):
+    value = _cards_state()
+    value['policy']['rare_card_kit'] = {'A:1:M1': ['ノリウツール']}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_move_without_cards_is_not_recorded(runtime_dir):
+    value = _cards_state(purpose='move')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_launch_record(purpose='move')], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_no_card_stock_is_not_recorded(runtime_dir):
+    value = _cards_state(stock={})
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_sortie_without_cards_is_reported_once(runtime_dir):
+    value = _cards_state()
+    for now in (1000, 1100):
+        audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=now)
+    assert len(audit.load_incidents(runtime_dir)) == 1
 
 
 def test_capture_reads_unmigrated_world_fields():
@@ -1000,6 +1698,25 @@ def test_file_respects_comment_cooldown(runtime_dir):
     gh = FakeGh(issues=[issue], comments=comments)
     result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=now)
     assert result['status'] == 'cooldown'
+
+
+def test_battle_loss_comments_before_the_generic_hour(runtime_dir):
+    value = state(10, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_result', outcome='loss',
+                                  metric={'egg_uses': 2, 'ally_hp': 0,
+                                          'enemy_hp': 40}, general='バゲット')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    issue = {'number': 7,
+             'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
+    now = time.time()
+    comments = [{'body': 'earlier',
+                 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ',
+                                            time.gmtime(now - 1200))}]
+    gh = FakeGh(issues=[issue], comments=comments)
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=now)
+    assert result['status'] == 'commented'
 
 
 def test_file_refuses_when_secret_scan_detects(runtime_dir):

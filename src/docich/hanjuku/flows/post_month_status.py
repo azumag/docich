@@ -2030,6 +2030,17 @@ def step(screen, mem, frame):
                 **({'camp_body': body}
                    if (body := camp_body_target(frame, camp['target'])) else {}),
                 **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
+            # docich#5105: the visible-camp path binds origin/camp_world at
+            # creation; a task recall never did, so _recall_goal could not
+            # locate this camp for the いどう→Y route. The SELECT-centred
+            # cursor still stands on the tent — measure both anchors now.
+            recall_state = _flow(mem)['recall']
+            recall_flow._observe_recall_origin(screen, mem, frame, recall_state)
+            camp_world = recall_flow._camp_world_cell(
+                screen.marker or cursor, recall_state.get('origin'), camp['target'])
+            if camp_world:
+                recall_state['camp_world'] = camp_world
+            recall_flow._reset_boss_jump(mem)
             _stage(state, 'wait_recall', recall_started=True)
             recall = recall_flow.camp_recall_step(screen, mem, frame)
             return recall if recall is not None else []
@@ -2141,6 +2152,22 @@ def step(screen, mem, frame):
             used = used if type(used) is int and used >= 0 else 0
             interrupted_at = _flow(mem).get('recall_interrupted')
             tick = mem.get('tick')
+            verification = _flow(mem).get('recall_verification') or {}
+            if (type(interrupted_at) is not int and isinstance(verification, dict)
+                    and verification.get('status') == 'dispatch_unconfirmed'
+                    and verification.get('input_sent') is not True
+                    and verification.get('interrupted') is True
+                    and verification.get('general') == name):
+                requested = verification.get('requested_tick')
+                recorded = verification.get('interrupted_tick')
+                started = state.get('started_tick')
+                if (type(requested) is int and type(started) is int and requested >= started
+                        and type(recorded) is int and requested <= recorded
+                        and type(tick) is int and recorded <= tick):
+                    # recall.py consumes the transient marker when it finalizes
+                    # the attempt. Keep the scoped terminal proof so this
+                    # monthly task can still recognize the interruption.
+                    interrupted_at = recorded
             interrupted = (type(interrupted_at) is int and type(tick) is int
                            and 0 <= tick - interrupted_at <= RECALL_INTERRUPT_GRACE)
             if (interrupted or used < RECALL_TASK_RETRIES) and not _recall_was_dispatched(

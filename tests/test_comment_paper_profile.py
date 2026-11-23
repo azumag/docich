@@ -38,7 +38,7 @@ def _status(**overrides) -> dict:
             "priced_positions": 2,
             "valued_positions": 2,
             "realized_total_jpy": "56.0",
-            "today_realized_pnl_jpy": "56.0",
+            "interval_realized_pnl_jpy": "56.0",
             "unrealized_pnl_jpy": "67.45",
             "cumulative_pnl_jpy": "123.45",
             "equity_jpy": "10123.45",
@@ -70,7 +70,7 @@ def test_paper_profile_answers_money_questions_from_the_corner_status(tmp_path):
     assert "10000" not in text  # formatted, not a raw JSON dump
     assert "資金 10,000円" in text and "評価込み資産 10,123円" in text
     assert "累積損益 +123円で、元手より増えている" in text
-    assert "本日損益(確定分) +56円 / 含み損益 +67円 / 確定損益の通算 +56円" in text
+    assert "区間損益(確定分) +56円 / 含み損益 +67円 / 確定損益の通算 +56円" in text
     # The reply must state PAPER first and then answer with the number.
     assert "最初にPAPER取引(仮想資金)であることを伝え" in text
     assert "コーナー内では増えている、マイナスなら減っている" in text
@@ -85,7 +85,7 @@ def test_paper_profile_reports_a_loss_as_a_decrease(tmp_path):
         **status["performance_summary"],
         "cumulative_pnl_jpy": "-250.4",
         "unrealized_pnl_jpy": "-100.2",
-        "today_realized_pnl_jpy": "-50",
+        "interval_realized_pnl_jpy": "-50",
         "equity_jpy": "9749.6",
     }
     text = _profile(tmp_path, status=status)["game_state"]
@@ -102,14 +102,14 @@ def test_incomplete_valuation_is_pending_not_zero(tmp_path):
         "priced_positions": 1,
         "valued_positions": 1,
         "realized_total_jpy": "56.0",
-        "today_realized_pnl_jpy": "56.0",
+        "interval_realized_pnl_jpy": "56.0",
         "unrealized_pnl_jpy": None,
         "cumulative_pnl_jpy": None,
         "equity_jpy": None,
     }
     text = _profile(tmp_path, status=status)["game_state"]
     assert "累積損益は評価待ち" in text
-    assert "本日損益(確定分) +56円" in text
+    assert "区間損益(確定分) +56円" in text
     assert "元手より増えている" not in text
     assert "累積損益 0円" not in text and "含み損益 0円" not in text
 
@@ -154,12 +154,12 @@ def test_absurd_numbers_and_timestamps_do_not_crash_or_claim_a_number(tmp_path):
         "as_of": -1,
         "cumulative_pnl_jpy": "1e100",
         "equity_jpy": "1e100",
-        "today_realized_pnl_jpy": "not-a-number",
+        "interval_realized_pnl_jpy": "not-a-number",
     }
     text = game_profile.build("paper-view", state_dir=_write(tmp_path / "s", status))["game_state"]
     assert "元手より増えている" not in text
     assert "1e100" not in text and "+100" not in text
-    assert "本日損益" not in text
+    assert "区間損益" not in text
 
 
 def test_symlinked_and_oversized_status_are_rejected(tmp_path):

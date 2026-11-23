@@ -16,10 +16,11 @@ Only the validated design §6 payload is read here (transient runtime file the
 program adapter wrote before the switch). Raw endpoint, streamer identity,
 tokens and unvalidated rows never reach the announcement text.
 
-Design §8 PR-5: enabling the announcement (overlay + speech) requires owner
-approval, so ``ANNOUNCEMENT_ENABLED`` stays ``False`` in this PR. The text
-builders are complete and unit-tested; flipping the flag is the whole enablement
-step. Speech additionally keeps the catalog's ``audio_enabled`` opt-in.
+Design §8 PR-5 required owner approval before either sink ran. The owner has now
+approved the speech (2026-11-23: 同志カード大賞を読み上げる), so ``SPEECH_ENABLED``
+is on; the overlay card stays off because the corner already shows the ranking
+view and a second overlay would duplicate it. Speech still keeps the catalog's
+``audio_enabled`` opt-in.
 """
 from __future__ import annotations
 
@@ -30,9 +31,10 @@ import time
 from .overlay_queue import OVERLAY_BODY_LIMIT, OVERLAY_TITLE_LIMIT, append_event
 from .trading.soren_output import enqueue_audio_text, resolve_soren_root
 
-#: design §8 PR-5: オーナー承認までは発話・overlay の両方を出さない。
-#: 有効化はこのフラグを立てるだけ（文面は本 PR で完成）。
-ANNOUNCEMENT_ENABLED = False
+#: オーナー承認 2026-11-23: 読み上げを有効化する（毎回のコーナーで1回）。
+#: overlay は出さない: ranking view が同じ内容を画面に出しており、重複するため。
+SPEECH_ENABLED = True
+OVERLAY_ENABLED = False
 
 TITLE = "同志カード大賞"
 CONTEXT = "doushi:ranking"
@@ -161,25 +163,23 @@ def announce(g, payload, *, request_id, audio_enabled=False, overlay=None,
     overlay = append_event if overlay is None else overlay
     speech = enqueue_audio_text if speech is None else speech
     result = {"overlay": "skipped", "speech": "skipped"}
-    if not ANNOUNCEMENT_ENABLED:
-        # Owner approval pending (design §8 PR-5): generate text, emit nothing.
-        return result
-    event = {
-        "ts": int(now()),
-        "category": "prediction",
-        "level": "info",
-        "title": TITLE[:OVERLAY_TITLE_LIMIT],
-        "body": overlay_body(payload),
-    }
-    if isinstance(request_id, str) and request_id:
-        event["source_id"] = f"{SOURCE_PREFIX}:{request_id}"
-    try:
-        overlay(resolve_soren_root(g), event)
-        result["overlay"] = "sent"
-    except Exception:
-        # Never surface sink errors: they can contain private queue payloads.
-        result["overlay"] = "failed"
-    if audio_enabled:
+    if OVERLAY_ENABLED:
+        event = {
+            "ts": int(now()),
+            "category": "prediction",
+            "level": "info",
+            "title": TITLE[:OVERLAY_TITLE_LIMIT],
+            "body": overlay_body(payload),
+        }
+        if isinstance(request_id, str) and request_id:
+            event["source_id"] = f"{SOURCE_PREFIX}:{request_id}"
+        try:
+            overlay(resolve_soren_root(g), event)
+            result["overlay"] = "sent"
+        except Exception:
+            # Never surface sink errors: they can contain private queue payloads.
+            result["overlay"] = "failed"
+    if audio_enabled and SPEECH_ENABLED:
         try:
             speech(g, narration_text(payload), context=CONTEXT, speaker=speaker)
             result["speech"] = "sent"

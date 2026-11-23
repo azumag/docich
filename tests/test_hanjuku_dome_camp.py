@@ -85,11 +85,14 @@ def test_a_dome_starts_a_recall_and_an_unmeasured_screen_is_closed(monkeypatch):
     assert closed['observed_metric']['screen'] == 'general_list'
 
 
-def test_a_small_tent_keeps_waiting_on_other_screens(monkeypatch):
+def test_a_small_tent_holds_an_unrelated_text_screen_without_spending_steps(monkeypatch):
     monkeypatch.setattr(p, 'own_camps', lambda _frame: [{'target': (173, 42), 'clipped': False}])
     mem = {'chapter': 3, 'tick': 100, '_records': []}
     assert p.camp_recall_step(MAP, mem, object()) == [p.pad('a')]
+    state = _flow(mem)['recall']
     other = Screen([], None, '', kind='text')
-    for _ in range(DOME_SCREEN_WAIT + 2):
-        assert p.camp_recall_step(other, mem, object()) == []
-    assert _flow(mem)['recall']['stage'] == 'menu'
+    for tick in range(100, 106):
+        mem['tick'] = tick
+        assert p.camp_recall_step(other, mem, object()) is None
+        assert state['stage'] == 'menu' and state['steps'] == 0
+    assert state['hold_since'] == 100

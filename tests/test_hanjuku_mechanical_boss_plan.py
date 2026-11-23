@@ -9,7 +9,7 @@ the real army roster is rediscovered before planning boss sorties.
 from docich import hanjuku_chart as chart
 from docich.hanjuku import orchestrator as O
 from docich.hanjuku.flows import deploy as D, map as M
-from docich.hanjuku.strategy import orders as ORD, replan
+from docich.hanjuku.strategy import orders as ORD, replan, routes
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen
 
@@ -177,63 +177,163 @@ def test_source_castle_mismatch_records_status_panel_garrison():
     assert mem['world']['garrison']['マラコビア'] == ['アルファルファ', 'ゼウス']
     assert mem['world']['garrison_tick']['マラコビア'] == 280050
 
-def test_chapter_one_without_a_chart_boss_order_gets_a_mechanical_boss_attack():
-    chapter = 1
+# docich#5153: stuck roster probes must account for marches, respect the
+# per-castle stale-read interval, and prefer a due arrival receipt over home.
+def _stuck_chapter_memory(*, owned_count=1):
+    chapter = 8
+    castles = chart.castles(chapter)
     home = chart.home_castle(chapter)
-    boss = chart.boss_castle(chapter)
-    normal = [c for c in chart.castles(chapter) if c not in (home, boss)]
-    mem = {'chapter': chapter, 'captured': normal, 'tick': 1000,
-           '_records': [], 'world': {'garrison': {home: ['どうし']}},
-           'plan': {'orders': {}}}
-    assert replan._mechanical_boss_plan(mem, 'rid') is True
-    plan = mem['plan']['chart_plan']
-    orders = plan['orders']
-    assert any(o['target'] == boss for o in orders)
-    assert any(o.get('purpose') == 'move' and o['target'] == 'スペンソニア'
-               for o in orders)
-    assert all(o['general'] == 'どうし' for o in orders)
+    normal = [c for c in castles if not chart.is_boss_castle(c)]
+    owned = [home, *[c for c in normal if c != home][:owned_count - 1]]
+    garrison = {castle: [f'general-{index}']
+                for index, castle in enumerate(owned)}
+    return {
+        'chapter': chapter, 'month': '67-10', 'tick': 10000,
+        'captured': owned, 'lost': [],
+        'country_general_count': {'count': len(owned) + 1},
+        'soldiers_seen': 100, 'house_eggs': {},
+        'general_location_unknown': [], '_records': [],
+        'plan': {'orders': {}}, 'orders': {},
+        'world': {
+            'garrison': garrison, 'garrison_tick': {},
+            'sorties': {}, 'launched_orders': {},
+            'route_probe_read_tick': {}, 'arrival_probe_tick': {},
+        },
+    }
 
-def test_a_second_boss_plan_call_keeps_the_same_step():
-    chapter = 1
-    home = chart.home_castle(chapter)
-    boss = chart.boss_castle(chapter)
-    normal = [c for c in chart.castles(chapter) if c not in (home, boss)]
-    mem = {'chapter': chapter, 'captured': normal, 'tick': 1000,
-           '_records': [], 'world': {'garrison': {home: ['どうし']}},
-           'plan': {'orders': {}}}
-    assert replan._mechanical_boss_plan(mem, 'rid1') is True
-    first = [o['step'] for o in mem['plan']['chart_plan']['orders']]
-    assert replan._mechanical_boss_plan(mem, 'rid2') is True
-    assert [o['step'] for o in mem['plan']['chart_plan']['orders']] == first
 
-def test_losing_a_normal_castle_drops_a_stale_boss_plan():
-    chapter = 2
-    home = chart.home_castle(chapter)
-    boss = chart.boss_castle(chapter)
-    normal = [c for c in chart.castles(chapter) if c not in (home, boss)]
-    mem = {'chapter': chapter, 'captured': normal[:-1], 'tick': 1000,
-           '_records': [], 'world': {'garrison': {home: ['どうし']}},
-           'plan': {'chart_plan': {'source': 'mechanical',
-                                   'orders': [{'step': 'B:2:ボス', 'source': home,
-                                               'general': 'どうし', 'target': boss,
-                                               'purpose': 'attack', 'cards': []}]},
-                    'orders': {'B:2:ボス': 'pending'}}}
-    assert replan._mechanical_boss_plan(mem, 'rid') is False
-    assert mem['plan']['chart_plan'] is None
-    assert mem['_records'][-1]['decision'] == 'mechanical_boss_plan_dropped'
+def test_stuck_roster_probe_counts_in_flight_generals_as_located():
+    mem = _stuck_chapter_memory()
+    home = chart.home_castle(8)
+    enemy = next(c for c in chart.castles(8)
+                 if not chart.is_boss_castle(c) and c not in mem['captured'])
+    mem['world']['sorties']['I:flight:1'] = {
+        'source': home, 'target': enemy, 'general': 'general-in-flight',
+        'purpose': 'move', 'status': 'en_route', 'tick': mem['tick'] - 10,
+    }
+    # One roster resident + one marching general exactly accounts for the country total.
+    assert 'probe_stuck_1' not in replan.interim_candidates(mem, allow_sole=False)
 
-def test_a_failed_step_in_a_kept_boss_plan_is_rearmed():
-    chapter = 2
+
+def test_stuck_roster_probe_respects_the_per_castle_read_cooldown():
+    mem = _stuck_chapter_memory()
+    home = chart.home_castle(8)
+    first = replan.interim_candidates(mem, allow_sole=False)
+    assert first['probe_stuck_1']['source'] == home
+
+    mem['world']['garrison_tick'][home] = mem['tick']
+    mem['tick'] += 1
+    assert 'probe_stuck_1' not in replan.interim_candidates(mem, allow_sole=False)
+
+    mem['tick'] += replan.STALE_ROSTER_PROBE_INTERVAL - 1
+    assert replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']['source'] == home
+
+
+def test_stuck_roster_probe_prioritizes_a_due_unread_arrival_over_home(monkeypatch):
+    mem = _stuck_chapter_memory(owned_count=2)
+    home, arrival_castle = mem['captured']
+    now = mem['tick']
+    mem['country_general_count']['count'] = 3
+    mem['world']['garrison_tick'].update({home: now - 1000, arrival_castle: now - 10})
+    mem['world']['route_probe_read_tick'][arrival_castle] = now - 1000
+    mem['world']['sorties']['I:arrival:1'] = {
+        'source': home, 'target': arrival_castle, 'general': 'general-arrived',
+        'purpose': 'move', 'status': 'overdue', 'tick': now - 500,
+    }
+    # Isolate the no-candidate fallback; the fallback itself must choose the
+    # castle whose unread dispatch is the only arrival receipt.
+    mem['boss_victories'] = {'chapter': 8}
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [])
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == arrival_castle
+    assert probe['source_probe'] is True and probe['roster_probe'] is True
+
+
+
+def _stuck_road_memory():
+    chapter = 3
     home = chart.home_castle(chapter)
-    boss = chart.boss_castle(chapter)
-    normal = [c for c in chart.castles(chapter) if c not in (home, boss)]
-    mem = {'chapter': chapter, 'captured': normal, 'tick': 1000, 'month': '4-1',
-           '_records': [], 'world': {'garrison': {home: ['どうし']}},
-           'plan': {'chart_plan': {'source': 'mechanical',
-                                   'orders': [{'step': 'B:2:ボス', 'source': home,
-                                               'general': 'どうし', 'target': boss,
-                                               'purpose': 'attack', 'cards': []}]},
-                    'orders': {'B:2:ボス': 'failed'}}}
-    assert replan._mechanical_boss_plan(mem, 'rid') is True
-    assert mem['plan']['orders']['B:2:ボス'] == 'pending'
-    assert mem['_records'][-1]['decision'] == 'mechanical_boss_step_rearmed'
+    owned = [home, 'グリン']
+    return {
+        'chapter': chapter, 'month': '7-11', 'tick': 20000,
+        'captured': owned, 'lost': [],
+        'country_general_count': {'count': 3},
+        'soldiers_seen': 100, 'house_eggs': {}, 'general_location_unknown': [],
+        'boss_victories': {'chapter': chapter},
+        '_records': [], 'plan': {'orders': {}}, 'orders': {},
+        'world': {
+            'garrison': {home: ['home-guard'], 'グリン': ['grin-guard']},
+            'garrison_tick': {home: 19000, 'グリン': 18000},
+            'sorties': {}, 'launched_orders': {},
+            'route_probe_read_tick': {}, 'arrival_probe_tick': {},
+        },
+    }
+
+
+def test_stuck_road_roster_probe_uses_a_route_legal_target(monkeypatch):
+    mem = _stuck_road_memory()
+    assert not routes.allowed(mem, 'グリン', 'コラダイン')
+    assert routes.allowed(mem, 'グリン', 'リグア')
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [])
+    monkeypatch.setattr(replan.chart, 'march_blocked', lambda *args, **kwargs: False)
+
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == 'グリン'
+    assert probe['target'] == 'リグア'
+    assert routes.allowed(mem, probe['source'], probe['target'])
+
+
+def test_stuck_roster_probe_tries_next_source_when_oldest_has_rejected_move(monkeypatch):
+    mem = _stuck_chapter_memory(owned_count=3)
+    home, rejected_source, next_source = mem['captured']
+    now = mem['tick']
+    mem['country_general_count']['count'] = 4
+    mem['world']['garrison_tick'].update({
+        home: now - 1000, rejected_source: now - 2000, next_source: now - 1500,
+    })
+    enemy = next(c for c in chart.castles(8)
+                 if not chart.is_boss_castle(c) and c not in mem['captured'])
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [
+        {'general': 'general-1', 'source': rejected_source, 'target': enemy,
+         'cards': [], 'after': None, 'purpose': 'move'},
+    ])
+    monkeypatch.setattr(replan.chart, 'march_blocked', lambda *args, **kwargs: False)
+    monkeypatch.setattr(replan, '_post_conquest_wait', lambda *args, **kwargs: False)
+
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == next_source
+    assert probe['source'] != rejected_source
+
+
+
+def test_stuck_road_roster_probe_falls_back_to_only_source_with_rejected_move(monkeypatch):
+    """A planned but route-rejected move must not erase the sole readable roster."""
+    mem = _stuck_road_memory()
+    home = chart.home_castle(3)
+    now = mem['tick']
+    enemies = [c for c in chart.castles(3)
+               if c not in mem['captured'] and not chart.is_boss_castle(c)]
+    legal = [c for c in enemies if routes.allowed(mem, home, c)]
+    illegal = [c for c in enemies if not routes.allowed(mem, home, c)]
+    assert legal and illegal
+
+    # The home roster is stale; グリン was just read and cannot be probed yet.
+    mem['world']['garrison_tick'][home] = now - 1000
+    mem['world']['garrison_tick']['グリン'] = now
+    mem['country_general_count']['count'] = 3
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [
+        {'general': 'home-guard', 'source': home, 'target': illegal[0],
+         'cards': [], 'after': None, 'purpose': 'move'},
+    ])
+    monkeypatch.setattr(replan.chart, 'march_blocked', lambda *args, **kwargs: False)
+    monkeypatch.setattr(replan, '_post_conquest_wait', lambda *args, **kwargs: False)
+
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == home
+    assert probe['target'] == legal[0]
+    assert probe['source_probe'] is True and probe['roster_probe'] is True
+    assert routes.allowed(mem, probe['source'], probe['target'])

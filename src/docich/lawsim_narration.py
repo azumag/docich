@@ -20,6 +20,8 @@ import json
 from pathlib import Path
 
 from .communist_law_simulator import (
+    LAWS,
+    METRIC_LABELS,
     render_overlay,
     progress_frames,
     status_text,
@@ -31,6 +33,24 @@ from .trading.soren_output import enqueue_audio_text
 TITLE = "共産主義法律シミュレーター"
 CONTEXT = "lawsim:session"
 MAX_SPEECH = 280
+
+
+def _delta_bits(deltas):
+    """Japanese-labeled, sign-prefixed metric deltas for speech/overlay."""
+    bits = []
+    if not isinstance(deltas, dict):
+        return bits
+    for key, value in deltas.items():
+        try:
+            if value:
+                label = METRIC_LABELS.get(key, key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    bits.append(f"{label}{value:+d}")
+                else:
+                    bits.append(f"{label}{value}")
+        except (TypeError, ValueError):
+            continue
+    return bits
 
 
 def _session_text(data, *, frame_index=None):
@@ -72,17 +92,10 @@ def _session_text(data, *, frame_index=None):
         if not isinstance(turn, dict):
             return ""
         name = turn.get("lawName") or turn.get("heading")
-        deltas = turn.get("deltas") if isinstance(turn.get("deltas"), dict) else {}
-        delta_bits = []
-        for key, value in deltas.items():
-            try:
-                if value:
-                    if isinstance(value, int) and not isinstance(value, bool):
-                        delta_bits.append(f"{key}{value:+d}")
-                    else:
-                        delta_bits.append(f"{key}{value}")
-            except (TypeError, ValueError):
-                continue
+        delta_bits = _delta_bits(turn.get("deltas"))
+        plan_gain = turn.get("planGain")
+        if isinstance(plan_gain, int) and not isinstance(plan_gain, bool) and plan_gain:
+            delta_bits.append(f"計画前倒し{plan_gain:+d}")
         events = turn.get("events")
         event_bits = []
         if isinstance(events, list):
@@ -92,14 +105,21 @@ def _session_text(data, *, frame_index=None):
                     event_bits.append(f"警告: {text}。")
         parts = []
         if name:
-            parts.append(f"第{turn.get('turn', frame_index)}回会議: {name}。")
+            parts.append(f"第{turn.get('turn', frame_index)}回会議。「{name}」を可決。")
+        summary = turn.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            parts.append(f"{summary.strip()}。")
         if delta_bits:
-            parts.append(" ".join(delta_bits) + "。")
+            parts.append("効果は、" + "、".join(delta_bits) + "。")
         if event_bits:
             parts.append(" ".join(event_bits))
         metrics = turn.get("metricsAfter")
         if isinstance(metrics, dict):
-            parts.append(" ".join(f"{k}{metrics.get(k)}" for k in metrics))
+            current = "、".join(
+                f"{METRIC_LABELS.get(key, key)}{metrics.get(key)}"
+                for key in metrics
+            )
+            parts.append(f"現在の指標: {current}。")
         return " ".join(" ".join(parts).split())
     parts = [f"{title}。{republic}。" if republic else f"{title}。"]
     if frames and isinstance(frames[0], dict):
@@ -108,19 +128,9 @@ def _session_text(data, *, frame_index=None):
         if not isinstance(turn, dict):
             continue
         name = turn.get("lawName") or turn.get("heading")
-        deltas = turn.get("deltas") if isinstance(turn.get("deltas"), dict) else {}
-        delta_bits = []
-        for key, value in deltas.items():
-            try:
-                if value:
-                    if isinstance(value, int) and not isinstance(value, bool):
-                        delta_bits.append(f"{key}{value:+d}")
-                    else:
-                        delta_bits.append(f"{key}{value}")
-            except (TypeError, ValueError):
-                continue
+        delta_bits = _delta_bits(turn.get("deltas"))
         if name:
-            parts.append(f"法案{name}。" + (" ".join(delta_bits) if delta_bits else ""))
+            parts.append(f"法案「{name}」。" + ("、".join(delta_bits) if delta_bits else ""))
         events = turn.get("events")
         if isinstance(events, list):
             for ev in events:
@@ -216,7 +226,14 @@ def announcement(g, *, audio_enabled=False, frame_index=None, **kwargs):
                             }
                             for f in frames
                         ],
-                        "turns": overlay["turns"],
+                        "turns": [
+                            {
+                                **turn,
+                                "summary": LAWS[turn["lawId"]].summary
+                                if turn.get("lawId") in LAWS else "",
+                            }
+                            for turn in overlay["turns"]
+                        ],
                     }
                 except Exception:
                     payload = stored.get("payload", stored) if isinstance(stored, dict) else stored

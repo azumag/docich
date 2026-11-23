@@ -16,6 +16,7 @@ from ..state.regions import plan as _plan_region
 from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
+                               CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
@@ -410,6 +411,19 @@ def _hero_retreat_menu(screen, mem, cur):
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_used': cur.get('cards_used', []),
+                             # docich#5117: the live list proved these are not
+                             # carried, so they are neither spendable nor a
+                             # "left behind" resource.
+                             'cards_missing': list(cur.get('cards_missing') or ()),
+                             # docich#5101: a card the bot already tried (or
+                             # spent its one bounded retry on) is not "left
+                             # unused" — the audit needs the attempt receipts
+                             # to tell a designed post-attempt retreat from a
+                             # card that was never given a chance.
+                             'cards_attempted': list((cur.get('survival') or {})
+                                                     .get('cards_attempted') or []),
+                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
+                             'cards_spend_attempts': dict(cur.get('cards_spend_attempts') or {}),
                              'card_pending': (cur.get('card_flow') or {}).get('card')
                              if isinstance(cur.get('card_flow'), dict) else None,
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
@@ -572,6 +586,9 @@ def _survival_menu(screen, mem, cur):
         # never became readable, and the general fell with the egg unused).
         # A bounded second selection gives that attempt a retry.
         rescue['egg_attempts'] = int(rescue.get('egg_attempts') or 0) + 1
+        # Remember the HP at this attempt: a later HP loss is what licenses the
+        # bounded extra retry (#5143/#5144 owner decision 2026-11-23).
+        rescue['egg_attempt_hp'] = cur.get('ally_hp')
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
             observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
@@ -610,9 +627,10 @@ def _survival_card_list(screen, mem, cur, flow, names):
     # two-reading settle applies: a flickering list is not a re-pick.
     retry = []
     if uncertain and (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)):
-        retried = cur.get('cards_spend_retry') or ()
+        attempts = _card_spend_attempts(cur)
         remaining = set(_retreat_remaining_cards(cur))
-        retry = [c for c in uncertain if c in remaining and c not in retried]
+        retry = [c for c in uncertain if c in remaining
+                 and attempts.get(c, 0) < CARD_SPEND_ATTEMPT_LIMIT]
         if retry:
             uncertain = [c for c in uncertain if c not in retry]
     rescue['cards_uncertain'] = bool(uncertain)
@@ -620,7 +638,8 @@ def _survival_card_list(screen, mem, cur, flow, names):
             and flow['count_readings'] < 2 and flow['list_ticks'] <= 10):
         return []
     if not candidates and retry:
-        cur.setdefault('cards_spend_retry', []).extend(retry)
+        for card in retry:
+            _note_card_spend_attempt(cur, card)
         candidates = retry
     if not candidates:
         if not names and flow['list_ticks'] <= 3:

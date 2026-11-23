@@ -92,10 +92,26 @@ def test_theoretical_benchmark_compares_actual_with_best_single_round_trip(tmp_p
     assert benchmark["scope"] == "best_single_symbol_round_trip"
     assert benchmark["best_symbol"] == "BTC/JPY"
     assert benchmark["theoretical_pnl_jpy"] == str(D("1000") * (D("120") / D("90") - D("1")))
-    assert benchmark["actual_today_realized_pnl_jpy"] == "10"
+    assert benchmark["actual_interval_realized_pnl_jpy"] == "10"
+    assert benchmark["actual_today_realized_pnl_jpy"] == "10"  # deprecated alias
     assert benchmark["gap_jpy"] == str(D(benchmark["theoretical_pnl_jpy"]) - D("10"))
     assert D(benchmark["capture_rate_pct"]) == D("10") / D(benchmark["theoretical_pnl_jpy"]) * D("100")
     assert benchmark["coverage_complete_to_now"] is True
+
+
+def test_theoretical_benchmark_preserves_missing_history_and_capital_reasons(tmp_path):
+    now = dt.datetime(2026, 9, 11, 12, 0, tzinfo=JST).timestamp()
+    missing = build_theoretical_benchmark(
+        None, capital_reference="1000", actual_today_realized="0", now=now
+    )
+    assert missing["reason"] == "history_not_configured"
+
+    cache = tmp_path / "market_cache.json"
+    _write_history_cache(cache, now=now)
+    no_capital = build_theoretical_benchmark(
+        cache, capital_reference=None, actual_today_realized="0", now=now
+    )
+    assert no_capital["reason"] == "capital_unavailable"
 
 
 def test_theoretical_benchmark_fails_closed_without_intraday_history(tmp_path):
@@ -192,6 +208,7 @@ def test_performance_combines_realized_unrealized_and_today(tmp_path):
         now=now,
     )
     assert perf["realized_total_jpy"] == "20"
+    assert perf["interval_realized_pnl_jpy"] == "20"
     assert perf["today_realized_pnl_jpy"] == "20"
     assert perf["unrealized_pnl_jpy"] == "10"
     assert perf["cumulative_pnl_jpy"] == "30"

@@ -122,7 +122,7 @@ def _get(port, path):
         connection.close()
 
 
-def test_board_ranks_hits_and_keeps_one_shot_viewers_off_the_board(tmp_path):
+def test_board_ranks_hits_and_includes_perfect_one_shot_viewers(tmp_path):
     state = tmp_path / "run"
     state.mkdir()
     _ledger(state, [
@@ -137,7 +137,8 @@ def test_board_ranks_hits_and_keeps_one_shot_viewers_off_the_board(tmp_path):
     assert data["ok"] is True and data["updated_at"] == 1234
     assert data["rounds"] == 3 and data["viewers"] == 3
     assert data["min_rounds"] == lb.DEFAULT_MIN_ROUNDS
-    assert [row["user_name"] for row in data["ranking"]] == ["Alice"]
+    # 全的中（1/1）の Bob / Carol も載る（owner 2026-11-23）。hits が多い Alice が先頭。
+    assert [row["user_name"] for row in data["ranking"]] == ["Alice", "Bob", "Carol"]
     alice = data["ranking"][0]
     assert (alice["rank"], alice["rounds"], alice["hits"]) == (1, 3, 3)
     assert alice["hit_rate"] == 1.0 and alice["net"] == 300
@@ -160,7 +161,9 @@ def test_board_bounds_and_sanitizes_display_names(tmp_path):
     forged["outcomes"][0]["top_predictors"][0]["user_name"] = "  \u202eAli\u0000ce  "
     _ledger(state, [forged])
 
-    assert board(state)["ranking"] == []
+    # 全的中の1回参加は載り、表示名は正規化される。
+    data = board(state)
+    assert data["ranking"][0]["user_name"] == "Alice"
     data = board(state, min_rounds=1)
     assert data["ranking"][0]["user_name"] == "Alice"
     with pytest.raises(YosoViewError):
@@ -186,8 +189,8 @@ def test_view_serves_broadcast_html_and_a_runtime_bound_projection(served):
     data = json.loads(raw)
     assert status == 200 and data["ok"] is True
     assert (data["runtime_id"], data["generation"], data["lease_id"]) == ("g4-view", 4, lease)
-    # Bob appears in only 2 of the 3 recorded rounds, so min_rounds keeps him off.
-    assert [row["user_name"] for row in data["ranking"]] == ["Alice"]
+    # Bob is 2/2 (perfect), so the hit-rate board carries him below Alice (3/3).
+    assert [row["user_name"] for row in data["ranking"]] == ["Alice", "Bob"]
     assert data["rounds"] == 3 and data["min_rounds"] == lb.DEFAULT_MIN_ROUNDS
 
     status, _ = _get(port, "/nope")

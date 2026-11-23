@@ -429,6 +429,55 @@ def test_auto_restore_projection_is_absent_without_a_record(tmp_path):
     assert rotation["auto_restore_status"] is None
 
 
+def test_auto_restore_detail_and_released_settles_are_fixed_enums(tmp_path):
+    # #2479: the noop detail is what separates "keep waiting" from "this path
+    # can never settle", and the per-corner settle outcome separates a deferred
+    # retirement from an unretirable owner. Only the fixed vocabulary is
+    # published; request ids stay in the ledger.
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "auto_restore": {"request_id": "DO-NOT-PUBLISH", "corner": "nethack",
+                         "attempts": 1, "next_attempt_at": 120,
+                         "last_status": "noop",
+                         "last_detail": "restore-failure-unproven"},
+        "released_settle_outcomes": {
+            "nethack": {"request_id": "DO-NOT-PUBLISH", "at": 110,
+                        "outcome": "deferred"},
+            "ninvaders": {"request_id": "DO-NOT-PUBLISH", "at": 111,
+                          "outcome": "leak outcome=SECRET-OUTCOME"},
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_restore_detail"] == "restore-failure-unproven"
+    assert rotation["released_settles"] == {
+        "nethack": "deferred", "ninvaders": "unknown"}
+    rendered = json.dumps(output, ensure_ascii=False)
+    assert "DO-NOT-PUBLISH" not in rendered and "SECRET-OUTCOME" not in rendered
+
+
+def test_released_settles_projection_is_absent_without_rows(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["corner_rotation"]["released_settles"] is None
+
+
+def test_corner_end_reason_reports_the_released_finish_vocabulary():
+    # #2479: a released owner retired after its post-finish restore failure
+    # must stay distinguishable from the prelaunch terminal reason.
+    module = load_collector()
+    output = module._project_corner_state({
+        'status': 'interrupted', 'game': 'nethack',
+        'end_reason': 'released-failure-after-corner-finished',
+        'completed_at': '2026-11-19T00:10:00+09:00'})
+    assert output['status'] == 'interrupted'
+    assert output['end_reason'] == 'released-failure-after-corner-finished'
+
+
 def test_auto_plane_recovery_projection_is_bounded(tmp_path):
     # #4349 recovery was invisible in the 2026-11-16 hanjuku incident
     # (#4356): the durable record must surface with bounded fields.
@@ -1588,6 +1637,15 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
 
 
+def test_hanjuku_camp_tail_projects_the_battle_reset_decision():
+    module=load_collector()
+    rows=[{'decision':'camp_recall_battle_reset'},{'decision':'camp_recall_battle_reset'},
+          {'decision':'camp_recall_requested'},{'decision':'not_a_camp_decision'},
+          {'decision':None},{'other':'camp_recall_battle_reset'}]
+    tail=module._hanjuku_camp_tail(rows)
+    assert tail=={'counts':{'camp_recall_battle_reset':2,'camp_recall_requested':1}}
+
+
 def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
     module=load_collector()
     digest='a'*64
@@ -1790,6 +1848,12 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1363-chikujou-at-month-end",
                  "hanjuku-chart-v1370-chikujou-tried-ledger",
                  "hanjuku-chart-v1373-egg-receipt-settle",
+                 "hanjuku-chart-v1375-boss-dispatch-guarantee",
+                 "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1397-recall-map-hold",
+                 "hanjuku-chart-v1398-egg-retry-on-hp-loss",
+                 "hanjuku-chart-v1399-recall-map-hold",
+                 "hanjuku-chart-v1402-sortie-audit-confidence",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

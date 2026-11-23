@@ -551,11 +551,18 @@ def month_step(screen: Screen, mem):
                      and shop['gold_start'] > 1000
                      and not shop.get('event_planned')
                      and not shop.get('closed'))
-    if shop and not shop.get('merchant_done') and not shop.get('items') and not rich_open:
+    if (shop and not shop.get('merchant_done') and not shop.get('items')
+            and not rich_open and not shop.get('bargain_deferred')):
         # Nothing to buy: the merchant gate below needs shop['items'], so with an
         # empty list the merchant never runs and merchant_done never clears — the
         # month then refuses to exit and loops (g1190 41-1). A month with no
         # purchase list is a month whose merchant is already done.
+        #
+        # A deferred plan is not an empty month: the egg recovery / recruitment
+        # still owns the menu and plan_bargains will fill the list once it is
+        # settled (v1376 93-12 / 94-1 closed the merchant here before either
+        # ran). plan_bargains clears the mark when it can plan again, so the
+        # ordinary no-purchase month still closes here.
         shop['merchant_done'] = True
         _record(mem, 'month_merchant_skipped', month=shop.get('key'),
                 observed_metric={'gold': shop.get('gold_start')},
@@ -668,6 +675,14 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
+    if shop and shop.get('bargain_deferred'):
+        # Closing the month: the mark only delays the empty-items close while
+        # an egg/recruit step is still pending. The exit below (month_done and
+        # も〜おしまい!) is not gated on the merchant, but a month whose
+        # necessity never resolves must not carry the mark into the next
+        # frame's empty-items close. Nothing was planned, so dropping it here
+        # is the same "no purchase list" close as above.
+        shop.pop('bargain_deferred', None)
     # 月一の将軍人数は国ステータスから直接取得するため、一覧巡回待ちは不要。
     if shop and not shop.get('closed') and _await_level_scan(mem, shop):
         return []
@@ -998,6 +1013,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
     return _month_chikujou(screen, mem, shop)
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
+CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
 
 
 LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
@@ -1122,7 +1138,29 @@ def _month_chikujou(screen, mem, shop):
     if isinstance(move, list) and not opened:
         return move
     if move is None:
+        # The month menu can be unreadable for a frame or two while the
+        # month's earlier purchases settle. Closing ちくじょう on the first
+        # unread frame spent the month's only build slot silently: live g1190
+        # ch1 9-1 (docich#5076) ended with every castle still buildable, no
+        # ちくじょう record at all and the audit reason empty. Re-read the
+        # menu a bounded number of times instead, then record why the month
+        # ended without building so the next audit names the cause.
+        waits = int(shop.get('chikujou_menu_wait') or 0) + 1
+        shop['chikujou_menu_wait'] = waits
+        if waits <= CHIKUJOU_MENU_WAIT:
+            _record(mem, 'chikujou_menu_unreadable', month=shop.get('key'),
+                    observed_metric={'waits': waits, 'gold': gold, 'reserve': reserve,
+                                     'screen': screen.kind,
+                                     'options': [word for _, _, word in _options(screen)][:8]},
+                    reason='月メニューのちくじょう行を読めないため、当月の築城を閉じずに再観測する')
+            return []
         shop['chikujou'] = 'skipped'
+        _record(mem, 'chikujou_menu_unreadable', month=shop.get('key'),
+                observed_metric={'waits': waits, 'gold': gold, 'reserve': reserve,
+                                 'screen': screen.kind, 'skipped': True,
+                                 'options': [word for _, _, word in _options(screen)][:8]},
+                deviation_reason='menu_row_unreadable',
+                reason='有限回待ってもちくじょう行を読めないため、当月は築城せずに月を終える')
         return None
     if not opened:
         return [move]
@@ -1279,7 +1317,7 @@ def _chikujou_step(screen, mem, sub):
             move = menu_to(screen, 'いかんッ!')
             if not sub.get('decline_recorded'):
                 sub['decline_recorded'] = True
-                _record(mem, 'chikujou_declined',
+                _record(mem, 'chikujou_declined', month=key,
                         observed_metric={'cost': cost, 'gold': gold, 'reserve': reserve},
                         reason='築城の実費が不明か必要資金を割るため、支払わず見送る')
             if move == 'here':
@@ -1294,7 +1332,7 @@ def _chikujou_step(screen, mem, sub):
             sub['confirm_gold'] = gold
             sub['confirm_sent'] = True
             sub['build_wait'] = 0
-            _record(mem, 'chikujou_confirm',
+            _record(mem, 'chikujou_confirm', month=key,
                     observed_metric={'castle': chosen, 'cost': cost, 'gold': gold, 'reserve': reserve},
                     reason=f'{chosen}を{cost}Gで増築し、実際の支払いを照合して次の城へ進む')
             return [pad('a')]

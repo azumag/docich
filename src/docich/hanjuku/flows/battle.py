@@ -1325,8 +1325,28 @@ def note_duel_event(screen, mem):
 def _hero_retreat_open(mem, cur):
     if cur.get('event_duel'):
         return None
-    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
+    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)):
         return None
+    if cur.get('side') == 'defense':
+        # docich#5177 (owner 2026-11-23): a castle defense has no retreat row,
+        # but the general's own egg is still usable. Open the survival menu
+        # while the danger is real instead of fighting to zero with eggs left.
+        if not _egg_before_retreat(mem, cur):
+            return None
+        rescue = _survival_state(mem, cur)
+        if (int(rescue.get('opens') or 0) >= 12
+                or int(rescue.get('pending_opens') or 0) >= 3):
+            return None
+        rescue.update(opens=rescue['opens'] + 1,
+                      pending_opens=rescue.get('pending_opens', 0) + 1,
+                      menu_ticks=0)
+        _record(mem, 'battle_defense_egg_rescue', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                observed_metric={'ally_hp': cur.get('ally_hp'),
+                                 'enemy_hp': cur.get('enemy_hp'),
+                                 'egg_attempts': rescue.get('egg_attempts')},
+                reason='防衛戦は退却できないため、危険時に卵の救済メニューを先に開く')
+        return _human_menu_open(cur, 'survival', mem)
     ally = cur.get('ally')
     if (mem.get('chapter') == 9 and isinstance(ally, str)
             and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')):

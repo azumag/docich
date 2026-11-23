@@ -212,6 +212,44 @@ def test_a_cancelled_sortie_makes_its_carried_cards_unknown_again():
     assert mem['picked'] == []
 
 
+def test_an_unconfirmed_sortie_makes_its_carried_cards_unknown_again():
+    """A picker closed without a recorded send may return the carried kit.
+
+    The field ledger had already dropped the three carried copies (99 -> 96),
+    so leaving 96 there made the next merchant refuse them as over the limit.
+    """
+    mem = {'chapter': 1, 'tick': 5, 'card_stock': {'イッテツーン': 96, 'ノリウツール': 5},
+           'picked': ['イッテツーン', 'イッテツーン', 'イッテツーン'],
+           'orders': {'1-B1': 'pending'}, 'active': '1-B1'}
+    _finish_order(mem, 'launched_unconfirmed', reason='テスト用の未確定')
+    assert 'イッテツーン' not in mem['card_stock']       # unknown, not a guess
+    assert mem['card_stock'] == {'ノリウツール': 5}
+    assert mem['picked'] == []
+    assert b.hold_room(mem, 'イッテツーン') is None
+
+
+def test_a_launched_sortie_keeps_the_carried_ledger():
+    mem = {'chapter': 1, 'tick': 5, 'card_stock': {'イッテツーン': 96, 'ノリウツール': 5},
+           'picked': ['イッテツーン', 'イッテツーン', 'イッテツーン'],
+           'orders': {'1-B1': 'pending'}, 'active': '1-B1'}
+    _finish_order(mem, 'launched', reason='テスト用の出撃確定')
+    assert mem['card_stock']['イッテツーン'] == 96      # the copies left the field
+    assert mem['card_stock']['ノリウツール'] == 5
+    assert mem['picked'] == []
+
+
+def test_the_next_rich_month_does_not_plan_the_forgotten_kind():
+    from test_hanjuku_rich_merchant_entry import memory as rich_memory
+    mem = rich_memory({'イッテツーン': 96, 'ノリウツール': 5})
+    mem.update(active='1-B1', orders={'1-B1': 'pending'},
+               picked=['イッテツーン', 'イッテツーン', 'イッテツーン'])
+    _finish_order(mem, 'launched_unconfirmed', reason='テスト用の未確定')
+    assert b.hold_room(mem, 'イッテツーン') is None
+    shop = p._plan(mem, {'year': 1, 'month': 3, 'gold': 9999})
+    assert 'イッテツーン' not in dict(shop['items'])
+    assert 'ノリウツール' in dict(shop['items'])        # the plan still ran
+
+
 # ------------------------------------------------------------ reads
 def test_a_window_read_that_differs_from_the_ledger_is_logged_once():
     mem = {'card_stock': {'ノリウツール': 99}}

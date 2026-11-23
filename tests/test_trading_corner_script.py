@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import datetime as dt
+import sqlite3
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -70,6 +71,21 @@ def _write_status(trading_dir: Path, **overrides) -> None:
     )
 
 
+def _write_paper_fills(trading_dir: Path) -> Path:
+    db = trading_dir / "paper.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE paper_fills("
+            "fill_id TEXT PRIMARY KEY, symbol TEXT, side TEXT, amount TEXT, "
+            "price TEXT, filled_at TEXT, reason_code TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO paper_fills VALUES(?,?,?,?,?,?,?)",
+            ("fill-1", "BTC/JPY", "sell", "0.01", "100", "1000", ""),
+        )
+    return db
+
+
 def test_build_facts_uses_status_policy_and_skip_context(tmp_path):
     _write_status(tmp_path)
     policy = StrategyPolicy(momentum_lookback=9, momentum_threshold_bps=Decimal("111"))
@@ -96,12 +112,20 @@ def test_build_facts_survives_missing_files(tmp_path):
     assert facts["policy"]["momentum_lookback"] == 6
 
 
+def test_prompt_keeps_news_provenance_and_benchmark_caveat(tmp_path):
+    prompt = build_prompt(build_facts(tmp_path, now=1010.0))
+    assert "本文取得済みの事実と分析・見通しを区別" in prompt
+    assert "見出しのみ・本文取得失敗" in prompt
+    assert "見出しだけで短絡終了しない" in prompt
+    assert "実績の目標値やバックテスト結果ではない" in prompt
+
+
 def test_prompt_requires_interpretation_and_pnl_commentary(tmp_path):
     _write_status(tmp_path)
     prompt = build_prompt(build_facts(tmp_path, now=1010.0))
     assert "数字の読み上げ係ではありません" in prompt
     assert "累積損益" in prompt
-    assert "本日の確定損益" in prompt
+    assert "区間の確定損益（前回説明から今回説明まで）" in prompt
     assert "軽いツッコミ" in prompt
     assert "損失なら言い訳せず" in prompt
 
@@ -131,6 +155,38 @@ def test_both_prompts_connect_meriken_to_paper_with_grounding_and_no_canned_quip
     assert covered[0] in prompts[1]
     assert "【重複の禁止】" in prompts[1]
     assert "同じ切り口とみなし、もう一度話さない" in prompts[1]
+
+
+@pytest.mark.parametrize(
+    ("research", "expected"),
+    [
+        (
+            {
+                "research_backend": "websearch_verified_body",
+                "news_items": [{"title": "ETF flows", "summary": "検証済み本文抜粋", "source": "example.com"}],
+            },
+            "ニュース本文の取得状態: 検証済み本文",
+        ),
+        (
+            {
+                "research_backend": "google_news_wikipedia",
+                "news_items": [{"title": "ETF flows", "summary": "RSS要約", "source": "Source A"}],
+            },
+            "ニュース本文の取得状態: 見出しとRSS要約のみ",
+        ),
+        (
+            {"status": "failed", "news_items": []},
+            "ニュース本文の取得状態: 取得失敗または対象なし",
+        ),
+    ],
+)
+def test_next_news_prompt_distinguishes_body_headline_and_failure(research, expected):
+    prompt = build_next_prompt(
+        {"capital_jpy": "10000", "research": research},
+        target_key="news",
+    )
+    assert expected in prompt
+    assert "この枠を省略せず" in prompt
 
 
 def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
@@ -179,7 +235,7 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     assert "10,000" in first["result"]
     assert "btc_jpy" in first["result"]
     assert "xrp_jpy" not in first["result"]
-    assert "本日の確定損益" in first["result"]
+    assert "区間の確定損益（前回説明から今回説明まで）" in first["result"]
     assert "戦略" in first["strategy"]
     assert all(isinstance(value, str) and value for value in first.values())
     assert sum(len(value) for value in first.values()) >= 500
@@ -888,6 +944,38 @@ def test_generate_next_narration_reports_unusable_output_as_failure(tmp_path, mo
         timeframe_facts=_TIMEFRAME_FACTS,
     )
     assert result == {"status": "failed", "reason": "CornerScriptError:no-json-object"}
+
+
+
+def test_generate_next_narration_failure_does_not_advance_unexplained_fills(tmp_path, monkeypatch):
+    from docich.trading import corner_interval, corner_script
+
+    _write_status(tmp_path)
+    db = _write_paper_fills(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: "not json")
+
+    result = generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result == {"status": "failed", "reason": "CornerScriptError:no-json-object"}
+    assert corner_interval.get_cursor(db) is None
+
+
+def test_generate_corner_script_dry_run_does_not_advance_unexplained_fills(tmp_path, monkeypatch):
+    from docich.trading import corner_interval, corner_script
+
+    _write_status(tmp_path)
+    db = _write_paper_fills(tmp_path)
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+
+    result = generate_corner_script(
+        None, trading_dir=tmp_path, agents="opencode:x", dry_run=True, now=1010.0,
+    )
+    assert result["reason"] == "dry-run"
+    assert corner_interval.get_cursor(db) is None
 
 
 def test_build_next_prompt_news_slot_requests_hints_only_with_research(tmp_path):

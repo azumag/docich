@@ -140,6 +140,41 @@ AUTO_RESTORE_ATTEMPT_LIMIT = 3
 AUTO_RESTORE_BACKOFF_SECONDS = (300.0, 900.0, 2700.0)
 AUTO_RESTORE_STATUSES = frozenset({"succeeded", "queued", "failed", "noop", "interrupted",
                                    "completed", "unknown", "none"})
+# Fixed detail codes a reviewed restore replay can report back. ``last_status``
+# alone cannot tell an unproven replay (``restore-failure-unproven``) apart
+# from a non-candidate (``not-a-restore-failure``), which is exactly the
+# difference between "keep waiting" and "this path can never settle" (#2479).
+# Only these values are recorded; a free-text detail is stored as ``unknown``.
+# Keep in sync with ops/vm_actions/collect_diagnostics.py.
+AUTO_RESTORE_DETAILS = frozenset({
+    "not-a-restore-failure",
+    "restore-failure-unproven",
+    "restore-recovery-record-unproven",
+    "restore-prepared-source-unproven",
+    "restore-recovery-landing-unproven",
+    "restore-replay-source-unproven",
+    "restore-recovery-unproven",
+    "already released by rotation",
+    "bounded restore replay already terminal failed",
+    "terminal restore already failed; not replayed",
+    "terminal restore landing is not confirmed",
+    "terminal restore proof refused",
+    "terminal Hanjuku release was not confirmed",
+    "canonical stateの照合待ちです",
+    "canonicalと切替cleanupの完了を待っています",
+    "restoreのlockまたは証跡照合待ちです",
+    "同じrestore requestの受付待ちです",
+    "同じrestore requestの完了を待っています",
+    "restore再実行のreceiptとcleanupの照合待ちです",
+    "restore再実行のlockまたは証跡照合待ちです",
+    "restore終端とcleanupを確認してinterruptedとして確定しました",
+    "期限切れ後もgame switchが処理中のため終端を待ちます",
+})
+# Fixed outcomes of the released-owner settle the adapter answers each tick
+# (#2479): ``released-owner-unretired`` alone cannot tell a deferred
+# retirement (proved, retried next tick) apart from an owner no hook can
+# ever retire. Keep in sync with ops/vm_actions/collect_diagnostics.py.
+RELEASED_SETTLE_OUTCOMES = frozenset({"retired", "deferred", "unretirable"})
 # A failed switch may park the shared game-switch plane itself in a terminal
 # failure (for example a failed candidate that cannot be cleaned while the
 # base singleton is busy). The timer retries the reviewed coordinator recovery
@@ -1301,6 +1336,8 @@ class CornerRotationManager:
                         busy = True
                     else:
                         outcome = self._settle_released_failure(adapter, request_id)
+                        self._record_released_settle_outcome(
+                            state, corner_id, request_id, outcome, now)
                         if outcome is not True and corner_id in self.adapters:
                             # The owner still holds this shared state file:
                             # either retirement is proved but deferred (None)
@@ -1973,6 +2010,7 @@ class CornerRotationManager:
                       "attempts": 0,
                       "next_attempt_at": now,
                       "last_status": None,
+                      "last_detail": None,
                       "exhausted_recorded": False}
             state["auto_restore"] = record
         attempts = record.get("attempts")
@@ -1997,6 +2035,16 @@ class CornerRotationManager:
         runner = getattr(adapter, "recover_failed_restore", None)
         if not callable(runner):
             return None
+        # A plane parked in a terminal phase makes every restore replay a
+        # deterministic noop or queued answer: the replay never performs
+        # canonical recovery itself, so running it now only burns this
+        # request's bounded attempts and can leave a misleading
+        # ``restore-recovery-exhausted`` row behind (#2479). The plane
+        # recovery below owns the parked phase; the durable budget (attempt
+        # count and backoff per request) is spent only once the replay can
+        # actually land.
+        if self._plane_phase(adapter) in AUTO_PLANE_RECOVERY_PHASES:
+            return None
         allowed, record = self._auto_restore_budget(state, pending, now)
         if not allowed:
             attempts = record.get("attempts")
@@ -2017,10 +2065,17 @@ class CornerRotationManager:
         status = getattr(recovered, "status", None) if recovered is not None else None
         if status is None and isinstance(recovered, str):
             status = recovered
+        detail = getattr(recovered, "detail", None) if recovered is not None else None
         attempts = int(record.get("attempts") or 0) + 1
         record.update(attempts=attempts,
                       last_status=status if status in AUTO_RESTORE_STATUSES else
                       ("none" if status is None else "unknown"),
+                      # The fixed detail code is what separates an unproven
+                      # replay from a non-candidate (#2479); free text stays
+                      # out of the durable record.
+                      last_detail=(detail if detail in AUTO_RESTORE_DETAILS else
+                                   ("unknown" if isinstance(detail, str) and detail
+                                    else None)),
                       next_attempt_at=now + AUTO_RESTORE_BACKOFF_SECONDS[
                           min(attempts, len(AUTO_RESTORE_BACKOFF_SECONDS)) - 1])
         state["auto_restore"] = record
@@ -2149,6 +2204,30 @@ class CornerRotationManager:
             return release_program_owner(self.g, state_path)
         except Exception:
             return False
+
+    def _record_released_settle_outcome(self, state, corner_id, request_id, outcome, now):
+        """Keep the last settle answer per corner, durably (#2479).
+
+        ``released-owner-unretired`` alone cannot tell a deferred retirement
+        (``None``: proved, retried next tick) from an owner no hook can ever
+        retire (``False``). The per-corner row mirrors
+        ``released_requests``: one bounded entry per corner, dropped once the
+        corner leaves the adapter and the known-corner records.
+        """
+
+        rows = state.get("released_settle_outcomes")
+        if not isinstance(rows, dict):
+            rows = {}
+        allowed = set(self.adapters) | set((state.get("known_corners") or {}))
+        rows = {key: value for key, value in rows.items() if key in allowed}
+        rows[corner_id] = {
+            "request_id": request_id,
+            "at": now,
+            "outcome": ("retired" if outcome is True
+                        else "deferred" if outcome is None
+                        else "unretirable"),
+        }
+        state["released_settle_outcomes"] = rows
 
     @staticmethod
     def _settle_released_failure(adapter, request_id):

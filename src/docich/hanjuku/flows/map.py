@@ -39,7 +39,7 @@ from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _bro
                                drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
-                               next_order, parked_boss_steps)
+                               next_order, order_dispatch_starved, parked_boss_steps)
 from ..strategy.replan import _off_chart
 from .result import FlowResult
 
@@ -502,6 +502,29 @@ def _settle_unverified_launches(mem, markers):
     else:
         mem.pop('launch_unverified', None)
 
+def _map_y_route_give_up(mem, recall, chapter, nearby, reason):
+    """docich#5105: a blind いどう→Y view that cannot name its destination.
+
+    The owner policy (2026-11-19: 「きかん禁止・いどう→Y」) never falls back to
+    the ring picker's confirm: reserve a roster read of the capital and back
+    out so the camp can be re-measured.
+    """
+    home = chart.home_castle(chapter)
+    if home and home not in (mem.get('roster_read_due') or {}):
+        mem.setdefault('roster_read_due', {})[home] = (
+            int(mem.get('tick') or 0) + 180)
+    _record(mem, 'camp_recall_goal_unresolved',
+            observed_metric={'camp': list(recall.get('target') or ()),
+                             'origin': recall.get('origin'),
+                             'nearby': nearby},
+            reason=reason)
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    from .recall import _arm_recall_skip as _arm_skip
+    _arm_skip(mem, recall)
+    return [pad('b')]
+
+
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
@@ -533,6 +556,8 @@ def world_map_step(screen, mem, frame):
                 return routed
         return _y_jump_step(mem, frame)
     recall = _flow(mem).get('recall')
+    if isinstance(recall, dict):
+        recall.pop('hold_since', None)      # docich#5108: the view is operable again
     if (isinstance(recall, dict) and recall.get('relay')
             and recall.get('stage') == 'menu' and screen.kind == 'world_map'):
         # relay_from_picker re-aimed this camp at the relay cell and sent the B
@@ -595,6 +620,12 @@ def world_map_step(screen, mem, frame):
                                      **({'hero_status': hero_status} if hero_status else {})},
                     reason='帰還先ピッカーの進捗を10回ごとに記録する')
         if recall['picker_observations'] >= RECALL_LIMIT:
+            if recall.get('map_y_route'):
+                # A blind いどう→Y view that stayed unreadable for the whole
+                # budget must not take the ring fallback's blind confirm.
+                return _map_y_route_give_up(
+                    mem, recall, chapter, nearby,
+                    '全体マップの旗が観測上限まで読めないため、首都在城名簿の再読を予約して帰還を見送る')
             if not recall.get('picker_forced') and not _picker_on_enemy(nearby, flags):
                 return _picker_fallback(mem, recall, nearby, cursor,
                                         '帰還先カーソルが有限回で合わないため、今いる城で確定する')
@@ -629,6 +660,27 @@ def world_map_step(screen, mem, frame):
             return [pad('b')]
         goal = recall.get('gather') or _picker_goal(mem, flags, recall)
         goal = _goal_after_failures(mem, flags, recall, goal)
+        if recall.get('map_y_route'):
+            # docich#5105: いどう's field cursor opened this view blind so its
+            # own-castle flags could name the destination. Bind it here and
+            # hand off to the measured Y route — the きかん ring walk below is
+            # never used for this recall.
+            if not flags:
+                return []                    # the view is still fading in
+            if goal:
+                recall['goal'] = goal
+                recall.pop('map_y_route', None)
+                recall['stage'], recall['steps'] = 'y_route', 0
+                _record(mem, 'camp_recall_y_route',
+                        observed_metric={'goal': goal},
+                        reason='全体マップの自軍城旗で帰還先を確定し、いどう→Yジャンプ経路へ委譲する')
+                return _y_route_step(screen, mem, recall)
+            # No reachable own castle even with the island survey: never fall
+            # back to きかん — reserve a roster read of the capital and back
+            # out so the camp can be re-measured (owner 2026-11-19).
+            return _map_y_route_give_up(
+                mem, recall, chapter, nearby,
+                '全体マップでも帰還先の自軍城を決められないため、首都在城名簿の再読を予約して帰還を見送る')
         delegated = _picker_y_route(screen, mem, recall, goal)
         if delegated is not None:
             return delegated
@@ -2398,7 +2450,8 @@ def map_step(screen: Screen, mem, frame):
         last = mem.get('select_focus_tick')
         if last is None:
             mem['select_focus_tick'] = tick
-        elif tick - int(last) >= SELECT_FOCUS_INTERVAL:
+        elif (tick - int(last) >= SELECT_FOCUS_INTERVAL
+                and not order_dispatch_starved(mem)):
             mem['select_focus_tick'] = tick
             mem['nav_last'] = None
             mem['uncertain'] = True
@@ -2436,12 +2489,15 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = _order(mem) or next_order(mem) or order
     if order is None and _cursor(screen) and not screen.marker and _world_map_wanted(mem):
-        # Before choosing what to do next, read every castle's owner at once.
-        mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
-        mem.pop('world_map_due', None)
-        _record(mem, 'world_map_open', screen=screen.kind,
-                reason='全城の所有を全体マップで確認するためYを押す')
-        return [pad('y')]
+        # Before choosing what to do next, read every castle's owner at once —
+        # unless a boss-phase order is starved for dispatch (docich#5077):
+        # the repeated survey then yields one frame to the block below.
+        if not order_dispatch_starved(mem):
+            mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
+            mem.pop('world_map_due', None)
+            _record(mem, 'world_map_open', screen=screen.kind,
+                    reason='全城の所有を全体マップで確認するためYを押す')
+            return [pad('y')]
     if order is None:
         from ..strategy import corridor
         # Chapter 9's march does not reopen a source list to settle an
@@ -2459,9 +2515,13 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = next_order(mem) or order
         if order is None:
+            # docich#5077: nothing startable ends the dispatch wait; a pending
+            # but unstartable order re-arms the bound on the next check.
+            mem.pop('order_dispatch_since', None)
             update_world(screen, mem, frame)
             goals.note_map_idle(mem)
             return []           # nothing charted: let real time advance
+        mem.setdefault('order_dispatch_since', int(mem.get('tick') or 0))
         if not _order_start_due(mem, order['step']):
             _tally(mem, 'map_hold_order_due')
             return []
@@ -2520,6 +2580,7 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('castle_verified', None)
         if order.get('source_probe') is True:
             mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
+        mem.pop('order_dispatch_since', None)   # docich#5077: the wait ends at dispatch
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),

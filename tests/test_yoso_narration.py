@@ -213,8 +213,9 @@ def test_announcement_reads_the_state_dir_ledger(tmp_path, monkeypatch):
     assert [event["source_id"] for event in seen] == ["yosou:intro:r2", "yosou:ranking:r2"]
     assert {event["category"] for event in seen} == {"prediction"}
     assert seen[0]["body"] == yn.INTRO_OVERLAY_BODY
-    # min_rounds=3 keeps a one-shot viewer off the board, so the notice is used.
-    assert "ランキング対象の同志はまだいません" in seen[1]["body"]
+    # owner 2026-11-23: 全的中の1回参加は min_rounds 未満でもボードに載る。
+    assert "1位 同志Alice 100% 1回中1回" in seen[1]["body"]
+    assert "ランキング対象の同志はまだいません" not in seen[1]["body"]
 
 
 def test_voice_queue_dir_defaults_below_the_soren_root(env, monkeypatch):

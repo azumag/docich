@@ -71,7 +71,15 @@ def test_combat_foreground_keeps_the_pending_recall_but_does_not_advance_it(monk
     _flow(mem)['recall']['stage'] = stage
     before = deepcopy(_flow(mem)['recall'])
     assert p.camp_recall_step(Screen([], None, '', kind=kind), mem, object()) is None
-    assert _flow(mem)['recall'] == before
+    after = _flow(mem)['recall']
+    # docich#5108/#5134: hold_since preserves the pending recall. A
+    # field-navigation/menu recall also records that combat moved the cursor,
+    # so the first operable map frame can restart its bounded step budget.
+    expected = dict(before)
+    if stage == 'to_camp':
+        expected['battle_return'] = True
+    assert {k: v for k, v in after.items() if k != 'hold_since'} == expected
+    assert after['hold_since'] == mem['tick']
 
 
 def test_a_map_frame_with_an_unfinished_battle_does_not_start_camp_movement(monkeypatch):
@@ -87,7 +95,14 @@ def test_a_battle_result_frame_does_not_discard_an_already_pending_camp(monkeypa
     mem['battle'] = {'ally': 'ココット', 'away': 1}
     before = deepcopy(_flow(mem)['recall'])
     assert p.camp_recall_step(MAP, mem, object()) == []
-    assert _flow(mem)['recall'] == before
+    after = _flow(mem)['recall']
+    # A battle-result map still belongs to the battle until its context is
+    # settled; keep the pending recall, mark the bounded hold, and remember
+    # that combat repositioned the field cursor.
+    expected = dict(before)
+    expected['battle_return'] = True
+    assert {k: v for k, v in after.items() if k != 'hold_since'} == expected
+    assert after['hold_since'] == mem['tick']
 
 
 def test_cursor_covering_a_previously_seen_tent_opens_the_menu(monkeypatch):

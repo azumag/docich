@@ -71,7 +71,11 @@ def test_a_live_egg_general_goes_before_a_broken_one_in_the_same_castle():
 
 
 def test_the_home_castle_alone_does_not_send_a_boss_wave():
-    attacks = boss_attacks(memory(garrison={HOME: ['ゼウス']}))
+    # A one-general home cannot send a wave. The other castles' rosters are
+    # unread here, so docich#5077 may mint one read probe for the pair — the
+    # probe is evidence gathering, not a wave.
+    attacks = [o for o in boss_attacks(memory(garrison={HOME: ['ゼウス']}))
+               if not o.get('source_probe')]
     assert attacks == []
 
 

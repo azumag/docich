@@ -585,6 +585,32 @@ def _is_quantity_confirm(kind, text):
             and 'うむッ' in text and 'いかんッ' in text)
 
 
+def _shop_owns_quantity_confirm(mem, kind, screen):
+    """The merchant's quote belongs to flows/shop.py, not to the generic A.
+
+    ``want`` exists only after the shop flow chose one planned row at its real
+    price, so it is the flow's ownership mark for this exact screen. The
+    generic shortcut pressed A without recording the buy, leaving ``want`` and
+    ``items`` intact: the next list asked for the same card again and the
+    holding-limit refusal was misread as a pre-confirmation refusal
+    (prod v1374 93-9: 494G spent, buy 0, refusal 3).
+
+    The mark alone is not enough: it outlived the visit on the B exits, and a
+    later quote with the same wording (g1190 63-5) then belonged to nobody.
+    Only the two kinds shop_step routes to quantity_step's confirmation branch
+    can be the merchant's screen, the quote must actually be visible there,
+    and a finished visit (``merchant_done``) never owns another quote.
+    """
+    shop = mem.get('shop') if isinstance(mem, dict) else None
+    if not isinstance(shop, dict) or not shop.get('want'):
+        return False
+    if shop.get('merchant_done'):
+        return False
+    if kind not in ('shop_quantity', 'shop_quantity_prompt'):
+        return False
+    return shop_flow._quote_prompt_visible(screen)
+
+
 PLAN_STARVE_TICKS = 900   # observations (~15 min) of a plan that cannot rebuild
 
 
@@ -1685,8 +1711,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # (stage='recovering') before A; the shortcut paid unbound, the ritual kept
     # the MONTH_SUB_LIMIT budget, and the sub died as month_sub_abandoned with
     # the payment unconfirmed. Other month subs never show this wording.
+    # v1380: the merchant's own confirmation is equally owned by flows/shop.py,
+    # which alone records buy/last_buy/card_stock; the generic A spent the
+    # money without any of them.
     if (_is_quantity_confirm(kind, screen.text)
-            and not (isinstance(month_sub, dict) and month_sub.get('kind') == 'egg')):
+            and not (isinstance(month_sub, dict) and month_sub.get('kind') == 'egg')
+            and not _shop_owns_quantity_confirm(mem, kind, screen)):
         # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
         # overlays the quantity menu; the quantity step waits on its own
         # overlay and never answers it (g1190 2026-11-18 63-5: the frame was

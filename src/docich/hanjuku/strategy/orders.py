@@ -283,6 +283,27 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
         if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
             _plan_region(mem).setdefault('orders', {})[step] = None
         return False
+    # docich#5107: suppression must expire. While the general is still at
+    # home the gate keeps _ready() False, and that retry is the only thing
+    # that increments the cancellation count which fails the order at
+    # SORTIE_CANCELLED_OBSERVED_LIMIT. A gate that never expires therefore
+    # held the order 'pending' for the rest of the month after a single
+    # cancelled departure (observed: order_start 0 / launched 0 / stalled
+    # march). Release it after a bounded window so the retry — and its own
+    # limit — can proceed.
+    tick = mem.get('tick')
+    gate_tick = gate.get('tick')
+    if isinstance(tick, int) and isinstance(gate_tick, int):
+        if tick - gate_tick >= SORTIE_CANCELLED_RETRY_TICKS:
+            gates.pop(step, None)
+            return False
+    else:
+        # Older/hotloaded state has no gate tick: count holds instead.
+        holds = int(gate.get('holds') or 0) + 1
+        gate['holds'] = holds
+        if holds >= SORTIE_CANCELLED_RETRY_HOLDS:
+            gates.pop(step, None)
+            return False
     count = gate.get('count', 0)
     if count >= SORTIE_CANCELLED_OBSERVED_LIMIT:
         gates.pop(step, None)
@@ -405,7 +426,8 @@ def _record_sortie_cancelled_observed(mem, order, sortie):
         _mark_order_failed(mem, step)
     else:
         gates[step] = {'general': general, 'source': source, 'month': month,
-                       'count': count, 'target': sortie.get('target')}
+                       'count': count, 'target': sortie.get('target'),
+                       'tick': mem.get('tick')}
 
 
 
@@ -1724,6 +1746,103 @@ def _clear_stale_pending_overrides(mem):
     return cleared
 
 
+# docich#5077: a boss-phase order must reach ``order_start`` inside a bounded
+# wait. While the phase holds, the map's repeated foreground work (world-map
+# survey, SELECT refocus, camp hunts) yields one frame per starvation episode
+# so the dispatch block can run ``next_order`` and start it. The wait used to
+# be unbounded: g1190 ch1 9-10 sat 600 s / 5,622 observations with two
+# startable move orders pending and zero ``order_start``.
+# docich#5125: the same wait is now measured in every phase so the audit can
+# see starvation in contested months too (g1314 ch10 94-9: ~16 pending orders,
+# zero ``order_start``); only the yield stays boss-phase-only.
+ORDER_DISPATCH_STARVE_TICKS = 60   # observations (~90 s) a pending order may wait undispatched
+
+
+def boss_only_phase(mem) -> bool:
+    """Every non-boss castle held and a boss site still enemy.
+
+    The engine twin of ``month_audit._boss_phase``: the dispatch guarantee
+    below arms on the same phase the audit measures boss-battle gaps on.
+    Chapter 9's moving boss is outside the castle table, so its remaining
+    site is by construction unowned and the normal-castle check is what
+    bounds the phase there.
+    """
+    chapter = mem.get('chapter') or 0
+    if type(chapter) is not int or chapter <= 0 or mem.get('boss_defeated') == chapter:
+        return False
+    castles = set(chart.castles(chapter) or ())
+    bosses = set(chart.boss_sites(chapter) or ())
+    if not castles or not bosses:
+        return False
+    owned = set(_owned(mem)) - set(mem.get('lost') or ())
+    normal = castles - bosses
+    return bool(normal) and normal <= owned and bool(bosses - owned)
+
+
+def _dispatch_pending(mem):
+    """Pending or boss-retry order steps the dispatch block could start."""
+    status = _plan_region(mem).get('orders') or {}
+    current = [o for o in _orders(mem) if isinstance(o, dict)]
+    steps = {o.get('step') for o in current}
+    waiting = []
+    for order in (*current,
+                  *(o for step, o in (_world(mem).get('launched_orders') or {}).items()
+                    if step not in steps)):
+        if not isinstance(order, dict) or not order.get('step'):
+            continue
+        if status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem):
+            waiting.append(order['step'])
+    return waiting
+
+
+def order_dispatch_starved(mem) -> bool:
+    """True once a boss-phase pending order has waited past the bound.
+
+    The counter starts the first observation a pending order is seen waiting
+    and is cleared when nothing is pending, when ``next_order`` finds nothing
+    startable (map_step pops the key itself), and when ``order_start``
+    records the dispatch. docich#5125: the wait is measured in every phase —
+    outside the boss phase a starved wait still records
+    ``order_dispatch_starved`` once per episode (per ``since``, flagged
+    ``boss_phase`` = False) so the month audit can separate "pending orders
+    that never reached dispatch" from "no startable order". Only the True
+    return stays boss-phase-only: while starved there the caller's repeated
+    foreground work yields every frame.
+    """
+    pending = _dispatch_pending(mem)
+    if not pending:
+        mem.pop('order_dispatch_since', None)
+        return False
+    tick = int(mem.get('tick') or 0)
+    since = mem.setdefault('order_dispatch_since', tick)
+    if type(since) is not int:
+        since = mem['order_dispatch_since'] = tick
+    wait = tick - int(since)
+    if wait < ORDER_DISPATCH_STARVE_TICKS:
+        return False
+    if not boss_only_phase(mem):
+        # docich#5125: a contested month records the same starvation once
+        # per episode but never yields — the survey/refocus/camp-hunt
+        # foreground work keeps its frames.
+        if mem.get('order_dispatch_noted_at') != since:
+            mem['order_dispatch_noted_at'] = since
+            _record(mem, 'order_dispatch_starved',
+                    observed_metric={'wait': wait,
+                                     'pending': [str(s) for s in pending[:6]],
+                                     'boss_phase': False},
+                    reason='通常フェーズで pending 指示が order_start に届かないまま上限を超えたため、'
+                           'dispatch 枯渇を記録する（前景ワークへの譲りはボスフェーズ限定）')
+        return False
+    if mem.get('order_dispatch_starved_at') != since:
+        mem['order_dispatch_starved_at'] = since
+        _record(mem, 'order_dispatch_starved',
+                observed_metric={'wait': wait,
+                                 'pending': [str(s) for s in pending[:6]]},
+                reason='ボスフェーズで開始可能な指示が order_start に届かないまま上限を超えたため、'
+                       '繰り返し前景ワークを一度譲って出撃ブロックを優先する')
+    return True
+
+
 def next_order(mem):
     # A measured しんぐんちゅうです reading restarts the age of a live march
     # before the fixed windows can relaunch it while it is still walking.
@@ -2148,6 +2267,10 @@ def _arrival_castle(mem, owned):
 
 SOURCE_LOCATION_RECHECK_LIMIT = 3
 SORTIE_CANCELLED_OBSERVED_LIMIT = 3
+# docich#5107: observation ticks a presence-cancelled sortie stays suppressed
+# before the retry is allowed again (the retry is what advances the count).
+SORTIE_CANCELLED_RETRY_TICKS = 200
+SORTIE_CANCELLED_RETRY_HOLDS = 200
 SOURCE_DEFENDER_CANCEL_LIMIT = 3
 HERO_BROKEN_SORTIE_CANCEL_LIMIT = 3
 
@@ -2317,11 +2440,14 @@ def _finish_order(mem, state, **fields):
             if goal_kind:
                 goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
     _plan_region(mem)['active'] = None
-    if state in ('failed', 'pending'):
-        # The order is abandoned before its departure confirmation, so the
-        # cards this attempt had taken may be back in the field: make them
-        # unknown instead of keeping a count the cancel just invalidated.
-        # 'done'/'launched' keep the ledger (the carried copies left the field).
+    if state in ('failed', 'pending', 'launched_unconfirmed'):
+        # The order ended before a confirmed departure -- failed, abandoned,
+        # or the destination picker closed without a recorded send -- so the
+        # cards this attempt had taken may be back in the field: make their
+        # kinds unknown instead of keeping a count the cancel just invalidated.
+        # The next card-panel read or the full-inventory read fills it in
+        # again. 'done'/'launched' keep the ledger (the carried copies left
+        # the field).
         from .bargains import forget_picked
         forget_picked(mem)
     else:

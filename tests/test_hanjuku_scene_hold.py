@@ -279,6 +279,7 @@ def test_a_held_world_map_gets_a_bounded_y():
     assert O.scene_hold_advance(mem, 'event', 'world_map', 'frozen', [], False) == [O.pad('y')]
     assert mem['_records'][-1]['decision'] == 'scene_hold_advance'
 
+
 def test_field_idle_opens_the_world_map():
     from docich.hanjuku import orchestrator as O
     mem = {'tick': 1000, '_records': []}

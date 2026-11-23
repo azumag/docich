@@ -3,6 +3,10 @@
 The bot had 43 overdue marches and an empty garrison, so the plan produced no
 candidate at all. One unread castle is opened per plan (the sortie menu reads
 the roster), and the deploy step sends whoever it finds at the boss.
+
+docich#5077 extended the same idea to the no-source case: when every measured
+castle fails the two-general launch rule, an unread castle is the only place
+a sendable pair can hide, so it is probed too (throttled by its last start).
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
@@ -44,18 +48,46 @@ def test_a_known_general_is_sent_instead_of_probing():
     assert [o['general'] for o in waves if not o.get('source_probe')] == ['ココット']
 
 
-def test_one_unread_castle_is_probed_when_the_known_roster_is_stalled():
-    # 2026-11-23: with a boss phase waiting and only a lone known general (no
-    # spare anywhere), one unread castle is read so the roster can be refreshed;
-    # the all-unread bookkeeping case is handled by the path below.
+def test_an_unread_castle_is_probed_when_no_measured_castle_can_send():
+    # docich#5077: one known general at カバルッサ cannot satisfy need=2, so
+    # the unread castles are the only places a sendable pair can hide. The
+    # probe goes to an unread castle (the existing ordering keeps the home
+    # castle last).
     mem = memory({'カバルッサ': ['ココット']})
     for c in _world(mem)['garrison']:
         if c != 'カバルッサ':
             _world(mem)['garrison'][c] = None
     probes = [o for o in boss_waves(mem) if o.get('source_probe')]
     assert len(probes) == 1
-    assert probes[0]['general'] == ANY
     assert _world(mem)['garrison'].get(probes[0]['source']) is None
+    assert probes[0]['source'] != 'カバルッサ'
+    assert probes[0]['general'] == ANY
+
+
+def test_the_unread_probe_skips_a_castle_whose_read_just_started():
+    # The probe order stamps arrival_probe_tick at order_start; a castle in
+    # that cooldown is skipped for the next unread one.
+    mem = memory({'カバルッサ': ['ココット']})
+    garrison = _world(mem)['garrison']
+    for c in garrison:
+        if c != 'カバルッサ':
+            garrison[c] = None
+    skipped = next(c for c in sorted(garrison) if garrison[c] is None)
+    mem['arrival_probe_tick'] = {skipped: int(mem['tick']) - 1}
+    probes = [o for o in boss_waves(mem) if o.get('source_probe')]
+    assert len(probes) == 1
+    assert probes[0]['source'] != skipped
+
+
+def test_every_unread_castle_in_cooldown_mints_no_probe():
+    mem = memory({'カバルッサ': ['ココット']})
+    for c in _world(mem)['garrison']:
+        if c != 'カバルッサ':
+            _world(mem)['garrison'][c] = None
+    mem['arrival_probe_tick'] = {c: int(mem['tick']) - 1
+                               for c, names in _world(mem)['garrison'].items()
+                               if names is None}
+    assert not [o for o in boss_waves(mem) if o.get('source_probe')]
 
 
 def test_a_blind_boss_launch_mints_one_read_only_roster_probe():
