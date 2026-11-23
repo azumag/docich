@@ -300,34 +300,6 @@ def map_unowned_input(kind, streak, *, guarded=False, army_owned=False,
     # The streak is not reset by this key, so gate on its period instead.
     return 'select' if streak % (MAP_UNOWNED_HOLD_MAX + 1) == 0 else None
 
-FIELD_IDLE_WORLD_MAP_STREAK = 1       # the field hold itself: one no-input observation
-FIELD_IDLE_WORLD_MAP_INTERVAL = 200   # ~5 min between whole-map observations
-
-
-def field_idle_world_map_nudge(mem, phase, kind, streak):
-    """Open the whole map with Y when the field is completely idle.
-
-    Owner 2026-11-23: a held field map should observe the whole board instead
-    of sitting still.  The world-map step reads every castle/flag and closes
-    again; a 200-tick interval keeps it from reopening continuously.
-    """
-    if phase != 'field' or kind not in ('map', 'map_target'):
-        return None
-    if streak < FIELD_IDLE_WORLD_MAP_STREAK:
-        return None
-    if mem.get('world_map_due') or mem.get('world_map_pending') or mem.get('y_jump'):
-        return None
-    now = int(mem.get('tick') or 0)
-    last = mem.get('world_map_tick')
-    if type(last) is int and 0 <= now - last < FIELD_IDLE_WORLD_MAP_INTERVAL:
-        return None
-    mem['world_map_due'] = True
-    decision_log._record(mem, 'field_idle_world_map', screen=kind, phase=phase,
-                         observed_metric={'streak': streak, 'tick': now},
-                         reason='フィールドが完全な待状態のためYで全体マップを開き、全城を観察する')
-    return [pad('y')]
-
-
 def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
                         blocked=False):
     """Bounded A for an unreadable scripted-scene frame an owner keeps held.
@@ -1453,35 +1425,6 @@ def _no_input_hold_max(kind, phase, screen, bounded_wait):
     return NO_INPUT_HOLD_MAX
 
 
-IMAGE_GRID = 4
-IMAGE_SAMPLE_STRIDE = 4
-
-
-def _frame_signature(frame: Frame):
-    """Coarse background colour grid for image-based merchant detection."""
-    w, h = frame.width, frame.height
-    if not w or not h:
-        return None
-    rows = max(1, h * 3 // 4)          # the shop list/text sits in the bottom quarter
-    sig = []
-    for gy in range(IMAGE_GRID):
-        y0, y1 = gy * rows // IMAGE_GRID, (gy + 1) * rows // IMAGE_GRID
-        for gx in range(IMAGE_GRID):
-            x0, x1 = gx * w // IMAGE_GRID, (gx + 1) * w // IMAGE_GRID
-            r = g = b = n = 0
-            for y in range(y0, y1, max(1, (y1 - y0) // IMAGE_SAMPLE_STRIDE)):
-                base = y * w * 3
-                for x in range(x0, x1, max(1, (x1 - x0) // IMAGE_SAMPLE_STRIDE)):
-                    i = base + x * 3
-                    r += frame.rgb[i]
-                    g += frame.rgb[i + 1]
-                    b += frame.rgb[i + 2]
-                    n += 1
-            if n:
-                sig.extend((r // n, g // n, b // n))
-    return tuple(sig) if sig else None
-
-
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
@@ -1495,8 +1438,6 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     hanjuku_chart.migrate_legacy_labels(state)
     memory = dict(state.get('policy') or {})
     memory['approx_map'] = bool(approx_map)
-    memory['screen_image'] = _frame_signature(frame)
-    memory['screen_phase'] = state.get('phase')
     previous_version = state.get('bot_version')
     if previous_version and previous_version != BOT_VERSION:
         # A new bot version re-evaluates the transient battle-menu holds. A
@@ -2436,21 +2377,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                      or mem.get('bijin_gift_hold') is True
                      or (mem.get('trade_guard') or {}).get('held') is True
                      or bool(mem.get('battle')))
-    # A stale battle record must not block a plain narration line: the
-    # reviewed battle menus are other kinds (yes_no/card/skill), while a
-    # dialogue/text screen can be advanced with A even just after a battle
-    # (ch2 3-x balloon-finch line held indefinitely).
-    named_hold = (trade_guard_hold or bijin_guard_hold
-                  or mem.get('bijin_gift_hold') is True
-                  or (mem.get('trade_guard') or {}).get('held') is True)
-    text_guarded = event_guarded and not (
-        kind == 'text' and phase == 'dialogue' and screen.text and not named_hold)
-    _merchant_text = ((screen.text or '').replace(' ', '')
-                      .replace('\u3000', '').replace('\n', ''))
-    if 'かてくれる' in _merchant_text or 'ちゅーか' in _merchant_text:
-        mem['event_merchant_pending'] = {'tick': int(mem.get('tick') or 0),
-                                         'line': _merchant_text[:80]}
-    if event_text_advance(mem, phase, kind, concert_key, actions, text_guarded):
+    if event_text_advance(mem, phase, kind, concert_key, actions, event_guarded):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
                                         'frame_sha256':digest},
@@ -2513,10 +2440,6 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         nudge = map_unsteerable_nudge(screen, mem, kind, phase, streak, digest)
         if nudge is not None:
             actions = nudge
-        if not actions:
-            idle = field_idle_world_map_nudge(mem, phase, kind, streak)
-            if idle is not None:
-                actions = idle
     hold_max = _no_input_hold_max(kind, phase, screen, bounded_wait)
     army_owned = month_flow.army_count_owned(mem)
     recruit_guard = month_flow.recruit_input_guard(screen, mem)

@@ -9,39 +9,39 @@ from test_hanjuku_merchant_reserve import quote
 from test_hanjuku_card_wear_down import memory as card_memory
 
 
-def test_2000g_merchant_puts_the_strong_card_first_and_keeps_the_1000g_floor(ready):
-    # Owner 2026-11-23: strong cards first, not expensive cards first.  The
-    # strongest listed card is bought up to the 1000G floor.
+def test_1000g_merchant_buys_both_without_monthly_caps(ready):
     rows = (('ノリウツール', 18), ('ミックミー', 40))
-    assert p.shop_step(listing(2000, rows), ready) == [p.pad('down')]
-    assert p.shop_step(listing(2000, rows, selected=1), ready) == [p.pad('a')]
+    assert p.shop_step(listing(1000, rows), ready) == [p.pad('a')]
     shop = ready['shop']
     planned = dict(shop['items'])
     assert shop['rich_merchant'] is True
-    assert [name for name, _ in shop['items']] == ['ミックミー', 'ノリウツール']
     assert planned['ノリウツール'] > b.BARGAIN_TARGETS['ノリウツール']
     assert planned['ミックミー'] > b.BARGAIN_TARGETS['ミックミー']
-    want = shop.get('want') or [None, 0, 0]
-    assert want[0] == 'ミックミー'
-    assert want[1] * want[2] <= 1000      # the actual purchase keeps the floor
+    assert sum(dict(rows)[n] * qty for n, qty in planned.items()) > b.BARGAIN_MONTHLY_GOLD
+    assert sum(dict(rows)[n] * qty for n, qty in planned.items()) <= b.bargain_spendable(
+        ready, shop, listing(1000, rows).header, rich=True)
     assert max(planned.values()) <= 99
 
 
-def test_after_buying_the_strong_card_to_the_floor_the_merchant_closes(ready):
+def test_real_quotes_remain_affordable_after_first_large_purchase(ready):
     rows = (('ノリウツール', 18), ('ミックミー', 40))
-    p.shop_step(listing(2000, rows), ready)
-    p.shop_step(listing(2000, rows, selected=1), ready)
+    p.shop_step(listing(1000, rows), ready)
     shop = ready['shop']
     first_name, first_qty = shop['items'][0]
     first_cost = first_qty * dict(rows)[first_name]
-    assert first_name == 'ミックミー'
-    assert p.quantity_step(quote(2000, count=first_qty, cost=first_cost), ready) == [p.pad('a')]
+    assert p.quantity_step(quote(1000, count=first_qty, cost=first_cost), ready) == [p.pad('a')]
     assert shop['bought'] == [[first_name, first_qty, dict(rows)[first_name]]]
-    after_first = 2000 - first_cost
-    assert after_first == 1000           # exactly the 1000G floor remains
-    # Buying anything else would cross the floor, so the merchant closes
-    # instead of selecting another card.
-    assert p.shop_step(listing(after_first, rows), ready) == [p.pad('b')]
+    after_first = 1000 - first_cost
+    # The cursor remains on the first row after payment: moving to the next
+    # merchant item is a legitimate down press, not an immediate selection.
+    assert p.shop_step(listing(after_first, rows), ready) == [p.pad('down')]
+    second_name, second_qty = shop['items'][0]
+    second_cost = second_qty * dict(rows)[second_name]
+    assert p.quantity_step(quote(after_first, count=second_qty, cost=second_cost), ready) == [p.pad('a')]
+    # This particular merchant lists only the two names in rows, not the full
+    # nine-card owner priority set.
+    assert {row[0] for row in shop['bought']} == {name for name, _ in rows}
+    assert after_first - second_cost >= 8 + 50 + b.BARGAIN_CASH_BUFFER
 
 
 def test_balmung_is_for_bosses_only_even_when_listed():
@@ -71,14 +71,3 @@ def test_confirmed_unused_cards_open_immediately_without_balmung(monkeypatch):
     # If the chart already owns a card's timing, do not fire that copy twice.
     specified = [{'card': 'ミックミー'}]
     assert [t['card'] for t in flow._carried_opening_tactics({}, cur, specified)] == ['ノリウツール']
-
-def test_rich_merchant_want_keeps_1000g_floor(ready):
-    shop_state = ready['shop']
-    shop_state['rich_merchant'] = True
-    shop_state['want'] = ['ノリウツール', 11, 18]
-    shop_state['items'] = []
-    rows = (('ノリウツール', 18),)
-    p.shop_step(listing(1093, rows), ready)
-    want = ready['shop']['want']
-    assert want[1] == 5          # (1093 - 1000) // 18
-    assert ready['shop']['items'] == []

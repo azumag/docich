@@ -1816,31 +1816,3 @@ def test_watch_retries_unchanged_log_after_cooldown(runtime_dir):
     assert audit.watch_once(state_dir, gh=gh, scanner=lambda path: True,
                             now=now + audit.COMMENT_COOLDOWN_SECONDS + 1,
                             seen=seen)[0]['status'] == 'commented'
-
-
-def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
-    first = state(1, '1-1', 0)
-    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
-    second = state(1, '1-1', 1)
-    sealed = []
-    miss = {'schema': 1, 'event': 'decision', 'at': 1001,
-            'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
-            'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
-            'screen_kind': 'egg_battle_menu', 'reason': '携行切り札を開けず攻撃',
-            'observed_metric': {'cards_left': ['ノリウツール']}, **IDENTITY}
-    audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
-                  on_sealed=sealed.append)
-    assert len(sealed) == 1
-    incident = sealed[0]
-    assert incident['kind'] == 'card_miss'
-    assert incident['auto_file'] is True
-    assert incident['card'] == 'ノリウツール'
-    assert '切り札未使用' in audit._issue_title(incident)
-    body = audit.render(incident)
-    assert 'ノリウツール' in body and 'card_miss' in body
-    comment = audit.render_comment(incident)
-    assert '再発' in comment
-    # The same decision observed again does not seal a second incident.
-    audit.observe(runtime_dir, audit.capture(second), state(1, '1-1', 2), [miss],
-                  now=1002, on_sealed=sealed.append)
-    assert len(sealed) == 1

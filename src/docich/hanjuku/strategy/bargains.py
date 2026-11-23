@@ -9,7 +9,6 @@ from __future__ import annotations
 import random
 
 from ..decision_log import _record
-from ...hanjuku_reference import CARDS as CARD_STATS
 from .economy import (KNOWN_PRICES, UNPRICED_CARDS, _charted_purchase_ahead,
                       _egg_recovery_targets, _merchant_spendable, low_army_first)
 
@@ -44,23 +43,6 @@ RICH_MERCHANT_CARDS = (
     'ファバード', 'エンジェリン',
 )
 RICH_MERCHANT_MAX_COPIES = 99
-
-
-def card_strength(name):
-    """Owner 2026-11-23: buy strong cards first, not expensive ones first.
-
-    The reference table's max general/monster/boss damage is the base; egg
-    drop and soldier damage add, and an effect card is strong regardless of
-    its raw damage (heal/defence/half-HP cards).
-    """
-    card = CARD_STATS.get(name) or {}
-    damage = max(card.get('general_damage') or 0,
-                 card.get('monster_damage') or 0,
-                 card.get('boss_damage') or 0)
-    return (damage * 2
-            + (card.get('egg_drop') or 0) * 4
-            + (card.get('soldier_damage') or 0) * 2
-            + (150 if card.get('effect') else 0))
 RICH_RANDOM_CARDS = tuple(name for name in KNOWN_PRICES
                           if name not in RICH_MERCHANT_CARDS and name not in BARGAIN_TARGETS)
 RICH_RANDOM_MAX_COPIES = 8
@@ -367,12 +349,8 @@ def plan_bargains(mem, shop, header, *, listed=None):
     # Owner 2026-11-22: a rich merchant (1000G+) buys every strong card it
     # knows, BARGAIN_TARGETS included, up to 99; the monthly 200G/8-copy caps
     # belong to the ordinary merchant only.
-    # Owner 2026-11-23: at 1000G+ buy the highest-priced listed cards first.
-    rich_targets = sorted(
-        (*RICH_MERCHANT_CARDS,
-         *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)),
-        key=lambda name: (-((listed or {}).get(name) or KNOWN_PRICES.get(name) or 0),
-                          -(KNOWN_PRICES.get(name) or 0), name))
+    rich_targets = [*RICH_MERCHANT_CARDS,
+                    *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)]
     if rich and listed is None:
         # #4988 moved the BARGAIN_TARGETS pass behind ``not rich``. Without a
         # listing there is no real price, but an empty ``items`` list means the

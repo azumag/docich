@@ -1246,12 +1246,6 @@ def _redirect_blocked_sources(mem):
         source, target = order.get('source'), order.get('target')
         blocker = (source and target
                    and chart.march_blocker(chapter, source, target, owned))
-        if blocker == source:
-            # The source itself is not an intermediate blocker.  Treating it as
-            # one re-pointed the order to the same castle and re-issued the
-            # same cancelled sortie forever (ch5 8-4: カルーン→ジュメルズ,
-            # blocker カルーン).
-            blocker = None
         if order.get('purpose') == 'move':
             general = order.get('general')
             garrison = _world(mem).get('garrison') or {}

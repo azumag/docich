@@ -11,10 +11,7 @@ from collections import deque
 from ... import hanjuku_chart as chart
 from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
-# Owner 2026-11-23: confirmation-only sortie-window probes were opening too
-# often and blocking progress.  Back off to ~5 minutes between probes of the
-# same castle (200 observations at 1.5 s).
-PROBE_INTERVAL = 200
+PROBE_INTERVAL = 40
 ROAD_ARRIVAL_PROBE_DELAY = 200   # ch9 road hop arrives well before SORTIE_BUSY_TICKS (800)
 
 

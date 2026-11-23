@@ -28,11 +28,11 @@ def ready(monkeypatch):
     return mem
 
 
-def listing(gold=300, rows=(('ノリウツール', 18),), selected=0):
+def listing(gold=300, rows=(('ノリウツール', 18),)):
     c = Canvas(); c.text(48, 15, f'1ねん 5のつき {gold}G')
     for i, (name, price) in enumerate(rows):
         c.text(120, 175 + i * 16, name); c.text(216, 175 + i * 16, f'{price}G')
-    c.hand(98, 169 + 16 * selected)
+    c.hand(98, 169)
     screen = parse(c.frame()); screen.kind = 'shop_list'
     return screen
 
@@ -228,10 +228,8 @@ def test_spent_optional_gold_is_not_reissued_on_another_card(ready):
 @pytest.mark.parametrize('gold', [100, 200, 300, 400, 500, 1000, 2000])
 def test_round_cash_header_never_poisoned_as_zero_price_stock(ready, gold):
     actions = p.shop_step(listing(gold), ready)
-    floor = 1000 if gold >= b.RICH_MERCHANT_GOLD else 0
     quantity = min(99 if gold >= b.RICH_MERCHANT_GOLD else 3,
-                   max(0, gold - 8 - 50 - 30) // 18,
-                   max(0, gold - floor) // 18)
+                   max(0, gold - 8 - 50 - 30) // 18)
     assert actions == [p.pad('a' if quantity else 'b')]
     assert ready['shop']['bargain_listing_planned'] is True
     assert (ready['shop'].get('want') or [None, 0])[1] == quantity
@@ -276,11 +274,7 @@ def month_pass_spent(mem):
 
 def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     month_pass_spent(ready)
-    actions = p.shop_step(listing(9987, HALF), ready)
-    # Strongest-first ordering may put the target below the initial cursor;
-    # one pad step is progress, and the plan must already name the card.
-    assert actions[0]['type'] == 'pad' and actions[0]['buttons'] in (['a'], ['down'])
-    assert ready['shop'].get('want') or ready['shop'].get('items')
+    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('a')]       # selects a card to buy
     shop = ready['shop']
     assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
     assert shop['cheap_vendor_planned'] is True
@@ -290,9 +284,7 @@ def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     # BARGAIN_TARGETS on the rich path too, so the two bargain targets go to 99
     # with the rich budget instead of the cart's smaller caps.
     for name in ('ノリウツール', 'クースカン', 'ゼンマイン'):
-        # strongest-first round-robin spreads the rich budget; presence, not
-        # a fixed 99 per kind, is the contract here.
-        assert name in planned, name
+        assert planned.get(name) == b.RICH_MERCHANT_MAX_COPIES, name
     assert set(planned) <= {name for name, _ in HALF}
     ordinary = [(n, q) for n, q in shop['items']
                 if n not in b.RICH_MERCHANT_CARDS and n not in b.BARGAIN_TARGETS]
@@ -446,13 +438,3 @@ def test_finished_merchant_reenter_latches_closed(ready):
     ready['shop']['bargain_listing_planned'] = False
     p.shop_step(listing(999, rows=(('バルムンク', 90), ('グリンボー', 30))), ready)
     assert 'closed' not in ready['shop']
-
-def test_pending_want_is_skipped_when_cash_is_short(ready):
-    shop_state = ready['shop']
-    shop_state['want'] = ['ノリウツール', 3, 18]
-    shop_state['items'] = [['ノリウツール', 3]]
-    actions = p.shop_step(listing(14, (('ノリウツール', 18),)), ready)
-    assert actions == [p.pad('b')]
-    assert ready['shop']['want'] is None
-    assert any(r['decision'] == 'buy_skip' and r.get('deviation_reason') == 'insufficient_cash'
-               for r in ready['_records'])

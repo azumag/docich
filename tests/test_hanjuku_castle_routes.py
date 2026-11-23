@@ -723,27 +723,3 @@ def test_a_roster_read_without_status_rows_writes_nothing():
     mem = {'chapter': 9, 'tick': 500, '_records': [], 'garrison': {'マランマ': []}}
     routes.observed_roster(mem, 'マランマ', ['オレガノ'])
     assert not any(r['decision'] == 'roster_resident_confirmed' for r in mem['_records'])
-
-def test_a_source_probe_is_not_cancelled_by_the_route():
-    mem = state()
-    order = {'step': 'I:probe:1', 'source': 'アルマムーン', 'target': 'イーピヨル',
-             'general': '—', 'cards': [], 'after': None,
-             'source_probe': True, 'roster_probe': True}
-    _plan_region(mem)['active'] = order['step']
-    assert deploy._hold_unrouted_sortie(mem, order) is None
-    assert _plan_region(mem)['active'] == order['step']
-
-def test_source_castle_is_not_its_own_march_blocker(monkeypatch):
-    from docich.hanjuku.strategy import orders as orders_mod
-    from docich.hanjuku.state.regions import plan as _plan
-    mem = {'chapter': 1, 'captured': [], 'tick': 100, '_records': [],
-           'plan': {'orders': {'s': 'pending'},
-                    'chart_plan': {'orders': [
-                        {'step': 's', 'source': 'アルマムーン', 'target': 'クロチェット',
-                         'general': 'どうし', 'purpose': 'attack', 'cards': [], 'after': None}]}},
-           'world': {'garrison': {'アルマムーン': ['どうし']}, 'launched_orders': {}}}
-    monkeypatch.setattr(orders_mod.chart, 'march_blocker', lambda *a: 'アルマムーン')
-    orders_mod._redirect_blocked_sources(mem)
-    assert not _plan(mem).get('source_override')
-    assert not any(r.get('decision') == 'sortie_source_march_block'
-                   for r in mem['_records'])

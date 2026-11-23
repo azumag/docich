@@ -278,21 +278,3 @@ def test_a_held_world_map_gets_a_bounded_y():
         assert O.scene_hold_advance(mem, 'event', 'world_map', 'frozen', [], False) is None
     assert O.scene_hold_advance(mem, 'event', 'world_map', 'frozen', [], False) == [O.pad('y')]
     assert mem['_records'][-1]['decision'] == 'scene_hold_advance'
-
-
-def test_field_idle_opens_the_world_map():
-    from docich.hanjuku import orchestrator as O
-    mem = {'tick': 1000, '_records': []}
-    assert O.field_idle_world_map_nudge(mem, 'field', 'map', 3) == [O.pad('y')]
-    assert mem['world_map_due'] is True
-    mem = {'tick': 1000, 'world_map_tick': 950, '_records': []}
-    assert O.field_idle_world_map_nudge(mem, 'field', 'map', 3) is None
-    assert O.field_idle_world_map_nudge({'_records': []}, 'field', 'map', 0) is None
-
-def test_camp_recall_never_falls_back_to_kikan():
-    from docich.hanjuku.flows import recall
-    mem = {'tick': 100, '_records': []}
-    state = {'goal': 'アルマムーン', 'stage': 'y_route', 'steps': recall.Y_ROUTE_RETRIES + 1}
-    assert recall._y_route_step(None, mem, state) == []
-    assert state['stage'] == 'y_route'
-    assert mem['_records'][-1]['decision'] == 'camp_recall_y_retry'
