@@ -2368,14 +2368,10 @@ def _recall_dispatch_step(screen, mem, state):
                   else 'dispatch_unconfirmed')
         goal = state.get('goal')
         escape_move = state.get('escape_move') is True
-        if (not escape_move and not interrupted and status == 'dispatch_unconfirmed'
-                and isinstance(goal, str)):
-            # Only a real castle recall that never left counts as a refused
-            # destination. A cliff escape A confirms a field-cursor move, not
-            # a return to this castle (docich#5248).
-            blocked = _flow(mem).setdefault('camp_recall_blocked', {})
-            if isinstance(blocked, dict):
-                blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)
+        # A missing input receipt is a source/transport/receipt-path uncertainty,
+        # not evidence that the selected destination refused this camp. Keep
+        # castle ranking unchanged until destination-specific refusal evidence
+        # exists (docich#5250).
         verification = {
             **state, 'status': status, 'interrupted': interrupted,
             **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
