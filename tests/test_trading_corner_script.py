@@ -141,6 +141,38 @@ def test_both_prompts_connect_meriken_to_paper_with_grounding_and_no_canned_quip
     assert "同じ切り口とみなし、もう一度話さない" in prompts[1]
 
 
+@pytest.mark.parametrize(
+    ("research", "expected"),
+    [
+        (
+            {
+                "research_backend": "websearch_verified_body",
+                "news_items": [{"title": "ETF flows", "summary": "検証済み本文抜粋", "source": "example.com"}],
+            },
+            "ニュース本文の取得状態: 検証済み本文",
+        ),
+        (
+            {
+                "research_backend": "google_news_wikipedia",
+                "news_items": [{"title": "ETF flows", "summary": "RSS要約", "source": "Source A"}],
+            },
+            "ニュース本文の取得状態: 見出しとRSS要約のみ",
+        ),
+        (
+            {"status": "failed", "news_items": []},
+            "ニュース本文の取得状態: 取得失敗または対象なし",
+        ),
+    ],
+)
+def test_next_news_prompt_distinguishes_body_headline_and_failure(research, expected):
+    prompt = build_next_prompt(
+        {"capital_jpy": "10000", "research": research},
+        target_key="news",
+    )
+    assert expected in prompt
+    assert "ニュース枠は省略せず" in prompt
+
+
 def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
     now = dt.datetime(2026, 9, 11, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))).timestamp()
     _write_status(tmp_path)
