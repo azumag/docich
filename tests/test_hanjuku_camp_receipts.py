@@ -166,6 +166,7 @@ def test_card_scroll_receipt_is_bound_to_run_frame_and_delivered_up(tmp_path):
 
 def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     _, state = pending(); mem = state['policy']; mem['_records'] = []
+    _flow(mem)['camp_recall_blocked'] = {'アルマムーン': 1}
     view = parse(picker(), phase='field')
     for _ in range(5):
         assert p.world_map_step(view, mem, picker()) == []
@@ -179,6 +180,9 @@ def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     assert '到着' not in record['reason']
     assert record['observed_metric']['stage'] == 'await_dispatch'
     assert record['observed_metric']['steps'] == 6
+    # The A was never receipt-confirmed, so the selected castle was not
+    # contacted and must not be learned as a refusing destination.
+    assert _flow(mem)['camp_recall_blocked'] == {'アルマムーン': 1}
 
 
 @pytest.mark.parametrize('kind',['unknown','yes_no'])
