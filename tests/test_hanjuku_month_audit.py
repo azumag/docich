@@ -535,6 +535,7 @@ def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
     assert '野営の崖離脱移動未確認' in audit._issue_title(record)
     assert '### 野営の崖離脱移動' in audit.render(record)
     assert 'target_cell: [135, 121]' in audit.render(record)
+    assert '- 崖離脱: unconfirmed / camp_escape_move_unconfirmed' in audit.render_comment(record)
 
 
 def test_camp_repeat_is_cooled_down(runtime_dir):
