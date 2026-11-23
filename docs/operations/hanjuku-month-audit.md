@@ -402,3 +402,10 @@ python3 -m docich.hanjuku.month_audit --runtime <runtime> file --incident <id>
 - 問題が出た場合は `brains/hanjuku/bot.py` の `month_audit.observe` 呼び出しを
   外すか、`src/docich/hanjuku/month_audit.py` を revert する。ゲーム入力には
   影響しない（effectは `month_audit_failed` として記録されるだけ）。
+
+## 出撃失敗の証拠（v1411）
+
+- `settlement_source` は marker probe / source roster を区別する。
+- `marker_count` は最後に実際に観測したマーカー数。source-roster rollback の再試行上限に使う `markers` 引数とは分離し、未観測は `null` とする。
+- `probe_elapsed_ticks` は出撃確定時の `started_tick` から計算する。blind probe へ移行したときの待機期限 `tick` とは別に保持する。古いhot-loadで開始tickを復元できないblind probeは不明として出力する。
+- 新規Issue本文と既存Issueへの再発コメントは同じbounded evidence formatterを使い、古いレコードに証拠がない場合は従来の表示を維持する。

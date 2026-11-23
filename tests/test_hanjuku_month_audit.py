@@ -531,6 +531,10 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     assert '### 出撃失敗 / キャンセル' in rendered
     assert 'source_roster' in rendered and 'markers=1' in rendered
     assert 'general_present=True' in rendered and 'complete=False' in rendered
+    recurrence = audit.render_comment(record)
+    assert 'source_roster' in recurrence and 'markers=1' in recurrence
+    assert 'general_present=True' in recurrence and 'complete=False' in recurrence
+    assert 'elapsed_ticks=200' in recurrence
     assert len(seen) == 1
 
 
