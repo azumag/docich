@@ -389,7 +389,10 @@ def test_resume_source_verification_skips_normal_cancel_suppression_before_map_s
     assert _plan_region(mem)['active'] == '1-A2'
     assert (_flow(mem).get('sortie_resume') or {})['1-A2']['owed'] is True
     assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
-    assert not [r for r in mem['_records'] if r['decision'] == 'sortie_cancelled_observed']
+    # The factual roster observation remains in the decision log; only the
+    # ordinary retry counter/suppression is bypassed for this resume.
+    assert [r for r in mem['_records'] if r['decision'] == 'sortie_cancelled_observed']
+    assert [r for r in mem['_records'] if r['decision'] == 'sortie_resume_source_confirmed']
 
     # Exercise the real map gate: it must not clear the resumed order as a
     # normal cancellation suppressed by the generic retry guard.
