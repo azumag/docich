@@ -982,10 +982,16 @@ def _build_sortie_incident(runtime, state, after, event, now):
     # accepted" reason is transient when the month has other confirmed launches.
     # Unknown order failures, confirmed launch failures, and exhausted retries
     # remain high so an unrelated failure cannot be silently downgraded.
+    month_scope = month_sorties.get('scope') if isinstance(month_sorties, dict) else None
+    same_month_scope = (
+        isinstance(month_scope, (list, tuple))
+        and list(month_scope) == [mem.get('chapter'), mem.get('month')]
+        and mem.get('chapter') is not None and mem.get('month') is not None
+    )
     confidence, confidence_reasons = 'high', []
     if (event.get('decision') == 'order_failed'
             and event.get('reason_code') == 'sortie_order_unaccepted'
-            and type(confirmed) is int and confirmed > 0):
+            and same_month_scope and type(confirmed) is int and confirmed > 0):
         confidence = 'medium'
         confidence_reasons = ['sortie_month_launched']
     identity = state.get('identity') or {}
