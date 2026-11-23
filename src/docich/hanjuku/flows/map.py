@@ -74,9 +74,29 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             _flow(mem)['sortie_attempt'] = attempt
     if not attempt:
         return
-    if (mem.get('y_jump') or {}).get('mode') == 'target' or mem.get('y_jump_return') == 'target':
+    own_target_jump = ((mem.get('y_jump') or {}).get('mode') == 'target'
+                       or mem.get('y_jump_return') == 'target')
+    if (screen.kind in SORTIE_INTERRUPTING_BATTLE_KINDS and order
+            and order.get('step') == attempt.get('step')):
+        # A fight cut the destination selection. The marker the picker restores
+        # afterwards sits wherever the game left it, not the cell our Y jump
+        # put it on, and a pre-battle arrival receipt still names the old cell.
+        # Mark the attempt so the resumed picker re-does the target jump
+        # (``target_step``) instead of confirming the restored marker, and give
+        # that jump a fresh attempt budget: the interrupted one must not eat it.
+        step = attempt.get('step')
+        if not attempt.get('battle_interrupt'):
+            attempt['battle_interrupt'] = True
+            tick = mem.get('tick')
+            attempt['battle_interrupt_tick'] = tick if type(tick) is int else None
+            (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
+            _forget_failed_jump(mem, step, 'target')
+        forget_target_placement(mem, step)
+    if own_target_jump:
         # Our own Y jump for the target (the view and the fade back), not an
-        # interruption.
+        # interruption. Captured before the battle reset above dropped
+        # ``y_jump_return``: the reset is about placement, not about treating
+        # our own view as a closed picker.
         if screen.kind in ('map_target', 'map'):
             mem.pop('y_jump_return', None)      # back on a map: normal tracking resumes
         else:
@@ -2735,6 +2755,26 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    attempt = _flow(mem).get('sortie_attempt')
+    if (isinstance(attempt, dict) and attempt.get('step') == order['step']
+            and attempt.get('battle_interrupt')):
+        # The battle that cut the target selection left its marker where the
+        # game restored it. A confirmation receipt from before that fight is
+        # not evidence about this screen: unless a fresh target jump placed the
+        # marker after the interruption, drop the old placement so the jump
+        # below runs again. The jump lands on the measured cell and the marker
+        # is read from that fresh placement.
+        interrupt_tick = attempt.get('battle_interrupt_tick')
+        placed_tick = (mem.get('y_jump_target_confirmed') or {}).get('tick')
+        freshly_placed = (type(interrupt_tick) is int and type(placed_tick) is int
+                          and placed_tick >= interrupt_tick)
+        attempt.pop('battle_interrupt', None)
+        attempt.pop('battle_interrupt_tick', None)
+        if not freshly_placed:
+            forget_target_placement(mem, order['step'])
+            _record(mem, 'sortie_target_rejump', chart_step=order['step'],
+                    target=order['target'], screen=screen.kind,
+                    reason='戦闘割り込みで出撃先マーカーが復元されたため、割り込み前の到達記録を捨ててYジャンプをやり直す')
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
