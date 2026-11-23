@@ -31,7 +31,8 @@
    - 境界は **単一キー**（filled_at + fill_id、最終約定1件）。fill_id は台帳の主キーなので、同時刻の時系列も自然に決まり、集合ではなく1キーで管理する。
    - 確定済みの最終約定のキーを「含めた最後の約定」として、台帳（paper.sqlite3）の `paper_corner_explanation_state`（corner_key, high_water_ts, high_water_fill_id, updated_at）に保存。
    - 区間 = 半開区間 [カーソル後, 当回生成時刻)。生成時刻の壁時計を上端とし、保存した約定キー基準で約定を取りこぼさない。
-   - カーソルは説明記録と**同一トランザクション**で更新し、**カーソル更新を「説明完了」の定義**とする。中断・再試行でも重複・取りこぼしなし。日跨ぎ・同日複数回は時刻キーで自然分離。
+   - 受入条件は、カーソルと説明記録を**同一トランザクション**で更新し、**そのcommitを「説明完了」の定義**とすること。中断・再試行でも重複・取りこぼしを防ぐ。日跨ぎ・同日複数回は時刻キーで自然分離。
+  - **実装未達**: 現在の `PaperCornerManager → generate_next_narration` は、永続的な説明記録を同じSQLite transactionで保存していない。生成前にcursorだけ進める処理は安全性のため撤去し、M2をDraft blockerとしている。
 
 5. **新名称**
    - 表示：**「区間損益」「区間実績」** ＋期間併記（例: `区間損益 +1,234円（11/22 10:05〜19:00）`）。
@@ -68,6 +69,7 @@
 - src/docich/trading/corner_script.py
   - build_prompt の「本日」文言を「区間」に、interval_realized を反映。
   - news の「見出しのみでも短絡終了しない」旨を追加（③：事実と分析・出典の区別＋限界明示）。
+  - 生成前にcursorだけをcommitしていた暫定処理は撤去。説明記録がdurableになる前にcursorを進めない fail-closed 方針。
 - src/docich/comment/paper_corner_profile.py
   - 52/64/72/318/328/343 行。318 行目はフォーマット実体 `f"本日損益(確定分) {_yen(f.today)}"` → interval キー（interval_realized_pnl_jpy）参照へ配線し直す（文言置換だけでは統計が日次残る）。
 - src/docich/trading/dashboard_assets/index.html（dashboard.js ではなくこちら）
@@ -89,3 +91,15 @@
 ## 作業場所
 
 /home/hatch/work/wt/docich/2454 (branch feat/2454-paper-corner-interval, base origin/main)
+
+## 2026-11-23 実装状態（PR #5156）
+
+- **実装済み**: interval ledger helpers、FIFO basis、same-second key ordering、pick selection、profile/dashboard/statusの一部配線、ニュースpromptの3状態。
+- **未達・merge blocker**:
+  1. `PaperCornerManager._generate_narration_text() → generate_next_narration()` で区間fills/picksと `interval_realized_pnl_jpy` を使う配線。
+  2. 生成segment/説明recordのdurable保存とcursor更新を同一transactionにし、再起動時に生成済みrecordを再利用すること。
+  3. dashboardに開始〜終了期間を表示し、JSがdeprecated `today_realized_pnl_jpy` ではなくinterval fieldを参照すること。
+- **安全対策**: 生成前にcursorを進める2経路を撤去。dry-runおよびAI出力失敗で未説明fillsが飛ばない回帰テストを追加。
+- CIで見つかった `test_performance_summary_is_scalar_allowlisted` の期待値不足は修正済み。最新の上記安全対策コミット後はCI再実行中。
+- 受入条件4・5を満たすまではDraftを維持し、productionへmergeしない。
+
