@@ -497,3 +497,46 @@ def test_public_performance_summary_exposes_only_bounded_ledger_health():
         "ledger_reason_code": "ledger_invalid_row",
         "unpaired_sell_count": 2,
     }
+
+
+
+def test_performance_valid_empty_ledger_remains_a_complete_zero_result(tmp_path):
+    db = tmp_path / "empty.sqlite3"
+    ledger = PaperLedger(db)
+    ledger.close()
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is True
+    assert perf["ledger_status"] == "ok"
+    assert perf["ledger_reason_code"] == "ok"
+    assert perf["unpaired_sell_count"] == 0
+    assert perf["realized_total_jpy"] == "0"
+    assert perf["interval_realized_pnl_jpy"] == "0"
+    assert perf["equity_jpy"] == "1000"
+
+
+def test_performance_missing_fill_table_is_schema_invalid_not_empty(tmp_path):
+    db = tmp_path / "wrong-schema.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE unrelated (value TEXT)")
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "invalid"
+    assert perf["ledger_reason_code"] == "ledger_schema_invalid"
+    assert perf["realized_total_jpy"] is None
+    assert perf["equity_jpy"] is None
