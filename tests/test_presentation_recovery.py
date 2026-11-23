@@ -372,7 +372,7 @@ def test_legacy_tree_cleanup_reaps_child_mirror_and_preserves_shared_process(tmp
             except (OSError,ValueError):
                 pass
             time.sleep(.02)
-        assert child is not None
+        assert child is not None, "child pid was not atomically published before the deadline"
         owned.append(child)
         # This is the same existing physical-tree function used by old tmux
         # cleanup. No newly hotloaded adapter method is needed.
