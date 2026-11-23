@@ -45,8 +45,38 @@ def test_a_full_roster_walk_is_assumed_enumerated():
     """g1163 2026-11-09: 32 names collected, then roster_end_unconfirmed."""
     from docich.hanjuku.flows import post_month_status as P
     state = {'top_confirmed': True, 'names': [f'g{i}' for i in range(P.MAX_SCAN)]}
-    assert P._roster_end_assumable(state) is True
+    assert P._roster_end_assumable(memory(), state) is True
     state['names'] = state['names'][:-1]
-    assert P._roster_end_assumable(state) is False
+    assert P._roster_end_assumable(memory(), state) is False
     state = {'top_confirmed': False, 'names': [f'g{i}' for i in range(P.MAX_SCAN)]}
-    assert P._roster_end_assumable(state) is False
+    assert P._roster_end_assumable(memory(), state) is False
+
+
+def test_a_count_matching_walk_is_assumed_enumerated():
+    """A sub-32 roster fully enumerated stalls on the same missing end proof:
+    the game's own headcount corroborates the enumeration."""
+    from docich.hanjuku.flows import post_month_status as P
+    from docich.hanjuku.os_layer import roster as receipts
+    names = [f'g{i}' for i in range(12)]
+    mem = memory()
+    mem['country_general_count'] = {
+        'scope': [2, '5-3'], 'identity': receipts.run_identity(mem.get('_run_identity')),
+        'tick': 10, 'count': 12}
+    mem['chapter'], mem['month'], mem['tick'] = 2, '5-3', 20
+    state = {'top_confirmed': True, 'names': list(names), 'scope': [2, '5-3'],
+             'statuses': {n: {'location': 'unknown'} for n in names}, 'dirty': []}
+    # ``location: unknown`` still blocks ``_complete_scan`` but not the assume:
+    # enumeration is proven, the tasks handle the unreadable row.
+    assert P._roster_end_assumable(mem, state) is True
+    # A genuinely truncated walk (fewer names than the country reports), a
+    # still-dirty name, a duplicate OCR row or a foreign scope are not proven.
+    for changed in (dict(names=names[:-1]),
+                    dict(dirty=['g3']),
+                    dict(statuses={n: {} for n in names[:-1]}),
+                    dict(names=names + ['g0'])):
+        assert P._roster_end_assumable(mem, dict(state, **changed)) is False, changed
+    mem['country_general_count']['count'] = 13
+    assert P._roster_end_assumable(mem, state) is False
+    mem['country_general_count']['count'] = 12
+    mem['country_general_count']['scope'] = [2, '5-2']
+    assert P._roster_end_assumable(mem, state) is False
