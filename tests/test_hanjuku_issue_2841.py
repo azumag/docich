@@ -125,7 +125,11 @@ def test_launch_probe_retry_budget_survives_equivalent_replanned_step():
     assert _plan_region(mem)['orders'][second] == 'failed'
     failed = [r for r in mem['_records'] if r['decision'] == 'sortie_launch_failed']
     assert failed and failed[-1]['chart_step'] == second
-    assert failed[-1]['observed_metric']['misses'] == p.LAUNCH_MISS_LIMIT
+    metric = failed[-1]['observed_metric']
+    assert metric['misses'] == p.LAUNCH_MISS_LIMIT
+    assert metric['settlement_source'] == 'marker_probe'
+    assert metric['probe_elapsed_ticks'] == 0
+    assert metric['markers'] == []
 
 
 def test_a_single_hero_marker_does_not_fail_the_launch():
