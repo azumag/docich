@@ -73,15 +73,17 @@ issue化の既定は `high` のみ。
 | `camp_recall_skipped` | `camp_recall_cancelled` | 自軍城の屋根が見えず帰還先を選べず取消 |
 | `camp_group_screen`（`unclassified_screen_closed`） | `camp_recall_cancelled` | 未分類画面で帰還を閉じる |
 | `camp_recall_unconfirmed` | `camp_recall_unconfirmed` | `dispatch_unconfirmed`（A送信receipt未確認）と `arrival_unconfirmed`（A送信済み・受理/到着未確認）を区別 |
-| `camp_escape_move_dispatched` / `camp_escape_move_unconfirmed` | camp recall incident対象外 | 崖離脱のフィールドカーソル移動。帰還先の到着証拠には使わない |
+| `camp_escape_move_dispatched` | camp recall incident対象外 | 崖離脱のフィールドカーソル移動の受理。帰還先の到着証拠には使わない |
+| `camp_escape_move_unconfirmed` | `camp_escape_move_unconfirmed` | 崖離脱のフィールド移動を確認できない専用incident。キャンプ帰還とは分けて記録 |
 
 - 将軍・野営位置・帰還先・stage/steps・status・input_sent/picker_closed/
   escape_move/interrupted・理由・直前120秒の決定・計画/在城/flowを1件に保存する。
 - `resulting_event` を理由文より優先して分類する。`dispatch_unconfirmed` は
   送信段階、`arrival_unconfirmed` は送信後の受理/到着段階であり、共通の
   日本語理由文に「到着」が含まれるかどうかでは分類しない。
-- `escape_move=true` は帰還Aではなく崖離脱のフィールド移動A。`camp_escape_move_*`
-  として記録し、帰還先の拒否回数・到着確認・camp recall issueへ混入させない。
+- `escape_move=true` は帰還Aではなく崖離脱のフィールド移動A。`camp_escape_move_dispatched`
+  は通常記録、`camp_escape_move_unconfirmed` は専用incidentとし、帰還先の拒否回数・
+  到着確認・camp recall issueへ混入させない。
 - 同じ `(chapter, kind, reason_code, camp, general, castle)` は900秒cooldown。
   連続する同一事象でissueを乱発しない。
 - issue題名は `[半熟英雄] キャンプ帰還失敗/キャンセル/未確認: ch<章> <将軍または城>`。
