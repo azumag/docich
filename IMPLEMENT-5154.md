@@ -18,7 +18,7 @@
 
 ## Hot-load marker
 
-`hanjuku-chart-v1404-fort-recall-evidence`。diagnostics allowlistと固定値テストを同期する。
+`hanjuku-chart-v1405-fort-recall-evidence`。mainに入ったv1404 defense egg rescueを維持したうえで、砦帰還の診断差分をv1405として識別する。diagnostics allowlistと固定値テストを同期する。
 
 ## 回帰テスト
 
