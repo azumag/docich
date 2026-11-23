@@ -148,7 +148,7 @@ jobs:
             detail="- envelope_bytes: ${ENVELOPE_BYTES}\n- cap_bytes: ${CAP_BYTES}\n- usage_percent: ${USAGE_PERCENT}\n- section_bytes: ${SECTION_BYTES_SUMMARY:-unavailable}"
           else
             state="unavailable"
-            detail="- envelope_bytes: unavailable\n- cap_bytes: unavailable\n- usage_percent: unavailable"
+            detail="- envelope_bytes: unavailable\n- cap_bytes: unavailable\n- usage_percent: unavailable\n- section_bytes: ${SECTION_BYTES_SUMMARY:-unavailable}"
           fi
           body="$(printf 'Production diagnostics health needs attention.\n\n- state: %s\n%b\n- warning threshold: %s%%\n- Workflow: %s/%s/actions/runs/%s\n\nOnly fixed status, numeric headroom fields, and validated section names with byte counts are published. Section values, raw diagnostics, stderr, paths, credentials, and command output are never published. This monitor is read-only.\n' "$state" "$detail" "$WARN_PERCENT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
           for number in "${alerts[@]}"; do
