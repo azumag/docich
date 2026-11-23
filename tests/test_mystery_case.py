@@ -266,6 +266,22 @@ def test_ai_detective_choice_is_seeded_and_bounded():
     assert pick in values
 
 
+def test_the_scenario_pools_are_wide_enough_for_repeat_airings():
+    # owner 2026-11-23: 「毎回同じシナリオ」— 5 人の被害者 × 5 か所では、
+    # 繰り返し放送で同じ組み合わせが出やすい。組み合わせの空間を広げる。
+    assert len(mystery_case.VICTIMS) >= 10
+    assert len(mystery_case.PLACES) >= 10
+    assert len(mystery_case.SUSPECT_POOL) >= 12
+    combos = {(generate(seed).victim, generate(seed).place) for seed in range(60)}
+    assert len(combos) >= 40
+
+
+def test_every_suspect_role_has_a_trace():
+    # 手がかりが持ち主を名指しできるよう、全ての役職に痕跡があること。
+    for _name, role in mystery_case.SUSPECT_POOL:
+        assert role in mystery_case.TRACE_BY_ROLE
+
+
 def test_alibi_of_unknown_partner_forms_a_bounded_sentence():
     case = generate(3)
     for index in range(len(case.suspects)):
