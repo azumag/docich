@@ -137,6 +137,8 @@ SIGNAL_LABELS = {
     'camp_recall_limit': '帰還操作が上限に達する',
     'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
     'camp_unclassified_screen': '未分類画面で帰還を取り消す',
+    'camp_dispatch_unconfirmed': '帰還入力の送信を確認できない',
+    'camp_escape_move_unconfirmed': '崖離脱のフィールド移動を確認できない',
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
@@ -204,6 +206,8 @@ PRIMARY_LABELS = {
     'camp_recall_limit': '帰還操作が上限に達する',
     'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
     'camp_unclassified_screen': '未分類画面で帰還を取り消す',
+    'camp_dispatch_unconfirmed': '帰還入力の送信を確認できない',
+    'camp_escape_move_unconfirmed': '崖離脱のフィールド移動を確認できない',
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
@@ -261,6 +265,7 @@ PRIMARY_SIGNALS = (
     ('camp_recall_failed', ('camp_recall_failed',)),
     ('camp_recall_cancelled', ('camp_recall_cancelled',)),
     ('camp_recall_unconfirmed', ('camp_recall_unconfirmed',)),
+    ('camp_escape_move_unconfirmed', ('camp_escape_move_unconfirmed',)),
     ('boss_no_battle', ('boss_no_battle',)),
     ('plan_starved', ('plan_all_settled', 'no_orders')),
     ('departure_failure', ('order_start_without_launch', 'launch_confirmation_missing',
@@ -730,11 +735,22 @@ CAMP_TERMINAL = {
     'camp_boss_redirect_aborted': ('camp_recall_failed', 'failed'),
     'camp_recall_skipped': ('camp_recall_cancelled', 'cancelled'),
     'camp_recall_unconfirmed': ('camp_recall_unconfirmed', 'unconfirmed'),
+    'camp_escape_move_unconfirmed': ('camp_escape_move_unconfirmed', 'unconfirmed'),
 }
 CAMP_OUTCOME_RANK = {'failed': 0, 'cancelled': 1, 'unconfirmed': 2}
 
 
 def _camp_reason_code(decision, event, reason):
+    if decision == 'camp_escape_move_unconfirmed':
+        return 'camp_escape_move_unconfirmed'
+    # The explicit terminal event is authoritative. The shared Japanese
+    # fallback sentence used to contain "到着" even when no A receipt existed,
+    # so substring matching could label a pre-dispatch failure as an arrival
+    # failure (docich#5248).
+    if event == 'dispatch_unconfirmed':
+        return 'camp_dispatch_unconfirmed'
+    if event == 'arrival_unconfirmed':
+        return 'camp_arrival_unconfirmed'
     text = f"{event or ''} {reason or ''}"
     if 'camp_menu_not_opened' in text or 'メニューが開かない' in text:
         return 'camp_menu_unread'
@@ -746,7 +762,7 @@ def _camp_reason_code(decision, event, reason):
         return 'camp_no_roof'
     if 'unclassified_screen' in text or '未分類' in text:
         return 'camp_unclassified_screen'
-    if 'arrival_unconfirmed' in text or '到着' in text:
+    if 'arrival_unconfirmed' in text:
         return 'camp_arrival_unconfirmed'
     if decision == 'camp_boss_redirect_aborted':
         return 'camp_boss_redirect'
@@ -754,7 +770,7 @@ def _camp_reason_code(decision, event, reason):
 
 
 def _camp_event(record):
-    """One terminal camp-recall failure/cancel/unconfirmed decision, or None."""
+    """One terminal camp-recall or cliff-escape incident, or None."""
     if not isinstance(record, dict):
         return None
     decision = record.get('decision')
@@ -765,6 +781,12 @@ def _camp_event(record):
         return None
     metric = record.get('observed_metric')
     metric = metric if isinstance(metric, dict) else {}
+    # Cliff escape confirms a field-cursor move, not a camp return. Be
+    # defensive against older callers that still label it as unconfirmed.
+    if decision == 'camp_recall_unconfirmed' and metric.get('escape_move') is True:
+        return None
+    if decision == 'camp_escape_move_unconfirmed' and metric.get('escape_move') is not True:
+        return None
     if decision in CAMP_TERMINAL:
         kind, outcome = CAMP_TERMINAL[decision]
     else:
@@ -773,6 +795,9 @@ def _camp_event(record):
     camp = metric.get('camp')
     camp = list(camp) if (isinstance(camp, list) and len(camp) == 2
                           and all(type(value) is int for value in camp)) else None
+    target_cell = metric.get('target_cell')
+    target_cell = list(target_cell) if (isinstance(target_cell, list) and len(target_cell) == 2
+                                        and all(type(value) is int for value in target_cell)) else None
     castle = _bounded_text(metric.get('castle'), 48)
     general = _bounded_text(record.get('general') or metric.get('general'), 48)
     return {
@@ -784,13 +809,25 @@ def _camp_event(record):
         'resulting_event': _bounded_text(event, 64),
         'general': general,
         'camp': camp,
+        'target_cell': target_cell,
         'castle': castle,
         'stage': _bounded_text(metric.get('stage'), 32),
         'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
+        'fort_status_reads': _bounded_int(metric.get('fort_status_reads'), 0, 10 ** 6),
+        'fort_status_observations': _bounded_int(metric.get('fort_status_observations'), 0, 10 ** 6),
+        'fort_list_observations': _bounded_int(metric.get('fort_list_observations'), 0, 10 ** 6),
+        'fort_menu_observations': _bounded_int(metric.get('fort_menu_observations'), 0, 10 ** 6),
+        'input_receipt_confirmed': (
+            metric.get('input_receipt_confirmed') is True
+            if 'input_receipt_confirmed' in metric else metric.get('input_sent') is True),
         'input_sent': metric.get('input_sent') is True,
+        'picker_closed': metric.get('picker_closed') is True,
+        'escape_move': metric.get('escape_move') is True,
         'interrupted': metric.get('interrupted') is True,
+        'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
+        'screen_text': _bounded_text(metric.get('screen_text'), 120),
+        'observed_general': _bounded_text(metric.get('observed_general'), 48),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
-        'screen': _bounded_text(record.get('screen_kind'), 32),
     }
 
 
@@ -3762,13 +3799,24 @@ def render(record):
         ]
     if camp:
         body += [
-            '### キャンプ帰還',
+            ('### 野営の崖離脱移動' if camp.get('escape_move') else '### キャンプ帰還'),
             '',
             f"- 結果: {camp.get('outcome')} / 決定: {BT}{camp.get('decision')}{BT}",
             f"- 将軍: {camp.get('general') or '不明'} / 野営: {camp.get('camp')} / 帰還先: {camp.get('castle') or '不明'}",
             f"- 理由: {camp.get('reason') or '不明'} ({camp.get('reason_code')})",
             f"- stage: {camp.get('stage') or '不明'} / steps: {camp.get('steps')}"
-            f" / input_sent: {bool(camp.get('input_sent'))} / interrupted: {bool(camp.get('interrupted'))}",
+            f" / status: {camp.get('resulting_event') or '不明'}"
+            f" / escape_move: {bool(camp.get('escape_move'))}"
+            f" / target_cell: {camp.get('target_cell')}"
+            f" / input_receipt_confirmed: {bool(camp.get('input_receipt_confirmed'))}"
+            f" / picker_closed: {bool(camp.get('picker_closed'))}"
+            f" / interrupted: {bool(camp.get('interrupted'))}",
+            *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
+               f" / status {camp.get('fort_status_observations') or 0} / status一致 {camp.get('fort_status_reads') or 0}",
+               f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"
+               f" / 文言: {_md(camp.get('screen_text') or 'なし')}"
+               ] if any(camp.get(key) is not None for key in
+                        ('fort_menu_observations', 'fort_list_observations', 'fort_status_observations')) else []),
             '',
         ]
     if boss:
@@ -3921,8 +3969,10 @@ def render_comment(record):
         lines.insert(5, f"- 出撃: {sortie.get('outcome')} / {sortie.get('reason_code')}"
                         f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
     elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
-                                'camp_recall_unconfirmed'):
-        lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
+                                'camp_recall_unconfirmed', 'camp_escape_move_unconfirmed'):
+        label = '崖離脱' if camp.get('escape_move') else 'キャンプ'
+        lines.insert(5, f"- {label}: {camp.get('outcome')} / {camp.get('reason_code')}"
+                        f" / status {camp.get('resulting_event') or '不明'}"
                         f" / 将軍 {camp.get('general') or '不明'}")
     elif record.get('kind') == 'boss_phase_no_battle':
         lines.insert(5, f"- ボス: {boss.get('boss_name') or 'ボス'}"
@@ -3983,6 +4033,10 @@ def _issue_title(record):
         label = '出撃失敗' if kind == 'sortie_failed' else '出撃キャンセル'
         who = sortie.get('general') or sortie.get('step_local') or '不明'
         return f"[半熟英雄] {label}: ch{record.get('chapter')} {who}"[:100]
+    if kind == 'camp_escape_move_unconfirmed':
+        camp = record.get('camp_event') or {}
+        where = ','.join(str(value) for value in (camp.get('camp') or [])) or '位置不明'
+        return f"[半熟英雄] 野営の崖離脱移動未確認: ch{record.get('chapter')} {where}"[:100]
     if kind in ('camp_recall_failed', 'camp_recall_cancelled', 'camp_recall_unconfirmed'):
         camp = record.get('camp_event') or {}
         label = {'camp_recall_failed': 'キャンプ帰還失敗',

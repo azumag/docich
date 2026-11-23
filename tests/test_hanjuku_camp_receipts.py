@@ -166,6 +166,7 @@ def test_card_scroll_receipt_is_bound_to_run_frame_and_delivered_up(tmp_path):
 
 def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     _, state = pending(); mem = state['policy']; mem['_records'] = []
+    _flow(mem)['camp_recall_blocked'] = {'アルマムーン': 1}
     view = parse(picker(), phase='field')
     for _ in range(5):
         assert p.world_map_step(view, mem, picker()) == []
@@ -173,6 +174,15 @@ def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     assert not _flow(mem).get('recall')
     assert not _flow(mem)['recall_verification'].get('input_sent')
     assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
+    record = next(row for row in mem['_records']
+                  if row['decision'] == 'camp_recall_unconfirmed')
+    assert record['resulting_event'] == 'dispatch_unconfirmed'
+    assert '到着' not in record['reason']
+    assert record['observed_metric']['stage'] == 'await_dispatch'
+    assert record['observed_metric']['steps'] == 6
+    # The A was never receipt-confirmed, so the selected castle was not
+    # contacted and must not be learned as a refusing destination.
+    assert _flow(mem)['camp_recall_blocked'] == {'アルマムーン': 1}
 
 
 @pytest.mark.parametrize('kind',['unknown','yes_no'])
@@ -231,3 +241,89 @@ def test_a_general_that_left_the_camp_confirms_the_arrival():
     assert recall_flow.camp_arrival_check(mem) is True
     assert any(r['decision'] == 'camp_recall_arrival_confirmed' for r in mem['_records'])
     assert 'camp_verify' not in _flow(mem)
+
+
+def test_cliff_escape_request_is_not_a_camp_recall_or_arrival_read():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'target': [134, 120], 'kind': 'camp'}
+    actions = [p.pad('a')]
+    assert recall_flow._request_recall(
+        mem, state, 'アルマムーン', actions,
+        escape_move=True, target_cell=[135, 121]) == actions
+    assert 'roster_read_due' not in mem
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_requested']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_requested'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['target_cell'] == [135, 121]
+
+
+@pytest.mark.parametrize('goal', [None, 'アルマムーン'])
+def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 5, 'goal': goal,
+             'target': [134, 120], 'target_cell': [135, 121],
+             'kind': 'camp', 'escape_move': True, 'a_inputs': 1}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='text'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_unconfirmed']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_unconfirmed'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['camp'] == [134, 120]
+    assert row['observed_metric']['target_cell'] == [135, 121]
+    assert row['observed_metric']['stage'] == 'await_dispatch'
+    assert row['observed_metric']['steps'] == 6
+    assert row['observed_metric']['input_receipt_confirmed'] is False
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatch_unconfirmed'
+    assert 'recall_verification' not in flow
+    assert 'camp_recall_blocked' not in flow
+    assert mem['uncertain'] is True
+
+
+def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 0, 'goal': None,
+             'target': [134, 120], 'kind': 'camp', 'escape_move': True,
+             'a_inputs': 1, 'input_sent': True}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='map'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_dispatched']
+    assert mem['_records'][0]['resulting_event'] == 'field_move_accepted'
+    assert mem['_records'][0]['observed_metric']['input_receipt_confirmed'] is True
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatched'
+    assert 'recall_verification' not in flow
+    assert 'camp_verify' not in flow
+    assert not mem.get('uncertain')
+
+
+@pytest.mark.parametrize('decision', [
+    'camp_escape_move_requested', 'camp_escape_move_dispatched',
+    'camp_escape_move_unconfirmed'])
+def test_cliff_escape_decisions_keep_their_frame_and_input_context(tmp_path, decision):
+    module = command_bot()
+    frame = picker()
+    state = {'step': 242, 'screen_kind': 'text',
+             'policy': {'active': 'unrelated'}}
+    record = {'decision': decision, 'chart_step': 'camp_escape',
+              'strategy_variant': 'escape_move',
+              'deviation_reason': 'cliff_exit'}
+    module.persist(tmp_path, state, [record], {'hanjuku': ID},
+                   actions=[], frame_sha256=frame.digest(), frame=frame)
+    plan = json.loads((tmp_path / 'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    assert plan['chart_step'] == 'camp_escape'
+    assert plan['strategy_variant'] == 'escape_move'
+    assert plan['deviation_reason'] == 'cliff_exit'
+    assert plan['snapshot'] == 'decision-002.png'
+    assert (tmp_path / 'hanjuku_frames' / 'decision-002.png').exists()

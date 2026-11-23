@@ -1495,10 +1495,22 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             state.pop('battle_return', None)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
+    _observe_fort_frame(screen, state)
     state['steps'] = int(state.get('steps') or 0) + 1
     if state['steps'] > RECALL_LIMIT:
-        _record(mem, 'camp_recall_aborted',
-                observed_metric={'stage': state.get('stage'), 'steps': state['steps']},
+        metric = {'stage': state.get('stage'), 'steps': state['steps']}
+        if state.get('stage') in FORT_STAGES:
+            metric.update({
+                'general': state.get('general'),
+                'fort_status_reads': int(state.get('fort_status_reads') or 0),
+                'fort_status_observations': int(state.get('fort_status_observations') or 0),
+                'fort_list_observations': int(state.get('fort_list_observations') or 0),
+                'fort_menu_observations': int(state.get('fort_menu_observations') or 0),
+                'screen_kind': state.get('fort_last_screen_kind'),
+                'screen_text': state.get('fort_last_screen_text'),
+                'observed_general': state.get('fort_last_observed_general'),
+            })
+        _record(mem, 'camp_recall_aborted', observed_metric=metric,
                 reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
         _flow(mem).pop('recall', None)
         mem['uncertain'] = True
@@ -2128,6 +2140,35 @@ def in_fort_route(state):
     return state.get('stage') in FORT_STAGES
 
 
+def _observe_fort_frame(screen, state):
+    """Keep bounded evidence for an unread 砦 route (#5252).
+
+    This is diagnostic only: it never changes the selected general or sends
+    input. The global recall limit remains the only retry bound.
+    """
+    stage = state.get('stage')
+    if stage not in FORT_STAGES:
+        return
+    key = f'{stage}_observations'
+    state[key] = min(RECALL_LIMIT + 1, int(state.get(key) or 0) + 1)
+    kind = getattr(screen, 'kind', None)
+    state['fort_last_screen_kind'] = kind[:32] if isinstance(kind, str) else 'unknown'
+    text = getattr(screen, 'text', None)
+    excerpt = ' '.join(text.split())[:120] if isinstance(text, str) else ''
+    if excerpt:
+        state['fort_last_screen_text'] = excerpt
+    else:
+        state.pop('fort_last_screen_text', None)
+    if stage == 'fort_status':
+        from . import house
+        info = house.general_status(screen)
+        observed = info.get('general') if isinstance(info, dict) else None
+        if isinstance(observed, str) and observed:
+            state['fort_last_observed_general'] = observed[:48]
+        else:
+            state.pop('fort_last_observed_general', None)
+
+
 def enter_fort(mem, state):
     """Start the 砦's own route: its generals leave by しゅつげき, not by きかん."""
     state.update(stage='fort_menu', steps=0, camp_kind='dome')
@@ -2268,7 +2309,8 @@ def _request_recall(mem, state, goal, actions, **fields):
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
-    if goal:
+    escape_move = fields.get('escape_move') is True
+    if goal and not escape_move:
         # The destination's own list is the arrival receipt for a recalled
         # camp (the field shows no marker for it). Ask the corridor probe to
         # read that castle so the recalled generals become visible instead of
@@ -2278,11 +2320,19 @@ def _request_recall(mem, state, goal, actions, **fields):
         # castle.
         mem.setdefault('roster_read_due', {})[goal] = (
             int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-    _record(mem, 'camp_recall_requested', chart_step=None,
+    if escape_move:
+        decision = 'camp_escape_move_requested'
+        resulting_event = 'field_move_requested'
+        reason = '崖離脱のフィールド移動入力を予定し、送信・画面遷移は未確認として保持'
+    else:
+        decision = 'camp_recall_requested'
+        resulting_event = 'planned_not_yet_sent'
+        reason = '実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持'
+    _record(mem, decision, chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
-                             'hero_intended': bool(state.get('hero')), **fields},
-            resulting_event='planned_not_yet_sent',
-            reason='実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持')
+                             'hero_intended': bool(state.get('hero')),
+                             'escape_move': escape_move, **fields},
+            resulting_event=resulting_event, reason=reason)
     return actions
 
 
@@ -2317,52 +2367,97 @@ def _recall_dispatch_step(screen, mem, state):
                   else 'arrival_unconfirmed' if state.get('input_sent')
                   else 'dispatch_unconfirmed')
         goal = state.get('goal')
-        if not interrupted and status == 'dispatch_unconfirmed' and isinstance(goal, str):
-            # Only a dispatch that never left counts as a refused castle. The
-            # arrival read missing (``arrival_unconfirmed``) says nothing about
-            # the march: the general may have arrived with the roster frame
-            # missed. Counting it blocked every castle over the months
-            # (g1190 14-x: アルマムーン/カラ/シマウ... at 3) and left the camp
-            # looping on the broken whole-island picker instead of its visible
-            # home castle.
-            blocked = _flow(mem).setdefault('camp_recall_blocked', {})
-            if isinstance(blocked, dict):
-                blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)
-        _flow(mem)['recall_verification'] = {
+        escape_move = state.get('escape_move') is True
+        # A missing input receipt is a source/transport/receipt-path uncertainty,
+        # not evidence that the selected destination refused this camp. Keep
+        # castle ranking unchanged until destination-specific refusal evidence
+        # exists (docich#5250).
+        verification = {
             **state, 'status': status, 'interrupted': interrupted,
             **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
         }
+        # A cliff escape uses the same bounded dispatch receipt, but it must
+        # not replace a real recall's arrival proof. camp_recheck consumes only
+        # recall_verification for named arrival reads.
+        if escape_move:
+            _flow(mem)['escape_move_verification'] = {
+                'status': status, 'interrupted': interrupted,
+                **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
+                'escape_move': True, 'target': state.get('target'),
+                'target_cell': state.get('target_cell'),
+                'requested_tick': state.get('requested_tick'),
+                'steps': state.get('steps'),
+                'input_sent': bool(state.get('input_sent')),
+                'picker_closed': bool(state.get('picker_closed')),
+            }
+        else:
+            _flow(mem)['recall_verification'] = verification
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
                          else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
+        camp_target = state.get('target')
+        if isinstance(camp_target, tuple):
+            camp_target = list(camp_target)
+        target_cell = state.get('target_cell')
+        if isinstance(target_cell, tuple):
+            target_cell = list(target_cell)
+        terminal_metric = {
+            'castle': goal,
+            'camp': camp_target,
+            'target_cell': target_cell,
+            'stage': state.get('stage'),
+            'steps': state.get('steps'),
+            'status': status,
+            'escape_move': escape_move,
+            'input_receipt_confirmed': bool(state.get('input_sent')),
+            'input_sent': bool(state.get('input_sent')),
+            'picker_closed': bool(state.get('picker_closed')),
+            'interrupted': interrupted,
+            'general': state.get('general') if state.get('fort') else None,
+        }
         if accepted:
-            # The dispatch was accepted; only its arrival is still unknown, and
-            # camp_recheck's named roster read owns that (arrival_request).
-            _record(mem, 'camp_recall_dispatched', chart_step=None,
-                    observed_metric={'castle': state.get('goal'),
-                                     'camp': state.get('target'),
-                                     'general': state.get('general') if state.get('fort') else None},
-                    resulting_event='accepted_awaiting_arrival',
-                    reason='帰還ピッカーが閉じて受理されたため、到着は名簿の実読みで確認する')
-            _remember_camp_verify(mem, state)
+            if escape_move:
+                # The map return after this A accepts the field move away from
+                # the cliff; it is not a camp-return dispatch or arrival proof.
+                _record(mem, 'camp_escape_move_dispatched', chart_step=None,
+                        observed_metric=terminal_metric,
+                        resulting_event='field_move_accepted',
+                        reason='崖離脱のフィールド移動が受理されたため、次の観測で野営位置を再確認する')
+            else:
+                # The dispatch was accepted; only its arrival is still unknown, and
+                # camp_recheck's named roster read owns that (arrival_request).
+                _record(mem, 'camp_recall_dispatched', chart_step=None,
+                        observed_metric={'castle': state.get('goal'),
+                                         'camp': state.get('target'),
+                                         'general': state.get('general') if state.get('fort') else None},
+                        resulting_event='accepted_awaiting_arrival',
+                        reason='帰還ピッカーが閉じて受理されたため、到着は名簿の実読みで確認する')
+                _remember_camp_verify(mem, state)
         else:
             mem['uncertain'] = True
-            _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
-                    'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
-                    'interrupted': interrupted,
-                    'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
-                    reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
-        if (status == 'arrival_unconfirmed' and isinstance(state.get('goal'), str)
-                and state.get('input_sent')):
+            if escape_move:
+                _record(mem, 'camp_escape_move_unconfirmed', chart_step=None,
+                        observed_metric=terminal_metric,
+                        resulting_event='field_move_unconfirmed',
+                        reason='崖離脱のフィールド移動の送信・画面遷移を確認できず、次回観測へ未確認として保持')
+            else:
+                reason = ('帰還Aの送信receiptを確認できず、送信段階で未確認として保持'
+                          if status == 'dispatch_unconfirmed' else
+                          '帰還A送信後の受理・到着を確認できず、未確認として保持')
+                _record(mem, 'camp_recall_unconfirmed', chart_step=None,
+                        observed_metric=terminal_metric, resulting_event=status,
+                        reason=reason)
+        if (not escape_move and status == 'arrival_unconfirmed'
+                and isinstance(goal, str) and state.get('input_sent')):
             # docich#5127 (owner 2026-11-23): an input that was sent but whose
             # picker did not close inside the window may still be walking. Give
             # it the same bounded destination-roster read an accepted dispatch
             # gets, so arrival can be confirmed instead of ending "unconfirmed"
             # and leaving the general unknown.
-            mem.setdefault('roster_read_due', {})[state['goal']] = (
+            mem.setdefault('roster_read_due', {})[goal] = (
                 int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-        if status == 'arrival_unconfirmed' and not state.get('picker_closed'):
+        if not escape_move and status == 'arrival_unconfirmed' and not state.get('picker_closed'):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
             # general never moved. Remember the pair so the next attempt picks
@@ -2374,7 +2469,6 @@ def _recall_dispatch_step(screen, mem, state):
             # (camp, castle) pair until _recall_exhausted abandoned the camp
             # (docich#4755 follow-up: generals stuck in field camps).
             camp = state.get('target')
-            goal = state.get('goal')
             if (isinstance(camp, (list, tuple)) and len(camp) == 2
                     and isinstance(goal, str) and goal):
                 failures = _flow(mem).setdefault('recall_goal_failures', {})

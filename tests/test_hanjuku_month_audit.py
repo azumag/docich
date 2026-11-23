@@ -416,6 +416,36 @@ def test_camp_terminal_decisions_are_classified():
     assert unconfirmed['kind'] == 'camp_recall_unconfirmed'
     assert unconfirmed['reason_code'] == 'camp_arrival_unconfirmed'
     assert unconfirmed['input_sent'] is True
+    dispatch = audit._camp_event(_camp_record(
+        'camp_recall_unconfirmed', event='dispatch_unconfirmed',
+        reason='帰還の本人・移動・到着を確認できず未確認として保持',
+        metric={'castle': 'アルマムーン', 'camp': [134, 120],
+                'stage': 'await_dispatch', 'steps': 6,
+                'input_sent': False, 'picker_closed': False,
+                'escape_move': False}))
+    assert dispatch['reason_code'] == 'camp_dispatch_unconfirmed'
+    assert dispatch['resulting_event'] == 'dispatch_unconfirmed'
+    assert dispatch['stage'] == 'await_dispatch' and dispatch['steps'] == 6
+    assert dispatch['camp'] == [134, 120]
+    assert dispatch['picker_closed'] is False and dispatch['escape_move'] is False
+    assert dispatch['input_receipt_confirmed'] is False
+    assert audit._camp_event(_camp_record(
+        'camp_recall_unconfirmed', event='dispatch_unconfirmed',
+        metric={'escape_move': True})) is None
+    escape = audit._camp_event(_camp_record(
+        'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+        metric={'escape_move': True, 'camp': [134, 120], 'target_cell': [135, 121],
+                'stage': 'await_dispatch', 'steps': 6, 'input_sent': False}))
+    assert escape['kind'] == 'camp_escape_move_unconfirmed'
+    assert escape['reason_code'] == 'camp_escape_move_unconfirmed'
+    assert escape['escape_move'] is True and escape['camp'] == [134, 120]
+    assert escape['target_cell'] == [135, 121]
+    assert audit._camp_event(_camp_record(
+        'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+        metric={'escape_move': False})) is None
+    assert audit._camp_event(_camp_record(
+        'camp_escape_move_dispatched', event='field_move_accepted',
+        metric={'escape_move': True})) is None
     group = audit._camp_event(_camp_record(
         'camp_group_screen', event='unclassified_screen_closed', reason='未分類'))
     assert group['kind'] == 'camp_recall_cancelled'
@@ -428,8 +458,12 @@ def test_camp_failure_is_recorded_and_titled(runtime_dir):
     value = state(9, '1-1', 0)
     seen = []
     audit.observe(runtime_dir, audit.capture(value), value,
-                  [_camp_record('camp_recall_aborted', reason='上限',
-                                metric={'stage': 'menu', 'steps': 91})],
+                  [_camp_record('camp_recall_aborted', reason='上限', metric={
+                      'stage': 'fort_status', 'steps': 91, 'general': 'ヴィーナス',
+                      'fort_status_reads': 0, 'fort_status_observations': 90,
+                      'fort_list_observations': 2, 'fort_menu_observations': 1,
+                      'screen_kind': 'text', 'screen_text': 'しろのなかにいます',
+                      'observed_general': 'エピィ'})],
                   now=1000, on_sealed=seen.append)
     records = audit.load_incidents(runtime_dir)
     assert len(records) == 1
@@ -437,8 +471,16 @@ def test_camp_failure_is_recorded_and_titled(runtime_dir):
     assert record['kind'] == 'camp_recall_failed'
     assert record['auto_file'] is True
     assert record['camp_event']['reason_code'] == 'camp_recall_limit'
+    assert record['camp_event']['general'] == 'ヴィーナス'
+    assert record['camp_event']['fort_status_reads'] == 0
+    assert record['camp_event']['fort_status_observations'] == 90
+    assert record['camp_event']['screen'] == 'text'
+    assert record['camp_event']['observed_general'] == 'エピィ'
+    rendered = audit.render(record)
     assert 'キャンプ帰還失敗' in audit._issue_title(record)
-    assert '### キャンプ帰還' in audit.render(record)
+    assert '### キャンプ帰還' in rendered
+    assert '砦観測: menu 1 / list 2 / status 90 / status一致 0' in rendered
+    assert 'しろのなかにいます' in rendered
     assert len(seen) == 1
 
 
@@ -454,6 +496,50 @@ def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
                   now=2000)
     kinds = [row['kind'] for row in audit.load_incidents(runtime_dir)]
     assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
+
+
+def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_recall_unconfirmed', event='dispatch_unconfirmed',
+                      reason='帰還Aの送信receiptを確認できず、送信段階で未確認として保持',
+                      metric={'camp': [134, 120], 'castle': None,
+                              'stage': 'await_dispatch', 'steps': 6,
+                              'input_sent': False, 'picker_closed': False,
+                              'input_receipt_confirmed': False,
+                              'escape_move': False, 'interrupted': False})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['camp_event']
+    assert event['reason_code'] == 'camp_dispatch_unconfirmed'
+    assert event['resulting_event'] == 'dispatch_unconfirmed'
+    assert event['stage'] == 'await_dispatch' and event['steps'] == 6
+    assert event['input_receipt_confirmed'] is False
+    body = audit.render(record)
+    assert 'status: dispatch_unconfirmed' in body
+    assert 'escape_move: False' in body
+    assert 'input_receipt_confirmed: False' in body
+
+
+def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+                      reason='崖離脱のフィールド移動の送信・画面遷移を確認できず',
+                      metric={'camp': [134, 120], 'castle': None,
+                              'stage': 'await_dispatch', 'steps': 6,
+                              'target_cell': [135, 121],
+                              'input_sent': False, 'picker_closed': False,
+                              'escape_move': True, 'interrupted': False})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'camp_escape_move_unconfirmed'
+    assert '野営の崖離脱移動未確認' in audit._issue_title(record)
+    assert '### 野営の崖離脱移動' in audit.render(record)
+    assert 'target_cell: [135, 121]' in audit.render(record)
+    assert '- 崖離脱: unconfirmed / camp_escape_move_unconfirmed' in audit.render_comment(record)
 
 
 def test_camp_repeat_is_cooled_down(runtime_dir):
