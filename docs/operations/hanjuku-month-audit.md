@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1410）
+## キャンプ帰還の失敗・キャンセル（v1410 / v1434）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -72,10 +72,16 @@ issue化の既定は `high` のみ。
 | `camp_boss_redirect_aborted` | `camp_recall_failed` | ボス再出撃の帰還失敗 |
 | `camp_recall_skipped` | `camp_recall_cancelled` | 自軍城の屋根が見えず帰還先を選べず取消 |
 | `camp_group_screen`（`unclassified_screen_closed`） | `camp_recall_cancelled` | 未分類画面で帰還を閉じる |
-| `camp_recall_unconfirmed` | `camp_recall_unconfirmed` | A送信後の本人・到着を確認できない |
+| `camp_recall_unconfirmed` | `camp_recall_unconfirmed` | `dispatch_unconfirmed`（A送信receipt未確認）と `arrival_unconfirmed`（A送信済み・受理/到着未確認）を区別 |
+| `camp_escape_move_dispatched` / `camp_escape_move_unconfirmed` | camp recall incident対象外 | 崖離脱のフィールドカーソル移動。帰還先の到着証拠には使わない |
 
-- 将軍・野営位置・帰還先・stage/steps・input_sent/interrupted・理由・
-  直前120秒の決定・計画/在城/flowを1件に保存する。
+- 将軍・野営位置・帰還先・stage/steps・status・input_sent/picker_closed/
+  escape_move/interrupted・理由・直前120秒の決定・計画/在城/flowを1件に保存する。
+- `resulting_event` を理由文より優先して分類する。`dispatch_unconfirmed` は
+  送信段階、`arrival_unconfirmed` は送信後の受理/到着段階であり、共通の
+  日本語理由文に「到着」が含まれるかどうかでは分類しない。
+- `escape_move=true` は帰還Aではなく崖離脱のフィールド移動A。`camp_escape_move_*`
+  として記録し、帰還先の拒否回数・到着確認・camp recall issueへ混入させない。
 - 同じ `(chapter, kind, reason_code, camp, general, castle)` は900秒cooldown。
   連続する同一事象でissueを乱発しない。
 - issue題名は `[半熟英雄] キャンプ帰還失敗/キャンセル/未確認: ch<章> <将軍または城>`。
