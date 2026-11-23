@@ -4569,5 +4569,24 @@ def test_summon_menu_records_a_missed_carried_card_for_the_audit():
                                    'cards_unclassified': [], 'cards_missing': [],
                                    'summon_card_scroll': 3}}}
     actions, state = decide(c.frame(), state)
+    assert actions and actions[0]['buttons'] == ['a']
     assert state['policy']['battle'].get('boss_card_missed_noted') is True
-    assert actions and actions[0]['buttons'] in (['a'], ['b'])
+
+
+def test_summon_menu_does_not_file_card_miss_before_attack_cursor_is_read():
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': [], 'cards_selected': [],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    _, state = decide(c.frame(), state)
+    assert not state['policy']['battle'].get('boss_card_missed_noted')
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
