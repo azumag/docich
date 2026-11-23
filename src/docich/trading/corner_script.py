@@ -335,6 +335,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
         f"{_slot_guidance(facts)}"
+        f"{news_guidance}"
         "【ニュースの扱い】\n"
         f"{research_note}"
         "- **見出しの文言をそのまま読み上げず、媒体名も口に出さないでください。** 「『見出し』（媒体）」という紹介は禁止です。"
@@ -1130,6 +1131,28 @@ def build_next_prompt(
         '"rationale": "検証方法と反証条件", "evidence": "根拠", "confidence": "low|medium|high"}]'
         if news_hints else ""
     )
+    news_guidance = ""
+    if target_key == "news":
+        news_items = research.get("news_items") if isinstance(research.get("news_items"), list) else []
+        backend = str(research.get("research_backend") or "")
+        if backend == "websearch_verified_body" and news_items:
+            news_guidance = (
+                "【ニュース本文の取得状態: 検証済み本文】\\n"
+                "- news_items.summary はHTTPS本文からreceipt/hash検証を通した抜粋です。抜粋に書かれた事実を中心に説明し、"
+                "媒体・本文の事実とあなたの分析を分けてください。抜粋にない詳細や因果は補わないでください。\\n"
+            )
+        elif backend == "google_news_wikipedia" and news_items:
+            news_guidance = (
+                "【ニュース本文の取得状態: 見出しとRSS要約のみ】\\n"
+                "- Google News RSSのtitle/source/published_at/summaryだけが根拠です。summaryも記事全文ではありません。"
+                "本文を読んだように語らず、見出しから確認できる範囲と推測を分け、方向や因果を断定しないでください。\\n"
+            )
+        else:
+            news_guidance = (
+                "【ニュース本文の取得状態: 取得失敗または対象なし】\\n"
+                "- 信頼できるニュース項目は取得できていません。存在しない記事・見出し・媒体を作らず、"
+                "取得できなかったことを短く明示してください。ニュース枠は省略せず、他の実データとの関係だけを慎重に述べてください。\\n"
+            )
     label = SEGMENT_LABELS.get(target_key, "")
     if target_key == "strategy" and facts.get("slot_strategies"):
         label = "銘柄別の戦略"
