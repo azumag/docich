@@ -483,7 +483,8 @@ def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
     for count in range(1, SORTIE_CANCELLED_OBSERVED_LIMIT + 1):
         _plan_region(mem)['orders']['1-A2'] = 'launched_unconfirmed'
         _plan_region(mem)['active'] = '1-A2'
-        _sorties(mem)['1-A2'] = {
+        # _sorties() is a read-only accessor; seed its owning WORLD region.
+        _world(mem).setdefault('sorties', {})['1-A2'] = {
             'general': 'ゼウス', 'source': 'アルマムーン', 'target': None,
             'planned_target': 'ジョンリギ', 'purpose': 'attack',
             'status': 'launched_unconfirmed',
