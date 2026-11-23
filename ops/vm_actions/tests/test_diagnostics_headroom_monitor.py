@@ -43,7 +43,7 @@ class DiagnosticsHeadroomMonitorContractTest(unittest.TestCase):
         self.assertIn('2>"$err"', self.text)
         self.assertNotIn('cat "$RUNNER_TEMP/diagnostics-headroom.json"', self.text)
         self.assertNotIn('cat "$RUNNER_TEMP/diagnostics-headroom.err"', self.text)
-        self.assertIn("Raw diagnostics, stderr, paths, credentials, and command output are never published", self.text)
+        self.assertIn("Section values, raw diagnostics, stderr, paths, credentials, and command output are never published", self.text)
 
 
 class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
@@ -55,8 +55,6 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
                 "bad\\n::error::inject": 999,
                 "queues": "not-a-number",
                 "ai": 1200,
-                "meta": 700,
-                "extra": 500,
             },
             "others": 100,
             "total": 20000,
