@@ -33,7 +33,7 @@ _PERFORMANCE_MONEY_KEYS = {
 _PERFORMANCE_LEDGER_STATUS = {"ok", "partial", "unavailable", "invalid"}
 _PERFORMANCE_LEDGER_REASONS = {
     "ok", "ledger_missing", "ledger_read_error", "ledger_schema_invalid",
-    "ledger_invalid_row", "unpaired_sell",
+    "ledger_invalid_row", "unpaired_sell", "position_snapshot_mismatch",
 }
 _MAX_SKIP_DETAILS = 16
 

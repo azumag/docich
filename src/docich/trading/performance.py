@@ -457,6 +457,25 @@ def build_performance(
         lots[symbol][0] = held - sold
         lots[symbol][1] = max(ZERO, cost - average * sold)
 
+    # The public position snapshot must reconcile exactly with the fill-ledger
+    # lots. Otherwise an omitted or stale holding could make realized-only P/L
+    # look like complete equity.
+    position_snapshot_matches = True
+    supplied_positions: dict[str, Decimal] = {}
+    for raw_symbol, raw_amount in positions.items():
+        symbol = str(raw_symbol)
+        amount = _dec(raw_amount)
+        if amount is None:
+            position_snapshot_matches = False
+            continue
+        supplied_positions[symbol] = amount
+    for symbol, (held, _cost) in lots.items():
+        if held != supplied_positions.get(symbol, ZERO):
+            position_snapshot_matches = False
+    for symbol, amount in supplied_positions.items():
+        if amount != lots.get(symbol, [ZERO, ZERO])[0]:
+            position_snapshot_matches = False
+
     position_rows: list[dict[str, object]] = []
     unrealized = ZERO
     priced = 0
@@ -498,7 +517,7 @@ def build_performance(
         reverse=True,
     )
     ledger_complete = unpaired_sells == 0
-    complete = total_positions == valued and ledger_complete
+    complete = total_positions == valued and ledger_complete and position_snapshot_matches
     cumulative = realized_total + unrealized if complete else None
     benchmark_actual = realized_interval if ledger_complete else None
     equity = None if capital is None or cumulative is None else capital + cumulative
@@ -519,8 +538,12 @@ def build_performance(
         "interval_realized_pnl_jpy": str(realized_interval) if ledger_complete else None,
         # Deprecated compatibility alias; remove after all consumers migrate.
         "today_realized_pnl_jpy": str(realized_interval) if ledger_complete else None,
-        "ledger_status": "partial" if not ledger_complete else "ok",
-        "ledger_reason_code": "unpaired_sell" if not ledger_complete else "ok",
+        "ledger_status": "partial" if not (ledger_complete and position_snapshot_matches) else "ok",
+        "ledger_reason_code": (
+            "unpaired_sell" if not ledger_complete
+            else "position_snapshot_mismatch" if not position_snapshot_matches
+            else "ok"
+        ),
         "unpaired_sell_count": unpaired_sells,
         "unrealized_pnl_jpy": str(unrealized) if complete else None,
         "cumulative_pnl_jpy": None if cumulative is None else str(cumulative),

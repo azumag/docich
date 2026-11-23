@@ -555,3 +555,28 @@ def test_realized_pnl_after_oversell_uses_the_next_fresh_inventory_lot(tmp_path)
 
     assert realized_pnl_for_fill(db, later_buy.fill_id) is None
     assert realized_pnl_for_fill(db, later_sell.fill_id) == Decimal("10")
+
+
+
+@pytest.mark.parametrize("positions", [{}, {"BTC/JPY": "2"}])
+def test_performance_position_snapshot_must_match_fill_ledger(tmp_path, positions):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    _zero_cost_broker(ledger).fill(_decision("snapshot-buy", "buy", "1", "100"), timestamp=1000.0)
+    ledger.close()
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions=positions,
+        prices={"BTC/JPY": "110"},
+        now=1200.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "partial"
+    assert perf["ledger_reason_code"] == "position_snapshot_mismatch"
+    assert perf["realized_total_jpy"] == "0"
+    assert perf["unrealized_pnl_jpy"] is None
+    assert perf["cumulative_pnl_jpy"] is None
+    assert perf["equity_jpy"] is None
