@@ -2327,7 +2327,21 @@ def next_order(mem):
     base = [o for o in chart.orders(mem.get('chapter') or 0)
             if o['step'] not in steps and o['target'] not in owned] if _plan_region(mem).get('chart_plan') else []
     chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
-    for order in (*current, *retries, *base):
+    order_sequence = (*current, *retries, *base)
+    # A resumed picker that closed without a verified target leaves an owed
+    # same-month retry. Keep that exact step ahead of newer chart work; it
+    # still passes every ordinary readiness/source/defender gate below.
+    resume_steps = {
+        step for step, row in (_flow(mem).get('sortie_resume') or {}).items()
+        if isinstance(row, dict) and row.get('owed') is True
+        and row.get('month') == mem.get('month')
+    }
+    if resume_steps:
+        order_sequence = (
+            *(order for order in order_sequence if order.get('step') in resume_steps),
+            *(order for order in order_sequence if order.get('step') not in resume_steps),
+        )
+    for order in order_sequence:
         if ((order['step'] in chart_steps or _is_boss_order(order, mem))
                 and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)):
