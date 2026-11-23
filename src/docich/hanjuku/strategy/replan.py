@@ -1289,12 +1289,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # one unread castle: the sortie menu opens its list and the next
         # plan sends the wave from it if a pair is there. The last probe's
         # start tick throttles re-issue while a read is still walking.
-        if allow_probe and any(garrison.get(c) for c in owned):
+        if allow_probe and any(_known_residents(mem, garrison, c) for c in owned):
             now = int(mem.get('tick') or 0)
             asked = mem.get('arrival_probe_tick') or {}
             unread = sorted(
                 (c for c in owned
-                 if garrison.get(c) is None and c not in prefer_not
+                 if _known_residents(mem, garrison, c) is None and c not in prefer_not
                  and (type(asked.get(c)) is not int
                       or now - int(asked[c]) >= routes.PROBE_INTERVAL)),
                 key=lambda c: (c == home, c))
@@ -1309,9 +1309,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # Probe at most one castle per plan, and only when the bookkeeping
         # knows nobody at all: a castle that is merely unread while other
         # generals are known is not worth a blind sortie.
-        if allow_probe and not any(garrison.get(c) for c in owned):
+        if allow_probe and not any(_known_residents(mem, garrison, c) for c in owned):
             for c in sorted((c for c in owned
-                             if garrison.get(c) is None and c not in prefer_not),
+                             if _known_residents(mem, garrison, c) is None and c not in prefer_not),
                             key=lambda c: (c == home, c)):
                 return c, MOVE_ANY_GENERAL
         return None
@@ -1428,6 +1428,16 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 wave_busy = wave_busy | {general2}
                 planned_busy.add(general2)
             extra += 1
+    # A castle that already committed a concrete boss wave must keep its
+    # remaining non-hero defender out of optional staging. Read-only source
+    # probes do not reserve a general and are deliberately excluded.
+    boss_wave_sources = {
+        order.get('source')
+        for order in (*sorties['attack'], *sorties['retake'], *boss_wave_orders)
+        if chart.is_boss_castle(order.get('target'))
+        and not order.get('source_probe')
+        and isinstance(order.get('source'), str)
+    }
     # #3266: a general already committed to a sortie above is busy for the
     # staging/refill moves below as well — one plan must not book him twice.
     busy = busy | planned_busy
@@ -1469,23 +1479,30 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 # 13:30 moved from メガパタ while ヴィーナス was still walking).
                 probe = routes.arrival_probe_due(mem, donor, cooldown=True)
                 stage_min = chart.sender_min(chapter)
+                spares = [g for g in _spares(free) if g != NAME]
+                # Once the boss is open, a source that already sent a
+                # concrete boss wave must not spend its last non-hero spare on
+                # an optional staging move. Keep one defender at every source.
+                if boss_open and donor in boss_wave_sources and len(spares) < 2:
+                    continue
                 if len(free) < stage_min and not probe:
                     continue
-                if len(free) >= stage_min and not [g for g in _spares(free) if g != NAME]:
+                if len(free) >= stage_min and not spares:
                     continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
-                    options.append((len(route), donor, route, free, probe))
+                    # Keep donor-specific spares paired with the option; the
+                    # shortest route may not belong to the last donor visited.
+                    options.append((len(route), donor, route, free, probe, spares))
             if not options:
                 continue
-            _, donor, route, free, probe = min(options, key=lambda v: (v[0], v[1]))
+            _, donor, route, free, probe, spares = min(options, key=lambda v: (v[0], v[1]))
             leg = (donor, route[1])
             if leg in seen_legs:
                 continue
             seen_legs.add(leg)
             general = (MOVE_ANY_GENERAL if len(free) < chart.sender_min(chapter)
-                       else (_defense_move_pick(mem, donor, route[1],
-                                                _spares(free)) or _spares(free)[0]))
+                       else (_defense_move_pick(mem, donor, route[1], spares) or spares[0]))
             moves.append({'general': general, 'source': donor, 'target': route[1],
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
