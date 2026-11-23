@@ -139,7 +139,9 @@ def classify(
     for run in runs:
         created = parse_created_at(run["created_at"])
         age = hours_since(created, now)
-        if run["status"] in IN_FLIGHT_STATUSES:
+        # A run that has remained queued/running beyond the freshness window
+        # must not suppress the missing-nightly alert forever.
+        if run["status"] in IN_FLIGHT_STATUSES and age < threshold_hours:
             in_flight = True
         elif run["status"] == "completed" and run["conclusion"] == "success":
             successes.append((created, age))
