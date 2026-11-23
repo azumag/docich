@@ -1233,6 +1233,17 @@ def _cursor_order_pick(screen, mem, order):
                     observed_metric={'present': present[:8]},
                     deviation_reason='主人公を前線へ出す代わりに、移動の指示を閉じる',
                     reason='主人公は前線の一つ後ろの自城に常駐させるため、行軍の代役にしない')
+            # The same move was re-minted with a new interim id every
+            # observation and reopened the sortie window (ch9 1-1: hero alone
+            # after the whole army sortied).  Remember the refusal so the
+            # cross-step guard suppresses equivalent reissues until the
+            # garrison actually changes, and retire this step.
+            from . import sortie_retry_guard as _sortie_guard
+            _sortie_guard.note_cancel(mem, order, 'hero_move_refused')
+            plan_orders = _plan_region(mem).setdefault('orders', {})
+            if plan_orders.get(step) != 'failed':
+                plan_orders[step] = 'failed' if step.startswith('I:') else 'pending'
+            _plan_region(mem)['active'] = None
             return None
     downs.pop(step, None)
     return _cursor_take(screen, mem, order, name, present)

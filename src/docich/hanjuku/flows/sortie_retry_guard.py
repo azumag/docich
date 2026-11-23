@@ -27,6 +27,10 @@ from . import map as _map
 _CANCEL_DECISIONS = frozenset({
     'sortie_held_source_defender',
     'sortie_held_hero_guard',
+    # The hero-only castle refuses a regular march at the general list and
+    # closes the sortie window.  Re-issued interim steps reopened it every
+    # ~10 s (ch9 1-1: only the hero left after every general sortied).
+    'hero_move_refused',
 })
 
 
@@ -107,6 +111,12 @@ def _remember_cancel(order, mem, decision):
         'count': count,
         'suppressed_steps': [],
     }
+
+
+def note_cancel(mem, order, decision) -> None:
+    """Record a refusal that closes the sortie window outside the hold path."""
+    if decision in _CANCEL_DECISIONS:
+        _remember_cancel(order, mem, decision)
 
 
 def _equivalent_cancel_suppressed(order, mem) -> bool:
