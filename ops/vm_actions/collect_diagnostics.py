@@ -8113,6 +8113,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1416-card-miss-after-use",
             "hanjuku-chart-v1417-stall-refresh",
             "hanjuku-chart-v1418-spend-next-card",
+            "hanjuku-chart-v1419-hero-move-backoff",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
