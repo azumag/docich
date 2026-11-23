@@ -428,8 +428,12 @@ def test_camp_failure_is_recorded_and_titled(runtime_dir):
     value = state(9, '1-1', 0)
     seen = []
     audit.observe(runtime_dir, audit.capture(value), value,
-                  [_camp_record('camp_recall_aborted', reason='上限',
-                                metric={'stage': 'menu', 'steps': 91})],
+                  [_camp_record('camp_recall_aborted', reason='上限', metric={
+                      'stage': 'fort_status', 'steps': 91, 'general': 'ヴィーナス',
+                      'fort_status_reads': 0, 'fort_status_observations': 90,
+                      'fort_list_observations': 2, 'fort_menu_observations': 1,
+                      'screen_kind': 'text', 'screen_text': 'しろのなかにいます',
+                      'observed_general': 'エピィ'})],
                   now=1000, on_sealed=seen.append)
     records = audit.load_incidents(runtime_dir)
     assert len(records) == 1
@@ -437,8 +441,16 @@ def test_camp_failure_is_recorded_and_titled(runtime_dir):
     assert record['kind'] == 'camp_recall_failed'
     assert record['auto_file'] is True
     assert record['camp_event']['reason_code'] == 'camp_recall_limit'
+    assert record['camp_event']['general'] == 'ヴィーナス'
+    assert record['camp_event']['fort_status_reads'] == 0
+    assert record['camp_event']['fort_status_observations'] == 90
+    assert record['camp_event']['screen'] == 'text'
+    assert record['camp_event']['observed_general'] == 'エピィ'
+    rendered = audit.render(record)
     assert 'キャンプ帰還失敗' in audit._issue_title(record)
-    assert '### キャンプ帰還' in audit.render(record)
+    assert '### キャンプ帰還' in rendered
+    assert '砦観測: menu 1 / list 2 / status 90 / status一致 0' in rendered
+    assert 'しろのなかにいます' in rendered
     assert len(seen) == 1
 
 
