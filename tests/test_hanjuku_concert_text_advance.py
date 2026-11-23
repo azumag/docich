@@ -162,11 +162,11 @@ def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
 
 
 def test_advancing_an_unrelated_event_restarts_the_chikujou_transition_wait():
-    mem = {'month_sub': {'kind': 'chikujou', 'build_wait': 19}}
-    key = 'text:イベント会話の本文'
-    results = [
-        event_text_advance_step(mem, 'event', 'text', key, [])
-        for _ in range(EVENT_TEXT_ADVANCE_MAX)
-    ]
-    assert results[-1] is True
-    assert mem['month_sub']['build_wait'] == 0
+    for key in ('text:イベント会話の本文', 'text:カ'):
+        mem = {'month_sub': {'kind': 'chikujou', 'build_wait': 19}}
+        results = [
+            event_text_advance_step(mem, 'event', 'text', key, [])
+            for _ in range(EVENT_TEXT_ADVANCE_MAX)
+        ]
+        assert results[-1] is True
+        assert mem['month_sub']['build_wait'] == 0

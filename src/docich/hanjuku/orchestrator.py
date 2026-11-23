@@ -220,7 +220,7 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
 def _chikujou_partial_castle_label(text, chapter):
     """Recognize a typewriter prefix of a catalog castle without changing state labels."""
     folded = ''.join(unicodedata.normalize('NFKC', text or '').split())
-    if not folded:
+    if len(folded) < 2:
         return False
     return any(''.join(unicodedata.normalize('NFKC', name).split()).startswith(folded)
                for name in chart.CASTLE_NAMES.get(chapter or 1, ()))
