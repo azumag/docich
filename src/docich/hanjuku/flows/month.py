@@ -1104,7 +1104,7 @@ def _chikujou_scroll(screen, mem, sub):
     resolved = _chikujou_list_rows(screen, chapter)
     if resolved is None:
         return _chikujou_wait(screen, mem, sub, 'castle_list_unread')
-    _, rows = resolved
+    labels, rows = resolved
     cur = _current(screen)
     if (len(rows) != 4 or len({_chikujou_castle_key(r[2]) for r in rows}) != 4
             or len({r[0] for r in rows}) != 1
@@ -1115,7 +1115,7 @@ def _chikujou_scroll(screen, mem, sub):
     state = sub.setdefault('build_scroll', {})
     stalled = int(state.get('stalled') or 0) + 1 if state.get('signature') == signature else 0
     presses = int(state.get('presses') or 0)
-    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(known) + 4:
+    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(labels) + 4:
         sub['declined'] = True
         sub['aborted'] = True
         _record(mem, 'chikujou_held', deviation_reason='castle_scroll_no_progress',
