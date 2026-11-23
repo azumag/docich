@@ -1318,9 +1318,15 @@ def step(screen, mem, frame):
     """
     state = mem.get('house')
     from .boss_pursuit import wave_active
+    from .recall import boss_phase
+    # docich#5170 (owner 2026-11-23): the whole boss phase (every road castle
+    # ours, the moving boss the only target) must be free for the boss sortie.
+    # Waiting for an active wave left the monthly roster scan owning the field
+    # for the entire phase (live: 600 s / 4250 observations, zero battles).
+    boss_phase_now = boss_phase(mem)
     if (isinstance(state, dict) and mem.get('chapter') == 9
-            and wave_active(mem)
-            and isinstance(mem.get('boss_cell'), dict)
+            and (boss_phase_now
+                 or (wave_active(mem) and isinstance(mem.get('boss_cell'), dict)))
             and state.get('phase') in HOUSE_BOSS_DEFER_PHASES):
         # The house's egg/roster walk owns the map for dozens of observations
         # while the boss waves camp (live g1288 2026-11-20 09:2x: five waves,
@@ -1329,8 +1335,11 @@ def step(screen, mem, frame):
         mem.pop('house', None)
         _record(mem, 'scan_deferred_for_boss',
                 observed_metric={'phase': state.get('phase'),
-                                 'roster_month': state.get('roster_month')},
-                reason='ボス波が飛んでいるため卵・名簿スキャンを保留し、フィールドをボス追撃へ明け渡す')
+                                 'roster_month': state.get('roster_month'),
+                                 'boss_phase': boss_phase_now},
+                reason=('ボス戦の段階（全街道城が自軍）のため卵・名簿スキャンを保留し、'
+                        'フィールドをボス追撃へ明け渡す' if boss_phase_now else
+                        'ボス波が飛んでいるため卵・名簿スキャンを保留し、フィールドをボス追撃へ明け渡す'))
         return None
     actions = _step_chain(screen, mem, frame)
     state = mem.get('house')
