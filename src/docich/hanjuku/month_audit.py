@@ -2254,37 +2254,67 @@ def _sortie_plan_order(mem, step):
     return {}
 
 
-def _sortie_carried_cards(mem, step, record):
+def _card_names(value):
+    if isinstance(value, str):
+        name = value.strip()
+        return [name] if name else []
+    if isinstance(value, list):
+        names = []
+        for card in value:
+            if isinstance(card, str) and card.strip():
+                names.append(card.strip())
+        return names
+    return []
+
+
+def _sortie_carried_cards(mem, step, record, records=None):
     carried = []
     rare = (mem.get('rare_card_kit') or {}).get(step)
-    if isinstance(rare, list):
-        carried += [card for card in rare if isinstance(card, str)]
-    elif isinstance(rare, str):
-        carried.append(rare)
+    carried += _card_names(rare)
     strong = (mem.get('strong_card_kit') or {}).get(step)
-    if isinstance(strong, str):
-        carried.append(strong)
+    carried += _card_names(strong)
     dropper = (mem.get('dropper_card_kit') or {}).get(step)
-    if isinstance(dropper, dict) and isinstance(dropper.get('card'), str):
-        carried.append(dropper['card'])
+    if isinstance(dropper, dict):
+        carried += _card_names(dropper.get('card'))
     for key in ('cards', 'card', 'cards_selected'):
-        value = record.get(key)
-        if isinstance(value, str):
-            carried.append(value)
-        elif isinstance(value, list):
-            carried += [card for card in value if isinstance(card, str)]
+        carried += _card_names(record.get(key))
     metric = record.get('observed_metric')
     metric = metric if isinstance(metric, dict) else {}
     for key in ('cards', 'card', 'cards_selected'):
-        value = metric.get(key)
-        if isinstance(value, str):
-            carried.append(value)
-        elif isinstance(value, list):
-            carried += [card for card in value if isinstance(card, str)]
+        carried += _card_names(metric.get(key))
+    # docich#5118/#5249: launch decisions do not carry a card list. Read the
+    # measured kit saved by the departure confirmation or committed binding.
+    plan = mem.get('plan') if isinstance(mem.get('plan'), dict) else {}
+    contexts = plan.get('order_context')
+    context = contexts.get(step) if isinstance(contexts, dict) else None
+    context = context if isinstance(context, dict) else {}
+    metric = context.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    for key in ('cards', 'card', 'cards_selected'):
+        carried += _card_names(metric.get(key))
+    world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+    launched = world.get('launched_orders')
+    snapshot = launched.get(step) if isinstance(launched, dict) else None
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    binding = snapshot.get('departure_binding')
+    binding = binding if isinstance(binding, dict) else {}
+    for key in ('cards', 'card', 'cards_selected'):
+        carried += _card_names(binding.get(key))
+        # Without a binding, the snapshot's top-level cards may be a copy of
+        # the plan (departure_snapshot fallback), not a measured carry receipt.
+        if binding:
+            carried += _card_names(snapshot.get(key))
+    for row in records or ():
+        if (not isinstance(row, dict) or row is record
+                or row.get('decision') != 'sortie_confirm'
+                or row.get('chart_step') != step):
+            continue
+        for key in ('cards', 'card', 'cards_selected'):
+            carried += _card_names(row.get(key))
     return carried
 
 
-def _sortie_cards_event(record, mem):
+def _sortie_cards_event(record, mem, records=None):
     if not isinstance(record, dict) or record.get('decision') not in LAUNCH_DECISIONS:
         return None
     step = record.get('chart_step')
@@ -2299,7 +2329,7 @@ def _sortie_cards_event(record, mem):
     stock = _positive_card_stock(mem)
     if not stock:
         return None
-    carried = _sortie_carried_cards(mem, step, record)
+    carried = _sortie_carried_cards(mem, step, record, records)
     if carried:
         return None
     return {
@@ -2391,7 +2421,7 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
 def _track_sortie_cards(runtime, state, after, records, now, on_sealed=None):
     mem = after.get('policy') or {}
     events = [event for event in
-              (_sortie_cards_event(record, mem) for record in records or ())
+              (_sortie_cards_event(record, mem, records) for record in records or ())
               if event]
     if not events:
         return
