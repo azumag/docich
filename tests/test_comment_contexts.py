@@ -309,18 +309,23 @@ def test_yosou_corner_context_names_the_leader_and_round_count(tmp_path):
                        'winning_outcome_id': 'o1', 'ended_at': '2026-11-01T00:00:00Z',
                        'outcomes': [{'id': 'o1', 'title': 'a', 'users': 1, 'channel_points': 100,
                                      'top_predictors': [{'user_id': 'u1', 'user_login': 'alice',
-                                                         'user_name': 'アリス',
+                                                         'user_name': 'Alice429',
                                                          'channel_points_used': 10,
                                                          'channel_points_won': 200}]},
                                     {'id': 'o2', 'title': 'b', 'users': 0, 'channel_points': 0,
                                      'top_predictors': None}]},
               corner='hanjuku')
     lb.save(root / lb.FILE, ledger)
+    from docich.comment import prompt
     text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    final_context = prompt.with_defaults({'game_state_context': text})['game_state_context']
     assert '予想王' in text
     assert '確定した予想は1件' in text
-    assert 'アリス' in text
-    assert len(text) <= 600
+    assert 'Alice429' in text
+    assert 'Alice429' in final_context
+    assert '確定した予想は1件' in final_context
+    assert '\n' in text
+    assert len(final_context) <= 600
 
 
 def test_yosou_corner_falls_back_without_a_ledger(tmp_path):
@@ -329,6 +334,28 @@ def test_yosou_corner_falls_back_without_a_ledger(tmp_path):
         'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
     text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
     assert isinstance(text, str) and text
+    assert '確定した予想は' not in text
+
+
+def test_yosou_corner_reports_zero_for_an_existing_empty_ledger(tmp_path):
+    from docich import prediction_leaderboard as lb
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    lb.save(root / lb.FILE, lb.new_ledger())
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '確定した予想は0件' in text
+    assert '的中率トップは' not in text
+
+
+def test_yosou_corner_falls_back_for_a_corrupt_ledger(tmp_path):
+    from docich import prediction_leaderboard as lb
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    (root / lb.FILE).write_text('{', encoding='utf-8')
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '確定した予想は' not in text
 
 
 def test_mystery_corner_context_names_the_case_and_phase(tmp_path):
