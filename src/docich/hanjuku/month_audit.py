@@ -3967,7 +3967,8 @@ def render_comment(record):
                         f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
     elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
                                 'camp_recall_unconfirmed', 'camp_escape_move_unconfirmed'):
-        lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
+        label = '崖離脱' if camp.get('escape_move') else 'キャンプ'
+        lines.insert(5, f"- {label}: {camp.get('outcome')} / {camp.get('reason_code')}"
                         f" / status {camp.get('resulting_event') or '不明'}"
                         f" / 将軍 {camp.get('general') or '不明'}")
     elif record.get('kind') == 'boss_phase_no_battle':
