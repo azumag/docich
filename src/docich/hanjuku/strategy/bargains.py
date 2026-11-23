@@ -351,6 +351,16 @@ def plan_bargains(mem, shop, header, *, listed=None):
     # belong to the ordinary merchant only.
     rich_targets = [*RICH_MERCHANT_CARDS,
                     *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)]
+    # Owner 2026-11-23: strong cards first, not the fixed catalogue order.
+    # The listed price is the measured strength; without a listing the
+    # catalogue price is the only stable proxy.  Names stay deterministic on
+    # ties so retries/hotloads keep the same order.
+    if isinstance(listed, dict):
+        rich_targets.sort(key=lambda name: (
+            -((listed.get(name) if type(listed.get(name)) is int else KNOWN_PRICES.get(name)) or 0),
+            -(KNOWN_PRICES.get(name) or 0), name))
+    else:
+        rich_targets.sort(key=lambda name: (-(KNOWN_PRICES.get(name) or 0), name))
     if rich and listed is None:
         # #4988 moved the BARGAIN_TARGETS pass behind ``not rich``. Without a
         # listing there is no real price, but an empty ``items`` list means the
