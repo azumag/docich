@@ -151,7 +151,8 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
 
 def test_real_interim_caller_keeps_registered_order_with_the_same_valid_identity():
     state, active = caller_adopted_interim()
-    _, updated = decide(field(), state, run_identity=IDENTITY)
+    actions, updated = decide(field(), state, run_identity=IDENTITY)
+    assert actions == []
     assert _plan_region(updated['policy']).get('active') == active
     with chart.map_context(updated['policy']):
         assert len(chart.castles(3)) == 9
