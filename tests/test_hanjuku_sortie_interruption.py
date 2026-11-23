@@ -378,3 +378,60 @@ def test_marker_return_records_resumed_without_spending_the_budget():
     assert len(resumed) == 1
     assert resumed[0]['observed_metric']['resume']['driven'] is False
     assert resumed[0]['observed_metric']['resume']['used'] == 0
+
+
+def test_resume_source_verification_skips_normal_cancel_suppression_before_map_step():
+    """A resume-owed source read must keep the same order startable."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert (_flow(mem).get('sortie_resume') or {})['1-A2']['owed'] is True
+    assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
+    assert not [r for r in mem['_records'] if r['decision'] == 'sortie_cancelled_observed']
+
+    # Exercise the real map gate: it must not clear the resumed order as a
+    # normal cancellation suppressed by the generic retry guard.
+    p.map_step(screen('map'), mem, None)
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert not [r for r in mem['_records'] if r['decision'] == 'order_precondition_lost']
+
+
+def _miss_resumed_picker_target(mem):
+    order = p._order(mem)
+    assert order and order['step'] == '1-A2'
+    actions = None
+    for _ in range(p.TARGET_MISS_LIMIT):
+        actions = p._unverified_target(screen('map_target'), mem, order, None)
+    return actions
+
+
+def test_resumed_picker_target_misses_use_resume_budget_not_target_cancel_limit():
+    """Two target-confirmation failures exhaust the two reopens without a new battle."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+
+    _reopen_picker(mem)
+    row = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert row['used'] == 1 and row['picker_active'] is True
+    assert _miss_resumed_picker_target(mem) == [p.pad('b')]
+    row = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert row['used'] == 1 and row['owed'] is True
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert not (mem.get('target_cancel') or {}).get('1-A2')
+
+    # No second battle occurs: the second failed target confirmation itself
+    # consumes the remaining picker-reopen budget.
+    _reopen_picker(mem)
+    row = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert row['used'] == 2 and row['picker_active'] is True
+    assert _miss_resumed_picker_target(mem) == [p.pad('b')]
+    assert '1-A2' not in (_flow(mem).get('sortie_resume') or {})
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None
+    assert not (mem.get('target_cancel') or {}).get('1-A2')
+    assert _outcomes(mem) == [None, 'resumed', 'resumed', 'exhausted']
