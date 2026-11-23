@@ -141,6 +141,7 @@ def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
         'これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
         'どのしろをぞうちく',
         'どのしろをぞうちくなさいますか?',
+        'カラじょうですな',  # partial typewriter quote
         'カラじょうですな5Gかかりますがよろしいですかなうむッ!',
         'カラじょうのレベルが2',
         'おかねがたりません',

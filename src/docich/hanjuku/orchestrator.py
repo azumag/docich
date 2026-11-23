@@ -229,7 +229,7 @@ def _chikujou_menu_text_owned(mem, kind, key):
                     'よろしいですかな', 'かかりますが',
                     'おかねがたりません', 'しょうぐんがおりませなんだ'))
             or ('じょう' in text and any(token in text for token in
-                                          ('レベル', 'ぞうちく', 'なりました'))))
+                                          ('レベル', 'ぞうちく', 'なりました', 'ですな'))))
 
 
 def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
