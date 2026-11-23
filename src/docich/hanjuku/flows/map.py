@@ -76,6 +76,14 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     order = _order(mem)
     attempt = _flow(mem).get('sortie_attempt')
     if not attempt and order and previous_kind == 'map_target':
+        resume = (_flow(mem).get('sortie_resume') or {}).get(order['step'])
+        if (isinstance(resume, dict) and resume.get('owed') is True
+                and resume.get('picker_active') is not True):
+            # B intentionally closed a resumed picker after its target miss.
+            # The owed retry is not a fresh interrupted departure: rebuilding
+            # an attempt from stale order_context would re-enter normal cancel
+            # suppression before the remaining resume slot can run.
+            return
         context = (_plan_region(mem).get('order_context') or {}).get(order['step']) or {}
         if context.get('actual_general'):
             attempt = {'step': order['step'], 'target_seen': True}
