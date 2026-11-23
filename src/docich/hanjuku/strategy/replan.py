@@ -1482,6 +1482,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
+                    # Keep donor-specific spares paired with the option; the
+                    # shortest route may not belong to the last donor visited.
                     options.append((len(route), donor, route, free, probe, spares))
             if not options:
                 continue
