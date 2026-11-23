@@ -222,6 +222,26 @@ def _month_nav_stuck(mem):
     return isinstance(nav, dict) and nav.get('cancel_sent') is True
 
 
+def _month_menu_hint_only(screen):
+    """Whether the readable foreground glyphs can only belong to the menu hint.
+
+    The hand can cover part of 「じゅうじキー」, so an exact substring check
+    is too strict. Accept a two-or-more-character subsequence only; any other
+    dialogue remains owned by the foreground-text handler.
+    """
+    body = _month_dialog_body(screen).replace(' ', '')
+    hint = 'じゅうじキー'
+    if len(body) < 2:
+        return False
+    pos = 0
+    for char in body:
+        pos = hint.find(char, pos)
+        if pos < 0:
+            return False
+        pos += 1
+    return True
+
+
 def _month_opened(move, mem, label: str):
     """'here' from the guarded walk, or a blind-nav plan ending on ``label``.
 
@@ -275,7 +295,8 @@ def _month_menu_move(screen: Screen, mem, label: str):
     # message, not the menu. The only exempt body is the menu's own じゅうじキー
     # hint line; any other foreground text is owned by _month_text_advance or
     # the hold path.
-    dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
+    dialogue_free = (_month_menu_quiet(screen) or screen.has('じゅうじキー')
+                     or (hand and hand[1] >= 175 and _month_menu_hint_only(screen)))
     exhausted = _blind_nav_exhausted(mem, label)
     if (not exhausted and screen.kind != 'discharge_menu'
             and ((hand and hand[1] >= 175) or _month_nav_stuck(mem))
