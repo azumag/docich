@@ -905,6 +905,8 @@ def _sortie_reason_code(decision, record):
         return 'sortie_status_screen'
     if '卵破損' in text:
         return 'sortie_hero_egg'
+    if '出撃要求が送信・受理されない' in text:
+        return 'sortie_order_unaccepted'
     return 'sortie_order_failed'
 
 
@@ -976,12 +978,13 @@ def _build_sortie_incident(runtime, state, after, event, now):
                  'duration_s': 0.0, 'first_tick': mem.get('tick'),
                  'last_tick': mem.get('tick'), 'duration_ticks': None,
                  'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
-    # docich#5162 (owner 2026-11-23): an unaccepted order_failed / sortie_order_failed
-    # in a month that launched other sorties is a transient. Do not downgrade
-    # confirmed launch failures or exhausted combat retries: those remain high.
+    # docich#5162 (owner 2026-11-23): only the explicit "order was not sent or
+    # accepted" reason is transient when the month has other confirmed launches.
+    # Unknown order failures, confirmed launch failures, and exhausted retries
+    # remain high so an unrelated failure cannot be silently downgraded.
     confidence, confidence_reasons = 'high', []
     if (event.get('decision') == 'order_failed'
-            and event.get('reason_code') == 'sortie_order_failed'
+            and event.get('reason_code') == 'sortie_order_unaccepted'
             and type(confirmed) is int and confirmed > 0):
         confidence = 'medium'
         confidence_reasons = ['sortie_month_launched']
