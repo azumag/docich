@@ -96,6 +96,14 @@ def test_build_facts_survives_missing_files(tmp_path):
     assert facts["policy"]["momentum_lookback"] == 6
 
 
+def test_prompt_keeps_news_provenance_and_benchmark_caveat(tmp_path):
+    prompt = build_prompt(build_facts(tmp_path, now=1010.0))
+    assert "本文取得済みの事実と分析・見通しを区別" in prompt
+    assert "見出しのみ・本文取得失敗" in prompt
+    assert "見出しだけで短絡終了しない" in prompt
+    assert "実績の目標値やバックテスト結果ではない" in prompt
+
+
 def test_prompt_requires_interpretation_and_pnl_commentary(tmp_path):
     _write_status(tmp_path)
     prompt = build_prompt(build_facts(tmp_path, now=1010.0))
