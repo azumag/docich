@@ -53,7 +53,7 @@ function renderBenchmark(perf) {
     if (sub) sub.textContent = "5分足履歴待ち";
     return;
   }
-  const actual = maybeNumber(benchmark.actual_today_realized_pnl_jpy);
+  const actual = maybeNumber(benchmark.actual_interval_realized_pnl_jpy);
   const theoretical = maybeNumber(benchmark.theoretical_pnl_jpy);
   if (theoretical === null) {
     target.textContent = "比較待ち";
@@ -243,7 +243,7 @@ function render(data) {
     ? "評価待ち" : fmtMoney(perf.equity_jpy);
   $("equity").className = perf.equity_jpy === null || perf.equity_jpy === undefined ? "v muted" : "v";
   setPnl("totalpnl", perf.cumulative_pnl_jpy, "価格不足");
-  setPnl("todaypnl", perf.today_realized_pnl_jpy, "-");
+  setPnl("todaypnl", perf.interval_realized_pnl_jpy, "-");
   renderBenchmark(perf);
   setPnl("unrealized", perf.unrealized_pnl_jpy, "価格不足");
   $("positions").textContent = `${p.position_count ?? 0} 銘柄`;
