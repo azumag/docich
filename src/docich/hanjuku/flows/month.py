@@ -1007,6 +1007,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
+CHIKUJOU_AFFORDABILITY_WAIT = 3  # transient unread gold/reserve frames before a safe skip
 
 
 LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
@@ -1120,6 +1121,31 @@ def _month_chikujou(screen, mem, shop):
         return None
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
+    if type(gold) is not int or type(reserve) is not int or reserve < 0:
+        previous = shop.get('chikujou_affordability_wait')
+        waits = (min(previous + 1, CHIKUJOU_AFFORDABILITY_WAIT + 1)
+                 if type(previous) is int and previous >= 0 else 1)
+        shop['chikujou_affordability_wait'] = waits
+        observed = {
+            'waits': waits,
+            'gold': gold if type(gold) is int else None,
+            'reserve': reserve if type(reserve) is int else None,
+            'gold_readable': type(gold) is int,
+            'reserve_readable': type(reserve) is int and reserve >= 0,
+            'screen': screen.kind,
+        }
+        if waits <= CHIKUJOU_AFFORDABILITY_WAIT:
+            _record(mem, 'chikujou_affordability_wait', month=shop.get('key'),
+                    observed_metric=observed,
+                    reason='所持金または必要予約を一時的に読めないため、築城の可否を決めず有限回再観測する')
+            return []
+        shop['chikujou'] = 'unverified'
+        observed['skipped'] = True
+        _record(mem, 'chikujou_affordability_unverified', month=shop.get('key'),
+                observed_metric=observed, deviation_reason='affordability_unreadable',
+                reason='所持金または必要予約を有限回待っても読めないため、支出せず当月の築城可否を未確認で閉じる')
+        return None
+    shop.pop('chikujou_affordability_wait', None)
     if not _chikujou_affordable(gold, reserve):
         shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
         return None
