@@ -306,3 +306,34 @@ def test_stuck_roster_probe_tries_next_source_when_oldest_has_rejected_move(monk
     probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
     assert probe['source'] == next_source
     assert probe['source'] != rejected_source
+
+
+
+def test_stuck_road_roster_probe_falls_back_to_only_source_with_rejected_move(monkeypatch):
+    """A planned but route-rejected move must not erase the sole readable roster."""
+    mem = _stuck_road_memory()
+    home = chart.home_castle(3)
+    now = mem['tick']
+    enemies = [c for c in chart.castles(3)
+               if c not in mem['captured'] and not chart.is_boss_castle(c)]
+    legal = [c for c in enemies if routes.allowed(mem, home, c)]
+    illegal = [c for c in enemies if not routes.allowed(mem, home, c)]
+    assert legal and illegal
+
+    # The home roster is stale; グリン was just read and cannot be probed yet.
+    mem['world']['garrison_tick'][home] = now - 1000
+    mem['world']['garrison_tick']['グリン'] = now
+    mem['country_general_count']['count'] = 3
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [
+        {'general': 'home-guard', 'source': home, 'target': illegal[0],
+         'cards': [], 'after': None, 'purpose': 'move'},
+    ])
+    monkeypatch.setattr(replan.chart, 'march_blocked', lambda *args, **kwargs: False)
+    monkeypatch.setattr(replan, '_post_conquest_wait', lambda *args, **kwargs: False)
+
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == home
+    assert probe['target'] == legal[0]
+    assert probe['source_probe'] is True and probe['roster_probe'] is True
+    assert routes.allowed(mem, probe['source'], probe['target'])
