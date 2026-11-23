@@ -119,7 +119,7 @@ def first_cursor(db_path: Path) -> tuple[float, str] | None:
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
-            "SELECT filled_at, fill_id FROM paper_fills ORDER BY filled_at ASC, rowid ASC"
+            "SELECT filled_at, fill_id FROM paper_fills ORDER BY filled_at ASC, fill_id ASC"
             " LIMIT 1"
         ).fetchone()
     finally:
