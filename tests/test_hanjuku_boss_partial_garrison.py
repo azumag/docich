@@ -157,3 +157,84 @@ def test_redirect_blocked_sources_still_redirects_non_move_attack():
     }
     orders.next_order(mem)
     assert _plan_region(mem)['source_override']['A:x:Atk1'] == 'オトラント'
+
+
+def test_next_order_clears_stale_companion_override_when_boss_wave_actor_at_partial_source():
+    owned = [c for c in chart.castles(1) if not chart.is_boss_castle(c)]
+    step = 'A:live:Mda3882'
+    mem = {
+        'chapter': 1,
+        'month': '19-5',
+        'tick': 77664,
+        'captured': list(owned),
+        'lost': [],
+        'orders': {step: 'pending'},
+        'chart_plan': {
+            'orders': [
+                {
+                    'step': step,
+                    'purpose': 'attack',
+                    'general': 'シナモン',
+                    'source': 'アルマムーン',
+                    'target': chart.boss_castle(1),
+                    'cards': [],
+                    'after': None,
+                },
+            ],
+        },
+        'source_override': {step: 'カストーラ'},
+        'world': {
+            'sorties': {},
+            'garrison': {
+                'カストーラ': ['デュオニソス'],
+                'キカンドン': [],
+                'ゴーメン': ['ヴィーナス'],
+                'ジョンリギ': ['チコリ'],
+                'スペンソニア': ['ソーピニヨン'],
+                'ナキューメラ': ['ゼウス'],
+            },
+            'garrison_partial': {'アルマムーン': ['どうし', 'セルリアク', 'シナモン']},
+        },
+        'house_eggs': {},
+        'general_location_unknown': [],
+        '_records': [],
+    }
+    picked = orders.next_order(mem)
+    assert step not in (_plan_region(mem).get('source_override') or {})
+    assert not any(r.get('decision') == 'boss_companion_source' for r in mem['_records'])
+    assert picked is not None
+    assert picked['step'] == step
+    assert orders._source(picked, mem) == 'アルマムーン'
+
+
+def test_boss_companion_source_skips_one_general_castle_and_uses_partial_source():
+    boss = next(o for o in chart.all_orders(1) if o['target'] == chart.boss_castle(1))
+    owned = [c for c in chart.castles(1) if not chart.is_boss_castle(c)]
+    mem = {
+        'chapter': 1,
+        'month': '19-5',
+        'tick': 77664,
+        'captured': list(owned),
+        'lost': [],
+        'orders': {boss['step']: 'pending'},
+        'source_override': {boss['step']: 'アルマムーン'},
+        'world': {
+            'sorties': {},
+            'garrison': {
+                'カストーラ': ['デュオニソス'],
+                'キカンドン': [],
+                'ゴーメン': ['ヴィーナス'],
+                'ジョンリギ': ['チコリ'],
+                'スペンソニア': ['ソーピニヨン'],
+                'ナキューメラ': ['ゼウス'],
+            },
+            'garrison_partial': {'アルマムーン': ['どうし', 'セルリアク', 'シナモン']},
+        },
+        'house_eggs': {},
+        'general_location_unknown': [],
+        '_records': [],
+    }
+    assert orders._boss_companion_source(boss, mem) == 'アルマムーン'
+    mem['world']['garrison_partial'] = {}
+    mem['world']['garrison']['アルマムーン'] = []
+    assert orders._boss_companion_source(boss, mem) is None

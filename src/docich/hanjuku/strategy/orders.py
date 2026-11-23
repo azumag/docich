@@ -152,6 +152,21 @@ def _boss_companion_unfit(mem, name):
                 and hp * 10 < maximum * 6))
 
 
+def _known_roster(mem, garrison, castle):
+    """Complete roster when known, else the partial page minus confirmed moves."""
+    names = garrison.get(castle)
+    if names is not None:
+        return names
+    partial = (_world(mem).get('garrison_partial') or {}).get(castle)
+    if not isinstance(partial, list) or not partial:
+        return None
+    elsewhere = {name for other, members in garrison.items()
+                 if other != castle and isinstance(members, list)
+                 for name in members}
+    remaining = [g for g in partial if g not in elsewhere]
+    return remaining or None
+
+
 def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = _world(mem).get('garrison') or {}
@@ -179,13 +194,23 @@ def _boss_companion_source(order, mem):
         return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
                    default=None)
     castles = [source] + sorted(owned - {source})
-    return next((castle for castle in castles if castle in owned
-                 and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
+    need = chart.sender_min(chapter)
+    sole = len(owned) <= 1
+    for castle in castles:
+        if castle not in owned:
+            continue
+        names = _known_roster(mem, garrison, castle)
+        if not _order_hero_alternatives(order, mem, names):
+            continue
+        if castle == source or sole or len(set(names or ())) >= need:
+            return castle
+    return None
 
 
 def _hero_source_alternative(order, mem):
+    garrison = _world(mem).get('garrison') or {}
     return (order.get('general') == NAME
-            and bool(_order_hero_alternatives(order, mem, (_world(mem).get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, _known_roster(mem, garrison, _source(order, mem)))))
 
 
 def _gate_dicts(mem, *keys):
@@ -1912,6 +1937,14 @@ def _follow_general(mem, order, garrison, owned):
     owned = owned & set(chart.castles(mem.get('chapter') or 0))
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
+        base_source = order.get('source')
+        if (general and general != NAME and base_source in owned
+                and general in (_known_roster(mem, garrison, base_source) or ())):
+            overrides = _plan_region(mem).get('source_override') or {}
+            override_src = overrides.get(order['step'])
+            if override_src and general not in (_known_roster(mem, garrison, override_src) or ()):
+                overrides.pop(order['step'], None)
+            return
         where = _boss_companion_source(order, mem)
         if where in owned and where != source:
             _plan_region(mem).setdefault('source_override', {})[order['step']] = where
