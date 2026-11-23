@@ -138,3 +138,10 @@ def test_adjusted_moves_and_boss_orders_keep_their_existing_card_policy():
                 'card_stock': {'バグストーム': 3}}
     boss = _adopt_adjusted_order(boss_mem, ['ミックミー'], target=boss_target)
     assert boss['cards'] == ['ミックミー']
+
+
+def test_an_adopted_adjusted_order_without_purpose_uses_stock_fallback():
+    mem = {'chapter': 2, 'tick': 100, '_records': [],
+           'card_stock': {'ミックミー': 0, 'バグストーム': 2}}
+    order = _adopt_adjusted_order(mem, ['ミックミー'], purpose=None)
+    assert order['cards'] == ['バグストーム']
