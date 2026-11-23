@@ -96,16 +96,21 @@ def get_cursor(db_path: Path, corner_key: str = "paper") -> tuple[float, str] | 
     lets fills_in_interval(None) return the full ledger (operation start),
     including the very first fill.
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    _ensure_cursor_table(db_path)
-    conn = sqlite3.connect(f"file:{str(db_path.resolve())}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    if not db_path.is_file():
+        return None
+    conn = _conn(db_path)
     try:
-        row = conn.execute(
-            "SELECT high_water_ts, high_water_fill_id FROM paper_corner_explanation_state"
-            " WHERE corner_key = ?",
-            (corner_key,),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT high_water_ts, high_water_fill_id FROM paper_corner_explanation_state"
+                " WHERE corner_key = ?",
+                (corner_key,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            # A read-only consumer must not create the state table as a side effect.
+            if "no such table" in str(exc).lower():
+                return None
+            raise
     finally:
         conn.close()
     if row is None:
@@ -145,8 +150,10 @@ def _upsert_cursor_exclusive(conn: sqlite3.Connection, corner_key: str, filled_a
     existing = cur.fetchone()
     new_key = (filled_at, str(fill_id))
     if existing is not None:
-        existing_ts = existing["high_water_ts"]
-        existing_id = str(existing["high_water_fill_id"])
+        # Support both default tuple rows and sqlite3.Row connections: callers
+        # own the transaction and may not have configured a row factory.
+        existing_ts = existing[0]
+        existing_id = str(existing[1])
         if new_key <= (existing_ts, existing_id):
             return
     conn.execute(
