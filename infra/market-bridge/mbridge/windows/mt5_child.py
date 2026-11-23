@@ -66,8 +66,10 @@ def run(payload: dict, mt5=None, *, clock=time.time) -> dict:
             if tick is None or not getattr(tick, "bid", 0) or not getattr(tick, "ask", 0):
                 continue
             ts = float(getattr(tick, "time", 0.0) or 0.0)
+            # An unknown source timestamp is not evidence of a fresh quote.
+            # Skip this symbol so the all-symbol readiness check fails closed.
             if ts <= 0:
-                ts = now - 1.0
+                continue
             newest = max(newest, ts)
             quotes.append({"symbol": symbol, "bid": float(tick.bid), "ask": float(tick.ask),
                            "bid_size": float(getattr(tick, "bid_volume", 0.0) or 0.0),
