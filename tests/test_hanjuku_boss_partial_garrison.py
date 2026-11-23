@@ -35,21 +35,76 @@ def _ch1_boss_ready_mem(*, garrison=None, garrison_partial=None):
 
 def test_boss_wave_pick_uses_garrison_partial_roster():
     mem = _ch1_boss_ready_mem(
-        garrison_partial={'アルマムーン': ['どうし', 'セルリアク', 'シナモン']},
+        garrison={
+            'アルマムーン': ['どうし'],
+            'カストーラ': ['デュオニソス'],
+            'キカンドン': [],
+            'ゴーメン': ['ヴィーナス'],
+            'ジョンリギ': ['チコリ'],
+            'ナキューメラ': ['ゼウス'],
+        },
+        garrison_partial={'スペンソニア': ['ソーピニヨン', 'シナモン']},
     )
     waves = [o for o in replan.interim_candidates(mem).values()
              if o.get('target') == chart.boss_castle(1)]
     assert waves, 'garrison_partial に 2 名以上いる城からボス波が生成されるべき'
-    assert waves[0]['source'] == 'アルマムーン'
-    assert waves[0]['general'] in {'セルリアク', 'シナモン'}
+    assert waves[0]['source'] == 'スペンソニア'
+    assert waves[0]['general'] in {'ソーピニヨン', 'シナモン'}
+
+
+def test_redirect_blocked_sources_does_not_redirect_boss_order_to_understaffed_blocker():
+    owned = [c for c in chart.castles(1) if not chart.is_boss_castle(c)]
+    step = 'A:live:Mboss1'
+    mem = {
+        'chapter': 1,
+        'month': '21-2',
+        'tick': 85709,
+        'captured': list(owned),
+        'lost': [],
+        'orders': {step: 'pending'},
+        'chart_plan': {
+            'orders': [
+                {
+                    'step': step,
+                    'purpose': 'attack',
+                    'general': 'シナモン',
+                    'source': 'アルマムーン',
+                    'target': chart.boss_castle(1),
+                    'cards': [],
+                    'after': None,
+                },
+            ],
+        },
+        'source_override': {step: 'スペンソニア'},
+        'world': {
+            'sorties': {},
+            'garrison': {
+                'カストーラ': ['デュオニソス'],
+                'キカンドン': [],
+                'ゴーメン': ['ヴィーナス'],
+                'ジョンリギ': ['チコリ'],
+                'スペンソニア': ['ソーピニヨン'],
+                'ナキューメラ': ['ゼウス'],
+            },
+            'garrison_partial': {'アルマムーン': ['どうし', 'セルリアク', 'シナモン']},
+        },
+        'house_eggs': {},
+        'general_location_unknown': [],
+        '_records': [],
+    }
+    picked = orders.next_order(mem)
+    assert step not in (_plan_region(mem).get('source_override') or {})
+    assert picked is not None
+    assert picked['step'] == step
+    assert orders._source(picked, mem) == 'アルマムーン'
 
 
 def test_boss_wave_pick_still_falls_back_to_unread_probe_when_partial_has_single_general():
     mem = _ch1_boss_ready_mem(
         garrison={
             'カストーラ': ['デュオニソス'],
-            'キカンドン': None,
-            'ゴーメン': ['ヴィーナス'],
+            'キカンドン': [],
+            'ゴーメン': None,
             'ジョンリギ': ['チコリ'],
             'スペンソニア': ['ソーピニヨン'],
             'ナキューメラ': ['ゼウス'],
@@ -60,7 +115,7 @@ def test_boss_wave_pick_still_falls_back_to_unread_probe_when_partial_has_single
              if o.get('target') == chart.boss_castle(1)]
     probes = [o for o in waves if o.get('source_probe')]
     assert len(probes) == 1
-    assert probes[0]['source'] == 'キカンドン'
+    assert probes[0]['source'] == 'ゴーメン'
     assert probes[0]['general'] == replan.MOVE_ANY_GENERAL
 
 
