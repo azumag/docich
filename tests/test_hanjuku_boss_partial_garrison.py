@@ -52,16 +52,51 @@ def test_boss_wave_pick_uses_garrison_partial_roster():
     assert waves[0]['general'] in {'ソーピニヨン', 'シナモン'}
 
 
-def test_boss_wave_pick_skips_march_blocked_rear_castle_so_moves_reinforce_front():
-    mem = _ch1_boss_ready_mem(
-        garrison_partial={'アルマムーン': ['どうし', 'セルリアク', 'シナモン']},
-    )
-    cands = list(replan.interim_candidates(mem).values())
-    waves = [o for o in cands if o.get('target') == chart.boss_castle(1)]
-    assert not waves, '手前の自城(スペンソニア)が1人で通れない後方城からボス攻撃を出さないべき'
-    moves = [o for o in cands if o.get('purpose') == 'move' and o.get('source') == 'アルマムーン']
-    assert moves, '後方の余剰将軍は前線補充の move を出すべき'
-    assert any(o.get('target') == 'スペンソニア' for o in moves)
+def test_redirect_blocked_sources_does_not_redirect_boss_order_to_understaffed_blocker():
+    owned = [c for c in chart.castles(1) if not chart.is_boss_castle(c)]
+    step = 'A:live:Mboss1'
+    mem = {
+        'chapter': 1,
+        'month': '21-2',
+        'tick': 85709,
+        'captured': list(owned),
+        'lost': [],
+        'orders': {step: 'pending'},
+        'chart_plan': {
+            'orders': [
+                {
+                    'step': step,
+                    'purpose': 'attack',
+                    'general': 'シナモン',
+                    'source': 'アルマムーン',
+                    'target': chart.boss_castle(1),
+                    'cards': [],
+                    'after': None,
+                },
+            ],
+        },
+        'source_override': {step: 'スペンソニア'},
+        'world': {
+            'sorties': {},
+            'garrison': {
+                'カストーラ': ['デュオニソス'],
+                'キカンドン': [],
+                'ゴーメン': ['ヴィーナス'],
+                'ジョンリギ': ['チコリ'],
+                'スペンソニア': ['ソーピニヨン'],
+                'ナキューメラ': ['ゼウス'],
+            },
+            'garrison_partial': {'アルマムーン': ['どうし', 'セルリアク', 'シナモン']},
+        },
+        'house_eggs': {},
+        'general_location_unknown': [],
+        '_records': [],
+    }
+    picked = orders.next_order(mem)
+    assert step not in (_plan_region(mem).get('source_override') or {})
+    assert picked is not None
+    assert picked['step'] == step
+    assert orders._source(picked, mem) == 'アルマムーン'
 
 
 def test_boss_wave_pick_still_falls_back_to_unread_probe_when_partial_has_single_general():

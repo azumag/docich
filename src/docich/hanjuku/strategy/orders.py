@@ -1253,6 +1253,12 @@ def _redirect_blocked_sources(mem):
                     and (not general or general not in (garrison.get(blocker) or ()))):
                 overrides.pop(step, None)
             continue
+        if blocker and chart.is_boss_castle(target):
+            blocker_names = _known_roster(mem, _world(mem).get('garrison') or {}, blocker)
+            if blocker_names is not None and len(set(blocker_names)) < chart.sender_min(chapter):
+                if overrides.get(step) == blocker:
+                    overrides.pop(step, None)
+                continue
         if step in overrides:
             continue
         if blocker:

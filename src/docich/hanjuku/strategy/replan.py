@@ -1226,14 +1226,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     return c, MOVE_ANY_GENERAL
             except Exception:
                 pass
-        boss = chart.boss_castle(chapter)
-        road_chapter = routes.is_road(chapter)
         choices = []
         for c in owned:
             free = [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             if len(set(free)) < need:
-                continue
-            if not road_chapter and boss and _march_blocked(chapter, c, boss, owned):
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
             for g in spare:
@@ -1299,7 +1295,6 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             unread = sorted(
                 (c for c in owned
                  if _known_residents(mem, garrison, c) is None and c not in prefer_not
-                 and not (not road_chapter and boss and _march_blocked(chapter, c, boss, owned))
                  and (type(asked.get(c)) is not int
                       or now - int(asked[c]) >= routes.PROBE_INTERVAL)),
                 key=lambda c: (c == home, c))
@@ -1316,8 +1311,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # generals are known is not worth a blind sortie.
         if allow_probe and not any(_known_residents(mem, garrison, c) for c in owned):
             for c in sorted((c for c in owned
-                             if _known_residents(mem, garrison, c) is None and c not in prefer_not
-                             and not (not road_chapter and boss and _march_blocked(chapter, c, boss, owned))),
+                             if _known_residents(mem, garrison, c) is None and c not in prefer_not),
                             key=lambda c: (c == home, c)):
                 return c, MOVE_ANY_GENERAL
         return None
