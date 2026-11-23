@@ -148,7 +148,8 @@ def test_production_catalog_enables_doushi_card_in_auto_rotation():
     assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
     # duration_minutes 未指定 = doushi_corner.DEFAULT_DURATION_MINUTES(2分) を使う。
-    assert row.duration_minutes is None and row.audio_enabled is False
+    # 2026-11-23 オーナー承認: 読み上げを有効化（overlay は出さない）。
+    assert row.duration_minutes is None and row.audio_enabled is True
     assert row.fetch_on_start is False and row.target_matches is None
 
 
