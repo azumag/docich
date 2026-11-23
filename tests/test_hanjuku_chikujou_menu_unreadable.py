@@ -69,3 +69,57 @@ def test_a_readable_row_still_opens_without_waiting():
     assert shop['chikujou'] == 'opened'
     assert records_of(mem) == []
     assert actions is not None
+
+
+def test_unread_gold_waits_then_opens_when_the_balance_is_readable():
+    """A transient unread balance must not consume the month's build slot."""
+    mem = memory()
+    shop = mem['shop']
+    screen = month(150)
+    screen.header['gold'] = None
+
+    assert month_flow._month_chikujou(screen, mem, shop) == []
+    assert shop['chikujou'] == 'check'
+    assert shop['chikujou_affordability_wait'] == 1
+
+    screen.header['gold'] = 150
+    assert month_flow._month_chikujou(screen, mem, shop) == [month_flow.pad('a')]
+    assert shop['chikujou'] == 'opened'
+    assert 'chikujou_affordability_wait' not in shop
+    assert not records_of(mem)
+
+
+def test_unread_reserve_is_bounded_and_ends_unverified_without_spending():
+    """Unknown necessity cash never authorizes optional construction."""
+    mem = memory(hero_repair_reserve=None)
+    shop = mem['shop']
+    screen = month(216)
+
+    for expected in range(1, month_flow.CHIKUJOU_AFFORDABILITY_WAIT + 1):
+        assert month_flow._month_chikujou(screen, mem, shop) == []
+        assert shop['chikujou'] == 'check'
+        assert shop['chikujou_affordability_wait'] == expected
+
+    assert month_flow._month_chikujou(screen, mem, shop) is None
+    assert shop['chikujou'] == 'unverified'
+    rows = [row for row in mem['_records']
+            if row.get('decision') == 'chikujou_affordability_wait']
+    assert [row['observed_metric']['waits'] for row in rows] == [1, 2, 3]
+    terminal = [row for row in mem['_records']
+                if row.get('decision') == 'chikujou_affordability_unverified']
+    assert len(terminal) == 1
+    assert terminal[0]['observed_metric']['waits'] == 4
+    assert terminal[0]['observed_metric']['skipped'] is True
+    assert terminal[0]['observed_metric']['gold'] == 216
+    assert terminal[0]['observed_metric']['reserve'] is None
+    assert not mem.get('month_sub')
+
+
+def test_known_insufficient_balance_still_skips_without_waiting():
+    mem = memory()
+    shop = mem['shop']
+    assert month_flow._month_chikujou(month(30), mem, shop) is None
+    assert shop['chikujou'] == 'skipped'
+    assert 'chikujou_affordability_wait' not in shop
+    assert not [row for row in mem['_records']
+                if row.get('decision') == 'chikujou_affordability_wait']
