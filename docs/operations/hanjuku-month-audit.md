@@ -97,6 +97,10 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 
 - 将軍・出撃元・対象・目的・step・misses・理由・直前120秒の決定・
   計画/在城/flow/statsを1件32KB以内で保存する。
+- `sortie_launch_failed` は最後のprobeの `reads` / `marker_count` / `probe_elapsed_ticks` と
+  `settlement_source`（`marker_probe` / `source_roster`）をissue本文に表示する。
+  出撃元名簿で失敗した場合は `general_present` / `complete` / `entries` も表示する。
+  生のマーカー座標・名簿の将軍名一覧はissue本文へ出さない。
 - 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
 - issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
