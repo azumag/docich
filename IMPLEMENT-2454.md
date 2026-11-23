@@ -82,10 +82,10 @@
   - comment/paper_corner_profile テスト: 新ラベル＋期間併記のアサートへ更新。
   - trading_corner_script テスト: 新ラベル＋期間併記のアサートへ更新。
 
-## 検証
+## 旧HEADでの検証（2026-11-22）
 
 - python -m pytest tests/（対象: performance, paper_corner, corner_script, comment, dashboard）→ green。
-- CI (ci-required, python-syntax, full-suite) green。
+- CI (ci-required, python-syntax, full-suite) green。これは旧HEADの結果であり、最新HEADの検証を代替しない。
 - 完了報告は git diff ＋対象ファイルの `grep 本日` = 0 件の証跡（対象ファイル単位。スコープ外は残る）。
 
 ## 作業場所
