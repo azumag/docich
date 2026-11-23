@@ -1469,9 +1469,16 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 # 13:30 moved from メガパタ while ヴィーナス was still walking).
                 probe = routes.arrival_probe_due(mem, donor, cooldown=True)
                 stage_min = chart.sender_min(chapter)
+                spares = [g for g in _spares(free) if g != NAME]
+                # Once the boss is open, a staging move must not consume the
+                # home castle's last non-hero general after a boss wave has
+                # already reserved another one. Keep the hero plus one defender
+                # at home; other castles retain the ordinary sender-minimum rule.
+                if boss_open and donor == home and len(spares) < 2:
+                    continue
                 if len(free) < stage_min and not probe:
                     continue
-                if len(free) >= stage_min and not [g for g in _spares(free) if g != NAME]:
+                if len(free) >= stage_min and not spares:
                     continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
@@ -1484,8 +1491,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 continue
             seen_legs.add(leg)
             general = (MOVE_ANY_GENERAL if len(free) < chart.sender_min(chapter)
-                       else (_defense_move_pick(mem, donor, route[1],
-                                                _spares(free)) or _spares(free)[0]))
+                       else (_defense_move_pick(mem, donor, route[1], spares) or spares[0]))
             moves.append({'general': general, 'source': donor, 'target': route[1],
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
