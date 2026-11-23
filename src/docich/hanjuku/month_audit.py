@@ -795,6 +795,9 @@ def _camp_event(record):
     camp = metric.get('camp')
     camp = list(camp) if (isinstance(camp, list) and len(camp) == 2
                           and all(type(value) is int for value in camp)) else None
+    target_cell = metric.get('target_cell')
+    target_cell = list(target_cell) if (isinstance(target_cell, list) and len(target_cell) == 2
+                                        and all(type(value) is int for value in target_cell)) else None
     castle = _bounded_text(metric.get('castle'), 48)
     general = _bounded_text(record.get('general') or metric.get('general'), 48)
     return {
@@ -806,6 +809,7 @@ def _camp_event(record):
         'resulting_event': _bounded_text(event, 64),
         'general': general,
         'camp': camp,
+        'target_cell': target_cell,
         'castle': castle,
         'stage': _bounded_text(metric.get('stage'), 32),
         'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
@@ -3800,6 +3804,7 @@ def render(record):
             f"- stage: {camp.get('stage') or '不明'} / steps: {camp.get('steps')}"
             f" / status: {camp.get('resulting_event') or '不明'}"
             f" / escape_move: {bool(camp.get('escape_move'))}"
+            f" / target_cell: {camp.get('target_cell')}"
             f" / input_sent: {bool(camp.get('input_sent'))}"
             f" / picker_closed: {bool(camp.get('picker_closed'))}"
             f" / interrupted: {bool(camp.get('interrupted'))}",
