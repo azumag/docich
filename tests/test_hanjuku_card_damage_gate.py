@@ -46,6 +46,26 @@ def cards(names, selected=0):
     return menu(tuple(names), selected=selected, kind='text')
 
 
+def test_a_critical_battle_may_open_the_next_card_after_one_was_used():
+    # owner 2026-11-24: 1戦闘で2枚目以降の札も開く（退却は一律禁止）。
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    cur['egg_battle'] = True
+    cur['cards_used'] = ['ミックミー']
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'second_card_critical_spend'
+
+
+def test_the_first_card_keeps_the_existing_refusal():
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    cur['egg_battle'] = True
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is False
+
+
 def assert_not_spent(mem):
     cur = mem['battle']
     assert cur['cards_selected'] == cur['cards_used'] == cur['cards_unclassified'] == []

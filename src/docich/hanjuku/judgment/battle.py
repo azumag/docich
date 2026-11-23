@@ -602,6 +602,15 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
                 result['role'] = 'control_has_no_observed_followup'
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
+    # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
+    # 既に1枚使った戦闘が危険なままなら、卵落とし等の非致死リスクで拒否せず
+    # 次の札を開かせる。1枚目や通常戦闘の判定は従来どおり（安全弁は維持）。
+    if (not result['allowed'] and not finished and cur.get('cards_used')
+            and _critical_survival_needed(cur)
+            and (summoned or boss)
+            and result['role'] in {'nonlethal_egg_risk', 'control_has_no_observed_followup',
+                                   'damage_or_egg_risk_unclassified'}):
+        result.update(allowed=True, role='second_card_critical_spend')
     cur['card_assessment'] = {
         'card': card, 'enemy_hp': context['enemy_hp'],
         'ally_soldiers': context['ally_soldiers'], 'enemy_soldiers': context['enemy_soldiers'],
