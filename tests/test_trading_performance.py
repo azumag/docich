@@ -497,8 +497,41 @@ def test_public_performance_summary_exposes_only_bounded_ledger_health():
         "ledger_status": "invalid",
         "ledger_reason_code": "ledger_invalid_row",
         "unpaired_sell_count": 2,
+        "realized_total_jpy": None,
+        "interval_realized_pnl_jpy": None,
+        "today_realized_pnl_jpy": None,
+        "unrealized_pnl_jpy": None,
+        "cumulative_pnl_jpy": None,
+        "equity_jpy": None,
     }
 
+
+def test_performance_unreadable_ledger_is_not_reported_as_missing(monkeypatch, tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    ledger.close()
+
+    original_stat = Path.stat
+
+    def denied_stat(path, *args, **kwargs):
+        if path == db:
+            raise PermissionError("denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "unavailable"
+    assert perf["ledger_reason_code"] == "ledger_read_error"
+    assert perf["realized_total_jpy"] is None
+    assert perf["equity_jpy"] is None
 
 
 def test_performance_valid_empty_ledger_remains_a_complete_zero_result(tmp_path):
