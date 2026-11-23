@@ -562,14 +562,16 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
     perf = facts.get("performance") if isinstance(facts.get("performance"), Mapping) else {}
     parts: list[str] = []
     cumulative = perf.get("cumulative_pnl_jpy")
-    today = perf.get("today_realized_pnl_jpy")
+    interval = perf.get("interval_realized_pnl_jpy")
+    if interval is None:
+        interval = perf.get("today_realized_pnl_jpy")  # deprecated compatibility alias
     unrealized = perf.get("unrealized_pnl_jpy")
     if cumulative is not None:
         parts.append(f"評価込みの累積損益は{_fmt_num(cumulative) or cumulative}円")
     else:
         parts.append("累積損益は一部の保有価格が不足していて評価待ち")
-    if today is not None:
-        parts.append(f"区間の確定損益（前回説明から今回説明まで）は{_fmt_num(today) or today}円")
+    if interval is not None:
+        parts.append(f"区間の確定損益（前回説明から今回説明まで）は{_fmt_num(interval) or interval}円")
     if unrealized is not None:
         parts.append(f"現在の含み損益は{_fmt_num(unrealized) or unrealized}円")
     return "、".join(parts) + "です。" + _pnl_interpretation(facts)
@@ -582,9 +584,11 @@ def _benchmark_text(facts: Mapping[str, object]) -> str:
         return "区間実績と理論値の比較は、まだ表示できません。"
     status = str(benchmark.get("status") or "unavailable")
     theoretical = benchmark.get("theoretical_pnl_jpy")
-    actual = benchmark.get("actual_today_realized_pnl_jpy")
+    actual = benchmark.get("actual_interval_realized_pnl_jpy")
+    if actual is None:
+        actual = benchmark.get("actual_today_realized_pnl_jpy")  # deprecated compatibility alias
     if status not in {"ready", "partial"} or theoretical is None:
-        return "区間実績と理論値の比較は、日中5分足の履歴がそろうまで待ちです。"
+        return "区間実績と理論値の比較は、区間内5分足の履歴がそろうまで待ちです。"
     theoretical_text = _fmt_num(theoretical) or str(theoretical)
     actual_text = _fmt_num(actual) if actual is not None else None
     if actual_text is None:
