@@ -85,7 +85,12 @@ def boss_phase(mem) -> bool:
     retreat, say) and is recalled home as usual.
     """
     chapter = mem.get('chapter')
-    if chapter != chart.MOVING_BOSS_CHAPTER or not chart.corridor(chapter):
+    # A rebound policy chart (tests, hot-load layers) may expose only the
+    # attributes its case needs; treat a missing one as "not the boss phase"
+    # instead of raising into the caller (docich#5170 follow-up).
+    moving = getattr(chart, 'MOVING_BOSS_CHAPTER', None)
+    corridor = getattr(chart, 'corridor', None)
+    if moving is None or corridor is None or chapter != moving or not corridor(chapter):
         return False
     from ..os_layer.world import _owned
     return chart.corridor_next(chapter, _owned(mem)) is None

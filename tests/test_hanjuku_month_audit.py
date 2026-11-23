@@ -612,6 +612,29 @@ def test_unknown_order_failure_stays_high_even_if_month_launched(runtime_dir):
     assert record['confidence_reasons'] == []
 
 
+def test_egg_drop_only_loss_is_not_high_confidence(runtime_dir):
+    # docich#5165: 卵落とし型しか残っていない敗北は、署名未校正の検出限界として
+    # medium に留める（実際に札を無駄にした証拠ではない）。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['イッテツーン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_plain_card_loss_stays_high_confidence(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['クースカン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
 def test_sortie_cancel_is_recorded(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
