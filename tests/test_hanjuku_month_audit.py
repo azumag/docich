@@ -1212,6 +1212,34 @@ def test_chikujou_month_end_with_unreadable_menu_row_is_medium_confidence(runtim
     assert record['chikujou_menu_unreadable'] is True
     assert '築城行の読取り: 不可' in audit.render(record)
 
+def test_chikujou_month_end_after_unread_affordability_is_medium_confidence(runtime_dir):
+    """docich#5186: a terminal unknown gold/reserve read is named, not high confidence."""
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_affordability_unverified', month='1-1',
+         chapter=10, observed_metric={'skipped': True, 'waits': 4,
+                                      'gold_readable': False, 'reserve_readable': False})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_affordability_unverified']
+    assert record['chikujou_affordability_unverified'] is True
+    assert '築城資金の確認: 未完了' in audit.render(record)
+    assert '資金確認未完了' in audit.render_comment(record)
+
+
+def test_chikujou_affordability_wait_without_terminal_skip_stays_high(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_affordability_wait', month='1-1',
+         chapter=10, observed_metric={'waits': 1, 'skipped': False})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_affordability_unverified'] is False
+
 
 def test_chikujou_cost_decline_in_prior_observation_suppresses_alarm(runtime_dir):
     value = _chikujou_state()
