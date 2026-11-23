@@ -198,27 +198,6 @@ def summon_panel():
     return parse(read_png(Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png'))
 
 
-def test_continue_melee_then_native_enemy_summon_backs_out_and_selects_real_retreat():
-    mem = bait_memory(); arm_bait(mem)
-    for _ in range(3):
-        assert p.battle_step(battle(mem), mem) != [p.pad('b')]
-    frame = read_png(Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png')
-    actions, state = decide(frame, {'policy': mem}, run_identity=mem['_run_identity'])
-    assert actions == [p.pad('b')]
-    mem = state['policy']; cur = mem['battle']
-    assert cur['enemy_egg_bait']['phase'] == 'summoned'
-    assert cur['enemy_hp'] == 11 and cur['ally_hp'] == 49
-    p._card_battle_reading(battle(mem), cur, mem)
-    assert not cur['egg_battle'] and not p._hero_retreat_needed(cur)
-    assert p._hero_retreat_menu(menu(('こうげき', 'たいきゃく'), selected=0), mem, cur) == [p.pad('down')]
-    assert p._hero_retreat_menu(menu(('こうげき', 'たいきゃく'), selected=1), mem, cur) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1
-    evidence = next(r for r in state['_records'] if r['decision'] == 'enemy_egg_bait_summon_observed')
-    assert evidence['observed_metric']['enemy_remaining_uses'] is None
-    assert evidence['observed_metric']['quantity_change'] == 'unclassified'
-    assert mem['egg_uses'] == {'アルテミス': 0}
-
-
 def test_repeated_summon_and_json_restore_never_refill_return_budget_or_proof():
     mem = bait_memory(); arm_bait(mem)
     for n in range(12):
@@ -298,19 +277,6 @@ def test_old_intention_never_survives_a_different_battle_or_scope(change):
         return
     assert not egg_bait.retreat_due(mem, mem['battle'])
     assert not mem['battle'].get('enemy_egg_bait')
-
-
-def test_json_restore_and_repeated_normal_menus_never_refill_retreat_a_budget():
-    mem = bait_memory(); arm_bait(mem)
-    p.egg_battle_step(summon_panel(), mem)
-    total_a = 0
-    for _ in range(35):
-        mem = json.loads(json.dumps(mem))
-        actions = p._hero_retreat_menu(menu(('たいきゃく',)), mem, mem['battle'])
-        total_a += sum(action.get('buttons') == ['a'] for action in actions or [])
-    assert total_a == 2
-    assert mem['battle']['hero_retreat']['selected'] == 2
-    assert mem['battle']['hero_retreat']['exhausted'] is True
 
 
 def test_native_enemy_general_command_is_not_the_opponents_egg_use():

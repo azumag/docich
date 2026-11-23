@@ -169,32 +169,6 @@ def test_unreadable_cursor_and_missing_menu_are_bounded():
     assert p.battle_menu_step(menu(selected=None), mem) == [p.pad('b')]
 
 
-@pytest.mark.parametrize('owner', ['survival', 'retreat'])
-def test_opening_wait_keeps_current_hp_and_reaches_real_menu_after_json_restore(owner):
-    import json
-    mem = memory(23, 26)
-    mem['battle'].update(ally='クミン', enemy='キャンディー', start_ally_hp=23,
-                        start_enemy_hp=26, side='attack', planned_cards=[])
-    if owner == 'retreat':
-        mem['battle']['ally_hp'] = 9
-    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-    mem = json.loads(json.dumps(mem))
-    mem['battle']['ally_hp'] -= 1
-    assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
-    assert mem['battle']['command_open_pending']['owner'] == owner
-    assert mem['_records'][-1]['observed_metric']['ally_hp'] == mem['battle']['ally_hp']
-    # A clipped live row is neither an egg selection nor another B opening.
-    c = Canvas(); c.text(176, 212, 'たまごをつかう')
-    actions, state = decide(c.frame(), {'policy': mem, 'no_input_streak': 999})
-    assert parse(c.frame()).kind == 'battle_menu_pending'
-    assert actions == []
-    mem = state['policy']
-    assert p.battle_menu_step(menu(selected=0), mem) == [p.pad('down')]
-    assert 'command_open_pending' not in mem['battle']
-    assert mem['battle']['cards_used'] == []
-    assert not mem['battle'].get('egg_battle')
-
-
 def test_missing_retreat_menu_still_exhausts_its_original_three_openings():
     mem = memory(9, 26)
     mem['battle'].update(ally='クミン', enemy='キャンディー', start_ally_hp=23,
@@ -512,39 +486,6 @@ def egg_menu_screen():
                   text='こうげきもうこうげき', kind='egg_battle_menu')
 
 
-def test_a_hopeless_egg_battle_tries_the_retreat_before_attacking():
-    # g460 16:46: ヴィーナス 82 vs アルファルファ 38 was summoned on; the egg
-    # was spent and no cards were left, yet the bot chose こうげき and died.
-    mem = memory(54, 200)
-    mem['battle'].update(enemy='カメレオンマン', side='attack', planned_cards=[])
-    screen = egg_menu_screen()
-    assert p.egg_battle_step(screen, mem) == [p.pad('b')]
-    assert mem['battle']['egg_retreat_tried']
-    assert p.egg_battle_step(screen, mem) == [p.pad('b')]
-    assert p.egg_battle_step(screen, mem) == [p.pad('b')]
-    assert p.egg_battle_step(screen, mem) == [p.pad('a')]
-    assert any(r['decision'] == 'battle_egg_retreat_unavailable' for r in mem['_records'])
-    assert p._hero_retreat_needed(mem['battle'])
-    # A castle defense cannot retreat: attack as before.
-    mem['battle'].update(side='defense', egg_retreat_tried=False)
-    assert p.egg_battle_step(screen, mem) == [p.pad('a')]
-
-
-def test_a_low_general_retreats_in_an_attack_battle():
-    # g460 16:11: ココット 24 vs タピオカ 50 spent the fight in card menus,
-    # fell to 12 and died; no retreat existed for a non-hero general.
-    mem = memory(12, 50)
-    mem['battle']['ally'] = 'ココット'
-    mem['battle']['start_ally_hp'] = 24
-    assert p._hero_retreat_needed(mem['battle'])
-    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-    assert mem['battle']['hero_retreat']['opens'] == 1
-    # The menu selects the retreat row for her too.
-    actions, state = decide(command_frame(cursor=2), {'policy': mem})
-    assert actions == [p.pad('a')]
-    assert state['policy']['battle']['hero_retreat']['selected'] == 1
-
-
 def test_a_defense_battle_never_opens_the_hero_retreat():
     # Owner 2026-09-29: a castle defense cannot retreat (no たいきゃく row).
     mem = memory(6, 50)
@@ -553,22 +494,6 @@ def test_a_defense_battle_never_opens_the_hero_retreat():
     p.battle_step(battle(mem), mem)
     assert 'hero_retreat' not in mem['battle']
     assert p._hero_retreat_menu(menu(), mem, mem['battle']) is None
-
-
-def test_hero_retreat_opens_before_chart_and_selects_only_visible_retreat(monkeypatch):
-    monkeypatch.setattr(p,'_tactics',lambda *args:[{'enemy':'ミント','card':'グリンボー','open':True,'note':'開幕'}])
-    mem=memory(12,50)
-    assert p.battle_step(battle(mem),mem)==[p.pad('b')]
-    assert mem['battle']['hero_retreat']['opens']==1
-    assert not mem['battle'].get('card_flow')
-    actions,state=decide(command_frame(),{'policy':mem})
-    assert actions==[p.pad('down'),{'type':'wait','ms':60},p.pad('down')]
-    actions,state=decide(command_frame(cursor=1),state)
-    assert actions==[p.pad('down')]
-    actions,state=decide(command_frame(cursor=2),state)
-    assert actions==[p.pad('a')]
-    assert state['policy']['battle']['hero_retreat']['selected']==1
-    assert state['_records'][-1]['resulting_event']=='retreat_selected_not_yet_confirmed'
 
 
 def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_fighting():
@@ -662,19 +587,6 @@ def test_exhausted_retreat_flow_does_not_discard_pending_card():
                    for r in mem.get('_records', []))
 
 
-def test_hero_retreat_cursor_wait_and_selection_retry_are_bounded():
-    mem=memory(12,50)
-    for _ in range(8):assert p.battle_menu_step(menu(selected=None),mem)==[]
-    assert p.battle_menu_step(menu(selected=None),mem)==[p.pad('b')]
-    assert mem['battle']['hero_retreat']['exhausted']
-    mem=memory(12,50)
-    assert p.battle_menu_step(menu(selected=2),mem)==[p.pad('a')]
-    for _ in range(3):assert p.battle_menu_step(menu(selected=2),mem)==[]
-    assert p.battle_menu_step(menu(selected=2),mem)==[p.pad('a')]
-    for _ in range(3):assert p.battle_menu_step(menu(selected=2),mem)==[]
-    assert p.battle_menu_step(menu(selected=2),mem)==[p.pad('b')]
-
-
 def test_hero_retreat_selection_is_not_counted_as_victory_or_confirmed_escape():
     mem=memory(12,50);mem['battle']['hero_retreat']={'selected':1}
     p.battle_end(mem,'map');p.battle_end(mem,'map')
@@ -751,32 +663,6 @@ def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
     assert len(mem['_records']) == records
 
 
-@pytest.mark.parametrize('side', ['attack', None])
-def test_unarmed_egg_enemy_checks_rescue_then_rechecks_hp_before_retreat(side):
-    # g486: Venus 76 vs Chicory 18 idled down to 40, then could not answer
-    # Dark Elf and lost. The owner's new HP policy keeps the pre-summon
-    # advantage; the later monster is a separate protection decision.
-    mem = memory(hp=76, enemy=18)
-    cur = mem['battle']
-    cur.update(ally='ヴィーナス', enemy='チコリ', start_ally_hp=76,
-               start_enemy_hp=18, side=side, planned_cards=[])
-    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-    assert not cur.get('melee_holds')
-    assert any('衝突前' in r.get('reason', '') for r in mem['_records'])
-    assert p.battle_menu_step(menu(('こうげき', 'たいきゃく')), mem) == [p.pad('b')]
-    assert cur['survival']['exhausted']
-    if side == 'attack':
-        assert not p._hero_retreat_needed(cur)
-        assert p.battle_step(battle(mem), mem) != [p.pad('b')]
-        assert not cur.get('hero_retreat')
-        cur.update(egg_battle=True, egg_retreat_needed=True)
-        assert p._hero_retreat_needed(cur)
-        return
-    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(('こうげき', 'たいきゃく'), selected=1), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected']
-
-
 @pytest.mark.parametrize('enemy,side,cards', [('チコリ', 'defense', ['イッテツーン']),
                                             ('チコリ', 'attack', ['イッテツーン']),
                                             ('クイーン', 'attack', []),
@@ -813,16 +699,6 @@ def test_missing_list_does_not_accumulate_intermittent_partial_names():
         assert p.card_list_step(menu(labels, kind='text'), mem) == []
     assert not mem['battle'].get('cards_missing')
     assert p.card_list_step(menu(('クースカン',), kind='text'), mem) == [p.pad('a')]
-
-
-def test_failed_summon_requests_real_retreat_even_when_general_hp_is_still_full():
-    mem = memory(82, 39)
-    mem['battle'].update(ally='ヴィーナス', side='attack', planned_cards=[])
-    assert not p._hero_retreat_needed(mem['battle'])
-    assert p.egg_battle_step(egg_menu_screen(), mem) == [p.pad('b')]
-    assert p._hero_retreat_needed(mem['battle'])
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
 
 
 def test_g504_defense_opens_rescue_at_full_hp_before_known_egg_clash():
@@ -904,16 +780,6 @@ def test_fierce_never_selected_against_single_digit_enemy_hp():
     assert mem['battle']['egg_attack_label'] == 'もうこうげき'
 
 
-def test_last_resort_still_tries_attack_retreat_and_forbids_defense_retreat():
-    mem = wounded_egg_memory();mem['battle']['egg_retreat_attempts'] = 0
-    for _ in range(3):
-        assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('b')]
-    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
-    mem = wounded_egg_memory();mem['battle'].update(side='defense', egg_retreat_attempts=0)
-    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
-    assert mem['battle']['egg_retreat_attempts'] == 0
-
-
 def test_fierce_preserves_available_egg_cards_and_requires_known_cursor():
     mem = wounded_egg_memory();sc = wounded_egg_screen();sc.text += 'たまごをつかう'
     assert p.egg_battle_step(sc, mem) == [p.pad('down')]
@@ -974,19 +840,6 @@ def test_g514_hero_with_unused_cards_and_available_egg_reaches_bounded_retreat_p
         assert p.egg_battle_step(hero_egg_screen(), mem) != [p.pad('b')]
     assert not mem['battle']['hero_retreat'].get('selected')
     assert mem['battle']['planned_cards'] == ['クースカン', 'ノリウツール']
-
-
-def test_g514_probe_selects_only_a_real_normal_menu_retreat_and_handles_unavailable():
-    mem = g514_hero_egg_memory()
-    assert p.egg_battle_step(hero_egg_screen(), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
-    assert mem['_records'][-1]['resulting_event'] == 'retreat_selected_not_yet_confirmed'
-    mem = g514_hero_egg_memory()
-    p.egg_battle_step(hero_egg_screen(), mem)
-    p.battle_menu_step(menu(labels=('たまごをつかう', 'きりふだ')), mem)
-    assert mem['battle']['hero_retreat']['unavailable'] is True
-    assert p.egg_battle_step(hero_egg_screen(), mem) != [p.pad('b')]
 
 
 @pytest.mark.parametrize('change', ['other_general', 'no_current_panel', 'other_attack',

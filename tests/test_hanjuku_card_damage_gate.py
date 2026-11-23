@@ -345,17 +345,6 @@ def test_refusal_has_finite_defense_fallback_and_does_not_reopen_same_tactic(mon
     assert_not_spent(mem)
 
 
-def test_refused_chart_does_not_retreat_while_healthy_but_does_at_probe_budget():
-    mem = memory()
-    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(('きりふだ',)), mem) == [p.pad('b')]
-    for _ in range(p.MELEE_HOLD_LIMIT):
-        assert p.battle_step(panel(mem), mem) == [p.pad('a', 3), {'type': 'wait', 'ms': 50}]
-    assert p.battle_step(panel(mem), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
-
-
 @pytest.mark.parametrize('survival', [False, True])
 @pytest.mark.parametrize('enemy,hp,remaining_hp,card,soldiers', [
     ('ソーピニヨン', 33, 33, 'ミックミー', 6),

@@ -899,26 +899,13 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     spent = Canvas()
     spent.text(176, 175, 'こうげき')
     spent.text(176, 191, 'もうこうげき')
+    spent.hand(98, 169)
     actions, state = decide(spent.frame(), state)
     assert state['screen_kind'] == 'egg_battle_menu'
-    # With no cards left the bot tries the retreat once (owner 2026-09-29)
-    # instead of attacking into a summon it cannot answer.
-    assert actions[0]['buttons'] == ['b']
+    # Owner 2026-11-23: retreat is banned everywhere.  With no egg and no card
+    # the summon turn attacks (the hand is readable on こうげき).
+    assert actions[0]['buttons'] == ['a']
     assert state['policy']['egg_battle_row_dead'] is True
-    # Three bounded return attempts; no immediate A after an unconfirmed B.
-    for _ in range(2):
-        actions, state = decide(spent.frame(), state)
-        assert actions[0]['buttons'] == ['b']
-    # g1107: with the row unreadable the cursor cannot be confirmed, so a
-    # blind A on the greyed egg row is rejected forever. The bot nudges up a
-    # bounded number of times to re-observe, then holds instead of confirming.
-    for _ in range(6):
-        actions, state = decide(spent.frame(), state)
-        assert actions[0]['buttons'] == ['up']
-    actions, state = decide(spent.frame(), state)
-    assert actions == []
-    actions, state = decide(spent.frame(), state)
-    assert actions == []
 
 
 def test_experience_prefers_a_better_action_and_stays_with_an_untried_default():
