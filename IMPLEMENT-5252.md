@@ -18,7 +18,7 @@ Issue #5252（ch9 12-5、砦帰還が `fort_status` で91 stepsを消費して�
 
 ## Hot-load marker
 
-`hanjuku-chart-v1422-fort-recall-evidence`。mainのv1421 critical-card-spendを保持したうえで、diagnostics allowlistと固定値テストを同期する。
+`hanjuku-chart-v1433-fort-recall-evidence`（当初 v1422、main 再同期時に v1433 へ再採番）。mainのv1421 critical-card-spendを保持したうえで、diagnostics allowlistと固定値テストを同期する。
 
 ## 回帰テスト
 
