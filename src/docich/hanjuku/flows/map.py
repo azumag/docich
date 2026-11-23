@@ -3102,8 +3102,12 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
         general = probe.get('general')
         if general in roster:
             probes.pop(step, None)
-            _rollback_unverified_launch(mem, step, probe, [],
-                                        reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す')
+            _rollback_unverified_launch(
+                mem, step, probe, [],
+                reason='出撃元の将軍一覧にまだ出撃した将軍がいるため、出撃を未発射に戻す',
+                roster_evidence={'general_present': True, 'complete': bool(complete),
+                                 'count': min(len(roster), 1000)},
+            )
             continue
         if not complete and not probe.get('blind'):
             # One page is not the roster: while the marker survey may still
@@ -3127,7 +3131,7 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
                         else '出撃元の将軍一覧の1ページに出撃した将軍がいないため出撃成立とみなす'))
 
 
-def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
+def _rollback_unverified_launch(mem, step, probe, markers, reason=None, roster_evidence=None):
     """A committed departure produced no unit marker: return it to pending.
 
     Mirrors the march-overdue reset so the order re-confirms from scratch,
@@ -3153,9 +3157,22 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     garrison = _world(mem).get('garrison') or {}
     if general and isinstance(garrison.get(source), list) and general not in garrison[source]:
         garrison[source].append(general)
+    now = int(mem.get('tick') or 0)
+    started = probe.get('tick')
+    elapsed = now - started if type(started) is int and now >= started else None
     observed = {'general': general, 'source': source, 'target': probe.get('target'),
-                'markers': [list(b) for b in markers], 'reads': probe.get('reads'),
-                'misses': misses[step]}
+                'markers': [list(b) for b in (markers or ())], 'reads': probe.get('reads'),
+                'misses': misses[step], 'probe_elapsed_ticks': elapsed,
+                'settlement_source': 'source_roster' if isinstance(roster_evidence, dict)
+                                     else 'marker_probe'}
+    if isinstance(roster_evidence, dict):
+        observed['roster_evidence'] = {
+            'general_present': roster_evidence.get('general_present') is True,
+            'complete': roster_evidence.get('complete') is True,
+            'count': roster_evidence.get('count')
+                     if type(roster_evidence.get('count')) is int
+                     and roster_evidence.get('count') >= 0 else None,
+        }
     # A view that shows only the hero's own marker cannot distinguish a new
     # unit mark, so "no marker" is not evidence that the launch failed
     # (g1190 2026-11-18: タプロベイン→タタール failed twice on the same single
