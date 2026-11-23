@@ -2414,6 +2414,7 @@ def _recall_dispatch_step(screen, mem, state):
             'steps': state.get('steps'),
             'status': status,
             'escape_move': escape_move,
+            'input_receipt_confirmed': bool(state.get('input_sent')),
             'input_sent': bool(state.get('input_sent')),
             'picker_closed': bool(state.get('picker_closed')),
             'interrupted': interrupted,
