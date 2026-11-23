@@ -54,14 +54,24 @@ def test_a_critical_battle_may_open_the_next_card_after_one_was_used():
     cur['egg_battle'] = True
     cur['cards_used'] = ['ミックミー']
     gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
-    assert gate['allowed'] is True and gate['role'] == 'second_card_critical_spend'
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
 
 
-def test_the_first_card_keeps_the_existing_refusal():
+def test_a_critical_summon_battle_may_open_its_first_card():
+    # 退却禁止の下では「札を閉じる」= 何も使わずに死ぬため、危険＋召喚獣戦では
+    # 1枚目も非致死リスクで拒否しない（live #5246: 卵4個を残して敗北）。
     from docich.hanjuku.judgment import battle as rules
     mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
     cur = mem['battle']
     cur['egg_battle'] = True
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
+
+
+def test_an_ordinary_battle_keeps_the_existing_refusal():
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
     gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
     assert gate['allowed'] is False
 
