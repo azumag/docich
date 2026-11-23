@@ -173,6 +173,12 @@ def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     assert not _flow(mem).get('recall')
     assert not _flow(mem)['recall_verification'].get('input_sent')
     assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
+    record = next(row for row in mem['_records']
+                  if row['decision'] == 'camp_recall_unconfirmed')
+    assert record['resulting_event'] == 'dispatch_unconfirmed'
+    assert '到着' not in record['reason']
+    assert record['observed_metric']['stage'] == 'await_dispatch'
+    assert record['observed_metric']['steps'] == 6
 
 
 @pytest.mark.parametrize('kind',['unknown','yes_no'])
@@ -233,11 +239,12 @@ def test_a_general_that_left_the_camp_confirms_the_arrival():
     assert 'camp_verify' not in _flow(mem)
 
 
-def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall():
+@pytest.mark.parametrize('goal', [None, 'アルマムーン'])
+def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
     from docich.hanjuku.flows import recall as recall_flow
 
     mem = {'chapter': 9, 'tick': 120, '_records': []}
-    state = {'stage': 'await_dispatch', 'steps': 5, 'goal': None,
+    state = {'stage': 'await_dispatch', 'steps': 5, 'goal': goal,
              'target': [134, 120], 'kind': 'camp', 'escape_move': True,
              'a_inputs': 1}
     assert recall_flow._recall_dispatch_step(
