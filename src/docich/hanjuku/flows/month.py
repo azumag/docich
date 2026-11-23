@@ -1121,17 +1121,19 @@ def _month_chikujou(screen, mem, shop):
         return None
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
-    if type(gold) is not int or type(reserve) is not int or reserve < 0:
+    gold_readable = type(gold) is int and gold >= 0
+    reserve_readable = type(reserve) is int and reserve >= 0
+    if not gold_readable or not reserve_readable:
         previous = shop.get('chikujou_affordability_wait')
         waits = (min(previous + 1, CHIKUJOU_AFFORDABILITY_WAIT + 1)
                  if type(previous) is int and previous >= 0 else 1)
         shop['chikujou_affordability_wait'] = waits
         observed = {
             'waits': waits,
-            'gold': gold if type(gold) is int else None,
-            'reserve': reserve if type(reserve) is int else None,
-            'gold_readable': type(gold) is int,
-            'reserve_readable': type(reserve) is int and reserve >= 0,
+            'gold': gold if gold_readable else None,
+            'reserve': reserve if reserve_readable else None,
+            'gold_readable': gold_readable,
+            'reserve_readable': reserve_readable,
             'screen': screen.kind,
         }
         if waits <= CHIKUJOU_AFFORDABILITY_WAIT:
