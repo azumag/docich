@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import sys
 from decimal import Decimal
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision  # noqa: E402
 from docich.trading.notifications import _render_event_with_local_facts, _safe_status  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
+from docich.trading.status import performance_summary_payload  # noqa: E402
 from docich.trading.performance import (  # noqa: E402
     build_theoretical_benchmark,
     build_performance,
@@ -401,3 +403,97 @@ def test_recent_orders_returns_allowlisted_rows(tmp_path):
     assert len(orders) == 1
     assert orders[0]["symbol"] == "BTC/JPY"
     assert orders[0]["reason_code"] == "momentum_breakout"
+
+
+
+def test_performance_missing_ledger_is_unavailable_not_a_zero_result(tmp_path):
+    now = dt.datetime(2026, 11, 24, 0, 0, tzinfo=JST).timestamp()
+    perf = build_performance(
+        tmp_path / "missing.sqlite3",
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=now,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "unavailable"
+    assert perf["ledger_reason_code"] == "ledger_missing"
+    assert perf["realized_total_jpy"] is None
+    assert perf["interval_realized_pnl_jpy"] is None
+    assert perf["today_realized_pnl_jpy"] is None
+    assert perf["unrealized_pnl_jpy"] is None
+    assert perf["cumulative_pnl_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+
+def test_performance_invalid_fill_row_is_not_silently_dropped(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    ledger.close()
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """INSERT INTO paper_fills
+               (fill_id, opportunity_id, strategy_id, symbol, side, quote, amount, price,
+                quote_notional, reference_notional, reason_code, filled_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("bad-fill", "bad-opportunity", "momentum-v1", "BTC/JPY", "buy",
+             "JPY", "not-a-number", "100", "100", "100", "test", 1000.0),
+        )
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "invalid"
+    assert perf["ledger_reason_code"] == "ledger_invalid_row"
+    assert perf["realized_total_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+
+def test_performance_unpaired_sell_does_not_publish_partial_realized_total(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("oversell-buy", "buy", "1", "100"), timestamp=1000.0)
+    sold = broker.fill(_decision("oversell-sell", "sell", "2", "120"), timestamp=1100.0)
+    positions = ledger.positions()
+    ledger.close()
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions=positions,
+        prices={"BTC/JPY": "110"},
+        now=1200.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "partial"
+    assert perf["ledger_reason_code"] == "unpaired_sell"
+    assert perf["unpaired_sell_count"] == 1
+    assert perf["realized_total_jpy"] is None
+    assert perf["interval_realized_pnl_jpy"] is None
+    assert perf["cumulative_pnl_jpy"] is None
+    assert perf["equity_jpy"] is None
+    assert realized_pnl_for_fill(db, sold.fill_id) is None
+
+
+def test_public_performance_summary_exposes_only_bounded_ledger_health():
+    payload = performance_summary_payload({
+        "ledger_status": "invalid",
+        "ledger_reason_code": "ledger_invalid_row",
+        "unpaired_sell_count": 2,
+        "private_path": "/private/paper.sqlite3",
+    })
+
+    assert payload == {
+        "ledger_status": "invalid",
+        "ledger_reason_code": "ledger_invalid_row",
+        "unpaired_sell_count": 2,
+    }

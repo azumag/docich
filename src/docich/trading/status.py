@@ -28,7 +28,12 @@ _WORKER_SUMMARY_KEYS = {
 _PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions"}
 _PERFORMANCE_MONEY_KEYS = {
     "realized_total_jpy", "interval_realized_pnl_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
-    "cumulative_pnl_jpy", "equity_jpy",
+    "cumulative_pnl_jpy", "equity_jpy", "unpaired_sell_count",
+}
+_PERFORMANCE_LEDGER_STATUS = {"ok", "partial", "unavailable", "invalid"}
+_PERFORMANCE_LEDGER_REASONS = {
+    "ok", "ledger_missing", "ledger_read_error", "ledger_schema_invalid",
+    "ledger_invalid_row", "unpaired_sell",
 }
 _MAX_SKIP_DETAILS = 16
 
@@ -91,6 +96,12 @@ def performance_summary_payload(value: object) -> dict[str, object]:
             result["as_of"] = as_of
     if type(value.get("complete")) is bool:
         result["complete"] = value["complete"]
+    ledger_status = value.get("ledger_status")
+    if isinstance(ledger_status, str) and ledger_status in _PERFORMANCE_LEDGER_STATUS:
+        result["ledger_status"] = ledger_status
+    ledger_reason = value.get("ledger_reason_code")
+    if isinstance(ledger_reason, str) and ledger_reason in _PERFORMANCE_LEDGER_REASONS:
+        result["ledger_reason_code"] = ledger_reason
     for key in _PERFORMANCE_COUNT_KEYS:
         raw = value.get(key)
         if type(raw) is int and raw >= 0:
