@@ -56,6 +56,8 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
                 bad_key: 999,
                 "queues": "not-a-number",
                 "ai": 1200,
+                "markets": 1000,
+                "orders": 900,
             },
             "others": 100,
             "total": 20000,
@@ -69,8 +71,23 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
         self.assertIn("total=20000B", compact)
         self.assertNotIn("inject", compact)
         self.assertNotIn("not-a-number", compact)
+        self.assertIn("markets=1000B (5%)", compact)
+        self.assertNotIn("orders", compact)
         section_rows = [line for line in lines if line.startswith("  - ") and not line.startswith("  - others:") and not line.startswith("  - total:")]
-        self.assertLessEqual(len(section_rows), 5)
+        self.assertEqual(len(section_rows), 5)
+
+    def test_invalid_byte_counts_are_zeroed(self):
+        document = {"diagnostics": {"meta": {"section_bytes": {
+            "top": {"boolean": True, "negative": -1, "oversized": 10_000_001, "valid": 1},
+            "others": False,
+            "total": 100,
+        }}}}
+        compact, _ = _HEADROOM.summarize_section_bytes(document)
+        self.assertIn("boolean=0B (0%)", compact)
+        self.assertIn("negative=0B (0%)", compact)
+        self.assertIn("oversized=0B (0%)", compact)
+        self.assertIn("valid=1B (1%)", compact)
+        self.assertIn("others=0B", compact)
 
     def test_missing_or_malformed_section_accounting_is_unavailable(self):
         for document in ({}, {"diagnostics": {"meta": {"section_bytes": {"top": []}}}}):
