@@ -428,6 +428,7 @@ def test_camp_terminal_decisions_are_classified():
     assert dispatch['stage'] == 'await_dispatch' and dispatch['steps'] == 6
     assert dispatch['camp'] == [134, 120]
     assert dispatch['picker_closed'] is False and dispatch['escape_move'] is False
+    assert dispatch['input_receipt_confirmed'] is False
     assert audit._camp_event(_camp_record(
         'camp_recall_unconfirmed', event='dispatch_unconfirmed',
         metric={'escape_move': True})) is None
@@ -506,6 +507,7 @@ def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
                       metric={'camp': [134, 120], 'castle': None,
                               'stage': 'await_dispatch', 'steps': 6,
                               'input_sent': False, 'picker_closed': False,
+                              'input_receipt_confirmed': False,
                               'escape_move': False, 'interrupted': False})],
                   now=1000)
     record = audit.load_incidents(runtime_dir)[0]
@@ -513,9 +515,11 @@ def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
     assert event['reason_code'] == 'camp_dispatch_unconfirmed'
     assert event['resulting_event'] == 'dispatch_unconfirmed'
     assert event['stage'] == 'await_dispatch' and event['steps'] == 6
+    assert event['input_receipt_confirmed'] is False
     body = audit.render(record)
     assert 'status: dispatch_unconfirmed' in body
     assert 'escape_move: False' in body
+    assert 'input_receipt_confirmed: False' in body
 
 
 def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
