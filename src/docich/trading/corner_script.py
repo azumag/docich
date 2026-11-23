@@ -413,16 +413,16 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "parameterは既存パラメータ調整です。各案に根拠(evidence)と確信度(confidence: low/medium/high)を付けます。\n"
         "- ニュース単発を根拠に自動売買ルールを直接追加する提案は禁止。検証方法・反証条件をrationaleに含めてください。\n"
         "【時間足チャートの解説】\n"
-        "- facts.timeframes は注目銘柄の日足・1時間足・15分足・1分足の公開ローソクです。各要素は bars(本数)、"
+        "- facts.timeframes は注目銘柄の日足・1時間足・15分足・5分足・1分足の公開ローソクです。各要素は bars(本数)、"
         "last_close、range_change_pct(表示区間の変化率)、momentum_pct(直近数本の勢い)、sma、bb_upper/bb_lower"
         "(ボリンジャーバンド)、bb_position(0が下限・1が上限)、trend、bb_phrase を持ちます。\n"
-        "- chart では4つの時間足を1つずつ、『事実』→『解釈』→『次に何を見るか』の順で解説します。"
+        "- chart では facts.timeframes に含まれる全ての時間足を1つずつ、『事実』→『解釈』→『次に何を見るか』の順で解説します。"
         "数値は facts にあるものだけを使い、無い足や空のtimeframesは正直に『取得できていない』と述べる。作らない。\n"
         "- ボリンジャーバンドは終値が上限寄りか下限寄りか、モメンタムは勢いが強いか弱いかを、価格の丸暗記より先に噛み砕く。\n"
         "- facts.fill_timeframes は直近の模擬約定銘柄の1時間足・15分足です。直近の約定を1つずつ、"
         "どの時間足のどの位置（バンド位置・勢い）だったかを recent_fills と突き合わせて説明します。"
         "売買判断の根拠を捏造してはいけません。\n"
-        "- 表示中のチャートは表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っている点を必要なら一言添える。\n"
+        "- 表示中のチャートは表示専用です。公開OHLCの5分足とは別に、売買判断は保存済みの戦略用5分足（終値系列）と戦略パラメータで行う点を必要なら一言添える。\n"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 各セグメントの最初の一文は、数字ではなく相場や判断の意味を先に言う。\n"
@@ -451,7 +451,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
         "  本文取得済みの事実と分析・見通しを区別し、出典（媒体名またはURL）を示す。\n"
         "  見出しのみ・本文取得失敗の項目は、その取得限界を明示し、見出しから記事本文や因果を創作しない。確認できる背景・対象資産との関連・観測点を説明し、見出しだけで短絡終了しない。\n"
-        "- chart: facts.timeframes の4つの時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
+        "- chart: facts.timeframes に含まれる全ての時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
         "- strategy: facts.slot_strategies があれば【銘柄別の戦略】に従い、銘柄ごとの戦略の狙いを損益・見送り傾向・ニュースから観測すべき点と結び付ける。"
         "無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
         "- result: 累積損益・区間実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
@@ -688,10 +688,10 @@ def _chart_text(facts: Mapping[str, object]) -> str:
     if not timeframes:
         return (
             "時間足チャートの解説です。今回は公開ローソクの取得が間に合わず、"
-            "日足・1時間足・15分足・1分足の数字をお伝えできません。データが取れ次第、次のコーナーで扱います。"
+            "日足・1時間足・15分足・5分足・1分足の数字をお伝えできません。データが取れ次第、次のコーナーで扱います。"
         )
-    parts = ["時間足チャートの解説です。注目銘柄を4つの時間足で見ていきます。"]
-    for view in timeframes[:4]:
+    parts = [f"時間足チャートの解説です。注目銘柄を{len(timeframes)}つの時間足で見ていきます。"]
+    for view in timeframes:
         label = str(view.get("label") or view.get("timeframe") or "")
         trend = str(view.get("trend") or "不明")
         change = _fmt_pct(view.get("range_change_pct"))
@@ -713,7 +713,7 @@ def _chart_text(facts: Mapping[str, object]) -> str:
                 f"なお直近約定の{first.get('symbol')}は、{view.get('label')}で{view.get('trend')}基調、"
                 f"{view.get('bb_phrase')}です。発注の理由は約定の解説で扱います。"
             )
-    parts.append("表示中のローソクは公開データの表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っています。")
+    parts.append("表示中のローソクは公開データの表示専用です。売買判断は保存済みの戦略用5分足（終値系列）と戦略パラメータで行っています。")
     return "".join(parts)
 
 
@@ -896,7 +896,7 @@ def _fills_text(facts: Mapping[str, object]) -> str:
                 f"{symbol}の{side}約定は記録がありますが、発注根拠の詳細が残っていないため、"
                 f"価格と{reason}だけをお伝えします。"
             )
-    parts.append("表示中のチャートは参考で、実際の判断は保存済みの5分足と戦略パラメータで行っています。")
+    parts.append("表示中のチャートは参考です。実際の判断は保存済みの戦略用5分足（終値系列）と戦略パラメータで行っています。")
     return "".join(parts)
 
 
@@ -1181,6 +1181,15 @@ def build_next_prompt(
         '"rationale": "検証方法と反証条件", "evidence": "根拠", "confidence": "low|medium|high"}]'
         if news_hints else ""
     )
+    chart_guidance = ""
+    if target_key == "chart":
+        chart_guidance = (
+            "【時間足チャートの解説】\n"
+            "- facts.timeframes に含まれる全ての時間足（日足・1時間足・15分足・5分足・1分足）の公開ローソクを、"
+            "存在する範囲で順に解説してください。4つに切り詰めないでください。\n"
+            "- 取得できない時間足は取得できていないと述べ、足や数値を補わないでください。\n"
+            "- 公開OHLCの5分足は表示専用です。売買判断に使う戦略用5分足（保存済み終値系列）と混同しないでください。\n"
+        )
     news_guidance = ""
     if target_key == "news":
         news_items = research.get("news_items") if isinstance(research.get("news_items"), list) else []
@@ -1234,6 +1243,7 @@ def build_next_prompt(
         f"{target_instruction}"
         f"{_slot_guidance(facts)}"
         f"{news_guidance}"
+        f"{chart_guidance}"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
