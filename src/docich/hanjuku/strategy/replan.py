@@ -1935,10 +1935,25 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             garrison_tick = _world(mem).get('garrison_tick') or {}
             now = int(mem.get('tick') or 0)
             candidates = []
+            # A source already represented by a planned retake/attack/move
+            # must not win the roster-probe ranking: that order may later be
+            # rejected by a source/defender guard. Filter it before sorting so
+            # the next eligible castle can still be inspected (Devin review
+            # on #5182, 2026-11-23).
+            already_sources = {
+                order.get('source')
+                for order in (*sorties['retake'], *sorties['attack'], *moves)
+                if isinstance(order.get('source'), str)
+            }
             for candidate_source in owned:
-                reachable = [e for e in enemies
-                             if not routes.is_road(chapter)
-                             or not chart.march_blocked(chapter, candidate_source, e, owned)]
+                if candidate_source in already_sources:
+                    continue
+                reachable = [
+                    e for e in enemies
+                    if routes.allowed(mem, candidate_source, e)
+                    and (not routes.is_road(chapter)
+                         or not chart.march_blocked(chapter, candidate_source, e, owned))
+                ]
                 if not reachable:
                     continue
                 unread = routes.unread_dispatches(mem, candidate_source)
@@ -1965,21 +1980,18 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             candidates.sort(key=lambda row: row[0])
             if candidates:
                 _, source, target = candidates[0]
-                already = any(o.get('source') == source
-                              for o in (*sorties['retake'], *sorties['attack'], *moves))
-                if not already:
-                    out['probe_stuck_1'] = {
-                        'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
-                        'cards': [], 'after': None, 'purpose': 'attack',
-                        'source_probe': True,
-                        # docich#4696: mark it a read-only roster probe as well, so the
-                        # deploy flow reads the source list with _observe_garrison and
-                        # backs out (B,B) instead of trying to send a general the bot
-                        # has not read. ch3 14-x: the source probe reached the list but
-                        # the plain source_probe path kept going to a sortie it could
-                        # not resolve, and the garrison stayed at four castles.
-                        'roster_probe': True,
-                        'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する'}
+                out['probe_stuck_1'] = {
+                    'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
+                    'cards': [], 'after': None, 'purpose': 'attack',
+                    'source_probe': True,
+                    # docich#4696: mark it a read-only roster probe as well, so the
+                    # deploy flow reads the source list with _observe_garrison and
+                    # backs out (B,B) instead of trying to send a general the bot
+                    # has not read. ch3 14-x: the source probe reached the list but
+                    # the plain source_probe path kept going to a sortie it could
+                    # not resolve, and the garrison stayed at four castles.
+                    'roster_probe': True,
+                    'note': f'暫定: 膠着のため{source}の将軍一覧を読んでから{target}へ出撃する'}
     return out
 
 
