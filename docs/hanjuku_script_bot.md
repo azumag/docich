@@ -963,6 +963,8 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
 - 同じ将軍が3ヶ月以上連続で野営のままなら `camp_abandoned` を記録する。
   月境界で継続を数え、城へ戻ったら滞在をリセットする。既存の滞在は
   `camp_status_seen` の初回tickから月境界数を推定する。
+- 敗北/退却の同一issueへの再発コメントは15分cooldown（汎用は1時間）。
+  同じincident_idの重複防止は維持する。
 - 卵残数が正数、または切り札が未使用のまま「たいきゃく」/敗北した場合、
   `battle_retreat_with_resources` / `battle_loss_with_resources` を記録する。
   同じ章・資源・将軍/stepは900秒cooldown。卵確認だけの
