@@ -24,8 +24,8 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
 from ..os_layer.commands import (VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad,
                                  roster_list_batch)
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
-                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell, nav_step,
-                                   y_jump_unreachable)
+                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell,
+                                   forget_target_placement, nav_step, y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _canonical_general, _cursor, _options,
                                 _roof_under_cursor, season_sites, world_cursor, world_flags,
                                 world_markers)
@@ -93,16 +93,13 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 # battle, the marker came back unplaced and the bot idled).
                 (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
                 _forget_failed_jump(mem, step, 'target')
-                (mem.get('y_jumped') or {}).pop(step, None)
-                # The remembered marker cell is from before the interruption
-                # too. g1163 2026-11-11 12:24:03 kept オシロガ's cell after
-                # the month menu, read the resumed marker as arrived, aligned
-                # it on a roof nearby and sent シュゼット to a cliff where she
-                # camped. Forget it so the target is found again by a jump.
-                mem.pop('cursor', None)
-                if (mem.get('near_goal') or {}).get('step') == step:
-                    mem.pop('near_goal', None)
-                mem['uncertain'] = True
+                # The remembered marker cell and the Y-view receipt are from
+                # before the interruption too. g1163 2026-11-11 12:24:03 kept
+                # オシロガ's cell after the month menu, read the resumed
+                # marker as arrived, aligned it on a roof nearby and sent
+                # シュゼット to a cliff where she camped. Forget both so the
+                # target is found again by a fresh jump.
+                forget_target_placement(mem, step)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
         attempt['target_seen'] = True
@@ -112,6 +109,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             or not order or order['step'] != attempt['step']):
         return
     step = order['step']
+    # The target picker closed (a battle, event or a plain return): its cursor
+    # and Y-jump receipt no longer describe any marker on screen. A re-armed
+    # attempt must re-place the target instead of confirming the restored
+    # marker at the old cell.
+    forget_target_placement(mem, step)
     request = flow(mem).get('departure_request')
     if isinstance(request, dict) and request.get('step') == step:
         if (_departure_receipt_sent(mem, request) and isinstance(request.get('snapshot'), dict)
@@ -1128,6 +1130,7 @@ def _drop_jump_state(mem, step):
                       if not k.startswith(f'{step}:')}
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
+    (mem.get('y_jumped_res') or {}).pop(step, None)
     last = mem.get('y_jump_last') or {}
     if last.get('step') == step:
         mem.pop('y_jump_last', None)
@@ -2577,6 +2580,16 @@ def map_step(screen: Screen, mem, frame):
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
         _forget_failed_jump(mem, order['step'])
+        # A restarted attempt gets a fresh destination placement. A receipt
+        # left by the previous attempt would confirm the new picker's marker
+        # on the old cell without a jump (the rearm path after an interrupted
+        # sortie does not pass through the resumed-picker cleanup).
+        for key in ('y_jumped', 'y_jumped_res'):
+            bucket = mem.get(key)
+            if isinstance(bucket, dict):
+                bucket.pop(order['step'], None)
+        if (mem.get('near_goal') or {}).get('step') == order['step']:
+            mem.pop('near_goal', None)
         mem.pop('castle_verified', None)
         if order.get('source_probe') is True:
             mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
@@ -2780,7 +2793,10 @@ def target_step(screen: Screen, mem, frame):
                     screen=screen.kind, reason='全体マップで選んだ出撃先の近くに屋根が無いため全体マップを開き直す')
     if (result is None and screen.marker and not y_jump_unreachable(mem, order['target'])
             and _want_y_jump(mem, order, order['target'], 'target')):
-        return _start_y_jump(mem, order, order['target'], 'target')
+        # Carry the same measured cell the walking path uses (route offsets
+        # included) into the Y view. A fresh jump after a battle must not
+        # silently fall back to the bare castle cell.
+        return _start_y_jump(mem, order, order['target'], 'target', goal_cell=goal)
     if result is None:
         if (chart.is_boss_castle(order['target'])
                 and (mem.get('y_jumped') or {}).get(order['step']) == order['target']):
