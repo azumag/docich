@@ -1133,6 +1133,50 @@ class HanjukuStatusTest(unittest.TestCase):
         self.assertIsNone(result['generals'])
         self.assertIn('将軍数: 不明', '\n'.join(sd.render_hanjuku_status(result)))
 
+    def _country_count(self, **extra):
+        row = dict(scope=[2, '5-3'], identity=dict(self.identity), tick=100,
+                   count=12, joined=[])
+        row.update(extra)
+        self._policy(tick=200, month='5-3', country_general_count=row)
+        return row
+
+    def test_country_status_count_is_the_fallback_when_no_roster_completed(self):
+        # A roster walk can stall for months (roster_end_unconfirmed); the
+        # country-status page still prints しょうぐん Nにん, and without this
+        # source the card stayed 不明 forever.
+        self._country_count()
+        result = self.snapshot()['hanjuku']
+        self.assertEqual((result['generals'], result['generals_previous'],
+                          result['generals_source']), (12, False, 'country'))
+        self.assertIn('将軍数: 12人（国ステータス）',
+                      '\n'.join(sd.render_hanjuku_status(result)))
+        # A previous-month observation stays visible, labelled 前月.
+        self._country_count(scope=[2, '5-2'])
+        result = self.snapshot()['hanjuku']
+        self.assertEqual((result['generals'], result['generals_previous']),
+                         (12, True))
+        self.assertIn('将軍数: 12人（前月の国ステータス）',
+                      '\n'.join(sd.render_hanjuku_status(result)))
+        # A complete roster always wins over the page count.
+        self._roster()
+        result = self.snapshot()['hanjuku']
+        self.assertEqual((result['generals'], result['generals_source']),
+                         (3, 'receipt'))
+
+    def test_stale_or_foreign_country_status_count_stays_unknown(self):
+        for extra in [dict(scope=[1, '5-3']), dict(scope=[2, '5-1']),
+                      dict(scope=[2, '5-3', 0]), dict(scope='5-3'),
+                      dict(identity={**self.identity, 'lease_id': 'other'}),
+                      dict(identity=None), dict(count=-1), dict(count=33),
+                      dict(count='12'), dict(tick=201), dict(tick=True)]:
+            with self.subTest(extra=extra):
+                self._country_count(**extra)
+                result = self.snapshot()['hanjuku']
+                self.assertIsNone(result['generals'])
+                self.assertIsNone(result['generals_source'])
+                self.assertIn('将軍数: 不明',
+                              '\n'.join(sd.render_hanjuku_status(result)))
+
     def test_gap_moves_keep_stale_as_unconfirmed_and_skip_settled_sorties(self):
         import time
         now = time.time()

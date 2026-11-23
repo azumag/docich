@@ -596,7 +596,11 @@ def render_hanjuku_status(value):
     generals = value.get("generals")
     if type(generals) is int and generals >= 0:
         base, joins = value.get("generals_roster"), value.get("generals_joins")
-        if type(joins) is int and joins > 0 and type(base) is int:
+        if value.get("generals_source") == "country":
+            # No complete roster yet: the しょうぐん row on the country-status
+            # page is the game's own headcount and labels itself as such.
+            basis = "前月の国ステータス" if value.get("generals_previous") is True else "国ステータス"
+        elif type(joins) is int and joins > 0 and type(base) is int:
             # A confirmed 加入 is added to the last complete list, so a month
             # command that recruits still shows a number (not 不明).
             basis = f"{'前月' if value.get('generals_previous') is True else '名簿'}{base}人＋加入{joins}名"
