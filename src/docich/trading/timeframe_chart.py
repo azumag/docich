@@ -300,7 +300,7 @@ def build_timeframe_view(
     window_seconds = max(tf_seconds, timestamps[-1] - timestamps[0] + tf_seconds)
     window_label = None
     if timeframe == "5m":
-        window_label = (f"約{window_seconds // 3600}時間"
+        window_label = (f"約{int(window_seconds // 3600)}時間"
                         if window_seconds >= 3600 and window_seconds % 3600 == 0
                         else f"約{max(1, round(window_seconds / 60))}分")
     bars = []
