@@ -173,7 +173,7 @@ def test_fort_observation_counter_and_screen_text_are_bounded():
     recall._observe_fort_frame(frame, state)
     assert state['fort_list_observations'] == recall.RECALL_LIMIT + 1
     assert len(state['fort_last_screen_text']) <= 120
-    assert '\\n' not in state['fort_last_screen_text']
+    assert '\n' not in state['fort_last_screen_text']
     assert state['fort_last_screen_text'].startswith('しろのなかにいます')
 
 
