@@ -1083,12 +1083,13 @@ def _complete_scan_blocked(state):
         return 'top_unconfirmed'
     if len(set(names)) != len(names):
         return 'duplicate_names'
-    if any(name not in state['statuses'] for name in names):
+    statuses = state.get('statuses')
+    if (not isinstance(statuses, dict)
+            or any(not isinstance(statuses.get(name), dict) for name in names)):
         return 'status_unread'
     if any(name in state.get('dirty', ()) for name in names):
         return 'dirty'
-    if any(state['statuses'][name].get('location') == 'unknown'
-           for name in names):
+    if any(statuses[name].get('location') == 'unknown' for name in names):
         return 'location_unknown'
     return None
 
@@ -1114,16 +1115,19 @@ def _roster_end_assumable(mem, state):
     ceiling gives -- continue into the tasks, still with ``complete`` False.
     """
     names = list(state.get('names') or ())
-    if not state.get('top_confirmed'):
+    if not names or not state.get('top_confirmed'):
         return False
     if len(names) >= MAX_SCAN:
         return True
-    statuses = state.get('statuses') or {}
-    if (len(set(names)) != len(names)
-            or any(name not in statuses for name in names)
+    statuses = state.get('statuses')
+    if (not isinstance(statuses, dict)
+            or len(set(names)) != len(names)
+            or any(not isinstance(statuses.get(name), dict) for name in names)
             or any(name in state.get('dirty', ()) for name in names)):
         return False
-    country = mem.get('country_general_count') or {}
+    country = mem.get('country_general_count')
+    if not isinstance(country, dict):
+        return False
     count = receipts.country_count(mem, 'generals')
     return (type(count) is int and count == len(names)
             and country.get('scope') == list(state.get('scope') or []))
