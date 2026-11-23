@@ -76,10 +76,15 @@ def test_decide_nudges_a_frozen_cursorless_map_before_the_generic_hold(monkeypat
     monkeypatch.setattr(screen_module, 'parse', lambda frame, phase=None: fake)
     frame = Frame(256, 224, bytes((40, 140, 20)) * (256 * 224))
     state = {'policy': {'chapter': 1}}
-    seen = []
+    seen, decisions = [], []
     for _ in range(orchestrator.MAP_UNSTEERABLE_HOLD_MAX + 1):
         actions, state = orchestrator.decide(frame, state)
         seen.append(actions)
-    assert all(actions == [] for actions in seen[:-1])
+        decisions += [r['decision'] for r in state.get('_records', [])]
+    # Owner 2026-11-23: the idle field first gets a whole-map Y observation,
+    # then the generic frozen-map SELECT nudge.
+    assert seen[0] == [orchestrator.pad('y')]
+    assert all(actions == [] for actions in seen[1:-1])
     assert seen[-1] == [orchestrator.pad('select')]
-    assert state['_records'][-1]['decision'] == 'map_unsteerable_nudge'
+    assert 'field_idle_world_map' in decisions
+    assert decisions[-1] == 'map_unsteerable_nudge'

@@ -1787,6 +1787,17 @@ def _hold_locked_boss(mem, order):
 
 def _hold_unrouted_sortie(mem, order):
     from ..strategy import routes
+    if order.get('source_probe') or order.get('roster_probe'):
+        # A source/roster probe only opens the castle's general list; it does
+        # not march.  The route gate cancelled it every time in chapter 3 and
+        # the list was never read (owner 2026-11-23: normal sortie cancelled
+        # with the general present).
+        return None
+    if order.get('purpose') == 'attack':
+        # Owner 2026-11-23: once the sortie window is open, commit.  The route
+        # is already validated when the source/general is chosen; a later B
+        # here left the opened window unused and blocked progress.
+        return None
     if ((_plan_region(mem).get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
             or routes.order_allowed(mem, order, _source(order, mem))):
         return None
@@ -2311,6 +2322,12 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                 # to hold are refuted when the list does not show them, so a
                 # one-general castle is not probed again for the same set.
                 _refute_unplaced(mem, order)
+            # Owner 2026-11-23: a completed confirmation read must arm the
+            # source-probe cooldown.  Without it the rebuilt plan minted a new
+            # roster_probe step every observation and reopened the same list
+            # (ch6 8-8: アルマムーン→オケアナ, 40 reads in ~20 s).
+            mem.setdefault('arrival_probe_tick', {})[source] = int(mem.get('tick') or 0)
+            (mem.get('roster_read_due') or {}).pop(source, None)
             _record(mem, 'roster_probe_complete' if verified else 'roster_probe_incomplete',
                     **_deploy_context(order, mem), castle=source,
                     observed_metric={'generals': list(present or [])[:12], 'roster_read': verified},
