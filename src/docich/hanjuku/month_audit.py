@@ -976,12 +976,13 @@ def _build_sortie_incident(runtime, state, after, event, now):
                  'duration_s': 0.0, 'first_tick': mem.get('tick'),
                  'last_tick': mem.get('tick'), 'duration_ticks': None,
                  'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
-    # docich#5162 (owner 2026-11-23): a single failed interim order in a month
-    # that still launched sorties is a transient, not a stalled month. Keep it
-    # in the ledger (medium) instead of filing it as a high-confidence alarm;
-    # a month with zero confirmed launches keeps the high signal.
+    # docich#5162 (owner 2026-11-23): an unaccepted order_failed / sortie_order_failed
+    # in a month that launched other sorties is a transient. Do not downgrade
+    # confirmed launch failures or exhausted combat retries: those remain high.
     confidence, confidence_reasons = 'high', []
-    if event['kind'] == 'sortie_failed' and type(confirmed) is int and confirmed > 0:
+    if (event.get('decision') == 'order_failed'
+            and event.get('reason_code') == 'sortie_order_failed'
+            and type(confirmed) is int and confirmed > 0):
         confidence = 'medium'
         confidence_reasons = ['sortie_month_launched']
     identity = state.get('identity') or {}
