@@ -230,6 +230,9 @@ def _month_menu_hint_only(screen):
     dialogue remains owned by the foreground-text handler.
     """
     body = _month_dialog_body(screen).replace(' ', '')
+    # The hand may hide the dakuten/small-kana tile; normalize only the
+    # corresponding base glyphs that can occur in this fixed hint.
+    body = body.translate(str.maketrans({'し': 'じ', 'ゆ': 'ゅ', 'き': 'キ'}))
     hint = 'じゅうじキー'
     if len(body) < 2:
         return False
