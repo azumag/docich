@@ -1674,6 +1674,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
 
     module = load_collector()
     versions = (BOT_VERSION, "hanjuku-script-v1", "hanjuku-chart-v2",
+                "hanjuku-chart-v1424-sortie-measured-kit",
                 "hanjuku-chart-v129-battle-card-progress",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
