@@ -2352,6 +2352,8 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     c.hand(180, 191)
     hint = parse(c.frame())
     assert hint.kind == 'month_menu' and hint.hand and hint.hand[1] >= 175
+    assert hint.has('へいしほじゅう') and not hint.has('かわりますぞ')
+    assert policy._month_menu_row_col(hint, 'へいしほじゅう') == (1, 0)
 
     blind = ['up'] * 4 + ['left', 'down']
     plan = policy.month_step(hint, mem)
