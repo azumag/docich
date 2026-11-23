@@ -141,6 +141,9 @@ def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
         'これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
         'どのしろをぞうちく',
         'どのしろをぞうちくなさいますか?',
+        'イデ',  # partial castle-name typewriter prefix
+        'イデ!',  # width-folded complete label before the suffix
+        'イデ！じょう',  # partial quote before the cost line
         'カラじょうですな',  # partial typewriter quote
         'カラじょうですな5Gかかりますがよろしいですかなうむッ!',
         'カラじょうのレベルが2',

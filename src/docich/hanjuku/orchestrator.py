@@ -9,7 +9,9 @@ returned records and sends the bounded pad actions.
 from __future__ import annotations
 
 from .os_layer.pixels import Frame
-from . import decision_log
+import unicodedata
+
+from . import chart, decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     card_census as card_census_flow,
                     deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
@@ -215,6 +217,15 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     return advance
 
 
+def _chikujou_partial_castle_label(text, chapter):
+    """Recognize a typewriter prefix of a catalog castle without changing state labels."""
+    folded = ''.join(unicodedata.normalize('NFKC', text or '').split())
+    if not folded:
+        return False
+    return any(''.join(unicodedata.normalize('NFKC', name).split()).startswith(folded)
+               for name in chart.CASTLE_NAMES.get(chapter or 1, ()))
+
+
 def _chikujou_menu_text_owned(mem, kind, key):
     """A live castle list/result owns its text; generic event A must not select it."""
     sub = mem.get('month_sub')
@@ -223,13 +234,13 @@ def _chikujou_menu_text_owned(mem, kind, key):
         return False
     text = key[5:] if isinstance(key, str) and key.startswith('text:') else ''
     return (_is_chikujou_prompt(text)
+            or _chikujou_partial_castle_label(text, mem.get('chapter'))
+            or 'じょう' in text
             or any(token in text for token in
                    ('どのしろをぞうちく', 'どのしろをそうたく',
                     'これいじょうのぞうちく', 'うむッ', 'いかんッ',
                     'よろしいですかな', 'かかりますが',
                     'おかねがたりません', 'しょうぐんがおりませなんだ'))
-            or ('じょう' in text and any(token in text for token in
-                                          ('レベル', 'ぞうちく', 'なりました', 'ですな'))))
 
 
 def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
