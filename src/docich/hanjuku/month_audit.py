@@ -265,6 +265,7 @@ PRIMARY_SIGNALS = (
     ('camp_recall_failed', ('camp_recall_failed',)),
     ('camp_recall_cancelled', ('camp_recall_cancelled',)),
     ('camp_recall_unconfirmed', ('camp_recall_unconfirmed',)),
+    ('camp_escape_move_unconfirmed', ('camp_escape_move_unconfirmed',)),
     ('boss_no_battle', ('boss_no_battle',)),
     ('plan_starved', ('plan_all_settled', 'no_orders')),
     ('departure_failure', ('order_start_without_launch', 'launch_confirmation_missing',
