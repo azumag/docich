@@ -1935,11 +1935,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             garrison_tick = _world(mem).get('garrison_tick') or {}
             now = int(mem.get('tick') or 0)
             candidates = []
-            # A source already represented by a planned retake/attack/move
-            # must not win the roster-probe ranking: that order may later be
-            # rejected by a source/defender guard. Filter it before sorting so
-            # the next eligible castle can still be inspected (Devin review
-            # on #5182, 2026-11-23).
+            # Prefer a castle not already used by a planned order, because
+            # that order may later be rejected by a source/defender guard.
+            # Keep planned sources as a last-resort read-only fallback, though:
+            # if every other castle is recent/unreachable, excluding the only
+            # source entirely erases the only way to discover its roster
+            # (Devin follow-up on #5182, 2026-11-23).
             already_sources = {
                 order.get('source')
                 for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
@@ -1947,8 +1948,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 if isinstance(order.get('source'), str)
             }
             for candidate_source in owned:
-                if candidate_source in already_sources:
-                    continue
+                planned_source = candidate_source in already_sources
                 reachable = [
                     e for e in enemies
                     if routes.allowed(mem, candidate_source, e)
@@ -1972,10 +1972,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 if arrival_due:
                     unread_ticks = [row.get('tick') for _, row in unread
                                     if isinstance(row, dict) and type(row.get('tick')) is int]
-                    priority = (0, min(unread_ticks, default=now),
+                    priority = (0, 1 if planned_source else 0,
+                                min(unread_ticks, default=now),
                                 candidate_source != home, candidate_source)
                 else:
-                    priority = (1, last_tick if type(last_tick) is int else -1,
+                    priority = (1, 1 if planned_source else 0,
+                                last_tick if type(last_tick) is int else -1,
                                 candidate_source != home, candidate_source)
                 candidates.append((priority, candidate_source, reachable[0]))
             candidates.sort(key=lambda row: row[0])
