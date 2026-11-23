@@ -107,3 +107,10 @@ def test_zombie_melee_skips_the_okunote_lottery():
     assert policy._defender_summon_preempt(mem, battle)['due'] is True
     battle['zombie_melee'] = True
     assert policy._defender_summon_preempt(mem, battle) is None
+
+
+def test_narration_names_the_zombie_and_melee():
+    from docich import hanjuku_commentary as commentary
+    record = {'decision': 'egg_battle', 'strategy_variant': 'egg_battle_attack',
+              'observed_metric': {'egg_need': {'rule': 'zombie_melee'}}}
+    assert commentary.compose(record)[1] == '敵の召喚獣はゾンビなので、たまごを使わず白兵で対処します。'

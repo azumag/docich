@@ -31,6 +31,8 @@
 - `judgment/battle._defender_summon_preempt`: `zombie_melee` のときは
   おくのて（自傷抽選）を開かない。0ダメージの相手へ自傷リスクを賭ける理由が
   ないため。札・おくのての既存判断はゾンビ以外では不変。
+- `hanjuku_commentary.py`: `egg_need.rule='zombie_melee'` の判断は
+  「敵の召喚獣はゾンビなので、たまごを使わず白兵で対処します。」と実況する。
 - `BOT_VERSION` v1425-zombie-melee。
 
 ## 検証
