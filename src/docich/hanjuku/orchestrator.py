@@ -2440,9 +2440,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # A live summon scene keeps its paced A: only a stale battle record is
     # allowed to be ignored for a plain dialogue line.
     summon_scene = bool(battle.get('summon_scene') or mem.get('summon_scene'))
+    from .state.regions import plan as _plan_here
+    plan_active = bool(_plan_here(mem).get('active'))
     text_guarded = event_guarded and not (
         kind == 'text' and phase == 'dialogue' and screen.text
-        and not named_hold and not summon_scene)
+        and not named_hold and not summon_scene and not plan_active)
     if event_text_advance(mem, phase, kind, concert_key, actions, text_guarded):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
