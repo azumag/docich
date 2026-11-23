@@ -207,7 +207,7 @@ def _rows(db_path: Path) -> list[dict[str, object]]:
             }
             for r in conn.execute(
                 "SELECT fill_id, symbol, side, amount, price, filled_at, reason_code"
-                " FROM paper_fills ORDER BY filled_at ASC, rowid ASC"
+                " FROM paper_fills ORDER BY filled_at ASC, fill_id ASC"
             )
         ]
     finally:
@@ -230,22 +230,25 @@ def interval_realized(db_path: Path, cursor: tuple[float, str] | None, now: floa
     (first run).
     """
     now = time.time() if now is None else float(now)
-    lower_bound_unset = cursor is None
     realized = ZERO
     lots: dict[str, list[Decimal]] = {}
 
-    for r in _rows(db_path):
+    rows = sorted(
+        _rows(db_path),
+        key=lambda row: (float(row["filled_at"]), str(row["fill_id"])),
+    )
+    for r in rows:
         filled = float(r["filled_at"])
         if filled > now:
             continue
-        if not lower_bound_unset:
-            if (filled, str(r["fill_id"])) <= cursor:
-                continue
+        in_interval = cursor is None or (filled, str(r["fill_id"])) > cursor
         symbol = str(r["symbol"])
         side = str(r.get("side"))
         amount = Decimal(str(r.get("amount") or ZERO))
         price = Decimal(str(r.get("price") or ZERO))
         if side == "buy":
+            # Carry pre-cursor lots forward so a later interval sell retains
+            # its true FIFO cost basis.
             held, cost = lots.setdefault(symbol, [ZERO, ZERO])
             lots[symbol] = [held + amount, cost + amount * price]
             continue
@@ -256,7 +259,8 @@ def interval_realized(db_path: Path, cursor: tuple[float, str] | None, now: floa
             continue
         sold = min(amount, held)
         average = cost / held
-        realized += sold * (price - average)
+        if in_interval:
+            realized += sold * (price - average)
         lots[symbol] = [held - sold, cost - (average * sold)]
     return realized
 
@@ -346,6 +350,10 @@ def select_picks(
             if fid in chosen:
                 continue
             score = tiers[idx][1](r)
+            # State-change and cost/risk tiers are predicates, not rankings:
+            # an empty tier must not consume a slot with an arbitrary score 0.
+            if idx >= 2 and score <= 0:
+                continue
             if best is None or score > best_score:
                 best = r
                 best_score = score
