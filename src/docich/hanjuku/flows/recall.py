@@ -2374,7 +2374,19 @@ def _recall_dispatch_step(screen, mem, state):
         # A cliff escape uses the same bounded dispatch receipt, but it must
         # not replace a real recall's arrival proof. camp_recheck consumes only
         # recall_verification for named arrival reads.
-        _flow(mem)['escape_move_verification' if escape_move else 'recall_verification'] = verification
+        if escape_move:
+            _flow(mem)['escape_move_verification'] = {
+                'status': status, 'interrupted': interrupted,
+                **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
+                'escape_move': True, 'target': state.get('target'),
+                'target_cell': state.get('target_cell'),
+                'requested_tick': state.get('requested_tick'),
+                'steps': state.get('steps'),
+                'input_sent': bool(state.get('input_sent')),
+                'picker_closed': bool(state.get('picker_closed')),
+            }
+        else:
+            _flow(mem)['recall_verification'] = verification
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
@@ -2448,7 +2460,7 @@ def _recall_dispatch_step(screen, mem, state):
                     and isinstance(goal, str) and goal):
                 failures = _flow(mem).setdefault('recall_goal_failures', {})
                 key = f'{int(camp[0])},{int(camp[1])}'
-                pair = failures.get(goal) if isinstance(failures.get(goal), dict) else {}
+                pair = failures.get(key) if isinstance(failures.get(key), dict) else {}
                 pair[goal] = int(pair.get(goal) or 0) + 1
                 failures[key] = pair
                 _record(mem, 'camp_recall_goal_failed', observed_metric={
