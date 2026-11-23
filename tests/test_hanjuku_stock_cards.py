@@ -93,7 +93,8 @@ def _adopt_adjusted_order(mem, cards, *, target='ウラノポリス', purpose='a
     """Adopt one validated adjusted order and return its stored form."""
     rid = 'abcd1234abcd1234'
     raw = {'step': 'M1', 'general': 'しょうぐん' if source_probe else 'チコリ',
-           'source': 'アルマムーン', 'target': target, 'cards': cards, 'after': None}
+           'source': replan.chart.home_castle(mem['chapter']),
+           'target': target, 'cards': cards, 'after': None}
     if purpose is not None:
         raw['purpose'] = purpose
     if source_probe:
