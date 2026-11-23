@@ -25,6 +25,7 @@ SOREN91_GAME_STATE_NOTE = (
 
 #: 配信ネイティブのコーナー view。ケースの内容は state dir の payload から読む。
 MYSTERY_VIEW = "mystery-view"
+YOSOU_VIEW = "yosou-view"
 MYSTERY_PHASE_LABELS = {
     "intro": "事件発生",
     "investigate": "現場調査",
@@ -114,6 +115,8 @@ class SorenGameContextProvider:
             game_state = self._flyhome_state_context(canonical)
         elif game == MYSTERY_VIEW:
             game_state = self._mystery_state_context(canonical_path.parent)
+        elif game == YOSOU_VIEW:
+            game_state = self._yosou_state_context(canonical_path.parent)
         elif isinstance(game, str) and game != "sorengame":
             profile = self._game_profile(game, state_dir=canonical_path.parent)
             game_state = (
@@ -171,6 +174,39 @@ class SorenGameContextProvider:
         if label:
             parts.append(f"いまの段階: {label}。")
         parts.append("視聴者はアンケートで尋問先や犯人を投票します。画面に無い設定や真相は創作しないこと。")
+        return "".join(parts)[:600]
+
+    def _yosou_state_context(self, state_dir: Path) -> str:
+        """Bounded summary of the airing prediction corner for comment replies.
+
+        The corner ranks viewers by hit rate; without it replies fell back to a
+        generic blurb unrelated to the board (owner 2026-11-23, same class as the
+        mystery corner). Only the public leaderboard file is read and every
+        value is bounded; a missing or malformed ledger keeps the static blurb.
+        """
+        fallback = game_profile.non_soviet_game_state(
+            YOSOU_VIEW, GAME_BLURBS.get(YOSOU_VIEW, ""))
+        try:
+            from .. import prediction_leaderboard as leaderboard
+
+            ledger = leaderboard.load(state_dir / leaderboard.FILE)
+            boards = leaderboard.boards(ledger)
+            counts = leaderboard.stats(ledger)
+        except Exception:
+            return fallback
+        rows = boards.get("hit_rate") if isinstance(boards, dict) else None
+        rows = rows if isinstance(rows, list) else []
+        parts = ["- いまは予想王のコーナー中です。チャンネルポイント予想の結果を発表しています。"]
+        parts.append(f"確定した予想は{counts.get('rounds') or 0}件。")
+        if rows:
+            top = rows[0] if isinstance(rows[0], dict) else {}
+            name = top.get("user_name") or top.get("user_login") or ""
+            name = name[:24] if isinstance(name, str) else ""
+            if name:
+                rounds = top.get("rounds") if type(top.get("rounds")) is int else 0
+                hits = top.get("hits") if type(top.get("hits")) is int else 0
+                parts.append(f"的中率トップは同志{name}（{rounds}回中{hits}回）。")
+        parts.append("画面に無い数字や順位は創作しないこと。")
         return "".join(parts)[:600]
 
     def _flyhome_state_context(self, canonical: dict) -> str:
