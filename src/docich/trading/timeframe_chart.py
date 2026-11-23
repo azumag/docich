@@ -225,7 +225,7 @@ def _clean_rows(rows: object) -> list[tuple[float, float, float, float, float, f
         volume = _nonnegative(row[5])
         if None in (open_, high, low, close, volume):
             continue
-        if high < low:
+        if high < low or high < max(open_, close) or low > min(open_, close):
             continue
         cleaned[timestamp] = (timestamp, open_, high, low, close, volume)
     return [cleaned[key] for key in sorted(cleaned)]

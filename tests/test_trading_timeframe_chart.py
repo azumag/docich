@@ -82,6 +82,16 @@ def test_build_view_rejects_short_future_and_bad_rows():
     view = build_timeframe_view("BTC/JPY", "15m", mixed, now=NOW)
     # Only the malformed row is dropped; one valid bar is still too short.
     assert view["available"] is False
+    impossible = [
+        [day_ms, 100, 101, 99, 100.5, 1],
+        [day_ms + 300_000, 100.5, 100.4, 99, 100.2, 1],  # high below open
+        [day_ms + 600_000, 100.2, 102, 100.3, 101, 1],  # low above open
+        [day_ms + 900_000, 101, 103, 99, 102, 1],
+    ]
+    valid = build_timeframe_view("BTC/JPY", "5m", impossible, now=NOW)
+    assert valid["available"] is True
+    assert valid["bar_count"] == 2
+    assert [bar["c"] for bar in valid["bars"]] == [100.5, 102]
     with pytest.raises(TimeframeDataError):
         build_timeframe_view("BTC/JPY", "2m", mixed, now=NOW)
 
