@@ -480,8 +480,11 @@ def _repair_sole_winner_payouts(ledger) -> None:
     the same number the settled payload should have carried; older rows are
     repaired in memory on read and persisted by the next save.
     """
-    for round_ in ledger["rounds"].values():
-        if round_.get("status") != RESOLVED:
+    rounds = ledger.get("rounds") if isinstance(ledger, dict) else None
+    if not isinstance(rounds, dict):
+        return
+    for round_ in rounds.values():
+        if not isinstance(round_, dict) or round_.get("status") != RESOLVED:
             continue
         winner = round_.get("winning_outcome_id")
         outcome = next((o for o in round_.get("outcomes") or []
