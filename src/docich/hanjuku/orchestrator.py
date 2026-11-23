@@ -2440,8 +2440,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # reviewed battle menus are other kinds (yes_no/card/skill), while a
     # dialogue/text screen can be advanced with A even just after a battle
     # (ch2 3-x balloon-finch line held indefinitely).
+    named_hold = (trade_guard_hold or bijin_guard_hold
+                  or mem.get('bijin_gift_hold') is True
+                  or (mem.get('trade_guard') or {}).get('held') is True)
     text_guarded = event_guarded and not (
-        kind == 'text' and phase == 'dialogue' and screen.text)
+        kind == 'text' and phase == 'dialogue' and screen.text and not named_hold)
     _merchant_text = ((screen.text or '').replace(' ', '')
                       .replace('\u3000', '').replace('\n', ''))
     if 'かてくれる' in _merchant_text or 'ちゅーか' in _merchant_text:

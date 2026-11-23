@@ -99,11 +99,13 @@ def test_no_blind_confirmation_on_an_unread_cursor_when_the_egg_is_zero():
     assert 'egg_recheck' not in mem
 
 
-def test_empty_egg_keeps_the_existing_attack_side_retreat_route():
+def test_empty_egg_attacks_instead_of_the_removed_retreat_route():
+    # Owner 2026-11-23: retreat is banned everywhere; with no card the summon
+    # turn attacks instead of probing the retreat menu.
     mem = memory()
     mem['battle']['side'] = 'attack'
-    assert policy.egg_battle_step(menu('egg_battle_menu'), mem) == [policy.pad('b')]
-    assert mem['battle']['egg_retreat_needed'] is True
+    assert policy.egg_battle_step(menu('egg_battle_menu'), mem) == [policy.pad('a')]
+    assert not mem['battle'].get('egg_retreat_needed')
 
 
 def test_already_offered_summon_candidates_do_not_confirm_an_empty_egg():

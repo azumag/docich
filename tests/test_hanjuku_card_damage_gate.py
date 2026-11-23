@@ -19,6 +19,10 @@ def refused_card(monkeypatch):
     # in test_hanjuku_card_wear_down.py.
     monkeypatch.setattr('docich.hanjuku.judgment.battle._boss_card_wears_down_enemy',
                         lambda estimate, cur: False)
+    # The owner's boss/summon force rule is tested in test_hanjuku_chart_bot.py;
+    # these gate contracts are about the refusal path, not the boss override.
+    monkeypatch.setattr('docich.hanjuku.flows.battle_menus._boss_or_summon_battle',
+                        lambda *args, **kwargs: False)
 
 
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',
@@ -345,15 +349,17 @@ def test_refusal_has_finite_defense_fallback_and_does_not_reopen_same_tactic(mon
     assert_not_spent(mem)
 
 
-def test_refused_chart_does_not_retreat_while_healthy_but_does_at_probe_budget():
+def test_refused_chart_never_retreats_even_at_the_probe_budget():
+    # Owner 2026-11-23: retreat is banned uniformly, including after the card
+    # probe budget; the たいきゃく row is never confirmed.
     mem = memory()
     assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
     assert p.battle_menu_step(menu(('きりふだ',)), mem) == [p.pad('b')]
     for _ in range(p.MELEE_HOLD_LIMIT):
         assert p.battle_step(panel(mem), mem) == [p.pad('a', 3), {'type': 'wait', 'ms': 50}]
     assert p.battle_step(panel(mem), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
+    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('b')]
+    assert not mem['battle']['hero_retreat'].get('selected')
 
 
 @pytest.mark.parametrize('survival', [False, True])
