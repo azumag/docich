@@ -1021,6 +1021,49 @@ def test_chikujou_month_end_after_released_hold_stays_high_confidence(runtime_di
     assert record['chikujou_event']['held_for'] is None
 
 
+def test_chikujou_month_end_after_reserve_skip_is_not_high_confidence(runtime_dir):
+    """docich#5186: the flow's reserve math held the build money all month.
+
+    The eval marker (`chikujou_last_eval` with affordable=False) is the
+    recorded reason the month ended unbuilt, so the audit keeps the
+    occurrence countable but must not file it as a high-confidence missed
+    build (the filer defaults to min_confidence=high).
+    """
+    value = _chikujou_state()
+    value['policy']['shop']['chikujou'] = 'check'
+    value['policy']['shop']['chikujou_last_eval'] = {'month': '1-1', 'gold': 216,
+                                                    'reserve': 250,
+                                                    'affordable': False}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_reserve_skipped']
+    assert record['chikujou_reserve_skipped'] is True
+    assert record['chikujou_event']['reserve_skipped'] is True
+
+
+def test_chikujou_stale_reserve_skip_marker_still_files(runtime_dir):
+    """A marker from an earlier month must not cover this month's end."""
+    value = _chikujou_state()
+    value['policy']['shop']['chikujou_last_eval'] = {'month': '0-12', 'gold': 10,
+                                                    'reserve': 500,
+                                                    'affordable': False}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_reserve_skipped'] is False
+    assert record['chikujou_event']['reserve_skipped'] is False
+
+
 def test_chikujou_month_end_without_resources_is_not_recorded(runtime_dir):
     value = _chikujou_state(gold=0)
     audit.observe(runtime_dir, audit.capture(value), value,

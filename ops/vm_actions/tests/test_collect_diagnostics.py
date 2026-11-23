@@ -1857,6 +1857,9 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1415-merchant-strong-first",
                  "hanjuku-chart-v1416-card-miss-after-use",
                  "hanjuku-chart-v1417-stall-refresh",
+                 "hanjuku-chart-v1418-spend-next-card",
+                 "hanjuku-chart-v1419-hero-move-backoff",
+                 "hanjuku-chart-v1420-chikujou-reserve-check",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

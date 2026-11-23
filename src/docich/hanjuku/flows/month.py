@@ -1121,8 +1121,28 @@ def _month_chikujou(screen, mem, shop):
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
     if not _chikujou_affordable(gold, reserve):
-        shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
+        # Keep the row open: a reserve released later in this same menu (an
+        # egg/recruit skip, a repair deferral, a completed roster) frees the
+        # build margin, so affordability is re-evaluated every observation.
+        # Record each newly failing (gold, reserve) pair on the shop and in
+        # the decision log, so the month audit names why the month ended
+        # unbuilt instead of filing a reason-less chikujou_available_at_end
+        # (docich#5163, #5186, #5195, #5200, #5201).
+        last = shop.get('chikujou_last_eval')
+        if not (isinstance(last, dict) and last.get('gold') == gold
+                and last.get('reserve') == reserve):
+            shop['chikujou_last_eval'] = {'month': shop.get('key'), 'gold': gold,
+                                          'reserve': reserve, 'affordable': False}
+            _record(mem, 'month_chikujou_skipped', month=shop.get('key'), gold=gold,
+                    observed_metric={'reserve': reserve, 'gold': gold,
+                                     'upgrades': len(shop.get('chikujou_upgrades') or [])},
+                    deviation_reason='reserve_unsettled' if reserve is None else None,
+                    reason=('必要費の予約額が未確定のため築城に回せる余剰を判定できず、当月の築城を保留する'
+                            if reserve is None else
+                            '必要資金の予約を残すと築城費が足りないため、余剰が出るまで築城を見送る'))
         return None
+    shop['chikujou_last_eval'] = {'month': shop.get('key'), 'gold': gold,
+                                  'reserve': reserve, 'affordable': True}
     # Bounded like every other month row (g684 2-8 14:52: a soldier-count
     # dialogue stayed in front of the menu and the unguarded walk pressed
     # down at an unmoving hand every observation).

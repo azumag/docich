@@ -1718,6 +1718,18 @@ def _chikujou_snapshot(after, before, record, records):
                        and sorted(refused_castles) == sorted(raw_candidates))
     affordable = economy._chikujou_affordable(gold, reserve)
     cost_declined = _chikujou_cost_declined(records, month)
+    # docich#5186/#5195/#5200/#5201/#5163: the flow's own reserve math (or the
+    # ch9 broken-hero hold) decided the month's gold could not cover the
+    # build. month.py keeps the row on 'check' and records each failing
+    # (gold, reserve) eval on shop['chikujou_last_eval']; a False marker for
+    # this month means the last eval failed before the end, so the unbuilt
+    # month is an explained hold, not a silent loss. The marker is a dict the
+    # flow writes only at eval time, so a stale marker from an earlier month
+    # is ignored.
+    last_eval = shop.get('chikujou_last_eval')
+    reserve_skipped = (isinstance(last_eval, dict)
+                       and last_eval.get('affordable') is False
+                       and (month is None or last_eval.get('month') in (None, month)))
     return {
         'month': month or shop.get('key'),
         'gold': gold,
@@ -1738,6 +1750,7 @@ def _chikujou_snapshot(after, before, record, records):
         'refused_castles': (sorted(name for name in refused_castles if isinstance(name, str))[:8]
                             if isinstance(refused_castles, list) else []),
         'cost_declined': cost_declined,
+        'reserve_skipped': reserve_skipped,
         'menu_unreadable': _chikujou_menu_unreadable(records, month),
         'held_for': _chikujou_hold(shop, records, month),
         'buildable': bool(affordable and staffed_candidates and not refusal_covered
@@ -1793,6 +1806,11 @@ def _build_chikujou_incident(runtime, state, after, event, now):
     held_for = event.get('held_for') if event.get('outcome') == 'ended' else None
     menu_unreadable = (event.get('menu_unreadable')
                        if event.get('outcome') == 'ended' else None)
+    # docich#5186: the flow's reserve math held the build money all month.
+    # The hold is now recorded, so count it like the other explained holds
+    # instead of filing a reason-less chikujou_available_at_end.
+    reserve_skipped = (event.get('reserve_skipped')
+                       if event.get('outcome') == 'ended' else None)
     confidence, confidence_reasons = 'high', []
     if held_for:
         confidence = 'medium'
@@ -1801,6 +1819,9 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         # docich#5097: the row was unreadable, not a reason-less missed build.
         confidence = 'medium'
         confidence_reasons = ['chikujou_menu_unreadable']
+    elif reserve_skipped:
+        confidence = 'medium'
+        confidence_reasons = ['chikujou_reserve_skipped']
     signals = [kind, 'chikujou_candidate']
     for name in _signals(context, counts, confirmed, departures, battle_count):
         if name not in signals:
@@ -1824,6 +1845,7 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'confidence_reasons': confidence_reasons,
         'chikujou_held_for': held_for,
         'chikujou_menu_unreadable': menu_unreadable,
+        'chikujou_reserve_skipped': reserve_skipped,
         'chikujou_refused_skips': event.get('refused_skips'),
         'chikujou_refused_castles': list(event.get('refused_castles') or []),
         'chapter': mem.get('chapter'),

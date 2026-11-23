@@ -3895,7 +3895,11 @@ def test_short_generals_save_insufficient_fee_without_building_it_away():
     policy.month_step(parse(month_canvas(49, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['soldiers'] == 0
     assert mem['shop']['recruit'] == 'skipped'
-    assert mem['shop']['chikujou'] == 'skipped'
+    # docich#5186: an unaffordable eval keeps the row open for a same-menu
+    # reserve release and records the failing signature instead of closing
+    # as 'skipped'.
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_last_eval']['affordable'] is False
     assert 'month_sub' not in mem
 
 
@@ -4143,8 +4147,10 @@ def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
     policy._plan(mem, {'year': 1, 'month': 7, 'gold': 80}).update(
         egg='not_needed', soldiers=0, soldiers_done=True, soldiers_before_recruit_done=True)
     policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem)
-    # The house fund plus wage/recruit holds exceed 80G.
-    assert mem['shop']['chikujou'] == 'skipped'
+    # The house fund plus wage/recruit holds exceed 80G; the row stays open
+    # for a same-menu reserve release and the failing eval is recorded.
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_last_eval']['affordable'] is False
     assert 'month_sub' not in mem
 
 
