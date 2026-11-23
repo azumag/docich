@@ -2309,7 +2309,8 @@ def _request_recall(mem, state, goal, actions, **fields):
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
-    if goal:
+    escape_move = fields.get('escape_move') is True
+    if goal and not escape_move:
         # The destination's own list is the arrival receipt for a recalled
         # camp (the field shows no marker for it). Ask the corridor probe to
         # read that castle so the recalled generals become visible instead of
@@ -2319,11 +2320,19 @@ def _request_recall(mem, state, goal, actions, **fields):
         # castle.
         mem.setdefault('roster_read_due', {})[goal] = (
             int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-    _record(mem, 'camp_recall_requested', chart_step=None,
+    if escape_move:
+        decision = 'camp_escape_move_requested'
+        resulting_event = 'field_move_requested'
+        reason = '崖離脱のフィールド移動入力を予定し、送信・画面遷移は未確認として保持'
+    else:
+        decision = 'camp_recall_requested'
+        resulting_event = 'planned_not_yet_sent'
+        reason = '実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持'
+    _record(mem, decision, chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
-                             'hero_intended': bool(state.get('hero')), **fields},
-            resulting_event='planned_not_yet_sent',
-            reason='実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持')
+                             'hero_intended': bool(state.get('hero')),
+                             'escape_move': escape_move, **fields},
+            resulting_event=resulting_event, reason=reason)
     return actions
 
 
