@@ -10,16 +10,20 @@ const FINAL =
 const MOVES = [["7g7f", "sente"], ["3c3d", "gote"], ["8h2b+", "sente"], ["8b2b", "gote"]];
 const GAME_ID = "backfill-game";
 
-function publicPayload() {
+function publicPayload(gameId = GAME_ID) {
   const table = [{}];
   const push = (value) => { table.push(value); return table.length - 1; };
   const moves = MOVES.map(([usi, by]) => push({ usi: push(usi), byColor: push(by), ms: push(200), foulsBefore: push(0) }));
-  const game = push({ id: push(GAME_ID), result: push("sente_win"), reason: push("checkmate"),
+  const game = push({ id: push(gameId), result: push("sente_win"), reason: push("checkmate"),
     moves: push(moves), foulAttempts: push([]), finalSfen: push(FINAL) });
   table[0].game = game;
   table[0].senteName = push("DoCiAI");
   table[0].goteName = push("opponent");
   return { type: "data", nodes: [{ type: "data", data: table }] };
+}
+
+function gameIdFrom(url) {
+  return decodeURIComponent(url.split("/games/")[1].split("/")[0]);
 }
 
 function response(body, overrides = {}) {
@@ -87,6 +91,27 @@ test("collectRecords archives each new game once and reports failures", async ()
   assert.equal(requests.filter((url) => url.includes(GAME_ID)).length, 1);
 });
 
+test("the batch limit counts new archives, not already-archived entries", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "collect-replays-skip-"));
+  const fetchFor = async (url) => response(JSON.stringify(publicPayload(gameIdFrom(url))));
+  // Seed two archived games so the listing starts with skips.
+  for (const index of [0, 1]) {
+    const seed = await collectRecords({
+      records: [{ gameId: `${GAME_ID}-seed-${index}`, brainVersion: "tsuitate-brain-v13" }],
+      outDir,
+      fetchImpl: fetchFor,
+    });
+    assert.equal(seed.failed.length, 0);
+  }
+  const records = [
+    { gameId: `${GAME_ID}-seed-0` }, { gameId: `${GAME_ID}-seed-1` },
+    { gameId: `${GAME_ID}-new-0` }, { gameId: `${GAME_ID}-new-1` },
+  ];
+  const summary = await collectRecords({ records, outDir, limit: 1, fetchImpl: fetchFor });
+  assert.deepEqual(summary.skipped, [`${GAME_ID}-seed-0`, `${GAME_ID}-seed-1`]);
+  assert.equal(summary.archived.length, 1, "only one new game is fetched under limit=1");
+});
+
 test("collectRecords caps one batch", async () => {
   const outDir = await mkdtemp(join(tmpdir(), "collect-replays-limit-"));
   const records = Array.from({ length: 5 }, (_, index) => ({
@@ -94,7 +119,7 @@ test("collectRecords caps one batch", async () => {
     brainVersion: "tsuitate-brain-v13",
   }));
   let calls = 0;
-  const fetchImpl = async () => { calls += 1; return response("", { status: 503 }); };
+  const fetchImpl = async (url) => { calls += 1; return response(JSON.stringify(publicPayload(gameIdFrom(url)))); };
   await collectRecords({ records, outDir, limit: 2, fetchImpl });
   assert.equal(calls, 2);
 });

@@ -62,7 +62,9 @@ export async function collectRecords({ records, outDir, limit = MAX_GAMES, fetch
     if (error.code !== "ENOENT") throw error;
   }
   const summary = { archived: [], skipped: [], failed: [] };
-  for (const record of records.slice(0, limit)) {
+  // `limit` caps *new* archives, not the scan: the newest entries are usually
+  // already archived, and slicing first would starve older unarchived games.
+  for (const record of records) {
     const gameId = record?.gameId;
     if (typeof gameId !== "string" || !GAME_ID.test(gameId)) {
       summary.failed.push({ gameId: null, error: "invalid_game_id" });
@@ -72,6 +74,7 @@ export async function collectRecords({ records, outDir, limit = MAX_GAMES, fetch
       summary.skipped.push(gameId);
       continue;
     }
+    if (summary.archived.length >= limit) break;
     try {
       const payload = await fetchReplay(gameId, { fetchImpl });
       const result = await archiveGame({
