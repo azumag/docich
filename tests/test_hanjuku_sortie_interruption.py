@@ -6,7 +6,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import pytest
 from docich import hanjuku_policy as p
-from docich.hanjuku.flows import deploy as deploy_flow
 from docich.hanjuku.strategy.orders import SORTIE_CANCELLED_OBSERVED_LIMIT
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
@@ -461,6 +460,11 @@ def test_closed_resumed_picker_does_not_recreate_an_attempt_on_map_return():
     assert _plan_region(mem)['active'] == '1-A2'
     assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
 
+    # The owed step is selected ahead of newer chart orders, but still passes
+    # the same source/defender/readiness gates as an ordinary dispatch.
+    p.map_step(screen('map'), mem, None)
+    assert _plan_region(mem)['active'] == '1-A2'
+
 
 def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
     mem = memory()
@@ -475,8 +479,8 @@ def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
             'planned_target': 'ジョンリギ', 'purpose': 'attack',
             'status': 'launched_unconfirmed',
         }
-        deploy_flow._verify_sortie_source(screen('general_list', ['ゼウス', 'どうし']),
-                                          mem, order)
+        _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': True}
+        _verify_cancel(mem)
         expected = ('failed' if count == SORTIE_CANCELLED_OBSERVED_LIMIT else 'pending')
         assert _plan_region(mem)['orders']['1-A2'] == expected
     assert mem['sortie_cancelled_observed_counts']['1-A2'] == SORTIE_CANCELLED_OBSERVED_LIMIT
