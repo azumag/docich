@@ -229,6 +229,51 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         for item in snap.get("fills", [])
         if isinstance(item, Mapping)
     ]
+    # Interval fills/picks (Issue #2454): population since the last explanation
+    # cursor, plus up to MAX_PICKS representative fills with grounds.
+    interval_fills = []
+    interval_picks = []
+    try:
+        from .corner_interval import (
+            get_cursor as _ci_get_cursor,
+            fills_in_interval as _ci_fills_in_interval,
+            select_picks as _ci_select_picks,
+            interval_realized as _ci_interval_realized,
+        )
+
+        _db_path = target / "paper.sqlite3"
+        _cursor = _ci_get_cursor(_db_path, "paper")
+        _interval_fills = _ci_fills_in_interval(_db_path, _cursor, now=moment)
+        _picks = _ci_select_picks(_db_path, _interval_fills, max_picks=3)
+        interval_fills = [
+            {
+                "fill_id": str(f.get("fill_id", "")),
+                "symbol": str(f.get("symbol", "")),
+                "side": str(f.get("side", "")),
+                "amount": str(f.get("amount", "")),
+                "price": str(f.get("price", "")),
+                "filled_at": f.get("filled_at"),
+                "reason_code": str(f.get("reason_code", "")),
+            }
+            for f in _interval_fills
+        ]
+        interval_picks = [
+            {
+                "fill_id": str(p.get("fill_id", "")),
+                "symbol": str(p.get("symbol", "")),
+                "side": str(p.get("side", "")),
+                "amount": str(p.get("amount", "")),
+                "price": str(p.get("price", "")),
+                "filled_at": p.get("filled_at"),
+                "reason_code": str(p.get("reason_code", "")),
+            }
+            for p in _picks
+        ]
+        interval_realized_value = str(_ci_interval_realized(_db_path, _cursor, now=moment))
+    except Exception:
+        interval_fills = []
+        interval_picks = []
+        interval_realized_value = None
     skipped = [
         {
             "symbol": str(item.get("symbol", "")),
@@ -289,6 +334,8 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         ],
         "skipped_decisions": skipped,
         "recent_fills": fills,
+        "interval_fills": interval_fills,
+        "interval_picks": interval_picks,
         "fresh_markets": int(portfolio.get("fresh_markets", 0) or 0),
         "total_markets": int(portfolio.get("total_markets", 0) or 0),
         "focus": focus,
@@ -394,7 +441,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- 同じ文型・同じオチを各段落で繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
         "【損益の扱い】\n"
         "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
-        "- performance.interval_realized_pnl_jpy は区間の確定損益（前回説明から今回説明まで）として触れる。\n"
+        "- performance.interval_realized_pnl_jpy は区間の確定損益（前回説明から今回説明まで）として触れる。\n- facts.interval_fills は前回説明から今回説明までの約定母集団（区間 fills）、facts.interval_picks はその代表ピック（最大3件・根拠付き）です。review/fills セグメントで活用してください。\n"
         "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
         "- performance.theoretical_benchmark が status=ready または partial の場合、区間損益と理論値を比較する。\n"
         "  これは区間内の5分足終値だけを使い、1銘柄を1回だけ売買できた場合の後知恵比較であり、実績の目標値やバックテスト結果ではない。\n"

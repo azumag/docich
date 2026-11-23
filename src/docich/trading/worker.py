@@ -173,7 +173,6 @@ def _performance_summary(
     try:
         db_path = g.state_dir / "trading" / "paper.sqlite3"
         cursor = get_cursor(db_path, "paper")
-        interval_start = cursor[0] if cursor is not None else None
         return build_performance(
             db_path,
             capital_reference=D(str(g.trading.paper_capital_jpy)),
@@ -181,7 +180,7 @@ def _performance_summary(
             prices=_cache_prices(market_cache),
             now=now,
             market_cache_path=g.state_dir / "trading" / "market_cache.json",
-            interval_start=interval_start,
+            interval_start=cursor,
         )
     except Exception:
         return dict(fallback or {})

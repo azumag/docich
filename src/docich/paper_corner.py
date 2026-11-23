@@ -1310,6 +1310,37 @@ class PaperCornerManager:
         if state.get('ai_failure_reason'):
             state['end_detail'] = str(state['ai_failure_reason'])[:240]
         self.save(state)
+        # M2 (Issue #2454): advance the explanation boundary cursor only after
+        # the full explanation (all slots) is durably saved (fail-closed). A
+        # partial/interrupted corner leaves the cursor unchanged.
+        try:
+            from .trading.corner_interval import (
+                get_cursor as _ci_get_cursor,
+                fills_in_interval as _ci_fills_in_interval,
+                _upsert_cursor_exclusive as _ci_upsert,
+                _ensure_cursor_table as _ci_ensure_table,
+            )
+            import sqlite3 as _sqlite3
+
+            _db_path = self.trading_dir / "paper.sqlite3"
+            _cursor_before = _ci_get_cursor(_db_path, "paper")
+            _interval_fills = _ci_fills_in_interval(_db_path, _cursor_before, now=self.clock())
+            if _interval_fills:
+                _last = _interval_fills[-1]
+                _filled_at = float(str(_last["filled_at"]))
+                _fill_id = str(_last["fill_id"])
+                _ci_ensure_table(_db_path)
+                _conn = _sqlite3.connect(
+                    f"file:{str(_db_path.resolve())}?mode=rw", uri=True
+                )
+                try:
+                    _conn.row_factory = _sqlite3.Row
+                    _ci_upsert(_conn, "paper", _filled_at, _fill_id, self.clock())
+                    _conn.commit()
+                finally:
+                    _conn.close()
+        except Exception:
+            pass
         # Preserve the existing final queue monitor as the last restore gate.
         if not self._wait_for_speech(state):
             return 'pending'

@@ -125,7 +125,6 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
     }
     db_path = target / "paper.sqlite3"
     cursor = get_cursor(db_path, "paper")
-    interval_start = cursor[0] if cursor is not None else None
     performance = build_performance(
         db_path,
         capital_reference=snapshot.get("capital_reference", "0"),
@@ -133,7 +132,7 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         prices=prices,
         now=moment,
         market_cache_path=target / "market_cache.json",
-        interval_start=interval_start,
+        interval_start=cursor,
     )
     valued_positions = performance.get("positions")
     positions = list(valued_positions)[:MAX_POSITIONS] if isinstance(valued_positions, list) else []
