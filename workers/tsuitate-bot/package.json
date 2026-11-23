@@ -16,7 +16,8 @@
     "test:beta-workerd": "node test/beta-workerd-integration.mjs",
     "dev:cf": "cf dev --local --persist-to .wrangler/cf-local",
     "build:cf": "cf build && npm test && npm run test:workerd && npm run test:bundle",
-    "lab": "node scripts/replay-lab.mjs"
+    "lab": "node scripts/replay-lab.mjs",
+    "collect": "node scripts/collect-replays.mjs"
   },
   "dependencies": {
     "socket.io-client": "4.8.4"
