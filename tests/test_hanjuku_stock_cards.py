@@ -86,3 +86,55 @@ def test_generic_fallback_does_not_spend_boss_reserved_stock(monkeypatch):
     assert replan._stock_cards(mem, None) == ['ノリウツール']
     # Pinned chart orders retain the pre-existing fallback semantics.
     assert replan._stock_cards(mem, ['イッテツーン']) == ['クースカン', 'ノリウツール']
+
+
+def _adopt_adjusted_order(mem, cards, *, target='ウラノポリス', purpose='attack'):
+    """Adopt one validated adjusted order and return its stored form."""
+    rid = 'abcd1234abcd1234'
+    raw = {'step': 'M1', 'general': 'チコリ', 'source': 'アルマムーン',
+           'target': target, 'cards': cards, 'after': None}
+    if purpose is not None:
+        raw['purpose'] = purpose
+    doc = replan.chart_adjust.validate({
+        'schema': replan.chart_adjust.SCHEMA, 'chapter': mem['chapter'],
+        'request_id': rid, 'orders': [raw],
+    })
+    replan._adopt_plan(mem, doc, rid)
+    return replan._plan_region(mem)['chart_plan']['orders'][0]
+
+
+def test_an_adopted_adjusted_attack_falls_back_to_cards_in_stock():
+    planned = ['ミックミー', 'ノリウツール', 'ノリウツール']
+    mem = {'chapter': 2, 'tick': 100, '_records': [],
+           'card_stock': {'ミックミー': 0, 'ノリウツール': 0, 'バグストーム': 3}}
+    order = _adopt_adjusted_order(mem, planned)
+    assert order['cards'] == ['バグストーム']
+    assert planned == ['ミックミー', 'ノリウツール', 'ノリウツール']
+
+
+def test_an_adopted_adjusted_order_keeps_its_cards_when_stock_is_unread():
+    planned = ['ミックミー', 'ノリウツール']
+    mem = {'chapter': 2, 'tick': 100, '_records': []}
+    order = _adopt_adjusted_order(mem, planned)
+    assert order['cards'] == planned
+
+
+def test_an_explicitly_cardless_adjusted_order_stays_cardless():
+    mem = {'chapter': 2, 'tick': 100, '_records': [],
+           'card_stock': {'バグストーム': 3}}
+    order = _adopt_adjusted_order(mem, [])
+    assert order['cards'] == []
+
+
+def test_adjusted_moves_and_boss_orders_keep_their_existing_card_policy():
+    mem = {'chapter': 2, 'tick': 100, '_records': [],
+           'card_stock': {'バグストーム': 3}}
+    move = _adopt_adjusted_order(mem, ['ミックミー'], purpose='move')
+    assert move['cards'] == ['ミックミー']
+
+    boss_target = replan.chart.boss_castle(2)
+    assert boss_target
+    boss_mem = {'chapter': 2, 'tick': 100, '_records': [],
+                'card_stock': {'バグストーム': 3}}
+    boss = _adopt_adjusted_order(boss_mem, ['ミックミー'], target=boss_target)
+    assert boss['cards'] == ['ミックミー']
