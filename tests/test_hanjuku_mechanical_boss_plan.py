@@ -176,3 +176,76 @@ def test_source_castle_mismatch_records_status_panel_garrison():
     D._check_source_castle(screen, mem, order)
     assert mem['world']['garrison']['マラコビア'] == ['アルファルファ', 'ゼウス']
     assert mem['world']['garrison_tick']['マラコビア'] == 280050
+
+# docich#5153: stuck roster probes must account for marches, respect the
+# per-castle stale-read interval, and prefer a due arrival receipt over home.
+def _stuck_chapter_memory(*, owned_count=1):
+    chapter = 8
+    castles = chart.castles(chapter)
+    home = chart.home_castle(chapter)
+    normal = [c for c in castles if not chart.is_boss_castle(c)]
+    owned = [home, *[c for c in normal if c != home][:owned_count - 1]]
+    garrison = {castle: [f'general-{index}']
+                for index, castle in enumerate(owned)}
+    return {
+        'chapter': chapter, 'month': '67-10', 'tick': 10000,
+        'captured': owned, 'lost': [],
+        'country_general_count': {'count': len(owned) + 1},
+        'soldiers_seen': 100, 'house_eggs': {},
+        'general_location_unknown': [], '_records': [],
+        'plan': {'orders': {}}, 'orders': {},
+        'world': {
+            'garrison': garrison, 'garrison_tick': {},
+            'sorties': {}, 'launched_orders': {},
+            'route_probe_read_tick': {}, 'arrival_probe_tick': {},
+        },
+    }
+
+
+def test_stuck_roster_probe_counts_in_flight_generals_as_located():
+    mem = _stuck_chapter_memory()
+    home = chart.home_castle(8)
+    enemy = next(c for c in chart.castles(8)
+                 if not chart.is_boss_castle(c) and c not in mem['captured'])
+    mem['world']['sorties']['I:flight:1'] = {
+        'source': home, 'target': enemy, 'general': 'general-in-flight',
+        'purpose': 'move', 'status': 'en_route', 'tick': mem['tick'] - 10,
+    }
+    # One roster resident + one marching general exactly accounts for the country total.
+    assert 'probe_stuck_1' not in replan.interim_candidates(mem, allow_sole=False)
+
+
+def test_stuck_roster_probe_respects_the_per_castle_read_cooldown():
+    mem = _stuck_chapter_memory()
+    home = chart.home_castle(8)
+    first = replan.interim_candidates(mem, allow_sole=False)
+    assert first['probe_stuck_1']['source'] == home
+
+    mem['world']['garrison_tick'][home] = mem['tick']
+    mem['tick'] += 1
+    assert 'probe_stuck_1' not in replan.interim_candidates(mem, allow_sole=False)
+
+    mem['tick'] += replan.STALE_ROSTER_PROBE_INTERVAL - 1
+    assert replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']['source'] == home
+
+
+def test_stuck_roster_probe_prioritizes_a_due_unread_arrival_over_home(monkeypatch):
+    mem = _stuck_chapter_memory(owned_count=2)
+    home, arrival_castle = mem['captured']
+    now = mem['tick']
+    mem['country_general_count']['count'] = 3
+    mem['world']['garrison_tick'].update({home: now - 1000, arrival_castle: now - 10})
+    mem['world']['route_probe_read_tick'][arrival_castle] = now - 1000
+    mem['world']['sorties']['I:arrival:1'] = {
+        'source': home, 'target': arrival_castle, 'general': 'general-arrived',
+        'purpose': 'move', 'status': 'overdue', 'tick': now - 500,
+    }
+    # Isolate the no-candidate fallback; the fallback itself must choose the
+    # castle whose unread dispatch is the only arrival receipt.
+    mem['boss_victories'] = {'chapter': 8}
+    monkeypatch.setattr(replan, '_interim_source', lambda *args, **kwargs: None)
+    monkeypatch.setattr(replan, '_garrison_rotation', lambda *args, **kwargs: [])
+    probe = replan.interim_candidates(mem, allow_sole=False)['probe_stuck_1']
+    assert probe['source'] == arrival_castle
+    assert probe['source_probe'] is True and probe['roster_probe'] is True
+
