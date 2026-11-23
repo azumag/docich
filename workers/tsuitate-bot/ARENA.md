@@ -528,30 +528,50 @@ npm run train:brain -- report \
 
 ## 日次の対戦結果レビュー
 
-`run-soren-live/tsuitate_corner.json` と `tsuitate_review.json` は次の対局で上書きされる。
-終局ごとに公開リプレイを取り込み、非公開の `run/tsuitate-beta/history/<gameId>.json` へ
-1局1ファイルで保存する。このディレクトリは `run/` 配下の untracked で、原棋譜・gameId・
-識別子をGitや配信へ出さない。
+終局した対局は Cloudflare の Durable Object に `beta:run:<runId>`（run receipt）と
+`beta:record:<runId>`（正規化済み記録）として残る。`run-soren-live/tsuitate_corner.json` と
+`tsuitate_review.json` は最新局しか保持せず次局で上書きされるため、日次レビューは
+**Cloudflare の完了run一覧**を起点にし、各局の公開リプレイを取り込む。
 
 ```sh
+# 1. 完了run一覧（owner-only HMAC。runId/gameId/brainVersion だけ）
+cd /home/ubuntu/docich
+PYTHONPATH=src python3 -m docich.tsuitate_records > /tmp/tsuitate-records.json
+
+# 2. 未取得の局の公開リプレイを取り込み、非公開アーカイブへ1局1ファイルで保存
 cd workers/tsuitate-bot
-curl -sS --max-time 15 --proto '=https' --tlsv1.2 \
-  "https://beta.tsuitate.info/games/<gameId>/__data.json" -o /tmp/tsuitate-public.json
-npm run lab -- archive \
-  --state ../../run-soren-live/tsuitate_corner.json \
-  --review ../../run-soren-live/tsuitate_review.json \
-  --public /tmp/tsuitate-public.json \
+npm run collect -- --records /tmp/tsuitate-records.json \
   --out ../../run/tsuitate-beta/history
-npm run lab -- --replay ../../run/tsuitate-beta/history/<gameId>.json \
+
+# 3. 溜まった局面で現行brainを再実行（複数局をまとめてよい）
+npm run lab -- --replay ../../run/tsuitate-beta/history/*.json \
   --brain ./src/brain/index.js
 ```
 
+一覧は Worker の読み取り専用 `records` 操作が返す。対象は `state="finished"` かつ
+`completedGames=1`、`beta:game:<gameId>` の所有runが一致するものだけで、生の観測・指し手・
+PlayerView・勝敗は含まない（勝敗と反則は公開リプレイから取る）。最大50件で、それを超える
+場合は `truncated` が立つ。既存局の取り込みは `--brain-version` を receipt の値で補い、
+手番は公開リプレイの `DoCiAI` の位置から推定する（推定できなければ fail-closed）。
+
+直近の局だけをすぐ見たい場合は、コーナー状態から直接アーカイブもできる:
+
+```sh
+npm run lab -- archive --state ../../run-soren-live/tsuitate_corner.json \
+  --review ../../run-soren-live/tsuitate_review.json \
+  --public /tmp/tsuitate-public.json \
+  --out ../../run/tsuitate-beta/history
+```
+
+`run/tsuitate-beta/history/` は `run/` 配下の untracked で、原棋譜・gameId・識別子を
+Gitや配信へ出さない。
+
 `replay-lab` は fail-closed で、公開棋譜の全着手が真の盤面で合法であること、最終局面が
-サイトの `finalSfen` と一致すること、レビューの着手列と公開棋譜が一致することを確認する。
-そのうえで自分の各手番の own-view（自駒・持駒・王手・自駒喪失から作る `knownEnemies`）を
-再構成し、指定した brain を再実行して、受理・反則（`blocked` / `blocked_unknown` /
-`into_check` / `occupied_drop` / `nifu` / `dead_end_drop` / `promotion`）・捕獲物得を出す。
-`--compare <brain/index.js>` で同じ局面のA/Bができる。
+サイトの `finalSfen` と一致すること、渡されたレビューの着手列と公開棋譜が一致することを
+確認する。そのうえで自分の各手番の own-view（自駒・持駒・王手・自駒喪失から作る
+`knownEnemies`）を再構成し、指定した brain を再実行して、受理・反則（`blocked` /
+`blocked_unknown` / `into_check` / `occupied_drop` / `nifu` / `dead_end_drop` /
+`promotion`）・捕獲物得を出す。`--compare <brain/index.js>` で同じ局面のA/Bができる。
 
 制約: 相手の着手は実戦どおり固定し、局面ごとに独立評価する。先読み・千日手・打ち歩詰めは
 判定しない。反則数や捕獲物得の差は診断値であり、勝率の証明ではない。相手の強さは日ごとに

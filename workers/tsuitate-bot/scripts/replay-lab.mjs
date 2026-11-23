@@ -482,8 +482,12 @@ function resolveTable(payload) {
       const attempt = read(ref);
       return { moveNumber: read(attempt.moveNumber), byColor: read(attempt.byColor), usi: read(attempt.usi) };
     });
+    const root = table[0];
+    const name = (key) => (root && Number.isSafeInteger(root[key]) && typeof table[root[key]] === "string"
+      ? table[root[key]] : null);
     return { gameId: read(game.id), moves, foulAttempts, finalSfen: read(game.finalSfen),
-      result: read(game.result), reason: read(game.reason) };
+      result: read(game.result), reason: read(game.reason),
+      senteName: name("senteName"), goteName: name("goteName") };
   }
   return null;
 }
@@ -506,38 +510,50 @@ export function normalizeReplay(payload, fallback = {}) {
     finalSfen: payload.finalSfen,
     result: payload.result?.result ?? payload.result,
     reason: payload.result?.reason ?? payload.reason,
+    senteName: payload.senteName ?? null,
+    goteName: payload.goteName ?? null,
   };
 }
 
-/** Write one compact, replay-verified record. Never overwrites a different game. */
-export async function archiveGame({ state, review, publicPayload, outDir }) {
-  const meta = {
-    gameId: state.beta_game_id,
-    brainVersion: state.beta_brainVersion,
-    color: state.beta_color,
-    result: state.beta_result,
-  };
-  if (typeof meta.gameId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(meta.gameId)) {
+/** The bot's own public site name; only used to infer its side on backfill. */
+export const BOT_NAME = "DoCiAI";
+
+/**
+ * Write one compact, replay-verified record. Accepts either the live corner
+ * state (preferred: brain version and side are authoritative) or only the
+ * public replay for a historical run listed from Cloudflare storage. Never
+ * overwrites a record for a different game.
+ */
+export async function archiveGame({ state = null, review = null, publicPayload, outDir,
+  brainVersion = null, color = null }) {
+  const publicReplay = normalizeReplay(publicPayload);
+  const gameId = state?.beta_game_id ?? publicReplay.gameId;
+  if (typeof gameId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(gameId)) {
     throw new Error("invalid_state_game_id");
   }
-  const publicReplay = normalizeReplay(publicPayload);
-  if (publicReplay.gameId !== meta.gameId) throw new Error("game_id_mismatch");
-  const reviewMoves = (review.moves ?? []).map((move) => ({ usi: move.usi, by: move.side ?? move.by }));
-  if (reviewMoves.length !== publicReplay.moves.length
-      || reviewMoves.some((move, index) => move.usi !== publicReplay.moves[index].usi
-        || move.by !== publicReplay.moves[index].by)) {
-    throw new Error("review_moves_mismatch");
+  if (publicReplay.gameId && publicReplay.gameId !== gameId) throw new Error("game_id_mismatch");
+  const resolvedColor = color ?? state?.beta_color
+    ?? (publicReplay.senteName === BOT_NAME ? "sente"
+      : publicReplay.goteName === BOT_NAME ? "gote" : null);
+  if (resolvedColor !== "sente" && resolvedColor !== "gote") throw new Error("color_unknown");
+  if (review) {
+    const reviewMoves = (review.moves ?? []).map((move) => ({ usi: move.usi, by: move.side ?? move.by }));
+    if (reviewMoves.length !== publicReplay.moves.length
+        || reviewMoves.some((move, index) => move.usi !== publicReplay.moves[index].usi
+          || move.by !== publicReplay.moves[index].by)) {
+      throw new Error("review_moves_mismatch");
+    }
   }
   // Refuse to archive a replay whose own position rebuild does not match the
   // site's final SFEN: a drifted move list must never become training data.
   replay(publicReplay.moves, publicReplay.finalSfen);
   const entry = {
     schema: 1,
-    gameId: meta.gameId,
-    brainVersion: meta.brainVersion,
-    color: meta.color,
-    startedAt: state.started_at ?? null,
-    result: meta.result,
+    gameId,
+    brainVersion: brainVersion ?? state?.beta_brainVersion ?? null,
+    color: resolvedColor,
+    startedAt: state?.started_at ?? null,
+    result: state?.beta_result ?? null,
     moves: publicReplay.moves,
     foulAttempts: publicReplay.foulAttempts,
     finalSfen: publicReplay.finalSfen,
@@ -545,7 +561,7 @@ export async function archiveGame({ state, review, publicPayload, outDir }) {
     siteReason: publicReplay.reason,
   };
   await mkdir(outDir, { recursive: true });
-  const path = join(outDir, `${meta.gameId}.json`);
+  const path = join(outDir, `${gameId}.json`);
   try {
     const existing = JSON.parse(await readFile(path, "utf8"));
     if (existing.gameId === entry.gameId) return { path, written: false };
@@ -570,16 +586,20 @@ async function archiveMain(argv) {
     else if (flag === "--review") { args.review = argv[index + 1]; index += 1; }
     else if (flag === "--public") { args.public = argv[index + 1]; index += 1; }
     else if (flag === "--out") { args.out = argv[index + 1]; index += 1; }
+    else if (flag === "--brain-version") { args.brainVersion = argv[index + 1]; index += 1; }
+    else if (flag === "--color") { args.color = argv[index + 1]; index += 1; }
   }
-  if (!args.state || !args.review || !args.public || !args.out) {
-    console.error("usage: replay-lab.mjs archive --state <tsuitate_corner.json> --review <tsuitate_review.json> --public <__data.json> --out <dir>");
+  if (!args.public || !args.out) {
+    console.error("usage: replay-lab.mjs archive --public <__data.json> --out <dir> [--state <corner.json>] [--review <review.json>] [--brain-version <v>] [--color sente|gote]");
     return 2;
   }
   const result = await archiveGame({
-    state: JSON.parse(await readFile(args.state, "utf8")),
-    review: JSON.parse(await readFile(args.review, "utf8")),
+    state: args.state ? JSON.parse(await readFile(args.state, "utf8")) : null,
+    review: args.review ? JSON.parse(await readFile(args.review, "utf8")) : null,
     publicPayload: JSON.parse(await readFile(args.public, "utf8")),
     outDir: args.out,
+    brainVersion: args.brainVersion ?? null,
+    color: args.color ?? null,
   });
   console.log(JSON.stringify(result));
   return 0;

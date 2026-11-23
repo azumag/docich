@@ -10,6 +10,14 @@ class Storage {
   async get(key) { return structuredClone(this.data.get(key)); }
   async put(key, value) { if (this.failPut) throw new Error("fixture_storage_failure"); this.data.set(key, structuredClone(value)); }
   async delete(key) { this.data.delete(key); }
+  async list(options = {}) {
+    const prefix = typeof options.prefix === "string" ? options.prefix : "";
+    let entries = [...this.data.entries()].filter(([key]) => key.startsWith(prefix))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    if (options.reverse) entries = entries.reverse();
+    if (Number.isSafeInteger(options.limit)) entries = entries.slice(0, options.limit);
+    return new Map(entries.map(([key, value]) => [key, structuredClone(value)]));
+  }
   async setAlarm(value) { this.alarm = value; }
   async deleteAlarm() { this.alarm = null; }
   transaction(operation) {
@@ -549,4 +557,42 @@ test("generation, checkpoint or game-owner changes fence a pending reconciliatio
     await assert.rejects(pending, /terminal_storage_failure|recovery_checkpoint_invalid/);
     assert.deepEqual(c.storage.data, before);
   }
+});
+
+test("owner history lists only verified terminal runs, newest first, without live data", async (t) => {
+  const c = setup(t);
+  const receipt = (runId, extra = {}) => ({ runId, state: "finished", completedGames: 1,
+    gameId: `game-${runId.split("-").at(-1)}`, brainVersion: BRAIN_VERSION, ...extra });
+  const newer = "background-20261123221056000000";
+  const older = "background-20261122221056000000";
+  const playing = "background-20261121221056000000";
+  const orphan = "background-20261120221056000000";
+  await c.storage.put(runKey(newer), receipt(newer));
+  await c.storage.put("beta:game:game-20261123221056000000", newer);
+  await c.storage.put(runKey(older), receipt(older, { brainVersion: undefined }));
+  await c.storage.put("beta:game:game-20261122221056000000", older);
+  await c.storage.put(runKey(playing), receipt(playing, { state: "playing", completedGames: 0 }));
+  await c.storage.put(runKey(orphan), receipt(orphan));
+  const result = await c.controller.records();
+  assert.equal(result.schema, 1);
+  assert.deepEqual(result.records.map((row) => row.runId), [newer, older]);
+  assert.deepEqual(Object.keys(result.records[0]).sort(), ["brainVersion", "gameId", "runId"]);
+  assert.equal(result.records[0].brainVersion, BRAIN_VERSION);
+  assert.equal(result.records[1].brainVersion, BRAIN_VERSION, "missing brain version falls back");
+  assert.equal(result.truncated, false);
+  // The projection never carries an outcome, move, observation or PlayerView.
+  assert.equal(JSON.stringify(result).includes("playerView"), false);
+});
+
+test("owner history is bounded and flags truncation", async (t) => {
+  const c = setup(t);
+  for (let index = 0; index < 60; index += 1) {
+    const runId = `background-20261101000000${String(index).padStart(4, "0")}`;
+    await c.storage.put(runKey(runId), { runId, state: "finished", completedGames: 1,
+      gameId: `game-${index}`, brainVersion: BRAIN_VERSION });
+    await c.storage.put(`beta:game:game-${index}`, runId);
+  }
+  const result = await c.controller.records();
+  assert.equal(result.records.length, 50);
+  assert.equal(result.truncated, true);
 });

@@ -155,7 +155,7 @@ test("evaluateReplay excludes a foul and retries within the same turn", () => {
   assert.equal(report.details[0].attempts, 2, "foul then accepted");
 });
 
-function publicPayload(moves, finalSfen, gameId = "fixture-game") {
+function publicPayload(moves, finalSfen, gameId = "fixture-game", senteName = "DoCiAI", goteName = "opponent") {
   // Minimal devalue table: every object/value is a table index.
   const table = [{}];
   const push = (value) => { table.push(value); return table.length - 1; };
@@ -163,8 +163,29 @@ function publicPayload(moves, finalSfen, gameId = "fixture-game") {
   const game = push({ id: push(gameId), result: push("sente_win"), reason: push("checkmate"),
     moves: push(moveRefs), foulAttempts: push([]), finalSfen: push(finalSfen) });
   table[0].game = game;
+  table[0].senteName = push(senteName);
+  table[0].goteName = push(goteName);
   return { type: "data", nodes: [{ type: "data", data: table }] };
 }
+
+test("archiveGame backfills a historical run from the public replay alone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "replay-lab-backfill-"));
+  const first = await archiveGame({
+    publicPayload: publicPayload(MOVES_A, FINAL_A, "backfill-game"),
+    outDir: directory,
+    brainVersion: "tsuitate-brain-v12",
+  });
+  const saved = JSON.parse(await readFile(first.path, "utf8"));
+  assert.equal(saved.color, "sente", "the bot side is inferred from the public names");
+  assert.equal(saved.brainVersion, "tsuitate-brain-v12");
+  assert.equal(saved.result, null, "a historical run has no local terminal state");
+  assert.equal(saved.moves.length, MOVES_A.length);
+  // An unknown bot name must not be guessed.
+  await assert.rejects(() => archiveGame({
+    publicPayload: publicPayload(MOVES_A, FINAL_A, "unknown-game", "someone", "another"),
+    outDir: directory,
+  }), /color_unknown/);
+});
 
 test("archiveGame writes one verified record and refuses a conflicting game", async () => {
   const directory = await mkdtemp(join(tmpdir(), "replay-lab-"));
