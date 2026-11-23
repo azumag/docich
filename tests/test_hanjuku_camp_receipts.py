@@ -239,6 +239,24 @@ def test_a_general_that_left_the_camp_confirms_the_arrival():
     assert 'camp_verify' not in _flow(mem)
 
 
+def test_cliff_escape_request_is_not_a_camp_recall_or_arrival_read():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'target': [134, 120], 'kind': 'camp'}
+    actions = [p.pad('a')]
+    assert recall_flow._request_recall(
+        mem, state, 'アルマムーン', actions,
+        escape_move=True, target_cell=[135, 121]) == actions
+    assert 'roster_read_due' not in mem
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_requested']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_requested'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['target_cell'] == [135, 121]
+
+
 @pytest.mark.parametrize('goal', [None, 'アルマムーン'])
 def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
     from docich.hanjuku.flows import recall as recall_flow
@@ -285,7 +303,8 @@ def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
 
 
 @pytest.mark.parametrize('decision', [
-    'camp_escape_move_dispatched', 'camp_escape_move_unconfirmed'])
+    'camp_escape_move_requested', 'camp_escape_move_dispatched',
+    'camp_escape_move_unconfirmed'])
 def test_cliff_escape_decisions_keep_their_frame_and_input_context(tmp_path, decision):
     module = command_bot()
     frame = picker()
