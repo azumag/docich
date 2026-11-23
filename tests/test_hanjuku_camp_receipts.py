@@ -245,8 +245,8 @@ def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
 
     mem = {'chapter': 9, 'tick': 120, '_records': []}
     state = {'stage': 'await_dispatch', 'steps': 5, 'goal': goal,
-             'target': [134, 120], 'kind': 'camp', 'escape_move': True,
-             'a_inputs': 1}
+             'target': [134, 120], 'target_cell': [135, 121],
+             'kind': 'camp', 'escape_move': True, 'a_inputs': 1}
     assert recall_flow._recall_dispatch_step(
         Screen([], None, '', kind='text'), mem, state) == []
     assert [row['decision'] for row in mem['_records']] == [
@@ -255,6 +255,7 @@ def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
     assert row['resulting_event'] == 'field_move_unconfirmed'
     assert row['observed_metric']['escape_move'] is True
     assert row['observed_metric']['camp'] == [134, 120]
+    assert row['observed_metric']['target_cell'] == [135, 121]
     assert row['observed_metric']['stage'] == 'await_dispatch'
     assert row['observed_metric']['steps'] == 6
     flow = _flow(mem)
