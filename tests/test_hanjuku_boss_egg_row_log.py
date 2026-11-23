@@ -65,3 +65,49 @@ def test_the_summon_card_row_is_revealed_by_scrolling_down():
     assert acts == [B.pad('down')]
     assert mem['battle']['summon_card_scroll'] == 1
     assert any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
+
+def test_interrupted_opening_card_flow_resumes_the_exact_carried_card(monkeypatch):
+    # A chart card was planned in the normal battle menu, but the enemy's
+    # summon dialogue replaced that menu before the card list opened.
+    mem = memory(uses=0)
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ミックミー', 'ノリウツール'],
+        'cards_selected': ['ミックミー'],
+        'cards_used': ['ミックミー'],
+        'card_flow': {'card': 'ノリウツール', 'stage': 'menu',
+                      'tactic_id': 'opening:2'},
+    })
+
+    # The spent egg row is grey and omitted from OCR.  The carried card row
+    # remains below the visible box, so the summon handler must scroll.
+    assert B.egg_battle_step(screen(text='こうげき'), mem) == [B.pad('down')]
+    assert battle.get('card_flow') is None
+    assert battle['summon_card_resume']['card'] == 'ノリウツール'
+    assert not any(r['decision'] == 'battle_egg_general_attack' for r in mem['_records'])
+
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: (160, 207))
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    assert B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem) == [B.pad('a')]
+
+    flow = battle['card_flow']
+    assert flow['card'] == 'ノリウツール'
+    assert flow['stage'] == 'list'
+    assert 'force_boss_card' not in flow  # the ordinary damage gate still applies
+    opened = [r for r in mem['_records'] if r['decision'] == 'battle_summon_card_open'][-1]
+    assert opened['observed_metric']['resumed_pending_flow'] is True
+    assert opened['observed_metric']['resumed_tactic_id'] == 'opening:2'
+
+
+def test_selected_or_announcement_card_flow_is_not_reopened():
+    mem = memory(uses=0)
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ノリウツール'],
+        'cards_selected': ['ノリウツール'],
+        'card_flow': {'card': 'ノリウツール', 'stage': 'announce',
+                      'selection_planned': True},
+    })
+    B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem)
+    assert battle['card_flow']['stage'] == 'announce'
+    assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])

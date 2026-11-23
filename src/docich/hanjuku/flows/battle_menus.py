@@ -2564,8 +2564,24 @@ def egg_battle_step(screen: Screen, mem):
     if action == 'attack':
         battle = (mem.get('battle') if isinstance(mem.get('battle'), dict)
                   else mem.setdefault('egg_retreat_flow', {}))
+        interrupted_flow = battle.get('card_flow')
+        if (isinstance(interrupted_flow, dict)
+                and interrupted_flow.get('stage') in ('menu', 'down', 'list')
+                and not interrupted_flow.get('selection_planned')
+                and not interrupted_flow.get('read_kit')):
+            # The enemy summon dialogue can replace the normal battle menu
+            # between planning a card and opening its list.  The old cursor
+            # navigation belongs to the previous menu; keep the exact card
+            # intent, then reopen it from the summon menu's real list.
+            interrupted_card = interrupted_flow.get('card')
+            if isinstance(interrupted_card, str):
+                battle['summon_card_resume'] = {
+                    'card': interrupted_card,
+                    'tactic_id': interrupted_flow.get('tactic_id'),
+                }
+            battle['card_flow'] = None
         attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
-                     *(battle.get('cards_unclassified') or [])}
+                     *(battle.get('cards_unclassified') or []), *(battle.get('cards_missing') or [])}
         cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
         if not cards_left:
             # The summon battle's battle context often has no planned_cards,
@@ -2579,7 +2595,7 @@ def egg_battle_step(screen: Screen, mem):
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
         # the visible command text until the box scrolls down; open it first.
         if (cards_left and 'きりふだ' not in (screen.text or '')
-                and 'たまごをつかう' in (screen.text or '')
+                and ('たまごをつかう' in (screen.text or '') or empty_egg)
                 and not battle.get('card_flow')):
             scrolls = int(battle.get('summon_card_scroll') or 0)
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
@@ -2589,19 +2605,29 @@ def egg_battle_step(screen: Screen, mem):
                                          'text': (screen.text or '')[:60]},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
+        resume = battle.get('summon_card_resume')
+        if not isinstance(resume, dict) or resume.get('card') not in cards_left:
+            resume = None
+            battle.pop('summon_card_resume', None)
         if (cards_left and 'きりふだ' in (screen.text or '')
                 and not battle.get('card_flow')):
             target = _battle_menu_to(screen, 'きりふだ')
             move = _menu_move_batch(screen, 'きりふだ', target) if target is not None else None
             if move == 'here':
-                battle['card_flow'] = {'card': cards_left[0], 'stage': 'list',
-                                       'note': '敵召喚獣戦の携行切り札を開幕使用',
+                card = resume['card'] if resume else cards_left[0]
+                battle['card_flow'] = {'card': card, 'stage': 'list',
+                                       'note': ('召喚会話で中断された携行切り札を再開'
+                                                if resume else '敵召喚獣戦の携行切り札を開幕使用'),
                                        'enemy_hp_at_open': battle.get('enemy_hp')}
+                battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
-                        card=cards_left[0],
+                        card=card,
                         observed_metric={'enemy': battle.get('enemy'),
-                                         'cards_left': list(cards_left)},
-                        reason='敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く')
+                                         'cards_left': list(cards_left),
+                                         'resumed_pending_flow': bool(resume),
+                                         'resumed_tactic_id': resume.get('tactic_id') if resume else None},
+                        reason=('召喚会話で中断された未選択の切り札を実一覧から再開する'
+                                if resume else '敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く'))
                 return [pad('a')]
             if move is not None:
                 return _emit_moves(move)
