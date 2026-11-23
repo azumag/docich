@@ -978,8 +978,9 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
   （`camp_recall_aborted` / `camp_recall_skipped` / `camp_recall_unconfirmed` /
   `camp_boss_redirect_aborted` / 未分類画面の取消）を `camp_recall_*` として記録する。
   同じ章・理由・将軍/城は900秒cooldown。
-- 崖離脱のフィールド移動は `camp_escape_move_dispatched` /
-  `camp_escape_move_unconfirmed` として別記録する。未確認時は専用incidentを作り、
+- 崖離脱のフィールド移動は `camp_escape_move_requested` /
+  `camp_escape_move_dispatched` / `camp_escape_move_unconfirmed` として別記録する。
+  未確認時は専用incidentを作り、
   帰還先の到着・拒否回数・通常の `recall_verification` と混同しない。
 - recordをsealした観測のeffect loopから、detached子プロセスで
   `python3 -m docich.hanjuku.month_audit file --incident <id>` を起動し、
