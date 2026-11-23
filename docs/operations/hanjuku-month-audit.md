@@ -101,6 +101,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   `settlement_source`（`marker_probe` / `source_roster`）をissue本文に表示する。
   出撃元名簿で失敗した場合は `general_present` / `complete` / `entries` も表示する。
   生のマーカー座標・名簿の将軍名一覧はissue本文へ出さない。
+- **v1411**: 失敗確定時にsettlement source・probe reads・経過ticks・marker countを保存し、出撃元名簿での判定なら本人の存在・一覧完全性・件数だけを追加する。座標と名簿名は投影しない。
 - 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
 - issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
