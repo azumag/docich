@@ -2,7 +2,7 @@
 
 ## 対象
 
-Issue #5252（ch9 12-5、砦帰還が `fort_status` で91 stepsを消費して中断した事案）。関連する先行事象は #5154。
+Issue #5252（ch9 12-5、砦帰還が `fort_status` で91 stepsを消費して中断した事案）。関連する先行事象は #5154。加えて、read-only検証で判明した #5248 の崖離脱Aと通常帰還Aの誤分類を同じ監査契約で分離する。
 
 ## 範囲
 
@@ -18,7 +18,13 @@ Issue #5252（ch9 12-5、砦帰還が `fort_status` で91 stepsを消費して�
 
 ## Hot-load marker
 
-`hanjuku-chart-v1433-fort-recall-evidence`（当初 v1422、main 再同期時に v1433 へ再採番）。mainのv1421 critical-card-spendを保持したうえで、diagnostics allowlistと固定値テストを同期する。
+`hanjuku-chart-v1434-camp-dispatch-evidence`（当初 v1422、main再同期時のv1433から、#5248のdispatch分類修正を含めv1434へ再採番）。mainのv1432を基点に、v1433の砦証拠とv1434のdispatch/escape証拠をdiagnostics allowlist・固定値テストへ同期する。
+
+## #5248 のdispatch分類
+
+- `dispatch_unconfirmed` はA送信receipt未確認、`arrival_unconfirmed` は送信後の受理/到着未確認として、`resulting_event` を優先して分類する。
+- `escape_move=true` は帰還要求ではなく崖離脱のフィールド移動。受理/未確認を `camp_escape_move_*` として記録し、通常の `recall_verification`、帰還先拒否回数、名簿到着確認を更新しない。
+- 未確認の崖離脱移動は専用audit kindで追跡し、キャンプ帰還未確認の誤起票を避ける。
 
 ## 回帰テスト
 
