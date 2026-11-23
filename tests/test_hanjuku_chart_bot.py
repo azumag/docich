@@ -4560,6 +4560,28 @@ def test_summon_menu_records_a_missed_carried_card_for_the_audit():
     assert state['policy']['battle'].get('boss_card_missed_noted') is True
 
 
+def test_a_battle_that_already_used_a_card_does_not_file_a_miss():
+    # docich#5217: ミックミーを使った後に残った札は「開けなかった」証拠ではない。
+    # 台帳の card_miss は「携行札を1枚も開かずに攻撃した」ときだけ記録する。
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.hand(98, 169)
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': ['ミックミー'],
+                                   'cards_selected': ['ミックミー'],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    _, state = decide(c.frame(), state)
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
+
+
 def test_summon_menu_does_not_file_card_miss_before_attack_cursor_is_read():
     c = Canvas()
     c.text(176, 175, 'こうげき')
