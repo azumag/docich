@@ -46,9 +46,6 @@ def test_a_page_that_still_lists_the_general_rolls_the_launch_back():
     assert unverified['observed_metric']['settlement_source'] == 'source_roster'
     assert unverified['observed_metric']['roster_evidence'] == {
         'general_present': True, 'complete': False, 'count': 2}
-    assert unverified['observed_metric']['settlement_source'] == 'source_roster'
-    assert unverified['observed_metric']['roster_evidence'] == {
-        'general_present': True, 'complete': False, 'count': 2}
     assert _plan_region(mem)['orders'][STEP] == 'pending'
 
 
