@@ -785,6 +785,8 @@ def _camp_event(record):
     # defensive against older callers that still label it as unconfirmed.
     if decision == 'camp_recall_unconfirmed' and metric.get('escape_move') is True:
         return None
+    if decision == 'camp_escape_move_unconfirmed' and metric.get('escape_move') is not True:
+        return None
     if decision in CAMP_TERMINAL:
         kind, outcome = CAMP_TERMINAL[decision]
     else:
