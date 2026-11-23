@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import pytest
 import sys
 from decimal import Decimal
 import sqlite3
