@@ -76,8 +76,10 @@ issue化の既定は `high` のみ。
 | `camp_escape_move_requested` / `camp_escape_move_dispatched` | camp recall incident対象外 | 崖離脱のフィールドカーソル移動の要求/受理。帰還先の到着証拠には使わない |
 | `camp_escape_move_unconfirmed` | `camp_escape_move_unconfirmed` | 崖離脱のフィールド移動を確認できない専用incident。キャンプ帰還とは分けて記録 |
 
-- 将軍・野営位置・帰還先・崖離脱target_cell・stage/steps・status・input_sent/
-  picker_closed/escape_move/interrupted・理由・直前120秒の決定・計画/在城/flowを1件に保存する。
+- 将軍・野営位置・帰還先・崖離脱target_cell・stage/steps・status・
+  input_receipt_confirmed/picker_closed/escape_move/interrupted・理由・直前120秒の決定・計画/在城/flowを1件に保存する。
+- 旧 `input_sent` はreceipt確認フラグとして後方互換で保持するが、Issue本文では
+  物理入力の送信有無と断定せず `input_receipt_confirmed` として表示する。
 - `resulting_event` を理由文より優先して分類する。`dispatch_unconfirmed` は
   送信段階、`arrival_unconfirmed` は送信後の受理/到着段階であり、共通の
   日本語理由文に「到着」が含まれるかどうかでは分類しない。
