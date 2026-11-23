@@ -2256,25 +2256,23 @@ def _sortie_plan_order(mem, step):
 
 def _card_names(value):
     if isinstance(value, str):
-        return [value]
+        name = value.strip()
+        return [name] if name else []
     if isinstance(value, list):
-        return [card for card in value if isinstance(card, str)]
+        return [name for card in value
+                if isinstance(card, str) and (name := card.strip())]
     return []
 
 
 def _sortie_carried_cards(mem, step, record, records=None):
     carried = []
     rare = (mem.get('rare_card_kit') or {}).get(step)
-    if isinstance(rare, list):
-        carried += _card_names(rare)
-    elif isinstance(rare, str):
-        carried.append(rare)
+    carried += _card_names(rare)
     strong = (mem.get('strong_card_kit') or {}).get(step)
-    if isinstance(strong, str):
-        carried.append(strong)
+    carried += _card_names(strong)
     dropper = (mem.get('dropper_card_kit') or {}).get(step)
-    if isinstance(dropper, dict) and isinstance(dropper.get('card'), str):
-        carried.append(dropper['card'])
+    if isinstance(dropper, dict):
+        carried += _card_names(dropper.get('card'))
     for key in ('cards', 'card', 'cards_selected'):
         carried += _card_names(record.get(key))
     metric = record.get('observed_metric')
