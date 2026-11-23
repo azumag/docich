@@ -48,6 +48,13 @@ from ..strategy.economy import _egg_recheck
 LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
 EMPTY_CARD_LIST_TEXTS = ('きりふだはありません', 'きりふだなし', 'なにももってない')
 CARD_LIST_SAME_FRAME_LIMIT = 12
+# Owner 2026-11-24: 相手（敵が召喚したモンスター）がゾンビなら卵を使わず
+# 白兵で対処する。ゾンビパンチは0ダメージ、ケアルは自己回復で、将軍を倒す
+# 即死・自爆の技能を持たない (hanjuku_reference.MONSTER_SKILLS)。原典チャート
+# (games/hanjuku-sfc-speedrun/charts/7.md) も対ブラウニーで「ゾンビは召喚
+# させ、もうこうげきでターン経過」と白兵を指示している。実画面の敵召喚獣が
+# 1体だけ読め、名前が完全一致したときだけ適用する (未知・複数・未読へ広げない)。
+MELEE_ONLY_SUMMONS = frozenset({'ゾンビ'})
 
 
 def _is_empty_card_list_text(screen: Screen) -> bool:
@@ -2305,6 +2312,8 @@ def egg_battle_step(screen: Screen, mem):
     summon is answered with an egg rather than a stall or blind attack.
     This is original pattern ⑥ (own egg when melee is not enough); patterns
     ②④⑤ stay chart-directed. Messages inside it advance with A.
+    A measured ゾンビ summon is the exception: it is met with melee and the
+    egg is kept (owner 2026-11-24, ``MELEE_ONLY_SUMMONS``).
     """
     if screen.kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage', None)
@@ -2369,7 +2378,17 @@ def egg_battle_step(screen: Screen, mem):
     enemy_monsters = [r for r in enemy_rows
                       if r.name in reference.MONSTER_SKILLS
                       and type(r.hp) is int and r.hp > 0]
+    # Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。HP比や
+    # 経験則より優先するが、実画面で敵召喚獣が1体だけ読めて名前が一致した
+    # ときだけ適用する (未知・複数・未読の敵へは広げない)。
+    melee_only = (len(enemy_rows) == len(enemy_monsters) == 1
+                  and enemy_monsters[0].name in MELEE_ONLY_SUMMONS)
+    if isinstance(mem.get('battle'), dict):
+        # Keep the okunote preempt from spending our general's HP on a lottery
+        # against a zero-damage zombie; cleared as soon as the panel changes.
+        mem['battle']['zombie_melee'] = melee_only
     summon_threat = bool(general_reading and len(enemy_rows) == len(enemy_monsters) == 1
+                        and not melee_only
                         and (enemy_monsters[0].name == 'ダークエルフ'
                              or general_reading[0] * 10
                              <= enemy_monsters[0].hp * BEHIND_EGG_RATIO_TENTHS))
@@ -2378,9 +2397,14 @@ def egg_battle_step(screen: Screen, mem):
         egg_evidence = {**egg_evidence, 'rule': 'enemy_monster_threat',
                         'enemy_monster': enemy_monsters[0].name,
                         'enemy_monster_hp': enemy_monsters[0].hp}
+    elif melee_only:
+        wants_egg = False
+        egg_evidence = {**egg_evidence, 'rule': 'zombie_melee',
+                        'enemy_monster': enemy_monsters[0].name,
+                        'enemy_monster_hp': enemy_monsters[0].hp}
     empty_egg = _screen_egg_empty(screen, mem, battle)
     hero_summon = isinstance(battle, dict) and battle.get('ally') == NAME
-    if hero_summon and not wants_egg:
+    if hero_summon and not wants_egg and not melee_only:
         # g604 3-11: どうし 66/90 looked healthy against チコリ (HP11), so the
         # egg was "saved"; the summoned ダークエルフ's ひとだまくん is instant
         # death (gcgx evil_egg) and HP comparisons cannot price it. A dead
@@ -2405,8 +2429,10 @@ def egg_battle_step(screen: Screen, mem):
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
         action = experience.preferred(exp, key, default='use_egg' if wants_egg and not empty_egg else 'attack',
                                       kind='egg_summon')
-        if (hero_summon or summon_threat or combat_danger) and not empty_egg:
+        if (hero_summon or summon_threat or combat_danger) and not empty_egg and not melee_only:
             action = 'use_egg'  # learned attacks cannot overrule a measured summon threat
+        if melee_only:
+            action = 'attack'   # owner 2026-11-24: zombie is met by melee, never by our egg
         if action == 'use_egg' and empty_egg:
             action = 'attack'
         mem['egg_action'] = action
@@ -2421,7 +2447,9 @@ def egg_battle_step(screen: Screen, mem):
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'experience_key': key, 'egg_need': egg_evidence},
                 source_pattern='⑥',
-                reason=('チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
+                reason=('オーナー指示 (2026-11-24): 相手がゾンビのため、たまごを使わず白兵で対処する'
+                        if melee_only else
+                        'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
                         '自軍が健在でHP・兵士数・戦闘力から白兵を続けられそうならたまごを温存）'
                         if not wants_egg else
                         'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）'))
@@ -2449,7 +2477,10 @@ def egg_battle_step(screen: Screen, mem):
         return [pad('b')]
     # 途中昇格: 温存していた (前回まで勝てていた) のに劣勢になったら、たまごを
     # 使う判断へ切り替える。回復しても温存へは戻さない (一方向だけ)。
-    if ((mem.get('egg_needed') is False or summon_threat or combat_danger) and wants_egg and not empty_egg
+    # 相手がゾンビのときはこの昇格も行わない (owner 2026-11-24)。
+    if (not melee_only
+            and (mem.get('egg_needed') is False or summon_threat or combat_danger)
+            and wants_egg and not empty_egg
             and mem.get('egg_action') == 'attack'):
         mem['egg_action'] = 'use_egg'
         if isinstance(battle.get('independent'), dict):
@@ -2464,6 +2495,23 @@ def egg_battle_step(screen: Screen, mem):
                         if combat_danger else '温存していたが、自軍のHPが最大の7割以下になるか、'
                         'HPと兵士の合戦力が敵の7割を下回ったため途中でたまごを'
                         '使う判断へ切り替える'))
+    if melee_only:
+        # A hot-loaded or learned 卵 decision made before the panel was read
+        # must not spend the egg on a zombie (owner 2026-11-24). Record the
+        # reversal once per battle; later observations just keep attacking.
+        if mem.get('egg_action') != 'attack' and not battle.get('zombie_melee_override'):
+            battle['zombie_melee_override'] = True
+            _record(mem, 'egg_battle', strategy_variant='egg_battle_zombie_melee',
+                    deviation_reason='チャート外: 敵の卵召喚戦（ゾンビは白兵）',
+                    expected_metric='ゾンビへの白兵と戦闘結果',
+                    observed_metric={'egg_need': egg_evidence,
+                                     'enemy_monster': enemy_monsters[0].name,
+                                     'enemy_monster_hp': enemy_monsters[0].hp},
+                    source_pattern='⑥',
+                    reason='オーナー指示 (2026-11-24): 相手がゾンビのため、たまごの温存判断を白兵へ戻す')
+        mem['egg_action'] = 'attack'
+        if isinstance(battle.get('independent'), dict):
+            battle['independent']['action'] = 'attack'
     mem['egg_needed'] = wants_egg
     action = mem.get('egg_action', 'use_egg')
     if empty_egg or (action == 'use_egg' and 'たまごをつかう' not in screen.text):
