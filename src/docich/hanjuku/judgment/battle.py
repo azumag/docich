@@ -2561,10 +2561,16 @@ def _defender_summon_preempt(mem, cur):
     unbounded menu, unknown context, and HP at/below the worst self-damage
     keep the old policy. The worst-case self-damage does not gate this path:
     like ``_defender_egg_window``, an unanswered summon is the worse outcome,
-    and the menu-side HP decline/last-resort rules still run first.
+    and the menu-side HP decline/last-resort rules still run first. A measured
+    ゾンビ summon is not a threat (0-damage ゾンビパンチ, self-heal ケアル) and
+    keeps melee instead (owner 2026-11-24).
     """
     chapter = mem.get('chapter')
     guard = cur.get('okunote_summon_preempt') or {}
+    # Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。ゾンビパンチ
+    # は0ダメージで、自傷する抽選を0ダメージの相手へ賭ける理由がない。
+    if cur.get('zombie_melee'):
+        return None
     # Owner 2026-11-04: 相手（召喚獣）のHPが一撃で倒せる残りなら奥の手は不要。
     enemy_hp = cur.get('summon_enemy_hp')
     if type(enemy_hp) is int and 0 < enemy_hp <= EGG_WALL_DAMAGE:
