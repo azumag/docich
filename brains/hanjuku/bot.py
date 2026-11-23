@@ -74,6 +74,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
     'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
+    'camp_escape_move_dispatched','camp_escape_move_unconfirmed',
 })
 
 
@@ -202,6 +203,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
                               'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
+                              'camp_escape_move_dispatched','camp_escape_move_unconfirmed',
                               'recall_arrival_status_started','recall_in_castle_observed',
                               'battle_survival_critical_recheck',
                               'house_dispatch_requested','house_arrival_seen',
