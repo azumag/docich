@@ -235,7 +235,9 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     assert "10,000" in first["result"]
     assert "btc_jpy" in first["result"]
     assert "xrp_jpy" not in first["result"]
-    assert "区間の確定損益（前回説明から今回説明まで）" in first["result"]
+    # The fixture intentionally has no PAPER fill ledger; fail closed instead of narrating a zero/known interval result.
+    assert "評価待ち" in first["result"]
+    assert "区間の確定損益（前回説明から今回説明まで）" not in first["result"]
     assert "戦略" in first["strategy"]
     assert all(isinstance(value, str) and value for value in first.values())
     assert sum(len(value) for value in first.values()) >= 500
