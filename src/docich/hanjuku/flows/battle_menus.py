@@ -2676,7 +2676,13 @@ def egg_battle_step(screen: Screen, mem):
             # cursor or an in-progress walk is not evidence that the card was
             # skipped in favour of an attack.
             missed = _carried_card_left(mem, battle)
-            if missed and cards_left and not battle.get('boss_card_missed_noted'):
+            # docich#5217: once this battle has spent a card, the next one is
+            # not evidence that the bot skipped cards in favour of an attack.
+            # The audit's card_miss signal is "attacked without opening any of
+            # the carried cards"; filing after a real use only produces
+            # duplicates (live: ミックミー used, ノリウツール left, 3 issues).
+            if (missed and cards_left and not battle.get('cards_used')
+                    and not battle.get('boss_card_missed_noted')):
                 battle['boss_card_missed_noted'] = True
                 _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
                         observed_metric={'cards_left': list(cards_left),
