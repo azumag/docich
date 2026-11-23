@@ -526,6 +526,51 @@ npm run train:brain -- report \
 同じIDでも重みが変われば別ハッシュ、同じ重みに名前を付け替えただけなら同じハッシュです。
 他サイトでもprofile JSONを共用できますが、成績はサイト・ルールごとに分けて評価します。
 
+## 日次の対戦結果レビュー
+
+`run-soren-live/tsuitate_corner.json` と `tsuitate_review.json` は次の対局で上書きされる。
+終局ごとに公開リプレイを取り込み、非公開の `run/tsuitate-beta/history/<gameId>.json` へ
+1局1ファイルで保存する。このディレクトリは `run/` 配下の untracked で、原棋譜・gameId・
+識別子をGitや配信へ出さない。
+
+```sh
+cd workers/tsuitate-bot
+curl -sS --max-time 15 --proto '=https' --tlsv1.2 \
+  "https://beta.tsuitate.info/games/<gameId>/__data.json" -o /tmp/tsuitate-public.json
+npm run lab -- archive \
+  --state ../../run-soren-live/tsuitate_corner.json \
+  --review ../../run-soren-live/tsuitate_review.json \
+  --public /tmp/tsuitate-public.json \
+  --out ../../run/tsuitate-beta/history
+npm run lab -- --replay ../../run/tsuitate-beta/history/<gameId>.json \
+  --brain ./src/brain/index.js
+```
+
+`replay-lab` は fail-closed で、公開棋譜の全着手が真の盤面で合法であること、最終局面が
+サイトの `finalSfen` と一致すること、レビューの着手列と公開棋譜が一致することを確認する。
+そのうえで自分の各手番の own-view（自駒・持駒・王手・自駒喪失から作る `knownEnemies`）を
+再構成し、指定した brain を再実行して、受理・反則（`blocked` / `blocked_unknown` /
+`into_check` / `occupied_drop` / `nifu` / `dead_end_drop` / `promotion`）・捕獲物得を出す。
+`--compare <brain/index.js>` で同じ局面のA/Bができる。
+
+制約: 相手の着手は実戦どおり固定し、局面ごとに独立評価する。先読み・千日手・打ち歩詰めは
+判定しない。反則数や捕獲物得の差は診断値であり、勝率の証明ではない。相手の強さは日ごとに
+変わるため、1局だけの結果で brain の版を上げない。
+
+### 2026-11-23 の初回
+
+- 1局（61手・詰み負け）。自分の反則1、捕獲物得9対38、相手は自分より600以上高いレーティング。
+- brain v13 の再実行は実戦31手すべてで同じUSIを選び、実戦の反則1も再現した。
+- 唯一の反則は、証拠マスへの6マス移動（飛）が道中の未知マス（実際は相手金）で遮断された
+  もの。v8の経路減点は「証拠捕獲」の優先層には効かず、スコア -1.11 でも他の候補（+0.5）を
+  押しのけていた。
+- 候補「経路が自視点で説明できる証拠捕獲だけを優先層に残す」は同一局面A/Bで反則1→0、
+  捕獲物得9→9、受理31→31。ただし反則は毎局5〜7回で上限10に対して余裕があり、負けの主因は
+  物量差だった。スコアに捕獲価値がないため、この変更は長い証拠捕獲を実質的に外す。
+  複数局のA/B（捕獲物得・王手対応を含む）が揃うまで採用しない。
+- 次の仮説: (1) 証拠捕獲の価値と経路リスクを同じスコアで比較する、(2) 王手時の玉逃げと
+  応手の順序、(3) 打ち駒の偏り（中央・前進バイアス）。
+
 ## 既存Webhookへ候補を適用する場合
 
 候補のJSON本文をWorkerの `BRAIN_PROFILE_JSON` に設定すると、新規対局から使います。

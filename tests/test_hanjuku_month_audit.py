@@ -1700,6 +1700,25 @@ def test_file_respects_comment_cooldown(runtime_dir):
     assert result['status'] == 'cooldown'
 
 
+def test_battle_loss_comments_before_the_generic_hour(runtime_dir):
+    value = state(10, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_result', outcome='loss',
+                                  metric={'egg_uses': 2, 'ally_hp': 0,
+                                          'enemy_hp': 40}, general='バゲット')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    issue = {'number': 7,
+             'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
+    now = time.time()
+    comments = [{'body': 'earlier',
+                 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ',
+                                            time.gmtime(now - 1200))}]
+    gh = FakeGh(issues=[issue], comments=comments)
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=now)
+    assert result['status'] == 'commented'
+
+
 def test_file_refuses_when_secret_scan_detects(runtime_dir):
     sealed_zero(runtime_dir)
     gh = FakeGh()
