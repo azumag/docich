@@ -27,7 +27,7 @@ _WORKER_SUMMARY_KEYS = {
 
 _PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions"}
 _PERFORMANCE_MONEY_KEYS = {
-    "realized_total_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
+    "realized_total_jpy", "interval_realized_pnl_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
     "cumulative_pnl_jpy", "equity_jpy",
 }
 _MAX_SKIP_DETAILS = 16

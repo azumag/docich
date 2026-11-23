@@ -42,6 +42,56 @@ def _quote_prompt_visible(screen):
             and 'うむッ' in text and 'いかんッ' in text)
 
 
+def _quote_row_matches(screen, mem, shop, want, value):
+    """The read quote is exactly this planned row and still affordable.
+
+    ``selected`` is not required: on a fading frame the hand/choice word may be
+    unreadable while the quote line（NこでNGになりまんな）still is. Both the
+    quantity and the total must equal the planned row, and the same reserved
+    funds check as the visible-selection path must pass.
+    """
+    if not isinstance(want, list) or len(want) != 3:
+        return False
+    name, target, price = want
+    if (not isinstance(name, str) or type(target) is not int or target <= 0
+            or type(price) is not int or price <= 0 or value != target):
+        return False
+    quotes = re.findall(r'(\d+)こで(\d+)Gになりまんな',
+                        ''.join((screen.text or '').split()))
+    if (len(quotes) != 1 or int(quotes[0][0]) != value
+            or int(quotes[0][1]) != value * price):
+        return False
+    spendable = merchant_card_spendable(mem, shop, screen.header, name, price)
+    return spendable is not None and int(quotes[0][1]) <= spendable
+
+
+def _record_quote_purchase(screen, mem, shop, want, value):
+    """Book one confirmed merchant purchase: ledger, last_buy, buy record.
+
+    Runs before the A that accepts the quote (as the visible-selection path
+    always did): the ledger first, then ``last_buy`` so a refusal can undo the
+    row, then the record and the queue pop. Never leaves ``want`` behind.
+    """
+    bought = shop.setdefault('bought', [])
+    bought.append([want[0], value, want[2]])
+    # The ledger first: a known kind takes the copies, an unknown one stays
+    # unknown for note_card_purchase below to record as UNSEEN (one of the
+    # two, never both).
+    note_card_bought(mem, want[0], value)
+    shop['last_buy'] = {'row': [want[0], value, want[2]],  # undone if refused
+                        'gold': (screen.header or {}).get('gold')}
+    extra = want[0] in (shop.get('bargain_cards') or [])
+    _record(mem, 'buy', card=want[0], qty=value, price=want[2],
+            chart_step=month_chart_step(mem),
+            strategy_variant='spare_cash_strong_cards' if extra else shop.get('variant', 'chart'),
+            reason=('必要資金・予備費・買い足し上限を再確認し、安い強力札の購入を確定する'
+                    if extra else 'チャート/予算計画どおりの個数を確認して購入'))
+    note_card_purchase(mem, want[0], value)  # a boss card returns to its kit
+    if shop.get('items') and shop['items'][0][0] == want[0]:
+        shop['items'].pop(0)
+    shop['want'] = None
+
+
 def _quote_stall_watch(shop, screen):
     """True once the same visible quote has survived QUOTE_STALL_LIMIT reads.
 
@@ -212,21 +262,33 @@ def shop_step(screen: Screen, mem):
         move = menu_to(screen, 'うむッ!')
         if shop:
             shop['merchant_done'] = True
+            # Leaving the shop abandons any unconfirmed selection: a want left
+            # here kept the generic A away from another owner's quote for the
+            # rest of the month (g1190 63-5 shape).
+            shop['want'] = None
         # Without a readable hand, the measured default cursor is うむッ (#960).
         return [move] if move and move != 'here' else [pad('a')]
     if kind == 'shop_quantity_prompt':
+        if _quote_prompt_visible(screen):
+            # The quote can be classified as the underlying "how many?" prompt
+            # when that text is still legible. quantity_step records the row
+            # before A; the blind A here spent the money without the buy.
+            return quantity_step(screen, mem)
         return [pad('a')]
     if kind == 'shop_quantity':
         return quantity_step(screen, mem)
     # shop_list
     gold = (screen.header or {}).get('gold')
     if not shop or shop.get('key') != _month_key(screen.header):
+        if isinstance(shop, dict):
+            shop['want'] = None   # the list is from another month; no quote is pending
         _record_shop_exit(mem, shop, screen, 'month_key_mismatch')
         return [pad('b')]
     spendable = _merchant_spendable(mem, shop, screen.header)
     if spendable is None:
         # A faded header is not permission or evidence of missing stock. Log
         # the silent exit: a quiet 'b' here once left a planned purchase unbought.
+        shop['want'] = None       # B abandons the unconfirmed selection
         _record_shop_exit(mem, shop, screen, 'spendable_unreadable')
         return [pad('b')]
     listed = {}
@@ -289,6 +351,11 @@ def shop_step(screen: Screen, mem):
                                          'listed': dict(listed or {})},
                         reason='購入完了済みの商人へ予定品なしで再入したため、当月起こさないよう閉じる')
             shop['closed'] = True
+    # B leaves the list: no planned row was chosen, so an older want (from a
+    # row the previous observation selected) is not a live quote any more.
+    # Keeping it would block the generic A on another owner's purchase
+    # confirmation for the rest of the month (g1190 63-5 shape).
+    shop['want'] = None
     return [pad('b')]
 
 
@@ -500,38 +567,24 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         value = int(m.group(1)) if m else None
         want = shop.get('want') or [None, 0, 0]
         target = want[1]
-        if screen.hand and 'うむッ' in screen.text and screen.selected in ('うむッ!', 'いかんッ!'):
+        if _quote_prompt_visible(screen):
+            # The merchant's purchase confirmation is the shop flow's own step.
+            # ``selected`` may be unreadable while the quote and its buttons are
+            # visible; the quote line is then the evidence. The generic A used
+            # to take this screen and spend the money without recording buy,
+            # last_buy or card_stock (prod v1374 93-9), so the next list asked
+            # for the same card again until the merchant refused it.
             if value == target and target:
-                quotes = re.findall(r'(\d+)こで(\d+)Gになりまんな', ''.join(screen.text.split()))
-                spendable = merchant_card_spendable(mem, shop, screen.header, want[0], want[2])
-                if (type(target) is not int or target <= 0
-                        or type(want[2]) is not int or want[2] <= 0
-                        or len(quotes) != 1 or int(quotes[0][0]) != value
-                        or int(quotes[0][1]) != value * want[2]
-                        or spendable is None or int(quotes[0][1]) > spendable):
-                    return _merchant_quote_decline(screen, mem, shop, want, 'quote_or_reserved_funds')
-                move = menu_to(screen, 'うむッ!')
-                if move == 'here':
-                    bought = shop.setdefault('bought', [])
-                    bought.append([want[0], value, want[2]])
-                    # The ledger first: a known kind takes the copies, an
-                    # unknown one stays unknown for note_card_purchase below
-                    # to record as UNSEEN (one of the two, never both).
-                    note_card_bought(mem, want[0], value)
-                    shop['last_buy'] = {'row': [want[0], value, want[2]],  # undone if refused
-                                        'gold': (screen.header or {}).get('gold')}
-                    extra = want[0] in (shop.get('bargain_cards') or [])
-                    _record(mem, 'buy', card=want[0], qty=value, price=want[2],
-                            chart_step=month_chart_step(mem),
-                            strategy_variant='spare_cash_strong_cards' if extra else shop.get('variant', 'chart'),
-                            reason=('必要資金・予備費・買い足し上限を再確認し、安い強力札の購入を確定する'
-                                    if extra else 'チャート/予算計画どおりの個数を確認して購入'))
-                    note_card_purchase(mem, want[0], value)  # a boss card returns to its kit
-                    if shop.get('items') and shop['items'][0][0] == want[0]:
-                        shop['items'].pop(0)
-                    shop['want'] = None
-                    return [pad('a')]
-                return [move] if move else []
+                if _quote_row_matches(screen, mem, shop, want, value):
+                    move = menu_to(screen, 'うむッ!')
+                    if move == 'here' or not move:
+                        # No readable cursor still has the measured default on
+                        # うむッ!; the row is recorded before that blind A.
+                        _record_quote_purchase(screen, mem, shop, want, value)
+                        return [pad('a')]
+                    return [move]
+                return _merchant_quote_decline(screen, mem, shop, want,
+                                               'quote_or_reserved_funds')
             if _quote_stall_watch(shop, screen):
                 return _quote_stall_decline(screen, mem, shop, want, 'quote_stall')
             return [pad('b')]

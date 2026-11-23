@@ -586,3 +586,91 @@ def test_lawsim_corner_audio_enabled_stored(tmp_path):
     assert adapter.audio_enabled is True
     assert adapter.manager.audio_enabled is True
 
+
+# --- #5065: readability / entertainment revamp contract tests ----------------
+
+
+def test_view_payload_carries_law_cards_rules_and_warning_meta(tmp_path):
+    path = tmp_path / "lawsim_session.json"
+    path.write_bytes(_stored_body(0))
+    payload = load_payload(path)
+    assert "計画" in payload["rules"]["goal"]
+    assert payload["rules"]["collapse"]
+    assert payload["rules"]["premise"]
+    assert payload["categoryLabels"]["economy"] == "経済"
+    assert set(payload["warningMeta"]) == {
+        "production", "support", "discipline", "reserves", "blackMarket"}
+    assert payload["warningMeta"]["support"]["threshold"] == 25
+    first = payload["turns"][0]
+    assert first["lawId"] == "grain-procurement-tightening"
+    assert first["summary"].strip() and first["risks"]
+    assert first["categoryLabel"] == "経済"
+    assert first["reaction"].strip()
+    assert 51 <= first["votesFor"] <= 99
+
+
+def test_view_payload_votes_are_deterministic_and_bounded(tmp_path):
+    path = tmp_path / "lawsim_session.json"
+    path.write_bytes(_stored_body(0))
+    first = load_payload(path)
+    second = load_payload(path)
+    votes = [turn["votesFor"] for turn in first["turns"]]
+    assert votes == [turn["votesFor"] for turn in second["turns"]]
+    assert all(type(value) is int and 51 <= value <= 99 for value in votes)
+
+
+def test_view_html_hides_final_status_until_the_end_frame():
+    # 進行中フレームで最終結果を先出ししない（#5065）。
+    assert "isEnd?data.finalStatusText" in HTML
+    assert "審議中・残り" in HTML
+    # republic 行は会期名のみ。終了ステータスコードを常時表示しない。
+    assert "data.republic ／" not in HTML
+
+
+def test_view_turn_status_and_metric_badges_follow_actual_state():
+    # Turn frames show post-law metrics; badge deltas must use actual clamped
+    # before/after values rather than the unapplied nominal law effects.
+    assert "turn.metricsAfter[key]-before[key]" in HTML
+    assert "frame.index===1?data.initialMetrics:data.turns[frame.index-2]?.metricsAfter" in HTML
+    assert "frame.index<totalTurns?'状態: 審議続行中':''" in HTML
+    assert "frame.index<totalTurns?`審議中・残り" in HTML
+    assert "totalTurns-frame.index+1" not in HTML
+
+
+def test_view_html_shows_rules_goal_law_card_and_next_agenda():
+    assert "この会期のルール" in HTML
+    assert "data.rules.goal" in HTML
+    assert "法律内容:" in HTML
+    assert "場内採決" in HTML
+    assert "次の議題" in HTML
+
+
+def test_narration_uses_japanese_metric_labels():
+    from docich.lawsim_narration import narration_text
+
+    text = narration_text(
+        {
+            "title": "t",
+            "republic": "r",
+            "finalStatusText": "done",
+            "frames": [
+                {"index": 0, "kind": "start", "text": "open"},
+                {"index": 1, "kind": "turn", "text": "x"},
+            ],
+            "turns": [{
+                "turn": 1,
+                "lawName": "L",
+                "summary": "テスト法律の内容",
+                "deltas": {"production": 5},
+                "planGain": 4,
+                "events": [],
+                "metricsAfter": {"production": 45},
+            }],
+        },
+        frame_index=1,
+    )
+    assert "生産+5" in text
+    assert "計画前倒し+4" in text
+    assert "テスト法律の内容" in text
+    assert "production" not in text
+

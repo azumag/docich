@@ -243,6 +243,7 @@ KEY_OWNERSHIP = {
     'map_idle_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # マップアイドルtick(goals計画管理)
     'order_dispatch_since': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスフェーズ出撃待ちの開始tick(#5077)
     'order_dispatch_starved_at': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上: 記録済みの待ち開始tick(#5077)
+    'order_dispatch_noted_at': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上: 通常月の記録済み待ち開始tick(#5125)
     'order_start_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 指示開始tickの計画簿記
     'plan': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 領域dict自体の防御的pop
     'recruit_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 採用保留(経済戦略も書く計画ホールド)

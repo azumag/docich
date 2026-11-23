@@ -89,6 +89,17 @@ def test_a_dispatched_recall_waits_out_the_scene_and_ends_on_the_month_screen():
     assert 'recall' not in state['policy']
 
 
+def test_a_sent_but_unclosed_recall_schedules_the_destination_roster_read():
+    # docich#5127 (owner 2026-11-23): input_sent + picker_closed=False ended as
+    # "unconfirmed" and never asked the destination roster, so the general's
+    # arrival could not be confirmed. The bounded read is scheduled instead.
+    state = recall_state(stage='await_dispatch', input_sent=True, goal='ファルゲ')
+    _, state = decide(read_png(MONTH_MENU), state)
+    assert 'camp_recall_unconfirmed' in decisions(state)
+    due = state['policy']['roster_read_due']['ファルゲ']
+    assert 70400 + recall_flow.RECALL_READ_DELAY <= due <= 70400 + recall_flow.RECALL_READ_DELAY + 10
+
+
 @pytest.mark.parametrize('flag', ['retreat_recheck', 'anonymous_recheck'])
 def test_a_recheck_recall_is_left_to_its_own_flow(flag):
     # The recheck validates its own identity and scope (this minimal state is
@@ -126,7 +137,7 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
     assert actions[0]['buttons'] == ['down']    # 実カーソルとの差分の1押し
     assert 'camp_recall_interrupted' not in decisions(state)
 
-    # 3. 野営再到達: 実カーソルが野営に乗った map で決定し、きかんメニュー段へ。
+    # 3. 野営再到達: 実カーソルが野営に乗った map で決定し、野営メニュー段へ。
     #    以降は実機画面の無い段を合成 Screen で遷移させる（chapter9 redirect
     #    テストと同じ手法: 野営検出を observed_camps 引数で pin する）。
     camp = {'target': (141, 128), 'clipped': False}
@@ -135,15 +146,14 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
     assert _flow(mem)['recall']['stage'] == 'menu'
     assert mem['_records'][-1]['decision'] == 'camp_enter'
 
-    # 4. 野営メニュー: 実カーソル位置を毎回観測して「きかん」（最下行）へ1押し
-    #    ずつ合わせ、乗った所でAして帰還先ピッカーを開く。
-    # docich#5010: the menu target is きかん (row 3) for an ordinary recall
-    # with no visible target, so the cursor walks down and the A lands on
-    # row 3. (Owner 2026-11-19 (#4736) made いどう the target; #5010 shows
-    # いどう abandons an ordinary recall on the 'map' screen it opens.)
-    for selected in (0, 1, 2):
-        assert recall_flow._camp_recall_step(camp_menu(selected), mem, frame) == [pad('down')]
-    assert recall_flow._camp_recall_step(camp_menu(3), mem, frame) == [pad('a')]
+    # 4. 野営メニュー: 実カーソル位置を毎回観測して「いどう」（最上行）へ1押し
+    #    ずつ合わせ、乗った所でAしてフィールドカーソルを開く。
+    # docich#5105 (owner 2026-11-19: きかん禁止・いどう→Y): the menu target
+    # is いどう (row 0) for every recall — きかん is never selected again; the
+    # dest stage hands the field cursor to the whole-map Y route.
+    for selected in (3, 2, 1):
+        assert recall_flow._camp_recall_step(camp_menu(selected), mem, frame) == [pad('up')]
+    assert recall_flow._camp_recall_step(camp_menu(0), mem, frame) == [pad('a')]
     assert _flow(mem)['recall']['stage'] == 'dest'
 
     # 5. 帰還先決定: goal解決済みなら先にYジャンプ(RECALL)で自城へ戻り

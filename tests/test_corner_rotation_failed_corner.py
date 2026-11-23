@@ -631,6 +631,152 @@ def test_auto_restore_is_skipped_without_the_adapter_entry(tmp_path):
     assert "auto_restore" not in ledger(manager)
 
 
+def test_parked_plane_never_burns_the_restore_replay_budget(tmp_path):
+    """#2479 P2: a terminal-parked plane makes every replay a deterministic
+    noop, so attempts are only spent once the replay can actually land.
+
+    Production 2026-11-19: the refused restore never wrote a receipt, so
+    ``recover_failed_restore`` answered ``restore-failure-unproven`` three
+    times and the durable record misreported ``restore-recovery-exhausted``.
+    """
+
+    calls = []
+
+    def replay(_adapter):
+        calls.append(1)
+        return SimpleNamespace(status="noop", detail="restore-failure-unproven")
+
+    parked_a = {**owned_canonical("gamea"), "phase": "failed"}
+    parked_b = {**owned_canonical("gameb"), "phase": "failed"}
+    manager, clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=parked_a),
+                  "b": Store(canonical=parked_b)},
+        executor=Executor(result="failed"),
+        restore_recovery={"a": replay, "b": replay},
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    blocked = pending["corner"]
+    adapters[blocked].states = [{"status": "failed", "started_at": 1.0,
+                                 "rotation_request_id": pending["request_id"]}]
+
+    assert manager.tick()["status"] == "recovery_required"
+    state = ledger(manager)
+    # The replay is skipped entirely while the plane is parked: no attempt
+    # is spent and no misleading record is left behind.
+    assert calls == []
+    assert "auto_restore" not in state
+
+    # Once the plane settles again the same bounded replay resumes. The tick
+    # still raises: after the latch releases the failed corner it dispatches
+    # the next one, the fake executor fails it again, and the slot cannot be
+    # proven reusable while the finished game is still the canonical active
+    # (the same designed raise as the first tick) -- the replay running
+    # before that raise is the resumed budget.
+    game = "gamea" if blocked == "a" else "gameb"
+    adapters[blocked].manager.store.canonical = _Canonical(owned_canonical(game))
+    clock[0] += 301
+    with pytest.raises(RotationError):
+        manager.tick()
+    assert calls == [1]
+    record = ledger(manager).get("auto_restore")
+    if record is not None:
+        assert record["attempts"] == 1
+
+
+def test_auto_restore_records_the_fixed_replay_detail(tmp_path):
+    """#2479 P3: the replay's fixed detail code stays durable (#2479)."""
+
+    def replay(_adapter):
+        return SimpleNamespace(status="noop", detail="restore-failure-unproven")
+
+    manager, _clock, _executor, adapters = build(
+        tmp_path,
+        # A non-terminal request receipt keeps the slot unreusable, so the
+        # latch (and the durable record) survives across ticks.
+        storages={"a": Store(canonical=owned_canonical("gamea"),
+                             default_receipt={"status": "queued"}),
+                  "b": Store(canonical=owned_canonical("gameb"),
+                             default_receipt={"status": "queued"})},
+        executor=Executor(result="failed"),
+        restore_recovery={"a": replay, "b": replay},
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    adapters[pending["corner"]].states = [
+        {"status": "failed", "started_at": 1.0,
+         "rotation_request_id": pending["request_id"]}
+    ]
+
+    assert manager.tick()["status"] == "recovery_required"
+    record = ledger(manager)["auto_restore"]
+    assert record["last_status"] == "noop"
+    assert record["last_detail"] == "restore-failure-unproven"
+
+
+def test_auto_restore_hides_a_freetext_replay_detail(tmp_path):
+    """Only the fixed detail vocabulary is recorded; free text is bounded."""
+
+    def replay(_adapter):
+        return SimpleNamespace(status="failed", detail="some free text detail")
+
+    manager, _clock, _executor, adapters = build(
+        tmp_path,
+        storages={"a": Store(canonical=owned_canonical("gamea"),
+                             default_receipt={"status": "queued"}),
+                  "b": Store(canonical=owned_canonical("gameb"),
+                             default_receipt={"status": "queued"})},
+        executor=Executor(result="failed"),
+        restore_recovery={"a": replay, "b": replay},
+    )
+    with pytest.raises(RotationError):
+        manager.tick()
+    pending = ledger(manager)["pending"]
+    adapters[pending["corner"]].states = [
+        {"status": "failed", "started_at": 1.0,
+         "rotation_request_id": pending["request_id"]}
+    ]
+
+    assert manager.tick()["status"] == "recovery_required"
+    record = ledger(manager)["auto_restore"]
+    assert record["last_detail"] == "unknown"
+    assert "some free text" not in str(record)
+
+
+def test_the_released_settle_outcome_is_recorded_per_corner(tmp_path):
+    """#2479 P3: deferred vs unretirable is visible in the ledger itself."""
+
+    manager, _clock, executor, _adapters = build(
+        tmp_path,
+        storages={"a": Store(default_receipt=TERMINAL_RECEIPT),
+                  "b": Store(default_receipt=TERMINAL_RECEIPT)},
+        executor=Executor(result="failed"),
+    )
+    manager.tick()
+    state = ledger(manager)
+    old = last_failure(state)
+    corner, old_request = old["corner"], old["request_id"]
+    adapter = manager.adapters[corner]
+    adapter.states = [{"status": "failed", "rotation_request_id": old_request}]
+    outcomes = [None, False, True]
+    adapter.settle_released_failure = lambda owner: outcomes.pop(0)
+    executor.result = "completed"
+
+    manager.tick()
+    row = ledger(manager)["released_settle_outcomes"][corner]
+    assert row["outcome"] == "deferred"
+    assert row["request_id"] == old_request
+
+    manager.tick()
+    assert ledger(manager)["released_settle_outcomes"][corner]["outcome"] == "unretirable"
+
+    manager.tick()
+    assert ledger(manager)["released_settle_outcomes"][corner]["outcome"] == "retired"
+
+
 def test_finished_corner_leftover_is_reclaimed_and_the_next_corner_runs(tmp_path):
     """A finished corner's leftover game must not stop the rotation (#2187)."""
 

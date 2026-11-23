@@ -152,6 +152,21 @@ def _boss_companion_unfit(mem, name):
                 and hp * 10 < maximum * 6))
 
 
+def _known_roster(mem, garrison, castle):
+    """Complete roster when known, else the partial page minus confirmed moves."""
+    names = garrison.get(castle)
+    if names is not None:
+        return names
+    partial = (_world(mem).get('garrison_partial') or {}).get(castle)
+    if not isinstance(partial, list) or not partial:
+        return None
+    elsewhere = {name for other, members in garrison.items()
+                 if other != castle and isinstance(members, list)
+                 for name in members}
+    remaining = [g for g in partial if g not in elsewhere]
+    return remaining or None
+
+
 def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = _world(mem).get('garrison') or {}
@@ -179,13 +194,23 @@ def _boss_companion_source(order, mem):
         return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
                    default=None)
     castles = [source] + sorted(owned - {source})
-    return next((castle for castle in castles if castle in owned
-                 and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
+    need = chart.sender_min(chapter)
+    sole = len(owned) <= 1
+    for castle in castles:
+        if castle not in owned:
+            continue
+        names = _known_roster(mem, garrison, castle)
+        if not _order_hero_alternatives(order, mem, names):
+            continue
+        if castle == source or sole or len(set(names or ())) >= need:
+            return castle
+    return None
 
 
 def _hero_source_alternative(order, mem):
+    garrison = _world(mem).get('garrison') or {}
     return (order.get('general') == NAME
-            and bool(_order_hero_alternatives(order, mem, (_world(mem).get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, _known_roster(mem, garrison, _source(order, mem)))))
 
 
 def _gate_dicts(mem, *keys):
@@ -258,6 +283,27 @@ def _sortie_cancelled_observed_suppressed(order, mem) -> bool:
         if (_plan_region(mem).get('orders') or {}).get(step) == 'failed':
             _plan_region(mem).setdefault('orders', {})[step] = None
         return False
+    # docich#5107: suppression must expire. While the general is still at
+    # home the gate keeps _ready() False, and that retry is the only thing
+    # that increments the cancellation count which fails the order at
+    # SORTIE_CANCELLED_OBSERVED_LIMIT. A gate that never expires therefore
+    # held the order 'pending' for the rest of the month after a single
+    # cancelled departure (observed: order_start 0 / launched 0 / stalled
+    # march). Release it after a bounded window so the retry — and its own
+    # limit — can proceed.
+    tick = mem.get('tick')
+    gate_tick = gate.get('tick')
+    if isinstance(tick, int) and isinstance(gate_tick, int):
+        if tick - gate_tick >= SORTIE_CANCELLED_RETRY_TICKS:
+            gates.pop(step, None)
+            return False
+    else:
+        # Older/hotloaded state has no gate tick: count holds instead.
+        holds = int(gate.get('holds') or 0) + 1
+        gate['holds'] = holds
+        if holds >= SORTIE_CANCELLED_RETRY_HOLDS:
+            gates.pop(step, None)
+            return False
     count = gate.get('count', 0)
     if count >= SORTIE_CANCELLED_OBSERVED_LIMIT:
         gates.pop(step, None)
@@ -380,7 +426,8 @@ def _record_sortie_cancelled_observed(mem, order, sortie):
         _mark_order_failed(mem, step)
     else:
         gates[step] = {'general': general, 'source': source, 'month': month,
-                       'count': count, 'target': sortie.get('target')}
+                       'count': count, 'target': sortie.get('target'),
+                       'tick': mem.get('tick')}
 
 
 
@@ -833,8 +880,10 @@ def _source_list_open(order, mem) -> bool:
     source = _source(order, mem)
     if (_world(mem).get('garrison') or {}).get(source) != []:
         return True
-    if order.get('roster_probe') is True and source in (mem.get('roster_read_due') or {}):
-        return True   # docich#3515: a blind launch asks for one roster read
+    if order.get('roster_probe') is True and (
+            source in (mem.get('roster_read_due') or {})
+            or order.get('source_probe') is True):
+        return True   # docich#3515: a blind launch or stale-roster probe reads the list
     return order.get('source_probe') is True and routes.probe_due(mem, source)
 
 
@@ -1191,13 +1240,27 @@ def _redirect_blocked_sources(mem):
     seen = set()
     for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
         step = order.get('step')
-        if (not step or step in seen or step in overrides
-                or status.get(step) != 'pending'):
+        if not step or step in seen or status.get(step) != 'pending':
             continue
         seen.add(step)
         source, target = order.get('source'), order.get('target')
         blocker = (source and target
                    and chart.march_blocker(chapter, source, target, owned))
+        if order.get('purpose') == 'move':
+            general = order.get('general')
+            garrison = _world(mem).get('garrison') or {}
+            if (blocker and overrides.get(step) == blocker
+                    and (not general or general not in (garrison.get(blocker) or ()))):
+                overrides.pop(step, None)
+            continue
+        if blocker and chart.is_boss_castle(target):
+            blocker_names = _known_roster(mem, _world(mem).get('garrison') or {}, blocker)
+            if blocker_names is not None and len(set(blocker_names)) < chart.sender_min(chapter):
+                if overrides.get(step) == blocker:
+                    overrides.pop(step, None)
+                continue
+        if step in overrides:
+            continue
         if blocker:
             overrides[step] = blocker
             _record(mem, 'sortie_source_march_block', chart_step=step,
@@ -1683,6 +1746,9 @@ def _clear_stale_pending_overrides(mem):
 # so the dispatch block can run ``next_order`` and start it. The wait used to
 # be unbounded: g1190 ch1 9-10 sat 600 s / 5,622 observations with two
 # startable move orders pending and zero ``order_start``.
+# docich#5125: the same wait is now measured in every phase so the audit can
+# see starvation in contested months too (g1314 ch10 94-9: ~16 pending orders,
+# zero ``order_start``); only the yield stays boss-phase-only.
 ORDER_DISPATCH_STARVE_TICKS = 60   # observations (~90 s) a pending order may wait undispatched
 
 
@@ -1729,11 +1795,14 @@ def order_dispatch_starved(mem) -> bool:
     The counter starts the first observation a pending order is seen waiting
     and is cleared when nothing is pending, when ``next_order`` finds nothing
     startable (map_step pops the key itself), and when ``order_start``
-    records the dispatch. The record fires once per episode (per ``since``);
-    while starved the caller's repeated foreground work yields every frame.
+    records the dispatch. docich#5125: the wait is measured in every phase —
+    outside the boss phase a starved wait still records
+    ``order_dispatch_starved`` once per episode (per ``since``, flagged
+    ``boss_phase`` = False) so the month audit can separate "pending orders
+    that never reached dispatch" from "no startable order". Only the True
+    return stays boss-phase-only: while starved there the caller's repeated
+    foreground work yields every frame.
     """
-    if not boss_only_phase(mem):
-        return False
     pending = _dispatch_pending(mem)
     if not pending:
         mem.pop('order_dispatch_since', None)
@@ -1744,6 +1813,19 @@ def order_dispatch_starved(mem) -> bool:
         since = mem['order_dispatch_since'] = tick
     wait = tick - int(since)
     if wait < ORDER_DISPATCH_STARVE_TICKS:
+        return False
+    if not boss_only_phase(mem):
+        # docich#5125: a contested month records the same starvation once
+        # per episode but never yields — the survey/refocus/camp-hunt
+        # foreground work keeps its frames.
+        if mem.get('order_dispatch_noted_at') != since:
+            mem['order_dispatch_noted_at'] = since
+            _record(mem, 'order_dispatch_starved',
+                    observed_metric={'wait': wait,
+                                     'pending': [str(s) for s in pending[:6]],
+                                     'boss_phase': False},
+                    reason='通常フェーズで pending 指示が order_start に届かないまま上限を超えたため、'
+                           'dispatch 枯渇を記録する（前景ワークへの譲りはボスフェーズ限定）')
         return False
     if mem.get('order_dispatch_starved_at') != since:
         mem['order_dispatch_starved_at'] = since
@@ -1835,6 +1917,10 @@ def next_order(mem):
                 and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
         if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and (order.get('purpose') == 'move'
+                     or chart.is_boss_castle(order.get('target'))
+                     or order.get('target') not in owned
+                     or order.get('roster_probe') is True)
                 and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
@@ -1857,6 +1943,14 @@ def _follow_general(mem, order, garrison, owned):
     owned = owned & set(chart.castles(mem.get('chapter') or 0))
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
+        base_source = order.get('source')
+        if (general and general != NAME and base_source in owned
+                and general in (_known_roster(mem, garrison, base_source) or ())):
+            overrides = _plan_region(mem).get('source_override') or {}
+            override_src = overrides.get(order['step'])
+            if override_src and general not in (_known_roster(mem, garrison, override_src) or ()):
+                overrides.pop(order['step'], None)
+            return
         where = _boss_companion_source(order, mem)
         if where in owned and where != source:
             _plan_region(mem).setdefault('source_override', {})[order['step']] = where
@@ -1909,8 +2003,18 @@ def _order(mem):
         plan = _plan_region(mem).get('chart_plan') or {}
         if plan.get('source') == 'mechanical':
             chapter = mem.get('chapter') or 0
+            status = _plan_region(mem).get('orders') or {}
+            owned = _owned(mem)
+            plan_steps = {o.get('step') for o in (plan.get('orders') or ())
+                          if isinstance(o, dict)}
             try:
-                if any(_ready(o, mem) for o in chart.orders(chapter)):
+                if any(status.get(o['step']) in (None, 'pending')
+                       and o['step'] not in plan_steps
+                       and (o.get('purpose') == 'move'
+                            or chart.is_boss_castle(o.get('target'))
+                            or o.get('target') not in owned)
+                       and _ready(o, mem)
+                       for o in chart.orders(chapter)):
                     _plan_region(mem)['chart_plan'] = None
             except Exception:
                 pass
@@ -2157,6 +2261,10 @@ def _arrival_castle(mem, owned):
 
 SOURCE_LOCATION_RECHECK_LIMIT = 3
 SORTIE_CANCELLED_OBSERVED_LIMIT = 3
+# docich#5107: observation ticks a presence-cancelled sortie stays suppressed
+# before the retry is allowed again (the retry is what advances the count).
+SORTIE_CANCELLED_RETRY_TICKS = 200
+SORTIE_CANCELLED_RETRY_HOLDS = 200
 SOURCE_DEFENDER_CANCEL_LIMIT = 3
 HERO_BROKEN_SORTIE_CANCEL_LIMIT = 3
 

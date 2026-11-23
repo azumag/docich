@@ -518,6 +518,149 @@ def test_sortie_failure_is_recorded_and_titled(runtime_dir):
     assert len(seen) == 1
 
 
+def test_cancel_after_a_launch_in_the_month_is_not_filed(runtime_dir):
+    # docich#5136 (owner 2026-11-23): 同じ月に発射が成立しているキャンセルは
+    # 再試行が効いた一過性の事象であり、停滞として起票しない。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_cancel_without_any_launch_is_still_filed(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
+                  now=1000)
+    assert audit.load_incidents(runtime_dir)[0]['kind'] == 'sortie_cancelled'
+
+
+def test_failed_order_in_a_month_that_launched_is_not_high(runtime_dir):
+    # docich#5162 (owner 2026-11-23): 同月に発射が成立している単発の失敗は
+    # high で起票せず、台帳に medium として残す（0 発射の月は high のまま）。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_unaccepted'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['sortie_month_launched']
+
+
+def test_failed_order_without_a_launch_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unaccepted_order_with_stale_month_scope_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=2, scope=[9, '1-0'])
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_confirmed_launch_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 6})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_exhausted_battle_retry_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('situation_held', variant='attack_retry_exhausted')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_other_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃元で決定しても城メニューが3回開かない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unknown_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='unexpected order failure')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_failed'
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_egg_drop_only_loss_is_not_high_confidence(runtime_dir):
+    # docich#5165: 卵落とし型しか残っていない敗北は、署名未校正の検出限界として
+    # medium に留める（実際に札を無駄にした証拠ではない）。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['イッテツーン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_plain_card_loss_stays_high_confidence(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['クースカン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
+def test_unclassified_only_card_loss_is_not_high_confidence(runtime_dir):
+    # docich#5158: 選択したが使用告知の署名が未校正で確定できない札だけが残る敗北は、
+    # 検出限界シグナルとして medium に留める。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー'], 'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_unclassified_card_beside_a_plain_card_stays_high(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー', 'クースカン'],
+                                    'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
 def test_sortie_cancel_is_recorded(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -586,6 +729,70 @@ def test_battle_resource_events_are_classified():
         'battle_retreat_preempted_card', card='クースカン',
         metric={'ally_hp': 12, 'enemy_hp': 41}, general='マフィン'))
     assert preempted['resources'] == ['card']
+    # docich#5101: the remaining-card alert keeps firing (the retreat with a
+    # card left is the signal), but the record now says whether the card was
+    # already tried, so triage can separate a failed spend attempt from a card
+    # that was never used.
+    attempted = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン'], 'cards_used': [],
+                'cards_attempted': ['イッテツーン'],
+                'cards_spend_retry': ['イッテツーン']}, general='アニス'))
+    assert attempted['cards_remaining'] == ['イッテツーン']
+    assert attempted['cards_attempted'] == ['イッテツーン']
+    assert attempted['cards_spend_retry'] == ['イッテツーン']
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 55, 'enemy_hp': 63,
+                'cards_selected': ['イッテツーン'], 'cards_used': []},
+        general='アニス'))['resources'] == ['card']
+    # docich#5130 (owner 2026-11-23): 即死帯では札を使わず退却するのが設計。
+    # その退却を「資源を残した無駄」として起票しない。
+    for floor_hp in (1, 2, 4):
+        assert audit._battle_resource_event(_battle_record(
+            'battle_hero_retreat_select', choice='たいきゃく',
+            metric={'ally_hp': floor_hp, 'enemy_hp': 8,
+                    'cards_selected': ['クースカン'], 'cards_used': []},
+            general='リースリング')) is None
+    # 即死帯の外では従来どおり起票する。
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 5, 'enemy_hp': 8,
+                'cards_selected': ['クースカン'], 'cards_used': []},
+        general='リースリング'))['resources'] == ['card']
+    # docich#5165: 卵落とし型の残り札は「消費確定不能」として区別する。
+    # v129 の安全則（敵HP低下では消費を確定しない）は変えない。
+    egg_drop = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert egg_drop['cards_remaining'] == ['イッテツーン']
+    assert egg_drop['cards_unconfirmed_egg_drop'] == ['イッテツーン']
+    plain = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['クースカン'], 'cards_used': []}))
+    assert plain['cards_remaining'] == ['クースカン']
+    assert plain['cards_unconfirmed_egg_drop'] == []
+    event = audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert event['cards_unconfirmed_egg_drop'] == ['イッテツーン']
+    # docich#5117: 実一覧で不在が確認できた札は、残り札として起票しない。
+    assert audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 16, 'enemy_hp': 4,
+                'cards_selected': ['クースカン'], 'cards_used': [],
+                'cards_missing': ['クースカン']}, general='ライム')) is None
+    mixed = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 16, 'enemy_hp': 4,
+                'cards_selected': ['クースカン', 'イッテツーン'],
+                'cards_used': [], 'cards_missing': ['クースカン']}))
+    assert mixed['cards_remaining'] == ['イッテツーン']
+    assert mixed['cards_missing'] == ['クースカン']
     assert audit._battle_resource_event(_battle_record(
         'battle_egg_before_retreat', metric={'egg_uses': 2})) is None
 
@@ -741,6 +948,21 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert '築城可能なまま月一終了' in audit._issue_title(record)
     assert '### 築城' in audit.render(record)
     assert len(seen) == 1
+
+
+def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
+    # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
+    # issue 本文だけで判別できるよう、拒否の skips と対象城を記録に残す。
+    value = _chikujou_state()
+    home = chart.home_castle(10)
+    value['policy']['chikujou_refused'] = {'castles': [home], 'skips': 1}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['chikujou_refused_skips'] == 1
+    assert record['chikujou_refused_castles'] == [home]
 
 
 def test_chikujou_month_end_held_for_unresolved_egg_is_not_high_confidence(runtime_dir):
@@ -1155,6 +1377,28 @@ def test_recall_with_idou_is_not_recorded(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_the_idou_y_route_emits_no_kikan_incident(runtime_dir):
+    """docich#5105: the real menu flow now confirms いどう for every recall
+    (owner 2026-11-19: きかん禁止・いどう→Y), so its camp_recall_cursor
+    records can never produce recall_kikan_selected."""
+    from docich.hanjuku.flows import recall as recall_flow
+    from test_hanjuku_chart_bot import camp_menu
+    mem = {'chapter': 10, 'tick': 100, '_records': [],
+           'recall': {'stage': 'menu', 'steps': 0, 'target': [135, 125],
+                      'general': 'カシュー'}}
+    for selected in (3, 2, 1, 0):
+        assert recall_flow.camp_recall_step(camp_menu(selected), mem, None)
+    assert not any((r.get('observed_metric') or {}).get('choice') == 'きかん'
+                   for r in mem['_records'])
+    value = state(10, '1-1', 0,
+                  flow={'recall': {'stage': 'dest', 'target': [135, 125],
+                                   'general': 'カシュー'}})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [r for r in mem['_records']
+                   if r['decision'] == 'camp_recall_cursor'], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
 def test_corner_stall_is_recorded_and_titled(runtime_dir):
     value = state(10, '1-1', 0)
     value['terminal_reason'] = 'screen_stalled'
@@ -1204,6 +1448,138 @@ def test_retro_corner_records_screen_stall_before_teardown():
         encoding='utf-8')
     assert 'record_corner_stall' in text
     assert "screen_stalled', 'input_stalled'" in text
+
+
+def _menu_state(menu=True):
+    value = state(10, '1-1', 0)
+    value['screen_kind'] = 'battle_menu' if menu else 'battle'
+    value['policy']['battle'] = {
+        'general': 'カシュー', 'step': 'A:1:M1',
+        'ally_hp': 30, 'enemy_hp': 40, 'side': 'attack',
+    }
+    return value
+
+
+def test_battle_menu_closed_without_action_is_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_egg_conserve', 'at': 1001,
+                    'reason': '卵を温存して戻る'}], now=1001,
+                  on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'battle_menu_wasted'
+    assert record['battle_menu']['close_decision'] == 'battle_egg_conserve'
+    assert record['auto_file'] is True
+    assert '戦闘Bメニューを無駄に開閉' in audit._issue_title(record)
+    assert '### 戦闘Bメニュー' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_battle_menu_with_action_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_card_selected', 'at': 1001},
+                   {'decision': 'battle_egg_conserve', 'at': 1001}], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_one_hit_close_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed,
+                  [{'decision': 'battle_one_hit_menu_close', 'at': 1001}], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_menu_close_without_close_decision_is_not_recorded(runtime_dir):
+    before = _menu_state(False)
+    opened = _menu_state(True)
+    audit.observe(runtime_dir, audit.capture(before), opened, [], now=1000)
+    closed = _menu_state(False)
+    audit.observe(runtime_dir, audit.capture(opened), closed, [], now=1001)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_battle_menu_waste_is_cooled_down(runtime_dir):
+    for start in (1000, 1100):
+        before = _menu_state(False)
+        opened = _menu_state(True)
+        audit.observe(runtime_dir, audit.capture(before), opened, [], now=start)
+        closed = _menu_state(False)
+        audit.observe(runtime_dir, audit.capture(opened), closed,
+                      [{'decision': 'battle_egg_conserve', 'at': start + 1}],
+                      now=start + 1)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def _cards_state(*, stock=None, purpose='attack', cards=None):
+    value = state(10, '1-1', 0)
+    value['policy']['card_stock'] = {'ノリウツール': 96} if stock is None else stock
+    value['policy']['plan'] = {'orders': {}, 'chart_plan': {'orders': [{
+        'step': 'A:1:M1', 'purpose': purpose, 'source': 'アルマムーン',
+        'target': 'タタール', 'general': 'カシュー', 'cards': cards or [],
+    }]}}
+    return value
+
+
+def _launch_record(purpose='attack'):
+    return {'decision': 'order_launched', 'chart_step': 'A:1:M1',
+            'general': 'カシュー', 'purpose': purpose, 'target': 'タタール',
+            'reason': '出撃', 'at': 1000}
+
+
+def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
+    value = _cards_state()
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'sortie_without_cards'
+    assert record['sortie_event']['inventory'] == {'ノリウツール': 96}
+    assert record['auto_file'] is True
+    assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
+    assert '### 切り札の非携行' in audit.render(record)
+    assert len(seen) == 1
+
+
+def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):
+    value = _cards_state()
+    value['policy']['rare_card_kit'] = {'A:1:M1': ['ノリウツール']}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_move_without_cards_is_not_recorded(runtime_dir):
+    value = _cards_state(purpose='move')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_launch_record(purpose='move')], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_no_card_stock_is_not_recorded(runtime_dir):
+    value = _cards_state(stock={})
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_sortie_without_cards_is_reported_once(runtime_dir):
+    value = _cards_state()
+    for now in (1000, 1100):
+        audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=now)
+    assert len(audit.load_incidents(runtime_dir)) == 1
 
 
 def test_capture_reads_unmigrated_world_fields():

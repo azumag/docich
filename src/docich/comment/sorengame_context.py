@@ -23,6 +23,18 @@ SOREN91_GAME_STATE_NOTE = (
     "いまの画面のゲームのものではないので、91のスコアとして読み上げないこと。"
 )
 
+#: 配信ネイティブのコーナー view。ケースの内容は state dir の payload から読む。
+MYSTERY_VIEW = "mystery-view"
+MYSTERY_PHASE_LABELS = {
+    "intro": "事件発生",
+    "investigate": "現場調査",
+    "interrogate": "容疑者尋問",
+    "deduction": "推理タイム",
+    "prediction": "犯人予想",
+    "reveal": "答えの開示",
+    "done": "おしまい",
+}
+
 GAME_BLURBS = {
     "sorengame": "ソ連ゲーム(Unity WebGL)。AIが戦略を改善しながらプレイし、ロシア建国・ソ連建国を目指す",
     "robots": "Robots(bsdgames)。ロボットの追跡を避けるターン制パズル(いまは手動操作)",
@@ -100,6 +112,8 @@ class SorenGameContextProvider:
             game_state = SOREN91_GAME_STATE_NOTE
         elif game == "external-video-view":
             game_state = self._flyhome_state_context(canonical)
+        elif game == MYSTERY_VIEW:
+            game_state = self._mystery_state_context(canonical_path.parent)
         elif isinstance(game, str) and game != "sorengame":
             profile = self._game_profile(game, state_dir=canonical_path.parent)
             game_state = (
@@ -113,6 +127,51 @@ class SorenGameContextProvider:
             comment_ops_context=self._ops_context(mode),
             celebration_history_context=self._celebration_history_context(),
         )
+
+    def _mystery_state_context(self, state_dir: Path) -> str:
+        """Bounded summary of the airing mystery case for comment replies.
+
+        The corner asks the audience to vote on a case; a generic game blurb let
+        replies talk past the screen (owner 2026-11-23). Only the published view
+        payload is read, every field is bounded, and a missing or malformed
+        payload falls back to the static blurb instead of guessing.
+        """
+        fallback = game_profile.non_soviet_game_state(
+            MYSTERY_VIEW, GAME_BLURBS.get(MYSTERY_VIEW, ""))
+        try:
+            payload = self._read_json(state_dir / "mystery_view.json")
+        except Exception:
+            return fallback
+        case = payload.get("case") if isinstance(payload, dict) else None
+        if not isinstance(case, dict):
+            return fallback
+
+        def bounded(value, limit: int) -> str:
+            return value.strip()[:limit] if isinstance(value, str) else ""
+
+        phase = bounded(payload.get("phase"), 24)
+        victim = bounded(case.get("victim"), 40)
+        place = bounded(case.get("place"), 40)
+        rows = case.get("suspects") if isinstance(case.get("suspects"), list) else []
+        names = []
+        for row in rows[:5]:
+            if not isinstance(row, dict):
+                continue
+            name, role = bounded(row.get("name"), 24), bounded(row.get("role"), 16)
+            if name:
+                names.append(f"{name}（{role}）" if role else name)
+        if not (victim or place or names):
+            return fallback
+        parts = ["- いまはAI探偵ミステリーのコーナー中です。"]
+        if victim or place:
+            parts.append(f"事件: {victim or '被害者不明'}が{place or '場所未明'}で巻き込まれた事件。")
+        if names:
+            parts.append("容疑者: " + "、".join(names) + "。")
+        label = MYSTERY_PHASE_LABELS.get(phase)
+        if label:
+            parts.append(f"いまの段階: {label}。")
+        parts.append("視聴者はアンケートで尋問先や犯人を投票します。画面に無い設定や真相は創作しないこと。")
+        return "".join(parts)[:600]
 
     def _flyhome_state_context(self, canonical: dict) -> str:
         """Measured facts only: the screen is the streamer's real play, not data we hold."""

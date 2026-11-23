@@ -502,6 +502,29 @@ def _settle_unverified_launches(mem, markers):
     else:
         mem.pop('launch_unverified', None)
 
+def _map_y_route_give_up(mem, recall, chapter, nearby, reason):
+    """docich#5105: a blind いどう→Y view that cannot name its destination.
+
+    The owner policy (2026-11-19: 「きかん禁止・いどう→Y」) never falls back to
+    the ring picker's confirm: reserve a roster read of the capital and back
+    out so the camp can be re-measured.
+    """
+    home = chart.home_castle(chapter)
+    if home and home not in (mem.get('roster_read_due') or {}):
+        mem.setdefault('roster_read_due', {})[home] = (
+            int(mem.get('tick') or 0) + 180)
+    _record(mem, 'camp_recall_goal_unresolved',
+            observed_metric={'camp': list(recall.get('target') or ()),
+                             'origin': recall.get('origin'),
+                             'nearby': nearby},
+            reason=reason)
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    from .recall import _arm_recall_skip as _arm_skip
+    _arm_skip(mem, recall)
+    return [pad('b')]
+
+
 def world_map_step(screen, mem, frame):
     """Read every castle's owner from the Y view, then close it with Y
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
@@ -533,6 +556,8 @@ def world_map_step(screen, mem, frame):
                 return routed
         return _y_jump_step(mem, frame)
     recall = _flow(mem).get('recall')
+    if isinstance(recall, dict):
+        recall.pop('hold_since', None)      # docich#5108: the view is operable again
     if (isinstance(recall, dict) and recall.get('relay')
             and recall.get('stage') == 'menu' and screen.kind == 'world_map'):
         # relay_from_picker re-aimed this camp at the relay cell and sent the B
@@ -595,6 +620,12 @@ def world_map_step(screen, mem, frame):
                                      **({'hero_status': hero_status} if hero_status else {})},
                     reason='帰還先ピッカーの進捗を10回ごとに記録する')
         if recall['picker_observations'] >= RECALL_LIMIT:
+            if recall.get('map_y_route'):
+                # A blind いどう→Y view that stayed unreadable for the whole
+                # budget must not take the ring fallback's blind confirm.
+                return _map_y_route_give_up(
+                    mem, recall, chapter, nearby,
+                    '全体マップの旗が観測上限まで読めないため、首都在城名簿の再読を予約して帰還を見送る')
             if not recall.get('picker_forced') and not _picker_on_enemy(nearby, flags):
                 return _picker_fallback(mem, recall, nearby, cursor,
                                         '帰還先カーソルが有限回で合わないため、今いる城で確定する')
@@ -629,6 +660,27 @@ def world_map_step(screen, mem, frame):
             return [pad('b')]
         goal = recall.get('gather') or _picker_goal(mem, flags, recall)
         goal = _goal_after_failures(mem, flags, recall, goal)
+        if recall.get('map_y_route'):
+            # docich#5105: いどう's field cursor opened this view blind so its
+            # own-castle flags could name the destination. Bind it here and
+            # hand off to the measured Y route — the きかん ring walk below is
+            # never used for this recall.
+            if not flags:
+                return []                    # the view is still fading in
+            if goal:
+                recall['goal'] = goal
+                recall.pop('map_y_route', None)
+                recall['stage'], recall['steps'] = 'y_route', 0
+                _record(mem, 'camp_recall_y_route',
+                        observed_metric={'goal': goal},
+                        reason='全体マップの自軍城旗で帰還先を確定し、いどう→Yジャンプ経路へ委譲する')
+                return _y_route_step(screen, mem, recall)
+            # No reachable own castle even with the island survey: never fall
+            # back to きかん — reserve a roster read of the capital and back
+            # out so the camp can be re-measured (owner 2026-11-19).
+            return _map_y_route_give_up(
+                mem, recall, chapter, nearby,
+                '全体マップでも帰還先の自軍城を決められないため、首都在城名簿の再読を予約して帰還を見送る')
         delegated = _picker_y_route(screen, mem, recall, goal)
         if delegated is not None:
             return delegated
@@ -1368,7 +1420,22 @@ def _start_reanchor_jump(mem, *, owner=None):
     """
     home = 'アルマムーン'
     chapter = mem.get('chapter') or 0
-    if (not mem.get('nav_search') or home not in chart.castles(chapter)
+    # Anchor at the active order's source castle when it is named: the X
+    # list's SELECT to that castle puts the cursor where the sortie's source
+    # list opens.  Home is only the fallback (ch4 53-x: the hardcoded home
+    # reanchor looped while 4-B1 waited for ミヒラギアン).
+    target = home
+    active = _plan_region(mem).get('active')
+    if active:
+        try:
+            from ..strategy.orders import _order_for_step
+            order = _order_for_step(mem, active)
+            source = order.get('source') if isinstance(order, dict) else None
+            if isinstance(source, str) and source in chart.castles(chapter):
+                target = source
+        except Exception:
+            target = home
+    if (not mem.get('nav_search') or target not in chart.castles(chapter)
             or mem.get('castle_jump') or mem.get('y_jump') or mem.get('expect_menu')):
         return None
     skip = mem.get('castle_jump_skip') or {}
@@ -1385,15 +1452,15 @@ def _start_reanchor_jump(mem, *, owner=None):
                  'active_step': _plan_region(mem).get('active'),
                  'stage': monthly.get('stage') if isinstance(monthly, dict) else None,
                  'scope': list(monthly.get('scope') or []) if isinstance(monthly, dict) else None}
-    mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': home,
+    mem['castle_jump'] = {'mode': 'reanchor', 'step': None, 'source': target,
                           'phase': 'menu', 'age': 0, 'total': 0, 'tick': tick,
                           'menu_presses': 1, 'selects': 0, 'scrolls': 0, 'waits': 0,
                           'return_to': return_to}
     mem.pop('select_centered', None)
-    _record(mem, 'cursor_reanchor_open', target=home,
+    _record(mem, 'cursor_reanchor_open', target=target,
             observed_metric={'cursor_before': mem.get('cursor'), 'chapter': chapter,
                              'return_to': return_to},
-            reason='中断元を保存しX→しろ→アルマムーン→SELECTでカーソル基準点を復旧する')
+            reason='中断元を保存しX→しろ→出撃元の城→SELECTでカーソル基準点を復旧する')
     return [pad('x')]
 
 

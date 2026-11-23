@@ -345,5 +345,242 @@ class TestNethackReleasedSettle(NethackReleasedSettleTestBase):
         self.assertEqual(sentinel.calls, [])
 
 
+class TestNethackReleasedFinishSettle(NethackReleasedSettleTestBase):
+    """#2479: the released post-finish owner can retire through its own engine.
+
+    Production 2026-11-19: the NetHack run reached its terminal screen, then
+    the nethack->sorengame restore switch was refused at admission while the
+    canonical plane was parked (``recovery_required``). The recorded
+    ``switch_request_id`` is the restore request -- different from the
+    rotation request -- and no restore receipt was ever written, so the
+    prelaunch engine can never apply and the owner stayed ``failed`` forever.
+    """
+
+    def _setup_released_finished_corner(self, *, state_error_code="recovery_required",
+                                        active_game="nethack", canonical_phase="ready",
+                                        canonical_extra=None, restore_receipt=None,
+                                        restore_receipt_result=None):
+        """Model the 2026-11-19 slot: finished run, refused restore switch."""
+        import shutil
+        shutil.rmtree(self.g.state_dir, ignore_errors=True)
+        mgr, coordinator = self.manager(["sorengame"])
+        rotation_request = str(uuid.uuid4())
+        restore_request = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="nethack",
+            previous_game="sorengame",
+            rotation_request_id=rotation_request,
+            switch_request_id=restore_request,
+            started_at=self.now_value.isoformat(),
+            completed_at=self.now_value.isoformat(),
+            finish_reason="terminal",
+            last_error=("nethack->sorengame switch に失敗しました: "
+                        "canonical stateの復旧が必要です"),
+            last_error_code=state_error_code,
+        )
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        canonical.update(phase=canonical_phase, next_generation=2,
+                         operation=None, request_id=None, deadline_at=None,
+                         active=self._runtime(active_game, 1),
+                         candidate=None, previous=None, retiring=[],
+                         last_result=None)
+        if canonical_extra:
+            canonical.update(canonical_extra)
+        mgr.store.canonical.save(canonical)
+        if restore_receipt is not None:
+            accepted = mgr.store.accept_request(
+                restore_request, "switch", "sorengame")
+            if restore_receipt in {"accepted"}:
+                pass  # accept_request already leaves a non-terminal receipt
+            else:
+                result = restore_receipt_result or {
+                    "request_id": restore_request, "operation": "switch",
+                    "status": restore_receipt,
+                    "from_game": "nethack", "to_game": "sorengame",
+                    "generation": accepted.generation,
+                    "error_code": state_error_code,
+                }
+                mgr.store.finish_request(restore_request, restore_receipt, result)
+                # A terminal restore receipt means the coordinator already
+                # settled the plane: accept_request left the canonical
+                # mid-switch, so restore the clean shape the settle engine
+                # requires (a live receipt keeps the mid-switch plane, and the
+                # engine defers on the non-terminal receipt first anyway).
+                canonical, _missing = mgr.store.canonical.load()
+                canonical.update(phase=canonical_phase, next_generation=2,
+                                 operation=None, request_id=None,
+                                 deadline_at=None,
+                                 active=self._runtime(active_game, 1),
+                                 candidate=None, previous=None, retiring=[],
+                                 last_result=None)
+                if canonical_extra:
+                    canonical.update(canonical_extra)
+                mgr.store.canonical.save(canonical)
+        return mgr, coordinator, rotation_request, restore_request
+
+    def test_settle_terminalizes_the_released_finished_owner(self):
+        # The production shape: refused restore wrote no receipt at all and
+        # the finished nethack runtime is still the canonical leftover.
+        mgr, coordinator, request_id, _restore = self._setup_released_finished_corner()
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), True)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["end_reason"], "released-failure-after-corner-finished")
+        self.assertEqual(state["finish_reason"], "terminal")
+        self.assertEqual(state["completed_at"], self.now_value.isoformat())
+        self.assertIsNone(state["last_error"])
+        self.assertIsNone(state["last_error_code"])
+        self.assertNotIn("switch_status", state)
+        self.assertNotIn("released_settle_pending", state)
+        # The recorded request ids stay as evidence of which requests ended.
+        self.assertEqual(state["rotation_request_id"], request_id)
+        self.assertNotEqual(state["switch_request_id"], request_id)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_settle_accepts_a_restored_canonical_owner(self):
+        # The restore target may already hold the plane (operator or replay
+        # restored sorengame first): the same retirement still applies.
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner(
+            active_game="sorengame")
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), True)
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+
+    def test_settle_accepts_a_terminal_restore_receipt(self):
+        # A restore that reached a terminal receipt instead of a refusal is
+        # the same post-finish shape; the corner still retires.
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner(
+            restore_receipt="rolled_back", state_error_code="rollback_failed")
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), True)
+        self.assertEqual(mgr._read_state()["status"], "interrupted")
+
+    def test_settle_defers_while_the_plane_is_parked(self):
+        # The transient that caused the 2026-11-19 failure must not turn into
+        # a permanent refusal: defer, pin the release record, retry next tick.
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner(
+            canonical_phase="recovery_required")
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
+
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        pin = state.get("released_settle_pending")
+        self.assertIsInstance(pin, dict)
+        self.assertEqual(pin["request_id"], request_id)
+        self.assertEqual(pin["corner_id"], "nethack")
+
+    def test_settle_defers_while_canonical_is_in_flight(self):
+        # A deadline on an otherwise settled plane is the in-flight element
+        # the canonical validation still permits on a ready phase
+        # (operation/request_id/candidate may only live on a mid-switch
+        # phase, which the engine already defers on before this check).
+        from datetime import timedelta
+
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner(
+            canonical_extra={"deadline_at": (self.now_value + timedelta(hours=1)).isoformat()})
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_settle_defers_on_a_live_restore_receipt(self):
+        # A non-terminal restore receipt means the recorded restore can still
+        # land; the owner must not be retired underneath it.
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner(
+            restore_receipt="accepted")
+        self._released_ledger(mgr, request_id)
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
+        self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_settle_defers_on_a_corrupt_restore_receipt(self):
+        # A corrupt receipt is not proof that the restore is absent or terminal.
+        # Keep the released owner pinned until the receipt can be read safely.
+        mgr, _coordinator, request_id, restore_request = self._setup_released_finished_corner()
+        self._released_ledger(mgr, request_id)
+        receipt_path = mgr.store.receipts._path(restore_request)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text("{not-json", encoding="utf-8")
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), None)
+        state = mgr._read_state()
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["switch_request_id"], restore_request)
+        self.assertEqual(state["completed_at"], self.now_value.isoformat())
+        self.assertNotIn("end_reason", state)
+        self.assertEqual(state["released_settle_pending"]["request_id"], request_id)
+        self.assertEqual(state["released_settle_pending"]["corner_id"], "nethack")
+
+    def test_settle_refuses_the_start_failure_shape(self):
+        # switch_request_id == rotation_request_id is a start failure: it
+        # must stay with the prelaunch engine, which fails closed without
+        # its own terminal receipt -- never through the post-finish path.
+        mgr, _coordinator, request_id, restore = self._setup_released_finished_corner()
+        state = mgr._read_state()
+        state["switch_request_id"] = request_id
+        mgr._write_state(state)
+        self._released_ledger(mgr, request_id)
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), False)
+        self.assertEqual(mgr._read_state(), before)
+
+    def test_settle_refuses_an_owner_that_never_finished(self):
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner()
+        state = mgr._read_state()
+        state["completed_at"] = None
+        mgr._write_state(state)
+        self._released_ledger(mgr, request_id)
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), False)
+        self.assertEqual(mgr._read_state(), before)
+
+    def test_settle_refuses_another_released_request(self):
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner()
+        self._released_ledger(mgr, request_id)
+        before = mgr._read_state()
+
+        self.assertIs(
+            mgr.settle_released_failure(str(uuid.uuid4()), corner_id="nethack"), False)
+        self.assertEqual(mgr._read_state(), before)
+
+    def test_settle_refuses_without_a_release_record(self):
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner()
+        self._released_ledger(mgr, request_id, released=False, audit=False)
+        before = mgr._read_state()
+
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), False)
+        self.assertEqual(mgr._read_state(), before)
+
+    def test_settled_finished_owner_accepts_the_next_dispatch(self):
+        # After the retirement the next rotation dispatch passes the owner
+        # gate again; only the injected begin failure stops it.
+        mgr, _coordinator, request_id, _restore = self._setup_released_finished_corner()
+        self._released_ledger(mgr, request_id)
+        self.assertIs(mgr.settle_released_failure(request_id, corner_id="nethack"), True)
+
+        current = ["sorengame"]
+        sentinel = SentinelSwitchCoordinator(current)
+        mgr2, _coordinator2 = self.manager(
+            current, coordinator=sentinel, active_game_reader=lambda: current[0])
+
+        with self.assertRaises(RetroCornerError) as caught:
+            mgr2.run_rotation(str(uuid.uuid4()))
+
+        self.assertNotIn("owner mismatch", str(caught.exception))
+        self.assertIn("sentinel-begin-reached", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2406,7 +2406,8 @@ def _corners_view(g: GlobalConfig, soren_root=None) -> dict[str, Any]:
                              "audio-complete", "session-unavailable",
                              "operator-moved-after-start",
                              "operator-moved-before-restore",
-                             "operator-stopped-before-start"} else None),
+                             "operator-stopped-before-start",
+                             "released-failure-after-corner-finished"} else None),
                 last_error_code=_view_str(raw.get("last_error_code")),
                 game_result=_view_game_result(raw.get("beta_result")),
             )

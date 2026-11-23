@@ -53,6 +53,34 @@ def with_top(pid, picks, *, winner="o1", ended="2026-10-01T00:00:00Z"):
     return row(pid, winner=winner, ended=ended, outcomes=outcomes)
 
 
+def test_a_perfect_record_stays_on_the_hit_rate_board_below_min_rounds():
+    # owner 2026-11-23: 的中率100%の視聴者が最小参加数未満という理由で
+    # ランキングから消えていた。1回でも全的中なら載せる。
+    ledger = lb.new_ledger()
+    assert lb.record(ledger, with_top('p1', {'o1': [predictor('u1', 'perfect')]}), corner='c')
+    combined = lb.boards(ledger)['hit_rate']
+    assert [r['user_name'] for r in combined] == ['Perfect']
+    assert [r['user_name'] for r in lb.ranking(ledger)] == ['Perfect']
+
+    # 1回だけ外した視聴者は従来どおり最小参加数未満では載らない。
+    missed = lb.new_ledger()
+    assert lb.record(missed, with_top('p2', {'o2': [predictor('u2', 'missed', won=0)]}),
+                     corner='c')
+    assert lb.boards(missed)['hit_rate'] == []
+
+
+def test_a_sole_winner_payout_is_derived_when_the_payload_reports_zero():
+    # Twitch は勝者が1名なら winning pool 全額を支払う。settled payload が 0 を
+    # 返していても、その場合は正しい獲得ポイントを記録する（live 2026-11-23）。
+    round_, preds = lb.extract(with_top('p3', {'o1': [predictor('u1', 'solo', used=500, won=0)]}))
+    assert preds[0]['won'] == 500
+
+    # 勝者が複数なら各人の stake が必要なため、報告値をそのまま使う。
+    _, preds2 = lb.extract(with_top('p4', {'o1': [predictor('u1', 'a', won=0),
+                                                 predictor('u2', 'b', won=0)]}))
+    assert [p['won'] for p in preds2] == [0, 0]
+
+
 def test_unresolved_row_is_not_recorded():
     active = row("p1", status="ACTIVE", winner=None,
                  outcomes=[{"id": "o1", "title": "A"}, {"id": "o2", "title": "B"}])
@@ -147,8 +175,9 @@ def test_ranking_orders_by_hit_rate_then_filters_min_rounds():
     assert ranked[0]["hits"] == 3 and ranked[0]["hit_rate"] == 1.0
     assert ranked[1]["hits"] == 2 and ranked[1]["hit_rate"] == pytest.approx(2 / 3)
     assert ranked[0]["net"] == ranked[0]["won"] - ranked[0]["used"]
-    # A viewer with fewer than min_rounds appearances is off the board.
-    assert lb.ranking(ledger, min_rounds=4) == []
+    # A viewer below min_rounds is off the board unless the graded record is
+    # perfect (owner 2026-11-23): bob is 3/3 and stays, alice (2/3) drops.
+    assert [e["user_id"] for e in lb.ranking(ledger, min_rounds=4)] == ["bob"]
     assert lb.ranking(ledger, min_rounds=1, limit=1)[0]["user_id"] == "bob"
 
 
@@ -398,11 +427,30 @@ def test_boards_are_independent_and_deterministically_ordered():
     assert {e["user_id"] for e in graded["hit_rate"]} == {"graded"}
     assert [e["user_id"] for e in graded["plays"]] == ["graded", "casual"]
     # min_rounds must not filter a board that never grades a round.
+    # Neither threshold hides a perfect record; a non-graded board is unaffected.
     strict = lb.boards(ledger, min_rounds=99, min_participations=1)
-    assert strict["hit_rate"] == [] and len(strict["staked"]) == 2
+    assert [e["user_id"] for e in strict["hit_rate"]] == ["graded"]
+    assert len(strict["staked"]) == 2
     assert lb.boards(ledger, min_rounds=1, min_participations=5)["plays"] == []
     with pytest.raises(lb.LeaderboardError):
         lb.boards(ledger, min_participations=0)
+
+
+def test_load_repairs_a_sole_winner_payout_recorded_as_zero(tmp_path):
+    # 早期の settle スナップショットが 0 で固定した勝者1名の配当を、読み込み時に
+    # pool から補正する（live 2026-11-23: users=1, pool=500, won=0）。
+    path = tmp_path / lb.FILE
+    path.write_text(json.dumps({"schema": 2, "rounds": {"p1": {
+        "id": "p1", "title": "t", "status": "RESOLVED", "corner": "hanjuku",
+        "winning_outcome_id": "o1", "ended_at": "2026-10-01T00:00:00Z",
+        "outcomes": [{"id": "o1", "title": "A", "users": 1, "points": 500},
+                     {"id": "o2", "title": "B", "users": 2, "points": 30}],
+        "predictors": [{"user_id": "u1", "user_login": "alice", "user_name": "Alice",
+                        "outcome_id": "o1", "used": 100, "won": 0, "hit": True,
+                        "refunded": 0}],
+        "recorded_at": 7}}}), encoding="utf-8")
+    ledger = lb.load(path)
+    assert ledger["rounds"]["p1"]["predictors"][0]["won"] == 500
 
 
 def test_load_upgrades_a_schema_1_ledger(tmp_path):

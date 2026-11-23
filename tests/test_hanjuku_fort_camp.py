@@ -21,6 +21,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku import orchestrator
 from docich.hanjuku.flows import camp_recheck, house, recall
 from docich.hanjuku.os_layer import phase, readers
+from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.readers import fort_list_open, is_camp_menu, is_fort_menu
 from docich.hanjuku.os_layer.screen import own_camps, parse
@@ -42,6 +43,15 @@ def load(name):
 def screen(name):
     frame = load(name)
     return parse(frame, phase=phase.classify(frame))
+
+
+def status_panel(general):
+    name = tuple((16 + 8 * i, ch) for i, ch in enumerate(general))
+    role = tuple((80 + 8 * i, ch) for i, ch in enumerate('しょうぐん'))
+    hp = tuple((56 + 8 * i, ch) for i, ch in enumerate('82/82'))
+    egg = tuple((16 + 8 * i, ch) for i, ch in enumerate('たまごなし'))
+    return Screen([TextLine(31, name + role), TextLine(47, hp), TextLine(111, egg)],
+                  None, 'しろのなかにいます', kind='text')
 
 
 def memory(**extra):
@@ -118,11 +128,19 @@ def test_a_general_leaves_the_fort_by_sortie_and_reaches_the_destination_picker(
     assert _flow(mem)['recall']['stage'] == 'fort_list'
     assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, frame) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'fort_status' and _flow(mem)['recall']['general'] == 'ヴィーナス'
-    status = screen('g1097-probe-fort-status.png')
+    status = status_panel('ヴィーナス')
     assert p.camp_recall_step(status, mem, frame) == [p.pad('a')]
     # One press per settled panel: a repeated A on the picker would cancel the sortie.
     assert p.camp_recall_step(status, mem, frame) == []
     assert decisions(mem, 'camp_fort_sortie')[-1]['observed_metric']['members'] == ['ヴィーナス', 'エピィ']
+
+
+def test_a_fort_status_for_another_general_does_not_confirm_the_sortie():
+    mem = memory(recall=fort_recall(stage='fort_status', general='ヴィーナス'))
+    assert p.camp_recall_step(status_panel('エピィ'), mem, object()) == []
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'fort_status'
+    assert state.get('fort_status_reads') is None
 
 
 def test_the_named_general_is_the_one_who_leaves():
@@ -271,15 +289,20 @@ def test_a_fort_picker_closed_to_the_map_holds_the_fort_back():
     assert 'recall' not in _flow(mem) and _flow(mem)['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
 
 
-def test_a_tent_picker_closed_to_the_map_holds_the_tent_back():
+def test_a_tent_return_uses_y_route_when_the_field_map_is_visible(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
     mem = memory(recall={'stage': 'dest', 'steps': 0, 'target': [150, 120]})
-    assert p.camp_recall_step(MAP, mem, object()) == []
-    assert _flow(mem)['recall_skip_ticks'] == recall.LOST_CAMP_RETRY_TICKS
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'y_route'
+    assert mem['y_jump']['goal'] == 'アルマムーン'
+    assert 'recall_skip' not in _flow(mem)
 
 
-def test_the_heros_return_never_arms_a_hold_on_every_camp():
+def test_the_heros_return_uses_y_without_arming_a_camp_wide_hold(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
     mem = memory(recall={'stage': 'dest', 'steps': 0, 'hero': True})
-    assert p.camp_recall_step(MAP, mem, object()) == []
+    assert p.camp_recall_step(MAP, mem, object()) == [p.pad('y')]
+    assert mem['y_jump']['goal'] == 'アルマムーン'
     assert 'recall_skip' not in _flow(mem)
 
 

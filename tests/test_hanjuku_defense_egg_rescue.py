@@ -1,0 +1,39 @@
+"""docich#5177: 防衛戦でも危険時は卵の救済メニューを開く（退却はしない）。
+
+owner 指示 2026-11-23: 資源を残して負けるより使い切る。防衛戦には退却行が無いが、
+将軍自身の卵は使えるため、危険時に救済メニューを開く。
+"""
+from docich import hanjuku_policy as p
+
+
+def _state(hp=10):
+    cur = {'ally': 'シェーブル', 'enemy': 'ビシソワーズ', 'ally_hp': hp,
+           'enemy_hp': 9, 'start_ally_hp': 40, 'start_enemy_hp': 40,
+           'side': 'defense', 'planned_cards': [], 'cards_selected': [],
+           'cards_used': [], 'card_soldiers_current': True,
+           'ally_soldiers': 0, 'enemy_soldiers': 0, 'card_evidence_version': 1}
+    mem = {'chapter': 1, 'tick': 100, 'battle': cur,
+           'egg_uses': {'シェーブル': 4}, '_records': []}
+    return mem, cur
+
+
+def test_defense_opens_the_egg_survival_menu_instead_of_fighting_to_zero():
+    mem, cur = _state()
+    actions = p._hero_retreat_open(mem, cur)
+    assert actions, '防衛戦でも救済メニューを開く'
+    assert cur['survival']['opens'] == 1
+    assert any(r['decision'] == 'battle_defense_egg_rescue' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_hero_retreat_open' for r in mem['_records'])
+
+
+def test_defense_without_an_egg_does_not_open_the_survival_menu():
+    mem, cur = _state()
+    mem['egg_uses'] = {'シェーブル': 0}
+    assert p._hero_retreat_open(mem, cur) is None
+
+
+def test_defense_at_low_hp_still_uses_the_egg():
+    # 卵は「消費」ではなく生存手段なので、即死帯でも救済メニューを開く
+    # （既存の _egg_before_retreat と同じ扱い。カードの使用抑制とは別）。
+    mem, cur = _state(hp=3)
+    assert p._hero_retreat_open(mem, cur)

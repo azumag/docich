@@ -298,6 +298,34 @@ def test_provider_reads_its_allowlisted_env_not_os_environ(tmp_path, monkeypatch
     assert 'LLMの動的判断は有効' in text and '止めていて' not in text
 
 
+def test_mystery_corner_context_names_the_case_and_phase(tmp_path):
+    # owner 2026-11-23: ミステリー中のコメント返しが画面と無関係だった。
+    # ケース（被害者・場所・容疑者）と段階を返答コンテキストに含める。
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'mystery-view'}}))
+    (root / 'mystery_view.json').write_text(json.dumps({
+        'phase': 'interrogate',
+        'case': {'victim': '評論家・ペン太', 'place': '山中のペンション',
+                 'suspects': [{'name': 'ゴン太', 'role': '運転手'},
+                              {'name': 'ワトすけ', 'role': '弁護士'}]}}), encoding='utf-8')
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert 'AI探偵ミステリー' in text
+    assert '評論家・ペン太' in text and '山中のペンション' in text
+    assert 'ゴン太（運転手）' in text
+    assert '容疑者尋問' in text
+    assert len(text) <= 600
+
+
+def test_mystery_corner_falls_back_when_the_payload_is_missing(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'mystery-view'}}))
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert isinstance(text, str) and text
+    assert 'AI探偵ミステリー' not in text
+
+
 def test_provider_non_soviet_game_state_comes_from_the_profile_module(tmp_path):
     from docich.comment import game_profile
     root = _input_root(tmp_path)

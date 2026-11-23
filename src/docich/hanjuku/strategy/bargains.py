@@ -297,10 +297,21 @@ def plan_bargains(mem, shop, header, *, listed=None):
     receipt = shop.get('soldier_receipt')
     if (receipt and (not isinstance(receipt, dict) or receipt.get('status') != 'paid')):
         return shop
-    if _necessities_pending(mem, shop) or low_army_first(shop):
+    low_army = low_army_first(shop)
+    if _necessities_pending(mem, shop) or low_army:
         # A month refilling a low army has no spare cash, even if the 5G
         # ころぼぐんだん still fits above the buffer (g825 2-8: 127G, 14 soldiers).
+        #
+        # Remember that the empty ``items`` is "not planned yet", not "nothing
+        # to buy". flows/month.py closes the merchant on an empty list, and it
+        # ran before the egg recovery / recruitment that owns this menu (prod
+        # v1376 93-12 / 94-1: month_merchant_skipped 19 s / 28 s after
+        # month_seen, then no merchant for the rest of the month). The mark is
+        # cleared below as soon as the deferral is over, including the other
+        # early returns: only these two reasons defer the plan.
+        shop['bargain_deferred'] = 'low_army' if low_army else 'necessities'
         return shop
+    shop.pop('bargain_deferred', None)
     budget = bargain_spendable(mem, shop, header)
     rich = shop.get('rich_merchant') is True
     rich_budget = bargain_spendable(mem, shop, header, rich=True) if rich else 0

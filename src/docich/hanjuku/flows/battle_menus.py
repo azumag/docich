@@ -16,6 +16,7 @@ from ..state.regions import plan as _plan_region
 from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
+                               CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
@@ -45,6 +46,14 @@ from ..strategy.economy import _egg_recheck
 
 
 LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
+EMPTY_CARD_LIST_TEXTS = ('きりふだはありません', 'きりふだなし', 'なにももってない')
+CARD_LIST_SAME_FRAME_LIMIT = 12
+
+
+def _is_empty_card_list_text(screen: Screen) -> bool:
+    """True when the battle card box explicitly states no cards are carried."""
+    compact = ''.join((screen.text or '').split())
+    return any(token in compact for token in EMPTY_CARD_LIST_TEXTS)
 
 
 def _okunote_last_resort_gate(cur, last_resort, now=None):
@@ -396,6 +405,19 @@ def _hero_retreat_menu(screen, mem, cur):
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_used': cur.get('cards_used', []),
+                             # docich#5117: the live list proved these are not
+                             # carried, so they are neither spendable nor a
+                             # "left behind" resource.
+                             'cards_missing': list(cur.get('cards_missing') or ()),
+                             # docich#5101: a card the bot already tried (or
+                             # spent its one bounded retry on) is not "left
+                             # unused" — the audit needs the attempt receipts
+                             # to tell a designed post-attempt retreat from a
+                             # card that was never given a chance.
+                             'cards_attempted': list((cur.get('survival') or {})
+                                                     .get('cards_attempted') or []),
+                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
+                             'cards_spend_attempts': dict(cur.get('cards_spend_attempts') or {}),
                              'card_pending': (cur.get('card_flow') or {}).get('card')
                              if isinstance(cur.get('card_flow'), dict) else None,
                              'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
@@ -557,6 +579,9 @@ def _survival_menu(screen, mem, cur):
         # never became readable, and the general fell with the egg unused).
         # A bounded second selection gives that attempt a retry.
         rescue['egg_attempts'] = int(rescue.get('egg_attempts') or 0) + 1
+        # Remember the HP at this attempt: a later HP loss is what licenses the
+        # bounded extra retry (#5143/#5144 owner decision 2026-11-23).
+        rescue['egg_attempt_hp'] = cur.get('ally_hp')
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
             observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
@@ -595,9 +620,10 @@ def _survival_card_list(screen, mem, cur, flow, names):
     # two-reading settle applies: a flickering list is not a re-pick.
     retry = []
     if uncertain and (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)):
-        retried = cur.get('cards_spend_retry') or ()
+        attempts = _card_spend_attempts(cur)
         remaining = set(_retreat_remaining_cards(cur))
-        retry = [c for c in uncertain if c in remaining and c not in retried]
+        retry = [c for c in uncertain if c in remaining
+                 and attempts.get(c, 0) < CARD_SPEND_ATTEMPT_LIMIT]
         if retry:
             uncertain = [c for c in uncertain if c not in retry]
     rescue['cards_uncertain'] = bool(uncertain)
@@ -605,7 +631,8 @@ def _survival_card_list(screen, mem, cur, flow, names):
             and flow['count_readings'] < 2 and flow['list_ticks'] <= 10):
         return []
     if not candidates and retry:
-        cur.setdefault('cards_spend_retry', []).extend(retry)
+        for card in retry:
+            _note_card_spend_attempt(cur, card)
         candidates = retry
     if not candidates:
         if not names and flow['list_ticks'] <= 3:
@@ -993,6 +1020,8 @@ def battle_menu_step(screen: Screen, mem):
             if isinstance(cur, dict) and isinstance(cur.get('independent'), dict):
                 cur['independent']['action'] = 'use_egg'
     _labels = {word for _, _, word in _options(screen)}
+    _plain_attack_box = ('こうげき' in _labels and 'たいきゃく' in _labels
+                         and not _labels.intersection({'おくのて', 'たまごをつかう', 'きりふだ'}))
     _sha = getattr(screen, 'frame_sha256', None)
     _recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
     cur['menu_same'] = int(cur.get('menu_same') or 0) + 1 if _sha in _recent else 0
@@ -1010,7 +1039,7 @@ def battle_menu_step(screen: Screen, mem):
         return [pad('b')]
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
-    if _one_hit_lethal(cur):
+    if _one_hit_lethal(cur) and not _plain_attack_box:
         # A menu that is already open (or opened before the HP fell): close it
         # unused. battle_step opens none while the enemy is one push from death.
         if (cur.get('card_flow') or {}).get('stage') != 'announce':
@@ -1114,7 +1143,25 @@ def battle_menu_step(screen: Screen, mem):
                             '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'))
             return [pad('a')] if move == 'here' else _emit_moves(move)
     if cur.get('survival') or _survival_needed(cur):
-        return _survival_menu(screen, mem, cur)
+        res = _survival_menu(screen, mem, cur)
+        if res is not None or not _plain_attack_box:
+            return res
+    if _plain_attack_box:
+        # 召喚獣戦の状態異常（「ないている!!」「ネバネバ!!」等）で表示される
+        # こうげき / たいきゃく のみの箱は B で閉じられない (g1190 ch6 60-4
+        # ペコリーノ vs キャンドロー)。退却・救済の判定後に残った場合はこうげきで進める。
+        move = _battle_menu_move(screen, mem, 'こうげき')
+        if move == 'here':
+            _record(mem, 'battle_menu_plain_command', **_battle_labels(cur),
+                    observed_metric={'cursor_y': screen.menu_cursor, 'words': sorted(_labels)},
+                    reason='Bで閉じられないこうげき・たいきゃくのみの戦闘メニューのため、こうげきで戦闘を進める')
+            return [pad('a')]
+        if move is not None:
+            return _emit_moves(move)
+        _record(mem, 'battle_menu_plain_command', **_battle_labels(cur),
+                observed_metric={'cursor_y': screen.menu_cursor, 'words': sorted(_labels)},
+                reason='カーソル未読でもこうげき・たいきゃくのみの戦闘メニューのため、既定のこうげきをAで確定する')
+        return [pad('a')]
     # Chart has no card due this frame: independent judgment under the chart,
     # mapped from the original six melee patterns (①③ pass / ⑥ egg; ②④⑤ are
     # chart-directed cards and never chosen blindly here).
@@ -1642,6 +1689,15 @@ def _defense_card_kit_read(screen, mem, cur, flow, names):
         _defense_kit_read_unread(mem, cur, '読取上限までに一致する実一覧を確認できない')
         return [pad('b'), pad('b')]
     if not names:
+        if _is_empty_card_list_text(screen):
+            cur['defense_card_menu'] = {**scope, 'cards': [], 'readings': flow['list_ticks']}
+            cur['defense_egg_kit_read']['read_done'] = True
+            cur['card_flow'] = None
+            _record(mem, 'battle_defense_kit_read', **_battle_labels(cur),
+                    observed_metric={**scope, 'cards': [], 'observations': flow['list_ticks']},
+                    resulting_event='kit_read_no_selection',
+                    reason='防衛戦の実切り札一覧が空表示のため、携行札なしとして戻る')
+            return [pad('b'), pad('b')]
         flow.pop('kit_names', None)
         return []
     cards = list(dict.fromkeys(names))
@@ -1705,20 +1761,25 @@ def card_list_step(screen: Screen, mem):
             # empty OCR list). An unreadable frame is not a missing-card
             # receipt. Explicit absence stays immediate; other readable
             # lists must agree twice, and unreadable lists back out boundedly.
-            absent = any(text in ''.join(screen.text.split()) for text in
-                         ('きりふだはありません', 'きりふだなし'))
+            absent = _is_empty_card_list_text(screen)
             # docich#4977: an unchanged frame is the same observation, not a
             # new one — identical sha256 repeats must not spend the bounded
             # wait that exists to give the list time to become readable.
+            # Bound identical static repeats separately so an unrecognised
+            # text screen cannot freeze forever.
             list_sha = getattr(screen, 'frame_sha256', None)
             if list_sha is None or list_sha != flow.get('list_obs_sha'):
                 flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+                flow['list_same_observations'] = 1
+            else:
+                flow['list_same_observations'] = int(flow.get('list_same_observations', 0)) + 1
             if list_sha is not None:
                 flow['list_obs_sha'] = list_sha
             previous = flow.get('missing_list_names')
             flow['missing_list_names'] = names
             if not absent and (not names or previous != names):
-                if flow['list_observations'] < 4:
+                if (flow['list_observations'] < 4
+                        and int(flow.get('list_same_observations', 0)) < CARD_LIST_SAME_FRAME_LIMIT):
                     return []
                 _record(mem, 'battle_card_list_unclassified', **_battle_labels(cur),
                         card=flow['card'], observed_metric={'listed_cards': names,
@@ -1798,8 +1859,7 @@ def card_list_step(screen: Screen, mem):
         # The visible rows must stay inside the list seen at selection: a
         # scrolled window or a misread into another real card name is not a
         # consumption receipt.
-        absent_text = any(text in ''.join(screen.text.split()) for text in
-                          ('きりふだはありません', 'きりふだなし'))
+        absent_text = _is_empty_card_list_text(screen)
         sha = getattr(screen, 'frame_sha256', None)
         at_select = flow.get('names_at_select')
         card = flow.get('card')
@@ -1862,7 +1922,7 @@ def card_list_step(screen: Screen, mem):
                 flow['announce_retried'] = True
                 flow.update(stage='list', selection_planned=False,
                             announce_ticks=0, cursor_ticks=0, list_observations=0,
-                            list_obs_sha=None, announce_absent_frames=[])
+                            list_same_observations=0, list_obs_sha=None, announce_absent_frames=[])
                 _record(mem, 'battle_card_announce_retry', **_battle_labels(cur),
                         card=flow['card'],
                         expected_metric='実使用告知または一覧からの消失',
@@ -2565,9 +2625,11 @@ def egg_battle_step(screen: Screen, mem):
         # 命中・先手を損なうもうこうげきは選ばない。
         enemy_low_hp = any(r.side == 'enemy' and type(r.hp) is int and 0 < r.hp < 10
                            for r in screen.egg_rows)
+        visible_opts = {w for _, _, w in _options(screen)}
         fierce = (general_reading is not None and 0 < general_reading[0] * 2 <= general_reading[1]
                   and len(enemy_rows) == 1 and not enemy_low_hp
                   and not cards_left
+                  and ('もうこうげき' in visible_opts or 'もうこうげき' in (screen.text or ''))
                   and (empty_egg or 'たまごをつかう' not in screen.text))
         # Owner 2026-11-02 (城防衛で対召喚獣戦、卵もない時はおくのて): a castle
         # defender facing an enemy summon with the egg row dead and no card left

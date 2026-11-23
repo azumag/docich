@@ -40,7 +40,7 @@ import secrets
 #: (texts, alibi shape, clue roles) changed, so a seed now means a different
 #: case than under v1. A corner session records the version it started with
 #: and fails closed instead of silently re-reading the seed under new rules.
-VERSION = 2
+VERSION = 3
 COMMITMENT_PREFIX = "docich-mystery-v1"
 
 #: Poll choice limits (Twitch Helix: 2..5 choices, <=25 chars, title <=60).
@@ -51,9 +51,13 @@ MIN_ROOMS = 3
 
 # --- Fixed content pools. Short bounded Japanese strings only. -------------
 
-VICTIMS = ("城主・ゴロー", "冒険家・ノック", "評論家・ペン太", "歌姫・ウタ子", "商人・ゼニ郎")
-PLACES = ("霧がかった洋館", "灯台のうらの別荘", "古城ホテル", "山中のペンション", "湖上の遊覧船")
-TIMES = ("夜半", "黄昏どき", "明け方", "深夜2時", "夕暮れ")
+VICTIMS = ("城主・ゴロー", "冒険家・ノック", "評論家・ペン太", "歌姫・ウタ子", "商人・ゼニ郎",
+           "画家・パレット", "棋士・フクスケ", "記者・スクープ", "船長・キャプテン", "博士・ハカセ",
+           "料理長・シェフ", "小説家・ペン丸")
+PLACES = ("霧がかった洋館", "灯台のうらの別荘", "古城ホテル", "山中のペンション", "湖上の遊覧船",
+          "港の倉庫", "雪の山小屋", "植物園の温室", "遊園地の休憩所", "劇場の楽屋",
+          "屋敷の地下書庫", "海辺のカフェ")
+TIMES = ("夜半", "黄昏どき", "明け方", "深夜2時", "夕暮れ", "昼下がり", "嵐の夜")
 
 # (name, role) — names stay well under the 25-char choice limit.
 SUSPECT_POOL = (
@@ -67,6 +71,10 @@ SUSPECT_POOL = (
     ("カゲロー", "庭師"),
     ("ワトすけ", "弁護士"),
     ("ニャンコ", "秘書"),
+    ("イヌダ", "猟師"),
+    ("ウサギ", "給仕"),
+    ("トリコ", "歌手"),
+    ("カメ吉", "管理人"),
 )
 
 #: The personal trace each suspect leaves behind. It is the identity marker
@@ -84,6 +92,10 @@ TRACE_BY_ROLE = {
     "庭師": "土のついた軍手の繊維",
     "弁護士": "インクの染みた袖口の繊維",
     "秘書": "細いヒールの跡",
+    "猟師": "火薬の焦げた匂いのする手袋",
+    "給仕": "盆の縁についた銀器の磨き粉",
+    "歌手": "香水の匂いのする羽根飾り",
+    "管理人": "鍵束の擦れた腰の革",
 }
 
 # (id, name) — searchable rooms; ids are stable engine vocabulary.
@@ -95,6 +107,9 @@ ROOM_POOL = (
     ("attic", "屋根裏"),
     ("hall", "応接間"),
     ("library", "書庫"),
+    ("studio", "画室"),
+    ("greenhouse", "温室"),
+    ("deck", "甲板"),
 )
 
 # (name, how the culprit did it, what the scene keeps as proof)
@@ -104,6 +119,8 @@ METHODS = (
     ("仕掛けのある燭台", "燭台の台座に細工をして倒れるように仕掛けた", "台座に巻かれた細い針金と倒れた燭台"),
     ("投げ込まれた古時計の錘", "古時計の錘を窓から投げ入れた", "窓枠の擦り跡と散らばったガラス"),
     ("扉に仕掛けた細工の梁", "扉の上に梁を仕掛けて倒れるようにした", "扉の上框に残った梁の圧痕"),
+    ("外された手すりの留め具", "手すりの留め具を外して足場を崩した", "手すりに残った新しい傷と外れた留め具"),
+    ("締めすぎたガス栓", "ガス栓を閉めすぎて戻らないように細工した", "栓の軸に巻かれた細い糸"),
 )
 
 # (name, why the culprit did it, what survives as proof of the motive)
@@ -118,6 +135,10 @@ MOTIVES = (
      "設計図の写しと売買の覚書"),
     ("焼かれた日記の内容", "{victim}が日記に{culprit}の弱みを書き、それを盾に脅していた",
      "焼け残った日記のページ"),
+    ("横取りされた発明の記録", "{culprit}の発明を{victim}が自分の名で発表し、評価を奪った",
+     "発表前の試作メモと日付の入った写真"),
+    ("取り消された推薦状", "{victim}が{culprit}の推薦状を取り消し、約束の地位を反故にした",
+     "取り消しの書き置きと破れた封筒"),
 )
 
 # --- Clue templates ---------------------------------------------------------

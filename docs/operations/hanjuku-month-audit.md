@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1378）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1381）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1378）
+## ボスフェーズ無戦闘（v1381）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1378）
+## キャンプ帰還の失敗・キャンセル（v1381）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -84,7 +84,7 @@ issue化の既定は `high` のみ。
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 出撃失敗・キャンセル（v1378）
+## 出撃失敗・キャンセル（v1381）
 
 terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
 
@@ -102,8 +102,9 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
   `order_retry`（戦闘再試行）はterminalでないため対象外。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
+- **v1402**: `order_failed` のうち、理由文が明示的に「出撃要求が送信・受理されない」を示すものだけ `sortie_order_unaccepted` と分類する。`month_sorties.scope` が現在の章・月と一致し、同月の確定発射が1件以上ある場合は confidence を `medium` にして台帳へ残し、既定の high-confidence filer では起票しない。scope不明・不一致は `high` のまま。発射後の未確認、戦闘retry上限、出撃元メニュー不成立、未知理由は従来どおり `high`。
 
-## 卵・切り札を残した退却/敗北（v1378）
+## 卵・切り札を残した退却/敗北（v1381）
 
 戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
 残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
@@ -123,7 +124,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
 - 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
 
-## 野営放置（3ヶ月以上連続）（v1378）
+## 野営放置（3ヶ月以上連続）（v1381）
 
 `general_statuses.statuses` で `location=camp` の将軍を月ごとに追跡し、
 同じ将軍が**3ヶ月以上連続**で野営のままなら `camp_abandoned` を1回保存する。
@@ -141,7 +142,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 野営放置: ch<章> <将軍> (<n>ヶ月)`。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 築城可能なのにキャンセル/月一終了（v1378）
+## 築城可能なのにキャンセル/月一終了（v1381）
 
 月一メニューの `month_done` / `month_confirm`、または terminal な
 `chikujou_declined` / `chikujou_leftover` の時点で、**資金・将軍・未試行の
@@ -161,7 +162,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 築城可能なまま月一終了: ch<章> <月>` または
   `築城可能なのにキャンセル: ...`。
 
-## ボスフェーズで月内ボス出撃ゼロ（v1378）
+## ボスフェーズで月内ボス出撃ゼロ（v1381）
 
 月を閉じた時点で `_boss_phase` が成立している（通常城をすべて確保し、ボス城が
 残っている）のに、その月の **ボス向け出撃が0** の場合、
@@ -178,7 +179,34 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] ボスフェーズで月内ボス出撃ゼロ: ch<章> <ボス名>`。
 - 既存の「ボスフェーズでボス戦闘ゼロ（600秒）」とは別シグネチャ。
 
-## 帰還で「きかん」を選択（v1378）
+## 出撃ディスパッチ待ちの計測（v1392）
+
+`order_dispatch_since` は pending 注文が `order_start` に届くまでの待ちを
+観測tickで計測する。`map_step` の dispatch ブロックが注文を確定した時点で
+シードされ、`order_start` 記録・pending 消滅・`next_order` が開始可能な
+注文を見つけられなかった時点で解除される（月の種別によらず動作）。
+
+- ボスフェーズ: 待ちが `ORDER_DISPATCH_STARVE_TICKS`（60観測・約90秒）を
+  超えると `order_dispatch_starved` を1エピソード1回記録し、繰り返し前景
+  ワーク（全体マップ調査・SELECTリフォーカス・新規野営帰還）を1フレーム
+  譲る（#5077）。
+- 通常月・争奪月（v1392〜）: 同じ待ち上限を計測し、超過時に
+  `order_dispatch_starved` を1エピソード1回記録する。記録の
+  `observed_metric.boss_phase` が `false` で、**譲りは発火しない**
+  （前景ワークの挙動は不変）。同一エピソードがフェーズ境界をまたぐ場合は
+  両側の記録が残る。
+- 読み方: 月の `decisions.counts.order_dispatch_starved` が正なら、マップの
+  譲り判定へ届く観測があった上で pending 注文が60観測以上 `order_start`
+  に届かなかったことを意味する。`boss_phase` フラグと月の `kind` /
+  `_boss_phase` 判定で「譲りが発火したボスフェーズの枯渇」と「通常月の
+  枯渇」を読み分ける。記録が無くても健全とは限らない — 戦闘等で譲り判定
+  自体に届かなかった月、pending 注文が無かった月、または全 pending が
+  開始不能で待ちが解除され続けた月では記録は残らない。
+- 目的（#5125）: `order_start=0` の月で「pending 注文が dispatch ブロックに
+  届かなかった」のか「全注文が開始不能で弾かれ続けた」のかを、次回以降の
+  監査レコードで切り分けるための観測点。
+
+## 帰還で「きかん」を選択（v1381）
 
 野営からの帰還は owner 指示（2026-11-19）で **きかんを使わず、全体マップ（Y）で
 自軍城へ直接戻る**。`camp_recall_cursor` の実カーソルが `choice='きかん'` かつ
@@ -191,7 +219,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 帰還で「きかん」を選択: ch<章> <将軍または帰還先>`。
 - 期待する帰還手段（Yジャンプ）を本文に明記する。
 
-## 画面停滞でコーナー停止（v1378）
+## 画面停滞でコーナー停止（v1381）
 
 `screen_stalled` / `input_stalled` でHanjukuコーナーが終了し、スロットが
 ローテーションへ戻る直前に、`corner_stalled` のrecordを1件保存する。
@@ -205,6 +233,44 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   （input_stalledは「入力停滞」）。同じruntime/reason/frameは1回だけ。
 - 記録・issue発行の失敗はteardownを止めず、stderrへ固定コードを出す。
 - 既存の「ボス戦闘ゼロ」「月内出撃ゼロ」などとは別シグネチャ。
+
+## 戦闘Bメニューの無駄な開閉（v1381）
+
+戦闘中に `battle_menu` が開いた後、`卵`・`切り札`・`退却`・`奥の手` を
+一度も実行せずにBで閉じた場合、`battle_menu_wasted` を保存する。
+
+- 監査は `screen_kind='battle_menu'` の観測で開を記録し、次に画面が
+  battle_menu から離れた観測のclose決定で判定する。
+- actionは `battle_egg_*` の実行、`battle_card_selected` 等、
+  `battle_hero_retreat_select` / `battle_retreat_preempted_card`、
+  `battle_okunote_*` の選択、`battle_survival_select` を数える。
+- closeは `battle_egg_conserve`、`battle_survival_unavailable`、
+  `battle_menu_rescue_exhausted/reclose`、`battle_card_remaining_unconfirmed`、
+  `battle_egg_actor_unconfirmed`、`battle_menu_context_recheck`、
+  `battle_command_incomplete`、`battle_card_menu_skipped_confirmed_kit`、
+  `battle_okunote_egg_wait`、`battle_disabled_defense_probe` など。
+- `battle_menu_close`（攻撃コマンドなし）と `battle_one_hit_menu_close`
+  （敵が一撃）は正当なcloseなので対象外。
+- 将軍・step・開閉時刻/秒・HP・close決定/理由・flow/計画/在城/統計・
+  決定を1件32KB以内で保存。同じ章・将軍・stepは900秒cooldown。
+- 題名は `[半熟英雄] 戦闘Bメニューを無駄に開閉: ch<章> <将軍>`。
+
+## 切り札在庫があるのに非携行で出撃（v1381）
+
+フィールド在庫 `card_stock` に正数の切り札があるのに、attack/retake/bossの
+出撃が切り札を1枚も携行せずに成立した場合、`sortie_without_cards` を保存する。
+
+- `order_launched` / `sortie_departed_observed` / `sortie_launch_confirmed` /
+  `sortie_launch_unconfirmed_kept` を対象。
+- move / house / repair / defend / recall は対象外。
+- 携行ありは `rare_card_kit` / `strong_card_kit` / `dropper_card_kit`、
+  recordの `cards` / `card` / `cards_selected` で判定。
+- 在庫は `card_stock` の正数。計画 `chart_plan.orders[].cards` は
+  「計画」であり、実携行の証拠にはしない（計画だけあってkitが無ければissue）。
+- 将軍・step・purpose・出撃元/対象・在庫・計画cards・flow/計画/在城/統計を
+  1件32KB以内で保存。同じ章・step・将軍は900秒cooldown。
+- 題名は `[半熟英雄] 切り札在庫があるのに非携行で出撃: ch<章> <将軍>`。
+- 既存の手動issue #2829 と同じ問題領域だが、自動検知用の別シグネチャ。
 
 ## 保存先
 
@@ -277,7 +343,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1378）
+## botからの自動発行（v1381）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで

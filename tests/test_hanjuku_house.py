@@ -769,6 +769,20 @@ def test_prices_without_dispatch_leaves_garrison_unchanged():
     assert _world(mem).get('garrison') == {'アルマムーン': ['ゼウス', 'どうし']}
 
 
+def test_the_boss_phase_defers_the_house_scan_without_a_wave():
+    # docich#5170 (owner 2026-11-23): ボス戦の段階（全街道城が自軍）では、
+    # ボス波が飛んでいなくても名簿スキャンにフィールドを渡さない。
+    from docich import hanjuku_chart as chart
+    home = chart.home_castle(9)
+    captured = [castle for castle in chart.corridor(9) if castle != home]
+    mem = {'chapter': 9, 'tick': 100, '_records': [], 'captured': captured,
+           'house': {'phase': 'roster_next', 'roster_month': '77-4'},
+           'world': {'garrison': {home: ['ゼウス']}}}
+    assert house.step(Screen([], None, '', kind='text'), mem, None) is None
+    assert 'house' not in mem
+    assert any('deferred_for_boss' in r['decision'] for r in mem['_records'])
+
+
 def test_a_boss_wave_defers_the_house_scan():
     mem = {'chapter': 9, 'tick': 100, '_records': [],
            'house': {'phase': 'roster_next', 'roster_month': '62-7'},

@@ -98,8 +98,9 @@ corners = [
   # 2026-10-15 オーナー承認で有効化し、24時間ローテーションの抽選対象へ入れる
   # （docs/features/doushi-card-corner.md §5）。表示は 15 秒 × 4 ページ、上限は
   # doushi_corner.DEFAULT_DURATION_MINUTES（2分。duration_minutes 未指定時）。
-  # 読み上げ・overlay は出さない（doushi_narration.ANNOUNCEMENT_ENABLED）。
-  { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = true },
+  # 2026-11-23 オーナー承認: 読み上げを出す（doushi_narration.SPEECH_ENABLED）。
+  # overlay の重複カードは出さない（画面は ranking view が表示する）。
+  { id = "doushi-card", adapter = "doushi", game = "doushi-view", enabled = true, audio_enabled = true },
   # ぷよぷよクローン (#698): チャット参加 (!puyo join) つきの読み取り専用ビュー。
   # 2026-10-18 オーナー承認 (Slack ts=1792288826): PR-4 で有効化 (手動予約可能に)。
   # 読み上げも承認済みのため audio_enabled = true。自動抽選 (manual_only 外し) は

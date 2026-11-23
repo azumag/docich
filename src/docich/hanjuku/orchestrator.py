@@ -308,7 +308,12 @@ def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
     transaction or a battle still owns: those keep their own answer budget
     and get no blind key from here either.
     """
-    if (guarded or blocked or actions or kind != 'unknown'
+    # A field event after a battle draws its message over the bare map
+    # ('map'); the owner held it without an input and the A was never sent
+    # (owner 2026-11-22: フィールド出てるのに dialog hold).  Keep the same
+    # unchanged-frame bound as an unreadable scene.
+    if (guarded or blocked or actions
+            or kind not in ('unknown', 'map', 'world_map')
             or phase not in EVENT_TEXT_ADVANCE_PHASES):
         mem.pop('scene_hold_watch', None)
         return None
@@ -333,7 +338,10 @@ def scene_hold_advance(mem, phase, kind, digest, actions, guarded, *,
                          observed_metric={'press': presses + 1,
                                           'frame_sha256': digest},
                          reason='場面の読めない画面を所有者が入力なしに保留し続けているため、同一画像の確認のうえAを1回送って進める')
-    return [pad('a')]
+    # The whole-map view is toggled with Y; A would select a castle and B did
+    # not close it.  A held world-map inspection otherwise keeps the field
+    # plan from ever reaching next_order (owner 2026-11-22 ch4 47-x).
+    return [pad('y')] if kind == 'world_map' else [pad('a')]
 
 
 # docich#4632: a scripted concert/event scene a foreground owner keeps
@@ -549,6 +557,32 @@ def _is_quantity_confirm(kind, text):
             and 'うむッ' in text and 'いかんッ' in text)
 
 
+def _shop_owns_quantity_confirm(mem, kind, screen):
+    """The merchant's quote belongs to flows/shop.py, not to the generic A.
+
+    ``want`` exists only after the shop flow chose one planned row at its real
+    price, so it is the flow's ownership mark for this exact screen. The
+    generic shortcut pressed A without recording the buy, leaving ``want`` and
+    ``items`` intact: the next list asked for the same card again and the
+    holding-limit refusal was misread as a pre-confirmation refusal
+    (prod v1374 93-9: 494G spent, buy 0, refusal 3).
+
+    The mark alone is not enough: it outlived the visit on the B exits, and a
+    later quote with the same wording (g1190 63-5) then belonged to nobody.
+    Only the two kinds shop_step routes to quantity_step's confirmation branch
+    can be the merchant's screen, the quote must actually be visible there,
+    and a finished visit (``merchant_done``) never owns another quote.
+    """
+    shop = mem.get('shop') if isinstance(mem, dict) else None
+    if not isinstance(shop, dict) or not shop.get('want'):
+        return False
+    if shop.get('merchant_done'):
+        return False
+    if kind not in ('shop_quantity', 'shop_quantity_prompt'):
+        return False
+    return shop_flow._quote_prompt_visible(screen)
+
+
 PLAN_STARVE_TICKS = 900   # observations (~15 min) of a plan that cannot rebuild
 
 
@@ -559,9 +593,40 @@ def plan_starved_rearm(mem, phase, kind):
     the plan at its old tick for an hour and order_start at 0 while the
     back-half castles stayed enemy (g1190 2026-11-18 65-10..66-10 — #4584).
     """
-    if kind in ('map', 'map_target', 'world_map') or phase in ('title', 'title_or_intro'):
-        return False
     plan = mem.get('plan') or {}
+    if kind in ('map', 'map_target', 'world_map') and phase == 'field':
+        # A mechanical boss plan is built while battles/menus keep the map
+        # flow away.  When the field map is finally foreground (not an event
+        # dialogue drawn over the map), set its first pending step active so
+        # the ordinary launch flow can start it; the map decision alone does
+        # not always reach next_order (ch4 47-x).
+        chart_plan = plan.get('chart_plan') or {}
+        status = plan.get('orders') or {}
+        if chart_plan.get('source') == 'mechanical' and not plan.get('active') and not mem.get('_adjusted'):
+            from .strategy import orders as order_mod
+            owned = order_mod._owned(mem)
+            for order in chart_plan.get('orders') or ():
+                step = order.get('step')
+                if status.get(step) not in (None, 'pending'):
+                    continue
+                full = order_mod._order_for_step(mem, step) or order
+                if (isinstance(full, dict) and 'source' in full and 'target' in full
+                        and (not order_mod._ready(full, mem)
+                             or order_mod._source(full, mem) not in owned
+                             or not order_mod._source_list_open(full, mem)
+                             or order_mod._retake_reserved(full, mem)
+                             or order_mod._source_spare_missing(full, mem, allow_probe=True))):
+                    continue
+                plan['active'] = step
+                decision_log._record(mem, 'plan_map_activate', screen=kind, phase=phase,
+                                     chart_step=step,
+                                     reason='機械ボス計画の先頭手順をフィールドで active にして出撃へ渡す')
+                return True
+        if phase in ('title', 'title_or_intro'):
+            return False
+        return False
+    if phase in ('title', 'title_or_intro'):
+        return False
     if plan.get('active'):
         return False
     # A plan whose orders all went 'failed' (or completed) is dead the same
@@ -1587,8 +1652,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # (stage='recovering') before A; the shortcut paid unbound, the ritual kept
     # the MONTH_SUB_LIMIT budget, and the sub died as month_sub_abandoned with
     # the payment unconfirmed. Other month subs never show this wording.
+    # v1380: the merchant's own confirmation is equally owned by flows/shop.py,
+    # which alone records buy/last_buy/card_stock; the generic A spent the
+    # money without any of them.
     if (_is_quantity_confirm(kind, screen.text)
-            and not (isinstance(month_sub, dict) and month_sub.get('kind') == 'egg')):
+            and not (isinstance(month_sub, dict) and month_sub.get('kind') == 'egg')
+            and not _shop_owns_quantity_confirm(mem, kind, screen)):
         # The purchase confirmation (「1こで50Gになりまんな! よろしでっか?」)
         # overlays the quantity menu; the quantity step waits on its own
         # overlay and never answers it (g1190 2026-11-18 63-5: the frame was
