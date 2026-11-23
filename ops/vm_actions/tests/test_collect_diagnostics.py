@@ -1861,6 +1861,11 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1419-hero-move-backoff",
                  "hanjuku-chart-v1420-chikujou-reserve-check",
                  "hanjuku-chart-v1424-sortie-measured-kit",
+                 "hanjuku-chart-v1425-zombie-melee",
+                 "hanjuku-chart-v1426-summon-card-hidden-row",
+                 "hanjuku-chart-v1427-attack-route-revalidation",
+                 "hanjuku-chart-v1435-recall-dispatch-unattributed",
+                 "hanjuku-chart-v1436-attack-route-revalidation",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
