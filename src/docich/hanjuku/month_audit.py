@@ -905,6 +905,8 @@ def _sortie_reason_code(decision, record):
         return 'sortie_status_screen'
     if '卵破損' in text:
         return 'sortie_hero_egg'
+    if '出撃要求が送信・受理されない' in text:
+        return 'sortie_order_unaccepted'
     return 'sortie_order_failed'
 
 
@@ -976,13 +978,29 @@ def _build_sortie_incident(runtime, state, after, event, now):
                  'duration_s': 0.0, 'first_tick': mem.get('tick'),
                  'last_tick': mem.get('tick'), 'duration_ticks': None,
                  'observations': 0, 'max_gap_s': 0.0, 'started_clean': True}
+    # docich#5162 (owner 2026-11-23): only the explicit "order was not sent or
+    # accepted" reason is transient when the month has other confirmed launches.
+    # Unknown order failures, confirmed launch failures, and exhausted retries
+    # remain high so an unrelated failure cannot be silently downgraded.
+    month_scope = month_sorties.get('scope') if isinstance(month_sorties, dict) else None
+    same_month_scope = (
+        isinstance(month_scope, (list, tuple))
+        and list(month_scope) == [mem.get('chapter'), mem.get('month')]
+        and mem.get('chapter') is not None and mem.get('month') is not None
+    )
+    confidence, confidence_reasons = 'high', []
+    if (event.get('decision') == 'order_failed'
+            and event.get('reason_code') == 'sortie_order_unaccepted'
+            and same_month_scope and type(confirmed) is int and confirmed > 0):
+        confidence = 'medium'
+        confidence_reasons = ['sortie_month_launched']
     identity = state.get('identity') or {}
     record = {
         'schema': SCHEMA,
         'event': event['kind'],
         'kind': event['kind'],
-        'confidence': 'high',
-        'confidence_reasons': [],
+        'confidence': confidence,
+        'confidence_reasons': confidence_reasons,
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': month,

@@ -536,6 +536,82 @@ def test_cancel_without_any_launch_is_still_filed(runtime_dir):
     assert audit.load_incidents(runtime_dir)[0]['kind'] == 'sortie_cancelled'
 
 
+def test_failed_order_in_a_month_that_launched_is_not_high(runtime_dir):
+    # docich#5162 (owner 2026-11-23): 同月に発射が成立している単発の失敗は
+    # high で起票せず、台帳に medium として残す（0 発射の月は high のまま）。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_unaccepted'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['sortie_month_launched']
+
+
+def test_failed_order_without_a_launch_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unaccepted_order_with_stale_month_scope_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=2, scope=[9, '1-0'])
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_confirmed_launch_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 6})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_exhausted_battle_retry_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('situation_held', variant='attack_retry_exhausted')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_other_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃元で決定しても城メニューが3回開かない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unknown_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='unexpected order failure')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_failed'
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
 def test_sortie_cancel_is_recorded(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
