@@ -275,6 +275,7 @@ def build_theoretical_benchmark(
         "theoretical_pnl_jpy": str(theoretical_pnl),
         "theoretical_return_pct": str(theoretical_return_pct),
         "actual_interval_realized_pnl_jpy": None if actual is None else str(actual),
+        # Deprecated compatibility alias; remove after consumers migrate.
         "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
         "gap_jpy": None if gap is None else str(gap),
         "capture_rate_pct": None if capture is None else str(capture),
