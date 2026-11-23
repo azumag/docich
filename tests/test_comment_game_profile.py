@@ -68,7 +68,6 @@ def test_llm_state_is_omitted_when_the_config_is_unreadable(tmp_path, config):
     assert "ハイブリッド" in text and "いまの状態" not in text
 
 
-@pytest.mark.parametrize("game", ["sorengame", "robots", "nethack", "soren91", "external-video-view", "", "unknown"])
 def _write_doushi_state(state_dir):
     runtime_id = "g4-a1b2c3d4"
     runtime_dir = state_dir / "runtimes" / runtime_id
@@ -114,6 +113,7 @@ def test_doushi_launcher_emits_the_same_profile_as_the_live_worker(tmp_path):
     assert "赤いカード" in profile["game_state"]
 
 
+@pytest.mark.parametrize("game", ["sorengame", "robots", "nethack", "soren91", "external-video-view", "", "unknown"])
 def test_games_without_a_profile_get_none(game):
     assert game_profile.build(game) is None
 
