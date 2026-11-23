@@ -165,6 +165,18 @@ def test_fort_recall_limit_records_bounded_stage_and_screen_evidence(stage, obse
         assert metric['screen_text'] == 'しろのなかにいます'
 
 
+def test_fort_observation_counter_and_screen_text_are_bounded():
+    state = fort_recall(stage='fort_list')
+    state['fort_list_observations'] = recall.RECALL_LIMIT + 1
+    text = '  しろのなかにいます\n' * 20
+    frame = type('Frame', (), {'kind': 'text', 'text': text})()
+    recall._observe_fort_frame(frame, state)
+    assert state['fort_list_observations'] == recall.RECALL_LIMIT + 1
+    assert len(state['fort_last_screen_text']) <= 120
+    assert '\\n' not in state['fort_last_screen_text']
+    assert state['fort_last_screen_text'].startswith('しろのなかにいます')
+
+
 def test_the_named_general_is_the_one_who_leaves():
     mem = memory(recall=fort_recall(stage='fort_list', fort_actor='エピィ'))
     assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('down')]
