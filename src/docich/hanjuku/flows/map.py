@@ -2695,6 +2695,24 @@ def map_step(screen: Screen, mem, frame):
     return _deploy_input(screen, mem, order, result, '出撃元の城へカーソルを移動')
 
 
+def _target_confirm_actions(mem, order):
+    """Confirm the sortie target; chapter 9's オシロガ steps up once first.
+
+    Owner 2026-11-24: the オシロガ sortie still caught the cliff even after
+    the aim was shifted; pressing UP once immediately before the confirming A
+    lands the march on the passable cell above it.
+    """
+    if ((mem.get('chapter') or 0) == 9 and order.get('target') == 'オシロガ'):
+        seen = _flow(mem).setdefault('ch9_oshiroga_confirm', {})
+        if not seen.get(order['step']):
+            seen[order['step']] = True
+            _record(mem, 'ch9_oshiroga_confirm_up', chart_step=order['step'],
+                    target=order['target'],
+                    reason='オシロガの出撃確定直前に↑を1回押して崖を避ける')
+            return [pad('up'), pad('a')]
+    return [pad('a')]
+
+
 def target_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
         return []
@@ -2827,7 +2845,7 @@ def target_step(screen: Screen, mem, frame):
                 **context, target=order['target'],
                 resulting_event='planned_not_yet_sent',
                 reason=f"{context['general']}を{order['target']}へ出撃するAを要求。送信・受理・出発は未確認のまま在城事実を消さない")
-        return [pad('a')]
+        return _target_confirm_actions(mem, order)
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
 
