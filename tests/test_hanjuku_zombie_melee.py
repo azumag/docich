@@ -1,0 +1,116 @@
+"""Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。
+
+The enemy summon panel decides it: one readable enemy monster named ゾンビ is
+met with こうげき and never with our egg, even when the HP comparison would
+have asked for the egg. ゾンビパンチ is 0 damage and its other skill is ケアル
+(self heal), so neither our general nor the run is threatened by the summon;
+the original chart (games/hanjuku-sfc-speedrun/charts/7.md) also says 白兵 for
+ブラウニー and explicitly lets the ゾンビ be summoned.
+"""
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from docich import hanjuku_chart as chart, hanjuku_experience as experience
+from docich import hanjuku_policy as policy
+from docich.hanjuku_pixels import read_png
+from docich.hanjuku_screen import EggRow, parse
+
+FRAME = Path(__file__).parent / 'fixtures/hanjuku/g684-artemis-dark-elf.png'
+
+
+def encounter():
+    screen = parse(read_png(FRAME))
+    assert screen.kind == 'egg_battle_menu'
+    mem = {'chapter': 1, 'egg_uses': {'アルテミス': 4}, 'battle': {
+        'ally': 'アルテミス', 'enemy': 'ブラウニー', 'ally_hp': 49, 'enemy_hp': 33,
+        'start_ally_hp': 49, 'start_enemy_hp': 33, 'side': 'attack',
+        'planned_cards': [], 'cards_used': [], 'card_evidence_version': 1}}
+    return screen, mem
+
+
+def with_zombie(screen, hp=100):
+    screen.egg_rows[1] = EggRow('ゾンビ', hp, 'enemy', 80)
+    return screen
+
+
+def egg_decision(mem):
+    return next(d for d in mem['_records'] if d['decision'] == 'egg_battle')
+
+
+def test_a_zombie_is_answered_by_melee_instead_of_our_egg():
+    screen, mem = encounter()
+    with_zombie(screen)
+    assert policy.egg_battle_step(screen, mem) == [policy.pad('a')]
+    assert mem['egg_action'] == 'attack'
+    assert mem['egg_needed'] is False
+    decision = egg_decision(mem)
+    assert decision['observed_metric']['egg_need']['rule'] == 'zombie_melee'
+    assert decision['strategy_variant'] == 'egg_battle_attack'
+    assert 'ゾンビ' in decision['reason']
+    assert mem['battle']['zombie_melee'] is True
+
+
+def test_zombie_melee_overrides_even_a_huge_monster_hp():
+    # 49 HP vs a 900 HP zombie would have been 'enemy_monster_threat' before.
+    screen, mem = encounter()
+    with_zombie(screen, hp=900)
+    assert policy.egg_battle_step(screen, mem) == [policy.pad('a')]
+    assert mem['egg_action'] == 'attack'
+    assert egg_decision(mem)['observed_metric']['egg_need']['rule'] == 'zombie_melee'
+
+
+def test_learned_egg_wins_do_not_bring_the_egg_back():
+    screen, mem = encounter()
+    with_zombie(screen)
+    key = experience.situation_key('egg_summon', mem)
+    mem['_experience'] = {key: {'use_egg': {'win': 9, 'loss': 0}}}
+    policy.egg_battle_step(screen, mem)
+    assert mem['egg_action'] == 'attack'
+
+
+def test_a_hot_loaded_use_egg_decision_is_reverted_to_melee():
+    screen, mem = encounter()
+    with_zombie(screen)
+    mem.update(egg_battle=True, egg_action='use_egg', egg_needed=True)
+    mem['battle']['independent'] = {'kind': 'egg_summon', 'action': 'use_egg', 'pattern': '⑥'}
+    assert policy.egg_battle_step(screen, mem) == [policy.pad('a')]
+    assert mem['egg_action'] == 'attack'
+    assert mem['battle']['independent']['action'] == 'attack'
+    assert any(d['strategy_variant'] == 'egg_battle_zombie_melee'
+               for d in mem['_records'] if d['decision'] == 'egg_battle')
+
+
+@pytest.mark.parametrize('mutation', ['duplicate_enemy', 'unread_hp', 'other_monster'])
+def test_only_a_measured_single_zombie_uses_the_rule(mutation):
+    screen, mem = encounter()
+    with_zombie(screen)
+    if mutation == 'duplicate_enemy':
+        screen.egg_rows.append(deepcopy(screen.egg_rows[1]))
+    elif mutation == 'unread_hp':
+        screen.egg_rows[1].hp = True
+    else:
+        screen.egg_rows[1] = EggRow('プチデビル', 240, 'enemy', 80)
+    policy.egg_battle_step(screen, mem)
+    assert egg_decision(mem)['observed_metric']['egg_need']['rule'] != 'zombie_melee'
+    assert mem['battle'].get('zombie_melee') is not True
+
+
+def test_zombie_melee_skips_the_okunote_lottery():
+    castle = next(iter(chart.castles(9)))
+    mem = {'chapter': 9}
+    battle = {'side': 'defense', 'castle': castle, 'ally': 'アルテミス',
+              'enemy': 'ヘーゼル', 'egg_battle': True, 'summon_egg_unavailable': True,
+              'card_summon_observed': True, 'okunote_only_observed': True,
+              'summon_enemy_hp': 200, 'ally_hp': 60}
+    assert policy._defender_summon_preempt(mem, battle)['due'] is True
+    battle['zombie_melee'] = True
+    assert policy._defender_summon_preempt(mem, battle) is None
+
+
+def test_narration_names_the_zombie_and_melee():
+    from docich import hanjuku_commentary as commentary
+    record = {'decision': 'egg_battle', 'strategy_variant': 'egg_battle_attack',
+              'observed_metric': {'egg_need': {'rule': 'zombie_melee'}}}
+    assert commentary.compose(record)[1] == '敵の召喚獣はゾンビなので、たまごを使わず白兵で対処します。'
