@@ -1100,7 +1100,25 @@ def _battle_resources(record):
         'card_pending': pending,
         'cards_attempted': sorted(attempted)[:12],
         'cards_spend_retry': sorted(retried)[:12],
+        'cards_unconfirmed_egg_drop': _egg_drop_cards(remaining)[:12],
     }
+
+
+def _egg_drop_cards(cards):
+    """Remaining cards whose consumption this audit cannot confirm (#5165).
+
+    Egg-drop cards act by dropping the enemy's egg. v129 forbids treating an
+    enemy HP drop as a confirmed consumption without a calibrated screen
+    signature, so a remaining egg-drop card is *structurally unconfirmed*
+    rather than evidence that the bot skipped a usable card.
+    """
+    from .. import hanjuku_reference as reference
+    out = []
+    for card in cards:
+        row = reference.CARDS.get(card) if isinstance(card, str) else None
+        if isinstance(row, dict) and (row.get('egg_drop') or 0) > 0:
+            out.append(card)
+    return out
 
 
 # Must match judgment.battle.RETREAT_RESOURCE_FLOOR_HP (a test guards the
@@ -1149,6 +1167,7 @@ def _battle_resource_event(record):
         'cards_selected': resources['cards_selected'],
         'cards_used': resources['cards_used'],
         'cards_remaining': resources['cards_remaining'],
+        'cards_unconfirmed_egg_drop': resources['cards_unconfirmed_egg_drop'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -3524,6 +3543,8 @@ def render(record):
             f"- 卵残数: {battle.get('egg_uses')} / 切り札: 選択 {battle.get('cards_selected')}"
             f" / 使用 {battle.get('cards_used')} / 残り {battle.get('cards_remaining')}"
             f" / pending {battle.get('card_pending')}",
+            *([f"- 残資源（消費確定不能・署名未校正）: {battle.get('cards_unconfirmed_egg_drop')}"]
+              if battle.get('cards_unconfirmed_egg_drop') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]

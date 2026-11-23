@@ -636,6 +636,25 @@ def test_battle_resource_events_are_classified():
         metric={'ally_hp': 5, 'enemy_hp': 8,
                 'cards_selected': ['クースカン'], 'cards_used': []},
         general='リースリング'))['resources'] == ['card']
+    # docich#5165: 卵落とし型の残り札は「消費確定不能」として区別する。
+    # v129 の安全則（敵HP低下では消費を確定しない）は変えない。
+    egg_drop = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert egg_drop['cards_remaining'] == ['イッテツーン']
+    assert egg_drop['cards_unconfirmed_egg_drop'] == ['イッテツーン']
+    plain = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['クースカン'], 'cards_used': []}))
+    assert plain['cards_remaining'] == ['クースカン']
+    assert plain['cards_unconfirmed_egg_drop'] == []
+    event = audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert event['cards_unconfirmed_egg_drop'] == ['イッテツーン']
     # docich#5117: 実一覧で不在が確認できた札は、残り札として起票しない。
     assert audit._battle_resource_event(_battle_record(
         'battle_hero_retreat_select', choice='たいきゃく',
