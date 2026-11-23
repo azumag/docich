@@ -2394,9 +2394,13 @@ def _recall_dispatch_step(screen, mem, state):
         camp_target = state.get('target')
         if isinstance(camp_target, tuple):
             camp_target = list(camp_target)
+        target_cell = state.get('target_cell')
+        if isinstance(target_cell, tuple):
+            target_cell = list(target_cell)
         terminal_metric = {
             'castle': goal,
             'camp': camp_target,
+            'target_cell': target_cell,
             'stage': state.get('stage'),
             'steps': state.get('steps'),
             'status': status,
