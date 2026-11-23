@@ -6,6 +6,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import pytest
 from docich import hanjuku_policy as p
+from docich.hanjuku.flows import deploy as deploy_flow
+from docich.hanjuku.strategy.orders import SORTIE_CANCELLED_OBSERVED_LIMIT
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow, journal as _journal
@@ -438,3 +440,43 @@ def test_resumed_picker_target_misses_use_resume_budget_not_target_cancel_limit(
     assert _plan_region(mem)['active'] is None
     assert not (mem.get('target_cancel') or {}).get('1-A2')
     assert _outcomes(mem) == [None, 'resumed', 'resumed', 'exhausted']
+
+
+
+def test_closed_resumed_picker_does_not_recreate_an_attempt_on_map_return():
+    mem = memory()
+    mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    _reopen_picker(mem)
+    assert _miss_resumed_picker_target(mem) == [p.pad('b')]
+    resume = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert resume['owed'] is True and resume.get('picker_active') is not True
+    assert not _flow(mem).get('sortie_attempt')
+
+    # The B that closed the resumed picker is not a new unsent departure.
+    p.observe_sortie_transition(screen('map'), mem, 'map_target')
+    assert not _flow(mem).get('sortie_attempt')
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
+
+
+def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
+    mem = memory()
+    _flow(mem).pop('sortie_resume', None)
+    order = {'step': '1-A2', 'source': 'アルマムーン', 'target': 'ジョンリギ',
+             'general': 'ゼウス', 'purpose': 'attack'}
+    for count in range(1, SORTIE_CANCELLED_OBSERVED_LIMIT + 1):
+        _plan_region(mem)['orders']['1-A2'] = 'launched_unconfirmed'
+        _plan_region(mem)['active'] = '1-A2'
+        _sorties(mem)['1-A2'] = {
+            'general': 'ゼウス', 'source': 'アルマムーン', 'target': None,
+            'planned_target': 'ジョンリギ', 'purpose': 'attack',
+            'status': 'launched_unconfirmed',
+        }
+        deploy_flow._verify_sortie_source(screen('general_list', ['ゼウス', 'どうし']),
+                                          mem, order)
+        expected = ('failed' if count == SORTIE_CANCELLED_OBSERVED_LIMIT else 'pending')
+        assert _plan_region(mem)['orders']['1-A2'] == expected
+    assert mem['sortie_cancelled_observed_counts']['1-A2'] == SORTIE_CANCELLED_OBSERVED_LIMIT
