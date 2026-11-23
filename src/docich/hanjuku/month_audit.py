@@ -1119,6 +1119,11 @@ def _battle_resources(record):
         'cards_attempted': sorted(attempted)[:12],
         'cards_spend_retry': sorted(retried)[:12],
         'cards_unconfirmed_egg_drop': _egg_drop_cards(remaining)[:12],
+        # docich#5158: selections whose announce receipt never calibrated are
+        # the same structural gap as egg-drop cards — the audit cannot tell a
+        # used card from an unused one.
+        'cards_unclassified': sorted({card for card in (metric.get('cards_unclassified') or ())
+                                      if isinstance(card, str)})[:12],
     }
 
 
@@ -1186,11 +1191,13 @@ def _battle_resource_event(record):
         'cards_used': resources['cards_used'],
         'cards_remaining': resources['cards_remaining'],
         'cards_unconfirmed_egg_drop': resources['cards_unconfirmed_egg_drop'],
-        # docich#5165: every remaining card is an egg-drop card whose use this
-        # audit cannot confirm without a calibrated signature. Such a loss is a
-        # detection-limit signal, not proof the bot wasted a usable card.
+        # docich#5165/#5158: every remaining card is either an egg-drop card or
+        # a selection whose announce signature never calibrated. The audit
+        # cannot confirm the use, so this is a detection-limit signal, not proof
+        # the bot wasted a usable card.
         'cards_unconfirmed_only': bool(resources['cards_remaining'])
-        and sorted(resources['cards_unconfirmed_egg_drop']) == sorted(resources['cards_remaining']),
+        and set(resources['cards_remaining'])
+        <= (set(resources['cards_unconfirmed_egg_drop']) | set(resources['cards_unclassified'])),
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -3576,6 +3583,8 @@ def render(record):
             f" / pending {battle.get('card_pending')}",
             *([f"- 残資源（消費確定不能・署名未校正）: {battle.get('cards_unconfirmed_egg_drop')}"]
               if battle.get('cards_unconfirmed_egg_drop') else []),
+            *([f"- 使用未分類（告知未校正）: {battle.get('cards_unclassified')}"]
+              if battle.get('cards_unclassified') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]
