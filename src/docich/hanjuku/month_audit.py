@@ -137,6 +137,7 @@ SIGNAL_LABELS = {
     'camp_recall_limit': '帰還操作が上限に達する',
     'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
     'camp_unclassified_screen': '未分類画面で帰還を取り消す',
+    'camp_dispatch_unconfirmed': '帰還入力の送信を確認できない',
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
@@ -204,6 +205,7 @@ PRIMARY_LABELS = {
     'camp_recall_limit': '帰還操作が上限に達する',
     'camp_boss_redirect': 'ボス再出撃の帰還が失敗',
     'camp_unclassified_screen': '未分類画面で帰還を取り消す',
+    'camp_dispatch_unconfirmed': '帰還入力の送信を確認できない',
     'camp_arrival_unconfirmed': '帰還到着を確認できない',
     'camp_battle_interrupt': '戦闘で帰還が中断',
     'camp_in_flight': '帰還操作が残っている',
@@ -735,6 +737,14 @@ CAMP_OUTCOME_RANK = {'failed': 0, 'cancelled': 1, 'unconfirmed': 2}
 
 
 def _camp_reason_code(decision, event, reason):
+    # The explicit terminal event is authoritative. The shared Japanese
+    # fallback sentence used to contain "到着" even when no A receipt existed,
+    # so substring matching could label a pre-dispatch failure as an arrival
+    # failure (docich#5248).
+    if event == 'dispatch_unconfirmed':
+        return 'camp_dispatch_unconfirmed'
+    if event == 'arrival_unconfirmed':
+        return 'camp_arrival_unconfirmed'
     text = f"{event or ''} {reason or ''}"
     if 'camp_menu_not_opened' in text or 'メニューが開かない' in text:
         return 'camp_menu_unread'
@@ -746,7 +756,7 @@ def _camp_reason_code(decision, event, reason):
         return 'camp_no_roof'
     if 'unclassified_screen' in text or '未分類' in text:
         return 'camp_unclassified_screen'
-    if 'arrival_unconfirmed' in text or '到着' in text:
+    if 'arrival_unconfirmed' in text:
         return 'camp_arrival_unconfirmed'
     if decision == 'camp_boss_redirect_aborted':
         return 'camp_boss_redirect'
@@ -765,6 +775,10 @@ def _camp_event(record):
         return None
     metric = record.get('observed_metric')
     metric = metric if isinstance(metric, dict) else {}
+    # Cliff escape confirms a field-cursor move, not a camp return. Be
+    # defensive against older callers that still label it as unconfirmed.
+    if decision == 'camp_recall_unconfirmed' and metric.get('escape_move') is True:
+        return None
     if decision in CAMP_TERMINAL:
         kind, outcome = CAMP_TERMINAL[decision]
     else:
@@ -792,6 +806,8 @@ def _camp_event(record):
         'fort_list_observations': _bounded_int(metric.get('fort_list_observations'), 0, 10 ** 6),
         'fort_menu_observations': _bounded_int(metric.get('fort_menu_observations'), 0, 10 ** 6),
         'input_sent': metric.get('input_sent') is True,
+        'picker_closed': metric.get('picker_closed') is True,
+        'escape_move': metric.get('escape_move') is True,
         'interrupted': metric.get('interrupted') is True,
         'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
         'screen_text': _bounded_text(metric.get('screen_text'), 120),
@@ -3774,7 +3790,11 @@ def render(record):
             f"- 将軍: {camp.get('general') or '不明'} / 野営: {camp.get('camp')} / 帰還先: {camp.get('castle') or '不明'}",
             f"- 理由: {camp.get('reason') or '不明'} ({camp.get('reason_code')})",
             f"- stage: {camp.get('stage') or '不明'} / steps: {camp.get('steps')}"
-            f" / input_sent: {bool(camp.get('input_sent'))} / interrupted: {bool(camp.get('interrupted'))}",
+            f" / status: {camp.get('resulting_event') or '不明'}"
+            f" / escape_move: {bool(camp.get('escape_move'))}"
+            f" / input_sent: {bool(camp.get('input_sent'))}"
+            f" / picker_closed: {bool(camp.get('picker_closed'))}"
+            f" / interrupted: {bool(camp.get('interrupted'))}",
             *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
                f" / status {camp.get('fort_status_observations') or 0} / status一致 {camp.get('fort_status_reads') or 0}",
                f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"
@@ -3935,6 +3955,7 @@ def render_comment(record):
     elif record.get('kind') in ('camp_recall_failed', 'camp_recall_cancelled',
                                 'camp_recall_unconfirmed'):
         lines.insert(5, f"- キャンプ: {camp.get('outcome')} / {camp.get('reason_code')}"
+                        f" / status {camp.get('resulting_event') or '不明'}"
                         f" / 将軍 {camp.get('general') or '不明'}")
     elif record.get('kind') == 'boss_phase_no_battle':
         lines.insert(5, f"- ボス: {boss.get('boss_name') or 'ボス'}"
