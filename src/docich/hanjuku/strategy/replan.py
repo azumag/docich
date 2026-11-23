@@ -1482,10 +1482,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
-                    options.append((len(route), donor, route, free, probe))
+                    options.append((len(route), donor, route, free, probe, spares))
             if not options:
                 continue
-            _, donor, route, free, probe = min(options, key=lambda v: (v[0], v[1]))
+            _, donor, route, free, probe, spares = min(options, key=lambda v: (v[0], v[1]))
             leg = (donor, route[1])
             if leg in seen_legs:
                 continue
