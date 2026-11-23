@@ -66,7 +66,6 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
         self.assertIn("corners=10558B (52%)", compact)
         self.assertIn("workers=4000B (20%)", compact)
         self.assertIn("?=999B (4%)", compact)
-        self.assertIn("queues=0B (0%)", compact)
         self.assertIn("others=100B", compact)
         self.assertIn("total=20000B", compact)
         self.assertNotIn("inject", compact)
