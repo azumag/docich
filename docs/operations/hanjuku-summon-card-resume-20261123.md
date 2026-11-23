@@ -35,3 +35,12 @@ Regression coverage is in `tests/test_hanjuku_boss_egg_row_log.py`:
 
 The hot-load marker is `hanjuku-chart-v1412-summon-card-resume`. Production deployment and a new live
 battle observation are still required for runtime acceptance.
+
+
+## Follow-up: the grey egg row may be absent from OCR
+
+Issue #5259 showed the remaining-card case where the own egg row is grey and omitted, and the text contains only the own general's `こうげき` command. When a live own-general HP row, an attack-side battle context, and a confirmed carried card all agree, the summon handler now makes a bounded navigation-only down press to reveal the lower card row.
+
+This does not infer that the egg count is zero, does not confirm a menu row, and does not bypass the card-list visibility or damage/safety gates. If the actor panel is not readable, the fallback is not used.
+
+The hot-load marker is `hanjuku-chart-v1441-summon-card-hidden-row`.

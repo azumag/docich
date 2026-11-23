@@ -13,9 +13,8 @@ from docich.hanjuku.os_layer.screen import Screen
 BOSS = chart.boss_castle(6)
 
 
-def screen(text='たまごをつかうきりふだたいきゃく', kind='egg_battle_menu'):
-    value = Screen([], None, text, kind=kind)
-    return value
+def screen(text='たまごをつかうきりふだたいきゃく', kind='egg_battle_menu', egg_rows=None):
+    return Screen([], None, text, kind=kind, egg_rows=egg_rows or [])
 
 
 def memory(castle=BOSS, general='ヘーゼル', uses=None):
@@ -65,6 +64,52 @@ def test_the_summon_card_row_is_revealed_by_scrolling_down():
     assert acts == [B.pad('down')]
     assert mem['battle']['summon_card_scroll'] == 1
     assert any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
+
+def test_a_carried_card_scrolls_when_the_grey_egg_row_is_omitted():
+    # The game can omit a grey egg row from OCR while the card row remains
+    # below the visible command box. A live own-general panel plus こうげき
+    # is enough to justify navigation, but not enough to select any card.
+    mem = memory()
+    mem['battle']['enemy'] = 'ゾンビ'
+    mem['battle']['planned_cards'] = ['ブラッキー']
+    rows = [
+        SimpleNamespace(name='ヘーゼル', hp=30, side='ally', y=176),
+        SimpleNamespace(name='ゾンビ', hp=30, side='enemy', y=192),
+    ]
+
+    actions = B.egg_battle_step(
+        screen(text='こうげきたいきゃく', egg_rows=rows), mem)
+
+    assert actions == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    scroll = [r for r in mem['_records']
+              if r['decision'] == 'battle_summon_card_scroll'][-1]
+    assert scroll['observed_metric']['egg_row_visible'] is False
+    assert scroll['observed_metric']['own_attack_menu'] is True
+    assert not any(r['decision'] in {
+        'battle_egg_general_attack', 'battle_boss_card_missed'
+    } for r in mem['_records'])
+
+
+def test_hidden_row_fallback_requires_a_boss_and_known_enemy_summon():
+    cases = [
+        (BOSS, '不明'),       # no recognized summon evidence
+        ('セレーネ', 'ゾンビ'),  # a summon, but not a boss-castle battle
+    ]
+    for castle, enemy in cases:
+        mem = memory(castle=castle)
+        mem['battle']['planned_cards'] = ['ブラッキー']
+        rows = [
+            SimpleNamespace(name='ヘーゼル', hp=30, side='ally', y=176),
+            SimpleNamespace(name=enemy, hp=30, side='enemy', y=192),
+        ]
+
+        B.egg_battle_step(screen(text='こうげきたいきゃく', egg_rows=rows), mem)
+
+        assert 'summon_card_scroll' not in mem['battle']
+        assert not any(r['decision'] == 'battle_summon_card_scroll'
+                       for r in mem['_records'])
+
 
 def test_interrupted_opening_card_flow_resumes_the_exact_carried_card(monkeypatch):
     # A chart card was planned in the normal battle menu, but the enemy's
