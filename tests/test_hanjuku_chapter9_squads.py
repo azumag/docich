@@ -96,16 +96,17 @@ def test_a_thin_front_opens_a_new_budget_without_an_empty_reading():
     assert mem[corridor.WAVE]['refill'] == 1
 
 
-def test_the_hero_walks_forward_only_up_to_one_castle_behind_the_front():
-    """Owner 2026-11-12: 主人公は前線の自城一つ前の自城に常駐する.
+def test_the_hero_walks_forward_to_the_front():
+    """Owner 2026-11-24: 9話では取り立ての最前線へ主人公を進める.
 
-    With HOME and FRONT ours, the post is HOME itself, so the hero stays there.
-    A third capture moves the post to FRONT and only then does he step forward.
+    With HOME and FRONT ours, the post is FRONT itself, so the hero in HOME
+    walks forward as soon as the front is held.
     """
     mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: []})
-    assert not [o for o in _orders(mem) if o.get('corridor_hero')]
+    hero = [o for o in _orders(mem) if o.get('corridor_hero')]
+    assert len(hero) == 1 and (hero[0]['source'], hero[0]['target']) == (HOME, FRONT)
     mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: ['リーキ']})
-    mem['captured'] = [FRONT, NEXT]          # NEXT taken: the post becomes FRONT
+    mem['captured'] = [FRONT, NEXT]          # NEXT taken: the front is NEXT
     mem['lost'] = []
     mem['tick'] += 50
     hero = [o for o in _orders(mem) if o.get('corridor_hero')]
