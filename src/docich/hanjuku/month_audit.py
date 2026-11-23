@@ -770,7 +770,7 @@ def _camp_reason_code(decision, event, reason):
 
 
 def _camp_event(record):
-    """One terminal camp-recall failure/cancel/unconfirmed decision, or None."""
+    """One terminal camp-recall or cliff-escape incident, or None."""
     if not isinstance(record, dict):
         return None
     decision = record.get('decision')
