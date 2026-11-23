@@ -787,8 +787,15 @@ def _camp_event(record):
         'castle': castle,
         'stage': _bounded_text(metric.get('stage'), 32),
         'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
+        'fort_status_reads': _bounded_int(metric.get('fort_status_reads'), 0, 10 ** 6),
+        'fort_status_observations': _bounded_int(metric.get('fort_status_observations'), 0, 10 ** 6),
+        'fort_list_observations': _bounded_int(metric.get('fort_list_observations'), 0, 10 ** 6),
+        'fort_menu_observations': _bounded_int(metric.get('fort_menu_observations'), 0, 10 ** 6),
         'input_sent': metric.get('input_sent') is True,
         'interrupted': metric.get('interrupted') is True,
+        'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
+        'screen_text': _bounded_text(metric.get('screen_text'), 120),
+        'observed_general': _bounded_text(metric.get('observed_general'), 48),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
         'screen': _bounded_text(record.get('screen_kind'), 32),
     }
@@ -3769,6 +3776,12 @@ def render(record):
             f"- 理由: {camp.get('reason') or '不明'} ({camp.get('reason_code')})",
             f"- stage: {camp.get('stage') or '不明'} / steps: {camp.get('steps')}"
             f" / input_sent: {bool(camp.get('input_sent'))} / interrupted: {bool(camp.get('interrupted'))}",
+            *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
+               f" / status {camp.get('fort_status_observations') or 0} / status一致 {camp.get('fort_status_reads') or 0}",
+               f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"
+               f" / 文言: {_md(camp.get('screen_text') or 'なし')}"
+               ] if any(camp.get(key) is not None for key in
+                        ('fort_menu_observations', 'fort_list_observations', 'fort_status_observations')) else []),
             '',
         ]
     if boss:
