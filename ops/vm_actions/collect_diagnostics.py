@@ -8107,6 +8107,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1404-defense-egg-rescue",
             "hanjuku-chart-v1405-boss-partial-garrison",
             "hanjuku-chart-v1406-boss-companion-partial-roster",
+            "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
