@@ -8121,6 +8121,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1424-ch9-oshiroga-up",
             "hanjuku-chart-v1425-zombie-melee",
             "hanjuku-chart-v1426-ch9-oshiroga-up",
+            "hanjuku-chart-v1427-sortie-cell-placement",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",

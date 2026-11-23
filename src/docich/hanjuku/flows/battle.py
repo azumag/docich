@@ -38,6 +38,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
+from ..os_layer.navigation import forget_target_placement
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, CAPTURE_READ_DELAY, garrison_lost
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
@@ -1894,6 +1895,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     for key in ('anchor', 'near_goal', 'goal_anchor_lock', 'select_used',
                 'nav_search', 'nav_search_leg', 'nav_last', 'nav_pressed', 'nav_still'):
         mem.pop(key, None)
+    # A battle can also take the destination picker: the marker comes back
+    # wherever the game left it, while the cursor and the Y-jump receipt still
+    # name the pre-battle cell. Keep those and target_step confirms the
+    # restored marker at the old cell, so the sortie goes somewhere offset
+    # from the plan. Forget the placement; the next picker re-finds its cell
+    # with a fresh Y jump.
+    forget_target_placement(mem)
     mem['uncertain'] = True
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
     # A battle result may return straight to the map while the post-month
