@@ -123,3 +123,26 @@ def test_known_insufficient_balance_still_skips_without_waiting():
     assert 'chikujou_affordability_wait' not in shop
     assert not [row for row in mem['_records']
                 if row.get('decision') == 'chikujou_affordability_wait']
+
+def test_malformed_or_negative_gold_waits_instead_of_confirming_a_shortage():
+    """Only a non-negative integer balance is sufficient to close the gate."""
+    for malformed in (-1, True, 1.5, '150'):
+        mem = memory()
+        shop = mem['shop']
+        screen = month(150)
+        screen.header['gold'] = malformed
+
+        assert month_flow._month_chikujou(screen, mem, shop) == []
+        assert shop['chikujou'] == 'check'
+        assert shop['chikujou_affordability_wait'] == 1
+        row = next(row for row in mem['_records']
+                   if row.get('decision') == 'chikujou_affordability_wait')
+        assert row['observed_metric']['gold'] is None
+        assert row['observed_metric']['gold_readable'] is False
+        assert row['observed_metric']['reserve_readable'] is True
+
+        screen.header['gold'] = 150
+        assert month_flow._month_chikujou(screen, mem, shop) == [month_flow.pad('a')]
+        assert shop['chikujou'] == 'opened'
+        assert 'chikujou_affordability_wait' not in shop
+
