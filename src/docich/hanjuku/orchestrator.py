@@ -215,6 +215,36 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     return advance
 
 
+def _chikujou_menu_text_owned(mem, kind, key):
+    """A live castle list/result owns its text; generic event A must not select it."""
+    sub = mem.get('month_sub')
+    if (kind != 'text' or not isinstance(sub, dict)
+            or sub.get('kind') != 'chikujou'):
+        return False
+    text = key[5:] if isinstance(key, str) and key.startswith('text:') else ''
+    return (_is_chikujou_prompt(text)
+            or any(token in text for token in
+                   ('どのしろをぞうちく', 'どのしろをそうたく',
+                    'これいじょうのぞうちく', 'うむッ', 'いかんッ',
+                    'よろしいですかな', 'かかりますが',
+                    'おかねがたりません', 'しょうぐんがおりませなんだ'))
+            or ('じょう' in text and any(token in text for token in
+                                          ('レベル', 'ぞうちく', 'なりました'))))
+
+
+def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
+    """Advance unrelated event narration without consuming a live build wait."""
+    guarded = guarded or _chikujou_menu_text_owned(mem, kind, key)
+    advanced = event_text_advance(mem, phase, kind, key, actions, guarded)
+    if advanced:
+        sub = mem.get('month_sub')
+        if isinstance(sub, dict) and sub.get('kind') == 'chikujou':
+            # The A belongs to unrelated scripted narration, not a failed
+            # castle transition. Give the resumed native list its own wait.
+            sub['build_wait'] = 0
+    return advanced
+
+
 # docich#4632: an unreadable scripted-scene frame (kind 'unknown' in a
 # concert/event/dialogue phase) held by a foreground owner got no input until
 # NO_INPUT_HOLD_MAX, and a fade or animation restarted even that streak: the
@@ -2445,7 +2475,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     text_guarded = event_guarded and not (
         kind == 'text' and phase == 'dialogue' and screen.text
         and not named_hold and not summon_scene and not plan_active)
-    if event_text_advance(mem, phase, kind, concert_key, actions, text_guarded):
+    if event_text_advance_step(mem, phase, kind, concert_key, actions, text_guarded):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
                                         'frame_sha256':digest},

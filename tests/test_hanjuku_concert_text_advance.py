@@ -2,6 +2,7 @@
 from docich.hanjuku.orchestrator import (
     EVENT_TEXT_ADVANCE_MAX,
     event_text_advance,
+    event_text_advance_step,
 )
 
 
@@ -131,3 +132,37 @@ def test_planned_action_on_stable_or_diverging_text_still_resets():
     assert event_text_advance(
         mem, 'event', 'text', 'text:さようなら', pad_action) is False
     assert 'event_text_watch' not in mem
+
+
+
+def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
+    mem = {'month_sub': {'kind': 'chikujou', 'build_wait': 7}}
+    native_texts = (
+        'これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
+        'どのしろをぞうちく',
+        'どのしろをぞうちくなさいますか?',
+        'カラじょうですな5Gかかりますがよろしいですかなうむッ!',
+        'カラじょうのレベルが2',
+        'おかねがたりません',
+        'しょうぐんがおりませなんだ',
+        'カラじょうのレベルが2になりましたぞ',
+        'おかねがたりませんぞ',
+    )
+    down = [{'type': 'pad', 'buttons': ['down'], 'hold_ms': 100}]
+    for text in native_texts:
+        for _ in range(EVENT_TEXT_ADVANCE_MAX + 2):
+            assert event_text_advance_step(
+                mem, 'event', 'text', f'text:{text}', down) is False
+        assert mem['month_sub']['build_wait'] == 7
+        assert 'event_text_watch' not in mem
+
+
+def test_advancing_an_unrelated_event_restarts_the_chikujou_transition_wait():
+    mem = {'month_sub': {'kind': 'chikujou', 'build_wait': 19}}
+    key = 'text:イベント会話の本文'
+    results = [
+        event_text_advance_step(mem, 'event', 'text', key, [])
+        for _ in range(EVENT_TEXT_ADVANCE_MAX)
+    ]
+    assert results[-1] is True
+    assert mem['month_sub']['build_wait'] == 0
