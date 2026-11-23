@@ -1625,6 +1625,19 @@ def _chikujou_menu_unreadable(records, month):
     return False
 
 
+def _chikujou_affordability_unverified(records, month):
+    """A terminal affordability read failure is a named, non-high-confidence hold."""
+    for row in records or ():
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_affordability_unverified':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric')
+        if isinstance(metric, dict) and metric.get('skipped') is True:
+            return True
+    return False
+
+
 def _chikujou_snapshot(after, before, record, records):
     from .strategy import economy
     month = record.get('month') if isinstance(record.get('month'), str) else None
@@ -1719,6 +1732,7 @@ def _chikujou_snapshot(after, before, record, records):
                             if isinstance(refused_castles, list) else []),
         'cost_declined': cost_declined,
         'menu_unreadable': _chikujou_menu_unreadable(records, month),
+        'affordability_unverified': _chikujou_affordability_unverified(records, month),
         'held_for': _chikujou_hold(shop, records, month),
         'buildable': bool(affordable and staffed_candidates and not refusal_covered
                           and not cost_declined),
@@ -1773,6 +1787,8 @@ def _build_chikujou_incident(runtime, state, after, event, now):
     held_for = event.get('held_for') if event.get('outcome') == 'ended' else None
     menu_unreadable = (event.get('menu_unreadable')
                        if event.get('outcome') == 'ended' else None)
+    affordability_unverified = (event.get('affordability_unverified')
+                                if event.get('outcome') == 'ended' else None)
     confidence, confidence_reasons = 'high', []
     if held_for:
         confidence = 'medium'
@@ -1781,6 +1797,11 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         # docich#5097: the row was unreadable, not a reason-less missed build.
         confidence = 'medium'
         confidence_reasons = ['chikujou_menu_unreadable']
+    elif affordability_unverified:
+        # docich#5186: a transient unread balance/reserve is not proof that
+        # optional construction was affordable at the decision point.
+        confidence = 'medium'
+        confidence_reasons = ['chikujou_affordability_unverified']
     signals = [kind, 'chikujou_candidate']
     for name in _signals(context, counts, confirmed, departures, battle_count):
         if name not in signals:
@@ -1804,6 +1825,7 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'confidence_reasons': confidence_reasons,
         'chikujou_held_for': held_for,
         'chikujou_menu_unreadable': menu_unreadable,
+        'chikujou_affordability_unverified': affordability_unverified,
         'chikujou_refused_skips': event.get('refused_skips'),
         'chikujou_refused_castles': list(event.get('refused_castles') or []),
         'chapter': mem.get('chapter'),
@@ -3530,6 +3552,8 @@ def render(record):
                if chikujou.get('held_for') else []),
             *(['- 築城行の読取り: 不可（有限回の再観測後も未読・docich#5079/#5097）']
                if chikujou.get('menu_unreadable') else []),
+            *(['- 築城資金の確認: 未完了（所持金または必要予約を有限回待っても未読・docich#5186）']
+               if chikujou.get('affordability_unverified') else []),
             '',
         ]
     if stay:
@@ -3736,7 +3760,8 @@ def render_comment(record):
         lines.insert(5, f"- 築城: {chikujou.get('outcome')} / gold {chikujou.get('gold')}"
                         f" / reserve {chikujou.get('reserve')}"
                         f" / 候補 {chikujou.get('staffed_candidates')}"
-                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else ''))
+                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else '')
+                        + (' / 資金確認未完了' if chikujou.get('affordability_unverified') else ''))
     elif record.get('kind') == 'camp_abandoned':
         lines.insert(5, f"- 野営: {stay.get('months')}ヶ月 / {stay.get('general')}"
                         f" / first {stay.get('first_tick')}")
