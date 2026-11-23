@@ -1012,38 +1012,9 @@ def generate_corner_script(
         }
     fallback = render_fallback(facts)
 
-    # M2: persist the explanation boundary cursor in the same transaction as
-    # the explanation record.  The cursor advances to the last fill actually
-    # covered by this explanation so the next run resumes after it.  Failure
-    # here is commentary degradation only and never blocks the script.
-    try:
-        from .corner_interval import (
-            get_cursor as _ci_get_cursor,
-            fills_in_interval as _ci_fills_in_interval,
-            _upsert_cursor_exclusive as _ci_upsert,
-            _ensure_cursor_table as _ci_ensure_table,
-        )
-        import sqlite3 as _sqlite3
-
-        _db_path = target / "paper.sqlite3"
-        _cursor_before = _ci_get_cursor(_db_path, "paper")
-        _interval_fills = _ci_fills_in_interval(_db_path, _cursor_before, now=moment)
-        if _interval_fills:
-            _last = _interval_fills[-1]
-            _filled_at = float(str(_last["filled_at"]))
-            _fill_id = str(_last["fill_id"])
-            _ci_ensure_table(_db_path)
-            _conn = _sqlite3.connect(
-                f"file:{str(_db_path.resolve())}?mode=rw", uri=True
-            )
-            try:
-                _conn.row_factory = _sqlite3.Row
-                _ci_upsert(_conn, "paper", _filled_at, _fill_id, moment)
-                _conn.commit()
-            finally:
-                _conn.close()
-    except Exception:
-        pass
+    # Do not advance the explanation cursor here. This function can return a
+    # dry-run/fallback script and has no durable explanation record to commit.
+    # M2 must commit that record and its cursor together at the manager boundary.
 
     if dry_run:
         return {"source": "fallback", "reason": "dry-run", "segments": fallback}
@@ -1330,39 +1301,9 @@ def generate_next_narration(
     except Exception as exc:
         return {"status": "failed", "reason": _safe_reason(exc)}
 
-    # M2: persist the explanation boundary cursor in the same transaction as
-    # the explanation record (mirrors generate_corner_script).  The cursor
-    # advances to the last fill actually covered by this explanation so the
-    # next run resumes after it.  Failure here is commentary degradation only
-    # and never blocks the script.
-    try:
-        from .corner_interval import (
-            get_cursor as _ci_get_cursor,
-            fills_in_interval as _ci_fills_in_interval,
-            _upsert_cursor_exclusive as _ci_upsert,
-            _ensure_cursor_table as _ci_ensure_table,
-        )
-        import sqlite3 as _sqlite3
-
-        _db_path = target / "paper.sqlite3"
-        _cursor_before = _ci_get_cursor(_db_path, "paper")
-        _interval_fills = _ci_fills_in_interval(_db_path, _cursor_before, now=moment)
-        if _interval_fills:
-            _last = _interval_fills[-1]
-            _filled_at = float(str(_last["filled_at"]))
-            _fill_id = str(_last["fill_id"])
-            _ci_ensure_table(_db_path)
-            _conn = _sqlite3.connect(
-                f"file:{str(_db_path.resolve())}?mode=rw", uri=True
-            )
-            try:
-                _conn.row_factory = _sqlite3.Row
-                _ci_upsert(_conn, "paper", _filled_at, _fill_id, moment)
-                _conn.commit()
-            finally:
-                _conn.close()
-    except Exception:
-        pass
+    # A generated segment is not durable until the manager saves it. Advancing
+    # the cursor here could skip fills if the following state write fails.
+    # Keep M2 fail-closed until record and cursor share one transaction.
 
     try:
         prompt = build_next_prompt(facts, covered, target_key)
