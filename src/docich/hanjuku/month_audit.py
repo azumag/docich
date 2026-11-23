@@ -91,6 +91,12 @@ MAX_STATE_BYTES = 128 * 1024
 MAX_TEXT = 160
 MAX_LIST = 20
 COMMENT_COOLDOWN_SECONDS = 3600
+# Correctness failures that recur across attempts should update their rolling
+# issue promptly instead of waiting the generic hour.
+COMMENT_COOLDOWN_BY_KIND = {
+    'battle_loss_with_resources': 900,
+    'battle_retreat_with_resources': 900,
+}
 MAX_ISSUES = 200
 DEFAULT_REPO = 'azumag/docich'
 BT = chr(96)
@@ -3968,7 +3974,9 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
                 age = now - dt.datetime.fromisoformat(latest.replace('Z', '+00:00')).timestamp()
             except (TypeError, ValueError):
                 age = None
-            if age is not None and 0 <= age < COMMENT_COOLDOWN_SECONDS:
+            cooldown = COMMENT_COOLDOWN_BY_KIND.get(record.get('kind'),
+                                                     COMMENT_COOLDOWN_SECONDS)
+            if age is not None and 0 <= age < cooldown:
                 return {**result, 'status': 'cooldown', 'issue': number}
     with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False,
                                      encoding='utf-8') as stream:
