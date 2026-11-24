@@ -59,7 +59,8 @@ PROBE_BUDGET = 6
 PROBE_REARM_TICKS = 3600
 # A recall's destination read is due only this long; an old entry must not
 # keep minting an unbudgeted probe (the read pops only a complete roster).
-ROSTER_READ_DUE_TTL = 900
+# Shared with the chapter-agnostic due scan in ``routes`` (docich#5127).
+ROSTER_READ_DUE_TTL = routes.ROSTER_READ_DUE_TTL
 # A drained castle just read empty is not re-probed this soon: every tracked
 # arrival already re-opens it (``_drained`` yields to a march that may still be
 # on the road), and an untracked one needs time to walk in. Without the gap a
@@ -805,14 +806,12 @@ def _due_probe(mem, routes_by, target, lost, *, roster_only=False):
     (g1163 2026-11-13 16:5x: roster_read_due still held オシロガ at tick
     110273).
     """
-    now = int(mem.get('tick') or 0)
-    raw = mem.get('roster_read_due') or {}
-    for castle, tick in list(raw.items()):
-        if type(tick) is not int or now - tick > ROSTER_READ_DUE_TTL:
-            raw.pop(castle, None)          # stale past due: drop, never re-read
     # The recall stores a due *time*: its destination is read after the
     # recalled general has had time to walk there, not at the request tick.
-    asked = {castle: tick for castle, tick in raw.items() if tick <= now}
+    # ``routes.roster_read_due`` drops the stale entries and keeps the due
+    # ones — the shared chapter-agnostic due scan (docich#5127).
+    raw = mem.get('roster_read_due') or {}
+    asked = routes.roster_read_due(mem)
     due = {source for source, route in routes_by.items()
            if route and len(route) >= 2
            and ((not roster_only and routes.probe_due(mem, source)) or source in asked)}

@@ -1874,6 +1874,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1373-egg-receipt-settle",
                  "hanjuku-chart-v1375-boss-dispatch-guarantee",
                  "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1393-roster-due-consume",
                  "hanjuku-chart-v1397-recall-map-hold",
                  "hanjuku-chart-v1398-egg-retry-on-hp-loss",
                  "hanjuku-chart-v1399-recall-map-hold",
