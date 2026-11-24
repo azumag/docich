@@ -4,4 +4,4 @@ Bump it with every behaviour change so production logs show which policy
 produced a decision (the bot is hot-loaded per observation).
 """
 
-BOT_VERSION = 'hanjuku-chart-v1438-chikujou-castle-width-fold'
+BOT_VERSION = 'hanjuku-chart-v1443-boss-companion-stage-timeout'

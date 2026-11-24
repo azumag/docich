@@ -24,6 +24,8 @@ def test_the_companion_wait_expires_and_records():
     mem['tick'] = 1000 + M.BOSS_COMPANION_WAIT_TICKS
     assert M._boss_companion_wait_expired(mem, order) is True
     assert mem['_records'][-1]['decision'] == 'boss_companion_timeout'
+    assert M._boss_companion_wait_expired(mem, order) is True
+    assert [row['decision'] for row in mem['_records']].count('boss_companion_timeout') == 1
 
 
 def test_a_new_step_starts_its_own_wait():
