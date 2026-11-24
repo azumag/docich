@@ -1871,23 +1871,21 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['policy'] = mem
         return [pad('a')], updated
     if kind == 'password_entry':
-        # Chapter clear door: sweep the word list top-down and enter every
-        # word. 実機プローブで A+down の全語掃引が扉を開くことを確認した
-        # (g1190 2026-11-19, #4564)。単に A/B/START を押しても進まない。
+        # 章クリア後のパスワード画面 (第11話オヴァリウム扉). 実機プローブ
+        # 2026-11-24: 左下は「入力済みの語が増える欄」で、右リストの白行に
+        # 手を合わせて A した語だけが受理される。語順はランごとに変わる。
+        # ディスパッチはこの 1 本だけ (旧 generic 分岐は到達不能だった)。
         if not mem.get('password_entry_seen'):
             mem['password_entry_seen'] = True
             decision_log._record(mem, 'password_entry_seen', screen=kind,
                                  observed_metric={'text': (screen.text or '')[:120]},
-                                 reason='章クリアのパスワード入力を検出。単語リストを掃引して全語入力する')
+                                 reason='章クリアのパスワード入力を検出。画面の入力済み欄と右リストから PHRASE 順に入力する')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
         _journal(mem).pop('_recall_inputs', None)
-        # 2026-11-22: the measured chapter-11 order (list indices
-        # 1,0,5,3,2,4,9,8,6,7) is the only one that opens the door; the old
-        # "A+down over the display order" was rejected as too long.  The flow
-        # moves one list step per observation and presses A on the target.
+        # 1 観測につき 1 入力。進捗は毎回、左下の入力済み欄から計算する。
         actions = password_flow.password_step(screen, mem)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -2309,8 +2307,6 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=prompts_flow.summer_bonus_step(screen,mem)
     elif kind=='summer_bonus_message':
         actions=[pad('a')]
-    elif kind=='password_entry':
-        actions=prompts_flow.password_step(screen,mem)
     elif kind=='yes_no':
         actions=prompts_flow.yes_no_step(screen,mem)
     elif menu_owner_active:
