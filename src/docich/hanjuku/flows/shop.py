@@ -752,6 +752,17 @@ def discharge_step(screen: Screen, mem, frame=None):
                 reason='所持金が0以上になったため解雇を続けずBで画面を出る')
         return [pad('b')]
 
+    # Never dismiss the last known general: the army would be left with one
+    # (or none) and stall (measured local chapter 1/2: the balance turned
+    # positive but the header stayed unreadable, so the bot kept firing).
+    roster = (mem.get('recruit_roster') or {}).get('names')
+    if isinstance(roster, list) and len(set(roster)) <= 1:
+        if not state.get('last_general_held'):
+            state['last_general_held'] = True
+            _record(mem, 'discharge_last_general', observed_metric={
+                'month': key, 'gold': gold, 'roster': list(roster)[:4]},
+                reason='将軍が1人だけになるため、これ以上解雇せずBで画面を出る')
+        return [pad('b')]
     names = discharge_candidates(screen)
     if names is None or screen.selected not in names:
         # An unread name/cursor is not proof that this is the weakest entry.
