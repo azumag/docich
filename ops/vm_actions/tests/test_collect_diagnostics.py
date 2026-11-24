@@ -1647,7 +1647,7 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
         'hanjuku-chart-v1467-status-panel-owner-unreadable-egg',
         'hanjuku-chart-v1469-recall-yjump-goal',
         'hanjuku-chart-v1470-ch4-site-bounded-wait',
-        'hanjuku-chart-v1471-status-panel-owner-unreadable-skip',
+        'hanjuku-chart-v1472-status-panel-owner-unreadable-skip',
     ):
         state['bot_version'] = marker
         assert module._project_corner_state(state)['bot_version'] == marker
@@ -1875,6 +1875,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1373-egg-receipt-settle",
                  "hanjuku-chart-v1375-boss-dispatch-guarantee",
                  "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1393-roster-due-consume",
                  "hanjuku-chart-v1397-recall-map-hold",
                  "hanjuku-chart-v1398-egg-retry-on-hp-loss",
                  "hanjuku-chart-v1399-recall-map-hold",
