@@ -51,6 +51,22 @@ def test_dynamic_moves_toward_a_visible_phrase_word():
     assert password.password_step(screen, mem) == [password.pad('up')]
 
 
+def test_dynamic_scroll_progress_does_not_look_stuck_when_rows_change():
+    from docich.hanjuku.flows import password
+    mem = {}
+    views = [
+        [(23, 'かんじゅく'), (39, 'せいめいたいの'), (55, 'いだいなる'),
+         (71, 'はは'), (87, 'エッグママの'), (103, 'きゅうでん'), (119, 'われを')],
+        [(23, 'せいめいたいの'), (39, 'いだいなる'), (55, 'はは'),
+         (71, 'エッグママの'), (87, 'きゅうでん'), (103, 'われを'), (119, 'みちびけ')],
+        [(23, 'いだいなる'), (39, 'はは'), (55, 'エッグママの'),
+         (71, 'きゅうでん'), (87, 'われを'), (103, 'みちびけ'), (119, 'オヴァリウムよ')],
+    ]
+    for rows in views:
+        assert password.password_step(_screen(rows, 23), mem) == [password.pad('down')]
+        assert mem['password_entry']['dyn_search']['stuck'] == 0
+
+
 def test_dynamic_finishes_a_partial_attempt_in_phrase_order():
     from docich.hanjuku.flows import password
     mem = {}
