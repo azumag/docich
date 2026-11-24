@@ -498,6 +498,25 @@ def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
     assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
 
 
+def test_camp_group_screen_preserves_and_renders_screen_evidence(runtime_dir):
+    value = state(10, '17-4', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_group_screen', event='unclassified_screen_closed',
+                      reason='未分類画面を有界待機後に閉じた',
+                      metric={'camp': [131, 113], 'stage': 'menu',
+                              'screen_kind': 'text', 'text': 'せめこまれました'})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['camp_event']
+    assert event['kind'] == 'camp_recall_cancelled'
+    assert event['screen'] == 'text'
+    assert event['screen_text'] == 'せめこまれました'
+    rendered = audit.render(record)
+    assert '最終画面: text' in rendered
+    assert 'せめこまれました' in rendered
+
+
 def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -1034,6 +1053,30 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert '築城可能なまま月一終了' in audit._issue_title(record)
     assert '### 築城' in audit.render(record)
     assert len(seen) == 1
+
+
+def test_chikujou_month_end_renders_last_held_visible_rows(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_held', 'month': '1-1', 'at': 999,
+                    'deviation_reason': 'castle_scroll_no_progress',
+                    'observed_metric': {'visible': ['アトランチス', 'ファルゲ',
+                                                    'リグア', 'アルマムーン'],
+                                        'scrolls': 9, 'stalled': 3},
+                    'reason': '築城一覧の移動が効かないためBで戻る'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    diagnostic = record['chikujou_event']['terminal_diagnostic']
+    assert diagnostic['deviation_reason'] == 'castle_scroll_no_progress'
+    assert diagnostic['visible'] == ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン']
+    assert diagnostic['scrolls'] == 9
+    assert diagnostic['stalled'] == 3
+    rendered = audit.render(record)
+    assert '最終保留理由: castle_scroll_no_progress' in rendered
+    assert 'ファルゲ' in rendered
+    assert 'scrolls: 9 / stalled: 3' in rendered
 
 
 def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
