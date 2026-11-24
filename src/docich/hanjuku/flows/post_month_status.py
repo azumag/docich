@@ -36,6 +36,7 @@ MAIN_MENU_BLIND_UPS = 6
 MAX_SCAN = receipts.MAX_GENERALS
 MENU_RETRIES = 4
 STATUS_RETRIES = 12
+STATUS_OPEN_GRACE = 4  # roster frames (~5s) to wait for an A-opened panel before skipping that general
 MARKER_RETRIES = 4  # bounded roster frames before status A; avoids transient sprite misses
 HOUSE_READ_FRESH_TICKS = 300  # a same-month house status read newer than this needs no re-open
 LOCATE_RETRIES = 2  # retry the named SELECT -> actual castle status, never infer a castle
@@ -481,6 +482,9 @@ def arm(mem):
                   else 'await_map' if scan else 'process'),
         'statuses': statuses,
         'dirty': sorted(stale), 'names': [] if (scan or manifest_due) else list(statuses),
+        # A fresh walk starts with nothing skipped; after a manifest the scan
+        # clears both ledgers through _reset_for_scan.
+        'skipped': [], 'walked': [],
         'tasks': [] if scan else tasks,
         'manifest': ({'castle': hero_castle, 'name': NAME,
                       'scope': list(scope), 'waiting': carry,
@@ -548,6 +552,12 @@ def _stage(state, name, **fields):
 
 def _open_status(screen, state, frame):
     state['selected'] = screen.selected
+    # Every attempt (read or later skipped) belongs to the walk order; the
+    # roster end proof compares against walked[0], not names[0], once a
+    # general has been skipped.
+    walked = state.setdefault('walked', [])
+    if screen.selected not in walked:
+        walked.append(screen.selected)
     proof = status_return.capture(screen, frame)
     if proof:
         state['status_return'] = proof
@@ -555,6 +565,54 @@ def _open_status(screen, state, frame):
         state.pop('status_return', None)
     _stage(state, 'status')
     return [pad('a')]
+
+
+def _skip_status(mem, state, *, reason, visible=None, close=True):
+    """Leave one unverifiable status page and keep the monthly walk going.
+
+    A single readable-but-foreign name, or one page that stayed unreadable for
+    STATUS_RETRIES, used to set ``stage='blocked'``; the next observation then
+    called ``_finish`` and failed the whole month (``status_unreadable``),
+    throwing away every already-read general.  Record the skip, press B once
+    and let ``roster_next`` step to the next row.  The ``skipped`` ledger keeps
+    the walk from retrying the same general and keeps ``_complete_scan`` from
+    publishing a membership proof or evicting anyone this walk did not read.
+    """
+    target = state.get('selected')
+    if isinstance(target, str) and target:
+        skipped = state.setdefault('skipped', [])
+        if target not in skipped:
+            skipped.append(target)
+        walked = state.setdefault('walked', [])
+        if target not in walked:
+            walked.append(target)
+    state.pop('failure', None)
+    _log(mem, 'post_month_status_unverified', general=target,
+         observed_metric={'visible_general': visible,
+                          'phase_reads': state.get('phase_reads'),
+                          'skipped': True, 'reason': reason},
+         reason='確認できない将軍のステータス画面だけを飛ばし、月次確認の残りを続行する')
+    if not close:
+        # The panel is already gone (the orphan guard closed a foreign page
+        # before this flow ran, or the A never opened one) and the roster is
+        # visible: step to the next row instead of pressing B on the roster.
+        _stage(state, 'roster')
+        state['list_moves'] = int(state.get('list_moves') or 0) + 1
+        return [pad('down')]
+    _stage(state, 'roster_next')
+    return [pad('b')]
+
+
+def _is_status_panel(screen):
+    """The measured status-page text, used only to bound an unreadable read.
+
+    A real panel whose name/egg rows are temporarily unreadable is retried
+    STATUS_RETRIES times and then skipped like a mismatch.  Any other text
+    frame is not evidence that a status page exists at all, so the flow keeps
+    its older fail-fast release for it.
+    """
+    from .battle_menus import _is_general_status_panel_text
+    return _is_general_status_panel_text(screen.text or '')
 
 
 def _location(screen):
@@ -733,7 +791,8 @@ def _reset_for_scan(state):
     state['complete'] = False
     for key in ('top_confirmed', 'top_seeks', 'list_moves', 'highlight',
                 'selected', 'marker_reads', 'markers', 'end_stall',
-                'end_stall_selected', 'stray_backouts', 'manifest_scan'):
+                'end_stall_selected', 'stray_backouts', 'manifest_scan',
+                'skipped', 'walked'):
         state.pop(key, None)
     state['steps'] = 0
     state['phase_reads'] = 0
@@ -1125,6 +1184,21 @@ def _complete_scan_blocked(state):
     return None
 
 
+def _skipped_names(state):
+    """Generals whose status page could not be verified in this walk.
+
+    A skipped general is *not* a read status and must never enter ``names``:
+    the names list is the membership proof that can evict absent generals.
+    Keep the skip order (the roster walk itself is the ordering) and accept
+    only non-empty strings so a corrupt persisted list cannot grow the walk.
+    """
+    skipped = state.get('skipped')
+    if not isinstance(skipped, list):
+        return []
+    return [name for name in dict.fromkeys(skipped)
+            if isinstance(name, str) and name]
+
+
 def _roster_end_assumable(mem, state):
     """The walk listed the game's whole roster, only its end pixels failed.
 
@@ -1146,9 +1220,10 @@ def _roster_end_assumable(mem, state):
     ceiling gives -- continue into the tasks, still with ``complete`` False.
     """
     names = list(state.get('names') or ())
-    if not names or not state.get('top_confirmed'):
+    skipped = _skipped_names(state)
+    if (not names and not skipped) or not state.get('top_confirmed'):
         return False
-    if len(names) >= MAX_SCAN:
+    if len(names) + len(skipped) >= MAX_SCAN:
         return True
     statuses = state.get('statuses')
     if (not isinstance(statuses, dict)
@@ -1160,7 +1235,7 @@ def _roster_end_assumable(mem, state):
     if not isinstance(country, dict):
         return False
     count = receipts.country_count(mem, 'generals')
-    return (type(count) is int and count == len(names)
+    return (type(count) is int and count == len(names) + len(skipped)
             and country.get('scope') == list(state.get('scope') or []))
 
 
@@ -1181,7 +1256,9 @@ def _recorded_castle(mem, name):
 
 
 def _complete_scan(mem, state):
-    if (not state['names'] or len(set(state['names'])) != len(state['names'])
+    skipped = _skipped_names(state)
+    if ((not state['names'] and not skipped)
+            or len(set(state['names'])) != len(state['names'])
             or not state.get('top_confirmed')
             or any(name not in state['statuses'] for name in state['names'])
             or any(name in state.get('dirty', ()) for name in state['names'])
@@ -1192,7 +1269,7 @@ def _complete_scan(mem, state):
     mismatch = (isinstance(country, dict) and country.get('scope') == state['scope']
                 and country.get('identity') == state['identity']
                 and type(country.get('count')) is int
-                and country['count'] != len(state['names']))
+                and country['count'] != len(state['names']) + len(skipped))
     if mismatch:
         # #3751: the walk reached its end (every observed name read, none
         # dirty) but the national headcount drifted mid-visit -- g1153
@@ -1204,13 +1281,28 @@ def _complete_scan(mem, state):
         state['count_mismatch'] = int(country['count'])
         _log(mem, 'roster_count_mismatch',
              observed_metric={'country': country['count'],
-                              'roster': len(state['names']),
+                              'roster': len(state['names']) + len(skipped),
                               'generals': len(state['statuses'])},
              reason='国人数と名簿末尾が一致しない（走査中の死亡・加入の可能性）ため、'
                     '除籍は行わず読めた将軍のタスクだけを実行する')
-    else:
+    if skipped:
+        # A name we could not verify is not a membership proof: never publish
+        # complete and never evict a general this walk merely failed to read.
+        # The read statuses are still usable, so continue into their tasks.
+        state['skipped_count'] = len(skipped)
+        state.pop('count_mismatch', None)
+        state['complete'] = False
+        _log(mem, 'post_month_status_skipped',
+             observed_metric={'skipped': list(skipped),
+                              'read': len(state['names']),
+                              'generals': len(state['statuses'])},
+             reason='ステータスを確認できなかった将軍を飛ばして月次確認を継続し、'
+                    '除籍は行わず読めた将軍のタスクだけを実行する')
+    elif not mismatch:
         state.pop('count_mismatch', None)
         state['complete'] = True
+    else:
+        state['complete'] = False
     state['steps'] = 0
     # A *complete* roster walk proves that missing names have left. A battle
     # defeat by itself never proves death. Exclude absent names and all their
@@ -1291,8 +1383,11 @@ def _complete_scan(mem, state):
     _stage(state, 'process')
     _log(mem, 'post_month_status_complete',
          observed_metric={'generals': list(state['names']),
+                          'skipped': list(skipped),
                           'carry': carry, 'tasks': list(queue)},
-         reason=('全将軍の個別卵・所在地を確認したため帰還・修理・所在確定を開始'
+         reason=('確認できない将軍を飛ばし、読めた将軍の卵・所在地だけを確定して処理を開始'
+                 if skipped else
+                 '全将軍の個別卵・所在地を確認したため帰還・修理・所在確定を開始'
                  if not carry else
                  '全将軍の個別卵・所在地を確認し、章またぎ待ちは在籍名簿の確認へ委ねる'))
     return True
@@ -1305,6 +1400,7 @@ def _finish(mem, state):
     mem['post_month_status_last'] = {
         'scope': list(state['scope']), 'complete': bool(state['complete']),
         'statuses': state['statuses'], 'failed': failure,
+        'skipped': _skipped_names(state),
         'manifest': state.get('manifest'),
         'manifest_done': bool(state.get('manifest_done')),
         'manifest_failed': state.get('manifest_failed'),
@@ -1405,7 +1501,7 @@ def reenter_after_reanchor(mem, resume):
         state['list_moves'] = 0
         state['top_confirmed'] = False
         for key in ('highlight', 'selected', 'marker_reads', 'markers', 'top_seeks',
-                    'end_stall', 'end_stall_selected'):
+                    'end_stall', 'end_stall_selected', 'skipped', 'walked'):
             state.pop(key, None)
         _stage(state, 'open_menu')
         state['phase_reads'] = 2  # next map observation opens X immediately
@@ -1476,7 +1572,7 @@ def resume_after_battle(mem, battle):
         state['complete'] = False
         for key in ('top_confirmed', 'top_seeks', 'list_moves', 'highlight',
                     'marker_reads', 'selected', 'markers', 'stray_backouts',
-                    'end_stall', 'end_stall_selected',
+                    'end_stall', 'end_stall_selected', 'skipped', 'walked',
                     'failure'):
             state.pop(key, None)
         state['steps'] = 0
@@ -1817,18 +1913,26 @@ def step(screen, mem, frame):
                     return [pad('b')]
                 return [pad('up')]
         selected = screen.selected
-        if selected in state['names']:
-            first = state['names'][0] if state['names'] else None
+        skipped = _skipped_names(state)
+        walked = [name for name in (state.get('walked') or ())
+                  if isinstance(name, str) and name]
+        if selected in state['names'] or selected in skipped:
+            # Use the walk order (which includes skipped pages), not the
+            # successfully-read names, for the wrap and last-row proofs.  With
+            # a skipped first general, names[0]/names[-1] would miss the real
+            # end of the roster.
+            first = walked[0] if walked else (state['names'][0] if state['names'] else None)
+            last = walked[-1] if walked else (names[-1] if names else None)
             at_end = (house._roster_scroll_end(screen, frame)
                       or (len(names) < receipts.VISIBLE_NAME_ROWS
-                          and selected == names[-1]))
+                          and selected == last))
             wrapped = selected == first and state.get('list_moves', 0) > 0
             if (at_end or wrapped) and _complete_scan(mem, state):
                 state.pop('end_stall', None)
                 state.pop('end_stall_selected', None)
                 return [pad('b')]
-            if (len(state['names']) >= receipts.VISIBLE_NAME_ROWS
-                    and selected == names[-1]):
+            if (len(walked) >= receipts.VISIBLE_NAME_ROWS
+                    and selected == last):
                 # Full-page non-wrapping list (live 299x224): down on the last
                 # row never moves and never shows scroll-end pixels. Count the
                 # stall and let a passing membership proof finish the walk.
@@ -1878,6 +1982,9 @@ def step(screen, mem, frame):
             # The roster page establishes current membership, but does not
             # require pressing A on a cached, unchanged general.
             state['names'].append(selected)
+            walked = state.setdefault('walked', [])
+            if selected not in walked:
+                walked.append(selected)
             state['list_moves'] = state.get('list_moves', 0) + 1
             state.pop('end_stall', None)
             state.pop('end_stall_selected', None)
@@ -1935,26 +2042,39 @@ def step(screen, mem, frame):
                  reason='一覧の選択三角マークから在城候補を観測した')
         return _open_status(screen, state, frame)
     if stage == 'status':
+        target = state.get('selected')
+        if (house.roster(screen)
+                and int(state.get('phase_reads') or 0) >= STATUS_OPEN_GRACE):
+            # The status page never appeared for this A.  The orphan guard may
+            # also have closed a readable foreign page before this flow ran
+            # (its owner snapshot is false for a different name), leaving the
+            # roster on screen.  Retrying here used to end in
+            # status_unreadable and fail the whole month; skip this general
+            # and continue the walk instead.
+            return _skip_status(mem, state, reason='status_panel_not_open',
+                                close=False)
         # A readable different name proves this is not the selected general's
-        # page. Leave before _observe_status can write that person's egg or
-        # location data into this scan's ledger (#5410).
-        visible_general = house.general_status_name(screen)
-        if (visible_general is not None
-                and visible_general != state.get('selected')):
-            state['failure'] = 'status_general_mismatch'
-            _log(mem, 'post_month_status_unverified',
-                 general=state.get('selected'),
-                 observed_metric={'visible_general': visible_general,
-                                  'phase_reads': state.get('phase_reads')},
-                 reason='別将軍のステータス画面を検出したため誤った卵・所在情報を記録せず月次確認を離脱')
-            _stage(state, 'blocked')
-            return [pad('b')]
-        info = house._observe_status(screen, mem)
-        if not info or info.get('general') != state.get('selected'):
+        # page.  Leave before _observe_status can write that person's egg or
+        # location data into this scan's ledger (#5410), but skip only this
+        # general: one foreign panel used to finish the whole monthly scan as
+        # status_unreadable and discard the other generals' reads.
+        visible_general = house.general_status_name(screen, expected=target)
+        if (visible_general is not None and isinstance(target, str) and target
+                and visible_general != target):
+            return _skip_status(mem, state, reason='status_general_mismatch',
+                                visible=visible_general)
+        info = house._observe_status(screen, mem, expected=target)
+        if not info or info.get('general') != target:
             if state['phase_reads'] >= STATUS_RETRIES:
+                if (isinstance(target, str) and target
+                        and _is_status_panel(screen)):
+                    # Bounded by STATUS_RETRIES, same as the mismatch path:
+                    # one unreadable panel must not fail the month.
+                    return _skip_status(mem, state, reason='status_unreadable',
+                                        visible=visible_general)
                 state['failure'] = 'status_unreadable'
                 _log(mem, 'post_month_status_unverified',
-                     general=state.get('selected'),
+                     general=target,
                      reason='将軍個別の状態を読めないため通常の出撃計画を保留')
                 _stage(state, 'blocked')
                 return [pad('b')]

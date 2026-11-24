@@ -8135,6 +8135,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
             "hanjuku-chart-v1468-battle-menu-bounded-episode",
             "hanjuku-chart-v1469-recall-yjump-goal",
+            "hanjuku-chart-v1470-status-panel-owner-unreadable-skip",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",

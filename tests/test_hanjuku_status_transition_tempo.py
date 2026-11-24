@@ -57,14 +57,22 @@ def test_early_old_roster_does_not_resend_a_or_keep_fast_polling():
     assert 'どうし' not in state['policy']['post_month_status']['statuses']
 
 
-def test_another_generals_status_leaves_the_requested_panel_immediately():
+def test_another_generals_status_is_skipped_without_failing_the_month():
+    # The old pre-#5410 expectation held the foreign panel with no input
+    # ([]), which could never finish.  Leaving it with B stays correct; one
+    # bad panel now skips only that general instead of blocking the whole
+    # monthly scan (the next roster frame continues the walk).
     _, state, _ = open_status()
     actions, state = decide(status('ゼウス'), state)
     assert actions == [commands.pad('b')]
     assert entry.observation_interval_ms(state, actions) == 1500
-    assert state['policy']['post_month_status']['stage'] == 'blocked'
-    assert state['policy']['post_month_status']['failure'] == 'status_general_mismatch'
-    assert not state['policy']['post_month_status']['statuses']
+    owner = state['policy']['post_month_status']
+    assert owner['stage'] == 'roster_next'
+    assert 'failure' not in owner
+    assert owner['skipped'] == ['どうし']
+    assert owner['walked'] == ['どうし']
+    assert not owner['statuses']
+    assert 'どうし' not in owner['names']
 
 
 @pytest.mark.parametrize('actions', [
