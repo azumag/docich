@@ -840,6 +840,17 @@ def _deploy_input(screen, mem, order, actions, reason):
 DEPLOY_HOLD_LIMIT = 12   # consecutive unclassified sortie screens before cancelling
 
 
+def _empty_kit_blocks_departure(want, carried):
+    """Whether a readable confirm must not approve this departure.
+
+    docich#5353: the plan names cards but the measured panel shows none. The
+    owner wants resources spent before losses, so the sortie is cancelled and
+    retried later rather than departing unarmed. A partial mismatch (some
+    cards carried) keeps the existing approve path.
+    """
+    return bool(want) and carried == []
+
+
 def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
     context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
     # docich#4715: an unclassified sortie screen held forever — the live run sat
@@ -2767,6 +2778,21 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                                   reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
                 if misses[order['step']] == limit:
+                    # docich#5353 (owner 2026-11-24: resources before losses):
+                    # a readable panel with no cards while the plan names some
+                    # is not a departure to approve. Cancelling keeps the kit
+                    # for a later sortie instead of leaving unarmed.
+                    if _empty_kit_blocks_departure(want, carried):
+                        misses.pop(order['step'], None)
+                        _record(mem, 'sortie_kit_empty_cancel',
+                                **_deploy_context(order, mem, expected_metric=want),
+                                carried=carried,
+                                observed_metric={'carried': carried, 'planned': want},
+                                reason='計画の切り札が携行されていないため出撃を取り消し、次回に持ち越す')
+                        _finish_order(mem, 'failed', deviation_reason='carried_kit_empty',
+                                      observed_metric={'carried': [], 'planned': want},
+                                      reason='携行札なしの出撃を避けるため取り消して次の指示へ進む')
+                        return [pad('b'), pad('b')]
                     # A readable panel is the truth: approve the shown kit.
                     _record(mem, 'sortie_kit_mismatch',
                             **_deploy_context(order, mem, expected_metric=want),
