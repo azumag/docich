@@ -247,12 +247,14 @@ def test_dispatcher_does_not_let_the_monthly_scan_claim_another_generals_page():
     assert actions == [pad('b')]
     assert 'battle_status_screen_return' in decisions(result)
     state = result['policy']['post_month_status']
-    assert state['stage'] == 'blocked'
-    assert state['failure'] == 'status_general_mismatch'
+    # The orphan B is the pre-flow snapshot's action here: owner_active was
+    # false, so post_month_status.step never ran and the state stays at
+    # 'status'.  The flow-level early leave is covered directly below.
+    assert state['stage'] == 'status'
     assert state['phase_reads'] == 0
     assert not state['statuses']
     recorded = decisions(result)
-    assert 'post_month_status_unverified' in recorded
+    assert 'post_month_status_unverified' not in recorded
     assert 'house_egg_seen' not in recorded
 
 
@@ -260,8 +262,9 @@ def test_named_status_owner_survives_an_unreadable_egg_row():
     screen = panel()
     # The owner still needs its bounded retry when the name is legible but the
     # egg row is not. Do not let the name-only guard turn that into an early B.
-    screen.lines = [line for line in screen.lines if line.y != 111]
+    screen.lines = [line for line in screen.lines if line.y != 119]
     assert house.general_status_name(screen) == 'ヴィーナス'
+    assert house.general_status(screen) is None
     monthly = policy(post_month_status=post_month_state())['policy']
     monthly['_run_identity'] = dict(IDENTITY)
     assert status_panel_owner_active(monthly, screen) is True
