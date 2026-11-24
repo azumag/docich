@@ -188,6 +188,24 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(auth.verify_headers(rotated, secret=self.secret, now=NOW + 120),
                          (True, "ok"))
 
+    def test_future_timestamp_replay_is_rejected_until_signature_expires(self):
+        # A timestamp at the future edge remains valid for another full skew
+        # window; its nonce must not expire at request_time + max_skew_s.
+        future_ts = int(NOW + 60)
+        future = auth.build_headers(self.secret, ts=future_ts, nonce="a1b2c3d5")
+        self.assertEqual(auth.verify_headers(future, secret=self.secret, now=NOW),
+                         (True, "ok"))
+        self.assertEqual(auth.verify_headers(future, secret=self.secret, now=NOW + 60),
+                         (False, "replay_detected"))
+        # The skew check is inclusive, so the exact last valid instant is
+        # still protected. Once it has passed, a freshly signed request may
+        # reuse the nonce.
+        self.assertEqual(auth.verify_headers(future, secret=self.secret, now=NOW + 120),
+                         (False, "replay_detected"))
+        fresh = auth.build_headers(self.secret, ts=int(NOW + 121), nonce="a1b2c3d5")
+        self.assertEqual(auth.verify_headers(fresh, secret=self.secret, now=NOW + 121),
+                         (True, "ok"))
+
     def test_replay_cache_is_bounded_and_fails_closed_until_expiry(self):
         original_limit = auth.REPLAY_CACHE_LIMIT
         auth.REPLAY_CACHE_LIMIT = 2
