@@ -138,6 +138,29 @@ def test_the_counter_file_is_bounded_and_malformed_state_is_tolerated(tmp_path):
     assert result['count'] == 1
 
 
+def test_oversized_counter_state_is_rejected_after_a_bounded_read(tmp_path):
+    rt = runtime(tmp_path)
+    path = rt / fault_issue.FAULTS_FILE
+    path.write_bytes(
+        b'{"schema":1,"entries":{}}'
+        + b" " * (fault_issue.FAULTS_READ_LIMIT + 1)
+    )
+    result = fault_issue.note_fault(
+        rt, signature="TypeError@a.py:1:f", now=9000
+    )
+    assert result["status"] == "counted"
+    assert result["count"] == 1
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["entries"]["TypeError@a.py:1:f"]["count"] == 1
+    assert path.stat().st_size < fault_issue.FAULTS_READ_LIMIT
+
+
+def test_exception_signature_uses_fallback_without_traceback():
+    exc = TypeError("unraised")
+    signature = fault_issue.exception_signature(exc, "fallback.py:12:handler")
+    assert signature == "TypeError@fallback.py:12:handler"
+
+
 def test_exception_signature_names_the_class_and_innermost_frame():
     try:
         raise TypeError('cannot unpack non-iterable NoneType object')
