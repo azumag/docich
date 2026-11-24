@@ -1805,11 +1805,6 @@ def _hold_unrouted_sortie(mem, order):
         # the list was never read (owner 2026-11-23: normal sortie cancelled
         # with the general present).
         return None
-    if order.get('purpose') == 'attack':
-        # Owner 2026-11-23: once the sortie window is open, commit.  The route
-        # is already validated when the source/general is chosen; a later B
-        # here left the opened window unused and blocked progress.
-        return None
     if ((_plan_region(mem).get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
             or routes.order_allowed(mem, order, _source(order, mem))):
         return None
