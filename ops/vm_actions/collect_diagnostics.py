@@ -8116,6 +8116,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1455-password-in-game-retry",
             "hanjuku-chart-v1456-password-phrase-ocr",
             "hanjuku-chart-v1457-empty-kit-cancel",
+            "hanjuku-chart-v1458-merchant-mickey-priority",
             "hanjuku-chart-v1459-summon-card-non-boss-reveal",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
