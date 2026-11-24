@@ -1005,10 +1005,6 @@ def _build_sortie_incident(runtime, state, after, event, now):
     rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
                            state.get('identity'))
     counts = _decision_counts(rows)
-    terminal_diagnostic = _chikujou_terminal_diagnostic(rows, event.get('month'))
-    if terminal_diagnostic:
-        event = dict(event)
-        event['terminal_diagnostic'] = terminal_diagnostic
     departures, launch_events = _departures(rows)
     month_sorties = (context or {}).get('month_sorties') or {}
     confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
@@ -1867,6 +1863,10 @@ def _build_chikujou_incident(runtime, state, after, event, now):
     rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
                            state.get('identity'))
     counts = _decision_counts(rows)
+    terminal_diagnostic = _chikujou_terminal_diagnostic(rows, event.get('month'))
+    if terminal_diagnostic:
+        event = dict(event)
+        event['terminal_diagnostic'] = terminal_diagnostic
     departures, launch_events = _departures(rows)
     month_sorties = (context or {}).get('month_sorties') or {}
     confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
