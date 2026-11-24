@@ -70,11 +70,12 @@ def test_a_carried_card_is_revealed_at_a_non_boss_castle_when_egg_row_is_ocr_mis
     # #5381: a measured own-general attack menu plus one recognized enemy
     # summon is sufficient for navigation-only discovery; castle rank is not
     # relevant to the position of the carried-card row.
-    mem = memory(castle='セレーネ')
+    mem = memory(castle='セレーネ', general='ヴィーナス')
+    mem['battle']['enemy'] = 'ダークエルフ'
     mem['battle']['planned_cards'] = ['クースカン']
     value = screen(text='こうげき')
-    value.egg_rows = [EggRow('ヘーゼル', 80, 'ally', 176),
-                      EggRow('ハードロボ', 152, 'enemy', 200)]
+    value.egg_rows = [EggRow('ヴィーナス', 80, 'ally', 176),
+                      EggRow('ダークエルフ', 152, 'enemy', 200)]
 
     assert B.egg_battle_step(value, mem) == [B.pad('down')]
     assert mem['battle']['summon_card_scroll'] == 1
@@ -86,10 +87,11 @@ def test_a_carried_card_is_revealed_at_a_non_boss_castle_when_egg_row_is_ocr_mis
 
 
 def test_carried_card_fallback_stays_closed_without_a_recognized_enemy_summon():
-    mem = memory(castle='セレーネ')
+    mem = memory(castle='セレーネ', general='ヴィーナス')
+    mem['battle']['enemy'] = '未分類の敵'
     mem['battle']['planned_cards'] = ['クースカン']
     value = screen(text='こうげき')
-    value.egg_rows = [EggRow('ヘーゼル', 80, 'ally', 176),
+    value.egg_rows = [EggRow('ヴィーナス', 80, 'ally', 176),
                       EggRow('未分類の敵', 152, 'enemy', 200)]
 
     B.egg_battle_step(value, mem)
@@ -98,12 +100,13 @@ def test_carried_card_fallback_stays_closed_without_a_recognized_enemy_summon():
 
 
 def test_carried_card_fallback_stays_closed_for_a_defending_general():
-    mem = memory(castle='セレーネ')
+    mem = memory(castle='セレーネ', general='ヴィーナス')
+    mem['battle']['enemy'] = 'ダークエルフ'
     mem['battle']['side'] = 'defense'
     mem['battle']['planned_cards'] = ['クースカン']
     value = screen(text='こうげき')
-    value.egg_rows = [EggRow('ヘーゼル', 80, 'ally', 176),
-                      EggRow('ハードロボ', 152, 'enemy', 200)]
+    value.egg_rows = [EggRow('ヴィーナス', 80, 'ally', 176),
+                      EggRow('ダークエルフ', 152, 'enemy', 200)]
 
     B.egg_battle_step(value, mem)
     assert not any(r['decision'] == 'battle_summon_card_scroll'
