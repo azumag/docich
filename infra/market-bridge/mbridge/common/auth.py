@@ -20,8 +20,8 @@ HEADER = "X-Docich-Bridge"
 KEY_ID_HEADER = "X-Docich-Key-Id"
 
 # Server-side replay cache: (key_id, nonce) -> expiry timestamp.
-# An accepted nonce is remembered until ``now + max_skew_s`` so the same nonce
-# cannot be reused within the skew window. Entries are lazily evicted at expiry
+# An accepted nonce is remembered through ``signed_ts + max_skew_s`` (the last
+# instant its signature can still pass the skew check). Entries are lazily evicted after expiry
 # and the cache has a hard cardinality limit; once full, new nonces fail closed
 # until expired entries are removed. Guarded by a lock for concurrent handlers.
 _REPLAY_LOCK = threading.Lock()
@@ -34,7 +34,7 @@ def reset_replay_cache() -> None:
         _REPLAY_CACHE.clear()
 
 
-def _record_nonce(key_id: str, nonce: str, now: float, max_skew_s: float) -> str:
+def _record_nonce(key_id: str, nonce: str, signed_ts: int, max_skew_s: float) -> str:
     """Return a fixed reason code; capacity exhaustion fails closed.
 
     Only called after the HMAC signature has been verified, so unauthenticated
@@ -43,8 +43,10 @@ def _record_nonce(key_id: str, nonce: str, now: float, max_skew_s: float) -> str
     once the skew window has elapsed.
     """
     with _REPLAY_LOCK:
-        expiry = now + max_skew_s
-        stale = [k for k, e in _REPLAY_CACHE.items() if e <= now]
+        expiry = signed_ts + max_skew_s
+        # verify_headers accepts the exact skew boundary, so keep the nonce at
+        # e == now and evict only once its signature has become invalid.
+        stale = [k for k, e in _REPLAY_CACHE.items() if e < now]
         for k in stale:
             del _REPLAY_CACHE[k]
         if (key_id, nonce) in _REPLAY_CACHE:
@@ -111,7 +113,7 @@ def verify_headers(headers: Mapping[str, str], *, secret: bytes, now: float,
         return False, "auth_failed"
     # Replay guard: reject a nonce already used within the skew window.  Checked
     # only after a valid signature so invalid attempts never occupy the cache.
-    replay_reason = _record_nonce(key_id, parts[1], now, max_skew_s)
+    replay_reason = _record_nonce(key_id, parts[1], ts, max_skew_s)
     if replay_reason != "ok":
         return False, replay_reason
     return True, "ok"
