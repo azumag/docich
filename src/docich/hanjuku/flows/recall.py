@@ -1696,6 +1696,13 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         actions = _fort_step(screen, mem, state)
         if actions is not None:
             return actions
+        # An unrelated destination picker is not owned by the fort recall.
+        # Leave it to the normal map/order flow instead of consuming it as an
+        # empty recall action.
+        if (screen.kind == 'map_target'
+                and state.get('stage') == 'fort_status'
+                and state.get('fort_picker_requested') is not True):
+            return None
         stage = state.get('stage')
         if (stage == 'dest' and not state.get('boss') and not state.get('boss_move')
                 and _whitehouse_camp(mem, screen, state, frame)):
@@ -2218,6 +2225,7 @@ def _abort_camp_recall(mem, state, screen, reason):
     stage = state.get('stage')
     metric = {'stage': stage, 'steps': int(state.get('steps') or 0)}
     if stage in FORT_STAGES:
+        metric['fort'] = True
         camp = state.get('target')
         if (isinstance(camp, (list, tuple)) and len(camp) == 2
                 and all(type(value) is int for value in camp)):
