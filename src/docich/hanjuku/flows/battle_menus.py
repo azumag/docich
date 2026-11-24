@@ -107,6 +107,10 @@ def _human_five_item_box(screen, labels=None):
             or getattr(screen, 'disabled_item_box', False)
             or getattr(screen, 'okunote_only_box', False)):
         return False
+    # The human command list is drawn over the live battle panel.  A bare
+    # menu with no HP rows is a synthetic/legacy card-flow box, not this list.
+    if not getattr(screen, 'egg_rows', None):
+        return False
     return ('きりふだ' in labels and 'おくのて' not in labels
             and 'たまごをつかう' not in labels)
 
@@ -1108,8 +1112,10 @@ def battle_menu_step(screen: Screen, mem):
         return []
     _labels = {word for _, _, word in _options(screen)}
     # A measured five-item scroll owns this box even before the B fallback:
-    # its きりふだ/たいきゃく-only bottom page is not a modal overlay.
-    _scroll_owned = _human_scroll_owns(screen, _labels, cur, chapter=mem.get('chapter'))
+    # its きりふだ/たいきゃく-only bottom page is not a modal overlay.  An
+    # active card flow still owns the menu: it deliberately walks to きりふだ.
+    _scroll_owned = not flow and _human_scroll_owns(
+        screen, _labels, cur, chapter=mem.get('chapter'))
     if (_screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur)
             and not _scroll_owned):
         _record(mem, 'battle_egg_actor_unconfirmed',
@@ -2477,6 +2483,7 @@ def _defender_summon_egg_menu(screen, mem, battle):
     guard = battle.setdefault('okunote_summon_preempt', {'opens': 0})
     labels = [w for _, _, w in _options(screen)]
     if (mem.get('chapter') == 12 and 'おくのて' not in labels
+            and 'たまごをつかう' not in labels
             and (_human_five_item_box(screen, set(labels))
                  or _human_scroll_active(battle)
                  or _stale_battle_actor(screen, battle))):
@@ -2615,11 +2622,13 @@ def egg_battle_step(screen: Screen, mem):
     # The same five-item list is classified egg_battle_menu once きりふだ drops
     # off its upper page. The persisted scroll episode (or a stale policy.battle
     # whose ally is not the general on the panel) owns it here too: never scroll
-    # it back down and never confirm もうこうげき (owner 2026-11-24).
+    # it back down and never confirm もうこうげき (owner 2026-11-24).  A real
+    # egg box with たまご/おくのて visible keeps its own owner.
     _human_menu = (
         _human_scroll_owns(screen, _labels, _battle_ctx, chapter=mem.get('chapter'))
         or (_stale_battle_actor(screen, _battle_ctx)
-            and bool(_labels.intersection({'こうげき', 'もうこうげき'})))
+            and bool(_labels.intersection({'こうげき', 'もうこうげき'}))
+            and not _labels.intersection({'たまごをつかう', 'おくのて'}))
     )
     if mem.get('chapter') == 12 and _battle_ctx and _human_menu:
         _begin_human_scroll(_battle_ctx)
