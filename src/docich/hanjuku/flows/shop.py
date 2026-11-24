@@ -337,8 +337,19 @@ def shop_step(screen: Screen, mem):
         shop['want'] = [name, n, price]
         move = menu_to(screen, name)
         if move == 'here':
+            shop.pop('unread_selection', None)
             return [pad('a')]
-        return (merchant_list_batch(screen, name) or [move]) if move else []
+        if move is None:
+            if shop.get('unread_selection') != name:
+                _record(mem, 'situation_held', screen=kind,
+                        strategy_variant='shop_selection_unread', item=name,
+                        observed_metric={'remaining_items': len(shop['items']),
+                                         'hand_visible': screen.hand is not None},
+                        reason='購入予定品は残っているがカーソルを読めないため商店一覧の所有を保持して再観測')
+            shop['unread_selection'] = name
+            return []
+        shop.pop('unread_selection', None)
+        return merchant_list_batch(screen, name) or [move]
     if had_items is False:
         _record_shop_exit(mem, shop, screen, 'nothing_planned', listed=listed)
         if shop.get('merchant_done'):
@@ -355,6 +366,7 @@ def shop_step(screen: Screen, mem):
     # row the previous observation selected) is not a live quote any more.
     # Keeping it would block the generic A on another owner's purchase
     # confirmation for the rest of the month (g1190 63-5 shape).
+    shop.pop('unread_selection', None)
     shop['want'] = None
     return [pad('b')]
 
