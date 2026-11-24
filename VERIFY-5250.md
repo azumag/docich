@@ -7,6 +7,8 @@
 camp_event: 将軍 不明 / 野営 None / 帰還先 アルマムーン / input_sent False
 fingerprint `4e88973e821e6304`
 
+> 追補（2026-11-24）: 本文はラン時点 v1419 と調査時点 v1431 の歴史的検証記録であり、現行mainの挙動を主張するものではない。後続の実装修正PR [#5254](https://github.com/azumag/docich/pull/5254) は2026-11-23にmainへmerge済み。過去incidentの遡及変更や、次回runtime受入の完了を意味しない。
+
 調査基盤: worktree `~/work/docich-5250`（branch `verify/5250`、HEAD `7b6539872`
 ＝ v1431）。read-only 調査。コードと issue 提示値、兄弟検証 VERIFY-5233 /
 VERIFY-5248（`~/work/docich-5233`、`~/work/docich-5248`）を根拠とする。
