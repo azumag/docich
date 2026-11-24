@@ -60,7 +60,7 @@ def _grid_words(screen):
     if words:
         return words
     # No parsed grid rows (synthetic screen/tests): derive from the text.
-    text = (screen.text or '').replace(' ', '').replace('\u3000', '')
+    text = (getattr(screen, 'text', '') or '').replace(' ', '').replace('\u3000', '')
     if 'パスワード' not in text:
         return set(PHRASE)
     for marker in ('パスワードヲジュンバンニイレテクダサイ。', 'パスワードヲ'):
@@ -86,7 +86,7 @@ def _dynamic_step(screen, mem, st):
         advance = int(st.get('dyn_advance') or 0)
         if advance < _ADVANCE_PRESSES:
             st['dyn_advance'] = advance + 1
-            return [pad('a', 10)]
+            return [pad('a', 30)]
         cycles = int(st.get('cycles') or 0) + 1
         _record(mem, 'password_entry_resweep', screen=screen.kind,
                 observed_metric={'cycles': cycles, 'order': 'measured_list'},
@@ -101,7 +101,7 @@ def _dynamic_step(screen, mem, st):
         want = PHRASE[step] if step < len(PHRASE) else None
     if want is None:
         st['dyn_advance'] = int(st.get('dyn_advance') or 0) + 1
-        return [pad('a', 10)]
+        return [pad('a', 30)]
     sel = _selected(screen, rows)
     if sel is None:
         return [pad('down')]
@@ -117,7 +117,7 @@ def _dynamic_step(screen, mem, st):
     if sel[1] == want:
         st['dyn_step'] = PHRASE.index(want) + 1
         st.pop('dyn_search', None)
-        return [pad('a', 10)]
+        return [pad('a', 30)]
     wanted = [y for y, w in rows if w == want]
     if wanted:
         search['dir'] = 'down' if wanted[0] > sel[0] else 'up'
@@ -150,11 +150,11 @@ def _legacy_step(screen, mem, st):
             st['idx'] = idx - 1
             return [pad('up')]
         st['step'] = step + 1
-        return [pad('a', 10)]
+        return [pad('a', 30)]
     advance = st.get('advance', 0)
     if advance < _ADVANCE_PRESSES:
         st['advance'] = advance + 1
-        return [pad('a', 10)]
+        return [pad('a', 30)]
     cycles = st.get('cycles', 0) + 1
     _record(mem, 'password_entry_resweep', screen=screen.kind,
             observed_metric={'cycles': cycles, 'target_order': list(_TARGET_ORDER)},
@@ -183,11 +183,46 @@ def password_step(screen, mem):
         _record(mem, 'password_entry_static_b', screen=screen.kind,
                 observed_metric={'digest': digest},
                 reason='パスワード画面が入力を12観測受け付けないため、Bで入力をやり直す')
-        return [pad('b')]
+        return [pad('b', 30)]
+    if int(st.get('probe_total') or 0) >= 8:
+        # Every reset input was ignored: the screen is soft-locked. Hold
+        # instead of pressing A forever; a state reload is the only recovery.
+        if not st.get('soft_lock_noted'):
+            st['soft_lock_noted'] = True
+            _record(mem, 'password_entry_soft_lock', screen=screen.kind,
+                    observed_metric={'probes': st.get('probe_total')},
+                    reason='A/B/START/SELECT/Y が全て無視されるため、画面の再読込まで入力しない')
+        return []
     if _rows(screen):
         if int(st.get('cycles') or 0) >= 6:
             return []
-        return _dynamic_step(screen, mem, st)
-    if st.get('cycles', 0) >= _MAX_CYCLES:
-        return []
-    return _legacy_step(screen, mem, st)
+        actions = _dynamic_step(screen, mem, st)
+    else:
+        if st.get('cycles', 0) >= _MAX_CYCLES:
+            return []
+        actions = _legacy_step(screen, mem, st)
+    def _is_a(action):
+        buttons = action.get('buttons') if isinstance(action, dict) else [action]
+        return buttons == ['a']
+    if actions and all(_is_a(a) for a in actions):
+        st['a_repeat'] = int(st.get('a_repeat') or 0) + 1
+    else:
+        st['a_repeat'] = 0
+    if int(st.get('a_repeat') or 0) >= 8:
+        # The game kept refusing the same confirming A (われらが measured
+        # 2026-11-24): probe the reset buttons one at a time instead of
+        # pressing A forever. B was ignored once; START/SELECT/Y may wake the
+        # prompt.
+        probes = ['b', 'start', 'select', 'y']
+        index = int(st.get('probe_index') or 0) % len(probes)
+        button = probes[index]
+        st['probe_index'] = index + 1
+        st['probe_total'] = int(st.get('probe_total') or 0) + 1
+        st['a_repeat'] = 0
+        st.pop('dyn_search', None)
+        st.pop('password_sweep', None)
+        _record(mem, 'password_entry_probe', screen=screen.kind,
+                observed_metric={'button': button, 'probe': index},
+                reason='同じ確定Aが通らないため、リセット用の入力を順に試す')
+        return [pad(button)]
+    return actions
