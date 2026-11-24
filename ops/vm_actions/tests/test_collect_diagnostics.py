@@ -1640,6 +1640,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1448-auto-carry-safe-card'
     state['bot_version']='hanjuku-chart-v1449-chikujou-hold-note'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-chikujou-hold-note'
+    state['bot_version']='hanjuku-chart-v1450-attack-route-revalidation'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1450-attack-route-revalidation'
     state['bot_version']='hanjuku-chart-v1451-dome-camp-terminal-evidence'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1451-dome-camp-terminal-evidence'
     state['bot_version']='hanjuku-chart-v1449-dome-camp-terminal-evidence'
