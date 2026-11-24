@@ -49,6 +49,10 @@ LOG_NAME = 'hanjuku_month_audit'
 TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
+# An active boss-targeted march is not evidence that the bot has failed to
+# start the battle yet. Match the existing stuck-march expiry boundary.
+BOSS_LIVE_SORTIE_MAX_AGE_TICKS = 3000
+BOSS_LIVE_SORTIE_STATUSES = frozenset({'en_route', 'launched', 'launched_unconfirmed'})
 CAMP_ISSUE_COOLDOWN_SECONDS = 900
 SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
@@ -2587,6 +2591,43 @@ def _track_camp(runtime, state, after, records, now, on_sealed=None):
             table.pop(stale, None)
 
 
+def _has_live_boss_attack_sortie(mem, phase):
+    """Whether a recent, unsettled sortie is still heading to a boss site.
+
+    A 600-second boss phase can contain a newly launched boss wave. Do not
+    report a zero-battle failure while that march is still active. Unknown age
+    is treated conservatively; a march older than the existing 3000-tick
+    stuck-march boundary no longer suppresses the audit.
+    """
+    world = _world_snapshot(mem)
+    sorties = world.get('sorties') if isinstance(world.get('sorties'), dict) else {}
+    launched = world.get('launched_orders') if isinstance(world.get('launched_orders'), dict) else {}
+    tick = _bounded_int(mem.get('tick'), 0, 10 ** 9)
+    boss_sites = set(phase.get('bosses') or ())
+    if not boss_sites:
+        return False
+    for step, value in list(sorties.items())[:MAX_LIST]:
+        if not isinstance(value, dict):
+            continue
+        if value.get('status') not in BOSS_LIVE_SORTIE_STATUSES:
+            continue
+        target = value.get('target') or value.get('planned_target')
+        if target not in boss_sites:
+            continue
+        purpose = value.get('purpose')
+        if purpose is None and isinstance(launched.get(step), dict):
+            purpose = launched[step].get('purpose')
+        if purpose not in (None, 'attack'):
+            continue
+        started = value.get('tick')
+        age = None
+        if tick is not None and type(started) is int and 0 <= started <= tick:
+            age = tick - started
+        if age is None or age <= BOSS_LIVE_SORTIE_MAX_AGE_TICKS:
+            return True
+    return False
+
+
 def _track_boss(runtime, state, after, records, now, on_sealed=None):
     mem = after.get('policy') or {}
     phase = _boss_phase(mem)
@@ -2636,6 +2677,10 @@ def _track_boss(runtime, state, after, records, now, on_sealed=None):
         return
     if float(now) - float(current.get('started_at') or now) < BOSS_NO_BATTLE_SECONDS:
         return
+    if _has_live_boss_attack_sortie(mem, phase):
+        current['live_boss_sortie_deferred'] = True
+        return
+    current.pop('live_boss_sortie_deferred', None)
     rows = _read_decisions(runtime, current.get('started_at') or now, now,
                            state.get('identity'))
     if _rows_boss_battle(rows, phase['chapter'], phase['boss_name']):
