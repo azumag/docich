@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import battle_menus as B
-from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.os_layer.screen import EggRow, Screen
 
 BOSS = chart.boss_castle(6)
 
@@ -65,6 +65,50 @@ def test_the_summon_card_row_is_revealed_by_scrolling_down():
     assert acts == [B.pad('down')]
     assert mem['battle']['summon_card_scroll'] == 1
     assert any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
+
+def test_a_carried_card_is_revealed_at_a_non_boss_castle_when_egg_row_is_ocr_missing():
+    # #5381: a measured own-general attack menu plus one recognized enemy
+    # summon is sufficient for navigation-only discovery; castle rank is not
+    # relevant to the position of the carried-card row.
+    mem = memory(castle='セレーネ')
+    mem['battle']['planned_cards'] = ['クースカン']
+    value = screen(text='こうげき')
+    value.egg_rows = [EggRow('ヘーゼル', 80, 'ally', 176),
+                      EggRow('ハードロボ', 152, 'enemy', 200)]
+
+    assert B.egg_battle_step(value, mem) == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    record = [r for r in mem['_records']
+              if r['decision'] == 'battle_summon_card_scroll'][-1]
+    assert record['observed_metric']['own_attack_menu'] is True
+    assert record['observed_metric']['egg_row_visible'] is False
+    assert record['observed_metric']['enemy_summons'] == 1
+
+
+def test_carried_card_fallback_stays_closed_without_a_recognized_enemy_summon():
+    mem = memory(castle='セレーネ')
+    mem['battle']['planned_cards'] = ['クースカン']
+    value = screen(text='こうげき')
+    value.egg_rows = [EggRow('ヘーゼル', 80, 'ally', 176),
+                      EggRow('未分類の敵', 152, 'enemy', 200)]
+
+    B.egg_battle_step(value, mem)
+    assert not any(r['decision'] == 'battle_summon_card_scroll'
+                   for r in mem['_records'])
+
+
+def test_carried_card_fallback_stays_closed_for_a_defending_general():
+    mem = memory(castle='セレーネ')
+    mem['battle']['side'] = 'defense'
+    mem['battle']['planned_cards'] = ['クースカン']
+    value = screen(text='こうげき')
+    value.egg_rows = [EggRow('ヘーゼル', 80, 'ally', 176),
+                      EggRow('ハードロボ', 152, 'enemy', 200)]
+
+    B.egg_battle_step(value, mem)
+    assert not any(r['decision'] == 'battle_summon_card_scroll'
+                   for r in mem['_records'])
+
 
 def test_interrupted_opening_card_flow_resumes_the_exact_carried_card(monkeypatch):
     # A chart card was planned in the normal battle menu, but the enemy's
