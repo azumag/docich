@@ -1046,6 +1046,46 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+
+def test_chikujou_month_end_uses_live_policy_gold_over_stale_outer_gold(runtime_dir):
+    # docich#5465: the last verified upgrade left 30G (the 30G reserve),
+    # while the outer state still carried the pre-payment 35G observation.
+    # The audit must not report another affordable build from that stale copy.
+    value = _chikujou_state(gold=35)
+    mem = value['policy']
+    home = chart.home_castle(10)
+    mem['gold'] = 30
+    mem['shop']['chikujou_tried'] = [home]
+    mem['shop']['chikujou_upgrades'] = [
+        {'castle': home, 'cost': 5, 'gold_before': 35, 'gold_after': 30},
+    ]
+
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_month_end_uses_policy_gold_over_stale_transaction_metric(runtime_dir):
+    # A gold_after value belongs to its transaction and can be older than the
+    # current policy header after a later purchase.
+    value = _chikujou_state(gold=35)
+    mem = value['policy']
+    home = chart.home_castle(10)
+    mem['gold'] = 30
+    mem['shop']['chikujou_tried'] = [home]
+    mem['shop']['chikujou_upgrades'] = [
+        {'castle': home, 'cost': 5, 'gold_before': 35, 'gold_after': 30},
+    ]
+
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'observed_metric': {'gold_after': 35},
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+
+    assert audit.load_incidents(runtime_dir) == []
+
 def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
     # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
     # issue 本文だけで判別できるよう、拒否の skips と対象城を記録に残す。
