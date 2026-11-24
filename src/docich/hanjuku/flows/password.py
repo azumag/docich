@@ -81,6 +81,15 @@ def _dynamic_step(screen, mem, st):
     """
     rows = _rows(screen)
     remaining = _grid_words(screen)
+    # A reset probe (or the game's retry) restores words to the grid; a
+    # normal entry only shrinks it. On a restore, start the phrase over.
+    previous_len = st.get('grid_len')
+    if previous_len is not None and len(remaining) > previous_len:
+        st['dyn_step'] = 0
+        st['dyn_advance'] = 0
+        st['reset_index'] = 0
+        st.pop('dyn_search', None)
+    st['grid_len'] = len(remaining)
     step = int(st.get('dyn_step') or 0)
     if not remaining:
         advance = int(st.get('dyn_advance') or 0)
@@ -168,31 +177,6 @@ def _legacy_step(screen, mem, st):
 def password_step(screen, mem):
     """Enter the phrase in order; read the list when the grey rows are usable."""
     st = mem.setdefault('password_entry', {})
-    digest = getattr(screen, 'frame_sha256', None)
-    if digest and st.get('digest') == digest:
-        st['static'] = int(st.get('static') or 0) + 1
-    else:
-        st['digest'] = digest
-        st['static'] = 0
-    if int(st.get('static') or 0) >= 12:
-        # The screen accepted no input for 12 observations: the game ignored
-        # the entry (a wrong-order sequence soft-locks it). One B asks the
-        # password screen to reset instead of pressing A forever.
-        st['static'] = 0
-        st.pop('dyn_search', None)
-        _record(mem, 'password_entry_static_b', screen=screen.kind,
-                observed_metric={'digest': digest},
-                reason='パスワード画面が入力を12観測受け付けないため、Bで入力をやり直す')
-        return [pad('b', 30)]
-    if int(st.get('probe_total') or 0) >= 8:
-        # Every reset input was ignored: the screen is soft-locked. Hold
-        # instead of pressing A forever; a state reload is the only recovery.
-        if not st.get('soft_lock_noted'):
-            st['soft_lock_noted'] = True
-            _record(mem, 'password_entry_soft_lock', screen=screen.kind,
-                    observed_metric={'probes': st.get('probe_total')},
-                    reason='A/B/START/SELECT/Y が全て無視されるため、画面の再読込まで入力しない')
-        return []
     if _rows(screen):
         if int(st.get('cycles') or 0) >= 6:
             return []
@@ -208,21 +192,26 @@ def password_step(screen, mem):
         st['a_repeat'] = int(st.get('a_repeat') or 0) + 1
     else:
         st['a_repeat'] = 0
-    if int(st.get('a_repeat') or 0) >= 8:
-        # The game kept refusing the same confirming A (われらが measured
-        # 2026-11-24): probe the reset buttons one at a time instead of
-        # pressing A forever. B was ignored once; START/SELECT/Y may wake the
-        # prompt.
-        probes = ['b', 'start', 'select', 'y']
-        index = int(st.get('probe_index') or 0) % len(probes)
-        button = probes[index]
-        st['probe_index'] = index + 1
-        st['probe_total'] = int(st.get('probe_total') or 0) + 1
+    if int(st.get('a_repeat') or 0) >= 4:
+        # The game refused the same confirming A: probe the in-game reset
+        # inputs (long presses) and, once the screen changes, restart the
+        # phrase from the top. No driver restart / state reload.
+        ladder = ['b', 'start', 'select', 'y']
+        index = int(st.get('reset_index') or 0)
         st['a_repeat'] = 0
-        st.pop('dyn_search', None)
-        st.pop('password_sweep', None)
-        _record(mem, 'password_entry_probe', screen=screen.kind,
-                observed_metric={'button': button, 'probe': index},
-                reason='同じ確定Aが通らないため、リセット用の入力を順に試す')
-        return [pad(button)]
+        if index < len(ladder):
+            button = ladder[index]
+            st['reset_index'] = index + 1
+            st.pop('dyn_search', None)
+            st.pop('password_sweep', None)
+            _record(mem, 'password_entry_reset_probe', screen=screen.kind,
+                    observed_metric={'button': button, 'step': index},
+                    reason='確定Aが通らないため、ゲーム内のリセット入力を長押しで試す')
+            return [pad(button, 30)]
+        st['reset_index'] = 0
+        st['probe_total'] = int(st.get('probe_total') or 0) + len(ladder)
+        _record(mem, 'password_entry_reset_exhausted', screen=screen.kind,
+                observed_metric={'probes': st.get('probe_total')},
+                reason='リセット入力でも画面が変わらないため、次に画面が変わるまで待つ')
+        return []
     return actions
