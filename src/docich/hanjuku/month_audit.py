@@ -3227,10 +3227,19 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             continue
         seen.append(incident_id)
         state['card_miss_ids'] = seen[-20:]
-        battle = {'ally': row.get('ally'), 'enemy': row.get('enemy'),
-                  'castle': row.get('castle'), 'at': float(at),
-                  'reason': row.get('reason'), 'screen': row.get('screen_kind'),
-                  'cards_left': (row.get('observed_metric') or {}).get('cards_left')}
+        metric = row.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        cards_left = metric.get('cards_left')
+        cards_left = cards_left if isinstance(cards_left, list) else []
+        screen = row.get('screen_kind') or metric.get('screen') or row.get('screen')
+        battle = {'ally': _bounded_text(row.get('ally'), 48),
+                  'enemy': _bounded_text(row.get('enemy'), 48),
+                  'castle': _bounded_text(row.get('castle'), 48), 'at': float(at),
+                  'reason': _bounded_text(row.get('reason'), 200),
+                  'screen': _bounded_text(screen, 32),
+                  'screen_text': _bounded_text(metric.get('text'), 120),
+                  'cards_left': [_bounded_text(card, 48) for card in cards_left
+                                 if isinstance(card, str)][:8]}
         record = {
             'schema': SCHEMA,
             'kind': 'card_miss',
@@ -3667,7 +3676,8 @@ def _render_card_miss(record):
         f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
         f" / 城: {battle.get('castle') or '不明'}",
         f"- 時刻: {_clock(battle.get('at'))}",
-        f"- 画面: {BT}{battle.get('screen')}{BT} / 理由: {battle.get('reason') or ''}",
+        f"- 画面: {BT}{battle.get('screen') or '不明'}{BT} / 文言: {_md(battle.get('screen_text') or 'なし')}"
+        f" / 理由: {battle.get('reason') or ''}",
         '',
         '敵召喚獣戦/ボス戦で、卵なし・奥の手不可のときに携行切り札を開かず攻撃へ進みました。',
         '切り札を開けなかった画面遷移と、未使用のまま攻撃した判断を確認してください。',
