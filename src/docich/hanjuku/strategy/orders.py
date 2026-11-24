@@ -857,7 +857,8 @@ def _ready(order, mem) -> bool:
     # Owner 2026-11-24 (chapter 12): no boss march leaves the home castle
     # (it is absorbed or camps on the way); the hero goes to the staging castle
     # first and only that castle sends.
-    if routes.staging_blocks(mem, order, _source(order, mem)):
+    if routes.staging_blocks(mem, order,
+                             _source(order, mem) if 'step' in order else order.get('source')):
         return False
     if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
