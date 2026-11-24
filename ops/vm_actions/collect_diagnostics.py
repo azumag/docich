@@ -8119,6 +8119,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1458-merchant-mickey-priority",
             "hanjuku-chart-v1459-merchant-listed-unknown",
             "hanjuku-chart-v1460-password-entered-field",
+            "hanjuku-chart-v1461-melee-only-ugokazaru",
+            "hanjuku-chart-v1462-status-panel-owner-guard",
             "hanjuku-chart-v1463-boss-static-audit-signals",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",

@@ -54,7 +54,11 @@ CARD_LIST_SAME_FRAME_LIMIT = 12
 # (games/hanjuku-sfc-speedrun/charts/7.md) も対ブラウニーで「ゾンビは召喚
 # させ、もうこうげきでターン経過」と白兵を指示している。実画面の敵召喚獣が
 # 1体だけ読め、名前が完全一致したときだけ適用する (未知・複数・未読へ広げない)。
-MELEE_ONLY_SUMMONS = frozenset({'ゾンビ'})
+#
+# Owner 2026-11-24 (追加): ウゴカザルも同じ。2つの技「なぐれっ！」「かきむしれ！」
+# はどちらも0ダメージで、卵を使わず「こうげき」だけで倒せる。ゾンビと同じく
+# 将軍を脅かさないので、卵・おくのてを消費せず白兵で処理する。
+MELEE_ONLY_SUMMONS = frozenset({'ゾンビ', 'ウゴカザル'})
 
 
 def _is_empty_card_list_text(screen: Screen) -> bool:
@@ -85,12 +89,17 @@ def _okunote_last_resort_gate(cur, last_resort, now=None):
     return True
 
 
-def orphan_battle_menu_step(screen, mem):
+def orphan_battle_menu_step(screen, mem, *, owner_active=None):
     """Close an unbound parent menu finitely, then require new native context.
 
     The gray commands do not identify an actor, HP or a usable Okunote. A
     background animation/fade must neither refill the cancellation budget nor
     release an exhausted episode to the generic scene-confirm fallback.
+
+    ``owner_active`` is the orchestrator's pre-flow snapshot
+    (``status_panel.status_panel_owner_active``): when a live flow is reading
+    this general status page, the page belongs to it and this step returns
+    None.  Returning ``[]`` would stop the dispatcher before that owner ran.
     """
     flow = mem.get('orphan_battle_menu')
     restored = isinstance(mem.get('resume_battle_menu'), dict)
@@ -101,10 +110,22 @@ def orphan_battle_menu_step(screen, mem):
     # A general's status page (opened by the monthly/roster walk) says
     # 「しろのなかにいます」 and 「Bボタンでもどる」.  The plain-command fade
     # path was advancing it with A forever (g1190 2026-11-22 09:00, n=30341).
+    # The owners that read this page dispatch after this step, so only close it
+    # when no owner was active before the flows ran (post_month_status failed
+    # every month with status_unreadable because this B beat its reader).  When
+    # an owner is active, return None before the plain-command A path below:
+    # advancing the owner's page with A is the g1190 loop this branch fixed.
     text = screen.text or ''
     if ('Bボタンでもどる' in text
             and ('しろのなかにいます' in text
                  or ('HP' in text and 'ちんぎん' in text))):
+        if owner_active:
+            # Drop the stale claim, as the close path did: the owner reads this
+            # page and returns to its roster, and a leftover plain-command flow
+            # would press A on that roster frame ahead of the same owner.
+            mem.pop('orphan_battle_menu', None)
+            mem.pop('resume_battle_menu', None)
+            return None
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         _record(mem, 'battle_status_screen_return',
@@ -2237,8 +2258,8 @@ def _summon_scroll_rearm(mem, battle, guard):
     hp = battle.get('summon_enemy_hp')
     if type(hp) is int and 0 < hp <= EGG_WALL_DAMAGE:
         return False    # 一撃で倒せる残りHPでは奥の手を使わない (owner 2026-11-04)
-    if battle.get('zombie_melee'):
-        return False    # ゾンビ召喚は白兵で対処し、抽選を開かない (owner 2026-11-24)
+    if battle.get('melee_only_summon'):
+        return False    # 0ダメージ召喚獣は白兵で対処し、抽選を開かない (owner 2026-11-24)
     live = _live_defense_summon(battle)
     limit = SUMMON_SCROLL_LIVE_REARM_LIMIT if live else SUMMON_SCROLL_REARM_LIMIT
     gap = SUMMON_SCROLL_LIVE_REARM_TICKS if live else SUMMON_SCROLL_REARM_TICKS
@@ -2481,7 +2502,7 @@ def egg_battle_step(screen: Screen, mem):
     if isinstance(mem.get('battle'), dict):
         # Keep the okunote preempt from spending our general's HP on a lottery
         # against a zero-damage zombie; cleared as soon as the panel changes.
-        mem['battle']['zombie_melee'] = melee_only
+        mem['battle']['melee_only_summon'] = melee_only
     summon_threat = bool(general_reading and len(enemy_rows) == len(enemy_monsters) == 1
                         and not melee_only
                         and (enemy_monsters[0].name == 'ダークエルフ'
@@ -2494,7 +2515,7 @@ def egg_battle_step(screen: Screen, mem):
                         'enemy_monster_hp': enemy_monsters[0].hp}
     elif melee_only:
         wants_egg = False
-        egg_evidence = {**egg_evidence, 'rule': 'zombie_melee',
+        egg_evidence = {**egg_evidence, 'rule': 'melee_only_summon',
                         'enemy_monster': enemy_monsters[0].name,
                         'enemy_monster_hp': enemy_monsters[0].hp}
     empty_egg = _screen_egg_empty(screen, mem, battle)
@@ -2542,7 +2563,8 @@ def egg_battle_step(screen: Screen, mem):
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'experience_key': key, 'egg_need': egg_evidence},
                 source_pattern='⑥',
-                reason=('オーナー指示 (2026-11-24): 相手がゾンビのため、たまごを使わず白兵で対処する'
+                reason=(f'オーナー指示 (2026-11-24): 相手が{enemy_monsters[0].name}'
+                        '（0ダメージ召喚獣）のため、たまごを使わず白兵で対処する'
                         if melee_only else
                         'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
                         '自軍が健在でHP・兵士数・戦闘力から白兵を続けられそうならたまごを温存）'
@@ -2594,16 +2616,17 @@ def egg_battle_step(screen: Screen, mem):
         # A hot-loaded or learned 卵 decision made before the panel was read
         # must not spend the egg on a zombie (owner 2026-11-24). Record the
         # reversal once per battle; later observations just keep attacking.
-        if mem.get('egg_action') != 'attack' and not battle.get('zombie_melee_override'):
-            battle['zombie_melee_override'] = True
-            _record(mem, 'egg_battle', strategy_variant='egg_battle_zombie_melee',
-                    deviation_reason='チャート外: 敵の卵召喚戦（ゾンビは白兵）',
-                    expected_metric='ゾンビへの白兵と戦闘結果',
+        if mem.get('egg_action') != 'attack' and not battle.get('melee_only_override'):
+            battle['melee_only_override'] = True
+            _record(mem, 'egg_battle', strategy_variant='egg_battle_melee_only',
+                    deviation_reason='チャート外: 敵の卵召喚戦（0ダメージ召喚獣は白兵）',
+                    expected_metric='0ダメージ召喚獣への白兵と戦闘結果',
                     observed_metric={'egg_need': egg_evidence,
                                      'enemy_monster': enemy_monsters[0].name,
                                      'enemy_monster_hp': enemy_monsters[0].hp},
                     source_pattern='⑥',
-                    reason='オーナー指示 (2026-11-24): 相手がゾンビのため、たまごの温存判断を白兵へ戻す')
+                    reason=(f'オーナー指示 (2026-11-24): 相手が{enemy_monsters[0].name}'
+                            '（0ダメージ召喚獣）のため、たまごの温存判断を白兵へ戻す'))
         mem['egg_action'] = 'attack'
         if isinstance(battle.get('independent'), dict):
             battle['independent']['action'] = 'attack'

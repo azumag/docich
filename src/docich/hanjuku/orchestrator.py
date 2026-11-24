@@ -14,7 +14,8 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     card_census as card_census_flow,
                     deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
                     month as month_flow, name as name_flow, password as password_flow,
-                    prompts as prompts_flow, recall as recall_flow, shop as shop_flow)
+                    prompts as prompts_flow, recall as recall_flow, shop as shop_flow,
+                    status_panel)
 from .judgment import battle as battle_judgment
 from .strategy import campaign, card_census as card_census_booking, edition, goals
 from .os_layer import readers
@@ -2093,6 +2094,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # flight'). The same jump ended on the camp menu at 77-8 (173415
     # castle_jump_failed text) and closed it before いどう could be chosen.
     recall_in_flight = _flow(mem).get('recall') or {}
+    # Snapshot the general-status panel's owner before any flow runs: a flow
+    # may pop its state mid-frame, and orphan_battle_menu_step must still know
+    # this frame's page belonged to a live reader (post_month_status failed
+    # every month with status_unreadable because the orphan B ran first).
+    status_panel_owner = status_panel.status_panel_owner_active(mem, screen)
     actions = None
     # S3: an open census owns its map/menu/list frames before every other
     # owner. It returns None on anything else (a battle, a message), so the
@@ -2130,7 +2136,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = deploy_flow.boss_stock_restart_step(screen, mem)
         sortie_cancel_hold = actions == [] and bool(mem.get('boss_stock_restart') or mem.get('boss_stock_cancelled'))
     if actions is None:
-        actions = battle_menus_flow.orphan_battle_menu_step(screen, mem)
+        actions = battle_menus_flow.orphan_battle_menu_step(
+            screen, mem, owner_active=status_panel_owner)
     if actions is None:
         actions = battle_menus_flow.defender_egg_pending_step(screen, mem)
     if actions is None:

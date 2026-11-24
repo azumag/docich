@@ -349,7 +349,10 @@ def test_boss_phase_without_a_battle_is_recorded_after_the_grace(runtime_dir):
     assert '### ボスフェーズ' in audit.render(record)
 
 
+
+
 def test_static_multi_site_boss_omits_moving_boss_only_signals(runtime_dir):
+    from docich import hanjuku_chart as chart
     normal = set(chart.castles(4)) - set(chart.boss_sites(4))
     for index in range(401):
         at = 1000 + index * STEP
@@ -374,7 +377,6 @@ def test_moving_boss_keeps_its_cell_and_pursuit_signals(runtime_dir):
     record = audit.load_incidents(runtime_dir)[0]
     assert 'boss_cell_missing' in record['signals']
     assert 'boss_pursuit_idle' in record['signals']
-
 
 def test_boss_phase_with_a_battle_is_not_recorded(runtime_dir):
     _run_boss(runtime_dir, battle_at=100)
