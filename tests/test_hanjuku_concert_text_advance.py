@@ -2,6 +2,8 @@
 from docich.hanjuku.orchestrator import (
     EVENT_TEXT_ADVANCE_MAX,
     event_text_advance,
+    event_text_advance_step,
+    _dome_camp_menu_text_owned,
 )
 
 
@@ -131,3 +133,85 @@ def test_planned_action_on_stable_or_diverging_text_still_resets():
     assert event_text_advance(
         mem, 'event', 'text', 'text:さようなら', pad_action) is False
     assert 'event_text_watch' not in mem
+
+
+
+def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
+    mem = {'month_sub': {'kind': 'chikujou', 'build_wait': 7}}
+    native_texts = (
+        'これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
+        'どのしろをぞうちく',
+        'どのしろをぞうちくなさいますか?',
+        'イデ',  # partial castle-name typewriter prefix
+        'イデ!',  # width-folded complete label before the suffix
+        'イデ！じょう',  # partial quote before the cost line
+        'ファ',  # #5313: typewriter prefix of the remaining castle
+        'ファルゲ',
+        'ファルゲじょう',
+        'カラじょうですな',  # partial typewriter quote
+        'カラじょうですな5Gかかりますがよろしいですかなうむッ!',
+        'カラじょうのレベルが2',
+        'おかねがたりません',
+        'しょうぐんがおりませなんだ',
+        'カラじょうのレベルが2になりましたぞ',
+        'おかねがたりませんぞ',
+    )
+    down = [{'type': 'pad', 'buttons': ['down'], 'hold_ms': 100}]
+    for text in native_texts:
+        for _ in range(EVENT_TEXT_ADVANCE_MAX + 2):
+            assert event_text_advance_step(
+                mem, 'event', 'text', f'text:{text}', down) is False
+        assert mem['month_sub']['build_wait'] == 7
+        assert 'event_text_watch' not in mem
+
+
+def test_advancing_an_unrelated_event_restarts_the_chikujou_transition_wait():
+    for key in ('text:イベント会話の本文', 'text:カ', 'text:じょうだんのイベント'):
+        mem = {'chapter': 9, 'month_sub': {'kind': 'chikujou', 'build_wait': 19}}
+        results = [
+            event_text_advance_step(mem, 'event', 'text', key, [])
+            for _ in range(EVENT_TEXT_ADVANCE_MAX)
+        ]
+        assert results[-1] is True
+        assert mem['month_sub']['build_wait'] == 0
+
+
+
+def test_active_dome_recall_owns_unclassified_text_but_not_other_screens():
+    recall = {'stage': 'menu', 'camp_kind': 'dome'}
+    assert _dome_camp_menu_text_owned(recall, True, 'text')
+    assert not _dome_camp_menu_text_owned(recall, True, 'unknown')
+    assert not _dome_camp_menu_text_owned(recall, False, 'text')
+    assert not _dome_camp_menu_text_owned(
+        {'stage': 'menu', 'camp_kind': 'tent'}, True, 'text')
+    assert not _dome_camp_menu_text_owned(
+        {'stage': 'fort_menu', 'camp_kind': 'dome'}, True, 'text')
+    assert not _dome_camp_menu_text_owned(recall, True, 'map')
+
+
+def test_dome_recall_gets_one_full_menu_wait_after_event_text_advance():
+    recall = {'stage': 'menu', 'camp_kind': 'dome', 'menu_other': 5}
+    assert _dome_camp_menu_text_owned(recall, True, 'text')
+    mem = {}
+    results = [
+        event_text_advance_step(
+            mem, 'event', 'text', 'text:せめこまれました', [],
+            dome_recall=recall)
+        for _ in range(EVENT_TEXT_ADVANCE_MAX)
+    ]
+    assert results[-1] is True
+    assert recall['menu_other'] == 0
+    assert recall['event_text_advance_restarted'] is True
+    assert 'event_text_watch' not in mem
+
+    # A second repeated text may still use the normal event-A bound, but it
+    # cannot restart the dome wait again and defeat DOME_SCREEN_WAIT.
+    recall['menu_other'] = 5
+    results = [
+        event_text_advance_step(
+            mem, 'event', 'text', 'text:せめこまれました', [],
+            dome_recall=recall)
+        for _ in range(EVENT_TEXT_ADVANCE_MAX)
+    ]
+    assert results[-1] is True
+    assert recall['menu_other'] == 5
