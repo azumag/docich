@@ -196,6 +196,15 @@ def terminal_identity(run, runtime_id):
                 and run.get("phase") == "title" and run.get("title_count", 0) >= 3
                 and run.get("observed_monotonic", 0) - run.get("title_since", 0) >= 2):
             _fail("invalid_terminal")
+    elif reason == "game_clear":
+        # The clear-ending corner end returns to the title just like game_over;
+        # the producer additionally marks the evidence
+        # (hanjuku_run: title_return_after_clear_ending), but old runs without
+        # that field still count when the title receipt is complete.
+        if not (run.get("name_entered") is True and run.get("gameplay_seen") is True
+                and run.get("phase") == "title" and run.get("title_count", 0) >= 3
+                and run.get("observed_monotonic", 0) - run.get("title_since", 0) >= 2):
+            _fail("invalid_terminal")
     elif reason == "screen_stalled":
         if run.get("unchanged_seconds", 0) < 300:
             _fail("invalid_terminal")
