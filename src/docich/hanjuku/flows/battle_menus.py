@@ -120,8 +120,15 @@ def _human_scroll_active(cur):
     return isinstance(state, dict) and state.get('active') is True
 
 
-def _human_scroll_owns(screen, labels, cur):
-    """True while the measured five-item scroll owns this command box."""
+def _human_scroll_owns(screen, labels, cur, *, chapter=None):
+    """True while the measured five-item scroll owns this command box.
+
+    The evidence is specific to the ch12 boss command list observed in g1190.
+    Other chapters have real grey-egg summon menus with the same OCR shape;
+    their existing card/egg owner must retain control.
+    """
+    if chapter != 12:
+        return False
     if _human_five_item_box(screen, labels):
         return True
     if not _human_scroll_active(cur):
@@ -1102,7 +1109,7 @@ def battle_menu_step(screen: Screen, mem):
     _labels = {word for _, _, word in _options(screen)}
     # A measured five-item scroll owns this box even before the B fallback:
     # its きりふだ/たいきゃく-only bottom page is not a modal overlay.
-    _scroll_owned = _human_scroll_owns(screen, _labels, cur)
+    _scroll_owned = _human_scroll_owns(screen, _labels, cur, chapter=mem.get('chapter'))
     if (_screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur)
             and not _scroll_owned):
         _record(mem, 'battle_egg_actor_unconfirmed',
@@ -2469,7 +2476,7 @@ def _defender_summon_egg_menu(screen, mem, battle):
         return None
     guard = battle.setdefault('okunote_summon_preempt', {'opens': 0})
     labels = [w for _, _, w in _options(screen)]
-    if ('おくのて' not in labels
+    if (mem.get('chapter') == 12 and 'おくのて' not in labels
             and (_human_five_item_box(screen, set(labels))
                  or _human_scroll_active(battle)
                  or _stale_battle_actor(screen, battle))):
@@ -2609,9 +2616,10 @@ def egg_battle_step(screen: Screen, mem):
     # off its upper page. The persisted scroll episode (or a stale policy.battle
     # whose ally is not the general on the panel) owns it here too: never scroll
     # it back down and never confirm もうこうげき (owner 2026-11-24).
-    if _battle_ctx and (_human_scroll_owns(screen, _labels, _battle_ctx)
-                        or (_stale_battle_actor(screen, _battle_ctx)
-                            and bool(_labels.intersection({'こうげき', 'もうこうげき'})))):
+    if (mem.get('chapter') == 12 and _battle_ctx
+            and (_human_scroll_owns(screen, _labels, _battle_ctx, chapter=mem.get('chapter'))
+                 or (_stale_battle_actor(screen, _battle_ctx)
+                     and bool(_labels.intersection({'こうげき', 'もうこうげき'})))):
         _begin_human_scroll(_battle_ctx)
         _scroll = _human_scroll_step(screen, mem, _battle_ctx, _labels)
         if _scroll is not None:
