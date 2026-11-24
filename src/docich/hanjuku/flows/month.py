@@ -724,10 +724,31 @@ def _note_chikujou_skip_unexplained(mem, shop):
     if isinstance(refused, dict) and refused.get('castles'):
         if not any(name not in tried for name in _chikujou_candidates(mem)):
             return
+    # A bounded wait that gave up on the screen transition is a cause too
+    # (docich#5326: chikujou_held -> skipped). Name it instead of calling the
+    # month unexplained; the audit still files, but the log now points at the
+    # real failure.
+    held_reason = None
+    for row in reversed(mem.get('_records') or ()):
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
+            continue
+        if row.get('month') not in (None, month):
+            continue
+        held_reason = row.get('deviation_reason') or row.get('reason')
+        break
     seen = shop.get('chikujou_skip_logged')
     if seen == month:
         return
     shop['chikujou_skip_logged'] = month
+    if held_reason:
+        _record(mem, 'chikujou_skip_after_hold', month=month,
+                observed_metric={'gold': (shop.get('gold_start')),
+                                 'chikujou': shop.get('chikujou'),
+                                 'tried': list(tried)[:8],
+                                 'candidates': sorted(_chikujou_candidates(mem))[:8],
+                                 'held_reason': held_reason},
+                reason='築城の画面遷移を有限回待っても確認できずに skipped のまま月を終えた')
+        return
     _record(mem, 'chikujou_skip_unexplained', month=month,
             observed_metric={'gold': (shop.get('gold_start')),
                              'chikujou': shop.get('chikujou'),
