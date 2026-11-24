@@ -1438,6 +1438,84 @@ def _survival_needed(cur):
             or (not cur.get('planned_cards') and _combat_behind(cur)))
 
 
+# Open a measured, one-shot rescue before the ordinary low-HP/retreat gates.
+# 70% remaining means at least 30% of the HP brought into this battle has
+# already been lost. The live menu still owns the final card damage gate.
+EARLY_RESOURCE_RESCUE_REMAINING_TENTHS = 7
+
+
+def _early_resource_rescue_needed(mem, cur):
+    """Open one bounded resource inspection after a meaningful losing HP trade.
+
+    Only current, named evidence can license this: the actor is behind, has
+    lost at least 30% of its opening HP, and a positive personal egg or a
+    confirmed carried survival card still has a path through the damage gate.
+    Charted/boss fights, event duels, the immediate-retreat HP floor and spent rescue
+    budgets keep their existing timing.
+    """
+    if not isinstance(mem, dict) or not isinstance(cur, dict):
+        return False
+    hp, start, enemy = (cur.get(k) for k in ('ally_hp', 'start_ally_hp', 'enemy_hp'))
+    if (type(hp) is not int or type(start) is not int or type(enemy) is not int
+            or start <= 0 or enemy <= 0 or hp <= RETREAT_RESOURCE_FLOOR_HP
+            or hp * 10 > start * EARLY_RESOURCE_RESCUE_REMAINING_TENTHS):
+        return False
+    if (cur.get('event_duel') or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('planned_cards')
+            or cur.get('card_flow') or cur.get('command_open_pending')):
+        return False
+    if (cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS):
+        return False
+    if _boss_tactics_allowed(mem, cur) or not _behind(cur):
+        return False
+
+    rescue = cur.get('survival')
+    rescue = rescue if isinstance(rescue, dict) else {}
+    if rescue.get('early_resource_triggered') or rescue.get('exhausted'):
+        return False
+    opens, pending = rescue.get('opens', 0), rescue.get('pending_opens', 0)
+    if (type(opens) is not int or type(pending) is not int
+            or opens < 0 or pending < 0 or opens >= 12 or pending >= 3):
+        return False
+
+    attempts = rescue.get('egg_attempts', 0)
+    if type(attempts) is not int or attempts < 0:
+        attempts = EGG_ATTEMPT_HARD_LIMIT
+    egg_limit = EGG_ATTEMPT_LIMIT
+    last_hp = rescue.get('egg_attempt_hp')
+    if (type(last_hp) is int and hp < last_hp and attempts < EGG_ATTEMPT_HARD_LIMIT):
+        egg_limit = EGG_ATTEMPT_HARD_LIMIT
+    egg_spent = attempts >= egg_limit or (rescue.get('egg_attempted') and not attempts)
+    egg_ready = (not rescue.get('egg_pending') and not egg_spent
+                 and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur))
+
+    cards_ready = False
+    checked = rescue.get('cards_checked', 0)
+    if (not rescue.get('cards_exhausted') and type(checked) is int
+            and 0 <= checked < CARD_SPEND_ATTEMPT_LIMIT):
+        kit = _confirmed_carried_kit(mem, cur)
+        spend_attempts = _card_spend_attempts(cur)
+        if isinstance(kit, (list, tuple)):
+            # Reuse the inventory multiset rule so one selected copy does not
+            # hide a second, still-unselected copy of the same carried card.
+            for row in _egg_inventory(mem, cur, kit):
+                card, available = row.get('name'), row.get('available')
+                attempts_for_card = spend_attempts.get(card, 0)
+                if (card not in SURVIVAL_CARDS or type(available) is not int or available <= 0
+                        or type(attempts_for_card) is not int or attempts_for_card < 0
+                        or attempts_for_card >= CARD_SPEND_ATTEMPT_LIMIT):
+                    continue
+                try:
+                    gate = _card_damage_gate(mem, cur, card)
+                except Exception:
+                    continue
+                if gate.get('allowed') is True or gate.get('needs_live_list') is True:
+                    cards_ready = True
+                    break
+    return egg_ready or cards_ready
+
+
 def _unarmed_wall_risk(cur):
     """Inspect initially eggless attackers before a wall-triggered summon.
 
