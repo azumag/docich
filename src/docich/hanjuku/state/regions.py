@@ -257,6 +257,7 @@ KEY_OWNERSHIP = {
     'shop': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 購入計画(戦略economyが書く)
     'site_step_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # サイトstep再武装の戦略管理
     'sortie_cancelled_observed_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃キャンセル観測カウント(orders調整用)
+    'sortie_empty_kit_retries': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 計画札ゼロ携行の再試行上限
     'sortie_cancelled_observed_gates': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上ゲート
     'sortie_held_source_defender_cancel_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 兄弟キー(orders書き)に同じ戦略カウント
     'sortie_held_source_defender_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃保留元防衛者カウント(orders戦略)
