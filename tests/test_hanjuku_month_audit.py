@@ -321,6 +321,16 @@ def test_boss_battle_evidence_is_not_only_battle_start():
     assert audit._boss_battle_seen(value, [], 9, 'ハデス') is True
 
 
+def test_chapter_four_season_king_battle_counts_as_boss_evidence():
+    from docich.hanjuku_map_sources import SEASON_KINGS
+    king = sorted(SEASON_KINGS)[0]
+    rows = [{'decision': 'battle_start', 'enemy': king}]
+    assert audit._rows_boss_battle(rows, 4, '四季王') is True
+    # Season kings are chapter 4 evidence only; the same name in another
+    # chapter's window must not suppress its boss incident.
+    assert audit._rows_boss_battle(rows, 9, 'ハデス') is False
+
+
 def _run_boss(runtime, count=401, *, battle_at=None, hp=False):
     for index in range(count):
         at = 1000 + index * STEP

@@ -561,6 +561,12 @@ def _boss_battle_seen(mem, records, chapter, boss_name):
                                       or row.get('castle') in boss_sites):
             return True
     boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    if chapter == 4:
+        # Chapter 4's four sites are fought as the season kings, not as the
+        # chart's ボス name. Without these names a live site battle looks
+        # like "no boss battle" to the audit (docich#5397).
+        from ..hanjuku_map_sources import SEASON_KINGS
+        boss_names |= set(SEASON_KINGS)
     for record in records or ():
         if not isinstance(record, dict):
             continue
@@ -585,6 +591,11 @@ def _rows_boss_battle(rows, chapter, boss_name):
     from .. import hanjuku_reference as reference
     boss_sites = set(chart.boss_sites(chapter) or ())
     boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    if chapter == 4:
+        # See _boss_battle_seen: the season kings are chapter 4's real boss
+        # enemies, so a site battle must count as boss evidence.
+        from ..hanjuku_map_sources import SEASON_KINGS
+        boss_names |= set(SEASON_KINGS)
     for row in rows or ():
         if not isinstance(row, dict):
             continue
@@ -621,9 +632,13 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
     # a busy phase can therefore hide a real battle_start from this count.
     battle_starts = sum(1 for row in rows if row.get('decision') == 'battle_start')
     from .. import hanjuku_reference as reference
+    boss_enemies = set(reference.BOSS_GENERALS)
+    if current.get('chapter') == 4:
+        from ..hanjuku_map_sources import SEASON_KINGS
+        boss_enemies |= set(SEASON_KINGS)
     boss_battles = sum(1 for row in rows if row.get('decision') == 'battle_start'
                        and (row.get('enemy') == current.get('boss_name')
-                            or row.get('enemy') in reference.BOSS_GENERALS))
+                            or row.get('enemy') in boss_enemies))
     signals = ['boss_no_battle']
     if not mem.get('boss_cell'):
         signals.append('boss_cell_missing')

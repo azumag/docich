@@ -48,13 +48,40 @@ def test_non_site_boss_without_companion_reaches_bounded_deploy_wait():
     assert strategy_orders._ready(order, mem) is True
 
 
-def test_chapter_four_boss_site_keeps_measured_companion_gate():
+def test_chapter_four_boss_site_wait_is_bounded_and_recorded():
     order = next(o for o in chart.orders(4) if o['target'] in chart.boss_sites(4))
     mem = {'chapter': 4, 'tick': 100, 'captured': list(chart.castles(4)),
            'orders': {o['step']: 'launched' for o in chart.orders(4)}, 'picked': []}
     _world(mem)['garrison'] = {castle: ([] if castle != order['source'] else [p.NAME])
                                for castle in chart.castles(4)}
+
+    # The source roster is known but has no eligible companion. The old
+    # chapter-4 site gate short-circuited before arming the timer, so the
+    # order never became ready and never reached deploy's bounded fallback
+    # (docich#5397). The first check now arms one visible, finite wait.
     assert strategy_orders._ready(order, mem) is False
+    waits = [r for r in mem['_records']
+             if r['decision'] == 'boss_companion_source_wait']
+    assert len(waits) == 1
+    assert waits[0]['observed_metric'] == {'waited_ticks': 0}
+
+    mem['tick'] += strategy_orders.BOSS_COMPANION_SOURCE_WAIT_TICKS - 1
+    assert strategy_orders._ready(order, mem) is False
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_wait']) == 1
+
+    mem['tick'] += 1
+    assert strategy_orders._ready(order, mem) is True
+    timeouts = [r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_timeout']
+    assert len(timeouts) == 1
+    assert timeouts[0]['observed_metric']['waited_ticks'] == strategy_orders.BOSS_COMPANION_SOURCE_WAIT_TICKS
+
+    # The expiry receipt is reused: a second readiness check neither waits
+    # again nor emits a duplicate timeout.
+    assert strategy_orders._ready(order, mem) is True
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_timeout']) == 1
 
 
 def test_boss_companion_timeout_does_not_send_a_broken_hero():
