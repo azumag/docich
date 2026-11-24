@@ -133,6 +133,14 @@ def test_a_hero_hop_along_the_relay_counts_as_progress():
     mem = memory()
     plan(mem)
     mem['tick'] = 1000 + routes.STAGING_MAX_TICKS - 100
+    # The hop is where the game books it: the destination's list holds him and
+    # the home list no longer does. A status post alone is dropped when that
+    # castle's list does not show him (e2e 2026-11-25), so the roster moves
+    # with the post here.
+    roster = _world(mem)['garrison']
+    roster[HOME] = ['A', 'B', 'C', 'D']
+    roster['ブラックランド'] = ['チコリ', HERO]
+    _world(mem).setdefault('garrison_tick', {})['ブラックランド'] = mem['tick']
     mem['hero_post'] = {'castle': 'ブラックランド', 'tick': mem['tick']}
     assert routes.staging_update(mem) == 'gathering'
     mem['tick'] += routes.STAGING_MAX_TICKS - 100      # still inside the window since the hop
