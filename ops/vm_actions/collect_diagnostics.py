@@ -8142,6 +8142,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1448-auto-carry-safe-card",
             "hanjuku-chart-v1449-dome-camp-terminal-evidence",
             "hanjuku-chart-v1449-chikujou-hold-note",
+            "hanjuku-chart-v1450-attack-route-revalidation",
             "hanjuku-chart-v1451-dome-camp-terminal-evidence",
             "hanjuku-chart-v1440-chikujou-event-text-advance",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
