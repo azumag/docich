@@ -571,9 +571,20 @@ def _survival_card_list(screen, mem, cur, flow, names):
         if flow['list_ticks'] > 10 and counts:
             rescue['cards_uncertain'] = True
         if uncertain:
+            # docich#5198: a listed card that was attempted but whose count
+            # never dropped is the same fail-closed "selected, consumption
+            # unconfirmed" as _card_use_unclassified. Book it on the same
+            # ledger so battle_result's metric — and the audit's
+            # unconfirmed-only downgrade — can see it. kit_spent stays
+            # untouched: the unchanged live count says the card is most
+            # likely still carried, so it remains plannable for this sortie.
+            unclassified = cur.setdefault('cards_unclassified', [])
+            unclassified += [card for card in uncertain if card not in unclassified]
+            cur['card_consumption_complete'] = False
             _record(mem, 'battle_card_remaining_unconfirmed', **_battle_labels(cur),
                     observed_metric={'listed_counts': counts,
-                                     'counts_at_selection': dict(previous)},
+                                     'counts_at_selection': dict(previous),
+                                     'cards_unclassified': list(unclassified)},
                     reason='同名札が実一覧に残るが使用・枚数減少を確認できないため再決定を保留。救済手段なしとは断定しない')
         return [pad('b')]
     eligible = []

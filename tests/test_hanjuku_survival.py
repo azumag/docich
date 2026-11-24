@@ -959,6 +959,42 @@ def test_legacy_attempt_without_count_does_not_allow_duplicate_reselection():
     assert cur['survival']['cards_uncertain']
 
 
+def test_uncertain_settle_books_the_attempted_card_unclassified():
+    # docich#5198: battle_card_remaining_unconfirmed で保留される試行済みの
+    # 同名札は「選択済み・消費未確認」の fail-closed と同じなので
+    # cards_unclassified に積算する。積まないと敗北時の監査 metric が空のまま
+    # になり、消費確定不能の残存として medium 降格できず high で起票される。
+    mem = basil_rescue_memory()
+    cur = mem['battle']
+    cur['survival'] = {'cards_attempted': ['イッテツーン'], 'opens': 1,
+                       'cards_checked': 1, 'menu_ticks': 0, 'egg_attempted': False}
+    cur['card_flow'] = {'survival': True, 'card': None, 'stage': 'list', 'list_ticks': 0}
+    one = menu(('イッテツーン',), kind='text')
+    assert p.card_list_step(one, mem) == []
+    assert p.card_list_step(one, mem) == [p.pad('b')]
+    assert cur['survival']['cards_uncertain']
+    assert cur['cards_unclassified'] == ['イッテツーン']
+    assert cur['card_consumption_complete'] is False
+    assert not cur.get('card_flow')
+    settle = [r for r in mem['_records']
+              if r['decision'] == 'battle_card_remaining_unconfirmed']
+    assert settle
+    assert settle[-1]['observed_metric']['cards_unclassified'] == ['イッテツーン']
+
+
+def test_uncertain_settle_does_not_duplicate_an_unclassified_card():
+    # 告知待ちで既に cards_unclassified へ積まれた同名札を、実一覧の未確認
+    # settle が重複して帳簿へ積まない。
+    mem = basil_rescue_memory()
+    first_basil_card(mem)
+    open_rescue_list(mem)
+    two = menu(('イッテツーン', 'イッテツーン'), kind='text')
+    assert p.card_list_step(two, mem) == []
+    assert p.card_list_step(two, mem) == [p.pad('b')]
+    assert mem['battle']['survival']['cards_uncertain']
+    assert mem['battle']['cards_unclassified'] == ['イッテツーン']
+
+
 def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhaustion():
     mem = basil_rescue_memory()
     first_basil_card(mem)

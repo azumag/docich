@@ -1254,9 +1254,14 @@ def _battle_resource_event(record):
         # a selection whose announce signature never calibrated. The audit
         # cannot confirm the use, so this is a detection-limit signal, not proof
         # the bot wasted a usable card.
+        # docich#5198: a remaining card the survival list already tried is the
+        # same unconfirmed signature even when the settle never reached the
+        # cards_unclassified ledger (e.g. the flow was dropped or the battle
+        # ended mid-attempt).
         'cards_unconfirmed_only': bool(resources['cards_remaining'])
         and set(resources['cards_remaining'])
-        <= (set(resources['cards_unconfirmed_egg_drop']) | set(resources['cards_unclassified'])),
+        <= (set(resources['cards_unconfirmed_egg_drop']) | set(resources['cards_unclassified'])
+            | set(resources['cards_attempted'])),
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),

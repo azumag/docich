@@ -1799,6 +1799,18 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),
                              'cards_unclassified': cur.get('cards_unclassified', []),
+                             # docich#5198: survival-list attempts and bounded
+                             # re-selections are the same "tried, unconfirmed"
+                             # receipts the old retreat records carried; a
+                             # defeat must expose them so the audit can tell a
+                             # detection-limit remnant from a card that was
+                             # never given a chance.
+                             'cards_attempted': list((cur.get('survival') or {})
+                                                     .get('cards_attempted') or []),
+                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
+                             'cards_spend_attempts': dict(cur.get('cards_spend_attempts') or {}),
+                             'cards_uncertain': bool((cur.get('survival') or {})
+                                                     .get('cards_uncertain')),
                              'card_consumption_complete': cur.get('card_consumption_complete', False),
                              'hero_retreat_selected': bool((cur.get('hero_retreat') or {}).get('selected')),
                              'general_loss': 'unclassified',
