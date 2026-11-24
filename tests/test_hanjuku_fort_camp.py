@@ -230,7 +230,9 @@ def test_a_map_target_without_a_pending_fort_request_is_not_adopted():
     assert _flow(mem)['recall']['stage'] == 'fort_status'
 
 
-def test_a_pending_fort_picker_precedes_both_recall_bounds():
+def test_a_pending_fort_picker_precedes_both_recall_bounds(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
     state = fort_recall(stage='fort_status', general='ヴィーナス',
                         fort_picker_requested=True, steps=recall.RECALL_LIMIT,
                         fort_status_observations=recall.FORT_STAGE_OBSERVATION_LIMIT)
