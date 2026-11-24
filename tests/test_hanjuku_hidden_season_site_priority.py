@@ -33,6 +33,9 @@ NE, NW, SW, SE = ('四季王城(北東)', '四季王城(北西)', '四季王城(
 ANCHOR = chart.CASTLES[3][chart.boss_castle(3)]
 # 21:20 Y view of g1342 (299x224 screenshot; the bot reads it at 256x224).
 NE_DEFEATED = read_png(FIXTURES / 'g1342-ch4-y-view-northeast-defeated-camp.png').resized(256, 224)
+# 23:50 live survey of the same runtime (after the fight): 北東 shows only our
+# army's pennant, the other three kings show the full skull.
+LIVE_2350 = read_png(FIXTURES / 'g1342-ch4-y-view-2350-live.png').resized(256, 224)
 DIMMED = read_png(FIXTURES / 'g1342-ch4-y-view-dimmed-transition.png').resized(256, 224)
 STATE = json.loads((FIXTURES / 'g1342-ch4-bot-state-20261124-2120.json').read_text())
 ID = STATE['policy']['_run_identity']
@@ -115,6 +118,16 @@ def test_real_frame_pair_separates_a_vanished_skull_from_a_live_king_with_our_ar
     assert STATE['policy']['world']['launched'][NW] == {'general': 'ブカティーニ', 'step': '4-B4'}
     # The old API keeps its contract: only definite skulls/terrain are a state.
     assert season_sites(NE_DEFEATED, 4) == {NW: 'open', SW: 'open'}
+
+
+def test_the_later_live_survey_keeps_the_same_split_and_closes_northeast_only():
+    read = season_site_readings(LIVE_2350, 4)
+    kinds = {site: (row['kind'], row['light']) for site, row in read['readings'].items()}
+    assert kinds == {NW: ('skull', 25), SW: ('skull', 25), SE: ('skull', 25), NE: ('hidden', 0)}
+    assert read['healthy']
+    mem = memory()
+    apply(mem, LIVE_2350, 3)
+    assert closed_sites(mem) == {NE}
 
 
 def test_a_dimmed_transition_frame_reads_unhealthy_and_closes_nothing():
