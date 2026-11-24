@@ -165,6 +165,25 @@ def location_row(screen):
     return next((r.span(24, 168).replace(' ', '') for r in screen.lines if r.y == 151), None)
 
 
+def general_status_name(screen):
+    """Read the named-general heading without requiring a readable egg row.
+
+    A status reader must retain ownership when the name is visible but the egg
+    row is temporarily unreadable; its bounded retry is responsible for that
+    row. The name and adjacent しょうぐん label identify the page.
+    """
+    for x, y in ((24, 39), (16, 31)):
+        row = next((r for r in screen.lines if r.y == y), None)
+        if row is None:
+            continue
+        name = row.span(x, x + 64).strip()
+        if (not name or UNKNOWN in name or re.search(r'[\d\s]', name)
+                or row.span(x + 64, x + 112) != 'しょうぐん'):
+            continue
+        return name
+    return None
+
+
 def general_status(screen):
     """Read the named general and egg row, never equate zero uses with broken.
 

@@ -59,6 +59,30 @@ CARD_LIST_SAME_FRAME_LIMIT = 12
 # はどちらも0ダメージで、卵を使わず「こうげき」だけで倒せる。ゾンビと同じく
 # 将軍を脅かさないので、卵・おくのてを消費せず白兵で処理する。
 MELEE_ONLY_SUMMONS = frozenset({'ゾンビ', 'ウゴカザル'})
+# Fields read from a real general status page (g1097 marching/camp/fort and
+# g1190 chapter 4 castle frames).  HP + ちんぎん alone also appear on a 砦
+# card and a sortie-confirm panel, so the page needs its battle/egg/hobby
+# fields as well; 「しろのなかにいます」 stays an alternate key because that
+# sentence alone identified the g1190 A-forever page.
+STATUS_PANEL_FIELDS = ('HP', 'ちんぎん', 'たまご', 'せんとう', 'ないせい', 'しゅみ')
+
+
+def _is_general_status_panel_text(text: str) -> bool:
+    """True only for the general status page, not any HP + ちんぎん panel.
+
+    The measured status layout carries all of ``STATUS_PANEL_FIELDS`` plus
+    ``Bボタンでもどる``; the 砦 card lacks the return sentence and the sortie
+    confirm has neither the egg nor the hobby row.  Camping/marching *status*
+    pages are still this layout (the location sentence changes, the fields do
+    not), which is intended: they are the same page whose leftover A-advance
+    was the g1190 2026-11-22 09:00 (n=30341) failure.
+    """
+    if 'Bボタンでもどる' not in text:
+        return False
+    if 'しろのなかにいます' in text:
+        return True
+    return all(field in text for field in STATUS_PANEL_FIELDS)
+
 
 # Owner 2026-11-24: the five-item human command list (こうげき / もうこうげき /
 # たまごをつかう (grey) / きりふだ / たいきゃく) is a three-row window.  When it
@@ -256,18 +280,20 @@ def orphan_battle_menu_step(screen, mem, *, owner_active=None):
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         return None
-    # A general's status page (opened by the monthly/roster walk) says
-    # 「しろのなかにいます」 and 「Bボタンでもどる」.  The plain-command fade
-    # path was advancing it with A forever (g1190 2026-11-22 09:00, n=30341).
+    # A general's status page (opened by the monthly/roster walk) carries the
+    # measured STATUS_PANEL_FIELDS and 「Bボタンでもどる」.  The plain-command
+    # fade path was advancing it with A forever (g1190 2026-11-22 09:00,
+    # n=30341).  Earlier this branch accepted any HP + ちんぎん panel with the
+    # return sentence, including non-status cards that carry those two rows.
+    # Require the measured status fields instead (#5408); camp/march *status*
+    # pages have the same layout and stay covered.
     # The owners that read this page dispatch after this step, so only close it
     # when no owner was active before the flows ran (post_month_status failed
     # every month with status_unreadable because this B beat its reader).  When
     # an owner is active, return None before the plain-command A path below:
     # advancing the owner's page with A is the g1190 loop this branch fixed.
     text = screen.text or ''
-    if ('Bボタンでもどる' in text
-            and ('しろのなかにいます' in text
-                 or ('HP' in text and 'ちんぎん' in text))):
+    if _is_general_status_panel_text(text):
         if owner_active:
             # Drop the stale claim, as the close path did: the owner reads this
             # page and returns to its roster, and a leftover plain-command flow
