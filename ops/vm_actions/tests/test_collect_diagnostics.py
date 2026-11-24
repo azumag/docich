@@ -1634,6 +1634,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1435-recall-dispatch-unattributed'
     state['bot_version']='hanjuku-chart-v1440-chikujou-event-text-advance'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1440-chikujou-event-text-advance'
+    state['bot_version']='hanjuku-chart-v1445-dome-camp-event-text-owner'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1445-dome-camp-event-text-owner'
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
