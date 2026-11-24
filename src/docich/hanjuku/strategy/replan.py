@@ -1955,8 +1955,20 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                     and (not routes.is_road(chapter)
                          or not chart.march_blocked(chapter, candidate_source, e, owned))
                 ]
-                if not reachable:
-                    continue
+                no_attack_leg = not reachable
+                if no_attack_leg:
+                    # A read-only roster probe never marches (deploy backs out
+                    # after opening the list), so a measured attack leg is not
+                    # required to open it. Requiring one skipped the home
+                    # castle, whose measured legs all lead to castles we
+                    # already own: 2026-11-24 ch3 had 24 generals country-wide
+                    # and four located, every castle kept one, the home list
+                    # was never reopened, and months passed with no sortie
+                    # (#5324, the same deadlock #4689 fixed before the probe
+                    # was narrowed to reachable attack sources). Any enemy
+                    # castle serves as the nominal target; no march uses it.
+                    reachable = [min(enemies,
+                                     key=lambda e: (_distance(chapter, candidate_source, e), e))]
                 unread = routes.unread_dispatches(mem, candidate_source)
                 arrival_due = bool(unread) and routes.arrival_probe_due(
                     mem, candidate_source, cooldown=True)
@@ -1976,7 +1988,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                                 min(unread_ticks, default=now),
                                 candidate_source != home, candidate_source)
                 else:
-                    priority = (1, 1 if planned_source else 0,
+                    # Among castles with no measured attack leg the home
+                    # castle comes first: joiners appear where the hero is
+                    # (``_arrival_castle``), so its list is the one that
+                    # actually hides the generals missing from the count.
+                    home_first = 0 if (no_attack_leg and candidate_source == home) else 1
+                    priority = (1, 1 if planned_source else 0, home_first,
                                 last_tick if type(last_tick) is int else -1,
                                 candidate_source != home, candidate_source)
                 candidates.append((priority, candidate_source, reachable[0]))
@@ -2110,6 +2127,10 @@ def _defense_gate(mem):
     and no per-tick record. 'break': the monthly fallback lets one general
     leave its castle. Records are written on entry, on each monthly evaluation
     and on release only.
+
+    A read-only roster probe is not a candidate for this decision: it opens a
+    castle list and never sends anybody, so it must neither release the wait
+    nor stop the probe from running.
     """
     # A break whose source was lost afterwards is never repeated from there.
     sources = mem.get('defense_break_sources') or {}
@@ -2121,7 +2142,16 @@ def _defense_gate(mem):
                 expected_metric={'castle_kept': True},
                 reason='1将軍出撃の出撃元が落ちたため、同じ城からの守備崩し出撃を禁止する')
         sources.pop(source)
-    if interim_candidates(mem):
+    candidates = interim_candidates(mem)
+    # docich#5324: a probe-only candidate used to count as "a second general
+    # became available" and cleared the wait. The wait then never aged: on
+    # 2026-11-24 ch3 it was released six times in 35 minutes, each release
+    # followed by the same read-only order and the same wait again, while
+    # every castle kept one general and no sortie left for over an hour.
+    probe_only = bool(candidates) and all(
+        isinstance(order, dict) and order.get('roster_probe') is True
+        for order in candidates.values())
+    if candidates and not probe_only:
         if mem.pop('defense_wait', None):
             _record(mem, 'chart_defense_wait_released', chart_step=None,
                     strategy_variant='chart_defense_wait',
@@ -2147,6 +2177,10 @@ def _defense_gate(mem):
                 observed_metric={**observed, 'cycles': wait['cycles']},
                 reason='月次評価: 2人目の将軍がまだ使えない')
     cycles, prospects = wait['cycles'], observed['prospects']
+    if probe_only:
+        # The probe still runs (the caller plans it), but it adds no general:
+        # keep the wait so the monthly count keeps ageing towards the break.
+        return None
     if cycles >= DEFENSE_WAIT_MAX_CYCLES or (cycles >= 1 and not prospects):
         return 'break'
     return 'hold'
