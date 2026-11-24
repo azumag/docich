@@ -2640,16 +2640,33 @@ def egg_battle_step(screen: Screen, mem):
         # こうげき while a carried card was still in planned_cards.  In a
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
         # the visible command text until the box scrolls down; open it first.
+        # A grey/omitted egg row is not proof that the summon command box has
+        # no lower card row. Only a live own-general panel, our attack command,
+        # one recognized enemy summon, and a confirmed carried card license a
+        # navigation-only down press; selection still needs the visible row.
+        enemy_summon_menu = (chart.is_boss_castle(battle.get('castle'))
+                              and len(enemy_rows) == len(enemy_monsters) == 1)
+        own_attack_menu = (general_reading is not None
+                           and battle.get('side') == 'attack'
+                           and enemy_summon_menu
+                           and 'こうげき' in (screen.text or ''))
         if (cards_left and 'きりふだ' not in (screen.text or '')
-                and ('たまごをつかう' in (screen.text or '') or empty_egg)
+                and ('たまごをつかう' in (screen.text or '') or empty_egg
+                     or own_attack_menu)
                 and not battle.get('card_flow')):
             scrolls = int(battle.get('summon_card_scroll') or 0)
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
                 battle['summon_card_scroll'] = scrolls + 1
                 _record(mem, 'battle_summon_card_scroll', **_battle_labels(battle),
                         observed_metric={'scrolls': scrolls + 1, 'cards_left': list(cards_left),
-                                         'text': (screen.text or '')[:60]},
-                        reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
+                                         'text': (screen.text or '')[:60],
+                                         'egg_row_visible': 'たまごをつかう' in (screen.text or ''),
+                                         'own_attack_menu': own_attack_menu},
+                        reason=('実将軍の攻撃コマンドを確認したが卵行がOCRに現れないため、'
+                                '携行札の行を探して下へスクロールする'
+                                if own_attack_menu and 'たまごをつかう' not in (screen.text or '')
+                                and not empty_egg else
+                                '召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する'))
                 return [pad('down')]
         resume = battle.get('summon_card_resume')
         if not isinstance(resume, dict) or resume.get('card') not in cards_left:
