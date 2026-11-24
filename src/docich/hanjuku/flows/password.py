@@ -90,7 +90,9 @@ def _dynamic_step(screen, mem, st):
     if sel is None:
         return [pad('down')]
     search = st.setdefault('dyn_search', {})
-    sign = tuple(y for y, _ in rows)
+    # Row y-coordinates are fixed; include the words so a real scroll is
+    # progress rather than a false 'stuck' observation.
+    sign = tuple((y, word) for y, word in rows)
     if search.get('sign') == sign:
         search['stuck'] = int(search.get('stuck') or 0) + 1
     else:
