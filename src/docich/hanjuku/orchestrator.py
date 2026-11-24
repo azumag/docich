@@ -257,7 +257,7 @@ def _dome_camp_menu_text_owned(recall, recall_dialog, kind):
                 and kind == 'text')
 
 
-def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
+def event_text_advance_step(mem, phase, kind, key, actions, guarded=False, dome_recall=None):
     """Advance unrelated event narration without consuming a live foreground-owner wait."""
     guarded = guarded or _chikujou_menu_text_owned(mem, kind, key)
     advanced = event_text_advance(mem, phase, kind, key, actions, guarded)
@@ -267,6 +267,11 @@ def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
             # The A belongs to unrelated scripted narration, not a failed
             # castle transition. Give the resumed native list its own wait.
             sub['build_wait'] = 0
+        if (isinstance(dome_recall, dict) and dome_recall.get('stage') == 'menu'
+                and dome_recall.get('camp_kind') == 'dome'):
+            # The event A advances the known defense notice. Restart the dome
+            # menu's bounded wait so the resulting screen gets a full window.
+            dome_recall['menu_other'] = 0
     return advanced
 
 
@@ -2497,13 +2502,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     summon_scene = bool(battle.get('summon_scene') or mem.get('summon_scene'))
     from .state.regions import plan as _plan_here
     plan_active = bool(_plan_here(mem).get('active'))
-    # A dome recall already owns its text frame and will use its bounded B-close;
-    # the faster generic event-A shortcut must not overtake that owner.
-    text_guarded = (event_guarded and not (
+    dome_recall = (recall if _dome_camp_menu_text_owned(recall, recall_dialog, kind)
+                    else None)
+    text_guarded = event_guarded and not (
         kind == 'text' and phase == 'dialogue' and screen.text
         and not named_hold and not summon_scene and not plan_active)
-        or _dome_camp_menu_text_owned(recall, recall_dialog, kind))
-    if event_text_advance_step(mem, phase, kind, concert_key, actions, text_guarded):
+    if event_text_advance_step(mem, phase, kind, concert_key, actions, text_guarded,
+                               dome_recall=dome_recall):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
                                         'frame_sha256':digest},
