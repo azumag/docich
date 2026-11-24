@@ -123,6 +123,20 @@ def test_malformed_retreat_recheck_state_is_ignored_when_seeding_camp_months():
         assert memory['boss_camp_exempt'] == {'キッシュ': 1}
 
 
+def test_a_task_recall_without_a_position_falls_back_to_an_owned_castle():
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku.strategy.orders import _recall_goal
+    memory = {'chapter': 4, 'captured': ['アルマムーン', 'フヌイヌム', 'アルカ'],
+              '_run_identity': dict(IDENTITY),
+              'flow': {'recall': {'task_recall': True}}}
+    # The old tail returned None with several owned castles and no measured
+    # position; the picker fallback then confirmed the camp itself.
+    assert _recall_goal(memory) == chart.home_castle(4)
+    # An ordinary camp recall keeps the conservative unresolved result.
+    memory['flow']['recall'].pop('task_recall')
+    assert _recall_goal(memory) is None
+
+
 def test_an_expired_siege_is_queued_for_recall_home_not_boss_move():
     memory = mem(boss_camp_exempt={'キッシュ': post.BOSS_CAMP_EXEMPT_MONTHS + 1})
     tasks = post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
