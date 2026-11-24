@@ -680,6 +680,8 @@ def _boss_target_unlocked(order, mem):
     if chapter == 4 and (order.get('target') not in chart.boss_sites(4)
                          or _season_site_held(order, mem)):
         return False
+    if chapter == 4 and _season_site_waits_for_visible_skull(order, mem):
+        return False
     if _season_site_ready(order, mem):
         return True
     # Parallel assault while side castles are retaken: the boss target is
@@ -699,6 +701,42 @@ def _season_site_held(order, mem):
     lost = mem.get('lost') or ()
     return (chart.home_castle(mem.get('chapter') or 0) in lost
             or len(lost) > SEASON_SITE_MISSING_LIMIT or _site_king_down(mem, order.get('target')))
+
+
+def _season_site_row(mem, target):
+    """The stored Y-view row for a chapter-4 site, or None."""
+    row = (mem.get('season_sites') or {}).get(target)
+    if (mem.get('chapter') or 0) != 4 or not isinstance(row, dict):
+        return None
+    return row if row.get('chapter') == 4 else None
+
+
+def _season_site_skull_visible(mem, target):
+    """The latest Y-view reading for this site still shows the king's skull."""
+    row = _season_site_row(mem, target)
+    return bool(row) and row.get('marker') == 'skull' and row.get('state') != 'closed'
+
+
+def _season_site_waits_for_visible_skull(order, mem):
+    """A hidden/partial site waits while another site still shows a skull.
+
+    g1342 2026-11-24 (owner): the defeated 北東 site stopped drawing its skull
+    while our camp stood on it. That makes a skull-less site a candidate only
+    after every visible skull is gone; the reading itself is bounded and
+    reversible (a skull reopens the site), so this is a priority, never a
+    permanent skip. A site whose state is already closed is handled by
+    ``_season_site_held`` and never reaches this gate.
+    """
+    target = order.get('target')
+    if (mem.get('chapter') or 0) != 4 or target not in chart.boss_sites(4):
+        return False
+    row = _season_site_row(mem, target)
+    if not row or row.get('state') == 'closed':
+        return False
+    if row.get('marker') in (None, 'skull'):
+        return False
+    return any(_season_site_skull_visible(mem, other)
+               for other in chart.boss_sites(4) if other != target)
 
 
 BOSS_COMPANION_WAIT_TICKS = 200   # bounded wait before a safe hero-only boss attempt
