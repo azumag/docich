@@ -1722,9 +1722,16 @@ def _chikujou_snapshot(after, before, record, records):
         return None
     state, mem, shop = chosen
     metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
-    gold = next((value for value in (metric.get('gold_end'), metric.get('gold_after'),
-                                     metric.get('gold'), state.get('gold'))
-                 if type(value) is int), None)
+    # The policy balance is refreshed from the current screen header. The
+    # outer runtime state's duplicate gold and transaction-level gold_after
+    # can both predate a later purchase (g1190 ch1 2-1 / docich#5465: 35G
+    # outside, 30G in policy). Prefer the live policy balance; event/outer
+    # snapshots are fallbacks only when the policy has no current reading.
+    gold = mem.get('gold') if type(mem.get('gold')) is int else None
+    if type(gold) is not int:
+        gold = next((value for value in (metric.get('gold_end'), metric.get('gold_after'),
+                                         metric.get('gold'), state.get('gold'))
+                     if type(value) is int), None)
     if type(gold) is not int:
         gold = shop.get('gold_end') if type(shop.get('gold_end')) is int else shop.get('gold_start')
     reserve = economy._chikujou_reserve(mem, shop)
