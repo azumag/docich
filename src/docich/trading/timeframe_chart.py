@@ -88,7 +88,7 @@ _FETCH_RETRY_DELAY_S = 0.5
 CHART_CACHE_RETENTION_S = 7 * 24 * 60 * 60
 CHART_CACHE_MAX_BYTES = 100 * 1024 * 1024
 CHART_CACHE_SCHEMA_VERSION = 1
-_CHART_CACHE_FILE_RE = re.compile(r"^[0-9a-f]{24}-(?:1d|1h|15m|5m|1m)\\.json$")
+_CHART_CACHE_FILE_RE = re.compile(r"^[0-9a-f]{24}-(?:1d|1h|15m|5m|1m)[.]json$")
 
 
 class TimeframeDataError(RuntimeError):
@@ -463,7 +463,9 @@ class TimeframeChartCache:
 
     def prune(self, *, now: float) -> None:
         """Remove expired/corrupt cache files, then evict oldest to the byte cap."""
-        if self.directory.is_symlink() or not self.directory.is_dir():
+        moment = _finite(now)
+        if (moment is None or self.directory.is_symlink()
+                or not self.directory.is_dir()):
             return
         entries: list[tuple[float, int, Path]] = []
         for path in self.directory.iterdir():
@@ -480,8 +482,8 @@ class TimeframeChartCache:
                     and payload.get("schema_version") == CHART_CACHE_SCHEMA_VERSION
                     else None
                 )
-                if (fetched_at is None or fetched_at > float(now)
-                        or float(now) - fetched_at > self.retention_s):
+                if (fetched_at is None or fetched_at > moment
+                        or moment - fetched_at > self.retention_s):
                     path.unlink()
                     continue
                 entries.append((fetched_at, metadata.st_size, path))
@@ -505,7 +507,9 @@ class TimeframeChartCache:
 
     def load(self, symbol: str, timeframe: str, *, now: float) -> dict[str, object] | None:
         path = self._path(symbol, timeframe, self.directory)
-        if path is None or self.directory.is_symlink() or path.is_symlink():
+        moment = _finite(now)
+        if (path is None or moment is None
+                or self.directory.is_symlink() or path.is_symlink()):
             return None
         try:
             metadata = os.stat(path, follow_symlinks=False)
@@ -518,8 +522,8 @@ class TimeframeChartCache:
                     or payload.get("timeframe") != timeframe):
                 return None
             fetched_at = _finite(payload.get("fetched_at"))
-            if (fetched_at is None or fetched_at > float(now)
-                    or float(now) - fetched_at > self.retention_s):
+            if (fetched_at is None or fetched_at > moment
+                    or moment - fetched_at > self.retention_s):
                 return None
             record = payload.get("record")
             if not self._valid_record(record, symbol, timeframe):
@@ -631,7 +635,7 @@ class TimeframeChartSampler:
         ttl = self.ttl.get(timeframe, 30.0)
         fetched_at = _finite(cached.get("_fetched_at")) if isinstance(cached, dict) else None
         age = moment - fetched_at if fetched_at is not None else None
-        if isinstance(cached, dict) and age is not None and 0 <= age <= CHART_CACHE_RETENTION_S:
+        if isinstance(cached, dict) and age is not None and 0 <= age <= self._disk_cache.retention_s:
             if age < ttl:
                 return self._public(cached)
         elif isinstance(cached, dict):
