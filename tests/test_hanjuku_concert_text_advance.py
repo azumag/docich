@@ -186,7 +186,7 @@ def test_active_dome_recall_owns_unclassified_text_but_not_other_screens():
     assert not _dome_camp_menu_text_owned(recall, True, 'map')
 
 
-def test_dome_recall_event_advance_restarts_the_bounded_menu_wait():
+def test_dome_recall_gets_one_full_menu_wait_after_event_text_advance():
     recall = {'stage': 'menu', 'camp_kind': 'dome', 'menu_other': 5}
     assert _dome_camp_menu_text_owned(recall, True, 'text')
     mem = {}
@@ -198,4 +198,17 @@ def test_dome_recall_event_advance_restarts_the_bounded_menu_wait():
     ]
     assert results[-1] is True
     assert recall['menu_other'] == 0
+    assert recall['event_text_advance_restarted'] is True
     assert 'event_text_watch' not in mem
+
+    # A second repeated text may still use the normal event-A bound, but it
+    # cannot restart the dome wait again and defeat DOME_SCREEN_WAIT.
+    recall['menu_other'] = 5
+    results = [
+        event_text_advance_step(
+            mem, 'event', 'text', 'text:せめこまれました', [],
+            dome_recall=recall)
+        for _ in range(EVENT_TEXT_ADVANCE_MAX)
+    ]
+    assert results[-1] is True
+    assert recall['menu_other'] == 5
