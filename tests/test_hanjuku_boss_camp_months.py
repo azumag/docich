@@ -88,7 +88,8 @@ def test_the_audit_camp_months_seed_a_lost_policy_counter(tmp_path):
         'schema': 1, 'identity': identity,
         'camp_watch': {'month': '8-6', 'generals': {
             'キッシュ': {'last_month': '8-6', 'months': 8}}}}), encoding='utf-8')
-    hint = month_audit.camp_watch_hint(rt, identity=identity)
+    hint = month_audit.camp_watch_hint(
+        rt, identity={**identity, 'observation_id': 'extra-meta'})
     assert hint['generals'] == {'キッシュ': 8}
     memory = mem(month='8-6', camp_watch_hint=hint)
     post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
@@ -103,6 +104,12 @@ def test_the_audit_hint_requires_the_same_run_identity(tmp_path):
     rt = tmp_path / 'runtimes' / 'g-test'
     rt.mkdir(parents=True)
     other = {**IDENTITY, 'lease_id': 'other'}
+    (rt / month_audit.AUDIT_FILE).write_text(json.dumps({
+        'schema': 1, 'identity': other,
+        'camp_watch': {'month': '8-6', 'generals': {
+            'キッシュ': {'last_month': '8-6', 'months': 8}}}}), encoding='utf-8')
+    assert month_audit.camp_watch_hint(rt, identity=dict(IDENTITY)) is None
+    other = {**IDENTITY, 'generation': 2}
     (rt / month_audit.AUDIT_FILE).write_text(json.dumps({
         'schema': 1, 'identity': other,
         'camp_watch': {'month': '8-6', 'generals': {
