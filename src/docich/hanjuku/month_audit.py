@@ -802,6 +802,9 @@ def _camp_event(record):
                                         and all(type(value) is int for value in target_cell)) else None
     castle = _bounded_text(metric.get('castle'), 48)
     general = _bounded_text(record.get('general') or metric.get('general'), 48)
+    screen_text = metric.get('text')
+    if not isinstance(screen_text, str) or not screen_text:
+        screen_text = metric.get('screen_text')
     return {
         'kind': kind,
         'outcome': outcome,
@@ -827,7 +830,7 @@ def _camp_event(record):
         'escape_move': metric.get('escape_move') is True,
         'interrupted': metric.get('interrupted') is True,
         'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
-        'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 120),
+        'screen_text': _bounded_text(screen_text, 120),
         'observed_general': _bounded_text(metric.get('observed_general'), 48),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
     }
