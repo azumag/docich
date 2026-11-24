@@ -685,6 +685,12 @@ def _boss_target_unlocked(order, mem):
     # a retry or a hotloaded active order cannot remove the game prerequisite.
     if not chart.is_boss_castle(order.get('target')):
         return True
+    if order.get('roster_probe') is True or order.get('source_probe') is True:
+        # A read-only roster probe targets the nearest enemy/boss castle only
+        # as a destination; deploy reads the source list and backs out (B,B).
+        # The boss lock applies to attacks, not to that read (chapter 1: the
+        # probe was held as boss_target_locked every observation).
+        return True
     chapter = mem.get('chapter')
     if chapter == 9:
         # The moving boss may only be attacked at a cell measured on this

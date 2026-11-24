@@ -152,7 +152,7 @@ jobs:
           # hanjuku_evidence.py terminal_identity). #2290: input_stalled
           # (#1369) was missing here, so one legitimately completed run made
           # the whole list fail with no artifact.
-          terminal_reasons = {"game_over", "game_clear", "screen_stalled", "input_stalled"}
+          terminal_reasons = {"game_over", "screen_stalled", "input_stalled", "game_clear"}
           keys = {"runtime_id", "generation", "terminal_reason", "observations", "actions_sent"}
           for item in items:
               # Fixed, finite field classification only: never echo the value.
