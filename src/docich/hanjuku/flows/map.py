@@ -895,10 +895,12 @@ def world_map_step(screen, mem, frame):
                 observed_metric={'cursor': list(y_cursor),
                                  'world': list(mem['cursor'])},
                 reason='全体マップの自位置カーソルからフィールド位置を再確定する')
-    # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
-    # pennant, a live king keeps the skull.
+    # The same view draws chapter 4's 四季王 sites: a live king keeps the
+    # skull, a defeated one draws none. Pass the richer reading so the writer
+    # can tell a partial/hidden marker from clean terrain (and from a frame
+    # whose other sites no longer read normally).
     if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
-        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
+        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame), True))
     if (mem.get('chapter') or 0) != 4 and hasattr(frame, 'pixel'):
         # A single boss skull on the Y view is the boss's measured cell (the
         # moving boss included; chapter 4's four sites use the scan above).

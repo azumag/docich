@@ -176,30 +176,48 @@ def world_flags(frame, chapter, cursor=None):
 # as plain terrain while the owner reported them cleared, and 南東 kept the
 # skull as the remaining king. An orange pennant seen earlier at three sites
 # was a marching army standing on them, not a cleared marker, so the cleared
-# test is "no skull and nothing but terrain": any unit portrait, army marker
-# or cloud leaves the site unreadable instead of guessing.
+# test is "no skull and nothing but terrain".
+#
+# g1342 2026-11-24 (owner confirmed): the 四季王 defeated in 北東 stopped
+# drawing its skull after the 21:11-21:15 fight while the bot's own camp
+# stayed on the site; the owner's only in-game evidence for a defeat is that
+# disappearance. A live king keeps the full skull even when a general of ours
+# stands on the site (北西 light 25 with ブカティーニ launched; 南東 light 8 is
+# a *partial* skull behind アポロン and is not evidence either way). The pixel
+# rule therefore has three outcomes beyond terrain:
+#   light >= 15  full skull          -> 'skull' (live king)
+#   6..14        partial/overlaid    -> 'ambiguous' (never closed, never first)
+#   <= 2, not terrain                -> 'hidden' (skull absent/covered; only a
+#                                       confirmed streak may close it)
+# Anything dim/transitional reads ambiguous or hidden with very few definite
+# boxes; season_site_readings()["healthy"] says whether the frame reads normally.
 SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
 SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
 # The island's own palette inside a site box (grass, water, sand, forest).
 SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
                   (106, 165, 205), (57, 88, 123), (172, 157, 65), (197, 133, 49))
 SEASON_TERRAIN_RATIO = 0.95
+SEASON_SKULL_VISIBLE = 15       # full skull measured 25; partial 南東 measured 8
+SEASON_SKULL_ABSENT = 2         # no skull pixels at all (measured 0 in 北東)
+SEASON_SITE_HEALTHY_READS = 2   # other sites that must still read definitively
 
 
-def season_sites(frame, chapter, cursor=None):
-    """{site: 'closed'|'open'} from the Y view's four corner markers.
+def season_site_readings(frame, chapter, cursor=None):
+    """Per-site Y-view marker classes plus whether the frame is trustworthy.
 
-    Skull light is a live king. A box that is nothing but island terrain has
-    no marker: the site is cleared. Anything else (a general's portrait, an
-    army marker, a cloud, the cursor's gold) is unreadable and left out so the
-    caller keeps its previous state.
+    ``readings`` keeps the sites the view made readable; a site under the
+    cursor and a too-small box stay out. ``healthy`` is True when at least two
+    sites read definitively (skull or clean terrain) and at least one of them
+    shows a full skull: a dimmed/transitional frame turns every box ambiguous
+    or hidden, while one site's camp/portrait leaves the rest definite.
     """
+    empty = {'readings': {}, 'healthy': False}
     if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
-        return {}
+        return empty
     anchor = chart.CASTLES[3].get(chart.boss_castle(3))
     if anchor is None:
-        return {}
-    out = {}
+        return empty
+    readings = {}
     for name in chart.boss_sites(4):
         cell = chart.castles(4).get(name)
         if cell is None:
@@ -217,9 +235,46 @@ def season_sites(frame, chapter, cursor=None):
                     if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
         terrain = sum(1 for px in pixels
                       if any(_near_colour(px, colour) for colour in SEASON_TERRAIN))
-        if light >= 6:
-            out[name] = 'open'
+        if light >= SEASON_SKULL_VISIBLE:
+            kind = 'skull'
         elif terrain >= len(pixels) * SEASON_TERRAIN_RATIO:
+            kind = 'closed'
+        elif light <= SEASON_SKULL_ABSENT:
+            kind = 'hidden'
+        else:
+            kind = 'ambiguous'
+        readings[name] = {'kind': kind, 'light': light, 'terrain': terrain,
+                          'pixels': len(pixels)}
+    definite = sum(1 for row in readings.values() if row['kind'] in ('skull', 'closed'))
+    skulls = sum(1 for row in readings.values() if row['kind'] == 'skull')
+    # At least one live skull must read in this very frame: that proves the
+    # skull palette is being drawn normally, so another site's missing skull
+    # is a measurement and not a dimmed/transitional frame.
+    return {'readings': readings,
+            'healthy': definite >= SEASON_SITE_HEALTHY_READS and skulls >= 1}
+
+
+def season_sites(frame, chapter, cursor=None, detailed=False):
+    """{site: 'closed'|'open'} from the Y view's four corner markers.
+
+    ``detailed=True`` returns the ``season_site_readings`` payload instead
+    (the world survey needs the hidden/partial classes and the frame health).
+
+    Skull light is a live king. A box that is nothing but island terrain has
+    no marker: the site is cleared. A partial skull, a general's portrait or
+    an army marker is *not* a state: it is left out so the caller keeps its
+    previous state and the richer reading (``season_site_readings``) can
+    deprioritise it without ever closing the site.
+    """
+    payload = season_site_readings(frame, chapter, cursor)
+    if detailed:
+        return payload
+    readings = payload['readings']
+    out = {}
+    for name, row in readings.items():
+        if row['kind'] == 'skull':
+            out[name] = 'open'
+        elif row['kind'] == 'closed':
             out[name] = 'closed'
     return out
 
