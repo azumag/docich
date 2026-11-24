@@ -827,7 +827,7 @@ def _camp_event(record):
         'escape_move': metric.get('escape_move') is True,
         'interrupted': metric.get('interrupted') is True,
         'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
-        'screen_text': _bounded_text(metric.get('screen_text'), 120),
+        'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 120),
         'observed_general': _bounded_text(metric.get('observed_general'), 48),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
     }
@@ -3818,7 +3818,8 @@ def render(record):
                f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"
                f" / 文言: {_md(camp.get('screen_text') or 'なし')}"
                ] if any(camp.get(key) is not None for key in
-                        ('fort_menu_observations', 'fort_list_observations', 'fort_status_observations')) else []),
+                        ('fort_menu_observations', 'fort_list_observations', 'fort_status_observations',
+                         'screen', 'screen_text', 'observed_general')) else []),
             '',
         ]
     if boss:
