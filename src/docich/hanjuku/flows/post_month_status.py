@@ -1903,6 +1903,20 @@ def step(screen, mem, frame):
                  reason='一覧の選択三角マークから在城候補を観測した')
         return _open_status(screen, state, frame)
     if stage == 'status':
+        # A readable different name proves this is not the selected general's
+        # page. Leave before _observe_status can write that person's egg or
+        # location data into this scan's ledger (#5410).
+        visible_general = house.general_status_name(screen)
+        if (visible_general is not None
+                and visible_general != state.get('selected')):
+            state['failure'] = 'status_general_mismatch'
+            _log(mem, 'post_month_status_unverified',
+                 general=state.get('selected'),
+                 observed_metric={'visible_general': visible_general,
+                                  'phase_reads': state.get('phase_reads')},
+                 reason='別将軍のステータス画面を検出したため誤った卵・所在情報を記録せず月次確認を離脱')
+            _stage(state, 'blocked')
+            return [pad('b')]
         info = house._observe_status(screen, mem)
         if not info or info.get('general') != state.get('selected'):
             if state['phase_reads'] >= STATUS_RETRIES:
