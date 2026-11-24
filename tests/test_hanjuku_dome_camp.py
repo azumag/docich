@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from docich import hanjuku_policy as p
+from docich.hanjuku.orchestrator import EVENT_TEXT_ADVANCE_MAX, event_text_advance_step
 from docich.hanjuku.flows.recall import DOME_SCREEN_WAIT
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import own_camps
@@ -113,3 +114,44 @@ def test_dome_unclassified_text_is_held_then_closed_after_bounded_wait():
     assert record['decision'] == 'camp_group_screen'
     assert record['resulting_event'] == 'unclassified_screen_closed'
     assert record['observed_metric']['text'] == 'せめこまれました'
+
+
+
+def test_dome_defense_text_advance_restarts_wait_once_then_still_closes():
+    mem = {'chapter': 10, 'tick': 100, '_records': []}
+    state = {
+        'stage': 'menu', 'steps': 0, 'camp_kind': 'dome',
+        'target': [131, 113],
+    }
+    _flow(mem)['recall'] = state
+    screen = Screen([], None, 'せめこまれました', kind='text')
+    advances = 0
+
+    # The known defense text gets the normal bounded event A. Its first A
+    # restarts the dome menu wait so the next screen has a full observation window.
+    for _ in range(EVENT_TEXT_ADVANCE_MAX):
+        actions = p.camp_recall_step(screen, mem, object())
+        assert actions == []
+        if event_text_advance_step(
+                mem, 'event', 'text', 'text:せめこまれました', actions,
+                dome_recall=state):
+            advances += 1
+    assert advances == 1
+    assert state['menu_other'] == 0
+    assert state['event_text_advance_restarted'] is True
+
+    # A second event A is still bounded, but does not reset the wait again.
+    # The dome owner closes an unmeasured resulting screen at its own limit.
+    for _ in range(DOME_SCREEN_WAIT):
+        actions = p.camp_recall_step(screen, mem, object())
+        if actions:
+            assert actions == [p.pad('b')]
+            break
+        if event_text_advance_step(
+                mem, 'event', 'text', 'text:せめこまれました', actions,
+                dome_recall=state):
+            advances += 1
+    else:
+        raise AssertionError('dome recall did not close after DOME_SCREEN_WAIT')
+    assert advances == 2
+    assert mem['_records'][-1]['decision'] == 'camp_group_screen'
