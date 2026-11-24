@@ -28,6 +28,7 @@ RECALL_SKIP_HISTORY = 6        # other failed camps whose hold is still running
 LOST_CAMP_RETRY_TICKS = 60     # first wait after a tent only went out of sight, doubling up to the skip
 FORT_RETRY_TICKS = 20          # first wait before the next general leaves the same 砦, doubling likewise
 FORT_STATUS_PRESS_EVERY = 4    # observations of the status panel between two A presses
+FORT_STAGE_OBSERVATION_LIMIT = 12  # a fort stage must progress or release its owner
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
@@ -1497,32 +1498,25 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         return _recall_dispatch_step(screen, mem, state)
     _observe_fort_frame(screen, state)
     state['steps'] = int(state.get('steps') or 0) + 1
-    if state['steps'] > RECALL_LIMIT:
-        metric = {'stage': state.get('stage'), 'steps': state['steps']}
-        if state.get('stage') in FORT_STAGES:
-            metric.update({
-                'general': state.get('general'),
-                'fort_status_reads': int(state.get('fort_status_reads') or 0),
-                'fort_status_observations': int(state.get('fort_status_observations') or 0),
-                'fort_list_observations': int(state.get('fort_list_observations') or 0),
-                'fort_menu_observations': int(state.get('fort_menu_observations') or 0),
-                'screen_kind': state.get('fort_last_screen_kind'),
-                'screen_text': state.get('fort_last_screen_text'),
-                'observed_general': state.get('fort_last_observed_general'),
-            })
-        _record(mem, 'camp_recall_aborted', observed_metric=metric,
-                reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
-        _flow(mem).pop('recall', None)
-        mem['uncertain'] = True
-        _arm_recall_skip(mem, state)
-        # A stuck recall must leave the screen it is on, not only a camp menu.
-        # map_target/world_map are the actual "return" screens; B closes them.
-        # A camp menu is closed with B as before; other screens keep the old
-        # no-input behaviour to avoid inventing inputs on text/battle frames.
-        if (is_camp_menu(screen) or is_fort_menu(screen) or screen.kind in ('map_target', 'world_map')
-                or str(state.get('stage')).startswith('fort_')):
-            return [pad('b')]
-        return []
+    stage = state.get('stage')
+    # A map_target following our A is the fort's own sortie picker. Let it
+    # reach _fort_step even at the global boundary so another order cannot
+    # steer the destination before the recall owner sees it.
+    fort_picker_ready = (
+        stage == 'fort_status'
+        and state.get('fort_picker_requested') is True
+        and screen.kind == 'map_target'
+    )
+    if stage in FORT_STAGES:
+        stage_observations = int(state.get(f'{stage}_observations') or 0)
+        if stage_observations > FORT_STAGE_OBSERVATION_LIMIT and not fort_picker_ready:
+            return _abort_camp_recall(
+                mem, state, screen,
+                '砦の画面が段階別の観測上限内に進行しないため中断し位置を再測定する')
+    if state['steps'] > RECALL_LIMIT and not fort_picker_ready:
+        return _abort_camp_recall(
+            mem, state, screen,
+            '野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
     stage = state.get('stage')
     if stage == 'hero_focus':
         if screen.kind != 'map':
@@ -2193,8 +2187,8 @@ def in_fort_route(state):
 def _observe_fort_frame(screen, state):
     """Keep bounded evidence for an unread 砦 route (#5252).
 
-    This is diagnostic only: it never changes the selected general or sends
-    input. The global recall limit remains the only retry bound.
+    Each stage also has a short non-progress bound; a stale fort panel must
+    release the foreground before it consumes the full camp-recall budget.
     """
     stage = state.get('stage')
     if stage not in FORT_STAGES:
@@ -2219,9 +2213,57 @@ def _observe_fort_frame(screen, state):
             state.pop('fort_last_observed_general', None)
 
 
+def _abort_camp_recall(mem, state, screen, reason):
+    """Record bounded evidence and release a recall that cannot progress."""
+    stage = state.get('stage')
+    metric = {'stage': stage, 'steps': int(state.get('steps') or 0)}
+    if stage in FORT_STAGES:
+        camp = state.get('target')
+        if (isinstance(camp, (list, tuple)) and len(camp) == 2
+                and all(type(value) is int for value in camp)):
+            metric['camp'] = list(camp)
+        target_cell = state.get('target_cell')
+        if (isinstance(target_cell, (list, tuple)) and len(target_cell) == 2
+                and all(type(value) is int for value in target_cell)):
+            metric['target_cell'] = list(target_cell)
+        castle = state.get('goal')
+        if isinstance(castle, str):
+            metric['castle'] = castle[:48]
+        metric.update({
+            'general': state.get('general'),
+            'fort_status_reads': int(state.get('fort_status_reads') or 0),
+            'fort_status_observations': int(state.get('fort_status_observations') or 0),
+            'fort_list_observations': int(state.get('fort_list_observations') or 0),
+            'fort_menu_observations': int(state.get('fort_menu_observations') or 0),
+            'screen_kind': state.get('fort_last_screen_kind'),
+            'screen_text': state.get('fort_last_screen_text'),
+            'observed_general': state.get('fort_last_observed_general'),
+            'input_sent': state.get('input_sent') is True,
+            'input_receipt_confirmed': state.get('input_receipt_confirmed') is True,
+            'picker_closed': state.get('picker_closed') is True,
+            'interrupted': _flow(mem).get('recall_interrupted') is not None,
+            'escape_move': state.get('escape_move') is True,
+        })
+    _record(mem, 'camp_recall_aborted', observed_metric=metric, reason=reason)
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    _arm_recall_skip(mem, state)
+    if (is_camp_menu(screen) or is_fort_menu(screen)
+            or screen.kind in ('map_target', 'world_map')
+            or str(stage).startswith('fort_')):
+        return [pad('b')]
+    return []
+
+
+
 def enter_fort(mem, state):
     """Start the 砦's own route: its generals leave by しゅつげき, not by きかん."""
     state.update(stage='fort_menu', steps=0, camp_kind='dome')
+    for stage in FORT_STAGES:
+        state.pop(f'{stage}_observations', None)
+    state.pop('fort_status_reads', None)
+    state.pop('fort_picker_requested', None)
+    state.pop('fort_picker_requested_tick', None)
     (mem.get('y_jumps') or {}).pop('RECALL:target', None)
     (mem.get('y_jumped') or {}).pop('RECALL', None)
 
@@ -2291,12 +2333,20 @@ def _fort_step(screen, mem, state):
         # locates it when the chosen one has no sortie record of his own.
         state['fort_members'] = list(members)
         state.update(stage='fort_status', steps=0, general=current[2])
+        state.pop('fort_status_observations', None)
+        state['fort_status_reads'] = 0
+        state.pop('fort_picker_requested', None)
+        state.pop('fort_picker_requested_tick', None)
         _record(mem, 'camp_fort_sortie', chart_step=None, general=current[2],
                 observed_metric={'camp': state.get('target'), 'members': members},
                 reason='砦の中の将軍を一人選び、しゅつげきで補給できる自軍城へ帰す')
         return [pad('a')]
     if screen.kind == 'map_target':
+        if state.get('fort_picker_requested') is not True:
+            return None
         state.update(stage='dest', steps=0, fort=True, picker_from_menu=True)
+        state.pop('fort_picker_requested', None)
+        state.pop('fort_picker_requested_tick', None)
         return None
     if screen.kind == 'map':
         return _leave_fort(mem, state, '砦のしゅつげきが閉じてマップへ戻ったため見送る', [])
@@ -2305,7 +2355,13 @@ def _fort_step(screen, mem, state):
     # A stale/adjacent panel is not permission to confirm the sortie picker.
     if info and info.get('general') == state.get('general'):
         reads = state['fort_status_reads'] = int(state.get('fort_status_reads') or 0) + 1
-        return [pad('a')] if reads % FORT_STATUS_PRESS_EVERY == 1 else []
+        if state.get('fort_picker_requested') is True:
+            return []
+        if reads % FORT_STATUS_PRESS_EVERY == 1:
+            state['fort_picker_requested'] = True
+            state['fort_picker_requested_tick'] = int(mem.get('tick') or 0)
+            return [pad('a')]
+        return []
     return []
 
 
