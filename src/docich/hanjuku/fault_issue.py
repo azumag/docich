@@ -50,10 +50,12 @@ def exception_signature(exc, where='') -> str:
     frames = [frame for frame in traceback.extract_tb(exc.__traceback__)
               if '/lib/python' not in frame.filename]
     head = frames[-1] if frames else None
-    location = (f'{Path(head.filename).name}:{head.lineno}:{head.name}'
-                if head is not None else 'unknown')
-    if not location and where:
+    if head is not None:
+        location = f'{Path(head.filename).name}:{head.lineno}:{head.name}'
+    elif where:
         location = where[:120]
+    else:
+        location = 'unknown'
     return f'{type(exc).__name__}@{location}'
 
 
@@ -70,7 +72,12 @@ def _load(path):
     try:
         if path.is_symlink() or not path.is_file():
             return {'schema': FAULTS_SCHEMA, 'entries': {}}
-        raw = path.read_bytes()[:FAULTS_READ_LIMIT]
+        # Read at most one byte beyond the limit. read_bytes() would load an
+        # arbitrarily large corrupted state file before slicing it.
+        with path.open('rb') as stream:
+            raw = stream.read(FAULTS_READ_LIMIT + 1)
+        if len(raw) > FAULTS_READ_LIMIT:
+            return {'schema': FAULTS_SCHEMA, 'entries': {}}
         data = json.loads(raw.decode('utf-8'))
     except (OSError, ValueError, UnicodeError):
         return {'schema': FAULTS_SCHEMA, 'entries': {}}
