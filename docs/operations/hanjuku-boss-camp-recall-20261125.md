@@ -77,7 +77,7 @@
 
 ## 実装メタデータ
 
-- Hot-load marker: `hanjuku-chart-v1474-boss-camp-recall`
+- Hot-load marker: `hanjuku-chart-v1475-boss-camp-recall`
 - Diagnostics collector の固定 allowlist と marker contract test も同じ値へ同期する。
 - 免除カウントの追加キー `boss_camp_counted` は (将軍 → 最後に数えた月) の
   小さな辞書で、run 同一性リセットの対象に含まれる。
