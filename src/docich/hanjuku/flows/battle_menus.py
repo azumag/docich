@@ -18,7 +18,7 @@ from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, 
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
-                               _behind, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
+                               _behind, _boss_tactics_allowed, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
                                DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, DEFENSE_MENU_READ_LIMIT,
                                EGG_WALL_DAMAGE, SUMMON_SCROLL_BATCH,
@@ -1248,6 +1248,11 @@ CARD_ROW_WALK_TOPDOWN = 2    # ups that reach the command box's top row
 CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
 CARD_MENU_TICK_LIMIT = 8     # same bound as before: the walk finishes by tick 5
 
+def _card_usable_in_battle(mem, cur, card):
+    """A boss-only card is eligible only after the measured boss gate opens."""
+    return card not in reference.BOSS_ONLY_CARDS or _boss_tactics_allowed(mem, cur)
+
+
 def _carried_card_left(mem, cur):
     """A card the general actually carries and has not spent yet.
 
@@ -1257,11 +1262,13 @@ def _carried_card_left(mem, cur):
     attempted = {*(cur.get('cards_selected') or []), *(cur.get('cards_used') or []),
                  *(cur.get('cards_unclassified') or []), *(cur.get('cards_missing') or [])}
     planned = [c for c in (cur.get('planned_cards') or [])
-               if isinstance(c, str) and c not in attempted]
+               if isinstance(c, str) and c not in attempted
+               and _card_usable_in_battle(mem, cur, c)]
     if planned:
         return planned[0]
     kit = _confirmed_carried_kit(mem, cur) or []
-    return next((c for c in kit if isinstance(c, str) and c not in attempted), None)
+    return next((c for c in kit if isinstance(c, str) and c not in attempted
+                 and _card_usable_in_battle(mem, cur, c)), None)
 
 
 def _card_row_walk(flow, screen, ticks):
@@ -3143,14 +3150,16 @@ def egg_battle_step(screen: Screen, mem):
                         reason='退却禁止のため切り札一覧の再オープンが空転する。札は使えないものとして攻撃へ切り替える')
         attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
                      *(battle.get('cards_unclassified') or []), *(battle.get('cards_missing') or [])}
-        cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
+        cards_left = [c for c in (battle.get('planned_cards') or [])
+                      if c not in attempted and _card_usable_in_battle(mem, battle, c)]
         if not cards_left:
             # The summon battle's battle context often has no planned_cards,
             # even though the sortie confirmation carried a card.  Use the
             # measured carried kit (departure binding minus spent) so a held
             # card is not silently treated as absent.
             carried = _confirmed_carried_kit(mem, battle) or []
-            cards_left = [c for c in carried if c not in attempted]
+            cards_left = [c for c in carried
+                          if c not in attempted and _card_usable_in_battle(mem, battle, c)]
         # Owner 2026-11-22: enemy summon + our general was going straight to
         # こうげき while a carried card was still in planned_cards.  In a
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
