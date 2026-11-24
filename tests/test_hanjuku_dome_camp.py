@@ -96,3 +96,20 @@ def test_a_small_tent_holds_an_unrelated_text_screen_without_spending_steps(monk
         assert p.camp_recall_step(other, mem, object()) is None
         assert state['stage'] == 'menu' and state['steps'] == 0
     assert state['hold_since'] == 100
+
+
+
+def test_dome_unclassified_text_is_held_then_closed_without_generic_advance():
+    mem = {'chapter': 10, 'tick': 100, '_records': []}
+    _flow(mem)['recall'] = {
+        'stage': 'menu', 'steps': 0, 'camp_kind': 'dome',
+        'target': [131, 113],
+    }
+    screen = Screen([], None, 'せめこまれました', kind='text')
+    for _ in range(DOME_SCREEN_WAIT - 1):
+        assert p.camp_recall_step(screen, mem, object()) == []
+    assert p.camp_recall_step(screen, mem, object()) == [p.pad('b')]
+    record = mem['_records'][-1]
+    assert record['decision'] == 'camp_group_screen'
+    assert record['resulting_event'] == 'unclassified_screen_closed'
+    assert record['observed_metric']['text'] == 'せめこまれました'
