@@ -123,6 +123,7 @@ SIGNAL_LABELS = {
     'chart_adjust_stale': '調整チャート待ち',
     'no_source': '出撃元の将軍がいない',
     'stuck_march': '行軍が停滞',
+    'sortie_kit_unobserved': '切り札の携行レシートなし',
     'ledger_unknown': '月内出撃数を確認できない',
     'boss_no_battle': 'ボス戦闘が発生しない',
     'boss_cell_missing': 'ボス位置が未測定',
@@ -2323,6 +2324,7 @@ def _card_names(value):
 
 def _sortie_carried_cards(mem, step, record, records=None):
     carried = []
+    measured = False
     rare = (mem.get('rare_card_kit') or {}).get(step)
     carried += _card_names(rare)
     strong = (mem.get('strong_card_kit') or {}).get(step)
@@ -2330,43 +2332,51 @@ def _sortie_carried_cards(mem, step, record, records=None):
     dropper = (mem.get('dropper_card_kit') or {}).get(step)
     if isinstance(dropper, dict):
         carried += _card_names(dropper.get('card'))
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(record.get(key))
-    metric = record.get('observed_metric')
-    metric = metric if isinstance(metric, dict) else {}
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(metric.get(key))
-    # docich#5118/#5249: launch decisions do not carry a card list. Read the
-    # measured kit saved by the departure confirmation or committed binding.
+
+    keys = ('cards', 'card', 'cards_selected')
+
+    def add_receipt(source):
+        nonlocal measured
+        if not isinstance(source, dict):
+            return
+        for key in keys:
+            value = source.get(key)
+            if key in source and value is not None:
+                measured = True
+                carried.extend(_card_names(value))
+
+    add_receipt(record)
+    add_receipt(record.get('observed_metric'))
+
+    # A measured confirmation is the source of truth. Missing context is not
+    # an empty kit: blind approval and legacy launches have no measured receipt.
     plan = mem.get('plan') if isinstance(mem.get('plan'), dict) else {}
     contexts = plan.get('order_context')
     context = contexts.get(step) if isinstance(contexts, dict) else None
     context = context if isinstance(context, dict) else {}
-    metric = context.get('observed_metric')
-    metric = metric if isinstance(metric, dict) else {}
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(metric.get(key))
+    add_receipt(context.get('observed_metric'))
+
     world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
     launched = world.get('launched_orders')
     snapshot = launched.get(step) if isinstance(launched, dict) else None
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     binding = snapshot.get('departure_binding')
     binding = binding if isinstance(binding, dict) else {}
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(binding.get(key))
-        # Without a binding, the snapshot's top-level cards may be a copy of
-        # the plan (departure_snapshot fallback), not a measured carry receipt.
-        if binding:
-            carried += _card_names(snapshot.get(key))
+    binding_has_receipt = any(key in binding and binding[key] is not None for key in keys)
+    if binding_has_receipt:
+        add_receipt(binding)
+        # Without a measured binding, snapshot.cards may just copy the plan.
+        add_receipt(snapshot)
+
     for row in records or ():
         if (not isinstance(row, dict) or row is record
                 or row.get('decision') != 'sortie_confirm'
                 or row.get('chart_step') != step):
             continue
-        for key in ('cards', 'card', 'cards_selected'):
-            carried += _card_names(row.get(key))
-    return carried
+        add_receipt(row)
 
+    # Preserve None (unobserved) separately from [] (measured empty).
+    return carried if measured or carried else None
 
 def _sortie_cards_event(record, mem, records=None):
     if not isinstance(record, dict) or record.get('decision') not in LAUNCH_DECISIONS:
@@ -2386,7 +2396,12 @@ def _sortie_cards_event(record, mem, records=None):
     carried = _sortie_carried_cards(mem, step, record, records)
     if carried:
         return None
+    carried_observed = carried is not None
+    kind = 'sortie_without_cards' if carried_observed else 'sortie_kit_unconfirmed'
     return {
+        'kind': kind,
+        'carried': carried,
+        'carried_observed': carried_observed,
         'decision': record.get('decision'),
         'step': step,
         'purpose': _bounded_text(purpose, 32),
@@ -2396,7 +2411,6 @@ def _sortie_cards_event(record, mem, records=None):
         'inventory': dict(sorted(stock.items())[:12]),
         'planned_cards': [card for card in (order.get('cards') or [])
                           if isinstance(card, str)][:12],
-        'carried': [],
         'reason': _bounded_text(record.get('reason'), 200),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
     }
@@ -2413,7 +2427,10 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
     confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
     battle_count = sum(counts.get(name, 0) for name in counts
                        if name.startswith('battle_') or name == 'monster_menu_choice')
-    signals = ['sortie_without_cards', 'card_inventory_ignored']
+    measured_empty = event.get('carried_observed') is True
+    kind = event.get('kind') or 'sortie_without_cards'
+    signals = ['sortie_without_cards' if measured_empty else 'sortie_kit_unobserved',
+               'card_inventory_ignored']
     for name in _signals(context, counts, confirmed, departures, battle_count):
         if name not in signals:
             signals.append(name)
@@ -2421,10 +2438,10 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
     identity = state.get('identity') or {}
     record = {
         'schema': SCHEMA,
-        'event': 'sortie_without_cards',
-        'kind': 'sortie_without_cards',
-        'confidence': 'high',
-        'confidence_reasons': [],
+        'event': kind,
+        'kind': kind,
+        'confidence': 'high' if measured_empty else 'low',
+        'confidence_reasons': [] if measured_empty else ['carried_kit_unobserved'],
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': _month_summary(state.get('observed'), now)
@@ -2462,13 +2479,12 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
         'created_at': float(now),
     }
     raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
-           f"sortie_without_cards|{event.get('step')}|{event.get('general')}|"
+           f"{kind}|{event.get('step')}|{event.get('general')}|"
            f"{int(float(now))}")
     record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
-    record['signature'] = 'sortie_without_cards'
-    record['fingerprint'] = _fingerprint(mem.get('chapter'), 'sortie_without_cards',
-                                         ['sortie_without_cards'])
-    record['auto_file'] = True
+    record['signature'] = kind
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), kind, [signals[0]])
+    record['auto_file'] = measured_empty
     return _shrink(record)
 
 
@@ -2482,7 +2498,7 @@ def _track_sortie_cards(runtime, state, after, records, now, on_sealed=None):
     event = events[0]
     chapter = mem.get('chapter')
     key = '|'.join(str(part or '') for part in (
-        chapter, event.get('step'), event.get('general')))
+        chapter, event.get('kind'), event.get('step'), event.get('general')))
     table = state.setdefault('sortie_cards_events', {})
     if not isinstance(table, dict):
         table = state['sortie_cards_events'] = {}
@@ -2493,7 +2509,7 @@ def _track_sortie_cards(runtime, state, after, records, now, on_sealed=None):
         return
     incident = _build_sortie_cards_incident(runtime, state, after, event, now)
     _append_incident(runtime, incident, on_sealed)
-    table[key] = {'at': float(now), 'kind': 'sortie_without_cards', 'count': 1}
+    table[key] = {'at': float(now), 'kind': event.get('kind'), 'count': 1}
     if len(table) > 30:
         for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
             table.pop(stale, None)
@@ -3822,18 +3838,21 @@ def render(record):
             '',
         ]
     if sortie_cards:
+        carried_observed = sortie_cards.get('carried_observed') is True
         body += [
-            '### 切り札の非携行',
+            '### 切り札の非携行' if carried_observed else '### 切り札の携行未確認',
             '',
             f"- 将軍: {sortie_cards.get('general') or '不明'} / step: {sortie_cards.get('step') or '不明'}"
             f" / purpose: {sortie_cards.get('purpose') or '不明'}",
             f"- 出撃元: {sortie_cards.get('source') or '不明'}"
             f" / 対象: {sortie_cards.get('target') or '不明'}",
-            f"- 在庫: {sortie_cards.get('inventory')} / 携行: なし"
+            f"- 在庫: {sortie_cards.get('inventory')} / 携行: {'なし' if carried_observed else '未確認'}"
             f" / 計画cards: {sortie_cards.get('planned_cards')}",
-            *(["- 型: 計画はあるが携行できていない（デプロイの選択・確認の失敗）"]
-               if sortie_cards.get('planned_cards') else
-               ["- 型: 計画が空（自動携行の対象・v1448 以降）"]),
+            *(["- 型: 計画はあるが実測kitが空（デプロイの選択・確認の失敗）"]
+               if carried_observed and sortie_cards.get('planned_cards') else
+               ["- 型: 計画が空（自動携行の対象・v1448 以降）"]
+               if carried_observed else
+               ["- 型: 出撃確認の実測レシートなし。非携行とは断定できず、自動Issue化しない"]),
             f"- 決定: {sortie_cards.get('decision')} / 理由: {sortie_cards.get('reason') or '不明'}",
             '',
         ]
@@ -4093,6 +4112,10 @@ def _issue_title(record):
         event = record.get('sortie_event') or {}
         who = event.get('general') or event.get('step') or '将軍不明'
         return (f"[半熟英雄] 切り札在庫があるのに非携行で出撃: ch{record.get('chapter')} {who}")[:100]
+    if kind == 'sortie_kit_unconfirmed':
+        event = record.get('sortie_event') or {}
+        who = event.get('general') or event.get('step') or '将軍不明'
+        return (f"[半熟英雄] 切り札の携行を確認できず: ch{record.get('chapter')} {who}")[:100]
     if kind == 'battle_menu_wasted':
         menu = record.get('battle_menu') or {}
         who = menu.get('general') or menu.get('step') or '将軍不明'
