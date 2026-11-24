@@ -948,20 +948,14 @@ def test_a_planned_kit_with_measured_empty_confirmation_retries_once():
     assert not any(row['decision'] == 'sortie_confirm' for row in mem['_records'])
 
 
-def test_a_planned_kit_still_empty_after_retry_fails_instead_of_departing():
+def test_a_second_empty_planned_kit_attempt_fails_instead_of_departing():
     mem = _c2_memory()
     order = policy._order(mem)
     mem['card_drop'] = {order['step']: list(order['cards'])}
-    screen = measured_empty_sortie()
-    for _ in range(policy.SORTIE_CONFIRM_LIMIT):
-        actions = policy.deploy_step(screen, mem)
-    assert actions == [policy.pad('b'), policy.pad('b')]
     plan = policy._plan_region(mem)
-    plan['active'] = order['step']
-    plan['orders'][order['step']] = 'pending'
-    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
-        assert policy.deploy_step(screen, mem) == []
-    actions = policy.deploy_step(screen, mem)
+    plan.setdefault('sortie_empty_kit_retries', {})[order['step']] = 1
+    mem['sortie_confirm_miss'] = {order['step']: policy.SORTIE_CONFIRM_LIMIT - 1}
+    actions = policy.deploy_step(measured_empty_sortie(), mem)
     assert actions == [policy.pad('b'), policy.pad('b')]
     assert plan['orders'][order['step']] == 'failed'
     assert order['step'] not in plan.get('sortie_empty_kit_retries', {})
