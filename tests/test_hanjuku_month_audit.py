@@ -747,17 +747,34 @@ def test_unclassified_card_beside_a_plain_card_stays_high(runtime_dir):
     assert incident['confidence'] == 'high'
 
 
-def test_survival_attempted_only_card_loss_is_not_high_confidence(runtime_dir):
-    # docich#5198: survival 一覧で試行したが消費を確認できず
-    # battle_card_remaining_unconfirmed で保留された札だけが残る敗北は、
-    # 帳簿未積算でも「試行済み残存」として検出限界シグナルに読み、
-    # medium に留める（ch5 セルリアク g1190 の再発経路）。
+def test_one_survival_attempt_does_not_cover_duplicate_remaining_cards(runtime_dir):
+    # docich#5198: one attempted copy plus its overlapping unclassified receipt
+    # cannot account for five identical remaining copies. Keep the loss high
+    # confidence because four copies have no attempt evidence.
     value = state(9, '1-1', 0)
     record = _battle_record('battle_result', outcome='loss',
                             metric={'cards_selected': ['ノリウツール'] * 5,
                                     'cards_used': [],
                                     'cards_attempted': ['ノリウツール'],
                                     'cards_spend_retry': ['ノリウツール'],
+                                    'cards_unclassified': ['ノリウツール'],
+                                    'cards_uncertain': True,
+                                    'ally_hp': 0, 'enemy_hp': 43}, general='セルリアク')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
+def test_all_survival_attempted_duplicate_cards_are_unconfirmed(runtime_dir):
+    # Every remaining copy has an attempt receipt. The attempted and
+    # unclassified ledgers overlap, so they must not be added together.
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ノリウツール'] * 5,
+                                    'cards_used': [],
+                                    'cards_attempted': ['ノリウツール'] * 5,
+                                    'cards_spend_retry': ['ノリウツール'],
+                                    'cards_unclassified': ['ノリウツール'],
                                     'cards_uncertain': True,
                                     'ally_hp': 0, 'enemy_hp': 43}, general='セルリアク')
     audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
