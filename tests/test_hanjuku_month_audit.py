@@ -1678,8 +1678,18 @@ def _launch_record(purpose='attack'):
             'reason': '出撃', 'at': 1000}
 
 
+def _measured_empty_kit(value):
+    value['policy']['plan']['order_context'] = {'A:1:M1': {
+        'observed_metric': {'general': 'カシュー', 'cards': []}}}
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'general': 'カシュー', 'source': 'アルマムーン', 'target': 'タタール',
+        'cards': [], 'departure_binding': {'general': 'カシュー',
+                                           'source': 'アルマムーン', 'cards': []}}}
+
+
 def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     value = _cards_state()
+    _measured_empty_kit(value)
     seen = []
     audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
                   now=1000, on_sealed=seen.append)
@@ -1688,6 +1698,9 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     record = records[0]
     assert record['kind'] == 'sortie_without_cards'
     assert record['sortie_event']['inventory'] == {'ノリウツール': 96}
+    assert record['sortie_event']['carried'] == []
+    assert record['sortie_event']['carried_observed'] is True
+    assert record['confidence'] == 'high'
     assert record['auto_file'] is True
     assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
     assert '### 切り札の非携行' in audit.render(record)
@@ -1698,9 +1711,10 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
 def test_sortie_without_cards_names_a_planned_kit(runtime_dir):
     # docich#5353: 計画に札があるのに携行できていない型は、計画が空の型と区別する。
     value = _cards_state(cards=['クースカン'])
+    _measured_empty_kit(value)
     audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
     records = audit.load_incidents(runtime_dir)
-    assert records and '計画はあるが携行できていない' in audit.render(records[0])
+    assert records and '計画はあるが実測kitが空' in audit.render(records[0])
 
 
 def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):
@@ -1725,6 +1739,7 @@ def test_no_card_stock_is_not_recorded(runtime_dir):
 
 def test_sortie_without_cards_is_reported_once(runtime_dir):
     value = _cards_state()
+    _measured_empty_kit(value)
     for now in (1000, 1100):
         audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=now)
     assert len(audit.load_incidents(runtime_dir)) == 1
@@ -1786,9 +1801,9 @@ def test_empty_card_strings_do_not_count_as_measured_kit(runtime_dir):
     assert records[0]['kind'] == 'sortie_without_cards'
 
 
-def test_sortie_with_planned_snapshot_cards_is_recorded(runtime_dir):
-    # A snapshot without departure_binding may copy planned cards; it is not
-    # evidence that the measured sortie actually carried them.
+def test_sortie_with_unbound_snapshot_cards_is_unconfirmed(runtime_dir):
+    # A snapshot without departure_binding may copy planned cards; absence of
+    # a measured receipt must not be represented as an empty carried kit.
     value = _cards_state(cards=['クースカン'])
     value['policy']['world']['launched_orders'] = {'A:1:M1': {
         'general': 'カシュー', 'source': 'アルマムーン', 'target': 'タタール',
@@ -1796,7 +1811,26 @@ def test_sortie_with_planned_snapshot_cards_is_recorded(runtime_dir):
     audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
     records = audit.load_incidents(runtime_dir)
     assert len(records) == 1
-    assert records[0]['kind'] == 'sortie_without_cards'
+    record = records[0]
+    assert record['kind'] == 'sortie_kit_unconfirmed'
+    assert record['confidence'] == 'low'
+    assert record['confidence_reasons'] == ['carried_kit_unobserved']
+    assert record['auto_file'] is False
+    assert record['sortie_event']['carried'] is None
+    assert record['sortie_event']['carried_observed'] is False
+    assert '携行: 未確認' in audit.render(record)
+
+
+def test_unconfirmed_sortie_does_not_cool_down_later_measured_empty_kit(runtime_dir):
+    value = _cards_state(cards=['クースカン'])
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1100)
+    records = audit.load_incidents(runtime_dir)
+    assert [record['kind'] for record in records] == [
+        'sortie_kit_unconfirmed', 'sortie_without_cards']
+    assert records[0]['auto_file'] is False
+    assert records[1]['auto_file'] is True
 
 
 def test_capture_reads_unmigrated_world_fields():

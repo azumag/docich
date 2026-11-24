@@ -1657,6 +1657,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
         'hanjuku-chart-v1483-ch12-boss-staging',
         'hanjuku-chart-v1478-departure-request-ownership',
         'hanjuku-chart-v1481-boss-camp-recall-followup',
+        'hanjuku-chart-v1482-departure-request-ownership',
+        'hanjuku-chart-v1484-sortie-kit-evidence-confidence',
     ):
         state['bot_version'] = marker
         assert module._project_corner_state(state)['bot_version'] == marker

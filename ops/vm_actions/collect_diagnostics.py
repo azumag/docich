@@ -8147,6 +8147,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1477-boss-camp-recall",
             "hanjuku-chart-v1483-ch12-boss-staging",
             "hanjuku-chart-v1484-clear-ending-corner-end",
+            "hanjuku-chart-v1484-sortie-kit-evidence-confidence",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
 
