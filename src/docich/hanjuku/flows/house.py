@@ -177,7 +177,7 @@ def general_status_name(screen):
         if row is None:
             continue
         name = row.span(x, x + 64).strip()
-        if (not name or UNKNOWN in name or re.search(r'[\\d\\s]', name)
+        if (not name or UNKNOWN in name or re.search(r'[\d\s]', name)
                 or row.span(x + 64, x + 112) != 'しょうぐん'):
             continue
         return name

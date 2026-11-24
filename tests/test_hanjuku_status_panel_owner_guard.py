@@ -29,6 +29,7 @@ from docich.hanjuku.flows import boss_pursuit, house, post_month_status
 from docich.hanjuku.flows.battle_menus import orphan_battle_menu_step
 from docich.hanjuku.flows.status_panel import status_panel_owner_active
 from docich.hanjuku.os_layer.commands import pad
+from docich.hanjuku.os_layer.font import TextLine
 from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.screen import Screen, parse
 from docich.hanjuku_bot import decide
@@ -271,6 +272,19 @@ def test_named_status_owner_survives_an_unreadable_egg_row():
     pursuit = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
                'boss_pursuit': boss_probe(0)}
     assert status_panel_owner_active(pursuit, screen) is True
+
+
+def test_general_status_name_rejects_digits_like_general_status():
+    # The name-only reader must keep general_status()'s digit/space rejection;
+    # otherwise an OCR-misread name could claim another page.
+    cells = tuple((24 + i * 8, ch) for i, ch in enumerate('ヴィーナス1'))
+    cells += tuple((88 + i * 8, ch) for i, ch in enumerate('しょうぐん'))
+    assert house.general_status_name(Screen([TextLine(39, cells)], None, '',
+                                              kind='text')) is None
+    cells = tuple((24 + i * 8, ch) for i, ch in enumerate('ヴィーナス'))
+    cells += tuple((88 + i * 8, ch) for i, ch in enumerate('しょうぐん'))
+    assert house.general_status_name(Screen([TextLine(39, cells)], None, '',
+                                              kind='text')) == 'ヴィーナス'
 
 
 def test_post_month_status_does_not_record_a_different_generals_egg():
