@@ -2067,8 +2067,10 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     miss = {'schema': 1, 'event': 'decision', 'at': 1001,
             'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
             'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
-            'screen_kind': 'egg_battle_menu', 'reason': '携行切り札を開けず攻撃',
-            'observed_metric': {'cards_left': ['ノリウツール']}, **IDENTITY}
+            'reason': '携行切り札を開けず攻撃',
+            'observed_metric': {'cards_left': ['ノリウツール'],
+                                'screen': 'egg_battle_menu',
+                                'text': 'こうげきたいきゃく'}, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
     assert len(sealed) == 1
@@ -2076,9 +2078,12 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert incident['kind'] == 'card_miss'
     assert incident['auto_file'] is True
     assert incident['card'] == 'ノリウツール'
+    assert incident['battle_event']['screen'] == 'egg_battle_menu'
+    assert incident['battle_event']['screen_text'] == 'こうげきたいきゃく'
     assert '切り札未使用' in audit._issue_title(incident)
     body = audit.render(incident)
     assert 'ノリウツール' in body and 'card_miss' in body
+    assert 'egg_battle_menu' in body and 'こうげきたいきゃく' in body
     comment = audit.render_comment(incident)
     assert '再発' in comment
     # The same decision observed again does not seal a second incident.
