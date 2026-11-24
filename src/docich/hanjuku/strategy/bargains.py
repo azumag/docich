@@ -21,6 +21,13 @@ from .economy import (KNOWN_PRICES, UNPRICED_CARDS, _charted_purchase_ahead,
 # of the recommended sets.
 BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイン': 2, 'ミックミー': 2,
                    'マグネガキン': 2, 'エンジェリン': 2, 'ころぼぐんだん': 2}
+# Owner 2026-11-24: ミックミーを優先する。推奨組は クースカン+ミックミーx2
+# (ID合計47) だが、月次の購入順が安い クースカン を先に埋めるため
+# 200G/8枚の枠で ミックミー が毎月0枚になっていた (g1342 6-7/6-8:
+# クースカン 3〜5枚を購入、ミックミーは購入なし)。購入順だけを変え、
+# 目標在庫・価格上限・予算の規則は変えない。
+BARGAIN_ORDER = ('ミックミー', 'クースカン', 'ノリウツール',
+                 'ゼンマイン', 'マグネガキン', 'エンジェリン', 'ころぼぐんだん')
 BARGAIN_CASH_BUFFER = 30
 BARGAIN_MONTHLY_GOLD = 200
 BARGAIN_MONTHLY_COPIES = 8
@@ -435,7 +442,8 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 remaining -= qty * listed[name]
         shop['rich_random_cards'] = random_names
     if not rich:
-        for name, target in BARGAIN_TARGETS.items():
+        for name in BARGAIN_ORDER:
+            target = BARGAIN_TARGETS[name]
             if name in queued or (name in bought and not cheap_pass):
                 continue  # chart quantities and already-attempted purchases stay untouched
             count = held(mem, name)
