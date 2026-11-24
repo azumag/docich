@@ -360,6 +360,27 @@ def test_boss_battle_in_the_decision_log_prevents_the_record(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_rows_boss_battle_covers_the_season_kings():
+    # #5397: chapter 4's chart boss name is the generic 四季王 while a site
+    # fight records the king's own name; the row check must count it anyway.
+    for king in ('スプリミョーネ', 'サマカンテ', 'フォーリシア', 'ウイナッツォ'):
+        assert audit._rows_boss_battle(
+            [{'decision': 'battle_start', 'enemy': king}], 4, '四季王') is True
+    assert audit._rows_boss_battle(
+        [{'decision': 'battle_start', 'enemy': 'カシュー'}], 4, '四季王') is False
+
+
+def test_season_king_battle_in_the_decision_log_prevents_the_record(runtime_dir):
+    note(runtime_dir, 1000, 'battle_start', enemy='サマカンテ')
+    normal = [c for c in chart.castles(4) if c not in chart.boss_sites(4)]
+    for index in range(401):
+        at = 1000 + index * STEP
+        value = state(4, '4-5', index)
+        value['policy']['captured'] = list(normal)
+        audit.observe(runtime_dir, audit.capture(value), value, [], now=at)
+    assert audit.load_incidents(runtime_dir) == []
+
+
 def test_boss_phase_with_hp_evidence_is_not_recorded(runtime_dir):
     _run_boss(runtime_dir, hp=True)
     assert audit.load_incidents(runtime_dir) == []

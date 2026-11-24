@@ -815,10 +815,12 @@ def _ready(order, mem) -> bool:
                 return False
         if (companion_source is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
-            # Chapter-4 summon sites keep their measured egg-holder gate. Other
-            # boss orders get a bounded source wait before reaching deploy.
-            if (order.get('target') in chart.boss_sites(4)
-                    or not _boss_companion_source_wait_expired(mem, order)):
+            # Chapter-4 summon sites keep their measured egg-holder gate, but
+            # it shares the same bounded source wait: the short-circuit used to
+            # return before the deadline could even arm, leaving an unbounded,
+            # unrecorded wait (docich#5397). After it expires the order reaches
+            # deploy, where the egg-holder rules re-apply to the real list.
+            if not _boss_companion_source_wait_expired(mem, order):
                 return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (companion_source if _is_boss_order(order, mem)
@@ -827,7 +829,6 @@ def _ready(order, mem) -> bool:
         # observed, safe hero or fails the order. Do not keep _ready blocked
         # forever on an injured companion or a broken/depleted hero.
         if not (_is_boss_order(order, mem)
-                and order.get('target') not in chart.boss_sites(4)
                 and _boss_companion_wait_expired(mem, order)):
             return False
     after = order['after']

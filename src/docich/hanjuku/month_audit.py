@@ -583,8 +583,12 @@ def _rows_boss_battle(rows, chapter, boss_name):
     """Boss battle evidence in a decision window (persisted across observations)."""
     from .. import hanjuku_chart as chart
     from .. import hanjuku_reference as reference
+    from ..hanjuku_map_sources import SEASON_KINGS
     boss_sites = set(chart.boss_sites(chapter) or ())
-    boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    # Chapter 4's chart boss name is the generic 四季王 while the recorded
+    # enemy is one of the four kings; a site fight only names the king.
+    boss_names = ({boss_name} | set(chart.BOSSES.values())
+                  | set(reference.BOSS_GENERALS) | set(SEASON_KINGS))
     for row in rows or ():
         if not isinstance(row, dict):
             continue
@@ -621,9 +625,11 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
     # a busy phase can therefore hide a real battle_start from this count.
     battle_starts = sum(1 for row in rows if row.get('decision') == 'battle_start')
     from .. import hanjuku_reference as reference
+    from ..hanjuku_map_sources import SEASON_KINGS
     boss_battles = sum(1 for row in rows if row.get('decision') == 'battle_start'
                        and (row.get('enemy') == current.get('boss_name')
-                            or row.get('enemy') in reference.BOSS_GENERALS))
+                            or row.get('enemy') in reference.BOSS_GENERALS
+                            or row.get('enemy') in SEASON_KINGS))
     signals = ['boss_no_battle']
     if not mem.get('boss_cell'):
         signals.append('boss_cell_missing')

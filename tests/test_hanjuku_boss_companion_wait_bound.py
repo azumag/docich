@@ -106,7 +106,8 @@ def test_strategy_companion_source_gate_expires():
     boss = chart.boss_castle(chapter)
     order = next(o for o in chart.orders(chapter) if o['target'] == boss)
     # The source roster is known but contains no eligible companion. Chapter-4
-    # seasonal sites intentionally retain their separate measured egg-holder gate.
+    # seasonal sites keep the same measured egg-holder gate inside this bound
+    # (covered by test_chapter_four_site_companion_gate_is_bounded below).
     garrison = {castle: [] for castle in chart.CASTLE_NAMES[chapter]}
     garrison[home] = [chart.HERO]
     mem = {'chapter': chapter, 'tick': 100, 'captured':
@@ -133,6 +134,73 @@ def test_strategy_companion_source_gate_expires():
     _plan_region(mem)['active'] = order['step']
     orders._finish_order(mem, 'failed', deviation_reason='test cleanup', reason='test cleanup')
     assert order['step'] not in mem.get('boss_companion_source_wait_expired', {})
+
+
+def test_chapter_four_site_companion_gate_is_bounded():
+    """Issue #5397: the 四季王 site gate shares the bounded source wait.
+
+    The site branch used to short-circuit ``_ready`` before the deadline
+    could arm, so a site order with no eligible egg-holder anywhere waited
+    forever and left no record. It must now expire like any other boss order
+    and let deploy evaluate the real list.
+    """
+    order = next(o for o in chart.orders(4) if o['target'] in chart.boss_sites(4))
+    # Every ordinary castle is ours and every cached roster is read, but no
+    # list holds an eligible egg-carrier: the measured site gate applies.
+    garrison = {castle: [] for castle in chart.castles(4)}
+    garrison[order['source']] = [D.NAME]
+    mem = {'chapter': 4, 'tick': 100,
+           'captured': [c for c in chart.CASTLE_NAMES[4] if c != chart.boss_castle(4)],
+           'lost': [], 'orders': {}, 'garrison': garrison,
+           'egg_types': {}, 'egg_uses': {}, 'general_location_unknown': [],
+           '_records': []}
+    assert orders._boss_companion_source(order, mem) is None
+
+    assert not orders._ready(order, mem)
+    mem['tick'] += orders.BOSS_COMPANION_SOURCE_WAIT_TICKS - 1
+    assert not orders._ready(order, mem)
+    mem['tick'] += 1
+    assert orders._ready(order, mem)
+
+    timed_out = [r for r in mem['_records']
+                 if r['decision'] == 'boss_companion_source_timeout']
+    assert len(timed_out) == 1
+    assert timed_out[0]['chart_step'] == order['step']
+    assert timed_out[0]['target'] == order['target']
+    assert timed_out[0]['observed_metric']['waited_ticks'] == orders.BOSS_COMPANION_SOURCE_WAIT_TICKS
+    # Repeated readiness checks reuse the same expiry receipt and do not
+    # emit a second timeout or begin another source-wait window.
+    assert orders._ready(order, mem) is True
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_timeout']) == 1
+
+
+def test_chapter_four_site_broken_hero_gate_is_bounded():
+    """Issue #5397: a broken-hero site order uses the same shared deadline.
+
+    The site exclusion below the source gate also short-circuited forever;
+    a site order whose hero is broken must now bound both waits and then
+    reach deploy, which re-evaluates safety on the real list.
+    """
+    order = next(o for o in chart.orders(4) if o['target'] in chart.boss_sites(4))
+    garrison = {castle: [] for castle in chart.castles(4)}
+    garrison[order['source']] = [D.NAME]
+    mem = {'chapter': 4, 'tick': 100,
+           'captured': [c for c in chart.CASTLE_NAMES[4] if c != chart.boss_castle(4)],
+           'lost': [], 'orders': {}, 'garrison': garrison,
+           'house_eggs': {D.NAME: {'broken': True}},
+           'egg_types': {}, 'egg_uses': {}, 'general_location_unknown': [],
+           '_records': []}
+
+    assert not orders._ready(order, mem)
+    # The source wait expires first; the shared companion wait then arms.
+    mem['tick'] += orders.BOSS_COMPANION_SOURCE_WAIT_TICKS
+    assert not orders._ready(order, mem)
+    mem['tick'] += orders.BOSS_COMPANION_WAIT_TICKS
+    assert orders._ready(order, mem)
+    decisions = [r['decision'] for r in mem['_records']]
+    assert 'boss_companion_source_timeout' in decisions
+    assert 'boss_companion_timeout' in decisions
 
 
 def test_stalled_castle_jump_fallback_is_bounded_and_retires_the_step():
