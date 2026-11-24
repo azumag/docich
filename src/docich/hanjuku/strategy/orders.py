@@ -711,10 +711,20 @@ def _season_site_row(mem, target):
     return row if row.get('chapter') == 4 else None
 
 
+SEASON_SITE_STALE_TICKS = 1500     # about eight world-map surveys without a clean read
+
+
+def _season_site_marker_fresh(mem, row):
+    """The skull was read recently (a cursor/camp on the box stops fresh reads)."""
+    read = row.get('last_read_tick')
+    return type(read) is not int or int(mem.get('tick') or 0) - read <= SEASON_SITE_STALE_TICKS
+
+
 def _season_site_skull_visible(mem, target):
     """The latest Y-view reading for this site still shows the king's skull."""
     row = _season_site_row(mem, target)
-    return bool(row) and row.get('marker') == 'skull' and row.get('state') != 'closed'
+    return (bool(row) and row.get('marker') == 'skull' and row.get('state') != 'closed'
+            and _season_site_marker_fresh(mem, row))
 
 
 def _season_site_waits_for_visible_skull(order, mem):
@@ -733,7 +743,8 @@ def _season_site_waits_for_visible_skull(order, mem):
     row = _season_site_row(mem, target)
     if not row or row.get('state') == 'closed':
         return False
-    if row.get('marker') in (None, 'skull'):
+    if row.get('marker') is None or (row.get('marker') == 'skull'
+                                     and _season_site_marker_fresh(mem, row)):
         return False
     return any(_season_site_skull_visible(mem, other)
                for other in chart.boss_sites(4) if other != target)

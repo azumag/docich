@@ -184,11 +184,12 @@ def world_flags(frame, chapter, cursor=None):
 # disappearance. A live king keeps the full skull even when a general of ours
 # stands on the site (北西 light 25 with ブカティーニ launched; 南東 light 8 is
 # a *partial* skull behind アポロン and is not evidence either way). The pixel
-# rule therefore has three outcomes beyond terrain:
-#   light >= 15  full skull          -> 'skull' (live king)
-#   6..14        partial/overlaid    -> 'ambiguous' (never closed, never first)
-#   <= 2, not terrain                -> 'hidden' (skull absent/covered; only a
+# rule therefore has these outcomes beyond terrain (shape cells, see below):
+#   blue cursor fill                 -> 'cursor' (nothing readable)
+#   >= 12 light and >= 12 dark cells -> 'skull' (live king, even overlapped)
+#   <= 2 light and <= 8 dark cells   -> 'hidden' (skull absent/covered; only a
 #                                       confirmed streak may close it)
+#   anything else                    -> 'ambiguous' (never closed, never first)
 # Anything dim/transitional reads ambiguous or hidden with very few definite
 # boxes; season_site_readings()["healthy"] says whether the frame reads normally.
 SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
@@ -197,11 +198,33 @@ SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
 SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
                   (106, 165, 205), (57, 88, 123), (172, 157, 65), (197, 133, 49))
 SEASON_TERRAIN_RATIO = 0.95
-SEASON_SKULL_VISIBLE = 15       # full skull measured 25; partial 南東 measured 8
-SEASON_SKULL_ABSENT = 2         # no skull pixels at all (measured 0 in 北東)
+SEASON_SKULL_ABSENT = 2         # skull-light cells of the shape (measured 0 in 北東)
 SEASON_CAMP_FLAG = (255, 181, 0)   # our army's orange pennant (a camp/march marker)
 SEASON_CAMP_MIN = 6                # flag pixels that make a skull-less box 'with camp'
 SEASON_SITE_HEALTHY_READS = 2   # other sites that must still read definitively
+# g1342 2026-11-25 00:24: the Y view's own cursor (blue square, white G, orange
+# corner brackets) sat on 北西 and its dark outline/white pixels counted as skull
+# light. A skull is therefore matched by *shape*: the chapter 3 boss skull,
+# 8 rows from the box origin (S = light, D = (32,32,32) outline), measured on a
+# clean site (g1075 and g1342 21:20 北西/南西, 23:50 南東). A cursor box scores
+# S 5 / D 0; an overlapped live king (00:24 南西, a general's face on it) S 15 /
+# D 19; a partial 南東 skull at 21:20 S 8 / D 20; a defeated king's box with our
+# flag only S 0 / D 4.
+SEASON_SKULL_SHAPE = ('.DDDDD..',
+                      'DSSSSSD.',
+                      'SSSSSSSD',
+                      'SDDSDDSD',
+                      'SDDSDDSD',
+                      'DSSSSSD.',
+                      '.DSDSD..',
+                      '..D.D...')
+SEASON_SKULL_DARK = (32, 32, 32)
+SEASON_SKULL_MIN_LIGHT = 12     # of 25 skull-light cells
+SEASON_SKULL_MIN_DARK = 12      # of 25 outline cells
+SEASON_SKULL_MAX_EXTRA = 4      # light pixels outside the skull's light cells
+SEASON_HIDDEN_MAX_DARK = 8      # an absent skull leaves (almost) no outline
+SEASON_CURSOR_BLUE = (0, 64, 189)
+SEASON_CURSOR_MIN = 20          # cursor-fill pixels that make the box 'cursor'
 
 
 def season_site_readings(frame, chapter, cursor=None):
@@ -237,17 +260,33 @@ def season_site_readings(frame, chapter, cursor=None):
                     if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
         terrain = sum(1 for px in pixels
                       if any(_near_colour(px, colour) for colour in SEASON_TERRAIN))
-        if light >= SEASON_SKULL_VISIBLE:
+        blue = sum(1 for px in pixels if _near_colour(px, SEASON_CURSOR_BLUE))
+        shape_light = shape_dark = 0
+        for dy, row in enumerate(SEASON_SKULL_SHAPE):
+            for dx, cell in enumerate(row):
+                if cell == '.' or not (0 <= x + dx < frame.width and 0 <= y + dy < frame.height):
+                    continue
+                px = frame.pixel(x + dx, y + dy)
+                if cell == 'S':
+                    shape_light += any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT)
+                else:
+                    shape_dark += px == SEASON_SKULL_DARK
+        extra = light - shape_light
+        if blue >= SEASON_CURSOR_MIN:
+            kind = 'cursor'
+        elif (shape_light >= SEASON_SKULL_MIN_LIGHT and shape_dark >= SEASON_SKULL_MIN_DARK
+                and extra <= SEASON_SKULL_MAX_EXTRA):
             kind = 'skull'
         elif terrain >= len(pixels) * SEASON_TERRAIN_RATIO:
             kind = 'closed'
-        elif light <= SEASON_SKULL_ABSENT:
+        elif shape_light <= SEASON_SKULL_ABSENT and shape_dark <= SEASON_HIDDEN_MAX_DARK:
             kind = 'hidden'
         else:
             kind = 'ambiguous'
         camp = sum(1 for px in pixels if _near_colour(px, SEASON_CAMP_FLAG))
         readings[name] = {'kind': kind, 'light': light, 'terrain': terrain, 'camp': camp,
-                          'pixels': len(pixels)}
+                          'pixels': len(pixels), 'shape': [shape_light, shape_dark],
+                          'extra_light': extra, 'blue': blue}
     definite = sum(1 for row in readings.values() if row['kind'] in ('skull', 'closed'))
     skulls = sum(1 for row in readings.values() if row['kind'] == 'skull')
     # At least one live skull must read in this very frame: that proves the

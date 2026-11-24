@@ -8140,6 +8140,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1471-roster-due-probe",
             "hanjuku-chart-v1473-hidden-season-site-priority",
             "hanjuku-chart-v1474-departure-request-ownership",
+            "hanjuku-chart-v1476-site-cursor-shape",
             "hanjuku-chart-v1472-status-panel-owner-unreadable-skip",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
