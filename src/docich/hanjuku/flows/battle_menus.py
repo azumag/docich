@@ -252,6 +252,10 @@ def _human_scroll_expired(screen, cur):
         return True
     if getattr(screen, 'kind', None) not in ('battle_menu', 'egg_battle_menu'):
         return True
+    labels = {word for _, _, word in _options(screen)}
+    if labels.intersection({'たまごをつかう', 'おくのて'}):
+        # A real egg/okunote box took the frame; the human scroll no longer owns it.
+        return True
     if not _human_menu_column(screen) and getattr(screen, 'menu_rows', None):
         # A draw with readable rows on the left is the enemy's menu.  An
         # unreadable transient keeps the episode for the observation limit.
