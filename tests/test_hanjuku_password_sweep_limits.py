@@ -1,49 +1,67 @@
-from types import SimpleNamespace
+"""Bounded behaviour of the Ovarium password flow on real measured frames.
 
+The flow never resets the game and never presses A on a row it cannot prove:
+it stops after a bounded number of prompt A presses or navigation presses and
+records why it held.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku_pixels import read_png
+from docich.hanjuku_screen import parse
 from docich.hanjuku.flows import password
 
-
-def test_top_then_the_measured_order_opens_the_door(monkeypatch):
-    monkeypatch.setattr(password, "pad", lambda key, frames=6: key)
-    monkeypatch.setattr(password, "_record", lambda *a, **kw: None)
-    screen = SimpleNamespace(kind="password_entry")
-    mem = {}
-    for _ in range(password._TOP_PRESSES):
-        assert password.password_step(screen, mem) == ["up"]
-    a_presses = 0
-    seen = []
-    while a_presses < len(password._TARGET_ORDER):
-        acts = password.password_step(screen, mem)
-        assert acts, "sweep must not hold before all target words"
-        seen.append(acts[0])
-        if acts[0] == "a":
-            a_presses += 1
-    assert a_presses == len(password._TARGET_ORDER) == 10
-    assert mem["password_entry"]["step"] == len(password._TARGET_ORDER)
-    # 15 ups, then the live-list movement for [1,0,5,3,2,4,9,8,6,7].
-    assert seen.count("a") == 10
-    assert seen.count("down") + seen.count("up") == 21
+FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
 
-def test_cycle_cap_holds_instead_of_spamming(monkeypatch):
-    monkeypatch.setattr(password, "pad", lambda key, frames=6: key)
-    screen = SimpleNamespace(kind="password_entry")
-    mem = {"password_entry": {"cycles": password._MAX_CYCLES}}
-    for _ in range(5):
-        assert password.password_step(screen, mem) == []
+def screen(name):
+    return parse(read_png(FIXTURES / f'hanjuku-password-{name}.png'))
 
 
-def test_a_failed_cycle_re_tops_and_records(monkeypatch):
-    monkeypatch.setattr(password, "pad", lambda key, frames=6: key)
+def test_a_prompt_that_never_shows_a_list_stops_after_three_a(monkeypatch):
     events = []
-    monkeypatch.setattr(password, "_record", lambda _, event, **kw: events.append(event))
-    screen = SimpleNamespace(kind="password_entry")
-    mem = {"password_entry": {
-        "tops": password._TOP_PRESSES,
-        "idx": 7,
-        "step": len(password._TARGET_ORDER),
-        "advance": password._ADVANCE_PRESSES,
-    }}
-    assert password.password_step(screen, mem) == ["up"]
-    assert mem["password_entry"]["cycles"] == 1
-    assert events == ["password_entry_resweep"]
+    monkeypatch.setattr(password, '_record', lambda _, event, **kw: events.append(event))
+    frame = screen('prompt-only')
+    mem = {}
+    for _ in range(password._PROMPT_A_MAX):
+        assert password.password_step(frame, mem) == [password.pad('a', password._A_FRAMES)]
+    for _ in range(3):
+        assert password.password_step(frame, mem) == []
+    assert events == ['password_entry_list_missing']
+
+
+def test_a_scan_that_never_finds_the_word_holds(monkeypatch):
+    events = []
+    monkeypatch.setattr(password, '_record', lambda _, event, **kw: events.append(event))
+    # Repeating the bottom-edge frame: the loop tops out, scans down, and
+    # must stop instead of pressing down forever.
+    frame = screen('list-bottom-edge')
+    mem = {}
+    actions = [password.password_step(frame, mem) for _ in range(8)]
+    assert actions[0] == [password.pad('up', password._NAV_FRAMES)]
+    assert actions[4] == []
+    assert actions[5:] == [[], [], []]
+    assert events == ['password_entry_nav_exhausted']
+
+
+def test_the_navigation_round_trip_cap_holds_and_records(monkeypatch):
+    events = []
+    monkeypatch.setattr(password, '_record', lambda _, event, **kw: events.append(event))
+    mem = {'password_entry': {'last_k': 9, 'entered': 9,
+                              'nav_presses': password._NAV_MAX}}
+    assert password.password_step(screen('ninth-entered'), mem) == []
+    assert events == ['password_entry_nav_exhausted']
+
+
+def test_a_stale_old_flow_state_is_dropped(monkeypatch):
+    monkeypatch.setattr(password, '_record', lambda *a, **kw: None)
+    mem = {'password_entry': {'dyn_step': 4, 'grid_len': 2, 'cycles': 6,
+                              'a_repeat': 4, 'reset_index': 2, 'sweep': 1}}
+    # われらが is already entered (k=1); a stale dyn_step must not skip it.
+    assert password.password_step(screen('first-entered'), mem) == [
+        password.pad('up', password._NAV_FRAMES)]
+    st = mem['password_entry']
+    for key in password._LEGACY_STATE_KEYS:
+        assert key not in st
