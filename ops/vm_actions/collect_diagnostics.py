@@ -8122,6 +8122,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1461-melee-only-ugokazaru",
             "hanjuku-chart-v1462-status-panel-owner-guard",
             "hanjuku-chart-v1463-battle-menu-scrolled-bottom",
+            "hanjuku-chart-v1464-status-panel-owner-followups",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",

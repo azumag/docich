@@ -7,16 +7,23 @@ flows that read it ran (the orphan step dispatches before post_month_status in
 live 256-wide frame, so the ordering itself is under test -- calling the owner
 directly would keep the original blind spot.
 
-The frame's own header is chapter 4 / month 34-6; ``observe_events`` adopts it
-before the dispatch, so the owner states must be armed for that scope.
+The marching frame's own header is chapter 4 / month 34-6 and the castle
+frame's is chapter 4 / month 47-3; ``observe_events`` adopts each header before
+the dispatch, so the owner states must be armed for that frame's scope.
 
-The only unreadable cases use a synthetic Screen (the repo has no 城在籍
-frame); every owner-read assertion below uses
+Most owner-read assertions use
 ``tests/fixtures/hanjuku/g1097-probe-status-marching.png`` (ヴィーナス,
-しんぐんちゅうです, HP 82/82, ちんぎん 3 G, Bボタンでもどる).
+しんぐんちゅうです, HP 82/82, ちんぎん 3 G, Bボタンでもどる).  The 城在籍
+panel (「しろのなかにいます」) was captured with the isolated probe on
+2026-11-24 from a copy of the preserved g1190-ch1v7
+``ch1v7-20261122-after-field-a.state`` and is
+``g1190-ch4-castle-status-panel.png`` (ヴィーナス, chapter 4 / 47-3).
+Unreadable cases use a synthetic Screen.
 """
 import json
 from pathlib import Path
+
+import pytest
 
 from docich.hanjuku.flows import boss_pursuit, house
 from docich.hanjuku.flows.battle_menus import orphan_battle_menu_step
@@ -28,43 +35,46 @@ from docich.hanjuku_bot import decide
 
 ROOT = Path(__file__).parent / 'fixtures/hanjuku'
 PANEL = 'g1097-probe-status-marching.png'
+CASTLE_PANEL = 'g1190-ch4-castle-status-panel.png'
+CAMP_PANEL = 'g1097-status-holds-camp.png'
+FORT_PANEL = 'g1097-status-inside-fort.png'
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g1097-4ddae5c8',
             'generation': 1097, 'lease_id': 'lease'}
 
 
-def frame():
-    return read_png(ROOT / PANEL).resized()
+def frame(name=PANEL):
+    return read_png(ROOT / name).resized()
 
 
-def panel():
-    return parse(frame())
+def panel(name=PANEL):
+    return parse(frame(name))
 
 
-def observed_scope():
+def observed_scope(name=PANEL):
     """The chapter and month the frame's own header shows (adopted by decide)."""
-    header = panel().header
+    header = panel(name).header
     return header['chapter'], f"{header['year']}-{header['month']}"
 
 
-def policy(**extra):
+def policy(name=PANEL, **extra):
     """A minimal policy that already knows this run and this frame's scope."""
-    chapter, month = observed_scope()
+    chapter, month = observed_scope(name)
     mem = {'chapter': chapter, 'month': month, 'tick': 1000, 'name': {'done': True},
            'survey_run_identity': dict(IDENTITY), **extra}
     return {'policy': mem}
 
 
-def observe(state):
+def observe(state, name=PANEL):
     # Every observation round-trips through JSON, like the bot's policy file.
-    return decide(frame(), json.loads(json.dumps(state)), run_identity=IDENTITY)
+    return decide(frame(name), json.loads(json.dumps(state)), run_identity=IDENTITY)
 
 
 def decisions(result):
     return [record['decision'] for record in result.get('_records') or []]
 
 
-def post_month_state(**over):
-    chapter, month = observed_scope()
+def post_month_state(name=PANEL, **over):
+    chapter, month = observed_scope(name)
     state = {'stage': 'status', 'scope': [chapter, month], 'identity': dict(IDENTITY),
              'selected': 'ヴィーナス', 'statuses': {}, 'names': [], 'dirty': [],
              'markers': {}, 'tasks': [], 'phase_reads': 0, 'steps': 0,
@@ -73,8 +83,8 @@ def post_month_state(**over):
     return state
 
 
-def house_state(**over):
-    chapter, _ = observed_scope()
+def house_state(name=PANEL, **over):
+    chapter, _ = observed_scope(name)
     state = {'phase': 'status', 'chapter': chapter, 'selected': 'ヴィーナス',
              'general': 'ヴィーナス', 'age': 0, 'total': 0, 'pending': [], 'seen': []}
     state.update(over)
@@ -157,10 +167,146 @@ def test_dispatcher_lets_the_house_scan_read_the_real_status_panel():
     assert result['policy']['house']['seen'] == ['ヴィーナス']
 
 
+def test_real_castle_status_fixture_is_the_castle_page():
+    # Isolated probe 2026-11-24: a copy of the preserved g1190-ch1v7 state
+    # (ch1v7-20261122-after-field-a.state) was loaded into the snes9x core and
+    # X -> しょうぐん -> ヴィーナス -> A opened this page.  No live runtime was
+    # used.  The header is adopted by decide, so the fixture scope is explicit.
+    screen = panel(CASTLE_PANEL)
+    assert screen.header['chapter'] == 4
+    assert 'しろのなかにいます' in screen.text
+    info = house.general_status(screen)
+    assert info['general'] == 'ヴィーナス'
+    assert info['location'] == 'castle'
+
+
+def test_dispatcher_lets_the_monthly_scan_read_the_real_castle_status_panel():
+    actions, result = observe(
+        policy(CASTLE_PANEL, post_month_status=post_month_state(CASTLE_PANEL)),
+        CASTLE_PANEL)
+    assert actions == [pad('b')]
+    assert 'battle_status_screen_return' not in decisions(result)
+    state = result['policy']['post_month_status']
+    assert state['stage'] == 'roster_next'
+    assert state['statuses']['ヴィーナス']['location'] == 'castle'
+
+
+def test_dispatcher_lets_the_house_scan_read_the_real_castle_status_panel():
+    actions, result = observe(
+        policy(CASTLE_PANEL, house=house_state(CASTLE_PANEL)), CASTLE_PANEL)
+    assert actions == [pad('b')]
+    assert 'battle_status_screen_return' not in decisions(result)
+    assert 'house_egg_seen' in decisions(result)
+    assert result['policy']['house']['phase'] == 'roster_next'
+    assert result['policy']['house']['seen'] == ['ヴィーナス']
+
+
+def test_dispatcher_lets_the_arrival_probe_read_the_real_castle_status_panel():
+    probe = {'phase': 'status', 'general': 'ヴィーナス', 'step': 'probe', 'reads': 0,
+             'seeks': 0, 'status_reads': 0, 'x_retries': 0}
+    actions, result = observe(
+        policy(CASTLE_PANEL, arrival_status_probe=probe), CASTLE_PANEL)
+    assert actions == [pad('b')]
+    assert 'battle_status_screen_return' not in decisions(result)
+    assert 'arrival_status_probe_verified' in decisions(result)
+    assert result['policy']['arrival_status_probe']['phase'] == 'close'
+    assert result['policy']['arrival_general_observations']['ヴィーナス']['location'] == 'castle'
+
+
+def test_arrival_owner_stands_down_when_its_step_would_defer():
+    # #5407: arrival_status.step returns None before it increments `reads`
+    # while any post_month/house/recall state is present.  A phase-only owner
+    # would suppress the orphan B and leave the panel to nobody.  Here the
+    # house state is present but its phase is not a status owner, so the real
+    # dispatch must close the page instead of holding it forever.
+    chapter, _ = observed_scope(CASTLE_PANEL)
+    probe = {'phase': 'status', 'general': 'ヴィーナス', 'step': 'probe', 'reads': 0,
+             'seeks': 0, 'status_reads': 0, 'x_retries': 0}
+    house_idle = {'phase': 'idle', 'chapter': chapter, 'selected': 'ヴィーナス',
+                  'general': 'ヴィーナス', 'pending': [], 'seen': []}
+    mem = {'chapter': chapter, 'month': observed_scope(CASTLE_PANEL)[1],
+           'house': house_idle, 'arrival_status_probe': probe}
+    assert status_panel_owner_active(mem, panel(CASTLE_PANEL)) is False
+    actions, result = observe(
+        policy(CASTLE_PANEL, arrival_status_probe=probe, house=house_idle),
+        CASTLE_PANEL)
+    assert actions == [pad('b')]
+    assert 'battle_status_screen_return' in decisions(result)
+    assert result['policy']['arrival_status_probe']['reads'] == 0
+    assert result['policy']['arrival_status_probe']['phase'] == 'status'
+
+
+def test_dispatcher_does_not_let_the_monthly_scan_claim_another_generals_page():
+    # #5410: stage 'status' names the general in `selected`.  The real panel is
+    # ヴィーナス, so a scan that opened ゼウス does not own it and the orphan B
+    # must close the page instead of spending its 12-read retry budget.
+    actions, result = observe(
+        policy(CASTLE_PANEL,
+               post_month_status=post_month_state(CASTLE_PANEL, selected='ゼウス')),
+        CASTLE_PANEL)
+    assert actions == [pad('b')]
+    assert 'battle_status_screen_return' in decisions(result)
+    state = result['policy']['post_month_status']
+    assert state['stage'] == 'status'
+    assert state['phase_reads'] == 0
+
+
+def test_monthly_scan_without_a_named_target_does_not_claim_the_page():
+    # 読めない/未設定の対象名は false で従来の B（#5410）。  stage 'status' の
+    # `selected` が対象将軍名の実コード上の置き場所。
+    state = post_month_state(CASTLE_PANEL)
+    state.pop('selected')
+    actions, result = observe(
+        policy(CASTLE_PANEL, post_month_status=state), CASTLE_PANEL)
+    assert actions == [pad('b')]
+    assert 'battle_status_screen_return' in decisions(result)
+
+
+def test_boss_fort_status_does_not_claim_another_generals_real_panel():
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
+           'boss_pursuit': {**boss_probe(0), 'general': 'ゼウス'}}
+    screen = panel(CASTLE_PANEL)
+    owner = status_panel_owner_active(mem, screen)
+    assert owner is False
+    assert orphan_battle_menu_step(screen, mem, owner_active=owner) == [pad('b')]
+    assert 'battle_status_screen_return' in [r['decision'] for r in mem['_records']]
+
+
+@pytest.mark.parametrize('name', [CASTLE_PANEL, PANEL, CAMP_PANEL, FORT_PANEL])
+def test_real_general_status_pages_still_trigger_the_status_close(name):
+    # The three older frames are the camp (キャンプしています), fort
+    # (キャンプのなかにいます) and marching (しんぐんちゅうです) pages; the new
+    # castle frame fills the しろのなかにいます location.  All are the same
+    # measured status layout and stay closable when no owner is active.
+    screen = panel(name)
+    assert 'Bボタンでもどる' in screen.text
+    mem = {}
+    assert orphan_battle_menu_step(screen, mem) == [pad('b')]
+    assert mem['_records'][-1]['decision'] == 'battle_status_screen_return'
+
+
+def test_hp_and_wage_without_the_status_fields_do_not_close_a_panel():
+    # A camp/army panel can carry HP + ちんぎん and the return sentence without
+    # being the general status page.  The g1190 close must not take it.
+    screen = Screen([], None, 'HP 40/40 ちんぎん 3 G Bボタンでもどるですじゃ!',
+                    kind='text')
+    mem = {}
+    assert orphan_battle_menu_step(screen, mem) is None
+    assert not mem
+
+
+def test_real_fort_card_with_hp_and_wage_is_not_a_status_panel():
+    # Measured 砦 card: it has HP and ちんぎん but not the return sentence.
+    screen = panel('g1097-probe-fort-status.png')
+    assert 'HP' in screen.text and 'ちんぎん' in screen.text
+    assert 'Bボタンでもどる' not in screen.text
+    assert orphan_battle_menu_step(screen, {}) is None
+
+
 def test_house_status_reads_are_bounded_and_close_with_b():
-    # Synthetic Screen (no 城在籍 frame in the repo): the trigger text is on
-    # screen but the status rows cannot be read as the selected general.  A
-    # ``text`` screen also has the shorter house_idle_escape (10 observations),
+    # Synthetic unreadable Screen: the two trigger rows are on screen but the
+    # status layout cannot be read as the selected general.  A ``text`` screen
+    # also has the shorter house_idle_escape (10 observations),
     # so this uses an unclassified frame: that is exactly the unreadable panel
     # whose status phase could otherwise return [] until STEP_LIMIT.
     screen = Screen([], None, 'HP 82/82 ちんぎん 3 G Bボタンでもどる', kind='unknown')

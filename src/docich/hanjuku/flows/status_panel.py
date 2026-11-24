@@ -47,8 +47,16 @@ def status_panel_owner_active(mem, screen):
     if isinstance(state, dict) and state.get('stage') == 'status':
         # The same scope/identity check that makes post_month_status.step drop
         # a stale or foreign scan.  A leftover state must not suppress the B.
+        # The status must also name the general this scan opened: another
+        # general's page is not this flow's panel (#5410).  Only the 'status'
+        # stage names a person; roster/menu stages keep their existing owner
+        # rules and are not filtered by an unreadable name row.
         if post_month_status.state_is_current(mem, state):
-            return True
+            info = house.general_status(screen)
+            target = state.get('selected')
+            if (isinstance(info, dict) and isinstance(target, str)
+                    and info.get('general') == target):
+                return True
 
     house_state = mem.get('house')
     if (isinstance(house_state, dict)
@@ -64,8 +72,15 @@ def status_panel_owner_active(mem, screen):
             return True
 
     probe = mem.get('arrival_status_probe')
-    if isinstance(probe, dict) and probe.get('phase') == 'status':
-        return True
+    if isinstance(probe, dict):
+        # Ask the flow itself whether step() would read this frame.  The
+        # probe's phase alone is not enough: step() defers to a foreground
+        # monthly/house/recall state (or an unsupported screen kind) before it
+        # grows its read counter, so a phase-only guard would hold the panel
+        # with no input and no limit (#5407).
+        from . import arrival_status
+        if arrival_status.reads_status_panel(mem, screen):
+            return True
 
     from ..state.regions import flow as _flow
     recall_state = _flow(mem).get('recall') or {}
@@ -82,5 +97,12 @@ def status_panel_owner_active(mem, screen):
             and probe.get('fort_stage') == 'status'):
         # The 砦's status card: A here opens the destination picker, so the
         # generic B must not close it.  The flow's own 40-read cap ends it.
-        return True
+        # Only the pursued general's card qualifies; another general's page is
+        # not this route's panel, so the orphan B closes it instead of waiting
+        # out the 40 reads (#5410).
+        info = house.general_status(screen)
+        target = probe.get('general')
+        if (isinstance(info, dict) and isinstance(target, str)
+                and info.get('general') == target):
+            return True
     return False
