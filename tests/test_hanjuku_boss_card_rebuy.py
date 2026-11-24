@@ -242,7 +242,9 @@ def test_no_rebuy_without_a_measured_shortage_for_a_boss_still_to_sortie(change)
     else:
         mem['rare_card_kit'] = {'1-B1': ['キャトルミュー']}
     open_month(mem, 200)
-    assert ['クースカン', 1] not in mem['shop']['items']
+    # The spare-cash bargain plan stocks クースカン (BARGAIN_ORDER now puts it
+    # right after ミックミー), so its row is not proof of a boss rebuy. The
+    # rebuy itself would insert its own rows first and record the plan.
     assert not records(mem, 'boss_card_rebuy_plan')
 
 

@@ -198,8 +198,10 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert policy._plan(_planned_mem(), {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
     refill = policy._plan(_planned_mem(), {'year': 1, 'month': 6, 'gold': 999})
-    # BARGAIN_TARGETS (2026-11-02): spare cash stocks useful cards to target.
-    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 3], ['ゼンマイン', 2]]
+    # BARGAIN_ORDER (2026-11-24): ミックミー first, then the recommended
+    # クースカン, within the monthly 8-copy cap.
+    assert refill['items'] == [['ミックミー', 2], ['クースカン', 3],
+                               ['ノリウツール', 2], ['ころぼぐんだん', 1]]
     assert refill['soldiers'] == 99  # optional cards do not take the refill budget
     assert refill['variant'] == 'soldier_refill_only'
 
