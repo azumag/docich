@@ -2963,6 +2963,12 @@ def _commit_departure(mem, order, context, snapshot):
     creates are identical to what the pre-#3193 code committed eagerly.
     """
     (mem.get('target_miss') or {}).pop(order['step'], None)
+    # A committed departure proves earlier releases premature: a later retry
+    # of this order must not inherit the old request-miss budget.
+    for key in ('departure_miss', 'departure_sent_miss'):
+        misses = flow(mem).get(key)
+        if isinstance(misses, dict):
+            misses.pop(order['step'], None)
     _finish_order(mem, 'launched', **context, target=order['target'],
                   cursor=mem.get('cursor'), anchor=mem.get('anchor'),
                   reason=f"{context['general']}を{order['target']}へ出撃")
@@ -3017,6 +3023,7 @@ TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
 DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A as unaccepted
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
+DEPARTURE_SENT_MISS_LIMIT = 4     # released sent-request cycles before failure evidence suffices
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
 # g1163 2026-11-09 19:00-19:40: 12 of 15 unverified launches were marker misses that
 # fell through to a source-roster trip (a castle jump plus a general list, ~20-30 s
@@ -3311,6 +3318,40 @@ def _departure_receipt_sent(mem, request):
                 and int(receipt.get('a_inputs') or 0) >= 1)
 
 
+def _sortie_is_current_for_departure_request(mem, step, request):
+    """Whether a sortie record belongs to this exact confirmed departure.
+
+    Transit continuation and overdue relaunches reuse an order step, so an
+    old arrived/overdue record may remain under that step while a new departure
+    request is being retried. Only a receipt-backed execution with the same
+    confirmation tick, actor and source can protect the new request. Untagged
+    active marches remain fail-closed because their provenance is unknown.
+    """
+    sortie = _sorties(mem).get(step)
+    if not isinstance(sortie, dict):
+        return False
+    status = sortie.get('status')
+    if status not in ('en_route', 'arrived', 'launched_unconfirmed', 'overdue'):
+        return False
+
+    snapshot = request.get('snapshot')
+    binding = snapshot.get('departure_binding') if isinstance(snapshot, dict) else None
+    if isinstance(binding, dict):
+        request_tick = binding.get('confirm_tick')
+        sortie_tick = sortie.get('confirmation_tick')
+        if type(request_tick) is int and type(sortie_tick) is int:
+            return (request_tick == sortie_tick
+                    and sortie.get('general') == request.get('general') == binding.get('general')
+                    and sortie.get('source') == request.get('source') == binding.get('source'))
+
+    # Arrived/overdue records are not live marches; without a matching
+    # confirmation binding they may belong to an earlier request.
+    if status in ('arrived', 'overdue'):
+        return False
+    # An untagged active march cannot be attributed safely; preserve the guard.
+    return True
+
+
 def _release_departure_request(mem, order, request, reason):
     """Release the reservation without touching observed facts.
 
@@ -3327,14 +3368,64 @@ def _release_departure_request(mem, order, request, reason):
         'released',
         _sortie_state_sig(mem, request.get('source'), request.get('general')))
     misses = flow(mem).setdefault('departure_miss', {})
-    misses[step] = int(misses.get(step) or 0) + 1
+    orders = _plan_region(mem).get('orders') or {}
+    used = int(misses.get(step) or 0)
+    # A stale release must not consume the retry budget of a different or
+    # already-settled order. Only the request that still owns the active step
+    # is allowed to count as a miss.
+    if (request.get('step') != step or _plan_region(mem).get('active') != step
+            or orders.get(step) in ('launched', 'launched_unconfirmed')):
+        _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                **(request.get('context') or {}),
+                observed_metric={'request_misses': used,
+                                 'request_step': request.get('step'),
+                                 'active': _plan_region(mem).get('active'),
+                                 'order_state': orders.get(step)},
+                resulting_event='request_released_not_owned',
+                reason='出撃要求が現在の指示・手順の所有に結び付かないため失敗とは記録せず解放する')
+        return FlowResult('departure_request', 'release', [], reason,
+                          retry={'used': used, 'limit': DEPARTURE_REQUEST_LIMIT},
+                          permitted_recovery='reconfirm')
+    misses[step] = used + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
+        # An untagged live march, or a receipt-backed march for this exact
+        # confirmation, is still evidence that the departure may have landed.
+        if _sortie_is_current_for_departure_request(mem, step, request):
+            misses[step] = DEPARTURE_REQUEST_LIMIT - 1
+            _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                    **(request.get('context') or {}),
+                    observed_metric={'request_misses': misses[step],
+                                     'request_step': request.get('step'),
+                                     'active': _plan_region(mem).get('active'),
+                                     'order_state': orders.get(step)},
+                    resulting_event='request_released_not_owned',
+                    reason='今回の出撃に結び付く行軍記録が残るため失敗を留保して解放する')
+            return FlowResult('departure_request', 'release', [], reason,
+                              retry={'used': misses[step], 'limit': DEPARTURE_REQUEST_LIMIT},
+                              permitted_recovery='reconfirm')
+        if request.get('status') == 'sent':
+            # A journaled A can be accepted a beat after the last picker read.
+            # Require several released sent cycles before declaring it ignored.
+            sent_misses = flow(mem).setdefault('departure_sent_miss', {})
+            sent_misses[step] = int(sent_misses.get(step) or 0) + 1
+            if sent_misses[step] < DEPARTURE_SENT_MISS_LIMIT:
+                misses[step] = DEPARTURE_REQUEST_LIMIT - 1
+                _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                        **(request.get('context') or {}),
+                        observed_metric={'request_misses': misses[step],
+                                         'sent_misses': sent_misses[step]},
+                        resulting_event='sent_release_held',
+                        reason='送信記録済みの要求がまだ受理の余地を残すため失敗を留保して解放する')
+                return FlowResult('departure_request', 'release', [], reason,
+                                  retry={'used': sent_misses[step], 'limit': DEPARTURE_SENT_MISS_LIMIT},
+                                  permitted_recovery='reconfirm')
         used = misses.pop(step)
+        sent_used = (flow(mem).get('departure_sent_miss') or {}).pop(step, None)
         context = {k: v for k, v in (request.get('context') or {}).items()
                    if k != 'deviation_reason'}
         _finish_order(mem, 'failed', **context, target=order['target'],
                       deviation_reason='出撃要求が送信・受理されない',
-                      observed_metric={'request_misses': DEPARTURE_REQUEST_LIMIT},
+                      observed_metric={'request_misses': used, 'sent_misses': sent_used},
                       reason='出撃Aが送信・受理されないまま要求の上限に達したため指示を失敗にする')
         return FlowResult('departure_request', 'release', [pad('b')], reason,
                           retry={'used': used, 'limit': DEPARTURE_REQUEST_LIMIT},
