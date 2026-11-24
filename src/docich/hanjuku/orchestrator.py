@@ -657,12 +657,22 @@ def plan_starved_rearm(mem, phase, kind):
         status = plan.get('orders') or {}
         if chart_plan.get('source') == 'mechanical' and not plan.get('active') and not mem.get('_adjusted'):
             from .strategy import orders as order_mod
+            from .. import hanjuku_chart as _chart
             owned = order_mod._owned(mem)
+            _normal = {c for c in _chart.castles(mem.get('chapter') or 0)
+                       if not _chart.is_boss_castle(c)}
+            boss_locked = bool(_normal) and not _normal <= owned
             for order in chart_plan.get('orders') or ():
                 step = order.get('step')
                 if status.get(step) not in (None, 'pending'):
                     continue
                 full = order_mod._order_for_step(mem, step) or order
+                if (boss_locked and isinstance(full, dict)
+                        and _chart.is_boss_castle(full.get('target'))):
+                    # A boss plan built before the chapter's normal castles were
+                    # captured stays locked; activating it only walks into
+                    # boss_target_locked every observation (chapter 1 loop).
+                    continue
                 if (isinstance(full, dict) and 'source' in full and 'target' in full
                         and (not order_mod._ready(full, mem)
                              or order_mod._source(full, mem) not in owned
