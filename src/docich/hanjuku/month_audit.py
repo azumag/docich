@@ -1120,6 +1120,7 @@ def _remaining_cards(selected, used):
             remaining.append(card)
     return remaining[:12]
 
+
 def _remaining_cards_are_unconfirmed(remaining, *evidence_groups):
     """Require enough unconfirmed evidence for every remaining copy.
 
