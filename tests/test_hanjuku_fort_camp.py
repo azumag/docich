@@ -238,7 +238,7 @@ def test_a_pending_fort_picker_precedes_both_recall_bounds():
                         fort_picker_requested=True, steps=recall.RECALL_LIMIT,
                         fort_status_observations=recall.FORT_STAGE_OBSERVATION_LIMIT)
     mem = memory(recall=state)
-    assert p.camp_recall_step(TARGET, mem, object()) is None
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
     assert _flow(mem)['recall']['stage'] == 'dest'
     assert not decisions(mem, 'camp_recall_aborted')
 
