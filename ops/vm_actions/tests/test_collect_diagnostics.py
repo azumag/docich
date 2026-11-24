@@ -1632,6 +1632,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1434-camp-dispatch-evidence'
     state['bot_version']='hanjuku-chart-v1435-recall-dispatch-unattributed'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1435-recall-dispatch-unattributed'
+    state['bot_version']='hanjuku-chart-v1438-chikujou-castle-width-fold'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert 'SECRET' not in json.dumps(output)
@@ -1863,6 +1865,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1399-recall-map-hold",
                  "hanjuku-chart-v1445-early-resource-rescue",
                  "hanjuku-chart-v1446-password-measured-order",
+                 "hanjuku-chart-v1446-boss-companion-wait-bound",
+                 "hanjuku-chart-v1447-password-measured-order",
                  "hanjuku-chart-v1402-sortie-audit-confidence",
                  "hanjuku-chart-v1415-merchant-strong-first",
                  "hanjuku-chart-v1416-card-miss-after-use",

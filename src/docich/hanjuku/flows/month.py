@@ -7,6 +7,7 @@ from __future__ import annotations
 from ..state.regions import world as _world
 
 import re
+import unicodedata
 
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
@@ -1077,6 +1078,46 @@ def _await_level_scan(mem, shop):
     return True
 
 
+def _chikujou_castle_key(name):
+    """Fold width variants for display matching; keep catalog labels as state."""
+    return ''.join(unicodedata.normalize('NFKC', name or '').split())
+
+
+def _chikujou_name_labels(chapter):
+    """Map folded native labels to catalog-facing labels; reject ambiguous maps."""
+    labels = {}
+    for castle in chart.CASTLE_NAMES.get(chapter or 1, ()):
+        label = STATUS_NAMES.get(castle, castle)
+        key = _chikujou_castle_key(label)
+        if not key or key in labels:
+            return None
+        labels[key] = label
+    return labels
+
+
+def _chikujou_list_rows(screen, chapter):
+    labels = _chikujou_name_labels(chapter)
+    if labels is None:
+        return None
+    rows = sorted((x, y, word) for x, y, word in _options(screen)
+                  if _chikujou_castle_key(word) in labels)
+    return labels, rows
+
+
+def _chikujou_screen_label(screen, name, chapter):
+    """Return the unique native spelling for a catalog candidate, if visible."""
+    labels = _chikujou_name_labels(chapter)
+    key = _chikujou_castle_key(name)
+    if labels is None or key not in labels:
+        return None
+    matches = [word for _, _, word in _options(screen) if _chikujou_castle_key(word) == key]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _chikujou_text_has_castle(text, name, suffix):
+    return _chikujou_castle_key(f'{name}{suffix}') in _chikujou_castle_key(text)
+
+
 def _chikujou_wait(screen, mem, sub, reason):
     sub['build_wait'] = int(sub.get('build_wait') or 0) + 1
     if sub['build_wait'] < CHIKUJOU_WAIT_LIMIT:
@@ -1098,10 +1139,12 @@ def _chikujou_scroll(screen, mem, sub):
     bound both ignored inputs and an entire traversal (including wrap).
     """
     chapter = mem.get('chapter') or 1
-    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(chapter, ())}
-    rows = sorted((x, y, w) for x, y, w in _options(screen) if w in known)
+    resolved = _chikujou_list_rows(screen, chapter)
+    if resolved is None:
+        return _chikujou_wait(screen, mem, sub, 'castle_list_unread')
+    labels, rows = resolved
     cur = _current(screen)
-    if (len(rows) != 4 or len({r[2] for r in rows}) != 4
+    if (len(rows) != 4 or len({_chikujou_castle_key(r[2]) for r in rows}) != 4
             or len({r[0] for r in rows}) != 1
             or any(b[1] - a[1] != 16 for a, b in zip(rows, rows[1:]))
             or cur not in rows):
@@ -1110,7 +1153,7 @@ def _chikujou_scroll(screen, mem, sub):
     state = sub.setdefault('build_scroll', {})
     stalled = int(state.get('stalled') or 0) + 1 if state.get('signature') == signature else 0
     presses = int(state.get('presses') or 0)
-    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(known) + 4:
+    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(labels) + 4:
         sub['declined'] = True
         sub['aborted'] = True
         _record(mem, 'chikujou_held', deviation_reason='castle_scroll_no_progress',
@@ -1229,9 +1272,12 @@ def _month_chikujou(screen, mem, shop):
 def _chikujou_visible_maxed(screen, mem):
     """Read level 5 only from this native castle-list window, never a saved cap."""
     options = _options(screen)
-    known = chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())
-    rows = sorted((x, y, word) for x, y, word in options if word in known)
-    if (not 1 <= len(rows) <= 4 or len({r[2] for r in rows}) != len(rows)
+    resolved = _chikujou_list_rows(screen, mem.get('chapter') or 1)
+    if resolved is None:
+        return []
+    labels, rows = resolved
+    if (not 1 <= len(rows) <= 4
+            or len({_chikujou_castle_key(r[2]) for r in rows}) != len(rows)
             or any(x != 168 or y != 39 + i * 16 for i, (x, y, _) in enumerate(rows))
             or _current(screen) not in rows):
         return []
@@ -1241,7 +1287,7 @@ def _chikujou_visible_maxed(screen, mem):
         if len(values) != 1 or values[0] not in ('1', '2', '3', '4', '5'):
             return []
         if values[0] == '5':
-            levels.append(name)
+            levels.append(labels[_chikujou_castle_key(name)])
     return levels
 
 
@@ -1252,8 +1298,10 @@ def _chikujou_continue_list(screen, mem, sub):
     identity = run_identity(mem.get('_run_identity'))
     key = sub.get('key')
     header = screen.header or {}
-    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())}
-    rows = sorted((x, y, word) for x, y, word in _options(screen) if word in known)
+    resolved = _chikujou_list_rows(screen, mem.get('chapter') or 1)
+    if resolved is None:
+        return None
+    _, rows = resolved
     if (identity is None or identity != run_identity(sub.get('chikujou_identity'))
             or sub.get('chikujou_chapter') != mem.get('chapter')
             or key is None or key != mem.get('month') or key != shop.get('key')
@@ -1261,7 +1309,8 @@ def _chikujou_continue_list(screen, mem, sub):
             or _month_key(header) != key or sub.get('payment_interrupted')
             or 'ぞうちくなさいます' not in screen.text
             or screen.has('うむッ') or screen.has('いかんッ')
-            or not 1 <= len(rows) <= 4 or len({r[2] for r in rows}) != len(rows)
+            or not 1 <= len(rows) <= 4
+            or len({_chikujou_castle_key(r[2]) for r in rows}) != len(rows)
             or any(x != 168 or y != 39 + i * 16 for i, (x, y, _) in enumerate(rows))
             or _current(screen) not in rows):
         return None
@@ -1329,7 +1378,7 @@ def _chikujou_step(screen, mem, sub):
     if 'になりましたぞ' in text:
         chosen = sub.get('chosen')
         if not (sub.get('confirm_sent') and chosen
-                and f'{chosen}じょうのレベルが' in text):
+                and _chikujou_text_has_castle(text, chosen, 'じょうのレベルが')):
             return _chikujou_wait(screen, mem, sub, 'result_castle_unconfirmed')
         sub['upgraded'] = True
         sub['build_wait'] = 0
@@ -1362,7 +1411,7 @@ def _chikujou_step(screen, mem, sub):
                 or reserve is None or gold - cost < reserve):
             if (not sub.get('declined') and cost is not None and type(gold) is int
                     and reserve is not None and sub.get('chosen')
-                    and f"{sub['chosen']}じょうですな" in text):
+                    and _chikujou_text_has_castle(text, sub['chosen'], 'じょうですな')):
                 sub['cost_declined'] = True  # this castle's price only
             sub['declined'] = True
             move = menu_to(screen, 'いかんッ!')
@@ -1375,7 +1424,8 @@ def _chikujou_step(screen, mem, sub):
                 sub['decline_sent'] = True
             return [pad('a')] if move == 'here' else [move] if move else [pad('b')]
         chosen = sub.get('chosen')
-        if not (chosen in _chikujou_candidates(mem) and f'{chosen}じょうですな' in text):
+        if not (chosen in _chikujou_candidates(mem)
+                and _chikujou_text_has_castle(text, chosen, 'じょうですな')):
             return _chikujou_wait(screen, mem, sub, 'quote_castle_unconfirmed')
         move = menu_to(screen, 'うむッ!')
         if move == 'here':
@@ -1411,7 +1461,8 @@ def _chikujou_step(screen, mem, sub):
                 # record, marched out to the boss → refused every month).
                 garrison = _world(mem).setdefault('garrison', {})
                 real = next((c for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())
-                             if STATUS_NAMES.get(c, c) == chosen), chosen)
+                             if _chikujou_castle_key(STATUS_NAMES.get(c, c))
+                             == _chikujou_castle_key(chosen)), chosen)
                 if garrison.get(real) != []:
                     garrison[real] = []
             sub['rejected_frame'] = text
@@ -1458,6 +1509,11 @@ def _chikujou_step(screen, mem, sub):
         names = [c for c in _chikujou_candidates(mem) if c not in tried]
         for name in names:
             move = menu_to(screen, name)
+            if move is None:
+                label = _chikujou_screen_label(screen, name, mem.get('chapter') or 1)
+                if label is None:
+                    continue
+                move = menu_to(screen, label)
             if move is None:
                 continue
             if move == 'here':
