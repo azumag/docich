@@ -735,6 +735,43 @@ def test_unclassified_only_card_loss_is_not_high_confidence(runtime_dir):
     assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
 
 
+def test_unclassified_only_card_retreat_is_not_filed(runtime_dir):
+    # docich#5192/#5194: 退却経路でも、選択したが告知署名未校正で使用未確認の札
+    # だけが残る場合は medium に降格し、既定の min_confidence='high' では起票しない。
+    # #5158/#5181 の降格は敗北 (battle_result) のみをカバーしていたが、退却の
+    # battle_retreat_preempted_card が cards_unclassified を emit するようになり
+    # 同じ降格が発火する。#5192 同様 HP 12（即死帯の外）で残り 1 枚の帳簿。
+    value = state(2, '4-5', 0)
+    record = _battle_record(
+        'battle_retreat_preempted_card', card='ノリウツール',
+        metric={'ally_hp': 12, 'enemy_hp': 15, 'card_confirmation': 'unclassified',
+                'cards_selected': ['ノリウツール', 'ノリウツール'],
+                'cards_used': ['ノリウツール'],
+                'cards_unclassified': ['ノリウツール']}, general='ヘラ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['kind'] == 'battle_retreat_with_resources'
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    # 降格後は既定の high 閾値で起票対象外になる。
+    assert audit.file_issue(runtime_dir, gh=FakeGh(),
+                            scanner=lambda path: True)['status'] == 'no_incident'
+
+
+def test_plain_card_retreat_stays_high_and_filed(runtime_dir):
+    # 対照: 通常の残り札（使用未確認ではない）の退却は high のまま起票する。
+    value = state(2, '4-5', 0)
+    record = _battle_record(
+        'battle_retreat_preempted_card', card='クースカン',
+        metric={'ally_hp': 12, 'enemy_hp': 15, 'card_confirmation': 'unclassified',
+                'cards_selected': ['クースカン'], 'cards_used': []}, general='ヘラ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+    assert audit.file_issue(runtime_dir, gh=FakeGh(),
+                            scanner=lambda path: True)['status'] == 'created'
+
+
 def test_unclassified_card_beside_a_plain_card_stays_high(runtime_dir):
     value = state(9, '1-1', 0)
     record = _battle_record('battle_result', outcome='loss',

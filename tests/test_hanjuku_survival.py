@@ -557,7 +557,8 @@ def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
     assert record['general'] == general
     assert record['enemy'] == 'タピオカ'
     assert record['observed_metric'] == {
-        'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
+        'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified',
+        'cards_unclassified': ['グリンボー']}
 
 
 def test_pending_card_is_preserved_above_critical_general_hp():
