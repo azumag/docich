@@ -127,7 +127,8 @@ class ScriptedClient:
 
 def snapshot_payload(**changes):
     base = dict(market="stocks", source="kabu-station", source_epoch="kabu-win-01",
-                generation=1, sequence=1, status="ready", reason="ok",
+                generation=1, sequence=1, upstream_sequence=1, status="ready",
+                reason="ok",
                 market_state="open", source_ts=NOW - 1, received_ts=NOW,
                 quotes=[{"symbol": "JP.7203", "bid": 100.0, "ask": 100.1,
                          "bid_size": 10.0, "ask_size": 10.0,
@@ -445,10 +446,25 @@ class ProviderFaultInjectionTests(unittest.TestCase):
             # Same sequence replayed on reconnect must not be accepted.
             provider.poll()
             self.assertEqual(provider.readiness()[1], "sequence_regressed")
-            client = ScriptedClient({"/v1/snapshot": snapshot_payload(sequence=2)})
+            client = ScriptedClient({"/v1/snapshot": snapshot_payload(sequence=2, upstream_sequence=2)})
             provider.client = client
             provider.poll()
             self.assertEqual(provider.readiness()[0], True)
+
+    def test_published_sequence_is_provider_issued_upstream_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = ScriptedClient({"/v1/snapshot": snapshot_payload(sequence=9, upstream_sequence=9)})
+            provider = make_provider(client, tmp)
+            provider.poll()
+            self.assertEqual(provider.readiness()[0], True)
+            published = provider.read_published()
+            # published envelope sequence is the provider counter (1), not the
+            # upstream bridge sequence (9); the upstream value is preserved
+            self.assertEqual(published.snapshot.sequence, 1)
+            self.assertEqual(published.snapshot.upstream_sequence, 9)
+            # re-publishing the same upstream sequence is rejected as regressed
+            provider.poll()
+            self.assertEqual(provider.readiness()[1], "sequence_regressed")
 
     def test_published_state_rejected_after_host_reboot(self):
         with tempfile.TemporaryDirectory() as tmp:
