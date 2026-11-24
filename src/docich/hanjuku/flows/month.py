@@ -681,6 +681,7 @@ def month_step(screen: Screen, mem):
         return []
     if shop and not shop.get('closed'):
         shop['closed'] = True
+        _note_chikujou_skip_unexplained(mem, shop)
         soldiers = _refill_month_outcome(mem, shop, screen.header)
         _record(mem, 'month_done', month=shop['key'], gold_after=(screen.header or {}).get('gold'),
                 observed_metric={'bought': shop.get('bought', []),
@@ -696,6 +697,43 @@ def month_step(screen: Screen, mem):
         mem['month_exit'] = True
         return move if isinstance(move, list) else [pad('a')]
     return [move] if move else []
+
+
+def _note_chikujou_skip_unexplained(mem, shop):
+    """Name a month that closed 築城 as skipped without any recorded cause.
+
+    The audit only files when none of the known holds is present (refusal,
+    recruit hold, unreadable row, reserve/hero-repair eval). A month that
+    skipped with none of those leaves the issue with no reason to read
+    (docich#5278: gold 9975, candidate イデ！, shop_status skipped). Record the
+    state once so the next occurrence is diagnosable from the decision log.
+    This is diagnostic only: the audit does not treat it as an explanation.
+    """
+    if not isinstance(shop, dict) or shop.get('chikujou') != 'skipped':
+        return
+    if shop.get('chikujou_held'):
+        return
+    month = shop.get('key')
+    last_eval = shop.get('chikujou_last_eval')
+    if (isinstance(last_eval, dict) and last_eval.get('affordable') is False
+            and last_eval.get('month') in (None, month)):
+        return
+    refused = mem.get('chikujou_refused')
+    tried = shop.get('chikujou_tried') or []
+    if isinstance(refused, dict) and refused.get('castles'):
+        if not any(name not in tried for name in _chikujou_candidates(mem)):
+            return
+    seen = shop.get('chikujou_skip_logged')
+    if seen == month:
+        return
+    shop['chikujou_skip_logged'] = month
+    _record(mem, 'chikujou_skip_unexplained', month=month,
+            observed_metric={'gold': (shop.get('gold_start')),
+                             'chikujou': shop.get('chikujou'),
+                             'tried': list(tried)[:8],
+                             'candidates': sorted(_chikujou_candidates(mem))[:8],
+                             'has_refusal': isinstance(refused, dict)},
+            reason='築城を skipped のまま月を終えたが、拒否・保留・読取不可・予約不足の記録が無い')
 
 
 def _refill_month_outcome(mem, shop, header):
