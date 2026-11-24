@@ -1652,6 +1652,76 @@ def _refresh_live_marches(mem):
                 reason='出撃後に行軍中を実測したため行軍記録の期限を更新する')
 
 
+SITE_END_REARM_LIMIT = 2        # a site step reopened from an observed return per month
+
+
+def _rearm_site_step_after_return(mem, step, sortie, general):
+    """Reopen a 四季王 step whose march ended in a castle other than its target.
+
+    ``_observed_march_end`` already treats a post-departure 在城 reading as the
+    end of the march, but a confirmed site launch was only discarded: the order
+    stayed 'launched' until ``SITE_PHANTOM_TICKS`` (900 observations) or the
+    next Y-view reconciliation re-armed it (live g1342 2026-11-25 02:15:49
+    4-B2: エシャロット read 在城 at 02:26:12, re-armed only at 02:31:43). The
+    general came back without reaching the site, so the step can be offered
+    again at once. A camp/castle *at* the target is the siege itself and is
+    left alone; a won king is skipped through ``_site_king_down``. Bounded per
+    step per month and spaced by the existing site cooldown.
+    """
+    if (mem.get('chapter') or 0) != 4:
+        return False
+    target = sortie.get('target')
+    if (target not in chart.boss_sites(4) or _site_king_down(mem, target)
+            or _boss_fight_live(mem, step)):
+        return False
+    status = (_plan_region(mem).get('orders') or {}).get(step)
+    if status not in ('launched', 'launched_unconfirmed'):
+        return False
+    rows = (mem.get('general_statuses') or {}).get('statuses') or {}
+    row = rows.get(general) if isinstance(rows, dict) else None
+    if (not isinstance(row, dict) or row.get('location_observed') is not True
+            or row.get('location') != 'castle'):
+        return False
+    marker = row.get('marker') if isinstance(row.get('marker'), dict) else {}
+    landed = marker.get('castle_candidate')
+    # A camp/castle on the target site is the siege the boss flow owns; only a
+    # measured return to a different castle re-opens the step.
+    if not isinstance(landed, str) or landed == target or landed not in chart.castles(4):
+        return False
+    now, month = int(mem.get('tick') or 0), mem.get('month')
+    rearmed = mem.setdefault('site_step_rearm', {})
+    last = rearmed.get(step)
+    if type(last) is int and now - last < SITE_STEP_REARM_COOLDOWN:
+        return False
+    counts = mem.setdefault('site_end_rearm', {})
+    entry = counts.get(step)
+    if not isinstance(entry, dict) or entry.get('month') != month:
+        entry = {'month': month, 'count': 0}
+    if entry['count'] >= SITE_END_REARM_LIMIT:
+        return False
+    entry['count'] += 1
+    counts[step] = entry
+    rearmed[step] = now
+    _plan_region(mem).setdefault('orders', {})[step] = 'pending'
+    for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
+        (mem.get(key) or {}).pop(step, None)
+    for key in ('general_override', 'source_override', 'card_override'):
+        (_plan_region(mem).get(key) or {}).pop(step, None)
+    (_plan_region(mem).get('order_context') or {}).pop(step, None)
+    (_plan_region(mem).get('sortie_general') or {}).pop(step, None)
+    (_world(mem).get('launched_orders') or {}).pop(step, None)
+    for name, launch in list((_world(mem).get('launched') or {}).items()):
+        if isinstance(launch, dict) and launch.get('step') == step:
+            _world(mem)['launched'].pop(name, None)
+    (_flow(mem).get('launch_probe') or {}).pop(step, None)
+    _record(mem, 'site_step_ended_rearmed', chart_step=step, general=general,
+            observed_metric={'site': target, 'landed': landed,
+                             'count': entry['count'], 'month': month},
+            resulting_event=f'rearm:{step}',
+            reason='撃破実測のない四季王stepの将軍が別の城へ戻って行軍が終わったため、次の出撃のために開き直す')
+    return True
+
+
 def _expire_spent_sorties(mem):
     """Expire stale march records without fabricating a return to the source.
 
@@ -1748,6 +1818,11 @@ def _expire_spent_sorties(mem):
                     _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
                             observed_metric=observed, resulting_event='order_reopened',
                             reason='出撃後の野営・在城を実測し出撃が成立していないため出撃を未発射に戻す')
+            else:
+                # A confirmed site march that came back to another castle is a
+                # retreat/lost road fight: the step can run again now instead
+                # of waiting for the phantom/ledger reconciliation.
+                _rearm_site_step_after_return(mem, step, sortie, general)
         if (general and general != NAME and general not in placed
                 and source in chart.castles(mem.get('chapter') or 0)
                 and measured):
