@@ -200,3 +200,42 @@ def test_boss_fort_status_still_closes_after_its_own_read_limit():
     assert 'boss_pursuit_unverified' in [r['decision'] for r in mem['_records']]
     assert mem['boss_pursuit']['outcome'] == 'fort_picker_missing'
     assert 'battle_status_screen_return' not in [r['decision'] for r in mem['_records']]
+
+
+
+def test_named_status_owner_survives_an_unreadable_egg_row():
+    screen = panel()
+    # The owner still needs its bounded retry when the name is legible but the
+    # egg row is not. Do not let the name-only guard turn that into an early B.
+    screen.lines = [line for line in screen.lines if line.y != 111]
+    assert house.general_status_name(screen) == 'ヴィーナス'
+    monthly = policy(post_month_status=post_month_state())['policy']
+    assert status_panel_owner_active(monthly, screen) is True
+    pursuit = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
+               'boss_pursuit': boss_probe(0)}
+    assert status_panel_owner_active(pursuit, screen) is True
+
+
+def test_dispatcher_releases_post_month_status_for_a_different_general():
+    actions, result = observe(policy(
+        post_month_status=post_month_state(selected='ゼウス')))
+    assert actions == [pad('b')]
+    state = result['policy']['post_month_status']
+    assert state['stage'] == 'blocked'
+    assert state['failure'] == 'status_general_mismatch'
+    assert 'post_month_status_unverified' in decisions(result)
+    # Do not let _observe_status write another general's egg into the ledger.
+    assert 'house_egg_seen' not in decisions(result)
+    assert 'ヴィーナス' not in result['policy'].get('house_eggs', {})
+
+
+def test_boss_pursuit_closes_a_different_generals_status_immediately():
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
+           'boss_pursuit': boss_probe(0)}
+    mem['boss_pursuit']['general'] = 'ゼウス'
+    screen = panel()
+    assert status_panel_owner_active(mem, screen) is False
+    assert boss_pursuit.step(screen, mem, None) == [pad('b')]
+    assert mem['boss_pursuit']['outcome'] == 'status_general_mismatch'
+    assert mem['boss_pursuit']['fort_reads'] == 0
+    assert 'boss_pursuit_unverified' in [r['decision'] for r in mem['_records']]
