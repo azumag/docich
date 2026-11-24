@@ -31,6 +31,9 @@ class Caller:
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=name)
         self._workers = workers
         self._lock = threading.Lock()
+        # Counts submitted futures (queued + running), not just workers that
+        # have entered _run. Reserve before submit so concurrent callers cannot
+        # both observe the same free slot and queue beyond the pool capacity.
         self._running = 0
 
     def call(self, fn: Callable[[], T], *, timeout_s: float) -> T:
@@ -38,25 +41,24 @@ class Caller:
             raise DeadlineExceeded("non_positive_deadline")
         with self._lock:
             if self._running >= self._workers:
-                # All workers are occupied by futures that cannot be stopped.
-                # Fail closed immediately instead of queueing the call and
-                # waiting for the deadline.
                 raise DeadlineExceeded("adapter_timeout")
-        future: Future = self._pool.submit(self._run, fn)
+            self._running += 1
+        try:
+            future: Future = self._pool.submit(fn)
+        except BaseException:
+            with self._lock:
+                self._running -= 1
+            raise
+        future.add_done_callback(self._release_slot)
         try:
             return future.result(timeout=timeout_s)
         except FutureTimeout as exc:
-            future.cancel()  # no-op when the future is already running
+            future.cancel()  # completion callback releases only when it is done/cancelled
             raise DeadlineExceeded("deadline_exceeded") from exc
 
-    def _run(self, fn: Callable[[], T]) -> T:
+    def _release_slot(self, _future: Future) -> None:
         with self._lock:
-            self._running += 1
-        try:
-            return fn()
-        finally:
-            with self._lock:
-                self._running -= 1
+            self._running -= 1
 
     def close(self, *, wait: bool = False) -> None:
         self._pool.shutdown(wait=wait, cancel_futures=True)
