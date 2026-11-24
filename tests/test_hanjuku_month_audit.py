@@ -1681,7 +1681,16 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     assert record['auto_file'] is True
     assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
     assert '### 切り札の非携行' in audit.render(record)
+    assert '計画が空' in audit.render(record)
     assert len(seen) == 1
+
+
+def test_sortie_without_cards_names_a_planned_kit(runtime_dir):
+    # docich#5353: 計画に札があるのに携行できていない型は、計画が空の型と区別する。
+    value = _cards_state(cards=['クースカン'])
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert records and '計画はあるが携行できていない' in audit.render(records[0])
 
 
 def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):

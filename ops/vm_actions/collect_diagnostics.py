@@ -8112,6 +8112,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1451-defense-wait-probe",
             "hanjuku-chart-v1452-password-hold",
             "hanjuku-chart-v1453-okunote-unclassified",
+            "hanjuku-chart-v1454-sortie-card-type",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",
