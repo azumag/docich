@@ -193,25 +193,33 @@ class SorenGameContextProvider:
         try:
             from .. import prediction_leaderboard as leaderboard
 
-            ledger = leaderboard.load(state_dir / leaderboard.FILE)
+            ledger_path = state_dir / leaderboard.FILE
+            # The shared loader intentionally treats a missing ledger as an empty one
+            # for board views. Comment replies must distinguish "not initialized" from
+            # a real, initialized ledger with zero settled rounds.
+            if ledger_path.is_symlink() or not ledger_path.is_file():
+                return fallback
+            ledger = leaderboard.load(ledger_path)
             boards = leaderboard.boards(ledger)
             counts = leaderboard.stats(ledger)
         except Exception:
             return fallback
         rows = boards.get("hit_rate") if isinstance(boards, dict) else None
         rows = rows if isinstance(rows, list) else []
+        # Keep each fact on its own line: downstream context sanitization is
+        # line-oriented, so a display name must not share the count's line.
         parts = ["- いまは予想王のコーナー中です。チャンネルポイント予想の結果を発表しています。"]
         parts.append(f"確定した予想は{counts.get('rounds') or 0}件。")
         if rows:
             top = rows[0] if isinstance(rows[0], dict) else {}
             name = top.get("user_name") or top.get("user_login") or ""
-            name = name[:24] if isinstance(name, str) else ""
+            name = " ".join(name.split())[:24] if isinstance(name, str) else ""
             if name:
                 rounds = top.get("rounds") if type(top.get("rounds")) is int else 0
                 hits = top.get("hits") if type(top.get("hits")) is int else 0
                 parts.append(f"的中率トップは同志{name}（{rounds}回中{hits}回）。")
         parts.append("画面に無い数字や順位は創作しないこと。")
-        return "".join(parts)[:600]
+        return "\n".join(parts)[:600]
 
     def _doushi_state_context(self, state_dir: Path) -> str:
         """Use the same bounded ranking summary as the live comment profile launcher."""

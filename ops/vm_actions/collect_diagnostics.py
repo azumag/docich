@@ -2927,19 +2927,26 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
         else:
             type_sources["type_arg"] += 1
         by_type[row["type"]] = by_type.get(row["type"], 0) + 1
-        owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
+        owner = by_owner.setdefault(
+            row["owner"],
+            {"count": 0, "cpu_pct": 0.0, "rss_mb": 0.0, "renderer_rss_mb": 0.0},
+        )
         owner["count"] += 1
         owner["cpu_pct"] += row["cpu_pct"]
+        owner["rss_mb"] += row["rss_kb"] / 1024.0
         if row["type"] == "gpu":
             owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
         elif row["type"] == "renderer":
             owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+            owner["renderer_rss_mb"] += row["rss_kb"] / 1024.0
 
     for owner in by_owner.values():
         owner["cpu_pct"] = round(owner["cpu_pct"], 1)
         for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
             if key in owner:
                 owner[key] = round(owner[key], 1)
+        for key in ("rss_mb", "renderer_rss_mb"):
+            owner[key] = round(owner[key], 1)
 
     result = {
         "schema_version": 1,
@@ -8126,6 +8133,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1465-unowned-screen-review-guards",
             "hanjuku-chart-v1466-status-panel-owner-name",
             "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
+            "hanjuku-chart-v1468-battle-menu-bounded-episode",
             "hanjuku-chart-v1469-recall-yjump-goal",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
