@@ -17,8 +17,8 @@ def screen(text='たまごをつかうきりふだたいきゃく', kind='egg_ba
     return Screen([], None, text, kind=kind, egg_rows=egg_rows or [])
 
 
-def memory(castle=BOSS, general='ヘーゼル', uses=None):
-    mem = {'chapter': 6, 'tick': 100, '_records': [],
+def memory(castle=BOSS, general='ヘーゼル', uses=None, chapter=6):
+    mem = {'chapter': chapter, 'tick': 100, '_records': [],
            'attack': {'general': general, 'castle': castle, 'side': 'attack', 'step': 'A:x:M1'},
            'battle': {'ally': general, 'enemy': 'ハードロボ', 'step': 'A:x:M1',
                       'castle': castle, 'side': 'attack'},
@@ -110,6 +110,30 @@ def test_issue_5331_uses_the_confirmed_carried_kit_when_battle_plan_is_empty(mon
               if r['decision'] == 'battle_summon_card_scroll'][-1]
     assert scroll['observed_metric']['cards_left'] == ['イッテツーン']
     assert scroll['observed_metric']['own_attack_menu'] is True
+
+
+def test_issue_5322_chapter11_reveals_confirmed_card_when_grey_egg_row_is_omitted():
+    # #5322: the audit confirmed ころぼぐんだん was carried, but the grey
+    # egg row was absent from OCR. Only the measured boss/summon context may
+    # authorize a navigation-only scroll; the card itself is not selected yet.
+    card = 'ころぼぐんだん'
+    mem = memory(castle=chart.boss_castle(11), general='ヘーゼル', chapter=11)
+    mem['battle'].update(enemy='ゾンビ', planned_cards=[card])
+    rows = [
+        SimpleNamespace(name='ヘーゼル', hp=30, side='ally', y=176),
+        SimpleNamespace(name='ゾンビ', hp=30, side='enemy', y=192),
+    ]
+
+    actions = B.egg_battle_step(
+        screen(text='こうげきたいきゃく', egg_rows=rows), mem)
+
+    assert actions == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    scroll = [r for r in mem['_records']
+              if r['decision'] == 'battle_summon_card_scroll'][-1]
+    assert scroll['observed_metric']['cards_left'] == [card]
+    assert scroll['observed_metric']['own_attack_menu'] is True
+    assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
 
 
 def test_hidden_egg_row_fallback_requires_a_live_own_attack_menu():

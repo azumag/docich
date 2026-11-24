@@ -1097,17 +1097,12 @@ PASSWORD_SWEEP_MAX = 40         # bounded A/down pairs; ten words is typical
 
 
 def password_step(screen: Screen, mem):
-    """#4564: オヴァリウム入城パスワード。実測の成功列は「upでリスト先頭へ
-    → (A, down) で上から順に全語選択」。失敗は先頭へ戻るだけなので、
-    掃引上限まで回し、画面が消えた時点で解除する。"""
-    sweep = mem.setdefault('password_sweep', {'ups': 0, 'picks': 0})
-    if sweep['ups'] < PASSWORD_UP_FIRST:
-        sweep['ups'] += 1
-        return [pad('up')]
-    if sweep['picks'] >= PASSWORD_SWEEP_MAX:
-        _record(mem, 'password_sweep_bound', observed_metric=dict(sweep),
-                reason='パスワード掃引が上限に達したため解除して通常フローへ戻す')
-        mem.pop('password_sweep', None)
-        return None
-    sweep['picks'] += 1
-    return [pad('a'), pad('down', 300)]
+    """#4564/#5325: オヴァリウム入城パスワード。
+
+    The measured list order decides the entry order, so both dispatch paths
+    (the early chapter-clear branch and the generic prompt dispatch) must use
+    the same flow. The old "A+down over the display order" sweep is rejected
+    by the door and soft-locks on a wrong partial sequence.
+    """
+    from . import password as password_flow
+    return password_flow.password_step(screen, mem)

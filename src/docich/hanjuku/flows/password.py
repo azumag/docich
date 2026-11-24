@@ -43,16 +43,32 @@ def _selected(screen, rows):
 
 
 def _grid_words(screen):
-    """Words still shown in the remaining grid (already-entered ones are gone)."""
+    """Words still shown in the remaining grid (already-entered ones are gone).
+
+    Only the bottom grid (y >= 140) counts: the right-hand list is also in
+    `screen.text` now, and including it made the flow re-enter a word that
+    the list still shows forever.
+    """
+    words = set()
+    for line in screen.lines or ():
+        if line.y < 140:
+            continue
+        for _, chunk in line.spans():
+            for word in PHRASE:
+                if word in chunk:
+                    words.add(word)
+    if words:
+        return words
+    # No parsed grid rows (synthetic screen/tests): derive from the text.
     text = (screen.text or '').replace(' ', '').replace('\u3000', '')
     if 'パスワード' not in text:
-        # No readable grid (synthetic/test screen): assume a fresh attempt.
         return set(PHRASE)
     for marker in ('パスワードヲジュンバンニイレテクダサイ。', 'パスワードヲ'):
         if marker in text:
             text = text.split(marker, 1)[-1]
             break
-    return {word for word in PHRASE if word in text}
+    found = {word for word in PHRASE if word in text}
+    return found or set(PHRASE)
 
 
 def _dynamic_step(screen, mem, st):
@@ -152,6 +168,22 @@ def _legacy_step(screen, mem, st):
 def password_step(screen, mem):
     """Enter the phrase in order; read the list when the grey rows are usable."""
     st = mem.setdefault('password_entry', {})
+    digest = getattr(screen, 'frame_sha256', None)
+    if digest and st.get('digest') == digest:
+        st['static'] = int(st.get('static') or 0) + 1
+    else:
+        st['digest'] = digest
+        st['static'] = 0
+    if int(st.get('static') or 0) >= 12:
+        # The screen accepted no input for 12 observations: the game ignored
+        # the entry (a wrong-order sequence soft-locks it). One B asks the
+        # password screen to reset instead of pressing A forever.
+        st['static'] = 0
+        st.pop('dyn_search', None)
+        _record(mem, 'password_entry_static_b', screen=screen.kind,
+                observed_metric={'digest': digest},
+                reason='パスワード画面が入力を12観測受け付けないため、Bで入力をやり直す')
+        return [pad('b')]
     if _rows(screen):
         if int(st.get('cycles') or 0) >= 6:
             return []
