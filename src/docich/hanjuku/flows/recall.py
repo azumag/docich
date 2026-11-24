@@ -2080,6 +2080,19 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
                                 'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
 
 
+def _site_king_down(mem, name):
+    """A chapter-4 site whose king's defeat is already measured.
+
+    Delegates to the strategy layer's single definition so the Y-view's
+    closed marker, the boss victories and the all-four fallback cannot drift
+    apart. Only chapter 4's own site names are asked (other chapters' boss
+    castle is not one of the four).
+    """
+    from ..strategy.orders import _site_king_down as king_down
+    return ((mem.get('chapter') or 0) == 4 and name in chart.boss_sites(4)
+            and king_down(mem, name))
+
+
 def _boss_move_goal(mem, state, marker=None):
     """The concrete boss site this いどう aims at, or None.
 
@@ -2090,14 +2103,21 @@ def _boss_move_goal(mem, state, marker=None):
     raised on every observation (the whole-map G cursor appeared stopped).
     Prefer the goal the monthly task measured from the roster marker, then the
     site nearest the measured camp; never invent a site from nothing.
+
+    Cleared sites never qualify (live g1342 2026-11-25 01:12: the 北西 king
+    was down and the camp still aimed a いどう at it). A measured goal that
+    is now closed yields None — aborting the redirect is safer than marching
+    the camper onto a dead site; the monthly task recalls him home instead.
+    A missing goal falls back to the nearest live site only.
     """
     chapter = mem.get('chapter') or 0
     cells = chart.castles(chapter)
     goal = state.get('goal')
     if isinstance(goal, str) and cells.get(goal):
-        return goal
+        return None if _site_king_down(mem, goal) else goal
     sites = [name for name in chart.boss_sites(chapter)
-             if isinstance(name, str) and cells.get(name)]
+             if isinstance(name, str) and cells.get(name)
+             and not _site_king_down(mem, name)]
     if len(sites) == 1:
         return sites[0]
     if not sites:

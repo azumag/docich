@@ -8151,7 +8151,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1485-camp-watch-hint-identity",
             "hanjuku-chart-v1486-locked-boss-activation",
             "hanjuku-chart-v1484-sortie-kit-evidence-confidence",
-            "hanjuku-chart-v1487-summon-card-without-egg",
+            "hanjuku-chart-v1487-ch4-southern-kings",
+            "hanjuku-chart-v1488-summon-card-without-egg",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
 

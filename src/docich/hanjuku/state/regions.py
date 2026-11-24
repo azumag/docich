@@ -259,6 +259,8 @@ KEY_OWNERSHIP = {
     'route_probe_read_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 経路プローブ読み取りtick
     'shop': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 購入計画(戦略economyが書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理
+    'site_end_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 目標外の城へ戻ったサイトstepの再武装回数(月内上限)
+    'site_unconfirmed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 検証不能なサイト出撃を戻した回数(月内上限)
     'site_step_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # サイトstep再武装の戦略管理
     'sortie_cancelled_observed_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃キャンセル観測カウント(orders調整用)
     'sortie_cancelled_observed_gates': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上ゲート
@@ -266,6 +268,7 @@ KEY_OWNERSHIP = {
     'sortie_held_source_defender_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃保留元防衛者カウント(orders戦略)
     'sortie_held_source_defender_gates': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上ゲート
     'sortie_relaunch': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃再発進の戦略管理
+    'sortie_verify_open': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃未確定の在城確認で城メニューから一覧を開いた回数
     'sortie_source_defender_cancel_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'sortie_source_defender_cancel_gates': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上
     'source_defender_cancel_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上
