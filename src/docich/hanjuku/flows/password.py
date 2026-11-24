@@ -34,6 +34,10 @@ def _rows(screen):
     return [(y, w) for y, w in (getattr(screen, 'password_list', None) or ()) if w]
 
 
+def _white_words(rows, grey):
+    return {w for y, w in rows if y not in grey}
+
+
 def _selected(screen, rows):
     hand = screen.hand
     if not hand or not rows:
@@ -80,6 +84,7 @@ def _dynamic_step(screen, mem, st):
     the full grid and enters the correct order.
     """
     rows = _rows(screen)
+    grey = getattr(screen, 'password_list_grey', set()) or set()
     remaining = _grid_words(screen)
     # A reset probe (or the game's retry) restores words to the grid; a
     # normal entry only shrinks it. On a restore, start the phrase over.
@@ -104,8 +109,11 @@ def _dynamic_step(screen, mem, st):
         st['cycles'] = cycles
         return [pad('up')]
     if len(remaining) < len(PHRASE):
-        # Partial attempt: consume the remaining words in phrase order.
-        want = next((w for w in PHRASE if w in remaining), None)
+        # Partial attempt: consume the remaining words in phrase order,
+        # skipping rows the list already marks as used (grey).
+        want = next((w for w in PHRASE if w in remaining and w in _white_words(rows, grey)), None)
+        if want is None:
+            want = next((w for w in PHRASE if w in remaining), None)
     else:
         want = PHRASE[step] if step < len(PHRASE) else None
     if want is None:
@@ -123,7 +131,7 @@ def _dynamic_step(screen, mem, st):
     else:
         search['sign'] = sign
         search['stuck'] = 0
-    if sel[1] == want:
+    if sel[1] == want and sel[0] not in grey:
         st['dyn_step'] = PHRASE.index(want) + 1
         st.pop('dyn_search', None)
         return [pad('a', 30)]
@@ -177,11 +185,26 @@ def _legacy_step(screen, mem, st):
 def password_step(screen, mem):
     """Enter the phrase in order; read the list when the grey rows are usable."""
     st = mem.setdefault('password_entry', {})
+    # The door's order is the phrase (われらが first), never the display
+    # order; drop any sweep left over from the earlier fallback.
+    if st.pop('sweep', None) is not None:
+        st['dyn_step'] = 0
+        st['grid_len'] = None
+        st.pop('dyn_search', None)
     if _rows(screen):
         if int(st.get('cycles') or 0) >= 6:
             return []
         actions = _dynamic_step(screen, mem, st)
     else:
+        if getattr(screen, 'lines', None):
+            # A real password screen whose list could not be read: never fall
+            # back to a fixed display order (the order is random per run).
+            if not st.get('list_unreadable_noted'):
+                st['list_unreadable_noted'] = True
+                _record(mem, 'password_entry_list_unreadable', screen=screen.kind,
+                        observed_metric={'text': (getattr(screen, 'text', '') or '')[:80]},
+                        reason='リストを読めないため固定順では入力せず、次の観測で読み直す')
+            return [pad('up', 30)]
         if st.get('cycles', 0) >= _MAX_CYCLES:
             return []
         actions = _legacy_step(screen, mem, st)
@@ -196,9 +219,10 @@ def password_step(screen, mem):
         # The game refused the same confirming A: probe the in-game reset
         # inputs (long presses) and, once the screen changes, restart the
         # phrase from the top. No driver restart / state reload.
-        ladder = ['b', 'start', 'select', 'y']
+        ladder = ['start', 'select', 'y', 'b']
         index = int(st.get('reset_index') or 0)
         st['a_repeat'] = 0
+        st['probe_total'] = int(st.get('probe_total') or 0) + 1
         if index < len(ladder):
             button = ladder[index]
             st['reset_index'] = index + 1
@@ -209,9 +233,11 @@ def password_step(screen, mem):
                     reason='確定Aが通らないため、ゲーム内のリセット入力を長押しで試す')
             return [pad(button, 30)]
         st['reset_index'] = 0
-        st['probe_total'] = int(st.get('probe_total') or 0) + len(ladder)
-        _record(mem, 'password_entry_reset_exhausted', screen=screen.kind,
+        st['dyn_step'] = 0
+        st['grid_len'] = None
+        st.pop('dyn_search', None)
+        _record(mem, 'password_entry_retry_phrase', screen=screen.kind,
                 observed_metric={'probes': st.get('probe_total')},
-                reason='リセット入力でも画面が変わらないため、次に画面が変わるまで待つ')
-        return []
+                reason='リセット入力でも変わらないため、語順（われらが先頭）を先頭からやり直す')
+        return [pad('up', 30)]
     return actions
