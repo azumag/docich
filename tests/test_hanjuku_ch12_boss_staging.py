@@ -1,0 +1,162 @@
+"""Chapter 12: the boss waves leave from a castle near the boss, hero first.
+
+Owner 2026-11-24: アルマムーン から直接ボスを目指すと障害物に当たってキャンプに
+なる。まずボス近くの城へ主人公を移動し、他の将軍も追従させてから出撃する。
+The staging castle and the relay path come from the chart's own boss order
+(12-A3 target, 12-B1 source); the state machine lives in ``strategy/routes``
+and is bounded (lost castle / repeated reverts / no progress -> abandoned and
+the old behaviour returns).
+"""
+import json
+
+from docich import hanjuku_chart as chart
+from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.strategy import orders, replan, routes
+
+HERO = chart.HERO
+NORMAL = [c for c in chart.castles(12) if not chart.is_boss_castle(c)]
+HOME = chart.home_castle(12)
+STAGE = 'ディランダ'
+PATH = ('アルマムーン', 'ブラックランド', 'ヘリオポリス', 'ディランダ')
+
+
+def memory(**garrison):
+    roster = {c: [f'g{i}'] for i, c in enumerate(NORMAL)}
+    roster.update({HOME: [HERO, 'A', 'B', 'C', 'D'], 'ブラックランド': ['チコリ'],
+                   'ヘリオポリス': ['H1'], STAGE: ['ペコリーノ']})
+    roster.update(garrison)
+    mem = {'chapter': 12, 'tick': 1000, 'month': '50-11', 'gold': 500, '_records': [],
+           'orders': {}, 'world': {'sorties': {}}, 'captured': list(NORMAL),
+           'garrison': roster, 'hero_post': {'castle': HOME, 'tick': 900}}
+    return json.loads(json.dumps(mem))
+
+
+def plan(mem):
+    return replan.interim_candidates(mem, allow_sole=False)
+
+
+def boss_attacks(mem):
+    return [c for c in plan(mem).values()
+            if chart.is_boss_castle(c.get('target')) and c.get('purpose') == 'attack']
+
+
+def decisions(mem):
+    return [r['decision'] for r in mem['_records']]
+
+
+def test_the_staging_is_derived_from_the_chart_and_only_for_chapter_12():
+    spec = chart.boss_staging(12)
+    assert spec == {'castle': STAGE, 'path': PATH}
+    assert spec['path'][0] == HOME
+    assert chart.boss_staging(9) is None
+    assert chart.boss_staging(11) is None
+
+
+def test_the_hero_leads_the_march_to_the_staging_castle_and_no_boss_wave_leaves():
+    mem = plan_mem = memory()
+    candidates = plan(plan_mem)
+    assert routes.staging_phase(mem) == 'gathering'
+    assert boss_attacks(mem) == []
+    hero = [c for c in candidates.values() if c.get('general') == HERO]
+    assert len(hero) == 1
+    assert (hero[0]['source'], hero[0]['target']) == ('アルマムーン', 'ブラックランド')
+    assert hero[0]['purpose'] == 'move' and hero[0]['hero_hub_move'] is True
+    assert hero[0]['stage_first'] is True
+    followers = [c for c in candidates.values()
+                 if c.get('purpose') == 'move' and c.get('general') != HERO
+                 and (c['source'], c['target']) == ('アルマムーン', 'ブラックランド')]
+    assert followers            # the other generals follow along the same relay
+    assert 'boss_staging_started' in decisions(mem)
+
+
+def test_the_home_castle_boss_order_is_not_ready_while_the_hero_is_on_the_way():
+    mem = memory()
+    plan(mem)
+    order = {'step': 'X', 'general': 'A', 'source': HOME, 'target': 'ボス', 'purpose': 'attack'}
+    assert routes.staging_blocks(mem, order, HOME) is True
+    assert orders._ready(order, mem) is False
+    # a march between our castles is never held by the staging
+    move = {'step': 'Y', 'general': 'A', 'source': HOME, 'target': 'ブラックランド', 'purpose': 'move'}
+    assert routes.staging_blocks(mem, move, HOME) is False
+
+
+def test_the_hero_in_the_staging_roster_opens_the_boss_waves_from_that_castle_only():
+    mem = memory()
+    plan(mem)
+    mem = json.loads(json.dumps(mem))       # the book survives a JSON round trip
+    _world(mem)['garrison'][STAGE] = [HERO, 'ペコリーノ', 'E']
+    _world(mem).setdefault('garrison_tick', {})[STAGE] = 1150
+    mem['hero_post'] = {'castle': STAGE, 'tick': 1100}
+    mem['tick'] = 1200
+    attacks = boss_attacks(mem)
+    assert routes.staging_phase(mem) == 'ready'
+    assert attacks and {a['source'] for a in attacks} == {STAGE}
+    assert HERO not in {a['general'] for a in attacks}
+    assert 'boss_staging_ready' in decisions(mem)
+    order = {'step': 'X', 'general': 'A', 'source': HOME, 'target': 'ボス', 'purpose': 'attack'}
+    assert routes.staging_blocks(mem, order, HOME) is True
+    assert routes.staging_blocks(mem, order, STAGE) is False
+
+
+def test_a_lost_relay_castle_abandons_the_staging_and_the_old_behaviour_returns():
+    mem = memory()
+    plan(mem)
+    mem['captured'] = [c for c in mem['captured'] if c != 'ブラックランド']
+    mem['tick'] = 1300
+    assert routes.staging_update(mem) == 'abandoned'
+    assert routes.staging_phase(mem) is None
+    assert decisions(mem)[-1] == 'boss_staging_abandoned'
+    order = {'step': 'X', 'general': 'A', 'source': HOME, 'target': 'ボス', 'purpose': 'attack'}
+    assert routes.staging_blocks(mem, order, HOME) is False
+    # an abandoned staging never re-arms within the chapter
+    mem['captured'] = list(NORMAL)
+    assert routes.staging_arm(mem) == 'abandoned'
+    assert routes.staging_phase(mem) is None
+
+
+def test_a_staging_that_never_progresses_is_abandoned_after_the_bound():
+    mem = memory()
+    plan(mem)
+    mem['tick'] = 1000 + routes.STAGING_MAX_TICKS + 1
+    assert routes.staging_update(mem) == 'abandoned'
+    assert routes.staging_phase(mem) is None
+    assert 'boss_staging_abandoned' in decisions(mem)
+
+
+def test_the_hero_never_leaves_a_relay_castle_alone():
+    mem = memory(**{HOME: [HERO]})
+    candidates = plan(mem)
+    assert [c for c in candidates.values() if c.get('general') == HERO] == []
+
+
+def test_a_hero_hop_along_the_relay_counts_as_progress():
+    mem = memory()
+    plan(mem)
+    mem['tick'] = 1000 + routes.STAGING_MAX_TICKS - 100
+    mem['hero_post'] = {'castle': 'ブラックランド', 'tick': mem['tick']}
+    assert routes.staging_update(mem) == 'gathering'
+    mem['tick'] += routes.STAGING_MAX_TICKS - 100      # still inside the window since the hop
+    assert routes.staging_update(mem) == 'gathering'
+    mem['tick'] += 200                                  # the window since the last hop is spent
+    assert routes.staging_update(mem) == 'abandoned'
+
+
+def test_the_staging_has_a_hard_cap_from_its_start():
+    mem = memory()
+    plan(mem)
+    mem['tick'] = 1000 + routes.STAGING_MAX_TOTAL + 1
+    mem['hero_post'] = {'castle': 'ヘリオポリス', 'tick': mem['tick']}   # fresh progress claimed
+    assert routes.staging_update(mem) == 'abandoned'
+
+
+def test_a_booked_arrival_beats_a_stale_status_post_and_plans_the_next_hop():
+    # e2e 2026-11-25: the arrival was booked in ブラックランド's list while
+    # hero_post still said アルマムーン, so hop 2 was never planned.
+    mem = memory(**{HOME: ['A', 'B', 'C'], 'ブラックランド': ['チコリ', HERO, 'F'],
+                    'ヘリオポリス': ['H1', 'H2']})
+    mem['world'] = {'sorties': {}, 'garrison_tick': {'ブラックランド': 100}}
+    mem['hero_post'] = {'castle': HOME, 'tick': 900}
+    mem = json.loads(json.dumps(mem))
+    assert routes.hero_castle(mem, PATH) == 'ブラックランド'
+    hero = [c for c in plan(mem).values() if c.get('general') == HERO]
+    assert [(c['source'], c['target']) for c in hero] == [('ブラックランド', 'ヘリオポリス')]
