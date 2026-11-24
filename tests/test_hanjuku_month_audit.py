@@ -1055,6 +1055,30 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_month_end_renders_last_held_visible_rows(runtime_dir):
+    value = _chikujou_state()
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_held', 'month': '1-1', 'at': 999,
+                    'deviation_reason': 'castle_scroll_no_progress',
+                    'observed_metric': {'visible': ['アトランチス', 'ファルゲ',
+                                                    'リグア', 'アルマムーン'],
+                                        'scrolls': 9, 'stalled': 3},
+                    'reason': '築城一覧の移動が効かないためBで戻る'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    diagnostic = record['chikujou_event']['terminal_diagnostic']
+    assert diagnostic['deviation_reason'] == 'castle_scroll_no_progress'
+    assert diagnostic['visible'] == ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン']
+    assert diagnostic['scrolls'] == 9
+    assert diagnostic['stalled'] == 3
+    rendered = audit.render(record)
+    assert '最終保留理由: castle_scroll_no_progress' in rendered
+    assert 'ファルゲ' in rendered
+    assert 'scrolls: 9 / stalled: 3' in rendered
+
+
 def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
     # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
     # issue 本文だけで判別できるよう、拒否の skips と対象城を記録に残す。
