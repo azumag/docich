@@ -1120,6 +1120,23 @@ def _remaining_cards(selected, used):
             remaining.append(card)
     return remaining[:12]
 
+def _remaining_cards_are_unconfirmed(remaining, *evidence_groups):
+    """Require enough unconfirmed evidence for every remaining copy.
+
+    One physical selection can appear in both attempted and unclassified
+    ledgers; use the maximum per-name count across evidence sources rather
+    than adding overlapping ledgers. One attempt at one of five identical
+    cards must not hide the other four as untried resources.
+    """
+    remaining_counts = Counter(card for card in remaining if isinstance(card, str))
+    if not remaining_counts:
+        return False
+    unconfirmed_counts = Counter()
+    for group in evidence_groups:
+        group_counts = Counter(card for card in (group or ()) if isinstance(card, str))
+        unconfirmed_counts |= group_counts
+    return not (remaining_counts - unconfirmed_counts)
+
 
 def _battle_resources(record):
     metric = record.get('observed_metric')
@@ -1144,10 +1161,11 @@ def _battle_resources(record):
     # a card left is the alert either way), but expose whether that card had
     # already been tried, so triage can tell "the spend attempt failed" from
     # "the card was never given a chance".
-    attempted = {card for card in (metric.get('cards_attempted') or ())
-                 if isinstance(card, str)}
-    retried = {card for card in (metric.get('cards_spend_retry') or ())
-               if isinstance(card, str)}
+    # Keep multiplicity: each list entry is one bounded selection attempt.
+    attempted = [card for card in (metric.get('cards_attempted') or ())
+                 if isinstance(card, str)][:12]
+    retried = [card for card in (metric.get('cards_spend_retry') or ())
+               if isinstance(card, str)][:12]
     resources = []
     if egg:
         resources.append('egg')
@@ -1167,8 +1185,10 @@ def _battle_resources(record):
         # docich#5158: selections whose announce receipt never calibrated are
         # the same structural gap as egg-drop cards — the audit cannot tell a
         # used card from an unused one.
-        'cards_unclassified': sorted({card for card in (metric.get('cards_unclassified') or ())
-                                      if isinstance(card, str)})[:12],
+        # Keep duplicate entries so the audit can distinguish one
+        # unconfirmed copy from several identical copies.
+        'cards_unclassified': sorted(card for card in (metric.get('cards_unclassified') or ())
+                                     if isinstance(card, str))[:12],
     }
 
 
@@ -1258,10 +1278,9 @@ def _battle_resource_event(record):
         # same unconfirmed signature even when the settle never reached the
         # cards_unclassified ledger (e.g. the flow was dropped or the battle
         # ended mid-attempt).
-        'cards_unconfirmed_only': bool(resources['cards_remaining'])
-        and set(resources['cards_remaining'])
-        <= (set(resources['cards_unconfirmed_egg_drop']) | set(resources['cards_unclassified'])
-            | set(resources['cards_attempted'])),
+        'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
+            resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
+            resources['cards_unclassified'], resources['cards_attempted']),
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
