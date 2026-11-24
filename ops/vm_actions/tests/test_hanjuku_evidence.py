@@ -188,9 +188,9 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
             with self.subTest(state=state):
                 # Export is intentionally stricter for legacy schema/no lease.
                 self.assertFalse(exported and not native_ok)
-                if index < 4:
+                if index < 5:
                     self.assertTrue(exported and native_ok)
-                elif index < 10:
+                elif index < 11:
                     self.assertFalse(exported or native_ok)
 
     def test_repetition_archive_roundtrip_and_missing_validator_fail_closed(self):
