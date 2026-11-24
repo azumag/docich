@@ -249,6 +249,14 @@ def _chikujou_menu_text_owned(mem, kind, key):
                     'おかねがたりません', 'しょうぐんがおりませなんだ')))
 
 
+def _dome_camp_menu_text_owned(recall, recall_dialog, kind):
+    """Keep unmeasured dome-camp screens under the recall's bounded close path."""
+    return bool(recall_dialog and isinstance(recall, dict)
+                and recall.get('stage') == 'menu'
+                and recall.get('camp_kind') == 'dome'
+                and kind in ('text', 'unknown'))
+
+
 def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
     """Advance unrelated event narration without consuming a live build wait."""
     guarded = guarded or _chikujou_menu_text_owned(mem, kind, key)
@@ -2489,9 +2497,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     summon_scene = bool(battle.get('summon_scene') or mem.get('summon_scene'))
     from .state.regions import plan as _plan_here
     plan_active = bool(_plan_here(mem).get('active'))
-    text_guarded = event_guarded and not (
+    text_guarded = (event_guarded and not (
         kind == 'text' and phase == 'dialogue' and screen.text
         and not named_hold and not summon_scene and not plan_active)
+        or _dome_camp_menu_text_owned(recall, recall_dialog, kind))
     if event_text_advance_step(mem, phase, kind, concert_key, actions, text_guarded):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
