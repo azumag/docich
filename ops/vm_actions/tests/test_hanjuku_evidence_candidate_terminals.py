@@ -37,7 +37,7 @@ class CandidateTerminalTests(unittest.TestCase):
                           and any(isinstance(t, ast.Name) and t.id == 'TERMINAL_REASONS'
                                   for t in n.targets))
         reasons = ast.literal_eval(assignment.value.args[0])
-        self.assertEqual(set(reasons), {'game_over', 'screen_stalled', 'input_stalled'})
+        self.assertEqual(set(reasons), {'game_over', 'game_clear', 'screen_stalled', 'input_stalled'})
         for reason in reasons:
             with self.subTest(reason=reason):
                 result = self.validate(reason)
