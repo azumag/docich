@@ -2512,6 +2512,14 @@ def _finish_order(mem, state, **fields):
             if isinstance(section, dict):
                 section.pop(step, None)
     if step:
+        # Keep the resolved order identity on the terminal record. Interim
+        # orders live in chart_adjust.interim_order rather than chart_plan, so
+        # the audit cannot recover their purpose after the active step retires.
+        order = (_order_for_step(mem, step) or {}) if state == 'failed' else {}
+        for key in ('purpose', 'general', 'source', 'target'):
+            value = order.get(key)
+            if not fields.get(key) and isinstance(value, str) and value:
+                fields[key] = value[:32 if key == 'purpose' else 48]
         _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':
             # A new sortie carries a fresh kit: attempted uses from the
@@ -2526,7 +2534,6 @@ def _finish_order(mem, state, **fields):
             # no castle menu opened at either source).
             mem.setdefault('failed_local_step', {})[step.rsplit(':', 1)[-1]] = int(mem.get('tick') or 0)
             from . import goals
-            order = _order_for_step(mem, step) or {}
             goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
             if goal_kind:
                 goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
