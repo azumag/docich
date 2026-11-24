@@ -2090,6 +2090,7 @@ def card_list_step(screen: Screen, mem):
             and not (cur.get('hero_retreat') or {}).get('unavailable')
             and not (cur.get('hero_retreat') or {}).get('exhausted')):
         cur['card_flow'] = None
+        cur['card_retreat_cancels'] = int(cur.get('card_retreat_cancels') or 0) + 1
         _record(mem, 'battle_hero_retreat_cancel_card', **_battle_labels(cur),
                 reason='未選択の切り札一覧を閉じ、どうしの緊急退却を優先')
         return [pad('b')]
@@ -3131,6 +3132,15 @@ def egg_battle_step(screen: Screen, mem):
                     'tactic_id': interrupted_flow.get('tactic_id'),
                 }
             battle['card_flow'] = None
+        if int(battle.get('card_retreat_cancels') or 0) >= CARD_RETREAT_CANCEL_LIMIT:
+            abandoned = [c for c in (battle.get('planned_cards') or [])
+                         if c not in (battle.get('cards_unclassified') or [])]
+            if abandoned:
+                battle.setdefault('cards_unclassified', []).extend(abandoned)
+                _record(mem, 'battle_summon_card_abandoned', **_battle_labels(battle),
+                        observed_metric={'cancels': battle.get('card_retreat_cancels'),
+                                         'abandoned': abandoned},
+                        reason='退却禁止のため切り札一覧の再オープンが空転する。札は使えないものとして攻撃へ切り替える')
         attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
                      *(battle.get('cards_unclassified') or []), *(battle.get('cards_missing') or [])}
         cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
@@ -3380,6 +3390,7 @@ MONSTER_STALL_RETURN_TURNS = 6
 # A summon fight's command box hides きりふだ below たまごをつかう; one or two
 # downs reveal it.  Bound the scroll so an unreadable box cannot loop.
 SUMMON_CARD_SCROLL_LIMIT = 3
+CARD_RETREAT_CANCEL_LIMIT = 2   # cancels before the carried card is abandoned
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
 # enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
 # even at enemy HP 27 with the summon at 515, which looked like throwing a
