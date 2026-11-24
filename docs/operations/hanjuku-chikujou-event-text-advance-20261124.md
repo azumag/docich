@@ -15,7 +15,7 @@
 
 ch10 17-4では、ドーム型野営を開いた後に防衛告知の `text` 画面が現れた。汎用イベント文送りの A はこの既知テキストを進めるため必要だが、帰還側の `menu_other` が A の前後で連続して数えられ、A の後わずか3観測で `DOME_SCREEN_WAIT` に達して `camp_group_screen` として帰還を取り消していた。
 
-- `recall_dialog` が所有する `stage=menu, camp_kind=dome` の `text` でイベント A が実行されたら、`menu_other` を0へ戻し、A後の画面に `DOME_SCREEN_WAIT` 全体を与える。
+- `recall_dialog` が所有する `stage=menu, camp_kind=dome` の `text` で最初のイベント A が実行されたら、`menu_other` を0へ戻し、A後の画面に `DOME_SCREEN_WAIT` 全体を与える。再度のAでは待機を延長しない。
 - 既知の防衛告知を進めるイベント A は維持し、未知の画面そのものへ盲目的に A を送らない。次画面も未計測なら全待機後に従来どおり B で閉じる。
 - 通常テント、砦の各段階、コンサート、帰還フローが所有しない会話は従来の有限イベント送りを維持する。
 
