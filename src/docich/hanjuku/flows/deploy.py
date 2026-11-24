@@ -2398,10 +2398,13 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             _plan_region(mem).setdefault('general_override', {}).pop(order['step'], None)
             if general != order['general']:
                 _plan_region(mem)['general_override'][order['step']] = general
-            if fallback_hero and (_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem)):
+            bound_general = _sortie_general(order, mem)
+            if fallback_hero and ((order.get('_execution_bound') is True and bound_general != NAME)
+                                  or _broken_hero_order(order, mem) or _boss_egg_depleted(order, mem)):
                 _finish_order(mem, 'failed',
                               deviation_reason='代役待ち上限後も主人公の卵・修復状態が出撃条件を満たさない',
-                              observed_metric={'general': NAME, 'egg_uses': egg_memory.current_uses(mem, NAME),
+                              observed_metric={'general': NAME, 'bound_general': bound_general,
+                                               'egg_uses': egg_memory.current_uses(mem, NAME),
                                                'broken': (mem.get('house_eggs') or {}).get(NAME, {}).get('broken') is True},
                               source=_source(order, mem),
                               reason='主人公単独出撃の安全条件を満たさないため、代役不在のボス注文を終了する')

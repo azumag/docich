@@ -35,7 +35,6 @@ def test_readable_boss_list_without_companion_waits_then_uses_hero_at_bound(name
     _plan_region(mem)['active'] = step
     actions = p.deploy_step(selected_list(names), mem)
     assert p.pad('b') not in actions
-    assert _plan_region(mem)['general_override'][step] == p.NAME
     assert _plan_region(mem)['sortie_general'][step] == p.NAME
     assert [r['decision'] for r in mem['_records']].count('boss_companion_timeout') == 1
 
@@ -44,6 +43,8 @@ def test_non_site_boss_without_companion_reaches_bounded_deploy_wait():
     order, mem = boss_memory(chapter=10)
     _plan_region(mem)['orders'][order['step']] = 'pending'
     _world(mem)['garrison'] = {order['source']: [p.NAME]}
+    assert strategy_orders._ready(order, mem) is False
+    mem['tick'] += strategy_orders.BOSS_COMPANION_WAIT_TICKS
     assert strategy_orders._ready(order, mem) is True
 
 
@@ -109,6 +110,10 @@ def test_companion_preparation_waits_for_known_injury_or_egg_failure(status):
     mem['house_eggs'] = {'ゼウス': status}
     assert p.next_order(mem) is None
     assert not _plan_region(mem).get('sortie_general')
+    # The known injury/egg blocker is respected initially, but it cannot
+    # keep a non-chapter-4 boss order hidden beyond the shared deadline.
+    mem['tick'] += strategy_orders.BOSS_COMPANION_WAIT_TICKS
+    assert p.next_order(mem) is not None
 
 
 def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():

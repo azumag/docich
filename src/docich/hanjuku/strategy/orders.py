@@ -705,7 +705,7 @@ BOSS_COMPANION_WAIT_TICKS = 200   # bounded wait before a safe hero-only boss at
 
 
 def _boss_companion_wait_expired(mem, order):
-    """Share one per-step deadline across planning, deploy and target gates.
+    """Share one per-step deadline across planner, deploy and target gates.
 
     A timeout must survive the general-list backout: otherwise the target
     picker starts a fresh timer and the same boss order waits forever in stages.
@@ -767,8 +767,10 @@ def _ready(order, mem) -> bool:
         return False
     if not _boss_target_unlocked(order, mem):
         return False
+    companion_source = None
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
             and order.get('roster_probe') is not True):
+        companion_source = _boss_companion_source(order, mem)
         # The corridor chapter's moving boss: the game refuses a sortie from a
         # castle that keeps only one general, so the chart's boss order from the
         # one-general last castle was started every ~85 steps and never
@@ -778,17 +780,24 @@ def _ready(order, mem) -> bool:
             source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
             if source_names is not None and len(set(source_names)) < 2:
                 return False
-        if (order.get('target') in chart.boss_sites(4)
-                and _boss_companion_source(order, mem) is None
+        if (companion_source is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
             # Chapter 4's summon sites retain their measured egg-holder gate.
-            # Other boss orders must reach the deploy flow, where the same
-            # companion wait is bounded and can settle without a planner deadlock.
-            return False
+            # Other boss orders start the shared deadline here, before the
+            # planner can hide them from the deploy flow indefinitely.
+            if (order.get('target') in chart.boss_sites(4)
+                    or not _boss_companion_wait_expired(mem, order)):
+                return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
-            and not (_boss_companion_source(order, mem) if _is_boss_order(order, mem)
+            and not (companion_source if _is_boss_order(order, mem)
                      else _hero_source_alternative(order, mem))):
-        return False
+        # After the same bounded wait, deploy_step either selects a freshly
+        # observed, safe hero or fails the order. Do not keep _ready blocked
+        # forever on an injured companion or a broken/depleted hero.
+        if not (_is_boss_order(order, mem)
+                and order.get('target') not in chart.boss_sites(4)
+                and _boss_companion_wait_expired(mem, order)):
+            return False
     after = order['after']
     captured = set(mem.get('captured', []))
     if after is None:
