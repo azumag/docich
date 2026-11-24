@@ -67,6 +67,7 @@ def test_a_release_for_a_step_not_active_never_writes_failed():
     _plan_region(mem)['active'] = 'A:run:M2'
     result = release(mem)
     assert _plan_region(mem)['orders'][STEP] == 'pending'
+    assert _flow(mem)['departure_miss'][STEP] == DEPARTURE_REQUEST_LIMIT - 1
     assert 'order_failed' not in decisions(mem)
     assert release_records(mem)[-1]['resulting_event'] == 'request_released_not_owned'
     assert result.permitted_recovery == 'reconfirm'
@@ -77,6 +78,7 @@ def test_a_late_release_does_not_fail_an_already_launched_order():
     _plan_region(mem)['orders'][STEP] = 'launched'
     result = release(mem)
     assert _plan_region(mem)['orders'][STEP] == 'launched'
+    assert _flow(mem)['departure_miss'][STEP] == DEPARTURE_REQUEST_LIMIT - 1
     assert 'order_failed' not in decisions(mem)
     assert release_records(mem)[-1]['resulting_event'] == 'request_released_not_owned'
 
@@ -86,6 +88,7 @@ def test_an_untagged_live_sortie_keeps_the_release_fail_closed():
     _world(mem).setdefault('sorties', {})[STEP] = {'status': 'en_route'}
     result = release(mem)
     assert _plan_region(mem)['orders'][STEP] == 'pending'
+    assert _flow(mem)['departure_miss'][STEP] == DEPARTURE_REQUEST_LIMIT - 1
     assert 'order_failed' not in decisions(mem)
     assert release_records(mem)[-1]['resulting_event'] == 'request_released_not_owned'
     assert result.permitted_recovery == 'reconfirm'
@@ -146,6 +149,7 @@ def test_a_request_for_another_step_never_settles_this_one():
     mem = order_mem()
     result = release(mem, {**REQUEST, 'step': 'A:run:M9'})
     assert _plan_region(mem)['orders'][STEP] == 'pending'
+    assert _flow(mem)['departure_miss'][STEP] == DEPARTURE_REQUEST_LIMIT - 1
     assert 'order_failed' not in decisions(mem)
     assert release_records(mem)[-1]['resulting_event'] == 'request_released_not_owned'
 

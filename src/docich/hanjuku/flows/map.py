@@ -3365,15 +3365,30 @@ def _release_departure_request(mem, order, request, reason):
         'released',
         _sortie_state_sig(mem, request.get('source'), request.get('general')))
     misses = flow(mem).setdefault('departure_miss', {})
-    misses[step] = int(misses.get(step) or 0) + 1
+    orders = _plan_region(mem).get('orders') or {}
+    used = int(misses.get(step) or 0)
+    # A stale release must not consume the retry budget of a different or
+    # already-settled order. Only the request that still owns the active step
+    # is allowed to count as a miss.
+    if (request.get('step') != step or _plan_region(mem).get('active') != step
+            or orders.get(step) in ('launched', 'launched_unconfirmed')):
+        _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                **(request.get('context') or {}),
+                observed_metric={'request_misses': used,
+                                 'request_step': request.get('step'),
+                                 'active': _plan_region(mem).get('active'),
+                                 'order_state': orders.get(step)},
+                resulting_event='request_released_not_owned',
+                reason='出撃要求が現在の指示・手順の所有に結び付かないため失敗とは記録せず解放する')
+        return FlowResult('departure_request', 'release', [], reason,
+                          retry={'used': used, 'limit': DEPARTURE_REQUEST_LIMIT},
+                          permitted_recovery='reconfirm')
+    misses[step] = used + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
-        # A durable failed status belongs only to the active request for this
-        # step. Old transit evidence or a late release must not settle a newer
-        # request or overwrite an order that has already launched.
-        orders = _plan_region(mem).get('orders') or {}
-        if (request.get('step') != step or _plan_region(mem).get('active') != step
-                or orders.get(step) in ('launched', 'launched_unconfirmed')
-                or _sortie_is_current_for_departure_request(mem, step, request)):
+        # An untagged live march, or a receipt-backed march for this exact
+        # confirmation, is still evidence that the departure may have landed.
+        if _sortie_is_current_for_departure_request(mem, step, request):
+            misses[step] = DEPARTURE_REQUEST_LIMIT - 1
             _record(mem, 'sortie_departure_not_accepted', chart_step=step,
                     **(request.get('context') or {}),
                     observed_metric={'request_misses': misses[step],
@@ -3381,7 +3396,7 @@ def _release_departure_request(mem, order, request, reason):
                                      'active': _plan_region(mem).get('active'),
                                      'order_state': orders.get(step)},
                     resulting_event='request_released_not_owned',
-                    reason='出撃要求が現在の指示・手順の所有に結び付かないため失敗とは記録せず解放だけ行う')
+                    reason='今回の出撃に結び付く行軍記録が残るため失敗を留保して解放する')
             return FlowResult('departure_request', 'release', [], reason,
                               retry={'used': misses[step], 'limit': DEPARTURE_REQUEST_LIMIT},
                               permitted_recovery='reconfirm')
