@@ -1298,6 +1298,57 @@ def _okunote_only_box_step(screen, mem, cur):
     return [pad('down')]
 
 
+def _safer_rescue_available(mem, cur):
+    """A measured egg or carried card the battle could still spend.
+
+    The command menu always draws たまごをつかう/きりふだ/たいきゃく, so their
+    labels cannot prove a usable resource: 2026-11-24 13:10 JST the decline
+    claimed 使用可能な卵/切り札 while パプリカ had no egg (has_egg false) and
+    an empty carried list, and the general fell in melee. Only the battle's
+    own measured plan (``cur['egg_plan']``) counts here.
+    """
+    plan = cur.get('egg_plan') if isinstance(cur.get('egg_plan'), dict) else {}
+    profile = plan.get('ally_profile') if isinstance(plan.get('ally_profile'), dict) else {}
+    if profile.get('has_egg') is True and not _own_egg_empty(mem, cur):
+        return True
+    return any(isinstance(row, dict) and row.get('usable') is True
+               for row in (plan.get('cards') or ()))
+
+
+def _okunote_risk_protected(mem, cur, hp, ally_full, enemy_full):
+    """A low HP battle still has a safer rescue than the irreversible lottery.
+
+    The original gate treated the visible きりふだ/たまご rows as proof of a
+    usable card or egg, which they never were (the rows are always drawn).
+    It also required a confirmed ``side == 'defense'``; battles that interrupt
+    a sortie have ``side`` and ``castle`` unknown and could never rescue a
+    losing general at all (2026-11-24 13:1x-13:2x: パプリカ/デュオニソス/
+    キャンディー declined at HP 34/21/8/22 and were lost). A confirmed attack
+    keeps the old policy; an unclassified battle may now open the lottery when
+    no measured egg/card is left.
+    """
+    hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
+    return bool(
+        cur.get('ally') in (None, 'だいじん')
+        or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
+        or cur.get('side') == 'attack'
+        or (cur.get('side') == 'defense'
+            and cur.get('castle') not in chart.castles(mem.get('chapter') or 0))
+        or cur.get('enemy') in chart.BOSSES.values()
+        or cur.get('planned_cards') or cur.get('card_flow')
+        or cur.get('egg_battle') or mem.get('egg_battle')
+        or cur.get('card_summon_observed')
+        or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
+        or _safer_rescue_available(mem, cur)
+        or type(hp) is not int or hp <= 0
+        or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
+        or ally_full is None or enemy_full is None
+        or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
+        or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
+        or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
+        or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -1499,25 +1550,7 @@ def okunote_step(screen, mem):
             conserve = (_hold_melee_egg(mem, cur, visible)
                         or cur.get('card_soldiers_current') is not True
                         or cur.get('card_hp_unread') or cur.get('card_context_unclassified'))
-            hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
-            protected = (
-                cur.get('ally') in (None, 'だいじん')
-                or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
-                or cur.get('side') != 'defense'
-                or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
-                or cur.get('enemy') in chart.BOSSES.values()
-                or cur.get('planned_cards') or cur.get('card_flow')
-                or cur.get('egg_battle') or mem.get('egg_battle')
-                or cur.get('card_summon_observed')
-                or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
-                or 'きりふだ' in visible or 'たまごをつかう' in visible
-                or type(hp) is not int or hp <= 0
-                or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
-                or ally_full is None or enemy_full is None
-                or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
-                or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
-                or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
-                or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+            protected = _okunote_risk_protected(mem, cur, hp, ally_full, enemy_full)
             if conserve:
                 if not flow.get('risk_conserved'):
                     flow['risk_conserved'] = True
@@ -1531,7 +1564,8 @@ def okunote_step(screen, mem):
                 if not flow.get('risk_declined'):
                     flow['risk_declined'] = True
                     _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
-                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE,
+                                             'side': cur.get('side'), 'castle': cur.get('castle')},
                             reason='低HPだが主人公・計画札・召喚戦・ボス・使用可能な卵/切り札などの既存保護条件があるため、奥の手を開かず白兵へ戻る')
                 rescue['exhausted'] = True
                 return [pad('b')]
