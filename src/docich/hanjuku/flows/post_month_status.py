@@ -1472,13 +1472,24 @@ def resume_after_battle(mem, battle):
          reason='戦闘で中断した月次ステータス処理を優先し、出撃計画ではなく元の確認手順へ戻る')
 
 
+def state_is_current(mem, state):
+    """True when ``state`` was armed for this chapter/month and this run.
+
+    ``step`` drops any other state as stale or foreign.  The orchestrator's
+    status-panel guard calls this same predicate: a state that step would drop
+    must never suppress the orphan close on the general status page.
+    """
+    return (isinstance(state, dict)
+            and state.get('scope') == [mem.get('chapter'), mem.get('month')]
+            and state.get('identity') == receipts.run_identity(mem.get('_run_identity')))
+
+
 def step(screen, mem, frame):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
     if not isinstance(state, dict):
         return None
-    if (state.get('scope') != [mem.get('chapter'), mem.get('month')]
-            or state.get('identity') != receipts.run_identity(mem.get('_run_identity'))):
+    if not state_is_current(mem, state):
         mem.pop('post_month_status', None)
         return None
     # An already-armed scan (from before the boss waves appeared) must not
