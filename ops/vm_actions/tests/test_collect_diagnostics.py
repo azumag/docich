@@ -1632,6 +1632,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1434-camp-dispatch-evidence'
     state['bot_version']='hanjuku-chart-v1435-recall-dispatch-unattributed'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1435-recall-dispatch-unattributed'
+    state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')

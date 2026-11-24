@@ -35,7 +35,8 @@ from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
-from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order,
+from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT,
+                               _boss_companion_wait_expired, _broken_hero_order,
                                drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -2744,34 +2745,6 @@ def _target_confirm_actions(mem, order):
                     reason='オシロガの出撃確定直前に↑を1回押して崖を避ける')
             return [pad('up'), pad('a')]
     return [pad('a')]
-
-
-BOSS_COMPANION_WAIT_TICKS = 200   # ~5 min: then the hero sorties alone
-
-
-def _boss_companion_wait_expired(mem, order):
-    """Bound the hero-alone boss hold (issue #5275).
-
-    The boss order waits for a capable companion, but when no companion can
-    reach the source the wait was unbounded and the month launched no boss
-    sortie at all (ch9 ハデス 12-12: 0 sorties, 177 observations). After
-    BOSS_COMPANION_WAIT_TICKS the hero goes alone instead of waiting forever.
-    """
-    wait = _flow(mem).setdefault('boss_companion_wait', {})
-    step = order.get('step')
-    now = int(mem.get('tick') or 0)
-    started = wait.get(step)
-    if started is None:
-        wait[step] = now
-        return False
-    if now - int(started) >= BOSS_COMPANION_WAIT_TICKS:
-        wait.pop(step, None)
-        _record(mem, 'boss_companion_timeout', chart_step=step,
-                target=order.get('target'),
-                observed_metric={'waited_ticks': now - int(started)},
-                reason='十分な代役を待つ上限に達したため、主人公単独でボスへ出撃する')
-        return True
-    return False
 
 
 def target_step(screen: Screen, mem, frame):

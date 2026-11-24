@@ -701,6 +701,42 @@ def _season_site_held(order, mem):
             or len(lost) > SEASON_SITE_MISSING_LIMIT or _site_king_down(mem, order.get('target')))
 
 
+BOSS_COMPANION_WAIT_TICKS = 200   # bounded wait before a safe hero-only boss attempt
+
+
+def _boss_companion_wait_expired(mem, order):
+    """Share one per-step deadline across planning, deploy and target gates.
+
+    A timeout must survive the general-list backout: otherwise the target
+    picker starts a fresh timer and the same boss order waits forever in stages.
+    The hero is only selected by deploy.py after a fresh readable roster proves
+    he is present and the existing egg/broken-hero guards still pass.
+    """
+    flow_state = _flow(mem)
+    step = order.get('step')
+    if not isinstance(step, str) or not step:
+        return False
+    expired = flow_state.setdefault('boss_companion_wait_expired', {})
+    if expired.get(step) is True:
+        return True
+    wait = flow_state.setdefault('boss_companion_wait', {})
+    started = wait.get(step)
+    now = int(mem.get('tick') or 0)
+    if type(started) is not int:
+        wait[step] = now
+        return False
+    elapsed = now - started
+    if elapsed < BOSS_COMPANION_WAIT_TICKS:
+        return False
+    wait.pop(step, None)
+    expired[step] = True
+    _record(mem, 'boss_companion_timeout', chart_step=step,
+            target=order.get('target'),
+            observed_metric={'waited_ticks': elapsed},
+            reason='十分な代役を待つ上限に達したため、実一覧で主人公の在席と安全条件を再確認する')
+    return True
+
+
 def _ready(order, mem) -> bool:
     # docich#4690: a source-list probe carries no named general, so every
     # later readiness check (the corridor road gate included) answers for a
@@ -742,8 +778,12 @@ def _ready(order, mem) -> bool:
             source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
             if source_names is not None and len(set(source_names)) < 2:
                 return False
-        if (_boss_companion_source(order, mem) is None
+        if (order.get('target') in chart.boss_sites(4)
+                and _boss_companion_source(order, mem) is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
+            # Chapter 4's summon sites retain their measured egg-holder gate.
+            # Other boss orders must reach the deploy flow, where the same
+            # companion wait is bounded and can settle without a planner deadlock.
             return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (_boss_companion_source(order, mem) if _is_boss_order(order, mem)
@@ -2420,6 +2460,12 @@ def drop_retired_step_context(mem):
 
 def _finish_order(mem, state, **fields):
     step = _plan_region(mem).get('active')
+    if step and state in ('failed', 'done', 'launched', 'launched_unconfirmed'):
+        flow_state = _flow(mem)
+        for key in ('boss_companion_wait', 'boss_companion_wait_expired'):
+            section = flow_state.get(key)
+            if isinstance(section, dict):
+                section.pop(step, None)
     if step:
         _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':
