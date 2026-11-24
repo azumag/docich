@@ -1862,6 +1862,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1398-egg-retry-on-hp-loss",
                  "hanjuku-chart-v1399-recall-map-hold",
                  "hanjuku-chart-v1445-early-resource-rescue",
+                 "hanjuku-chart-v1446-password-measured-order",
                  "hanjuku-chart-v1402-sortie-audit-confidence",
                  "hanjuku-chart-v1415-merchant-strong-first",
                  "hanjuku-chart-v1416-card-miss-after-use",
