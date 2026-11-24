@@ -276,8 +276,11 @@ GET /api/overlay/{streamerId}/card-ranking?period=all|7d|30d&limit=10
    **実装済み** `adapters/doushi_program.py` / `doushi_view.py` / `doushi_corner.py`、
    `corner_adapters` / `corner_catalog` / `webui` / `collect_diagnostics` / `config/docich.soren-live.toml` の配線。
 5. **PR-5（同 PR、オフライン部分まで）**: 読み上げ・実況文面の**文面生成まで**。
-   **実装済み** `doushi_narration.py`。`ANNOUNCEMENT_ENABLED = False` のまま、
-   overlay・発話とも出さない（有効化と VM 反映はオーナー承認後の別作業）。
+   **実装済み** `doushi_narration.py`。
+   2026-11-23 オーナー承認で**読み上げを有効化**（`SPEECH_ENABLED = True`、
+   `config/docich.soren-live.toml` の `audio_enabled = true`）。overlay の重複カードは
+   出さない（`OVERLAY_ENABLED = False`。画面は ranking view が表示する）。
+   VM 反映は通常の owner-only deploy 経路。
 
 ## 9. 検証
 

@@ -49,7 +49,7 @@ GAME_RULES_EN = (
     "virtual funds. No real money, no exchange account, and no real order is used; fills "
     "and P/L are computed locally from public prices.\n"
     "Screen labels: 資金 (capital), 投入 (deployed), 累積損益 (cumulative P/L, valuation "
-    "included), 本日損益 (today's realized P/L), 含み損益 (unrealized P/L), 保有 "
+    "included), 区間損益 (today's realized P/L), 含み損益 (unrealized P/L), 保有 "
     "(positions), 直近約定 (recent fills), BOTの判断 (decision summary).\n"
     "When asked about money, profit, or losses, use the current-corner memo's numbers, "
     "state whether the cumulative P/L is up or down, and always say this is PAPER trading "
@@ -61,7 +61,7 @@ GAME_RULES_JA = (
     "\t【現在のコーナーの基本ルール（PAPER暗号資産取引）】\n"
     "\t※ ゲームではない。仮想資金で暗号資産の売買判断を検証するPAPER取引のコーナー。"
     "実際のお金・口座・発注は使わず、約定と損益は公開価格からローカルで模擬計算している\n"
-    "\t- 画面の主な表示: 資金、投入、累積損益、本日損益(確定分)、含み損益、保有、直近約定、BOTの判断\n"
+    "\t- 画面の主な表示: 資金、投入、累積損益、区間損益(確定分)、含み損益、保有、直近約定、BOTの判断\n"
     "\t- お金・儲け・損益を聞かれたら、現在のコーナーのメモの数字で、累積損益がプラスかマイナスかを答える\n"
     "\t- 必ずPAPER取引(仮想資金)であり実収入ではないと伝える。実取引の利益のように話さない\n"
     "\t- ソ連ゲームの国・併合・得点のルールで説明しない"
@@ -69,7 +69,7 @@ GAME_RULES_JA = (
 
 UI_MEMO = (
     "【いまの画面: PAPER暗号資産コーナー】\n"
-    "画面上部に「PAPER / 模擬」と資金・投入。カードに累積損益・本日損益(確定分)・"
+    "画面上部に「PAPER / 模擬」と資金・投入。カードに累積損益・区間損益(確定分)・"
     "含み損益、保有銘柄、直近約定、BOTの判断が出る。"
 )
 
@@ -237,7 +237,7 @@ class _Facts:
     capital: Decimal | None
     equity: Decimal | None
     cumulative: Decimal | None
-    today: Decimal | None
+    interval: Decimal | None
     unrealized: Decimal | None
     realized_total: Decimal | None
     inconsistent: bool
@@ -257,14 +257,14 @@ def _facts(status: Mapping[str, object], moment: float) -> _Facts:
             and cumulative is not None and abs((equity - capital) - cumulative) > 1):
         # equity must be capital + cumulative; a mismatch is corrupted data.
         inconsistent = True
-    today = _decimal(perf.get("today_realized_pnl_jpy"))
+    interval = _decimal(perf.get("interval_realized_pnl_jpy"))
     unrealized = _decimal(perf.get("unrealized_pnl_jpy"))
     realized_total = _decimal(perf.get("realized_total_jpy"))
     if inconsistent:
         # A complete valuation must carry a cumulative value, and equity must
         # equal capital + cumulative.  Treat the whole performance block as
         # unusable instead of mixing partial fields.
-        cumulative = today = unrealized = realized_total = None
+        cumulative = interval = unrealized = realized_total = None
     as_of = _timestamp(perf.get("as_of")) or _timestamp(status.get("snapshot_generated_at"))
     age = None if as_of is None else max(0.0, moment - as_of)
     return _Facts(
@@ -274,7 +274,7 @@ def _facts(status: Mapping[str, object], moment: float) -> _Facts:
         capital=capital,
         equity=equity,
         cumulative=cumulative,
-        today=today,
+        interval=interval,
         unrealized=unrealized,
         realized_total=realized_total,
         inconsistent=inconsistent,
@@ -314,8 +314,8 @@ def _game_state(f: _Facts) -> str:
         lines.append(f"- 資金 {capital_text}。累積損益は{reason}。")
 
     parts: list[str] = []
-    if f.today is not None:
-        parts.append(f"本日損益(確定分) {_yen(f.today)}")
+    if f.interval is not None:
+        parts.append(f"区間損益(確定分) {_yen(f.interval)}")
     if f.unrealized is not None:
         parts.append(f"含み損益 {_yen(f.unrealized)}")
     if f.realized_total is not None:
@@ -325,7 +325,7 @@ def _game_state(f: _Facts) -> str:
     if f.cumulative is None and not f.inconsistent:
         lines.append(
             "- 保有の価格評価がすべて揃っていないため、累積損益と含み損益は評価待ち。"
-            "本日の確定分だけが確定値。"
+            "区間の確定分だけが確定値。"
         )
 
     facts: list[str] = []
@@ -340,7 +340,7 @@ def _game_state(f: _Facts) -> str:
 
     lines.append(
         "返答ルール: 「お金増えた？」「儲かった？」など資金・損益を聞かれたら、最初にPAPER取引(仮想資金)で"
-        "あることを伝え、そのうえでコーナー内の累積損益の数字と増減を必ず答える。本日損益と含み損益も分かる範囲で"
+        "あることを伝え、そのうえでコーナー内の累積損益の数字と増減を必ず答える。区間損益と含み損益も分かる範囲で"
         "添える。累積損益がプラスならコーナー内では増えている、マイナスなら減っていると言う。"
         "実際のお金は増えないという説明だけで終わらせない。数字が無い・評価待ち・更新が古い場合は、"
         "断定せずにその旨を言い、金額を推測で作らない。実取引の利益のように話さず、"

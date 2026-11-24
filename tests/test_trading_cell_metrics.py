@@ -399,10 +399,10 @@ def test_non_terminating_average_matches_build_performance_string_for_string(led
     ledger.fill("lab:A:e1", "buy", 2, 101, T0 + 1)
     ledger.fill("lab:B:e1", "buy", 3, D("103.3"), T0 + 2)
     ledger.fill("lab-exit:A:x", "sell", D("0.7"), 104, T0 + 3)
-    ledger.fill("momentum-v1", "sell", D("0.9"), 99, T0 + 4)
-    ledger.fill("lab-exit:B:x", "sell", D("1.9"), 105, T0 + 5)
+    ledger.fill("lab-exit:B:x", "sell", D("0.9"), 99, T0 + 4)
+    ledger.fill("lab-exit:B:x", "sell", D("2.1"), 105, T0 + 5)
     ledger.fill("lab-exit:A:x", "sell", D("0.3"), 98, T0 + 6)
-    ledger.fill("lab-exit:A:x", "sell", D("3.2"), 107, T0 + 7)
+    ledger.fill("lab-exit:A:x", "sell", D("2.0"), 107, T0 + 7)
     result = ledger.result()
     performance = build_performance(
         ledger.path, capital_reference="1000000", positions={}, prices={}, now=T0 + 100

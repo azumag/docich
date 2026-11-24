@@ -122,7 +122,8 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     # 2026-10-15 オーナー承認で有効化し、自動抽選の対象へ入れた（manual_only なし）。
     assert doushi.enabled is True and doushi.manual_only is False
     assert (doushi.adapter, doushi.game) == ("doushi", "doushi-view")
-    assert doushi.live_eligible is False and doushi.audio_enabled is False
+    # 2026-11-23 オーナー指示: 同志カード大賞を読み上げる（audio opt-in を有効化）。
+    assert doushi.live_eligible is False and doushi.audio_enabled is True
     # duration_minutes 未指定は doushi_corner.DEFAULT_DURATION_MINUTES(2分) を使う。
     assert doushi.duration_minutes is None
     assert {c.id for c in catalog} >= {

@@ -172,6 +172,7 @@ class TestPublicTradingStatus(unittest.TestCase):
                 "priced_positions": 1,
                 "valued_positions": 1,
                 "realized_total_jpy": "120.5",
+                "interval_realized_pnl_jpy": None,
                 "today_realized_pnl_jpy": "20",
                 "unrealized_pnl_jpy": "-5.5",
                 "cumulative_pnl_jpy": "115",

@@ -24,7 +24,7 @@ from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
-from docich.hanjuku import month_audit, state_budget
+from docich.hanjuku import fault_issue, month_audit, state_budget
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich import hanjuku_run
@@ -74,6 +74,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
     'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
+    'camp_escape_move_requested','camp_escape_move_dispatched','camp_escape_move_unconfirmed',
 })
 
 
@@ -202,6 +203,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
                               'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
+                              'camp_escape_move_requested','camp_escape_move_dispatched','camp_escape_move_unconfirmed',
                               'recall_arrival_status_started','recall_in_castle_observed',
                               'battle_survival_critical_recheck',
                               'house_dispatch_requested','house_arrival_seen',
@@ -588,6 +590,42 @@ def _where(exc):
     return f'{type(exc).__name__}({str(exc)[:80]!r}) at {trail}'
 
 
+def _fault_context(state, meta):
+    """Identity/chapter/month for a recurrence issue; never guesses a game."""
+    identity = (meta.get('hanjuku') if isinstance(meta, dict) else None)
+    if not isinstance(identity, dict):
+        identity = (state.get('decision_trace')
+                    if isinstance(state, dict) else None)
+    policy = (state.get('policy') if isinstance(state, dict) else None)
+    policy = policy if isinstance(policy, dict) else {}
+    chapter = policy.get('chapter') if type(policy.get('chapter')) is int else None
+    month = policy.get('month') if isinstance(policy.get('month'), str) else None
+    return identity, chapter, month
+
+
+def _note_exception_fault(scope, exc, where):
+    """Best-effort recurrence counting for a failed observation.
+
+    Runs after the decision is already lost (the process exits 2), so it must
+    never raise into the handler. A configuration error before the state load
+    is not a gameplay defect and is skipped.
+    """
+    runtime = scope.get('runtime')
+    state = scope.get('state')
+    if not isinstance(runtime, Path) or not isinstance(state, dict):
+        return
+    try:
+        identity, chapter, month = _fault_context(state, scope.get('meta'))
+        fault_issue.note_fault(
+            runtime, signature=fault_issue.exception_signature(exc, where),
+            detail=where, kind=fault_issue.KIND_BRAIN_ERROR, identity=identity,
+            chapter=chapter, month=month, bot_version=BOT_VERSION,
+            now=time.time())
+    except Exception as report_exc:
+        print(f'hanjuku-bot: fault_issue_failed {type(report_exc).__name__}',
+              file=sys.stderr)
+
+
 def _unsortable_path(obj, path=''):
     """Path of the first dict whose keys mix types (json sort_keys cannot order them)."""
     if isinstance(obj, dict):
@@ -757,6 +795,7 @@ def main():
             # silently held every input until the run ended as input_stalled
             # (g1153 2026-11-08 19:26: the v519 carry-manifest set made the
             # bot-state write raise TypeError on every observation).
+            fault_identity, fault_chapter, fault_month = _fault_context(state, meta)
             for label, effect in (
                     ('persist_failed', lambda: persist(
                         runtime, state, records, meta, actions=actions,
@@ -767,6 +806,10 @@ def main():
                             runtime, record))),
                     ('adjust_request_failed', lambda: publish_adjust_request(runtime, records, meta)),
                     ('interim_failed', lambda: ask_interim(runtime, state, meta)),
+                    ('fault_issue_failed', lambda: fault_issue.note_decision_faults(
+                        runtime, records, identity=fault_identity,
+                        chapter=fault_chapter, month=fault_month,
+                        bot_version=BOT_VERSION, now=time.time())),
                     ('state_write_failed', lambda: atomic_write_json(
                         runtime/'hanjuku_bot.json',
                         state_budget.compact_state(state, BOT_STATE_LIMIT)))):
@@ -784,13 +827,17 @@ def main():
         code=2
         # g1133 11-05: 400+ "invalid observation" exits with no way to tell which
         # line raised, so decided actions were silently dropped for hours.
-        print(f'hanjuku-bot: invalid observation {_where(exc)}',file=sys.stderr)
+        where=_where(exc)
+        print(f'hanjuku-bot: invalid observation {where}',file=sys.stderr)
+        _note_exception_fault(locals(), exc, where)
     except Exception as exc:
         # A policy defect must not crash the agent loop or send guesses:
         # hold input for this observation and record only the error class.
         code=2
         actions=[]
-        print(f'hanjuku-bot: policy_error {_where(exc)}',file=sys.stderr)
+        where=_where(exc)
+        print(f'hanjuku-bot: policy_error {where}',file=sys.stderr)
+        _note_exception_fault(locals(), exc, where)
     print(json.dumps({'actions':actions, 'observation_interval_ms':interval_ms}),flush=True)
     return code
 

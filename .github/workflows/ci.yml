@@ -11,6 +11,8 @@ on:
   # run is what covers the rest of the suite for them.
   schedule:
     - cron: '23 18 * * *'
+  # GitHub can delay or drop scheduled events. ci-nightly-watchdog.yml checks
+  # on push to main and dispatches a full-suite run when a nightly is missing.
   # Use this entry point when a full-suite run on main is needed sooner, e.g.
   # after a manual merge commit.
   workflow_dispatch:

@@ -229,8 +229,13 @@ def test_an_unread_scroll_rearms_after_the_wait_and_stays_bounded():
     g1288 ch10 2026-11-22 08:2x: okunote_summon_preempt stayed exhausted for the
     rest of a fight with a 187 HP summon alive and the ally at 22 HP, so 奥の手
     was never offered again.
+
+    Owner 2026-11-24: while a castle-defense summon is alive the route keeps
+    re-arming at a short gap (bounded), because the last live fight ended the
+    route after one unread redraw and lost the castle.
     """
     mem = egg_fight_memory(ally_hp=50)
+    mem['battle']['summon_enemy_hp'] = 263
     mem['tick'] = 1000
     for _ in range(8):
         p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
@@ -239,20 +244,71 @@ def test_an_unread_scroll_rearms_after_the_wait_and_stays_bounded():
             break
     guard = mem['battle']['okunote_summon_preempt']
     assert guard['exhausted'] and guard['exhausted_reason'] == 'scroll_unread'
-    # Before the wait elapses the old attack path still runs.
+    # Before the short wait elapses the old attack path still runs.
     assert p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem) == [p.pad('a')]
-    mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_REARM_TICKS
+    mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_LIVE_REARM_TICKS
     actions = p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
     assert actions == [p.pad('down')] * p.SUMMON_SCROLL_BATCH
-    assert any(r['decision'] == 'battle_okunote_summon_rearm' for r in mem['_records'])
+    rearm = [r for r in mem['_records'] if r['decision'] == 'battle_okunote_summon_rearm'][-1]
+    assert rearm['observed_metric']['summon_live'] is True
     assert not guard.get('exhausted')
-    # Re-arm budget is finite: after the second look the latch is final.
-    for _ in range(2 * p.SUMMON_SCROLL_REARM_LIMIT + 6):
+    # The live-summon re-arm budget is finite.
+    for _ in range(3 * p.SUMMON_SCROLL_LIVE_REARM_LIMIT + 6):
         p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem)
         if guard.get('exhausted'):
-            mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_REARM_TICKS
+            mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_LIVE_REARM_TICKS
     assert guard['exhausted']
-    assert int(guard.get('rearms') or 0) == p.SUMMON_SCROLL_REARM_LIMIT
+    assert int(guard.get('rearms') or 0) == p.SUMMON_SCROLL_LIVE_REARM_LIMIT
+    assert any(r['decision'] == 'battle_okunote_summon_rearm_limit'
+               for r in mem['_records'])
+    # Once the summon is one edge hit away the lottery stops (owner 2026-11-04).
+    rearms_before = sum(r['decision'] == 'battle_okunote_summon_rearm'
+                        for r in mem['_records'])
+    mem['battle']['summon_enemy_hp'] = p.EGG_WALL_DAMAGE
+    mem['tick'] = int(mem.get('tick') or 0) + p.SUMMON_SCROLL_REARM_TICKS
+    assert p.egg_battle_step(egg_menu_screen(mem, ally_hp=50), mem) == [p.pad('a')]
+    assert sum(r['decision'] == 'battle_okunote_summon_rearm'
+               for r in mem['_records']) == rearms_before
+
+
+def test_an_unread_okunote_box_is_reread_before_the_attack():
+    """g1342 2026-11-24 02:59 フーリック: the last scroll pair landed on a
+    redrawing box (unread cursor / a single visible row), the old code declared
+    the row absent and attacked with the 263 HP summon still alive."""
+    mem = egg_fight_memory(ally_hp=60)
+    mem['battle']['summon_enemy_hp'] = 263
+    mem['battle']['okunote_summon_preempt'] = {'opens': 1, 'downs': p.DEFENDER_SUMMON_SCROLL_LIMIT}
+    s = egg_menu_screen(mem, labels=('もうこうげき',), cursor=None)
+    actions = p.egg_battle_step(s, mem)
+    assert actions == [{'type': 'wait', 'ms': 50}]
+    guard = mem['battle']['okunote_summon_preempt']
+    assert not guard.get('exhausted')
+    assert any(r['decision'] == 'battle_okunote_summon_unread_box'
+               for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_okunote_summon_open_failed'
+                   for r in mem['_records'])
+    # The next readable frame still selects the row instead of attacking.
+    readable = egg_menu_screen(mem, labels=('もうこうげき', 'おくのて'),
+                               ys=(176, 208), cursor=208)
+    assert p.egg_battle_step(readable, mem) == [p.pad('a')]
+    assert mem['battle']['okunote_summon_preempt']['selected']
+
+
+def test_a_zombie_summon_does_not_rearm_the_okunote():
+    # Owner 2026-11-24: ゾンビ召喚には卵も奥の手も使わず白兵で対処する。
+    mem = egg_fight_memory(ally_hp=50)
+    battle = mem['battle']
+    battle.update(summon_enemy_hp=263, melee_only_summon=True,
+                  okunote_summon_preempt={
+                      'opens': 1, 'downs': p.DEFENDER_SUMMON_SCROLL_LIMIT,
+                      'exhausted': True, 'exhausted_reason': 'scroll_unread',
+                      'exhausted_tick': 0})
+    mem['tick'] = 100
+    assert p._defender_summon_egg_menu(
+        egg_menu_screen(mem, ally_hp=50), mem, battle) is None
+    assert not any(r['decision'] == 'battle_okunote_summon_rearm'
+                   for r in (mem.get('_records') or []))
+    assert battle['okunote_summon_preempt']['exhausted']
 
 
 def test_a_repeated_frame_after_selection_never_resends_a():

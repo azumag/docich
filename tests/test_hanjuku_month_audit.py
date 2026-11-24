@@ -321,6 +321,16 @@ def test_boss_battle_evidence_is_not_only_battle_start():
     assert audit._boss_battle_seen(value, [], 9, 'ハデス') is True
 
 
+def test_chapter_four_season_king_battle_counts_as_boss_evidence():
+    from docich.hanjuku_map_sources import SEASON_KINGS
+    king = sorted(SEASON_KINGS)[0]
+    rows = [{'decision': 'battle_start', 'enemy': king}]
+    assert audit._rows_boss_battle(rows, 4, '四季王') is True
+    # Season kings are chapter 4 evidence only; the same name in another
+    # chapter's window must not suppress its boss incident.
+    assert audit._rows_boss_battle(rows, 9, 'ハデス') is False
+
+
 def _run_boss(runtime, count=401, *, battle_at=None, hp=False):
     for index in range(count):
         at = 1000 + index * STEP
@@ -416,6 +426,36 @@ def test_camp_terminal_decisions_are_classified():
     assert unconfirmed['kind'] == 'camp_recall_unconfirmed'
     assert unconfirmed['reason_code'] == 'camp_arrival_unconfirmed'
     assert unconfirmed['input_sent'] is True
+    dispatch = audit._camp_event(_camp_record(
+        'camp_recall_unconfirmed', event='dispatch_unconfirmed',
+        reason='帰還の本人・移動・到着を確認できず未確認として保持',
+        metric={'castle': 'アルマムーン', 'camp': [134, 120],
+                'stage': 'await_dispatch', 'steps': 6,
+                'input_sent': False, 'picker_closed': False,
+                'escape_move': False}))
+    assert dispatch['reason_code'] == 'camp_dispatch_unconfirmed'
+    assert dispatch['resulting_event'] == 'dispatch_unconfirmed'
+    assert dispatch['stage'] == 'await_dispatch' and dispatch['steps'] == 6
+    assert dispatch['camp'] == [134, 120]
+    assert dispatch['picker_closed'] is False and dispatch['escape_move'] is False
+    assert dispatch['input_receipt_confirmed'] is False
+    assert audit._camp_event(_camp_record(
+        'camp_recall_unconfirmed', event='dispatch_unconfirmed',
+        metric={'escape_move': True})) is None
+    escape = audit._camp_event(_camp_record(
+        'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+        metric={'escape_move': True, 'camp': [134, 120], 'target_cell': [135, 121],
+                'stage': 'await_dispatch', 'steps': 6, 'input_sent': False}))
+    assert escape['kind'] == 'camp_escape_move_unconfirmed'
+    assert escape['reason_code'] == 'camp_escape_move_unconfirmed'
+    assert escape['escape_move'] is True and escape['camp'] == [134, 120]
+    assert escape['target_cell'] == [135, 121]
+    assert audit._camp_event(_camp_record(
+        'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+        metric={'escape_move': False})) is None
+    assert audit._camp_event(_camp_record(
+        'camp_escape_move_dispatched', event='field_move_accepted',
+        metric={'escape_move': True})) is None
     group = audit._camp_event(_camp_record(
         'camp_group_screen', event='unclassified_screen_closed', reason='未分類'))
     assert group['kind'] == 'camp_recall_cancelled'
@@ -428,8 +468,12 @@ def test_camp_failure_is_recorded_and_titled(runtime_dir):
     value = state(9, '1-1', 0)
     seen = []
     audit.observe(runtime_dir, audit.capture(value), value,
-                  [_camp_record('camp_recall_aborted', reason='上限',
-                                metric={'stage': 'menu', 'steps': 91})],
+                  [_camp_record('camp_recall_aborted', reason='上限', metric={
+                      'stage': 'fort_status', 'steps': 91, 'general': 'ヴィーナス',
+                      'fort_status_reads': 0, 'fort_status_observations': 90,
+                      'fort_list_observations': 2, 'fort_menu_observations': 1,
+                      'screen_kind': 'text', 'screen_text': 'しろのなかにいます',
+                      'observed_general': 'エピィ'})],
                   now=1000, on_sealed=seen.append)
     records = audit.load_incidents(runtime_dir)
     assert len(records) == 1
@@ -437,8 +481,16 @@ def test_camp_failure_is_recorded_and_titled(runtime_dir):
     assert record['kind'] == 'camp_recall_failed'
     assert record['auto_file'] is True
     assert record['camp_event']['reason_code'] == 'camp_recall_limit'
+    assert record['camp_event']['general'] == 'ヴィーナス'
+    assert record['camp_event']['fort_status_reads'] == 0
+    assert record['camp_event']['fort_status_observations'] == 90
+    assert record['camp_event']['screen'] == 'text'
+    assert record['camp_event']['observed_general'] == 'エピィ'
+    rendered = audit.render(record)
     assert 'キャンプ帰還失敗' in audit._issue_title(record)
-    assert '### キャンプ帰還' in audit.render(record)
+    assert '### キャンプ帰還' in rendered
+    assert '砦観測: menu 1 / list 2 / status 90 / status一致 0' in rendered
+    assert 'しろのなかにいます' in rendered
     assert len(seen) == 1
 
 
@@ -454,6 +506,50 @@ def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
                   now=2000)
     kinds = [row['kind'] for row in audit.load_incidents(runtime_dir)]
     assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
+
+
+def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_recall_unconfirmed', event='dispatch_unconfirmed',
+                      reason='帰還Aの送信receiptを確認できず、送信段階で未確認として保持',
+                      metric={'camp': [134, 120], 'castle': None,
+                              'stage': 'await_dispatch', 'steps': 6,
+                              'input_sent': False, 'picker_closed': False,
+                              'input_receipt_confirmed': False,
+                              'escape_move': False, 'interrupted': False})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['camp_event']
+    assert event['reason_code'] == 'camp_dispatch_unconfirmed'
+    assert event['resulting_event'] == 'dispatch_unconfirmed'
+    assert event['stage'] == 'await_dispatch' and event['steps'] == 6
+    assert event['input_receipt_confirmed'] is False
+    body = audit.render(record)
+    assert 'status: dispatch_unconfirmed' in body
+    assert 'escape_move: False' in body
+    assert 'input_receipt_confirmed: False' in body
+
+
+def test_camp_escape_move_failure_has_a_separate_issue_kind(runtime_dir):
+    value = state(9, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_escape_move_unconfirmed', event='field_move_unconfirmed',
+                      reason='崖離脱のフィールド移動の送信・画面遷移を確認できず',
+                      metric={'camp': [134, 120], 'castle': None,
+                              'stage': 'await_dispatch', 'steps': 6,
+                              'target_cell': [135, 121],
+                              'input_sent': False, 'picker_closed': False,
+                              'escape_move': True, 'interrupted': False})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'camp_escape_move_unconfirmed'
+    assert '野営の崖離脱移動未確認' in audit._issue_title(record)
+    assert '### 野営の崖離脱移動' in audit.render(record)
+    assert 'target_cell: [135, 121]' in audit.render(record)
+    assert '- 崖離脱: unconfirmed / camp_escape_move_unconfirmed' in audit.render_comment(record)
 
 
 def test_camp_repeat_is_cooled_down(runtime_dir):
@@ -534,6 +630,131 @@ def test_cancel_without_any_launch_is_still_filed(runtime_dir):
                   [_sortie_record('sortie_cancelled_observed', general='ヘスティア')],
                   now=1000)
     assert audit.load_incidents(runtime_dir)[0]['kind'] == 'sortie_cancelled'
+
+
+def test_failed_order_in_a_month_that_launched_is_not_high(runtime_dir):
+    # docich#5162 (owner 2026-11-23): 同月に発射が成立している単発の失敗は
+    # high で起票せず、台帳に medium として残す（0 発射の月は high のまま）。
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_unaccepted'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['sortie_month_launched']
+
+
+def test_failed_order_without_a_launch_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unaccepted_order_with_stale_month_scope_stays_high(runtime_dir):
+    value = state(9, '1-1', 0, launches=2, scope=[9, '1-0'])
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃要求が送信・受理されない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_confirmed_launch_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('sortie_launch_failed',
+                                  reason='出撃確定後に部隊が現れない',
+                                  metric={'misses': 6})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_exhausted_battle_retry_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('situation_held', variant='attack_retry_exhausted')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_other_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='出撃元で決定しても城メニューが3回開かない')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_unknown_order_failure_stays_high_even_if_month_launched(runtime_dir):
+    value = state(9, '1-1', 0, launches=2)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('order_failed', deviation='unexpected order failure')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['sortie_event']['reason_code'] == 'sortie_order_failed'
+    assert record['confidence'] == 'high'
+    assert record['confidence_reasons'] == []
+
+
+def test_egg_drop_only_loss_is_not_high_confidence(runtime_dir):
+    # docich#5165: 卵落とし型しか残っていない敗北は、署名未校正の検出限界として
+    # medium に留める（実際に札を無駄にした証拠ではない）。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['イッテツーン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_plain_card_loss_stays_high_confidence(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['クースカン'], 'cards_used': [],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
+
+
+def test_unclassified_only_card_loss_is_not_high_confidence(runtime_dir):
+    # docich#5158: 選択したが使用告知の署名が未校正で確定できない札だけが残る敗北は、
+    # 検出限界シグナルとして medium に留める。
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー'], 'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+
+
+def test_unclassified_card_beside_a_plain_card_stays_high(runtime_dir):
+    value = state(9, '1-1', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'cards_selected': ['ブラッキー', 'クースカン'],
+                                    'cards_used': [],
+                                    'cards_unclassified': ['ブラッキー'],
+                                    'ally_hp': 0, 'enemy_hp': 40}, general='エピィ')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['confidence'] == 'high'
 
 
 def test_sortie_cancel_is_recorded(runtime_dir):
@@ -636,6 +857,25 @@ def test_battle_resource_events_are_classified():
         metric={'ally_hp': 5, 'enemy_hp': 8,
                 'cards_selected': ['クースカン'], 'cards_used': []},
         general='リースリング'))['resources'] == ['card']
+    # docich#5165: 卵落とし型の残り札は「消費確定不能」として区別する。
+    # v129 の安全則（敵HP低下では消費を確定しない）は変えない。
+    egg_drop = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert egg_drop['cards_remaining'] == ['イッテツーン']
+    assert egg_drop['cards_unconfirmed_egg_drop'] == ['イッテツーン']
+    plain = audit._battle_resources(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['クースカン'], 'cards_used': []}))
+    assert plain['cards_remaining'] == ['クースカン']
+    assert plain['cards_unconfirmed_egg_drop'] == []
+    event = audit._battle_resource_event(_battle_record(
+        'battle_hero_retreat_select', choice='たいきゃく',
+        metric={'ally_hp': 30, 'enemy_hp': 20,
+                'cards_selected': ['イッテツーン'], 'cards_used': []}))
+    assert event['cards_unconfirmed_egg_drop'] == ['イッテツーン']
     # docich#5117: 実一覧で不在が確認できた札は、残り札として起票しない。
     assert audit._battle_resource_event(_battle_record(
         'battle_hero_retreat_select', choice='たいきゃく',
@@ -806,6 +1046,21 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
+    # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
+    # issue 本文だけで判別できるよう、拒否の skips と対象城を記録に残す。
+    value = _chikujou_state()
+    home = chart.home_castle(10)
+    value['policy']['chikujou_refused'] = {'castles': [home], 'skips': 1}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['chikujou_refused_skips'] == 1
+    assert record['chikujou_refused_castles'] == [home]
+
+
 def test_chikujou_month_end_held_for_unresolved_egg_is_not_high_confidence(runtime_dir):
     """docich#5094 / #5045: a fail-closed hold is not a silent loss.
 
@@ -860,6 +1115,49 @@ def test_chikujou_month_end_after_released_hold_stays_high_confidence(runtime_di
     record = audit.load_incidents(runtime_dir)[0]
     assert record['confidence'] == 'high'
     assert record['chikujou_event']['held_for'] is None
+
+
+def test_chikujou_month_end_after_reserve_skip_is_not_high_confidence(runtime_dir):
+    """docich#5186: the flow's reserve math held the build money all month.
+
+    The eval marker (`chikujou_last_eval` with affordable=False) is the
+    recorded reason the month ended unbuilt, so the audit keeps the
+    occurrence countable but must not file it as a high-confidence missed
+    build (the filer defaults to min_confidence=high).
+    """
+    value = _chikujou_state()
+    value['policy']['shop']['chikujou'] = 'check'
+    value['policy']['shop']['chikujou_last_eval'] = {'month': '1-1', 'gold': 216,
+                                                    'reserve': 250,
+                                                    'affordable': False}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    record = records[0]
+    assert record['kind'] == 'chikujou_available_at_end'
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_reserve_skipped']
+    assert record['chikujou_reserve_skipped'] is True
+    assert record['chikujou_event']['reserve_skipped'] is True
+
+
+def test_chikujou_stale_reserve_skip_marker_still_files(runtime_dir):
+    """A marker from an earlier month must not cover this month's end."""
+    value = _chikujou_state()
+    value['policy']['shop']['chikujou_last_eval'] = {'month': '0-12', 'gold': 10,
+                                                    'reserve': 500,
+                                                    'affordable': False}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_reserve_skipped'] is False
+    assert record['chikujou_event']['reserve_skipped'] is False
 
 
 def test_chikujou_month_end_without_resources_is_not_recorded(runtime_dir):
@@ -1393,7 +1691,16 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     assert record['auto_file'] is True
     assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
     assert '### 切り札の非携行' in audit.render(record)
+    assert '計画が空' in audit.render(record)
     assert len(seen) == 1
+
+
+def test_sortie_without_cards_names_a_planned_kit(runtime_dir):
+    # docich#5353: 計画に札があるのに携行できていない型は、計画が空の型と区別する。
+    value = _cards_state(cards=['クースカン'])
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert records and '計画はあるが携行できていない' in audit.render(records[0])
 
 
 def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):
@@ -1421,6 +1728,75 @@ def test_sortie_without_cards_is_reported_once(runtime_dir):
     for now in (1000, 1100):
         audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=now)
     assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_sortie_with_measured_kit_in_order_context_is_not_recorded(runtime_dir):
+    value = _cards_state(cards=['クースカン', 'ノリウツール'])
+    value['policy']['plan']['order_context'] = {'A:1:M1': {
+        'observed_metric': {'general': 'カシュー',
+                            'cards': ['クースカン', 'ノリウツール']}}}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_sortie_with_bound_kit_in_launched_orders_is_not_recorded(runtime_dir):
+    value = _cards_state(cards=['クースカン', 'ノリウツール'])
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'general': 'カシュー', 'source': 'アルマムーン', 'target': 'タタール',
+        'cards': ['クースカン', 'ノリウツール'],
+        'departure_binding': {'general': 'カシュー', 'source': 'アルマムーン',
+                              'cards': ['クースカン', 'ノリウツール']}}}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_sortie_with_sortie_confirm_cards_is_not_recorded(runtime_dir):
+    value = _cards_state(cards=['クースカン', 'ノリウツール'])
+    confirm = {'decision': 'sortie_confirm', 'chart_step': 'A:1:M1',
+               'general': 'カシュー', 'cards': ['クースカン', 'ノリウツール'],
+               'at': 999}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [confirm, _launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_sortie_with_empty_measured_kit_is_recorded(runtime_dir):
+    value = _cards_state(cards=['クースカン'])
+    value['policy']['plan']['order_context'] = {'A:1:M1': {
+        'observed_metric': {'general': 'カシュー', 'cards': []}}}
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'general': 'カシュー', 'cards': [], 'departure_binding': {'cards': []}}}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'sortie_without_cards'
+
+
+def test_empty_card_strings_do_not_count_as_measured_kit(runtime_dir):
+    value = _cards_state(cards=['クースカン'])
+    value['policy']['rare_card_kit'] = {'A:1:M1': ''}
+    value['policy']['strong_card_kit'] = {'A:1:M1': '  '}
+    value['policy']['plan']['order_context'] = {'A:1:M1': {
+        'observed_metric': {'general': 'カシュー', 'cards': ['']}}}
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'departure_binding': {'cards': ['  ']}}}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'sortie_without_cards'
+
+
+def test_sortie_with_planned_snapshot_cards_is_recorded(runtime_dir):
+    # A snapshot without departure_binding may copy planned cards; it is not
+    # evidence that the measured sortie actually carried them.
+    value = _cards_state(cards=['クースカン'])
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'general': 'カシュー', 'source': 'アルマムーン', 'target': 'タタール',
+        'cards': ['クースカン']}}
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'sortie_without_cards'
 
 
 def test_capture_reads_unmigrated_world_fields():
@@ -1541,6 +1917,25 @@ def test_file_respects_comment_cooldown(runtime_dir):
     assert result['status'] == 'cooldown'
 
 
+def test_battle_loss_comments_before_the_generic_hour(runtime_dir):
+    value = state(10, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_result', outcome='loss',
+                                  metric={'egg_uses': 2, 'ally_hp': 0,
+                                          'enemy_hp': 40}, general='バゲット')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    issue = {'number': 7,
+             'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
+    now = time.time()
+    comments = [{'body': 'earlier',
+                 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ',
+                                            time.gmtime(now - 1200))}]
+    gh = FakeGh(issues=[issue], comments=comments)
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=now)
+    assert result['status'] == 'commented'
+
+
 def test_file_refuses_when_secret_scan_detects(runtime_dir):
     sealed_zero(runtime_dir)
     gh = FakeGh()
@@ -1638,3 +2033,54 @@ def test_watch_retries_unchanged_log_after_cooldown(runtime_dir):
     assert audit.watch_once(state_dir, gh=gh, scanner=lambda path: True,
                             now=now + audit.COMMENT_COOLDOWN_SECONDS + 1,
                             seen=seen)[0]['status'] == 'commented'
+
+
+def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
+    first = state(1, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
+    second = state(1, '1-1', 1)
+    sealed = []
+    miss = {'schema': 1, 'event': 'decision', 'at': 1001,
+            'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
+            'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
+            'screen_kind': 'egg_battle_menu', 'reason': '携行切り札を開けず攻撃',
+            'observed_metric': {'cards_left': ['ノリウツール']}, **IDENTITY}
+    audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
+                  on_sealed=sealed.append)
+    assert len(sealed) == 1
+    incident = sealed[0]
+    assert incident['kind'] == 'card_miss'
+    assert incident['auto_file'] is True
+    assert incident['card'] == 'ノリウツール'
+    assert '切り札未使用' in audit._issue_title(incident)
+    body = audit.render(incident)
+    assert 'ノリウツール' in body and 'card_miss' in body
+    comment = audit.render_comment(incident)
+    assert '再発' in comment
+    # The same decision observed again does not seal a second incident.
+    audit.observe(runtime_dir, audit.capture(second), state(1, '1-1', 2), [miss],
+                  now=1002, on_sealed=sealed.append)
+    assert len(sealed) == 1
+
+
+def test_boss_battle_starts_are_counted_beyond_the_truncated_decision_map(tmp_path):
+    # Issue #5276: _decision_counts keeps only 30 names, so a busy phase can
+    # drop 'battle_start' from the compact map. The incident must still count
+    # every battle_start row directly.
+    current = {
+        'chapter': 9, 'boss_name': 'ハデス', 'bosses': ['ボス'],
+        'started_at': 1000.0, 'first_tick': 0, 'last_at': 1700.0,
+        'last_tick': 400, 'observations': 200, 'max_gap_s': 1.0,
+        'bot_version': 'synthetic-v1',
+    }
+    rows = [{'at': 1000.0 + i, 'decision': f'filler_{i:02d}'}
+            for i in range(30) for _ in range(2)]
+    rows.append({'at': 1700.0, 'decision': 'battle_start', 'enemy': '別の敵'})
+    state_value = _boss_state()
+    record = audit._build_boss_incident(str(tmp_path), state_value, state_value,
+                                        [], 1700.0, current, rows=rows)
+    assert 'battle_start' not in record['decisions']['counts']
+    assert record['boss_phase']['battle_starts'] == 1
+    assert record['sorties']['battle_starts'] == 1
+    assert record['battles']['decisions'] == 1
+

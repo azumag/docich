@@ -1626,6 +1626,30 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert chart['strategy_variant']=='budget_boss_kit_first' and chart['name_entered'] is True
     output=module._project_corner_state(state)
     assert output['bot_version']=='hanjuku-chart-v2'
+    state['bot_version']='hanjuku-chart-v1433-fort-recall-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1433-fort-recall-evidence'
+    state['bot_version']='hanjuku-chart-v1434-camp-dispatch-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1434-camp-dispatch-evidence'
+    state['bot_version']='hanjuku-chart-v1435-recall-dispatch-unattributed'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1435-recall-dispatch-unattributed'
+    state['bot_version']='hanjuku-chart-v1438-chikujou-castle-width-fold'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
+    state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    for marker in (
+        'hanjuku-chart-v1460-password-entered-field',
+        'hanjuku-chart-v1461-melee-only-ugokazaru',
+        'hanjuku-chart-v1462-status-panel-owner-guard',
+        'hanjuku-chart-v1463-battle-menu-scrolled-bottom',
+        'hanjuku-chart-v1464-status-panel-owner-followups',
+        'hanjuku-chart-v1465-unowned-screen-review-guards',
+        'hanjuku-chart-v1466-status-panel-owner-name',
+        'hanjuku-chart-v1467-status-panel-owner-unreadable-egg',
+        'hanjuku-chart-v1469-recall-yjump-goal',
+        'hanjuku-chart-v1470-ch4-site-bounded-wait',
+    ):
+        state['bot_version'] = marker
+        assert module._project_corner_state(state)['bot_version'] == marker
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
@@ -1635,6 +1659,15 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert chart['chart_step'] is None and chart['month'] is None and chart['strategy_variant'] is None
     assert chart['wins'] is None and chart['gold'] is None and output['bot_version'] is None
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
+
+
+def test_hanjuku_camp_tail_projects_the_battle_reset_decision():
+    module=load_collector()
+    rows=[{'decision':'camp_recall_battle_reset'},{'decision':'camp_recall_battle_reset'},
+          {'decision':'camp_recall_requested'},{'decision':'not_a_camp_decision'},
+          {'decision':None},{'other':'camp_recall_battle_reset'}]
+    tail=module._hanjuku_camp_tail(rows)
+    assert tail=={'counts':{'camp_recall_battle_reset':2,'camp_recall_requested':1}}
 
 
 def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
@@ -1842,6 +1875,22 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1375-boss-dispatch-guarantee",
                  "hanjuku-chart-v1392-dispatch-starve-measure",
                  "hanjuku-chart-v1393-roster-due-consume",
+                 "hanjuku-chart-v1397-recall-map-hold",
+                 "hanjuku-chart-v1398-egg-retry-on-hp-loss",
+                 "hanjuku-chart-v1399-recall-map-hold",
+                 "hanjuku-chart-v1445-early-resource-rescue",
+                 "hanjuku-chart-v1446-password-measured-order",
+                 "hanjuku-chart-v1446-boss-companion-wait-bound",
+                 "hanjuku-chart-v1447-password-measured-order",
+                 "hanjuku-chart-v1402-sortie-audit-confidence",
+                 "hanjuku-chart-v1415-merchant-strong-first",
+                 "hanjuku-chart-v1416-card-miss-after-use",
+                 "hanjuku-chart-v1417-stall-refresh",
+                 "hanjuku-chart-v1418-spend-next-card",
+                 "hanjuku-chart-v1419-hero-move-backoff",
+                 "hanjuku-chart-v1420-chikujou-reserve-check",
+                 "hanjuku-chart-v1424-sortie-measured-kit",
+                 "hanjuku-chart-v1443-boss-companion-stage-timeout",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

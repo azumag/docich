@@ -131,34 +131,6 @@ def test_retreat_row_waits_while_a_retried_card_is_under_the_limit():
     assert not cur['hero_retreat'].get('selected')
 
 
-def test_spent_retries_fall_through_to_the_retreat_row():
-    """使い切った後は通常どおり たいきゃく を選ぶ。"""
-    # 上限まで試して使えなかった札だけが退却を許す (owner 決定 2026-11-23)。
-    mem = _mem(cards_selected=['フットバース'],
-               cards_spend_retry=['フットバース'],
-               cards_spend_attempts={'フットバース': 3},
-               hero_retreat={'opens': 1})
-    cur = mem['battle']
-    assert p.battle_menu_step(menu(), mem) == [p.pad('down')]
-    assert p.battle_menu_step(menu(selected=1), mem) == [p.pad('down')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1
-    assert any(r['decision'] == 'battle_hero_retreat_select' for r in mem['_records'])
-
-
-def test_unspendable_cards_fall_back_to_retreat():
-    """救済メニューが枯渇済みなら残り札があっても退却へ落ちる。"""
-    mem = _mem(cards_selected=['フットバース'],
-               survival={'exhausted': True, 'cards_checked': 3,
-                         'cards_attempted': []},
-               hero_retreat={'opens': 1})
-    cur = mem['battle']
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1
-    assert p.battle_step(battle_screen(mem), mem) == [p.pad('b')]
-    assert cur['command_open_pending']['owner'] == 'retreat'
-
-
 def test_immediate_loss_floor_preempts_and_skips_the_spend():
     """HP4以下では選択待ち・残り札遠回りを打ち切り、そのまま退却を開く (g460)。"""
     mem = _mem(ally_hp=4, cards_selected=['フットバース'],
@@ -172,16 +144,6 @@ def test_immediate_loss_floor_preempts_and_skips_the_spend():
     preempted = next(r for r in mem['_records']
                      if r['decision'] == 'battle_retreat_preempted_card')
     assert preempted['card'] == 'フットバース'
-
-
-def test_immediate_loss_floor_goes_straight_to_the_retreat_row():
-    """メニュー側でも HP4以下なら残り札の遠回りをせず退却行を選ぶ。"""
-    mem = _mem(ally_hp=4, cards_selected=['フットバース'],
-               hero_retreat={'opens': 1})
-    cur = mem['battle']
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1
-    assert not cur.get('survival')
 
 
 def test_pending_selection_gets_bounded_grace_before_the_spend():

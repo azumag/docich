@@ -145,6 +145,24 @@ def _boss_move_ready(info):
             and maximum > 0 and hp > maximum // 2)
 
 
+def _boss_move_goal(info, chapter):
+    """The measured boss site a boss_move job aims at, or None.
+
+    ``chart.boss_castle(4)`` is the shared label 'ボス' and chapter 4 has no
+    such cell: its boss is spread over four 四季王 sites. The roster marker
+    already measured which site this general is camped at/next to, so carry
+    that name instead of the label. Live g1342 2026-11-24 22:14 aimed a
+    chapter-4 boss_move Y jump at 'ボス' and the brain raised on every
+    observation (docich#5421).
+    """
+    from ... import hanjuku_chart as chart
+    marker = info.get('marker')
+    candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
+    if isinstance(candidate, str) and chart.castles(chapter or 0).get(candidate):
+        return candidate
+    return None
+
+
 def _road_skips_checks(mem):
     """Chapter 9 before its boss phase: no monthly locate or camp recall.
 
@@ -180,7 +198,7 @@ def _boss_unlocked(mem):
 
 
 def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
-           boss_unlocked=True):
+           boss_unlocked=True, chapter=None):
     """``camp_stays``: a moving-boss chapter never recalls a camp home (owner
     2026-11-09); the camp is re-sent at the boss by the camp flow instead.
     ``road``: chapter 9 before the boss phase keeps only repairs."""
@@ -213,7 +231,20 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
                 # #3505: an intact siege camper marches on to the boss by the
                 # camp menu's いどう instead of idling the exempt months away.
                 if _boss_move_ready(info):
-                    queue.append({'kind': 'boss_move', 'name': name})
+                    # ``chapter=None`` keeps the historical shape for callers
+                    # that did not measure a chapter (unit fixtures); the live
+                    # arm path always passes it, so a chapter-4 site name is
+                    # carried instead of the label 'ボス'.
+                    goal = (_boss_move_goal(info, chapter)
+                            if chapter is not None else None)
+                    if goal:
+                        queue.append({'kind': 'boss_move', 'name': name,
+                                      'goal': goal})
+                    elif chapter is None:
+                        queue.append({'kind': 'boss_move', 'name': name})
+                    # No measured single site (chapter 4 without a roster
+                    # marker): keep the siege exemption. A boss_move aimed at
+                    # the label 'ボス' has no cell and froze the Y jump.
                 continue
             queue.append({'kind': 'recall', 'name': name})
         elif info.get('location') == 'castle':
@@ -432,7 +463,7 @@ def arm(mem):
             mem.pop('boss_camp_exempt', None)
     tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
                    camp_stays=_camp_stays(mem), road=_road_skips_checks(mem),
-                   boss_unlocked=boss_unlocked)
+                   boss_unlocked=boss_unlocked, chapter=mem.get('chapter'))
     if not scan and not manifest_due and not tasks:
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -1071,7 +1102,30 @@ def _promote_pending(mem, statuses):
     return promoted
 
 
-def _roster_end_assumable(state):
+def _complete_scan_blocked(state):
+    """Which membership-proof guard still fails, for the failure record.
+
+    ``post_month_status_unverified`` names the guard so a live
+    ``roster_end_unconfirmed`` can be triaged from the decision log alone
+    instead of a frame-by-frame replay (v506's residual problem).
+    """
+    names = list(state.get('names') or ())
+    if not names or not state.get('top_confirmed'):
+        return 'top_unconfirmed'
+    if len(set(names)) != len(names):
+        return 'duplicate_names'
+    statuses = state.get('statuses')
+    if (not isinstance(statuses, dict)
+            or any(not isinstance(statuses.get(name), dict) for name in names)):
+        return 'status_unread'
+    if any(name in state.get('dirty', ()) for name in names):
+        return 'dirty'
+    if any(statuses[name].get('location') == 'unknown' for name in names):
+        return 'location_unknown'
+    return None
+
+
+def _roster_end_assumable(mem, state):
     """The walk listed the game's whole roster, only its end pixels failed.
 
     The roster caps at 32 (``MAX_SCAN``): once a walk that started at the hero
@@ -1081,9 +1135,33 @@ def _roster_end_assumable(state):
     ``names: 32`` and 13 stalled reads). The month then continues into the
     per-general tasks instead of dropping them, and nothing is evicted because
     ``complete`` stays False.
+
+    A shorter roster hits the same dead end: a full last page stalls on its
+    last row, and a wrapped or short page still fails when one membership
+    guard (``location: unknown`` from an unrecognised status sentence, a
+    duplicate OCR name) never passes ``_complete_scan``. The country's own
+    headcount is the game's membership count: an enumeration that matches the
+    verified ``country_general_count`` for this scope, with every collected
+    name's status read and none still dirty, is the same proof the 32-name
+    ceiling gives -- continue into the tasks, still with ``complete`` False.
     """
-    return (bool(state.get('top_confirmed'))
-            and len(list(state.get('names') or ())) >= MAX_SCAN)
+    names = list(state.get('names') or ())
+    if not names or not state.get('top_confirmed'):
+        return False
+    if len(names) >= MAX_SCAN:
+        return True
+    statuses = state.get('statuses')
+    if (not isinstance(statuses, dict)
+            or len(set(names)) != len(names)
+            or any(not isinstance(statuses.get(name), dict) for name in names)
+            or any(name in state.get('dirty', ()) for name in names)):
+        return False
+    country = mem.get('country_general_count')
+    if not isinstance(country, dict):
+        return False
+    count = receipts.country_count(mem, 'generals')
+    return (type(count) is int and count == len(names)
+            and country.get('scope') == list(state.get('scope') or []))
 
 
 def _recorded_castle(mem, name):
@@ -1189,7 +1267,8 @@ def _complete_scan(mem, state):
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
                             road=_road_skips_checks(mem),
-                            boss_unlocked=_boss_unlocked(mem))
+                            boss_unlocked=_boss_unlocked(mem),
+                            chapter=mem.get('chapter'))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
@@ -1425,13 +1504,24 @@ def resume_after_battle(mem, battle):
          reason='戦闘で中断した月次ステータス処理を優先し、出撃計画ではなく元の確認手順へ戻る')
 
 
+def state_is_current(mem, state):
+    """True when ``state`` was armed for this chapter/month and this run.
+
+    ``step`` drops any other state as stale or foreign.  The orchestrator's
+    status-panel guard calls this same predicate: a state that step would drop
+    must never suppress the orphan close on the general status page.
+    """
+    return (isinstance(state, dict)
+            and state.get('scope') == [mem.get('chapter'), mem.get('month')]
+            and state.get('identity') == receipts.run_identity(mem.get('_run_identity')))
+
+
 def step(screen, mem, frame):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
     if not isinstance(state, dict):
         return None
-    if (state.get('scope') != [mem.get('chapter'), mem.get('month')]
-            or state.get('identity') != receipts.run_identity(mem.get('_run_identity'))):
+    if not state_is_current(mem, state):
         mem.pop('post_month_status', None)
         return None
     # An already-armed scan (from before the boss waves appeared) must not
@@ -1756,7 +1846,7 @@ def step(screen, mem, frame):
                 state.pop('end_stall', None)
                 state.pop('end_stall_selected', None)
             if state['phase_reads'] > STATUS_RETRIES:
-                if _roster_end_assumable(state):
+                if _roster_end_assumable(mem, state):
                     # The whole roster is enumerated; only the end proof is
                     # missing. Continue into the per-general tasks (no eviction)
                     # instead of failing the month and repeating it next month.
@@ -1777,7 +1867,8 @@ def step(screen, mem, frame):
                                       'top_confirmed': bool(state.get('top_confirmed')),
                                       'dirty': list(state.get('dirty') or ()),
                                       'phase_reads': state['phase_reads'],
-                                      'end_stall': int(state.get('end_stall') or 0)},
+                                      'end_stall': int(state.get('end_stall') or 0),
+                                      'blocked': _complete_scan_blocked(state)},
                      reason='将軍一覧の末尾が確認できず、通常の出撃計画を保留')
                 _stage(state, 'blocked')
                 return [pad('b')]
@@ -1844,6 +1935,20 @@ def step(screen, mem, frame):
                  reason='一覧の選択三角マークから在城候補を観測した')
         return _open_status(screen, state, frame)
     if stage == 'status':
+        # A readable different name proves this is not the selected general's
+        # page. Leave before _observe_status can write that person's egg or
+        # location data into this scan's ledger (#5410).
+        visible_general = house.general_status_name(screen)
+        if (visible_general is not None
+                and visible_general != state.get('selected')):
+            state['failure'] = 'status_general_mismatch'
+            _log(mem, 'post_month_status_unverified',
+                 general=state.get('selected'),
+                 observed_metric={'visible_general': visible_general,
+                                  'phase_reads': state.get('phase_reads')},
+                 reason='別将軍のステータス画面を検出したため誤った卵・所在情報を記録せず月次確認を離脱')
+            _stage(state, 'blocked')
+            return [pad('b')]
         info = house._observe_status(screen, mem)
         if not info or info.get('general') != state.get('selected'):
             if state['phase_reads'] >= STATUS_RETRIES:
@@ -2029,7 +2134,8 @@ def step(screen, mem, frame):
                 # camp_menu_not_opened until it aborts.
                 **({'camp_body': body}
                    if (body := camp_body_target(frame, camp['target'])) else {}),
-                **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
+                **({'boss_move': True} if job['kind'] == 'boss_move' else {}),
+                **({'goal': job['goal']} if job.get('goal') else {})}
             # docich#5105: the visible-camp path binds origin/camp_world at
             # creation; a task recall never did, so _recall_goal could not
             # locate this camp for the いどう→Y route. The SELECT-centred

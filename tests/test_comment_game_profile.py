@@ -68,6 +68,71 @@ def test_llm_state_is_omitted_when_the_config_is_unreadable(tmp_path, config):
     assert "ハイブリッド" in text and "いまの状態" not in text
 
 
+def _write_doushi_state(state_dir):
+    runtime_id = "g4-a1b2c3d4"
+    runtime_dir = state_dir / "runtimes" / runtime_id
+    runtime_dir.mkdir(parents=True)
+    (state_dir / "doushi_corner.json").write_text(json.dumps({
+        "doushi_runtime_identity": {"game": "doushi-view", "runtime_id": runtime_id,
+                                    "generation": 4, "lease_id": "l1"}}), encoding="utf-8")
+    (runtime_dir / "doushi_ranking.json").write_text(json.dumps({"payload": {
+        "by_count": [{"username": "アリス", "redemption_count": 42}],
+        "by_points": [{"username": "ボブ", "total_points": 1200}],
+        "popular_cards": [{"card_name": "赤いカード", "actual_count": 30}]}}), encoding="utf-8")
+
+
+def test_doushi_profile_uses_the_run_ranking_and_replaces_soviet_rules(tmp_path):
+    _write_doushi_state(tmp_path)
+    profile = game_profile.build("doushi-view", state_dir=tmp_path)
+    assert profile is not None and profile["game"] == "doushi-view"
+    assert "アリス" in profile["game_state"] and "42枚" in profile["game_state"]
+    assert "ボブ" in profile["game_state"] and "1200ポイント" in profile["game_state"]
+    assert "赤いカード" in profile["game_state"] and "30枚" in profile["game_state"]
+    assert "アリス" in profile["ui_memo"] and "42枚" in profile["ui_memo"]
+    assert "ボブ" in profile["ui_memo"] and "1200ポイント" in profile["ui_memo"]
+    assert "赤いカード" in profile["ui_memo"] and "30枚" in profile["ui_memo"]
+    assert len(profile["ui_memo"]) <= 300
+    assert "There is no separate rules memo" in profile["game_rules"]
+    assert "ソ連ゲーム" not in profile["game_rules_ja"]
+    assert len(profile["game_state"]) <= 600
+
+
+def test_doushi_chitchat_template_receives_the_measured_ranking_memo(tmp_path):
+    _write_doushi_state(tmp_path)
+    profile = game_profile.build("doushi-view", state_dir=tmp_path)
+    from docich.comment import prompt
+    from docich.comment_classifier.heuristic import classify
+    assert classify("viewer", "一番人気のカードどれ") == "chitchat"
+    rendered = prompt.envsubst(
+        prompt.asset("comment_response_chitchat.md"),
+        prompt.CATEGORY_TEMPLATE_VARS,
+        {"_comment_ui_memo": profile["ui_memo"]},
+    )
+    assert "アリス" in rendered and "42枚" in rendered
+    assert "赤いカード" in rendered and "30枚" in rendered
+
+
+def test_doushi_profile_falls_back_when_runtime_payload_is_missing(tmp_path):
+    profile = game_profile.build("doushi-view", state_dir=tmp_path)
+    assert profile is not None
+    assert "アリス" not in profile["game_state"]
+    assert "推測して補わないでください" in profile["game_state"]
+    assert profile["ui_memo"] == ""
+
+
+def test_doushi_launcher_emits_the_same_profile_as_the_live_worker(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    _write_doushi_state(state_dir)
+    result = _run("doushi-view", cwd=tmp_path, env_extra={"DOCICH_STATE_DIR": str(state_dir)})
+    assert result.returncode == 0, result.stderr
+    profile = json.loads(result.stdout)
+    assert profile["game"] == "doushi-view"
+    assert "アリス" in profile["game_state"] and "42枚" in profile["game_state"]
+    assert "赤いカード" in profile["game_state"]
+    assert "アリス" in profile["ui_memo"] and "42枚" in profile["ui_memo"]
+
+
 @pytest.mark.parametrize("game", ["sorengame", "robots", "nethack", "soren91", "external-video-view", "", "unknown"])
 def test_games_without_a_profile_get_none(game):
     assert game_profile.build(game) is None

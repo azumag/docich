@@ -48,6 +48,350 @@ from ..strategy.economy import _egg_recheck
 LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
 EMPTY_CARD_LIST_TEXTS = ('きりふだはありません', 'きりふだなし', 'なにももってない')
 CARD_LIST_SAME_FRAME_LIMIT = 12
+# Owner 2026-11-24: 相手（敵が召喚したモンスター）がゾンビなら卵を使わず
+# 白兵で対処する。ゾンビパンチは0ダメージ、ケアルは自己回復で、将軍を倒す
+# 即死・自爆の技能を持たない (hanjuku_reference.MONSTER_SKILLS)。原典チャート
+# (games/hanjuku-sfc-speedrun/charts/7.md) も対ブラウニーで「ゾンビは召喚
+# させ、もうこうげきでターン経過」と白兵を指示している。実画面の敵召喚獣が
+# 1体だけ読め、名前が完全一致したときだけ適用する (未知・複数・未読へ広げない)。
+#
+# Owner 2026-11-24 (追加): ウゴカザルも同じ。2つの技「なぐれっ！」「かきむしれ！」
+# はどちらも0ダメージで、卵を使わず「こうげき」だけで倒せる。ゾンビと同じく
+# 将軍を脅かさないので、卵・おくのてを消費せず白兵で処理する。
+MELEE_ONLY_SUMMONS = frozenset({'ゾンビ', 'ウゴカザル'})
+# Fields read from a real general status page (g1097 marching/camp/fort and
+# g1190 chapter 4 castle frames).  HP + ちんぎん alone also appear on a 砦
+# card and a sortie-confirm panel, so the page needs its battle/egg/hobby
+# fields as well; 「しろのなかにいます」 stays an alternate key because that
+# sentence alone identified the g1190 A-forever page.
+STATUS_PANEL_FIELDS = ('HP', 'ちんぎん', 'たまご', 'せんとう', 'ないせい', 'しゅみ')
+
+
+def _is_general_status_panel_text(text: str) -> bool:
+    """True only for the general status page, not any HP + ちんぎん panel.
+
+    The measured status layout carries all of ``STATUS_PANEL_FIELDS`` plus
+    ``Bボタンでもどる``; the 砦 card lacks the return sentence and the sortie
+    confirm has neither the egg nor the hobby row.  Camping/marching *status*
+    pages are still this layout (the location sentence changes, the fields do
+    not), which is intended: they are the same page whose leftover A-advance
+    was the g1190 2026-11-22 09:00 (n=30341) failure.
+    """
+    if 'Bボタンでもどる' not in text:
+        return False
+    if 'しろのなかにいます' in text:
+        return True
+    return all(field in text for field in STATUS_PANEL_FIELDS)
+
+
+# Owner 2026-11-24: the five-item human command list (こうげき / もうこうげき /
+# たまごをつかう (grey) / きりふだ / たいきゃく) is a three-row window.  When it
+# was left scrolled to the bottom page, the bot saw only きりふだ/たいきゃく and
+# sent B 297 times; B does not close this box (measured 2026-11-24, 10/40-frame
+# presses changed nothing).  Walk the cursor up one row per observation until
+# the cursor row is exactly こうげき, then confirm.  The bound is well above the
+# measured four ups; the overrun holds instead of falling back to B.
+HUMAN_COMMAND_SCROLL_UP_LIMIT = 6
+HUMAN_COMMAND_SCROLL_KEY = 'human_command_scroll'
+# The human five-item list is drawn in the right-hand column (word x=176).
+# Enemy-general command menus use the left column (x=32/40) and ignore the
+# player's up/down.  Treating those as the human list sent six no-op ups and
+# then held with no input (g1190 ch12 2026-11-24 20:31:27, reproduced on the
+# real g747 enemy-command frame).
+HUMAN_COMMAND_SCROLL_X_MIN = 168
+# An exhausted episode holds only this many observations before releasing the
+# frame to the previous owner.  The old code returned [] forever.
+HUMAN_COMMAND_SCROLL_EXHAUSTED_HOLD = 2
+# Two consecutive ups whose frame/cursor did not change prove that up is a
+# no-op on this box; stop rather than spend the whole up budget.
+HUMAN_COMMAND_SCROLL_NO_PROGRESS_LIMIT = 2
+# A backstop for an episode that stays on a menu forever without confirming.
+HUMAN_COMMAND_SCROLL_OBSERVATION_LIMIT = 20
+
+
+def _human_menu_column(screen):
+    """True when a command row is drawn in the right-hand human column."""
+    for line in getattr(screen, 'menu_rows', ()) or ():
+        spans = line.spans()
+        if spans and spans[0][0] >= HUMAN_COMMAND_SCROLL_X_MIN:
+            return True
+    return False
+
+
+def _cursor_row_text(screen):
+    """The whole text of the cursor row in the human column, or None.
+
+    Joining every span at the cursor's y handles a row the OCR split into
+    pieces; the caller compares the joined string as a whole.  Substring tests
+    stay forbidden because もうこうげき contains こうげき.
+    """
+    y = getattr(screen, 'menu_cursor', None)
+    if type(y) is not int:
+        return None
+    for line in getattr(screen, 'menu_rows', ()) or ():
+        if line.y != y:
+            continue
+        words = [word for x, word in line.spans() if x >= HUMAN_COMMAND_SCROLL_X_MIN]
+        return ''.join(words) if words else None
+    return None
+
+
+def _cursor_exact_label(screen):
+    """Exactly the row text under the measured cursor, or None when unread.
+
+    The same list contains こうげき and もうこうげき, and the latter contains
+    the former as a substring.  Every caller must compare the whole row, never
+    use a substring test, or it would confirm もうこうげき (measured: Ku-mon
+    swallows Athena on that row).
+    """
+    return _cursor_row_text(screen)
+
+
+def _human_five_item_box(screen, labels=None):
+    """The scrolled human command list: きりふだ visible, no おくのて row.
+
+    A grey たまご row is not read as text, so the bottom/middle pages show
+    きりふだ without たまご.  A real egg-battle box carries たまご (white or
+    grey) and its 4th おくのて row; neither is this list.
+    """
+    if labels is None:
+        labels = {word for _, _, word in _options(screen)}
+    if getattr(screen, 'kind', None) not in ('battle_menu', 'egg_battle_menu'):
+        return False
+    if not _human_menu_column(screen):
+        return False
+    if getattr(screen, 'menu_cursor', None) not in (176, 192, 196, 208, 212):
+        return False
+    if (getattr(screen, 'hidden_battle_commands', False)
+            or getattr(screen, 'disabled_item_box', False)
+            or getattr(screen, 'okunote_only_box', False)):
+        return False
+    # The human command list is drawn over the live battle panel.  A bare
+    # menu with no HP rows is a synthetic/legacy card-flow box, not this list.
+    if not getattr(screen, 'egg_rows', None):
+        return False
+    return ('きりふだ' in labels and 'おくのて' not in labels
+            and 'たまごをつかう' not in labels)
+
+
+def _human_scroll_state(cur):
+    return cur.get(HUMAN_COMMAND_SCROLL_KEY) if isinstance(cur, dict) else None
+
+
+def _human_scroll_active(cur):
+    state = _human_scroll_state(cur)
+    return isinstance(state, dict) and state.get('active') is True
+
+
+def _human_scroll_owns(screen, labels, cur, *, chapter=None):
+    """True while the measured five-item scroll owns this command box.
+
+    The evidence is specific to the ch12 boss command list observed in g1190.
+    Other chapters have real grey-egg summon menus with the same OCR shape;
+    their existing card/egg owner must retain control.  The right-hand column
+    is part of the evidence: enemy-general command menus use the left column
+    and ignore the player's keys.
+    """
+    if chapter != 12:
+        return False
+    if not _human_menu_column(screen):
+        return False
+    if _human_five_item_box(screen, labels):
+        return True
+    if not _human_scroll_active(cur):
+        return False
+    if getattr(screen, 'menu_cursor', None) is None:
+        return False
+    if not labels or labels.intersection({'おくのて', 'たまごをつかう'}):
+        return False
+    # The upper page drops きりふだ from OCR; only the attack rows remain.
+    return bool(labels.intersection({'こうげき', 'もうこうげき', 'きりふだ', 'たいきゃく'}))
+
+
+def _stale_battle_actor(screen, cur):
+    """The screen's own general is not the one policy.battle remembers.
+
+    g1190 ch12 2026-11-24: policy.battle still held エストラゴン/カシス while
+    the live frame was アテナ vs クーモン.  The stale enemy general is normal in
+    a summon fight (the panel names the monster), so only the ally row is
+    evidence; the general cannot be replaced between observations.
+    """
+    if not isinstance(cur, dict):
+        return False
+    ally = cur.get('ally')
+    names = [row.name for row in (getattr(screen, 'egg_rows', ()) or ())
+             if row.side == 'ally' and isinstance(row.name, str) and row.name]
+    return bool(isinstance(ally, str) and ally and names and ally not in names)
+
+
+def _screen_ally_name(screen):
+    """The ally general's name read from the live battle panel, or None."""
+    for row in (getattr(screen, 'egg_rows', ()) or ()):
+        if row.side == 'ally' and isinstance(row.name, str) and row.name:
+            return row.name
+    return None
+
+
+def _begin_human_scroll(cur, screen=None):
+    """Create the persisted scroll episode once with its live actor/context."""
+    state = _human_scroll_state(cur)
+    if isinstance(state, dict):
+        return state
+    state = {
+        'active': True,
+        'ups': 0,
+        'observations': 0,
+        'actor': _screen_ally_name(screen) if screen is not None else None,
+        'last_frame': getattr(screen, 'frame_sha256', None) if screen is not None else None,
+        'last_cursor': getattr(screen, 'menu_cursor', None) if screen is not None else None,
+        'no_progress': 0,
+    }
+    cur[HUMAN_COMMAND_SCROLL_KEY] = state
+    return state
+
+
+def _release_human_scroll(mem, cur, reason, *, observed=None):
+    """Pop the episode and record why ownership was returned."""
+    state = cur.pop(HUMAN_COMMAND_SCROLL_KEY, None)
+    if not isinstance(state, dict):
+        return
+    metric = {'ups': state.get('ups'), 'exhausted': bool(state.get('exhausted')),
+              'observations': state.get('observations')}
+    if observed:
+        metric.update(observed)
+    _record(mem, 'battle_menu_scroll_released', **_battle_labels(cur),
+            observed_metric=metric, reason=reason)
+
+
+def _human_scroll_expired(screen, cur):
+    """True when the persisted episode no longer describes the live frame.
+
+    The episode is scoped to one battle-menu owner: leaving the command menu,
+    losing the right-hand column, or reading a different ally general ends it.
+    The observation limit is a backstop for a menu that never confirms.
+    """
+    state = _human_scroll_state(cur)
+    if not isinstance(state, dict) or state.get('active') is not True:
+        return True
+    if getattr(screen, 'kind', None) not in ('battle_menu', 'egg_battle_menu'):
+        return True
+    if not _human_menu_column(screen) and getattr(screen, 'menu_rows', None):
+        # A draw with readable rows on the left is the enemy's menu.  An
+        # unreadable transient keeps the episode for the observation limit.
+        return True
+    actor = state.get('actor')
+    live = _screen_ally_name(screen)
+    if (isinstance(actor, str) and actor
+            and isinstance(live, str) and live and actor != live):
+        return True
+    if int(state.get('observations') or 0) > HUMAN_COMMAND_SCROLL_OBSERVATION_LIMIT:
+        return True
+    return False
+
+
+def expire_human_scroll(screen, mem):
+    """Release an episode that no longer matches the live frame.
+
+    Called for every observation from the dispatcher.  A marker stored inside
+    a stale ``policy.battle`` survives that battle in production (the live
+    g1190 record did), so it cannot rely on ``battle_end`` alone.
+    """
+    cur = mem.get('battle')
+    if not isinstance(cur, dict):
+        return
+    state = _human_scroll_state(cur)
+    if not isinstance(state, dict):
+        return
+    if not _human_scroll_expired(screen, cur):
+        return
+    _release_human_scroll(
+        mem, cur,
+        '戦闘メニューから離れた、右列コマンドでなくなった、味方が変わった、'
+        'または観測上限に達したためスクロール所有を解除する',
+        observed={'screen_kind': getattr(screen, 'kind', None),
+                  'cursor_y': getattr(screen, 'menu_cursor', None),
+                  'actor_on_screen': _screen_ally_name(screen),
+                  'episode_actor': state.get('actor')})
+
+
+def _human_scroll_step(screen, mem, cur, labels):
+    """One closed-loop up per observation until the cursor row is こうげき.
+
+    Returns a pad action list, or None when no scroll episode owns the frame.
+    The episode is released on the exact こうげき row, when the screen/actor
+    no longer matches, or after a bounded hold once it is exhausted; it never
+    returns [] forever.  ``up_changed`` in the records separates "up moved the
+    cursor" from "this box ignored up".
+    """
+    state = _human_scroll_state(cur)
+    if not isinstance(state, dict) or state.get('active') is not True:
+        return None
+    state['observations'] = int(state.get('observations') or 0) + 1
+    if _human_scroll_expired(screen, cur):
+        _release_human_scroll(
+            mem, cur,
+            '戦闘メニューから離れた、右列コマンドでなくなった、味方が変わった、'
+            'または観測上限に達したためスクロール所有を解除する',
+            observed={'screen_kind': getattr(screen, 'kind', None),
+                      'cursor_y': getattr(screen, 'menu_cursor', None),
+                      'labels': sorted(labels)})
+        return None
+    exact = _cursor_exact_label(screen)
+    if exact == 'こうげき':
+        cur.pop(HUMAN_COMMAND_SCROLL_KEY, None)
+        _record(mem, 'battle_menu_scroll_attack', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                                 'cursor_label': exact, 'ups': state.get('ups'),
+                                 'actor': state.get('actor')},
+                reason='五項目コマンドリストを上へ戻し、カーソル行が完全一致でこうげきになったためAで確定する')
+        return [pad('a')]
+    if state.get('exhausted'):
+        held = int(state.get('exhausted_held') or 0)
+        if held < HUMAN_COMMAND_SCROLL_EXHAUSTED_HOLD:
+            state['exhausted_held'] = held + 1
+            return []
+        _release_human_scroll(
+            mem, cur,
+            '有界の保留後もこうげき行を観測できないため、フレームを以前のオーナーへ戻す',
+            observed={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                      'cursor_label': exact})
+        return None
+    ups = int(state.get('ups') or 0)
+    # The first up has no previous up to compare with; None is not "unchanged".
+    changed = None if ups == 0 else (
+        screen.frame_sha256 != state.get('last_frame')
+        or screen.menu_cursor != state.get('last_cursor'))
+    no_progress = (int(state.get('no_progress') or 0) + 1
+                   if (ups and changed is False) else 0)
+    state['no_progress'] = no_progress
+    if no_progress >= HUMAN_COMMAND_SCROLL_NO_PROGRESS_LIMIT:
+        state.update(exhausted=True, exhausted_held=0)
+        _record(mem, 'battle_menu_scroll_exhausted', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                                 'cursor_label': exact, 'ups': ups,
+                                 'limit': HUMAN_COMMAND_SCROLL_UP_LIMIT,
+                                 'up_changed': False, 'no_progress': no_progress},
+                reason='upを送っても画面/カーソルが変わらないため、これ以上のupを止めて有界に保留する')
+        return []
+    if ups >= HUMAN_COMMAND_SCROLL_UP_LIMIT:
+        state.update(exhausted=True, exhausted_held=0)
+        _record(mem, 'battle_menu_scroll_exhausted', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                                 'cursor_label': exact, 'ups': ups,
+                                 'limit': HUMAN_COMMAND_SCROLL_UP_LIMIT,
+                                 'up_changed': changed, 'no_progress': no_progress},
+                reason='有界な上スクロール上限でもこうげき行を観測できないため、Bを送らず入力を保留する')
+        return []
+    state['ups'] = ups + 1
+    state['last_frame'] = screen.frame_sha256
+    state['last_cursor'] = screen.menu_cursor
+    _record(mem, 'battle_menu_scroll_up', **_battle_labels(cur),
+            observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                             'cursor_label': exact, 'up_attempt': ups + 1,
+                             'limit': HUMAN_COMMAND_SCROLL_UP_LIMIT,
+                             'up_changed': changed, 'no_progress': no_progress},
+            reason='攻撃コマンドが上にスクロールアウトした五項目リストのため、Bではなく上へ戻す')
+    return [pad('up')]
 
 
 def _is_empty_card_list_text(screen: Screen) -> bool:
@@ -78,12 +422,17 @@ def _okunote_last_resort_gate(cur, last_resort, now=None):
     return True
 
 
-def orphan_battle_menu_step(screen, mem):
+def orphan_battle_menu_step(screen, mem, *, owner_active=None):
     """Close an unbound parent menu finitely, then require new native context.
 
     The gray commands do not identify an actor, HP or a usable Okunote. A
     background animation/fade must neither refill the cancellation budget nor
     release an exhausted episode to the generic scene-confirm fallback.
+
+    ``owner_active`` is the orchestrator's pre-flow snapshot
+    (``status_panel.status_panel_owner_active``): when a live flow is reading
+    this general status page, the page belongs to it and this step returns
+    None.  Returning ``[]`` would stop the dispatcher before that owner ran.
     """
     flow = mem.get('orphan_battle_menu')
     restored = isinstance(mem.get('resume_battle_menu'), dict)
@@ -91,13 +440,27 @@ def orphan_battle_menu_step(screen, mem):
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         return None
-    # A general's status page (opened by the monthly/roster walk) says
-    # 「しろのなかにいます」 and 「Bボタンでもどる」.  The plain-command fade
-    # path was advancing it with A forever (g1190 2026-11-22 09:00, n=30341).
+    # A general's status page (opened by the monthly/roster walk) carries the
+    # measured STATUS_PANEL_FIELDS and 「Bボタンでもどる」.  The plain-command
+    # fade path was advancing it with A forever (g1190 2026-11-22 09:00,
+    # n=30341).  Earlier this branch accepted any HP + ちんぎん panel with the
+    # return sentence, including non-status cards that carry those two rows.
+    # Require the measured status fields instead (#5408); camp/march *status*
+    # pages have the same layout and stay covered.
+    # The owners that read this page dispatch after this step, so only close it
+    # when no owner was active before the flows ran (post_month_status failed
+    # every month with status_unreadable because this B beat its reader).  When
+    # an owner is active, return None before the plain-command A path below:
+    # advancing the owner's page with A is the g1190 loop this branch fixed.
     text = screen.text or ''
-    if ('Bボタンでもどる' in text
-            and ('しろのなかにいます' in text
-                 or ('HP' in text and 'ちんぎん' in text))):
+    if _is_general_status_panel_text(text):
+        if owner_active:
+            # Drop the stale claim, as the close path did: the owner reads this
+            # page and returns to its roster, and a leftover plain-command flow
+            # would press A on that roster frame ahead of the same owner.
+            mem.pop('orphan_battle_menu', None)
+            mem.pop('resume_battle_menu', None)
+            return None
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         _record(mem, 'battle_status_screen_return',
@@ -335,95 +698,16 @@ def _retreat_forbidden(mem, cur):
 
 
 def _hero_retreat_menu(screen, mem, cur):
-    # A castle defense cannot retreat (owner 2026-09-29; the menu has no
-    # たいきゃく row there), so never try to select it.
-    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
-        return None
-    if _retreat_forbidden(mem, cur):
-        if not cur.get('retreat_forbidden_noted'):
-            cur['retreat_forbidden_noted'] = True
-            _record(mem, 'battle_retreat_forbidden', **_battle_labels(cur),
-                    general=cur.get('ally'), enemy=cur.get('enemy'),
-                    castle=cur.get('castle'), side=cur.get('side'),
-                    reason='第9話では主人公以外は退却しないため、卵・切り札・奥の手で応戦する')
-        return None
-    if _egg_rescue_pending(cur):
-        return []
-    if ('きりふだ' in {w for _, _, w in _options(screen)}
-            and _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True)):
-        return _survival_menu(screen, mem, cur)
-    if _egg_before_retreat(mem, cur, menu=True) and 'たまごをつかう' in {w for _, _, w in _options(screen)}:
-        if (cur.get('card_flow') or {}).get('stage') == 'announce':
-            _card_use_unclassified(mem, cur, '本人の未試行の卵を優先し、切り札の使用告知は未確認として保持')
-        else:
-            cur['card_flow'] = None
-        _survival_state(mem, cur)['egg_priority'] = True
-        return _survival_menu(screen, mem, cur)
-    flow = cur.setdefault('hero_retreat', {})
-    if flow.get('unavailable') or flow.get('exhausted'):
-        return None
-    # docich#4999 (owner 2026-11-22): spend resources before the retreat row.
-    # A pending selection on this menu screen means its announce already
-    # ended without a receipt — settle it honestly, then give remaining
-    # cards one bounded retry through the survival menu before choosing
-    # たいきゃく. Below the immediate-loss floor the detour stops.
-    card_flow = cur.get('card_flow') or {}
-    if card_flow.get('selection_planned'):
-        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘メニューへ戻ったため未分類として保持')
-    else:
-        cur['card_flow'] = None
-    if not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur):
-        return _survival_menu(screen, mem, cur)
-    if 'たいきゃく' not in {w for _, _, w in _options(screen)}:
-        flow['unavailable'] = True
-        _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
+    # Owner 2026-11-23: retreat is banned uniformly.  It was chosen in a pinch
+    # (often after cards/eggs ran out) and the menu then stalled the battle.
+    # Fight to the end with こうげき instead.  Record once per battle.
+    if not cur.get('retreat_banned_noted'):
+        cur['retreat_banned_noted'] = True
+        _record(mem, 'battle_retreat_banned', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'),
                 castle=cur.get('castle'), side=cur.get('side'),
-                reason='退却が有効な項目として読めないため卵・切り札・奥の手で対処')
-        return None
-    if flow.get('selected'):
-        flow['wait'] = flow.get('wait', 0) + 1
-        if flow['wait'] <= 3:
-            return []
-        if flow['selected'] >= 2:
-            flow['exhausted'] = True
-            return [pad('b')]
-    flow['menu_ticks'] = flow.get('menu_ticks', 0) + 1
-    if flow['menu_ticks'] > 8:
-        flow['exhausted'] = True
-        return [pad('b')]
-    move = _battle_menu_move(screen, mem, 'たいきゃく')
-    if move != 'here':
-        return _emit_moves(move)
-    cur['card_flow'] = None
-    flow['selected'] = flow.get('selected', 0) + 1
-    flow['wait'] = 0
-    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
-            general=cur.get('ally'), enemy=cur.get('enemy'),
-            castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
-            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
-                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
-                             'cards_selected': cur.get('cards_selected', []),
-                             'cards_used': cur.get('cards_used', []),
-                             # docich#5117: the live list proved these are not
-                             # carried, so they are neither spendable nor a
-                             # "left behind" resource.
-                             'cards_missing': list(cur.get('cards_missing') or ()),
-                             # docich#5101: a card the bot already tried (or
-                             # spent its one bounded retry on) is not "left
-                             # unused" — the audit needs the attempt receipts
-                             # to tell a designed post-attempt retreat from a
-                             # card that was never given a chance.
-                             'cards_attempted': list((cur.get('survival') or {})
-                                                     .get('cards_attempted') or []),
-                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
-                             'cards_spend_attempts': dict(cur.get('cards_spend_attempts') or {}),
-                             'card_pending': (cur.get('card_flow') or {}).get('card')
-                             if isinstance(cur.get('card_flow'), dict) else None,
-                             'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
-            resulting_event='retreat_selected_not_yet_confirmed',
-            reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')
-    return [pad('a')]
+                reason='退却は停滞の原因になるため一律禁止し、切り札・卵を使い切った後もそのまま戦い切る')
+    return None
 
 
 RESCUE_RECLOSE_WAIT = 3     # observations a spent rescue menu may stay open
@@ -579,6 +863,9 @@ def _survival_menu(screen, mem, cur):
         # never became readable, and the general fell with the egg unused).
         # A bounded second selection gives that attempt a retry.
         rescue['egg_attempts'] = int(rescue.get('egg_attempts') or 0) + 1
+        # Remember the HP at this attempt: a later HP loss is what licenses the
+        # bounded extra retry (#5143/#5144 owner decision 2026-11-23).
+        rescue['egg_attempt_hp'] = cur.get('ally_hp')
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
             observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
@@ -961,6 +1248,22 @@ CARD_ROW_WALK_TOPDOWN = 2    # ups that reach the command box's top row
 CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
 CARD_MENU_TICK_LIMIT = 8     # same bound as before: the walk finishes by tick 5
 
+def _carried_card_left(mem, cur):
+    """A card the general actually carries and has not spent yet.
+
+    Castle stock alone is not "holding" a card for the miss audit; only the
+    planned sortie kit or a confirmed carried kit counts.
+    """
+    attempted = {*(cur.get('cards_selected') or []), *(cur.get('cards_used') or []),
+                 *(cur.get('cards_unclassified') or []), *(cur.get('cards_missing') or [])}
+    planned = [c for c in (cur.get('planned_cards') or [])
+               if isinstance(c, str) and c not in attempted]
+    if planned:
+        return planned[0]
+    kit = _confirmed_carried_kit(mem, cur) or []
+    return next((c for c in kit if isinstance(c, str) and c not in attempted), None)
+
+
 def _card_row_walk(flow, screen, ticks):
     '''docich#4673: reach きりふだ without a readable command-box cursor.
 
@@ -993,7 +1296,14 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
-    if _screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur):
+    _labels = {word for _, _, word in _options(screen)}
+    # A measured five-item scroll owns this box even before the B fallback:
+    # its きりふだ/たいきゃく-only bottom page is not a modal overlay.  An
+    # active card flow still owns the menu: it deliberately walks to きりふだ.
+    _scroll_owned = not flow and _human_scroll_owns(
+        screen, _labels, cur, chapter=mem.get('chapter'))
+    if (_screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur)
+            and not _scroll_owned):
         _record(mem, 'battle_egg_actor_unconfirmed',
                 reason='実画面の本人は残数0のため、旧戦闘文脈で卵を選ばず戻る')
         return [pad('b')]
@@ -1016,22 +1326,32 @@ def battle_menu_step(screen: Screen, mem):
             mem['egg_action'] = 'use_egg'
             if isinstance(cur, dict) and isinstance(cur.get('independent'), dict):
                 cur['independent']['action'] = 'use_egg'
-    _labels = {word for _, _, word in _options(screen)}
     _plain_attack_box = ('こうげき' in _labels and 'たいきゃく' in _labels
                          and not _labels.intersection({'おくのて', 'たまごをつかう', 'きりふだ'}))
+    if _scroll_owned:
+        _begin_human_scroll(cur, screen)
+        scroll = _human_scroll_step(screen, mem, cur, _labels)
+        if scroll is not None:
+            return scroll
     _sha = getattr(screen, 'frame_sha256', None)
     _recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
     cur['menu_same'] = int(cur.get('menu_same') or 0) + 1 if _sha in _recent else 0
     if _sha is not None:
         cur['menu_recent'] = ([_sha] + [d for d in _recent if d != _sha])[:2]
+    _modal_box = bool(getattr(screen, 'hidden_battle_commands', False)
+                      or getattr(screen, 'disabled_item_box', False)
+                      or getattr(screen, 'okunote_only_box', False))
     if (int(cur.get('menu_same') or 0) >= 10
             and _labels and 'たいきゃく' in _labels
-            and not _labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'})):
-        # A command box with no usable command is a modal overlay: A on the
-        # dead きりふだ row does nothing. B closes it and the melee resumes
-        # (owner 2026-11-16).
+            and not _labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'})
+            and (_modal_box or (screen.menu_cursor is None and not screen.menu_rows))):
+        # A command box with no usable command and no readable rows/cursor is
+        # a modal overlay: A on the dead きりふだ row does nothing. B closes
+        # it and the melee resumes (owner 2026-11-16). A readable 5-item list
+        # is never closed with B; it is scrolled up above (owner 2026-11-24).
         _record(mem, 'battle_menu_close', **_battle_labels(cur),
-                observed_metric={'labels': sorted(_labels)},
+                observed_metric={'labels': sorted(_labels), 'modal_box': _modal_box,
+                                 'cursor_y': screen.menu_cursor},
                 reason='攻撃コマンドの無い戦闘メニューはBで閉じて白兵へ戻る')
         return [pad('b')]
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
@@ -1351,6 +1671,57 @@ def _okunote_only_box_step(screen, mem, cur):
     return [pad('down')]
 
 
+def _safer_rescue_available(mem, cur):
+    """A measured egg or carried card the battle could still spend.
+
+    The command menu always draws たまごをつかう/きりふだ/たいきゃく, so their
+    labels cannot prove a usable resource: 2026-11-24 13:10 JST the decline
+    claimed 使用可能な卵/切り札 while パプリカ had no egg (has_egg false) and
+    an empty carried list, and the general fell in melee. Only the battle's
+    own measured plan (``cur['egg_plan']``) counts here.
+    """
+    plan = cur.get('egg_plan') if isinstance(cur.get('egg_plan'), dict) else {}
+    profile = plan.get('ally_profile') if isinstance(plan.get('ally_profile'), dict) else {}
+    if profile.get('has_egg') is True and not _own_egg_empty(mem, cur):
+        return True
+    return any(isinstance(row, dict) and row.get('usable') is True
+               for row in (plan.get('cards') or ()))
+
+
+def _okunote_risk_protected(mem, cur, hp, ally_full, enemy_full):
+    """A low HP battle still has a safer rescue than the irreversible lottery.
+
+    The original gate treated the visible きりふだ/たまご rows as proof of a
+    usable card or egg, which they never were (the rows are always drawn).
+    It also required a confirmed ``side == 'defense'``; battles that interrupt
+    a sortie have ``side`` and ``castle`` unknown and could never rescue a
+    losing general at all (2026-11-24 13:1x-13:2x: パプリカ/デュオニソス/
+    キャンディー declined at HP 34/21/8/22 and were lost). A confirmed attack
+    keeps the old policy; an unclassified battle may now open the lottery when
+    no measured egg/card is left.
+    """
+    hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
+    return bool(
+        cur.get('ally') in (None, 'だいじん')
+        or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
+        or cur.get('side') == 'attack'
+        or (cur.get('side') == 'defense'
+            and cur.get('castle') not in chart.castles(mem.get('chapter') or 0))
+        or cur.get('enemy') in chart.BOSSES.values()
+        or cur.get('planned_cards') or cur.get('card_flow')
+        or cur.get('egg_battle') or mem.get('egg_battle')
+        or cur.get('card_summon_observed')
+        or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
+        or _safer_rescue_available(mem, cur)
+        or type(hp) is not int or hp <= 0
+        or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
+        or ally_full is None or enemy_full is None
+        or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
+        or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
+        or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
+        or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -1552,25 +1923,7 @@ def okunote_step(screen, mem):
             conserve = (_hold_melee_egg(mem, cur, visible)
                         or cur.get('card_soldiers_current') is not True
                         or cur.get('card_hp_unread') or cur.get('card_context_unclassified'))
-            hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
-            protected = (
-                cur.get('ally') in (None, 'だいじん')
-                or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
-                or cur.get('side') != 'defense'
-                or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
-                or cur.get('enemy') in chart.BOSSES.values()
-                or cur.get('planned_cards') or cur.get('card_flow')
-                or cur.get('egg_battle') or mem.get('egg_battle')
-                or cur.get('card_summon_observed')
-                or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
-                or 'きりふだ' in visible or 'たまごをつかう' in visible
-                or type(hp) is not int or hp <= 0
-                or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
-                or ally_full is None or enemy_full is None
-                or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
-                or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
-                or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
-                or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+            protected = _okunote_risk_protected(mem, cur, hp, ally_full, enemy_full)
             if conserve:
                 if not flow.get('risk_conserved'):
                     flow['risk_conserved'] = True
@@ -1584,7 +1937,8 @@ def okunote_step(screen, mem):
                 if not flow.get('risk_declined'):
                     flow['risk_declined'] = True
                     _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
-                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE,
+                                             'side': cur.get('side'), 'castle': cur.get('castle')},
                             reason='低HPだが主人公・計画札・召喚戦・ボス・使用可能な卵/切り札などの既存保護条件があるため、奥の手を開かず白兵へ戻る')
                 rescue['exhausted'] = True
                 return [pad('b')]
@@ -2219,23 +2573,67 @@ def _egg_retreat_return(screen, mem, battle):
 SUMMON_SCROLL_REARM_TICKS = 40      # observations (~60 s) before one more look
 SUMMON_SCROLL_REARM_LIMIT = 2       # extra looks per battle
 
+# Owner 2026-11-24: 城守り戦で敵の召喚獣が生きている間は、おくのて行が一度
+# 読めなかっただけで通常攻撃へ戻さない。live g1342 2026-11-24 02:59 フーリック
+# (ゼウス vs ビシソワーズ→ドラゴンフライ, 召喚獣HP263) は 17 回おくのてを
+# 引いた後、描画途中の箱で最後の 2 押しが反映されず「おくのて行なし」と判定して
+# こうげきへ戻り、城を失った。召喚獣が生きている間は短い間隔で読み直しを続ける
+# (押下・確定は従来どおり有界。確定は可視行のみ)。
+SUMMON_SCROLL_LIVE_REARM_TICKS = 8
+SUMMON_SCROLL_LIVE_REARM_LIMIT = 12
+# An unread cursor / a one-row redraw is not proof that おくのて is absent.
+SUMMON_SCROLL_UNREAD_WAITS = 3
+
+
+def _live_defense_summon(battle):
+    """A castle defense whose enemy summon still justifies drawing おくのて."""
+    if battle.get('side') != 'defense':
+        return False
+    if not (battle.get('enemy_summon_observed') or battle.get('card_summon_observed')):
+        return False
+    hp = battle.get('summon_enemy_hp')
+    if type(hp) is int:
+        # A summon one edge hit finishes needs no lottery (owner 2026-11-04).
+        return hp > EGG_WALL_DAMAGE
+    return True     # an unread summon HP is not evidence of the one-hit case
+
 
 def _summon_scroll_rearm(mem, battle, guard):
-    """Re-open the bounded scroll after a failed label read, at most twice."""
+    """Re-open the bounded scroll after a failed label read.
+
+    A live castle-defense summon keeps the route open with a short gap, so one
+    unread frame cannot end 奥の手 for the rest of the fight. Other fights keep
+    the finite two looks.
+    """
     if guard.get('exhausted_reason') != 'scroll_unread':
         return False
+    hp = battle.get('summon_enemy_hp')
+    if type(hp) is int and 0 < hp <= EGG_WALL_DAMAGE:
+        return False    # 一撃で倒せる残りHPでは奥の手を使わない (owner 2026-11-04)
+    if battle.get('melee_only_summon'):
+        return False    # 0ダメージ召喚獣は白兵で対処し、抽選を開かない (owner 2026-11-24)
+    live = _live_defense_summon(battle)
+    limit = SUMMON_SCROLL_LIVE_REARM_LIMIT if live else SUMMON_SCROLL_REARM_LIMIT
+    gap = SUMMON_SCROLL_LIVE_REARM_TICKS if live else SUMMON_SCROLL_REARM_TICKS
     rearms = int(guard.get('rearms') or 0)
-    if rearms >= SUMMON_SCROLL_REARM_LIMIT:
+    if rearms >= limit:
+        if not guard.get('rearm_limit_recorded'):
+            guard['rearm_limit_recorded'] = True
+            _record(mem, 'battle_okunote_summon_rearm_limit', **_battle_labels(battle),
+                    observed_metric={'rearms': rearms, 'limit': limit,
+                                     'summon_live': live,
+                                     'summon_enemy_hp': battle.get('summon_enemy_hp')},
+                    reason='おくのて行の読み直し上限に達したため、以後は実コマンドで応戦する')
         return False
     since = guard.get('exhausted_tick')
     now = int(mem.get('tick') or 0)
-    if type(since) is not int or now - since < SUMMON_SCROLL_REARM_TICKS:
+    if type(since) is not int or now - since < gap:
         return False
-    guard.update(exhausted=False, downs=0, stage='scroll_rearm',
+    guard.update(exhausted=False, downs=0, stage='scroll_rearm', unread_waits=0,
                  rearms=rearms + 1, exhausted_tick=0, exhausted_reason=None)
     _record(mem, 'battle_okunote_summon_rearm', **_battle_labels(battle),
-            observed_metric={'rearms': rearms + 1, 'limit': SUMMON_SCROLL_REARM_LIMIT,
-                             'waited_ticks': now - since},
+            observed_metric={'rearms': rearms + 1, 'limit': limit,
+                             'waited_ticks': now - since, 'summon_live': live},
             reason='おくのて行が読めないまま同一戦闘で打ち切っていたが、召喚獣が残っているため有界で読み直す')
     return True
 
@@ -2270,6 +2668,33 @@ def _defender_summon_egg_menu(screen, mem, battle):
         return None
     guard = battle.setdefault('okunote_summon_preempt', {'opens': 0})
     labels = [w for _, _, w in _options(screen)]
+    _stale_human = (_stale_battle_actor(screen, battle)
+                    and _human_menu_column(screen)
+                    and not getattr(screen, 'hidden_battle_commands', False)
+                    and not getattr(screen, 'disabled_item_box', False)
+                    and not getattr(screen, 'okunote_only_box', False))
+    if (mem.get('chapter') == 12 and 'おくのて' not in labels
+            and 'たまごをつかう' not in labels
+            and (_human_five_item_box(screen, set(labels))
+                 or _human_scroll_active(battle)
+                 or _stale_human)):
+        # The human command list has no おくのて row. Its upper page reads as
+        # this egg box, and a stale policy.battle used to send the cursor back
+        # down to the bottom page after every up. Never scroll it.
+        if not guard.get('human_command_list'):
+            guard['human_command_list'] = True
+            _record(mem, 'battle_okunote_summon_human_menu', **_battle_labels(battle),
+                    observed_metric={'visible': labels, 'cursor_y': screen.menu_cursor,
+                                     'stale_actor': _stale_battle_actor(screen, battle)},
+                    reason='人間用五項目コマンドリストにおくのて行は無いため、下方スクロールせず実コマンドへ戻す')
+        return None
+    if (labels and not _human_menu_column(screen)
+            and not getattr(screen, 'hidden_battle_commands', False)
+            and not getattr(screen, 'disabled_item_box', False)):
+        # Enemy-general command menus are drawn in the left column (x=32/40).
+        # They are not a player-scrollable おくのて box; down is ignored and
+        # only stalls the turn.
+        return None
     from . import okunote
     if 'おくのて' in labels:
         move = _menu_move_batch(screen, 'おくのて', _battle_menu_to(screen, 'おくのて'))
@@ -2309,6 +2734,23 @@ def _defender_summon_egg_menu(screen, mem, battle):
                                  'down_attempt': downs + batch, 'batch': batch},
                 reason='たまごをつかう（灰色）の下のおくのて行へカーソルを下げる')
         return [pad('down') for _ in range(batch)]
+    # The scroll budget is spent. A frame whose cursor or rows are still
+    # unread (the box is redrawing) is not evidence that おくのて is absent:
+    # live g1342 02:59:05 sent the last pair into a redrawing defense box and
+    # the very next frame had an unread cursor, so the old code latched the
+    # route off and attacked with the summon still alive. Re-read first, then
+    # give the turn back only from a readable box.
+    waits = int(guard.get('unread_waits') or 0)
+    if ((screen.menu_cursor is None or len(labels) < 2)
+            and waits < SUMMON_SCROLL_UNREAD_WAITS):
+        guard['unread_waits'] = waits + 1
+        _record(mem, 'battle_okunote_summon_unread_box', **_battle_labels(battle),
+                observed_metric={'waits': waits + 1, 'limit': SUMMON_SCROLL_UNREAD_WAITS,
+                                 'cursor_y': screen.menu_cursor, 'visible': labels,
+                                 'down_attempts': downs},
+                reason='おくのて行の探索中に箱のカーソル/行が未読のため、行なしと断定せず再観測する')
+        return [{'type': 'wait', 'ms': 50}]
+    guard.pop('unread_waits', None)
     guard.update(exhausted=True, exhausted_reason='scroll_unread',
                  exhausted_tick=int(mem.get('tick') or 0))
     _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(battle),
@@ -2365,12 +2807,51 @@ def egg_battle_step(screen: Screen, mem):
     summon is answered with an egg rather than a stall or blind attack.
     This is original pattern ⑥ (own egg when melee is not enough); patterns
     ②④⑤ stay chart-directed. Messages inside it advance with A.
+    A measured ゾンビ summon is the exception: it is met with melee and the
+    egg is kept (owner 2026-11-24, ``MELEE_ONLY_SUMMONS``).
     """
     if screen.kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage', None)
         mem.pop('enemy_general_menu', None)
         mem.pop('enemy_general_menu_pending', None)
         return [pad('a')]
+    _labels = {word for _, _, word in _options(screen)}
+    _battle_ctx = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    # The same five-item list is classified egg_battle_menu once きりふだ drops
+    # off its upper page.  The right-hand column is part of the evidence: the
+    # enemy-general command menu is drawn on the left and ignores the player's
+    # keys, so it must keep its own wait owner.  A stale policy.battle alone is
+    # not enough to create a persisted episode; it may only correct one
+    # readable attack row (A on こうげき, up from もうこうげき).
+    _scroll_owner = _human_scroll_owns(
+        screen, _labels, _battle_ctx, chapter=mem.get('chapter'))
+    _five = _human_five_item_box(screen, _labels)
+    _stale_row = (
+        _stale_battle_actor(screen, _battle_ctx)
+        and _human_menu_column(screen)
+        and bool(_labels.intersection({'こうげき', 'もうこうげき'}))
+        and not _labels.intersection({'たまごをつかう', 'おくのて'})
+        and not getattr(screen, 'hidden_battle_commands', False)
+        and not getattr(screen, 'disabled_item_box', False)
+        and not getattr(screen, 'okunote_only_box', False)
+    )
+    _stale_exact = _cursor_exact_label(screen) if _stale_row else None
+    if (mem.get('chapter') == 12 and _battle_ctx and _stale_row
+            and not _scroll_owner and _stale_exact == 'こうげき'):
+        _record(mem, 'battle_menu_scroll_attack', **_battle_labels(_battle_ctx),
+                observed_metric={'labels': sorted(_labels), 'cursor_y': screen.menu_cursor,
+                                 'cursor_label': _stale_exact, 'ups': 0,
+                                 'stale_actor': True},
+                reason='staleなpolicy.battleでも右列コマンドのカーソル行が完全一致でこうげきのため、Aで一度だけ確定する')
+        return [pad('a')]
+    _human_menu = bool(
+        _scroll_owner or _five
+        or (_stale_row and _stale_exact in ('こうげき', 'もうこうげき')))
+    if mem.get('chapter') == 12 and _battle_ctx and _human_menu:
+        _begin_human_scroll(_battle_ctx, screen)
+        _scroll = _human_scroll_step(screen, mem, _battle_ctx, _labels)
+        if _scroll is not None:
+            return _scroll
     partial_enemy = _partial_enemy_general_command(screen)
     if partial_enemy:
         for key in ('egg_battle', 'egg_action', 'egg_key', 'egg_needed',
@@ -2429,7 +2910,17 @@ def egg_battle_step(screen: Screen, mem):
     enemy_monsters = [r for r in enemy_rows
                       if r.name in reference.MONSTER_SKILLS
                       and type(r.hp) is int and r.hp > 0]
+    # Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。HP比や
+    # 経験則より優先するが、実画面で敵召喚獣が1体だけ読めて名前が一致した
+    # ときだけ適用する (未知・複数・未読の敵へは広げない)。
+    melee_only = (len(enemy_rows) == len(enemy_monsters) == 1
+                  and enemy_monsters[0].name in MELEE_ONLY_SUMMONS)
+    if isinstance(mem.get('battle'), dict):
+        # Keep the okunote preempt from spending our general's HP on a lottery
+        # against a zero-damage zombie; cleared as soon as the panel changes.
+        mem['battle']['melee_only_summon'] = melee_only
     summon_threat = bool(general_reading and len(enemy_rows) == len(enemy_monsters) == 1
+                        and not melee_only
                         and (enemy_monsters[0].name == 'ダークエルフ'
                              or general_reading[0] * 10
                              <= enemy_monsters[0].hp * BEHIND_EGG_RATIO_TENTHS))
@@ -2438,9 +2929,14 @@ def egg_battle_step(screen: Screen, mem):
         egg_evidence = {**egg_evidence, 'rule': 'enemy_monster_threat',
                         'enemy_monster': enemy_monsters[0].name,
                         'enemy_monster_hp': enemy_monsters[0].hp}
+    elif melee_only:
+        wants_egg = False
+        egg_evidence = {**egg_evidence, 'rule': 'melee_only_summon',
+                        'enemy_monster': enemy_monsters[0].name,
+                        'enemy_monster_hp': enemy_monsters[0].hp}
     empty_egg = _screen_egg_empty(screen, mem, battle)
     hero_summon = isinstance(battle, dict) and battle.get('ally') == NAME
-    if hero_summon and not wants_egg:
+    if hero_summon and not wants_egg and not melee_only:
         # g604 3-11: どうし 66/90 looked healthy against チコリ (HP11), so the
         # egg was "saved"; the summoned ダークエルフ's ひとだまくん is instant
         # death (gcgx evil_egg) and HP comparisons cannot price it. A dead
@@ -2465,8 +2961,10 @@ def egg_battle_step(screen: Screen, mem):
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
         action = experience.preferred(exp, key, default='use_egg' if wants_egg and not empty_egg else 'attack',
                                       kind='egg_summon')
-        if (hero_summon or summon_threat or combat_danger) and not empty_egg:
+        if (hero_summon or summon_threat or combat_danger) and not empty_egg and not melee_only:
             action = 'use_egg'  # learned attacks cannot overrule a measured summon threat
+        if melee_only:
+            action = 'attack'   # owner 2026-11-24: zombie is met by melee, never by our egg
         if action == 'use_egg' and empty_egg:
             action = 'attack'
         mem['egg_action'] = action
@@ -2481,7 +2979,10 @@ def egg_battle_step(screen: Screen, mem):
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'experience_key': key, 'egg_need': egg_evidence},
                 source_pattern='⑥',
-                reason=('チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
+                reason=(f'オーナー指示 (2026-11-24): 相手が{enemy_monsters[0].name}'
+                        '（0ダメージ召喚獣）のため、たまごを使わず白兵で対処する'
+                        if melee_only else
+                        'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
                         '自軍が健在でHP・兵士数・戦闘力から白兵を続けられそうならたまごを温存）'
                         if not wants_egg else
                         'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）'))
@@ -2509,7 +3010,10 @@ def egg_battle_step(screen: Screen, mem):
         return [pad('b')]
     # 途中昇格: 温存していた (前回まで勝てていた) のに劣勢になったら、たまごを
     # 使う判断へ切り替える。回復しても温存へは戻さない (一方向だけ)。
-    if ((mem.get('egg_needed') is False or summon_threat or combat_danger) and wants_egg and not empty_egg
+    # 相手がゾンビのときはこの昇格も行わない (owner 2026-11-24)。
+    if (not melee_only
+            and (mem.get('egg_needed') is False or summon_threat or combat_danger)
+            and wants_egg and not empty_egg
             and mem.get('egg_action') == 'attack'):
         mem['egg_action'] = 'use_egg'
         if isinstance(battle.get('independent'), dict):
@@ -2524,6 +3028,24 @@ def egg_battle_step(screen: Screen, mem):
                         if combat_danger else '温存していたが、自軍のHPが最大の7割以下になるか、'
                         'HPと兵士の合戦力が敵の7割を下回ったため途中でたまごを'
                         '使う判断へ切り替える'))
+    if melee_only:
+        # A hot-loaded or learned 卵 decision made before the panel was read
+        # must not spend the egg on a zombie (owner 2026-11-24). Record the
+        # reversal once per battle; later observations just keep attacking.
+        if mem.get('egg_action') != 'attack' and not battle.get('melee_only_override'):
+            battle['melee_only_override'] = True
+            _record(mem, 'egg_battle', strategy_variant='egg_battle_melee_only',
+                    deviation_reason='チャート外: 敵の卵召喚戦（0ダメージ召喚獣は白兵）',
+                    expected_metric='0ダメージ召喚獣への白兵と戦闘結果',
+                    observed_metric={'egg_need': egg_evidence,
+                                     'enemy_monster': enemy_monsters[0].name,
+                                     'enemy_monster_hp': enemy_monsters[0].hp},
+                    source_pattern='⑥',
+                    reason=(f'オーナー指示 (2026-11-24): 相手が{enemy_monsters[0].name}'
+                            '（0ダメージ召喚獣）のため、たまごの温存判断を白兵へ戻す'))
+        mem['egg_action'] = 'attack'
+        if isinstance(battle.get('independent'), dict):
+            battle['independent']['action'] = 'attack'
     mem['egg_needed'] = wants_egg
     action = mem.get('egg_action', 'use_egg')
     if empty_egg or (action == 'use_egg' and 'たまごをつかう' not in screen.text):
@@ -2561,8 +3083,24 @@ def egg_battle_step(screen: Screen, mem):
     if action == 'attack':
         battle = (mem.get('battle') if isinstance(mem.get('battle'), dict)
                   else mem.setdefault('egg_retreat_flow', {}))
+        interrupted_flow = battle.get('card_flow')
+        if (isinstance(interrupted_flow, dict)
+                and interrupted_flow.get('stage') in ('menu', 'down', 'list')
+                and not interrupted_flow.get('selection_planned')
+                and not interrupted_flow.get('read_kit')):
+            # The enemy summon dialogue can replace the normal battle menu
+            # between planning a card and opening its list.  The old cursor
+            # navigation belongs to the previous menu; keep the exact card
+            # intent, then reopen it from the summon menu's real list.
+            interrupted_card = interrupted_flow.get('card')
+            if isinstance(interrupted_card, str):
+                battle['summon_card_resume'] = {
+                    'card': interrupted_card,
+                    'tactic_id': interrupted_flow.get('tactic_id'),
+                }
+            battle['card_flow'] = None
         attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
-                     *(battle.get('cards_unclassified') or [])}
+                     *(battle.get('cards_unclassified') or []), *(battle.get('cards_missing') or [])}
         cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
         if not cards_left:
             # The summon battle's battle context often has no planned_cards,
@@ -2576,7 +3114,7 @@ def egg_battle_step(screen: Screen, mem):
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
         # the visible command text until the box scrolls down; open it first.
         if (cards_left and 'きりふだ' not in (screen.text or '')
-                and 'たまごをつかう' in (screen.text or '')
+                and ('たまごをつかう' in (screen.text or '') or empty_egg)
                 and not battle.get('card_flow')):
             scrolls = int(battle.get('summon_card_scroll') or 0)
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
@@ -2586,19 +3124,29 @@ def egg_battle_step(screen: Screen, mem):
                                          'text': (screen.text or '')[:60]},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
+        resume = battle.get('summon_card_resume')
+        if not isinstance(resume, dict) or resume.get('card') not in cards_left:
+            resume = None
+            battle.pop('summon_card_resume', None)
         if (cards_left and 'きりふだ' in (screen.text or '')
                 and not battle.get('card_flow')):
             target = _battle_menu_to(screen, 'きりふだ')
             move = _menu_move_batch(screen, 'きりふだ', target) if target is not None else None
             if move == 'here':
-                battle['card_flow'] = {'card': cards_left[0], 'stage': 'list',
-                                       'note': '敵召喚獣戦の携行切り札を開幕使用',
+                card = resume['card'] if resume else cards_left[0]
+                battle['card_flow'] = {'card': card, 'stage': 'list',
+                                       'note': ('召喚会話で中断された携行切り札を再開'
+                                                if resume else '敵召喚獣戦の携行切り札を開幕使用'),
                                        'enemy_hp_at_open': battle.get('enemy_hp')}
+                battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
-                        card=cards_left[0],
+                        card=card,
                         observed_metric={'enemy': battle.get('enemy'),
-                                         'cards_left': list(cards_left)},
-                        reason='敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く')
+                                         'cards_left': list(cards_left),
+                                         'resumed_pending_flow': bool(resume),
+                                         'resumed_tactic_id': resume.get('tactic_id') if resume else None},
+                        reason=('召喚会話で中断された未選択の切り札を実一覧から再開する'
+                                if resume else '敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く'))
                 return [pad('a')]
             if move is not None:
                 return _emit_moves(move)
@@ -2607,11 +3155,8 @@ def egg_battle_step(screen: Screen, mem):
         # and actually request retreat if the normal command menu is reached.
         # g460 安全弁は「卵か札か退却のどれもない」局面だけ。勝てそうなので
         # たまごを温存している間は、まず白兵で戦う (退却しない)。
-        if (not cards_left and battle.get('side') != 'defense'
-                and (wants_egg or empty_egg or 'たまごをつかう' not in screen.text)):
-            returning = _egg_retreat_return(screen, mem, battle)
-            if returning is not None:
-                return returning
+        # Owner 2026-11-23: retreat is banned; with no card the summon turn
+        # attacks instead of probing the retreat menu.
         # g508: after Excalibur fell, stale general HP82 concealed the
         # wounded Venus while blind A kept choosing the weakest attack.
         # Fierce attack adds lost HP to damage, but can miss/lose initiative;
@@ -2708,6 +3253,26 @@ def egg_battle_step(screen: Screen, mem):
                                      'enemy_hp': enemy_rows[0].hp if len(enemy_rows) == 1 else None},
                     reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
                             if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
+        if move == 'here' and label == 'こうげき':
+            # File only after the attack row is actually selected. An unread
+            # cursor or an in-progress walk is not evidence that the card was
+            # skipped in favour of an attack.
+            missed = _carried_card_left(mem, battle)
+            # docich#5217: once this battle has spent a card, the next one is
+            # not evidence that the bot skipped cards in favour of an attack.
+            # The audit's card_miss signal is "attacked without opening any of
+            # the carried cards"; filing after a real use only produces
+            # duplicates (live: ミックミー used, ノリウツール left, 3 issues).
+            if (missed and cards_left and not battle.get('cards_used')
+                    and not battle.get('boss_card_missed_noted')):
+                battle['boss_card_missed_noted'] = True
+                _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
+                        observed_metric={'cards_left': list(cards_left),
+                                         'screen': screen.kind,
+                                         'text': (screen.text or '')[:80],
+                                         'scrolls': battle.get('summon_card_scroll'),
+                                         'cursor': screen.menu_cursor},
+                        reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         return [pad('a')] if move == 'here' else _emit_moves(move)
     _egg_recheck(mem)
     if screen.hand:
@@ -3086,7 +3651,9 @@ def monster_menu_step(screen: Screen, mem):
     special_cycle = balloon_cycle or akematsu_cycle or omedetori_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
     # Re-evaluate old cached choices on the first new-policy observation.
-    special_epoch = '20261029-omedetori-v1' if omedetori_cycle else '20261016-balloon-akematsu-v2'
+    special_epoch = ('20261029-omedetori-v1' if omedetori_cycle
+                     else '20261124-balloon-final-jelly-v1' if balloon_cycle
+                     else '20261016-balloon-akematsu-v2')
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
             or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
@@ -3225,7 +3792,14 @@ def monster_menu_step(screen: Screen, mem):
                    '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す')
         elif balloon_cycle:
             label = second if action == 'skill2' else first
-            if balloon['rule'] == 'survival_buffer':
+            if balloon['rule'] == 'final_jelly_shout':
+                why = ('ファイナルゼリー戦でHP1000以上に達したため、以降も'
+                       '「シャウト」を続けて相手を削り切る（オーナー 2026-11-24）')
+            elif balloon['rule'] == 'final_jelly_inflate':
+                why = (f'ファイナルゼリー戦でシャウトへ移るため、HP{ally_hp}を'
+                       f'目標{balloon["target_hp"]}以上へ「ふくらむ」で引き上げる'
+                       '（オーナー 2026-11-24）')
+            elif balloon['rule'] == 'survival_buffer':
                 why = (f"シャウト後HP{balloon['post_shout_hp']}が、被ダメージ推定"
                        f"{balloon['incoming_damage']}に25%の余裕を加えた"
                        f"{balloon['survival_hits']}回分を超えるため全回復を待たず攻撃")

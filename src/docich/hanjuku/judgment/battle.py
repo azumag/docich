@@ -602,6 +602,15 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
                 result['role'] = 'control_has_no_observed_followup'
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
+    # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
+    # 既に1枚使った戦闘が危険なままなら、卵落とし等の非致死リスクで拒否せず
+    # 次の札を開かせる。1枚目や通常戦闘の判定は従来どおり（安全弁は維持）。
+    if (not result['allowed'] and not finished
+            and _critical_survival_needed(cur)
+            and (summoned or boss)
+            and result['role'] in {'nonlethal_egg_risk', 'control_has_no_observed_followup',
+                                   'damage_or_egg_risk_unclassified'}):
+        result.update(allowed=True, role='critical_card_spend')
     cur['card_assessment'] = {
         'card': card, 'enemy_hp': context['enemy_hp'],
         'ally_soldiers': context['ally_soldiers'], 'enemy_soldiers': context['enemy_soldiers'],
@@ -1429,6 +1438,84 @@ def _survival_needed(cur):
             or (not cur.get('planned_cards') and _combat_behind(cur)))
 
 
+# Open a measured, one-shot rescue before the ordinary low-HP/retreat gates.
+# 70% remaining means at least 30% of the HP brought into this battle has
+# already been lost. The live menu still owns the final card damage gate.
+EARLY_RESOURCE_RESCUE_REMAINING_TENTHS = 7
+
+
+def _early_resource_rescue_needed(mem, cur):
+    """Open one bounded resource inspection after a meaningful losing HP trade.
+
+    Only current, named evidence can license this: the actor is behind, has
+    lost at least 30% of its opening HP, and a positive personal egg or a
+    confirmed carried survival card still has a path through the damage gate.
+    Charted/boss fights, event duels, the immediate-retreat HP floor and spent rescue
+    budgets keep their existing timing.
+    """
+    if not isinstance(mem, dict) or not isinstance(cur, dict):
+        return False
+    hp, start, enemy = (cur.get(k) for k in ('ally_hp', 'start_ally_hp', 'enemy_hp'))
+    if (type(hp) is not int or type(start) is not int or type(enemy) is not int
+            or start <= 0 or enemy <= 0 or hp <= RETREAT_RESOURCE_FLOOR_HP
+            or hp * 10 > start * EARLY_RESOURCE_RESCUE_REMAINING_TENTHS):
+        return False
+    if (cur.get('event_duel') or cur.get('egg_battle') or mem.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('planned_cards')
+            or cur.get('card_flow') or cur.get('command_open_pending')):
+        return False
+    if (cur.get('enemy') in chart.BOSSES.values()
+            or cur.get('enemy') in reference.BOSS_GENERALS):
+        return False
+    if _boss_tactics_allowed(mem, cur) or not _behind(cur):
+        return False
+
+    rescue = cur.get('survival')
+    rescue = rescue if isinstance(rescue, dict) else {}
+    if rescue.get('early_resource_triggered') or rescue.get('exhausted'):
+        return False
+    opens, pending = rescue.get('opens', 0), rescue.get('pending_opens', 0)
+    if (type(opens) is not int or type(pending) is not int
+            or opens < 0 or pending < 0 or opens >= 12 or pending >= 3):
+        return False
+
+    attempts = rescue.get('egg_attempts', 0)
+    if type(attempts) is not int or attempts < 0:
+        attempts = EGG_ATTEMPT_HARD_LIMIT
+    egg_limit = EGG_ATTEMPT_LIMIT
+    last_hp = rescue.get('egg_attempt_hp')
+    if (type(last_hp) is int and hp < last_hp and attempts < EGG_ATTEMPT_HARD_LIMIT):
+        egg_limit = EGG_ATTEMPT_HARD_LIMIT
+    egg_spent = attempts >= egg_limit or (rescue.get('egg_attempted') and not attempts)
+    egg_ready = (not rescue.get('egg_pending') and not egg_spent
+                 and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur))
+
+    cards_ready = False
+    checked = rescue.get('cards_checked', 0)
+    if (not rescue.get('cards_exhausted') and type(checked) is int
+            and 0 <= checked < CARD_SPEND_ATTEMPT_LIMIT):
+        kit = _confirmed_carried_kit(mem, cur)
+        spend_attempts = _card_spend_attempts(cur)
+        if isinstance(kit, (list, tuple)):
+            # Reuse the inventory multiset rule so one selected copy does not
+            # hide a second, still-unselected copy of the same carried card.
+            for row in _egg_inventory(mem, cur, kit):
+                card, available = row.get('name'), row.get('available')
+                attempts_for_card = spend_attempts.get(card, 0)
+                if (card not in SURVIVAL_CARDS or type(available) is not int or available <= 0
+                        or type(attempts_for_card) is not int or attempts_for_card < 0
+                        or attempts_for_card >= CARD_SPEND_ATTEMPT_LIMIT):
+                    continue
+                try:
+                    gate = _card_damage_gate(mem, cur, card)
+                except Exception:
+                    continue
+                if gate.get('allowed') is True or gate.get('needs_live_list') is True:
+                    cards_ready = True
+                    break
+    return egg_ready or cards_ready
+
+
 def _unarmed_wall_risk(cur):
     """Inspect initially eggless attackers before a wall-triggered summon.
 
@@ -2133,6 +2220,11 @@ def _bind_substitute_defender(mem, cur, b):
 
 
 EGG_ATTEMPT_LIMIT = 2      # summon-menu selections per battle before melee resumes
+# owner 2026-11-23 (#5143/#5144): a selection whose use was never confirmed is
+# not proof the egg is unusable. When the general keeps losing HP after the
+# failed selection, reopen the retry up to this hard cap (both bounds are small
+# so a menu that ignores every input cannot loop).
+EGG_ATTEMPT_HARD_LIMIT = 4
 
 
 def _egg_before_retreat(mem, cur, *, menu=False):
@@ -2148,9 +2240,17 @@ def _egg_before_retreat(mem, cur, *, menu=False):
             and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
         return False
     attempts = int(rescue.get('egg_attempts') or 0)
+    limit = EGG_ATTEMPT_LIMIT
+    last_hp = rescue.get('egg_attempt_hp')
+    hp = cur.get('ally_hp')
+    if (type(last_hp) is int and type(hp) is int and hp < last_hp
+            and attempts < EGG_ATTEMPT_HARD_LIMIT):
+        # The general lost more HP after the failed selection: the egg is still
+        # carried and the earlier attempt proved nothing. One more bounded try.
+        limit = EGG_ATTEMPT_HARD_LIMIT
     # A legacy flag without the counter means the menu was already used: only
     # the counted attempts (v726) may retry once.
-    spent = attempts >= EGG_ATTEMPT_LIMIT or (rescue.get('egg_attempted') and not attempts)
+    spent = attempts >= limit or (rescue.get('egg_attempted') and not attempts)
     return (not cur.get('egg_battle') and not cur.get('event_duel')
             and _survival_needed(cur)
             # #4606: against an observed summon/large enemy the retreat must not
@@ -2539,10 +2639,16 @@ def _defender_summon_preempt(mem, cur):
     unbounded menu, unknown context, and HP at/below the worst self-damage
     keep the old policy. The worst-case self-damage does not gate this path:
     like ``_defender_egg_window``, an unanswered summon is the worse outcome,
-    and the menu-side HP decline/last-resort rules still run first.
+    and the menu-side HP decline/last-resort rules still run first. A measured
+    ゾンビ summon is not a threat (0-damage ゾンビパンチ, self-heal ケアル) and
+    keeps melee instead (owner 2026-11-24).
     """
     chapter = mem.get('chapter')
     guard = cur.get('okunote_summon_preempt') or {}
+    # Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。ゾンビパンチ
+    # は0ダメージで、自傷する抽選を0ダメージの相手へ賭ける理由がない。
+    if cur.get('melee_only_summon'):
+        return None
     # Owner 2026-11-04: 相手（召喚獣）のHPが一撃で倒せる残りなら奥の手は不要。
     enemy_hp = cur.get('summon_enemy_hp')
     if type(enemy_hp) is int and 0 < enemy_hp <= EGG_WALL_DAMAGE:

@@ -140,6 +140,7 @@ def caller_adopted_interim():
 def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(identity):
     state, active = caller_adopted_interim()
     actions, updated = decide(field(), state, run_identity=identity)
+    # The idle field may ask for the whole-map observation (owner 2026-11-23).
     assert actions == []
     assert _plan_region(updated['policy']).get('active') is None
     assert (_plan_region(updated['policy']).get('orders') or {}).get(active) in (None, 'pending')
@@ -150,7 +151,10 @@ def test_real_interim_caller_stops_active_when_identity_is_missing_or_invalid(id
 
 def test_real_interim_caller_keeps_registered_order_with_the_same_valid_identity():
     state, active = caller_adopted_interim()
-    _, updated = decide(field(), state, run_identity=IDENTITY)
+    actions, updated = decide(field(), state, run_identity=IDENTITY)
+    # An active interim order may press A to localize its castle, but the idle
+    # whole-map Y refresh must not fire while the order owns the field.
+    assert all(a['buttons'] != ['y'] for a in actions)
     assert _plan_region(updated['policy']).get('active') == active
     with chart.map_context(updated['policy']):
         assert len(chart.castles(3)) == 9

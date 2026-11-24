@@ -21,6 +21,13 @@ from .economy import (KNOWN_PRICES, UNPRICED_CARDS, _charted_purchase_ahead,
 # of the recommended sets.
 BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイン': 2, 'ミックミー': 2,
                    'マグネガキン': 2, 'エンジェリン': 2, 'ころぼぐんだん': 2}
+# Owner 2026-11-24: ミックミーを優先する。推奨組は クースカン+ミックミーx2
+# (ID合計47) だが、月次の購入順が安い クースカン を先に埋めるため
+# 200G/8枚の枠で ミックミー が毎月0枚になっていた (g1342 6-7/6-8:
+# クースカン 3〜5枚を購入、ミックミーは購入なし)。購入順だけを変え、
+# 目標在庫・価格上限・予算の規則は変えない。
+BARGAIN_ORDER = ('ミックミー', 'クースカン', 'ノリウツール',
+                 'ゼンマイン', 'マグネガキン', 'エンジェリン', 'ころぼぐんだん')
 BARGAIN_CASH_BUFFER = 30
 BARGAIN_MONTHLY_GOLD = 200
 BARGAIN_MONTHLY_COPIES = 8
@@ -351,6 +358,16 @@ def plan_bargains(mem, shop, header, *, listed=None):
     # belong to the ordinary merchant only.
     rich_targets = [*RICH_MERCHANT_CARDS,
                     *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)]
+    # Owner 2026-11-23: strong cards first, not the fixed catalogue order.
+    # The listed price is the measured strength; without a listing the
+    # catalogue price is the only stable proxy.  Names stay deterministic on
+    # ties so retries/hotloads keep the same order.
+    if isinstance(listed, dict):
+        rich_targets.sort(key=lambda name: (
+            -((listed.get(name) if type(listed.get(name)) is int else KNOWN_PRICES.get(name)) or 0),
+            -(KNOWN_PRICES.get(name) or 0), name))
+    else:
+        rich_targets.sort(key=lambda name: (-(KNOWN_PRICES.get(name) or 0), name))
     if rich and listed is None:
         # #4988 moved the BARGAIN_TARGETS pass behind ``not rich``. Without a
         # listing there is no real price, but an empty ``items`` list means the
@@ -425,14 +442,26 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 remaining -= qty * listed[name]
         shop['rich_random_cards'] = random_names
     if not rich:
-        for name, target in BARGAIN_TARGETS.items():
+        for name in BARGAIN_ORDER:
+            target = BARGAIN_TARGETS[name]
             if name in queued or (name in bought and not cheap_pass):
                 continue  # chart quantities and already-attempted purchases stay untouched
             count = held(mem, name)
-            if count is None:
-                # Unknown stock is not 0: asking 99 from a guess is exactly the
-                # refusal loop this ledger replaces (owner 2026-11-22).
-                continue
+            unknown_stock = count is None
+            if unknown_stock:
+                if listed is None or not (cheap_pass or shop.get('cheap_vendor')):
+                    # Without a real listing there is no price evidence; asking
+                    # from an invented 0 is the refusal loop the ledger replaces
+                    # (owner 2026-11-22). An ordinary merchant keeps that rule.
+                    continue
+                # Owner 2026-11-24: at the half-price cart (中華の行商人) a
+                # listed target with unread stock is bought up to its monthly
+                # target. ch4's card census is disabled (observation_limit), so
+                # a kind never owned stays unknown and ミックミー could never be
+                # bought at all. The ask stays bounded by BARGAIN_TARGETS;
+                # ordinary merchants and spare-cash guesses still never buy an
+                # unknown count.
+                count = 0
             seen_basis[name] = count
             target = target * factor
             price = KNOWN_PRICES[name] if listed is None else listed.get(name)
@@ -443,7 +472,11 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 # Owner (2026-11-05): 目標在庫に達していても、チャートに関係なく
                 # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
                 need = copy_cap
-            qty = min(need, copy_cap - copies, budget // price, hold_room(mem, name))
+            room = (BARGAIN_TARGETS[name] if unknown_stock
+                    else hold_room(mem, name))
+            if room is None:
+                continue
+            qty = min(need, copy_cap - copies, budget // price, room)
             if qty:
                 added.append([name, qty])
                 budget -= qty * price

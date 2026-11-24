@@ -265,6 +265,23 @@ del _chapter
 # Its west edge is a black cliff line; the x=122 column south of the heart is
 # pinched by the dark forest band (x~125-137, y~76-84), so aim the open grass
 # row north-east of it instead. View (134.0, 74.0) -> cell.
+# Owner 2026-11-24 (chapter 9): the サヌト→オシロガ sortie cell sits against
+# the cliff; aiming at the bare castle cell camps there.  Aim one measured
+# step north (up) of the cell for that corridor only.
+CH9_SANUTO_OSHIROGA_AIM_OFFSET = (0, -8)
+MARCH_AIM_OFFSETS = {(9, 'サヌト', 'オシロガ'): CH9_SANUTO_OSHIROGA_AIM_OFFSET}
+
+
+def aim_cell(chapter, source, target, cell=None):
+    """The sortie cell for one route, with its measured per-route offset."""
+    if cell is None:
+        cell = (castles(chapter) or {}).get(target)
+    if not cell:
+        return cell
+    dx, dy = MARCH_AIM_OFFSETS.get((chapter, source, target), (0, 0))
+    return (cell[0] + dx, cell[1] + dy) if (dx or dy) else cell
+
+
 CH9_BOSS_WAYPOINT = (568, 212)
 # Issue #4861 / #4937: a black impassable cliff line splits chapter 9's イデ！
 # pocket (x < 640, y > 260) and north corridor (x < 640, y <= 260) from the

@@ -41,6 +41,14 @@ RELAY_MENU_WAIT = 4             # observations for the picker B to settle back o
 # instead; only this many ticks without a resumable screen take the ordinary
 # abort path.
 RECALL_HOLD_TICK_LIMIT = 600   # ticks a non-operable screen may hold one recall
+# docich#5134: combat that takes the foreground mid-recall returns the field
+# cursor to the battle site, so the observations the recall burned before it
+# are debt under a cursor position that no longer exists — the walk to the
+# tent restarts from scratch. The first 'map' frame afterwards restarts the
+# budget, bounded by count and total ticks so a battle-heavy month cannot
+# stretch one recall indefinitely.
+RECALL_BATTLE_RESET_LIMIT = 3    # budget restarts battle returns may grant one recall
+RECALL_BATTLE_RESET_TICKS = 1800 # ticks those restarts may stretch one recall
 
 # #4468: a field general's blue G badge is the very same square as the real
 # いどう destination marker. On g1190 2026-11-17 the recall read a bare field
@@ -77,7 +85,12 @@ def boss_phase(mem) -> bool:
     retreat, say) and is recalled home as usual.
     """
     chapter = mem.get('chapter')
-    if chapter != chart.MOVING_BOSS_CHAPTER or not chart.corridor(chapter):
+    # A rebound policy chart (tests, hot-load layers) may expose only the
+    # attributes its case needs; treat a missing one as "not the boss phase"
+    # instead of raising into the caller (docich#5170 follow-up).
+    moving = getattr(chart, 'MOVING_BOSS_CHAPTER', None)
+    corridor = getattr(chart, 'corridor', None)
+    if moving is None or corridor is None or chapter != moving or not corridor(chapter):
         return False
     from ..os_layer.world import _owned
     return chart.corridor_next(chapter, _owned(mem)) is None
@@ -383,6 +396,35 @@ def _recall_hold_or_abort(mem, state, screen):
     return []
 
 
+def _battle_return_reset(mem, state):
+    """Restart the step budget after combat repositioned the field cursor.
+
+    docich#5134: the walk to the tent (and the bounded menu reopen after
+    it) was measured from the pre-battle cursor, so the first operable
+    'map' frame back gets a fresh budget. ``battle_reset_since`` marks the
+    first restart — later ones are allowed up to RECALL_BATTLE_RESET_LIMIT
+    while they stay inside RECALL_BATTLE_RESET_TICKS of it, so an
+    eight-battle month stretches the recall by a bounded amount only.
+    """
+    resets = int(state.get('battle_resets') or 0)
+    if resets >= RECALL_BATTLE_RESET_LIMIT:
+        return
+    now = mem.get('tick')
+    since = state.get('battle_reset_since')
+    if (type(now) is int and type(since) is int
+            and now - since >= RECALL_BATTLE_RESET_TICKS):
+        return
+    if type(now) is int and type(since) is not int:
+        state['battle_reset_since'] = now
+    spent = int(state.get('steps') or 0)
+    state['battle_resets'] = resets + 1
+    state['steps'] = 0
+    _record(mem, 'camp_recall_battle_reset',
+            observed_metric={'stage': state.get('stage'), 'steps_spent': spent,
+                             'resets': state['battle_resets']},
+            reason='戦闘が終わりカーソル位置が戦闘地点へ戻ったため、帰還操作の観測予算を新しい基準でやり直す')
+
+
 def camp_recall_step(screen: Screen, mem, frame):
     """Observe named retreaters before reusing the existing camp recall route."""
     from . import camp_recheck as hanjuku_camp_recheck
@@ -406,6 +448,21 @@ def _mark_recall_interrupted(mem):
     if state.get('stage') != 'await_dispatch' or state.get('input_sent'):
         return
     _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
+
+
+def _mark_recall_battle(mem):
+    """A combat foreground interrupted field nav or menu work (docich#5134).
+
+    Combat returns the field cursor to the battle site; the first 'map'
+    frame afterwards restarts that work's observation budget on the new
+    baseline (see ``_battle_return_reset``). Only the stages that steer the
+    field cursor — or wait on the camp menu it opened — take the flag; a
+    pending dispatch already has ``recall_interrupted`` and a text-hold is
+    not a cursor repositioning.
+    """
+    state = _flow(mem).get('recall')
+    if isinstance(state, dict) and state.get('stage') in ('to_camp', 'menu'):
+        state['battle_return'] = True
 
 
 MONTH_END_MARGIN = 200         # ticks before the estimated month end: no new recall
@@ -1041,22 +1098,13 @@ def _y_route_step(screen, mem, state):
         return _finish_hero_recall(mem, state, goal)
     state['steps'] = int(state.get('steps') or 0) + 1
     if not mem.get('y_jump') and state['steps'] > Y_ROUTE_RETRIES:
-        # The view never produced a receipt: fall back to the menu route
-        # rather than holding the recall forever. SELECT centres the cursor
-        # on the hero, so the hero_open bootstrap only fits his own recall —
-        # for a camped general it would open the wrong unit's menu. An
-        # ordinary recall withdraws instead of looping (docich#5105).
-        if not state.get('hero'):
-            _flow(mem).pop('recall', None)
-            mem['uncertain'] = True
-            _arm_recall_skip(mem, state)
-            _record(mem, 'camp_recall_aborted',
-                    observed_metric={'stage': 'y_route', 'steps': state['steps'],
-                                     'goal': goal},
-                    reason='全体マップジャンプが受領されないため帰還を断念する')
-            return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
-        state['stage'], state['steps'] = 'hero_open', 0
-        return [pad('select')]
+        # Owner 2026-11-23: camp recall must never fall back to きかん.
+        # Re-arm the Y view instead and keep trying.
+        _record(mem, 'camp_recall_y_retry', observed_metric={'goal': goal,
+                                                            'steps': state['steps']},
+                reason='全体マップ（Y）の受領が得られないため、きかんへ戻さずYジャンプを再試行する')
+        state['steps'] = 0
+        return []
     if screen.kind in ('map', 'world_map'):
         return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
     return []
@@ -1166,6 +1214,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     if screen.kind in {'battle', 'battle_menu', 'egg_battle_menu', 'monster_menu',
                        'egg_choice_menu', 'attack_started', 'defense_started', 'boss_attack_started'}:
         _mark_recall_interrupted(mem)
+        _mark_recall_battle(mem)
         held = _recall_hold_or_abort(mem, state, screen)
         if held is not None:
             return held
@@ -1181,6 +1230,7 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         return None  # combat owns this screen; keep the recall intention pending
     if mem.get('battle'):
         _mark_recall_interrupted(mem)
+        _mark_recall_battle(mem)
         held = _recall_hold_or_abort(mem, state, screen)
         if held is not None:
             return held
@@ -1418,13 +1468,49 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         if held is not None:
             return held
         return None
+    # docich#5134: a 'map' frame without the field cursor cannot be steered —
+    # the post-battle return animation and fades look exactly like that, and
+    # g1190 ch6's to_camp recall spent all 91 'map' observations on them
+    # before camp_recall_limit. Hold it like a battle foreground: the budget
+    # is not spent and RECALL_HOLD_TICK_LIMIT bounds the wait. A HUD-less
+    # cinematic map (map_step's blind chapter intermission) keeps the old
+    # counted path so the recall still releases to the scene's advance
+    # instead of holding the field for the whole limit.
+    if (screen.kind == 'map' and state.get('stage') == 'to_camp'
+            and not _cursor(screen) and (screen.header or screen.text)):
+        held = _recall_hold_or_abort(mem, state, screen)
+        if held is not None:
+            return held
+        return []
     state.pop('hold_since', None)
+    if state.get('battle_return'):
+        if state.get('stage') in ('to_camp', 'menu') and screen.kind == 'map':
+            # Keep the marker through resumable non-map frames; only the first
+            # map after combat establishes the new cursor baseline.
+            state.pop('battle_return', None)
+            _battle_return_reset(mem, state)
+        elif state.get('stage') not in ('to_camp', 'menu'):
+            # The recall left the field-navigation/menu stages before a map
+            # returned, so this reset no longer applies to the active route.
+            state.pop('battle_return', None)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
+    _observe_fort_frame(screen, state)
     state['steps'] = int(state.get('steps') or 0) + 1
     if state['steps'] > RECALL_LIMIT:
-        _record(mem, 'camp_recall_aborted',
-                observed_metric={'stage': state.get('stage'), 'steps': state['steps']},
+        metric = {'stage': state.get('stage'), 'steps': state['steps']}
+        if state.get('stage') in FORT_STAGES:
+            metric.update({
+                'general': state.get('general'),
+                'fort_status_reads': int(state.get('fort_status_reads') or 0),
+                'fort_status_observations': int(state.get('fort_status_observations') or 0),
+                'fort_list_observations': int(state.get('fort_list_observations') or 0),
+                'fort_menu_observations': int(state.get('fort_menu_observations') or 0),
+                'screen_kind': state.get('fort_last_screen_kind'),
+                'screen_text': state.get('fort_last_screen_text'),
+                'observed_general': state.get('fort_last_observed_general'),
+            })
+        _record(mem, 'camp_recall_aborted', observed_metric=metric,
                 reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
         _flow(mem).pop('recall', None)
         mem['uncertain'] = True
@@ -1461,8 +1547,10 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             'target': state.get('target'), 'fort': bool(state.get('fort')),
             'stage_from': state.get('stage')},
             reason='hero_focus で帰還goalが解決できず picker 経路へフォールバック')
-        state['stage'], state['steps'] = 'hero_open', 0
-        return [pad('select')]         # measured: SELECT centres the cursor on the hero
+        # Owner 2026-11-23: no きかん fallback.  Wait for a measurable goal and
+        # retry the Y jump; the picker/menu route is forbidden for camp recall.
+        state['steps'] = 0
+        return []
     if stage == 'y_route':
         return _y_route_step(screen, mem, state)
     if stage == 'hero_open':
@@ -1992,6 +2080,36 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
                                 'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
 
 
+def _boss_move_goal(mem, state, marker=None):
+    """The concrete boss site this いどう aims at, or None.
+
+    #3505 assumes one boss castle, but chapter 4 spreads the boss over four
+    四季王 sites and ``chart.boss_castle(4)`` answers the label 'ボス' with no
+    cell. Live g1342 2026-11-24 22:14: a chapter-4 boss_move recall pressed Y
+    with that goal, ``_y_jump_step`` could not unpack a cell and the brain
+    raised on every observation (the whole-map G cursor appeared stopped).
+    Prefer the goal the monthly task measured from the roster marker, then the
+    site nearest the measured camp; never invent a site from nothing.
+    """
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    goal = state.get('goal')
+    if isinstance(goal, str) and cells.get(goal):
+        return goal
+    sites = [name for name in chart.boss_sites(chapter)
+             if isinstance(name, str) and cells.get(name)]
+    if len(sites) == 1:
+        return sites[0]
+    if not sites:
+        return None
+    anchor = state.get('camp_world') or state.get('origin')
+    if (isinstance(anchor, (list, tuple)) and len(anchor) == 2
+            and all(type(value) is int for value in anchor)):
+        return min(sites, key=lambda name: (abs(cells[name][0] - anchor[0])
+                                            + abs(cells[name][1] - anchor[1]), name))
+    return None
+
+
 def _boss_move_dest_step(screen, mem, frame, state, marker):
     """Aim the destination marker at the boss castle and confirm (いどう).
 
@@ -2001,7 +2119,7 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
     measured on the cell, never a blind confirm.
     """
     from . import map as _map
-    goal = state.get('goal') or chart.boss_castle(mem.get('chapter') or 0)
+    goal = _boss_move_goal(mem, state, marker)
     state['goal'] = goal
     if not goal or not marker or frame is None:
         state['boss_lost'] = int(state.get('boss_lost') or 0) + 1
@@ -2050,6 +2168,35 @@ FORT_STAGES = ('fort_menu', 'fort_list', 'fort_status')
 
 def in_fort_route(state):
     return state.get('stage') in FORT_STAGES
+
+
+def _observe_fort_frame(screen, state):
+    """Keep bounded evidence for an unread 砦 route (#5252).
+
+    This is diagnostic only: it never changes the selected general or sends
+    input. The global recall limit remains the only retry bound.
+    """
+    stage = state.get('stage')
+    if stage not in FORT_STAGES:
+        return
+    key = f'{stage}_observations'
+    state[key] = min(RECALL_LIMIT + 1, int(state.get(key) or 0) + 1)
+    kind = getattr(screen, 'kind', None)
+    state['fort_last_screen_kind'] = kind[:32] if isinstance(kind, str) else 'unknown'
+    text = getattr(screen, 'text', None)
+    excerpt = ' '.join(text.split())[:120] if isinstance(text, str) else ''
+    if excerpt:
+        state['fort_last_screen_text'] = excerpt
+    else:
+        state.pop('fort_last_screen_text', None)
+    if stage == 'fort_status':
+        from . import house
+        info = house.general_status(screen)
+        observed = info.get('general') if isinstance(info, dict) else None
+        if isinstance(observed, str) and observed:
+            state['fort_last_observed_general'] = observed[:48]
+        else:
+            state.pop('fort_last_observed_general', None)
 
 
 def enter_fort(mem, state):
@@ -2192,7 +2339,8 @@ def _request_recall(mem, state, goal, actions, **fields):
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
-    if goal:
+    escape_move = fields.get('escape_move') is True
+    if goal and not escape_move:
         # The destination's own list is the arrival receipt for a recalled
         # camp (the field shows no marker for it). Ask the corridor probe to
         # read that castle so the recalled generals become visible instead of
@@ -2202,11 +2350,19 @@ def _request_recall(mem, state, goal, actions, **fields):
         # castle.
         mem.setdefault('roster_read_due', {})[goal] = (
             int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-    _record(mem, 'camp_recall_requested', chart_step=None,
+    if escape_move:
+        decision = 'camp_escape_move_requested'
+        resulting_event = 'field_move_requested'
+        reason = '崖離脱のフィールド移動入力を予定し、送信・画面遷移は未確認として保持'
+    else:
+        decision = 'camp_recall_requested'
+        resulting_event = 'planned_not_yet_sent'
+        reason = '実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持'
+    _record(mem, decision, chart_step=None,
             observed_metric={'castle': goal, 'camp': state.get('target'),
-                             'hero_intended': bool(state.get('hero')), **fields},
-            resulting_event='planned_not_yet_sent',
-            reason='実選択した自軍城への帰還入力を予定し、送信と到着は未確認として保持')
+                             'hero_intended': bool(state.get('hero')),
+                             'escape_move': escape_move, **fields},
+            resulting_event=resulting_event, reason=reason)
     return actions
 
 
@@ -2241,52 +2397,97 @@ def _recall_dispatch_step(screen, mem, state):
                   else 'arrival_unconfirmed' if state.get('input_sent')
                   else 'dispatch_unconfirmed')
         goal = state.get('goal')
-        if not interrupted and status == 'dispatch_unconfirmed' and isinstance(goal, str):
-            # Only a dispatch that never left counts as a refused castle. The
-            # arrival read missing (``arrival_unconfirmed``) says nothing about
-            # the march: the general may have arrived with the roster frame
-            # missed. Counting it blocked every castle over the months
-            # (g1190 14-x: アルマムーン/カラ/シマウ... at 3) and left the camp
-            # looping on the broken whole-island picker instead of its visible
-            # home castle.
-            blocked = _flow(mem).setdefault('camp_recall_blocked', {})
-            if isinstance(blocked, dict):
-                blocked[goal] = min(3, int(blocked.get(goal) or 0) + 1)
-        _flow(mem)['recall_verification'] = {
+        escape_move = state.get('escape_move') is True
+        # A missing input receipt is a source/transport/receipt-path uncertainty,
+        # not evidence that the selected destination refused this camp. Keep
+        # castle ranking unchanged until destination-specific refusal evidence
+        # exists (docich#5250).
+        verification = {
             **state, 'status': status, 'interrupted': interrupted,
             **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
         }
+        # A cliff escape uses the same bounded dispatch receipt, but it must
+        # not replace a real recall's arrival proof. camp_recheck consumes only
+        # recall_verification for named arrival reads.
+        if escape_move:
+            _flow(mem)['escape_move_verification'] = {
+                'status': status, 'interrupted': interrupted,
+                **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
+                'escape_move': True, 'target': state.get('target'),
+                'target_cell': state.get('target_cell'),
+                'requested_tick': state.get('requested_tick'),
+                'steps': state.get('steps'),
+                'input_sent': bool(state.get('input_sent')),
+                'picker_closed': bool(state.get('picker_closed')),
+            }
+        else:
+            _flow(mem)['recall_verification'] = verification
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
                          else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
+        camp_target = state.get('target')
+        if isinstance(camp_target, tuple):
+            camp_target = list(camp_target)
+        target_cell = state.get('target_cell')
+        if isinstance(target_cell, tuple):
+            target_cell = list(target_cell)
+        terminal_metric = {
+            'castle': goal,
+            'camp': camp_target,
+            'target_cell': target_cell,
+            'stage': state.get('stage'),
+            'steps': state.get('steps'),
+            'status': status,
+            'escape_move': escape_move,
+            'input_receipt_confirmed': bool(state.get('input_sent')),
+            'input_sent': bool(state.get('input_sent')),
+            'picker_closed': bool(state.get('picker_closed')),
+            'interrupted': interrupted,
+            'general': state.get('general') if state.get('fort') else None,
+        }
         if accepted:
-            # The dispatch was accepted; only its arrival is still unknown, and
-            # camp_recheck's named roster read owns that (arrival_request).
-            _record(mem, 'camp_recall_dispatched', chart_step=None,
-                    observed_metric={'castle': state.get('goal'),
-                                     'camp': state.get('target'),
-                                     'general': state.get('general') if state.get('fort') else None},
-                    resulting_event='accepted_awaiting_arrival',
-                    reason='帰還ピッカーが閉じて受理されたため、到着は名簿の実読みで確認する')
-            _remember_camp_verify(mem, state)
+            if escape_move:
+                # The map return after this A accepts the field move away from
+                # the cliff; it is not a camp-return dispatch or arrival proof.
+                _record(mem, 'camp_escape_move_dispatched', chart_step=None,
+                        observed_metric=terminal_metric,
+                        resulting_event='field_move_accepted',
+                        reason='崖離脱のフィールド移動が受理されたため、次の観測で野営位置を再確認する')
+            else:
+                # The dispatch was accepted; only its arrival is still unknown, and
+                # camp_recheck's named roster read owns that (arrival_request).
+                _record(mem, 'camp_recall_dispatched', chart_step=None,
+                        observed_metric={'castle': state.get('goal'),
+                                         'camp': state.get('target'),
+                                         'general': state.get('general') if state.get('fort') else None},
+                        resulting_event='accepted_awaiting_arrival',
+                        reason='帰還ピッカーが閉じて受理されたため、到着は名簿の実読みで確認する')
+                _remember_camp_verify(mem, state)
         else:
             mem['uncertain'] = True
-            _record(mem, 'camp_recall_unconfirmed', chart_step=None, observed_metric={'castle': state.get('goal'),
-                    'input_sent': bool(state.get('input_sent')), 'picker_closed': bool(state.get('picker_closed')),
-                    'interrupted': interrupted,
-                    'general': state.get('general') if state.get('fort') else None}, resulting_event=status,
-                    reason='帰還の本人・移動・到着を確認できず未確認として保持し、有限な操作を終了')
-        if (status == 'arrival_unconfirmed' and isinstance(state.get('goal'), str)
-                and state.get('input_sent')):
+            if escape_move:
+                _record(mem, 'camp_escape_move_unconfirmed', chart_step=None,
+                        observed_metric=terminal_metric,
+                        resulting_event='field_move_unconfirmed',
+                        reason='崖離脱のフィールド移動の送信・画面遷移を確認できず、次回観測へ未確認として保持')
+            else:
+                reason = ('帰還Aの送信receiptを確認できず、送信段階で未確認として保持'
+                          if status == 'dispatch_unconfirmed' else
+                          '帰還A送信後の受理・到着を確認できず、未確認として保持')
+                _record(mem, 'camp_recall_unconfirmed', chart_step=None,
+                        observed_metric=terminal_metric, resulting_event=status,
+                        reason=reason)
+        if (not escape_move and status == 'arrival_unconfirmed'
+                and isinstance(goal, str) and state.get('input_sent')):
             # docich#5127 (owner 2026-11-23): an input that was sent but whose
             # picker did not close inside the window may still be walking. Give
             # it the same bounded destination-roster read an accepted dispatch
             # gets, so arrival can be confirmed instead of ending "unconfirmed"
             # and leaving the general unknown.
-            mem.setdefault('roster_read_due', {})[state['goal']] = (
+            mem.setdefault('roster_read_due', {})[goal] = (
                 int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-        if status == 'arrival_unconfirmed' and not state.get('picker_closed'):
+        if not escape_move and status == 'arrival_unconfirmed' and not state.get('picker_closed'):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
             # general never moved. Remember the pair so the next attempt picks
@@ -2298,7 +2499,6 @@ def _recall_dispatch_step(screen, mem, state):
             # (camp, castle) pair until _recall_exhausted abandoned the camp
             # (docich#4755 follow-up: generals stuck in field camps).
             camp = state.get('target')
-            goal = state.get('goal')
             if (isinstance(camp, (list, tuple)) and len(camp) == 2
                     and isinstance(goal, str) and goal):
                 failures = _flow(mem).setdefault('recall_goal_failures', {})

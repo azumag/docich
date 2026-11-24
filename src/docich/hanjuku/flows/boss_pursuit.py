@@ -979,7 +979,14 @@ def _fort_step(screen, mem, probe):
         probe['fort_stage'] = 'status'
         probe['fort_reads'] = 0
         return [pad('a')]
-    # status card: one A opens the picker, a repeat only while the card stays
+    # status card: one A opens the picker, a repeat only while the card stays.
+    # A different named general is not this pursuit's page; leave immediately
+    # rather than spending the 40-read budget on another person's status.
+    visible_general = house.general_status_name(screen)
+    if (visible_general is not None
+            and visible_general != probe.get('general')):
+        _close(mem, probe, 'status_general_mismatch')
+        return [pad('b')]
     probe['fort_reads'] = int(probe.get('fort_reads') or 0) + 1
     if probe['fort_reads'] > 40:
         _close(mem, probe, 'fort_picker_missing')

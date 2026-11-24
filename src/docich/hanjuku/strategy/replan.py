@@ -1228,7 +1228,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 pass
         choices = []
         for c in owned:
-            free = [g for g in garrison.get(c) or () if g not in busy]
+            free = [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             if len(set(free)) < need:
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
@@ -1289,12 +1289,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # one unread castle: the sortie menu opens its list and the next
         # plan sends the wave from it if a pair is there. The last probe's
         # start tick throttles re-issue while a read is still walking.
-        if allow_probe and any(garrison.get(c) for c in owned):
+        if allow_probe and any(_known_residents(mem, garrison, c) for c in owned):
             now = int(mem.get('tick') or 0)
             asked = mem.get('arrival_probe_tick') or {}
             unread = sorted(
                 (c for c in owned
-                 if garrison.get(c) is None and c not in prefer_not
+                 if _known_residents(mem, garrison, c) is None and c not in prefer_not
                  and (type(asked.get(c)) is not int
                       or now - int(asked[c]) >= routes.PROBE_INTERVAL)),
                 key=lambda c: (c == home, c))
@@ -1309,9 +1309,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # Probe at most one castle per plan, and only when the bookkeeping
         # knows nobody at all: a castle that is merely unread while other
         # generals are known is not worth a blind sortie.
-        if allow_probe and not any(garrison.get(c) for c in owned):
+        if allow_probe and not any(_known_residents(mem, garrison, c) for c in owned):
             for c in sorted((c for c in owned
-                             if garrison.get(c) is None and c not in prefer_not),
+                             if _known_residents(mem, garrison, c) is None and c not in prefer_not),
                             key=lambda c: (c == home, c)):
                 return c, MOVE_ANY_GENERAL
         return None
@@ -1428,6 +1428,16 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 wave_busy = wave_busy | {general2}
                 planned_busy.add(general2)
             extra += 1
+    # A castle that already committed a concrete boss wave must keep its
+    # remaining non-hero defender out of optional staging. Read-only source
+    # probes do not reserve a general and are deliberately excluded.
+    boss_wave_sources = {
+        order.get('source')
+        for order in (*sorties['attack'], *sorties['retake'], *boss_wave_orders)
+        if chart.is_boss_castle(order.get('target'))
+        and not order.get('source_probe')
+        and isinstance(order.get('source'), str)
+    }
     # #3266: a general already committed to a sortie above is busy for the
     # staging/refill moves below as well — one plan must not book him twice.
     busy = busy | planned_busy
@@ -1469,23 +1479,30 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 # 13:30 moved from メガパタ while ヴィーナス was still walking).
                 probe = routes.arrival_probe_due(mem, donor, cooldown=True)
                 stage_min = chart.sender_min(chapter)
+                spares = [g for g in _spares(free) if g != NAME]
+                # Once the boss is open, a source that already sent a
+                # concrete boss wave must not spend its last non-hero spare on
+                # an optional staging move. Keep one defender at every source.
+                if boss_open and donor in boss_wave_sources and len(spares) < 2:
+                    continue
                 if len(free) < stage_min and not probe:
                     continue
-                if len(free) >= stage_min and not [g for g in _spares(free) if g != NAME]:
+                if len(free) >= stage_min and not spares:
                     continue
                 route = routes.path(mem, donor, target, owned)
                 if route and len(route) > 2 and route[1] not in heading:
-                    options.append((len(route), donor, route, free, probe))
+                    # Keep donor-specific spares paired with the option; the
+                    # shortest route may not belong to the last donor visited.
+                    options.append((len(route), donor, route, free, probe, spares))
             if not options:
                 continue
-            _, donor, route, free, probe = min(options, key=lambda v: (v[0], v[1]))
+            _, donor, route, free, probe, spares = min(options, key=lambda v: (v[0], v[1]))
             leg = (donor, route[1])
             if leg in seen_legs:
                 continue
             seen_legs.add(leg)
             general = (MOVE_ANY_GENERAL if len(free) < chart.sender_min(chapter)
-                       else (_defense_move_pick(mem, donor, route[1],
-                                                _spares(free)) or _spares(free)[0]))
+                       else (_defense_move_pick(mem, donor, route[1], spares) or spares[0]))
             moves.append({'general': general, 'source': donor, 'target': route[1],
                           'cards': [], 'after': None, 'purpose': 'move',
                           'note': f'暫定: {target}への中継として{route[1]}へ移動',
@@ -1917,8 +1934,21 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     if not out and not _army_below_floor(mem):
         home = chart.home_castle(chapter)
         garrison_map = _world(mem).get('garrison') or {}
-        located = sum(len(names) for names in garrison_map.values()
-                      if isinstance(names, (list, tuple)))
+        # Count each known general once. A general still marching is already
+        # accounted for; it is not an unlocated recruit that warrants another
+        # roster probe (docich#5153: 72 read-only probes while a single march
+        # was still in flight).
+        located_names = {
+            general
+            for names in garrison_map.values()
+            if isinstance(names, (list, tuple))
+            for general in names
+            if isinstance(general, str) and general
+        }
+        in_flight, _ = _en_route(mem)
+        located_names.update(general for general in in_flight
+                             if isinstance(general, str) and general)
+        located = len(located_names)
         totals = mem.get('country_general_count')
         total = totals.get('count') if isinstance(totals, dict) else None
         enemies = [c for c in castles if c not in owned and not chart.is_boss_castle(c)]
@@ -1928,29 +1958,79 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             probe = _stale_boss_roster_probe(mem, chapter, castles, owned, busy_sources)
             if probe is not None:
                 out['probe_stuck_1'] = probe
-        else:
-            # docich#4705: the probe must open the castle that can actually send.
-            # ch4 17-x held 17 generals at home, but every 四季王城 is blocked from
-            # there (march_blocked) and only the frontier castles can reach them;
-            # their lists were never read, so startable answered
-            # 'general_unconfirmed_at_source' and no order was ever offered. Prefer
-            # a source that owns a spare and can march to some enemy, home on ties.
-            source = None
-            target = None
-            for candidate_source in sorted(
-                    owned,
-                    key=lambda c: (c != home,
-                                   -len(set(garrison_map.get(c) or ())), c)):
-                reachable = [e for e in enemies
-                             if not routes.is_road(chapter)
-                             or not chart.march_blocked(chapter, candidate_source, e, owned)]
-                if reachable:
-                    source, target = candidate_source, reachable[0]
-                    break
-            already = any(o.get('source') == source
-                          for o in (*sorties['retake'], *sorties['attack'], *moves))
-            if (source in owned and target and not already
-                    and type(total) is int and total > located):
+        elif type(total) is int and total > located:
+            # A due arrival is stronger evidence than a stale home roster:
+            # open the castle whose unread dispatch is waiting to be reconciled.
+            # Otherwise probe the stalest eligible roster, but never reread the
+            # same castle inside the shared 300-tick cooldown.
+            garrison_tick = _world(mem).get('garrison_tick') or {}
+            now = int(mem.get('tick') or 0)
+            candidates = []
+            # Prefer a castle not already used by a planned order, because
+            # that order may later be rejected by a source/defender guard.
+            # Keep planned sources as a last-resort read-only fallback, though:
+            # if every other castle is recent/unreachable, excluding the only
+            # source entirely erases the only way to discover its roster
+            # (Devin follow-up on #5182, 2026-11-23).
+            already_sources = {
+                order.get('source')
+                for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
+                              *attacks, *stage_more, *rotation, *wave_orders)
+                if isinstance(order.get('source'), str)
+            }
+            for candidate_source in owned:
+                planned_source = candidate_source in already_sources
+                reachable = [
+                    e for e in enemies
+                    if routes.allowed(mem, candidate_source, e)
+                    and (not routes.is_road(chapter)
+                         or not chart.march_blocked(chapter, candidate_source, e, owned))
+                ]
+                no_attack_leg = not reachable
+                if no_attack_leg:
+                    # A read-only roster probe never marches (deploy backs out
+                    # after opening the list), so a measured attack leg is not
+                    # required to open it. Requiring one skipped the home
+                    # castle, whose measured legs all lead to castles we
+                    # already own: 2026-11-24 ch3 had 24 generals country-wide
+                    # and four located, every castle kept one, the home list
+                    # was never reopened, and months passed with no sortie
+                    # (#5324, the same deadlock #4689 fixed before the probe
+                    # was narrowed to reachable attack sources). Any enemy
+                    # castle serves as the nominal target; no march uses it.
+                    reachable = [min(enemies,
+                                     key=lambda e: (_distance(chapter, candidate_source, e), e))]
+                unread = routes.unread_dispatches(mem, candidate_source)
+                arrival_due = bool(unread) and routes.arrival_probe_due(
+                    mem, candidate_source, cooldown=True)
+                # An unread transfer that is still marching, or whose arrival
+                # probe cooldown has not elapsed, must not redirect this fallback.
+                if unread and not arrival_due:
+                    continue
+                last_tick = garrison_tick.get(candidate_source)
+                recently_read = (type(last_tick) is int
+                                 and 0 <= now - last_tick < STALE_ROSTER_PROBE_INTERVAL)
+                if recently_read and not arrival_due:
+                    continue
+                if arrival_due:
+                    unread_ticks = [row.get('tick') for _, row in unread
+                                    if isinstance(row, dict) and type(row.get('tick')) is int]
+                    priority = (0, 1 if planned_source else 0,
+                                min(unread_ticks, default=now),
+                                candidate_source != home, candidate_source)
+                else:
+                    # Among castles with no measured attack leg the home
+                    # castle comes first: joiners appear where the hero is
+                    # (``_arrival_castle``), so its list is the one that
+                    # actually hides the generals missing from the count.
+                    home_first = 0 if (no_attack_leg and candidate_source == home) else 1
+                    priority = (1, 1 if planned_source else 0, home_first,
+                                last_tick if type(last_tick) is int else -1,
+                                candidate_source != home, candidate_source)
+                candidates.append((priority, candidate_source, reachable[0]))
+            candidates.sort(key=lambda row: row[0])
+            if candidates:
+                _, source, target = candidates[0]
                 out['probe_stuck_1'] = {
                     'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
                     'cards': [], 'after': None, 'purpose': 'attack',
@@ -2078,6 +2158,10 @@ def _defense_gate(mem):
     and no per-tick record. 'break': the monthly fallback lets one general
     leave its castle. Records are written on entry, on each monthly evaluation
     and on release only.
+
+    A read-only roster probe is not a candidate for this decision: it opens a
+    castle list and never sends anybody, so it must neither release the wait
+    nor stop the probe from running.
     """
     # A break whose source was lost afterwards is never repeated from there.
     sources = mem.get('defense_break_sources') or {}
@@ -2089,7 +2173,16 @@ def _defense_gate(mem):
                 expected_metric={'castle_kept': True},
                 reason='1将軍出撃の出撃元が落ちたため、同じ城からの守備崩し出撃を禁止する')
         sources.pop(source)
-    if interim_candidates(mem):
+    candidates = interim_candidates(mem)
+    # docich#5324: a probe-only candidate used to count as "a second general
+    # became available" and cleared the wait. The wait then never aged: on
+    # 2026-11-24 ch3 it was released six times in 35 minutes, each release
+    # followed by the same read-only order and the same wait again, while
+    # every castle kept one general and no sortie left for over an hour.
+    probe_only = bool(candidates) and all(
+        isinstance(order, dict) and order.get('roster_probe') is True
+        for order in candidates.values())
+    if candidates and not probe_only:
         if mem.pop('defense_wait', None):
             _record(mem, 'chart_defense_wait_released', chart_step=None,
                     strategy_variant='chart_defense_wait',
@@ -2115,6 +2208,10 @@ def _defense_gate(mem):
                 observed_metric={**observed, 'cycles': wait['cycles']},
                 reason='月次評価: 2人目の将軍がまだ使えない')
     cycles, prospects = wait['cycles'], observed['prospects']
+    if probe_only:
+        # The probe still runs (the caller plans it), but it adds no general:
+        # keep the wait so the monthly count keeps ageing towards the break.
+        return None
     if cycles >= DEFENSE_WAIT_MAX_CYCLES or (cycles >= 1 and not prospects):
         return 'break'
     return 'hold'

@@ -71,3 +71,24 @@ def test_gate_without_tick_uses_hold_count():
     for _ in range(orders.SORTIE_CANCELLED_RETRY_HOLDS - 1):
         assert orders._sortie_cancelled_observed_suppressed(_order(), mem) is True
     assert orders._sortie_cancelled_observed_suppressed(_order(), mem) is False
+
+
+def test_hero_only_move_refusal_suppresses_equivalent_reissue():
+    # ch9 1-1: after every general sortied, only the hero was left.  The plan
+    # re-minted the same move with a new interim id every observation and the
+    # bot reopened the status/sortie windows (~10 s cycle).  The refusal must
+    # suppress equivalent reissues until the garrison actually changes.
+    step = 'I:c9:ハヤク>タオ:9'
+    mem = {
+        'chapter': 9, 'month': 'ch9 1-1', 'tick': 100,
+        'world': {'garrison': {'ハヤク': ['どうし']}, 'sorties': {}},
+        'plan': {'orders': {step: 'pending'}},
+    }
+    order = {'step': step, 'source': 'ハヤク', 'target': 'タオ', 'purpose': 'move'}
+    sortie_retry_guard.note_cancel(mem, order, 'hero_move_refused')
+    twin = {'step': 'I:c9:ハヤク>タオ:10', 'source': 'ハヤク', 'target': 'タオ',
+            'purpose': 'move'}
+    assert sortie_retry_guard._equivalent_cancel_suppressed(twin, mem) is True
+    # A reinforcement (the state really changed) releases the hold.
+    mem['world']['garrison']['ハヤク'].append('ゼウス')
+    assert sortie_retry_guard._equivalent_cancel_suppressed(twin, mem) is False

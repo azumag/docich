@@ -2927,19 +2927,26 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
         else:
             type_sources["type_arg"] += 1
         by_type[row["type"]] = by_type.get(row["type"], 0) + 1
-        owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
+        owner = by_owner.setdefault(
+            row["owner"],
+            {"count": 0, "cpu_pct": 0.0, "rss_mb": 0.0, "renderer_rss_mb": 0.0},
+        )
         owner["count"] += 1
         owner["cpu_pct"] += row["cpu_pct"]
+        owner["rss_mb"] += row["rss_kb"] / 1024.0
         if row["type"] == "gpu":
             owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
         elif row["type"] == "renderer":
             owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+            owner["renderer_rss_mb"] += row["rss_kb"] / 1024.0
 
     for owner in by_owner.values():
         owner["cpu_pct"] = round(owner["cpu_pct"], 1)
         for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
             if key in owner:
                 owner[key] = round(owner[key], 1)
+        for key in ("rss_mb", "renderer_rss_mb"):
+            owner[key] = round(owner[key], 1)
 
     result = {
         "schema_version": 1,
@@ -8100,6 +8107,71 @@ def _project_corner_state(data):
             "hanjuku-chart-v1389-idou-y-route-recall-hold",
             "hanjuku-chart-v1392-dispatch-starve-measure",
             "hanjuku-chart-v1393-roster-due-consume",
+            "hanjuku-chart-v1397-recall-map-hold",
+            "hanjuku-chart-v1398-egg-retry-on-hp-loss",
+            "hanjuku-chart-v1399-recall-map-hold",
+            "hanjuku-chart-v1445-early-resource-rescue",
+            "hanjuku-chart-v1446-password-measured-order",
+            "hanjuku-chart-v1446-boss-companion-wait-bound",
+            "hanjuku-chart-v1447-password-measured-order",
+            "hanjuku-chart-v1448-auto-carry-safe-card",
+            "hanjuku-chart-v1449-chikujou-hold-note",
+            "hanjuku-chart-v1450-password-dispatch",
+            "hanjuku-chart-v1451-defense-wait-probe",
+            "hanjuku-chart-v1452-password-hold",
+            "hanjuku-chart-v1453-okunote-unclassified",
+            "hanjuku-chart-v1454-sortie-card-type",
+            "hanjuku-chart-v1455-password-in-game-retry",
+            "hanjuku-chart-v1456-password-phrase-ocr",
+            "hanjuku-chart-v1457-empty-kit-cancel",
+            "hanjuku-chart-v1458-merchant-mickey-priority",
+            "hanjuku-chart-v1459-merchant-listed-unknown",
+            "hanjuku-chart-v1460-password-entered-field",
+            "hanjuku-chart-v1461-melee-only-ugokazaru",
+            "hanjuku-chart-v1462-status-panel-owner-guard",
+            "hanjuku-chart-v1463-battle-menu-scrolled-bottom",
+            "hanjuku-chart-v1464-status-panel-owner-followups",
+            "hanjuku-chart-v1465-unowned-screen-review-guards",
+            "hanjuku-chart-v1466-status-panel-owner-name",
+            "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
+            "hanjuku-chart-v1468-battle-menu-bounded-episode",
+            "hanjuku-chart-v1469-recall-yjump-goal",
+            "hanjuku-chart-v1470-ch4-site-bounded-wait",
+            "hanjuku-chart-v1471-roster-due-probe",
+            "hanjuku-chart-v1402-sortie-audit-confidence",
+            "hanjuku-chart-v1403-boss-phase-scan-defer",
+            "hanjuku-chart-v1404-defense-egg-rescue",
+            "hanjuku-chart-v1405-boss-partial-garrison",
+            "hanjuku-chart-v1408-boss-companion-partial-roster",
+            "hanjuku-chart-v1409-audit-hp-floor-numeric",
+            "hanjuku-chart-v1410-battle-loss-cooldown",
+            "hanjuku-chart-v1415-merchant-strong-first",
+            "hanjuku-chart-v1416-card-miss-after-use",
+            "hanjuku-chart-v1417-stall-refresh",
+            "hanjuku-chart-v1418-spend-next-card",
+            "hanjuku-chart-v1419-hero-move-backoff",
+            "hanjuku-chart-v1420-chikujou-reserve-check",
+            "hanjuku-chart-v1421-critical-card-spend",
+            "hanjuku-chart-v1422-ch9-oshiroga-aim",
+            "hanjuku-chart-v1423-ch9-hero-front",
+            "hanjuku-chart-v1424-ch9-oshiroga-up",
+            "hanjuku-chart-v1424-sortie-measured-kit",
+            "hanjuku-chart-v1425-zombie-melee",
+            "hanjuku-chart-v1426-ch9-oshiroga-up",
+            "hanjuku-chart-v1427-sortie-cell-placement",
+            "hanjuku-chart-v1428-defense-summon-okunote-retry",
+            "hanjuku-chart-v1429-final-jelly-shout",
+            "hanjuku-chart-v1430-sortie-measured-kit",
+            "hanjuku-chart-v1431-boss-companion-timeout",
+            "hanjuku-chart-v1431-sortie-yjump-after-battle",
+            "hanjuku-chart-v1432-boss-companion-timeout",
+            "hanjuku-chart-v1433-fort-recall-evidence",
+            "hanjuku-chart-v1434-camp-dispatch-evidence",
+            "hanjuku-chart-v1435-recall-dispatch-unattributed",
+            "hanjuku-chart-v1438-chikujou-castle-width-fold",
+            "hanjuku-chart-v1443-boss-companion-stage-timeout",
+            "hanjuku-chart-v1444-chikujou-skip-note",
+            "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",
@@ -13705,6 +13777,7 @@ HANJUKU_CAMP_DECISIONS = frozenset({
     'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
     'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
     'camp_recall_picker_not_open', 'camp_recall_scene_abandoned',
+    'camp_recall_battle_reset',
     'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',
     'retreat_recheck_invalidated', 'camp_fort_sortie', 'camp_hp_observation',
 })

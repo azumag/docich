@@ -105,7 +105,45 @@ def _deploy_cards(order, mem):
     # 1枠に加える。追加後もID合計48未満を守る (``_with_extra_card``)。
     dropper = (mem.get('dropper_card_kit') or {}).get(order['step'])
     carried = _with_extra_card(capped, dropper, mem, order['step'])
+    if not carried:
+        # owner 2026-11-24: 在庫があるのに計画が空なら、安全な札（egg_drop 0）を
+        # 1枚だけ自動で携行する（資源を使い切る方針・卵落としは避ける）。
+        # 枠・ID合計の安全弁は _with_extra_card をそのまま通す。
+        carried = _with_extra_card(carried, _auto_carry_safe_card(mem, order),
+                                   mem, order['step'])
     return _with_strong_card(carried, strong, mem, order['step'])
+
+
+def _auto_carry_safe_card(mem, order):
+    """The safe card to carry when the plan names none (owner 2026-11-24).
+
+    Only a card whose egg_drop is exactly 0 is eligible, so an unplanned carry
+    cannot hand the enemy an egg. Stock, spent and dropped copies are honoured;
+    the choice is deterministic (name order) and bounded to one card.
+    """
+    stock = mem.get('card_stock')
+    if not isinstance(stock, dict):
+        return None
+    step = order.get('step')
+    spent = set((mem.get('kit_spent') or {}).get(step) or ())
+    dropped = set((mem.get('card_drop') or {}).get(step) or ())
+    for name in sorted(stock):
+        if not isinstance(name, str) or name in spent or name in dropped:
+            continue
+        try:
+            count = int(stock.get(name) or 0)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        card = reference.CARDS.get(name)
+        if not isinstance(card, dict) or card.get('egg_drop') != 0:
+            continue
+        _record(mem, 'cards_autocarried', chart_step=step,
+                observed_metric={'card': name, 'stock': count},
+                reason='計画にカードが無いが安全な札（egg_drop 0）が在庫にあるため1枚だけ携行する')
+        return name
+    return None
 
 
 def _extra_card_name(extra):

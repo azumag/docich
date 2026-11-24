@@ -187,7 +187,18 @@ def test_completed_egg_recovery_releases_the_old_estimate_for_building():
     assert policy._month_chikujou(month(100), mem, mem['shop']) == [policy.pad('a')]
     other = memory(egg='unverified', reserve=150, egg_cost=150)
     assert policy._month_chikujou(month(100), other, other['shop']) is None
-    assert other['shop']['chikujou'] == 'skipped'
+    # docich#5186: an unaffordable eval keeps the row open so a reserve
+    # released later in the same menu can still build, and records the
+    # failing eval on the shop and in the decision log for the month audit.
+    assert other['shop']['chikujou'] == 'check'
+    assert other['shop']['chikujou_last_eval'] == {'month': '1-7', 'gold': 100,
+                                                  'reserve': 180, 'affordable': False}
+    skipped = [r for r in other['_records'] if r['decision'] == 'month_chikujou_skipped']
+    assert len(skipped) == 1
+    # An unchanged (gold, reserve) pair must not record the same skip again.
+    assert policy._month_chikujou(month(100), other, other['shop']) is None
+    assert len([r for r in other['_records']
+                if r['decision'] == 'month_chikujou_skipped']) == 1
 
 
 def test_the_actual_remaining_balance_can_end_a_batch_after_one_success():

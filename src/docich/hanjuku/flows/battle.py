@@ -34,10 +34,11 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _egg_drop_trace, _egg_plan, _hero_marching,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
-                               _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
+                               _early_resource_rescue_needed, _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
 from ..os_layer.commands import _human_menu_open, pad
+from ..os_layer.navigation import forget_target_placement
 from ..os_layer.readers import STATUS_NAMES
 from ..os_layer.world import NAME, CAPTURE_READ_DELAY, garrison_lost
 from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_chapter_general
@@ -915,6 +916,25 @@ def battle_step(screen: Screen, mem):
                                  'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally'))},
                 reason='本人の卵残数が正数で未試行のため、退却より先に実メニューの召喚可否を確認')
         return _human_menu_open(cur, 'survival', mem)
+    # #5157: do not wait for the old 40%-of-opening-HP/critical gate when a
+    # measured losing trade has already consumed 30% and a real resource remains.
+    if not dropper_due and not melee_followup and _early_resource_rescue_needed(mem, cur):
+        rescue = _survival_state(mem, cur)
+        rescue['early_resource_triggered'] = True
+        rescue['opens'] = int(rescue.get('opens') or 0) + 1
+        rescue['pending_opens'] = int(rescue.get('pending_opens') or 0) + 1
+        rescue['menu_ticks'] = 0
+        hp, start = cur.get('ally_hp'), cur.get('start_ally_hp')
+        _record(mem, 'battle_survival_early_resource', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                observed_metric={'ally_hp': hp, 'start_ally_hp': start,
+                                 'hp_lost': start - hp,
+                                 'remaining_tenths': hp * 10 // start,
+                                 'threshold_remaining_tenths': 7,
+                                 'melee_balance': _melee_balance(cur)},
+                expected_metric='damage gateを通る実携行札または本人の正数卵',
+                reason='白兵劣勢かつ開始HPから30%以上減少し、即死帯より前に実資源の救済メニューを確認')
+        return _human_menu_open(cur, 'survival', mem)
     retreat = None if melee_followup or dropper_due else _hero_retreat_open(mem, cur)
     if retreat is not None:
         return retreat
@@ -1325,8 +1345,28 @@ def note_duel_event(screen, mem):
 def _hero_retreat_open(mem, cur):
     if cur.get('event_duel'):
         return None
-    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
+    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)):
         return None
+    if cur.get('side') == 'defense':
+        # docich#5177 (owner 2026-11-23): a castle defense has no retreat row,
+        # but the general's own egg is still usable. Open the survival menu
+        # while the danger is real instead of fighting to zero with eggs left.
+        if not _egg_before_retreat(mem, cur):
+            return None
+        rescue = _survival_state(mem, cur)
+        if (int(rescue.get('opens') or 0) >= 12
+                or int(rescue.get('pending_opens') or 0) >= 3):
+            return None
+        rescue.update(opens=rescue['opens'] + 1,
+                      pending_opens=rescue.get('pending_opens', 0) + 1,
+                      menu_ticks=0)
+        _record(mem, 'battle_defense_egg_rescue', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                observed_metric={'ally_hp': cur.get('ally_hp'),
+                                 'enemy_hp': cur.get('enemy_hp'),
+                                 'egg_attempts': rescue.get('egg_attempts')},
+                reason='防衛戦は退却できないため、危険時に卵の救済メニューを先に開く')
+        return _human_menu_open(cur, 'survival', mem)
     ally = cur.get('ally')
     if (mem.get('chapter') == 9 and isinstance(ally, str)
             and ally not in ('', NAME, 'しゅじんこう', 'しじんこう')):
@@ -1874,6 +1914,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
     for key in ('anchor', 'near_goal', 'goal_anchor_lock', 'select_used',
                 'nav_search', 'nav_search_leg', 'nav_last', 'nav_pressed', 'nav_still'):
         mem.pop(key, None)
+    # A battle can also take the destination picker: the marker comes back
+    # wherever the game left it, while the cursor and the Y-jump receipt still
+    # name the pre-battle cell. Keep those and target_step confirms the
+    # restored marker at the old cell, so the sortie goes somewhere offset
+    # from the plan. Forget the placement; the next picker re-finds its cell
+    # with a fresh Y jump.
+    forget_target_placement(mem)
     mem['uncertain'] = True
     _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
     # A battle result may return straight to the map while the post-month
