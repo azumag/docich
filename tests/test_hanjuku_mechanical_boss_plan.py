@@ -337,3 +337,29 @@ def test_stuck_road_roster_probe_falls_back_to_only_source_with_rejected_move(mo
     assert probe['target'] == legal[0]
     assert probe['source_probe'] is True and probe['roster_probe'] is True
     assert routes.allowed(mem, probe['source'], probe['target'])
+
+
+def test_field_map_does_not_activate_a_locked_boss_step():
+    # Chapter 1/4: the normal castles are not all owned yet, so a mechanical
+    # plan whose first step is the boss must not be activated (the launch flow
+    # would hold it as boss_target_locked on every observation).
+    mem = _memory()
+    mem['captured'] = []
+    mem['plan']['orders'] = {'4-B1': 'pending'}
+    mem['plan']['chart_plan'] = {
+        'source': 'mechanical',
+        'orders': [next(o for o in chart.orders(4) if o['step'] == '4-B1')],
+    }
+    mem['world']['garrison'] = {'アルマムーン': ['どうし', 'アルファルファ', 'ゼウス']}
+    mem['egg_types'] = {'アルファルファ': 'スーパーエッグ', 'ゼウス': 'ワンダーエッグ'}
+    assert O.plan_starved_rearm(mem, 'field', 'map') is False
+    assert mem['plan'].get('active') is None
+
+
+def test_roster_probe_to_a_boss_castle_is_not_boss_locked():
+    mem = _memory()
+    mem['captured'] = []          # normal castles not owned yet
+    order = {'step': 'probe', 'source': chart.home_castle(4),
+             'target': chart.boss_sites(4)[0], 'purpose': 'move',
+             'roster_probe': True, 'source_probe': True}
+    assert ORD._boss_target_unlocked(order, mem) is True
