@@ -14,10 +14,15 @@ before any flow runs.  It sits in the flows layer (a sibling of the owners) so
 the owners' existing checks (``post_month_status``, ``house``,
 ``camp_recheck``) instead of re-implementing them.
 
-Every condition is strict: unreadable or mismatched evidence returns False so
-the orphan close keeps its pre-2026-11-24 behaviour.  A false positive would
-hold a panel that no flow finishes, which is the g1190 A-forever failure in a
-new costume.
+A readable name that names another general still returns False so the orphan
+close does the safe B.  An unreadable name, however, returns True for the
+monthly scan and the boss fort route: the screen may be the owner's page with
+a temporary OCR hole, and the measured #5403 behaviour let those flows retry
+it (bounded by STATUS_RETRIES / the fort read cap).  Making ownership depend
+on the newer name-only reader regressed the live-proven path to
+``status_unreadable``.  A false positive is still bounded by each owner's read
+cap.  The house walk keeps #5403's full-row match and adds the name-only row
+on top, so it is never stricter than the pre-#5414 check.
 """
 from __future__ import annotations
 
@@ -47,28 +52,39 @@ def status_panel_owner_active(mem, screen):
     if isinstance(state, dict) and state.get('stage') == 'status':
         # The same scope/identity check that makes post_month_status.step drop
         # a stale or foreign scan.  A leftover state must not suppress the B.
-        # The status must also name the general this scan opened: another
-        # general's page is not this flow's panel (#5410).  Only the 'status'
-        # stage names a person; roster/menu stages keep their existing owner
-        # rules and are not filtered by an unreadable name row.
+        # Only a *readable* name that differs from the general this scan
+        # opened proves the page is foreign (#5410); an unreadable name keeps
+        # the #5403 owner so the measured monthly read can retry it.  Only the
+        # 'status' stage names a person; roster/menu stages keep their existing
+        # owner rules and are not filtered by an unreadable name row.
         if post_month_status.state_is_current(mem, state):
-            visible_general = house.general_status_name(screen)
             target = state.get('selected')
-            if (isinstance(visible_general, str) and isinstance(target, str)
-                    and visible_general == target):
+            visible_general = house.general_status_name(screen, expected=target)
+            if visible_general is None:
                 return True
+            if not isinstance(target, str) or not target:
+                return False
+            return visible_general == target
 
     house_state = mem.get('house')
     if (isinstance(house_state, dict)
             and house_state.get('phase') in HOUSE_STATUS_PHASES
             and house_state.get('chapter') == mem.get('chapter')):
-        # The owner reads through house.general_status; a panel it cannot name
-        # (or another general's) is not its page, so the orphan B still runs.
-        visible_general = house.general_status_name(screen)
+        # #5403 read the full card through house.general_status.  Keep that
+        # exact rule and add the name-only row on top: a readable name that
+        # matches is enough even while the egg row is temporarily unreadable.
+        # If neither reader can identify this page, the house walk keeps its
+        # measured false (the orphan B closes it).
         target = (house_state.get('selected')
                   if house_state.get('phase') == 'status'
                   else house_state.get('general'))
-        if isinstance(visible_general, str) and isinstance(target, str) and visible_general == target:
+        info = house.general_status(screen, expected=target)
+        if (info is not None and isinstance(target, str)
+                and info.get('general') == target):
+            return True
+        visible_general = house.general_status_name(screen, expected=target)
+        if (isinstance(visible_general, str) and isinstance(target, str)
+                and visible_general == target):
             return True
 
     probe = mem.get('arrival_status_probe')
@@ -96,13 +112,14 @@ def status_panel_owner_active(mem, screen):
     if (isinstance(probe, dict) and mem.get('chapter') == 9
             and probe.get('fort_stage') == 'status'):
         # The 砦's status card: A here opens the destination picker, so the
-        # generic B must not close it.  The flow's own 40-read cap ends it.
-        # Only the pursued general's card qualifies; another general's page is
-        # not this route's panel, so the orphan B closes it instead of waiting
-        # out the 40 reads (#5410).
-        visible_general = house.general_status_name(screen)
+        # generic B must not close it.  Only a readable different name proves
+        # another general's page (#5410); an unreadable name stays owned and
+        # the flow's own 40-read cap ends it.
         target = probe.get('general')
-        if (isinstance(visible_general, str) and isinstance(target, str)
-                and visible_general == target):
+        visible_general = house.general_status_name(screen, expected=target)
+        if visible_general is None:
             return True
+        if not isinstance(target, str) or not target:
+            return False
+        return visible_general == target
     return False

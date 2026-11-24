@@ -980,17 +980,25 @@ def _fort_step(screen, mem, probe):
         probe['fort_reads'] = 0
         return [pad('a')]
     # status card: one A opens the picker, a repeat only while the card stays.
-    # A different named general is not this pursuit's page; leave immediately
-    # rather than spending the 40-read budget on another person's status.
-    visible_general = house.general_status_name(screen)
-    if (visible_general is not None
-            and visible_general != probe.get('general')):
+    # Only a *readable* different name is another person's page; an unreadable
+    # name stays with this flow and its 40-read bound.  A target name that
+    # itself carries a digit (later chapters) is compared with digits allowed,
+    # so the reader's normal OCR-safety rejection does not turn the pursuit's
+    # own card into a mismatch.
+    target = probe.get('general')
+    visible_general = house.general_status_name(screen, expected=target)
+    if (visible_general is not None and isinstance(target, str) and target
+            and visible_general != target):
         _close(mem, probe, 'status_general_mismatch')
         return [pad('b')]
     probe['fort_reads'] = int(probe.get('fort_reads') or 0) + 1
     if probe['fort_reads'] > 40:
         _close(mem, probe, 'fort_picker_missing')
         return [pad('b')]
-    if house.general_status(screen):
+    # The name row plus しょうぐん label is enough to press A: the route only
+    # needs the destination picker, and a temporarily unreadable egg row must
+    # not burn the whole 40-read budget (that ended as fort_picker_missing).
+    if (house.general_status(screen, expected=target) is not None
+            or (visible_general is not None and visible_general == target)):
         return [pad('a')] if probe['fort_reads'] % 6 == 1 else []
     return []
