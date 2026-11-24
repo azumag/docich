@@ -202,7 +202,6 @@ def test_boss_fort_status_still_closes_after_its_own_read_limit():
     assert 'battle_status_screen_return' not in [r['decision'] for r in mem['_records']]
 
 
-
 def test_named_status_owner_survives_an_unreadable_egg_row():
     screen = panel()
     # The owner still needs its bounded retry when the name is legible but the
