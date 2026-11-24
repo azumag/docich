@@ -344,9 +344,12 @@ def _count_boss_camps(mem, statuses, scope, boss_unlocked, *, fresh):
                 names.pop(name, None)
     def _long_camp_months(name):
         """Months a measured camp has stayed unresolved since its recheck."""
-        row = (_flow(mem).get('retreat_rechecks') or {}).get(name) or {}
+        queue = _flow(mem).get('retreat_rechecks')
+        row = queue.get(name) if isinstance(queue, dict) else None
+        if not isinstance(row, dict):
+            return 0
         tick, now = row.get('tick'), mem.get('tick')
-        if (not isinstance(row, dict) or type(tick) is not int
+        if (type(tick) is not int
                 or type(now) is not int or now <= tick
                 or row.get('chapter') != mem.get('chapter')
                 or receipts.run_identity(row.get('identity'))

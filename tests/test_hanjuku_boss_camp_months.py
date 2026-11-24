@@ -112,6 +112,17 @@ def test_the_audit_hint_requires_the_same_run_identity(tmp_path):
     assert month_audit.camp_watch_hint(rt, identity=dict(IDENTITY)) is None
 
 
+def test_malformed_retreat_recheck_state_is_ignored_when_seeding_camp_months():
+    # Persisted state is untrusted: a partial/corrupt queue or row must not
+    # crash the monthly scan or manufacture a long-camp exemption.
+    for queue in ('corrupt', {'キッシュ': 'corrupt'}):
+        memory = mem(month='8-6', tick=60000, month_durations=[1000, 1000, 1000],
+                     flow={'retreat_rechecks': queue})
+        post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                               fresh=True)
+        assert memory['boss_camp_exempt'] == {'キッシュ': 1}
+
+
 def test_an_expired_siege_is_queued_for_recall_home_not_boss_move():
     memory = mem(boss_camp_exempt={'キッシュ': post.BOSS_CAMP_EXEMPT_MONTHS + 1})
     tasks = post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
