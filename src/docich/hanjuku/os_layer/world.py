@@ -717,10 +717,10 @@ def _apply_season_sites(mem, sites):
                                      'terrain': reading.get('terrain'),
                                      'healthy': healthy, 'streak': count},
                     reason='全体マップの四季王マスを再読し、ドクロ可視/曖昧/隠れ/読めないの別を記録する')
-        if kind == 'ambiguous':
-            # A partial skull is neither a live-king confirmation nor a
-            # defeat; leave the state alone and let the order priority use
-            # the marker.
+        if kind in ('ambiguous', 'unreadable'):
+            # A partial skull, or a skull-less box in a frame that is not
+            # trustworthy, is neither a live-king confirmation nor a defeat;
+            # leave the state alone and let the order priority use the marker.
             continue
         target_state = 'open' if kind == 'skull' else 'closed'
         need = SEASON_SITE_HIDDEN_CONFIRM if kind == 'hidden' else SEASON_SITE_CONFIRM
