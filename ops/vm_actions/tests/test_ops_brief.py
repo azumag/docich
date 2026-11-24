@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from ops.vm_actions.tests import _ab_gate_support
+
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location("brief_gateway_test", ROOT / "ops/vm_actions/gateway.py")
 gw = importlib.util.module_from_spec(spec)
@@ -18,6 +20,15 @@ SOURCE = "## 2026-09-22 — 最新の修正 Issue #123\nprivate body\n## 2026-09
 
 
 class BriefGenerationTests(unittest.TestCase):
+    def test_schema_one_rendering_preserves_installed_gateway_bytes(self):
+        expected = ("# 直近の裏側の改修 (docich handoff.md から自動生成。手で編集しない)\n"
+                    "- 最新の修正\n- 配信復旧\n").encode()
+        for source in (brief.SOURCE_LEGACY, brief.SOURCE_TRACKED):
+            with self.subTest(source=source):
+                data = brief.build(SOURCE, source)
+                self.assertEqual(brief.render(data), expected)
+                self.assertEqual(brief.validate(data)["output_sha256"], brief.digest(expected))
+
     def clean_env(self):
         env = dict(os.environ)
         env.pop(brief.HANDOFF_ENV, None)
@@ -94,16 +105,28 @@ class BriefGenerationTests(unittest.TestCase):
             self.assertEqual(run("check-artifact"), 0)
 
     def test_repository_artifact_and_workflow_gate(self):
-        brief.validate((ROOT / brief.ARTIFACT).read_bytes())
+        artifact = brief.validate((ROOT / brief.ARTIFACT).read_bytes())
+        self.assertEqual(artifact["source"], brief.SOURCE_TRACKED)
+        self.assertTrue((ROOT / brief.SOURCE_TRACKED).is_file())
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py"), "check-source"],
+            env=self.clean_env(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
         workflow = (ROOT / ".github/workflows/vm-operations.yml").read_text()
         self.assertLess(workflow.index("Require parent operations brief gateway capability"),
                         workflow.index("Upload candidate to VM staging"))
-        self.assertIn(brief.CAPABILITY, workflow)
-        self.assertIn(gw.projection_io.CAPABILITY, workflow)
+        for capability in (brief.CAPABILITY, brief.CAPABILITY_TRACKED_SOURCE, gw.projection_io.CAPABILITY):
+            self.assertIn(capability, workflow)
         self.assertIn("check-artifact --artifact candidate/" + brief.ARTIFACT, workflow)
         self.assertIn("/handoff.md", (ROOT / ".gitignore").read_text())
+        self.assertIn("/handoff-archive/", (ROOT / ".gitignore").read_text())
+        ops_ci = (ROOT / ".github/workflows/vm-operations-ci.yml").read_text()
+        self.assertIn("ops_brief.py check-artifact", ops_ci)
+        self.assertIn("ops_brief.py check-source", ops_ci)
         self.assertIn('"$source_dir/ops_brief.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
         self.assertIn('"$source_dir/projection_io.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
+        self.assertIn('"$source_dir/ab_gate_preflight.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
 
     def test_explicit_shared_source_overrides_environment(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -122,28 +145,44 @@ class BriefGenerationTests(unittest.TestCase):
                 self.assertNotIn(str(shared), result.stdout + result.stderr)
                 self.assertNotIn("private body", result.stdout + result.stderr)
 
-    def test_environment_shared_source_builds_and_checks_without_checkout_copy(self):
+    def test_legacy_shared_source_still_verifies_from_the_environment(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             shared = root / "shared" / "handoff.md"
             shared.parent.mkdir()
             shared.write_bytes(SOURCE)
             artifact = root / "brief.json"
+            artifact.write_bytes(brief.build(SOURCE))
             env = {**os.environ, brief.HANDOFF_ENV: str(shared)}
             base = [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py")]
-            for op in ("build", "check-source"):
-                result = subprocess.run(base + [op, "--artifact", str(artifact)],
-                                        env=env, cwd=root, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0)
-                self.assertNotIn(str(shared), result.stdout + result.stderr)
-                self.assertNotIn("private body", result.stdout + result.stderr)
-            self.assertEqual(artifact.read_bytes(), brief.build(SOURCE))
-            self.assertFalse((root / "handoff.md").exists())
+            result = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
+                                    env=env, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(str(shared), result.stdout + result.stderr)
+            self.assertNotIn("private body", result.stdout + result.stderr)
+
             shared.write_bytes(SOURCE + b"private changed\n")
             result = subprocess.run(base + ["check-source", "--artifact", str(artifact)],
                                     env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("private changed", result.stdout + result.stderr)
+
+    def test_default_build_no_longer_reads_any_private_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = root / "ops/vm_actions/ops_brief.py"
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "ops/vm_actions/ops_brief.py", script)
+            (root / "ops/runtime_context").mkdir(parents=True)
+            shutil.copyfile(ROOT / brief.SOURCE_TRACKED, root / brief.SOURCE_TRACKED)
+            env = {**os.environ, brief.HANDOFF_ENV: "unset/relative/path"}
+            artifact = root / "brief.json"
+            base = [sys.executable, str(script)]
+            for op in ("build", "check-source"):
+                result = subprocess.run(base + [op, "--artifact", str(artifact)],
+                                        env=env, cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(brief.validate(artifact.read_bytes())["source"], brief.SOURCE_TRACKED)
 
     def test_missing_shared_source_never_falls_back_to_checkout(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -256,7 +295,8 @@ class BriefGenerationTests(unittest.TestCase):
             for op in ("build", "check-source"):
                 result = subprocess.run(
                     [sys.executable, str(ROOT / "ops/vm_actions/ops_brief.py"), op,
-                     "--artifact", str(artifact)], env=env, capture_output=True, text=True)
+                     "--source", str(source), "--artifact", str(artifact)],
+                    env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(artifact.read_bytes(), before)
                 self.assertNotIn(str(source), result.stdout + result.stderr)
@@ -264,6 +304,10 @@ class BriefGenerationTests(unittest.TestCase):
 
 class BriefDeploymentTests(unittest.TestCase):
     def setUp(self):
+        # Local file:// submodule fixtures need the test-only Git protocol override.
+        env_patch = mock.patch.dict(os.environ, {"VMOPS_TESTING": "1"})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
         self.addCleanup(os.umask, os.umask(0o022))
         temp = tempfile.TemporaryDirectory(prefix="vmops-brief-")
         self.addCleanup(temp.cleanup)
@@ -282,6 +326,7 @@ class BriefDeploymentTests(unittest.TestCase):
         gw.git(self.root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(self.sub), brief.PROJECTION)
         self.baseline = self.commit(self.root)
         self.live.mkdir()
+        _ab_gate_support.install_clear_gate(self.live)
         (self.live / "prompts").mkdir()
         (self.live / brief.DESTINATION).write_bytes(self.legacy)
         (self.live / "code.txt").write_text("before\n")

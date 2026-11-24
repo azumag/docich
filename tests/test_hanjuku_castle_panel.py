@@ -11,7 +11,8 @@ def setup_case():
     order = dict(step='F1', general='どうし', source='スペンソニア', target='けっかい',
                  cards=[], after=None, note='test')
     mem = dict(chapter=1, active='F1', castle_verified='F1', orders={}, picked=[],
-               captured=['スペンソニア'], garrison={'スペンソニア': ['どうし', 'ガルバンゾー']},
+               captured=list(set(policy.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'}),
+               garrison={'スペンソニア': ['どうし', 'ガルバンゾー']},
                chart_plan={'request_id': 'test', 'orders': [order]}, _records=[])
     return order, mem
 
@@ -49,3 +50,21 @@ def test_unclassified_status_does_not_create_a_new_verification():
     partial = Screen(lines=[], hand=None, kind='castle_menu', text='スペンソニアじょう')
     assert policy._check_source_castle(partial, mem, order) is None
     assert 'castle_verified' not in mem
+
+
+def test_verified_status_name_fixes_the_cursor_on_that_castle():
+    # g1163 2026-11-11 00:07: after a jump to ながはま the estimate stayed on
+    # the home castle and the next home order opened ながはま instead.
+    order, mem = setup_case()
+    mem.pop('castle_verified')
+    mem['cursor'], mem['uncertain'] = [1, 1], True
+    assert policy._check_source_castle(status(), mem, order) == [policy.pad('b')]
+    assert mem['cursor'] == list(policy.chart.castles(1)['スペンソニア'])
+    assert mem['uncertain'] is False
+
+
+def test_contradictory_status_still_moves_the_cursor_to_the_seen_castle():
+    order, mem = setup_case()
+    mem['cursor'] = [1, 1]
+    policy._check_source_castle(status('ゴーメン'), mem, order)
+    assert mem['cursor'] == list(policy.chart.castles(1)['ゴーメン'])

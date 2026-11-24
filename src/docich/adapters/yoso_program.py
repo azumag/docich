@@ -13,16 +13,20 @@ from time import monotonic, sleep
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from ..comment_queue import comment_queue_dir
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
 from ..prediction_leaderboard import LeaderboardError
+from ..trading.soren_output import resolve_soren_root
 from ..yoso_view import DEFAULT_PORT, VIEW_NAME, YosoViewError, board
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
-from .program import ProgramViewAdapter, _browser_bin
+from .program import (
+    ProgramViewAdapter,
+    broadcast_browser_command,
+    broadcast_view_session_env,
+)
 
-#: ``src/`` of this checkout, the import path the view needs at runtime.
-DOCICH_SRC = Path(__file__).resolve().parents[2]
 READY_PATH = "/api/yosou"
 
 
@@ -46,10 +50,19 @@ class YosoProgramViewAdapter(ProgramViewAdapter):
         self.dashboard_kind = "html"
         self.dashboard_port = DEFAULT_PORT
 
+    def _voice_queue_dir(self) -> str | None:
+        # The shared audio queue the corner reads its departments through. The
+        # view only lists it (read-only) to follow the department being spoken;
+        # when it cannot be resolved the view rotates on its own timer.
+        try:
+            return str(comment_queue_dir(resolve_soren_root(self.g)))
+        except Exception:
+            return None
+
     def _game_command(self) -> list[str]:
         # ``serve`` is read-only: the corner never mutates the ledger, and a
         # missing ledger is an empty board rather than a hidden write.
-        return [
+        command = [
             sys.executable, "-m", "docich.yoso_view",
             "--state-dir", str(self.g.state_dir),
             "--port", str(self.dashboard_port),
@@ -57,42 +70,52 @@ class YosoProgramViewAdapter(ProgramViewAdapter):
             "--generation", str(self.spec.generation),
             "--lease-id", self.spec.lease_id,
         ]
+        queue_dir = self._voice_queue_dir()
+        if queue_dir is not None:
+            command += ["--queue-dir", queue_dir]
+        return command
 
     def _game_session_env(self) -> dict[str, str]:
         # tmux starts the command from the server environment and never
         # inherits the operator's PYTHONPATH, so bind this checkout explicitly.
-        return {"PYTHONPATH": str(DOCICH_SRC)}
+        return broadcast_view_session_env()
 
     def _viewer_command(self) -> list[str]:
-        browser = _browser_bin()
-        if not browser:
-            raise AdapterError("chromium が見つかりません (yosou HTML view)")
-        command = [
-            browser,
-            f"--app=http://127.0.0.1:{self.dashboard_port}/broadcast",
-            "--window-size=960,540",
-            "--window-position=0,0",
-            "--lang=ja-JP",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--hide-scrollbars",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-translate",
-            "--disable-features=Translate,TranslateUI,BackForwardCache",
-            f"--user-data-dir={self.spec.runtime_dir / 'yosou-browser-profile'}",
-        ]
         display = self.g.display
-        if display.viewport_width > 0 and display.viewport_height > 0:
+        # 予想王 is a broadcast-native information screen like the weather
+        # corner, not a game that needs the shared top/right/bottom status
+        # rails.  When the full X11 display dimensions are known, own the
+        # complete broadcast frame so the ranking is not squeezed next to those
+        # rails for the two minutes the corner is on air (オーナー判断
+        # 2026-10-15, Issue #2237; the weather precedent is PR #1874).
+        full_width = int(getattr(display, "width", 0) or 0)
+        full_height = int(getattr(display, "height", 0) or 0)
+        if full_width > 0 and full_height > 0:
+            present_x, present_y = 0, 0
+            present_width, present_height = full_width, full_height
+        else:
+            present_x, present_y = display.viewport_x, display.viewport_y
+            present_width, present_height = display.viewport_width, display.viewport_height
+
+        browser_width = present_width if present_width > 0 else 960
+        browser_height = present_height if present_height > 0 else 540
+        command = broadcast_browser_command(
+            f"http://127.0.0.1:{self.dashboard_port}/broadcast",
+            window_size=(browser_width, browser_height),
+            window_position=(0, 0),
+            profile_dir=self.spec.runtime_dir / "yosou-browser-profile",
+            label="yosou HTML view",
+        )
+        if present_width > 0 and present_height > 0:
             return [
                 sys.executable,
                 str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 "--display", display.name,
                 "--title", f"docich-present-{self.spec.runtime_id}",
-                "--x", str(display.viewport_x),
-                "--y", str(display.viewport_y),
-                "--width", str(display.viewport_width),
-                "--height", str(display.viewport_height),
+                "--x", str(present_x),
+                "--y", str(present_y),
+                "--width", str(present_width),
+                "--height", str(present_height),
                 "--", *command,
             ]
         return command

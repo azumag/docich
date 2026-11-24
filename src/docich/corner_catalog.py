@@ -42,6 +42,15 @@ MAX_COOLDOWN_HOURS = 24 * 30
 # value a cadence rather than a hidden second cooldown.
 MIN_INTERVAL_MINUTES = 1.0
 MAX_INTERVAL_MINUTES = 24 * 60.0
+# A prediction in flight delays the announced corner; the rotation holds the
+# due slot instead of spending its normal wait and expiring it. The bound is a
+# safety valve for a stuck prediction, not a second cooldown.
+DEFAULT_PREDICTION_HOLD_WAIT_MINUTES = 90
+MAX_PREDICTION_HOLD_WAIT_MINUTES = 180
+# After a corner, a short window lets the prediction worker start before the
+# rotation promises a clock again. 0 disables the handoff.
+DEFAULT_PREDICTION_HANDOFF_SECONDS = 180
+MAX_PREDICTION_HANDOFF_SECONDS = 900
 
 
 def rotation_config(g) -> dict:
@@ -65,6 +74,20 @@ def rotation_config(g) -> dict:
             "corner_rotation.interval_minutes must be a number of minutes between "
             f"{MIN_INTERVAL_MINUTES:g} and {MAX_INTERVAL_MINUTES:g}"
         )
+    hold_wait = raw.get("prediction_hold_wait_minutes", DEFAULT_PREDICTION_HOLD_WAIT_MINUTES)
+    if (type(hold_wait) is not int or isinstance(hold_wait, bool)
+            or not 0 <= hold_wait <= MAX_PREDICTION_HOLD_WAIT_MINUTES):
+        raise CornerCatalogError(
+            "corner_rotation.prediction_hold_wait_minutes must be an integer 0-"
+            f"{MAX_PREDICTION_HOLD_WAIT_MINUTES}"
+        )
+    handoff = raw.get("prediction_handoff_seconds", DEFAULT_PREDICTION_HANDOFF_SECONDS)
+    if (type(handoff) is not int or isinstance(handoff, bool)
+            or not 0 <= handoff <= MAX_PREDICTION_HANDOFF_SECONDS):
+        raise CornerCatalogError(
+            "corner_rotation.prediction_handoff_seconds must be an integer 0-"
+            f"{MAX_PREDICTION_HANDOFF_SECONDS}"
+        )
     return raw
 
 
@@ -85,6 +108,20 @@ def configured_interval_seconds(g) -> float | None:
 
     interval = rotation_config(g).get("interval_minutes")
     return None if interval is None else float(interval) * 60.0
+
+
+def prediction_hold_wait_seconds(g) -> float:
+    """How long a due corner waits for an in-flight prediction before fallback."""
+
+    return float(rotation_config(g).get(
+        "prediction_hold_wait_minutes", DEFAULT_PREDICTION_HOLD_WAIT_MINUTES)) * 60.0
+
+
+def prediction_handoff_seconds(g) -> float:
+    """Short post-corner window where the next prediction starts first."""
+
+    return float(rotation_config(g).get(
+        "prediction_handoff_seconds", DEFAULT_PREDICTION_HANDOFF_SECONDS))
 
 
 def load_catalog(g) -> tuple[Corner, ...]:
@@ -127,16 +164,21 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     "weather requires id=weather, game=weather-view, boolean audio_enabled/fetch_on_start, and duration_minutes 1-14 when enabled"
                 )
         elif item.adapter == "tsuitate":
+            # One remote beta match. The corner is bounded by the Worker's own
+            # match bound, so there is no display duration; speech (the corner
+            # introduction and the 感想戦) is the only optional setting.
             if item.id != "tsuitate" or item.game != "tsuitate-view":
                 raise CornerCatalogError(
                     "tsuitate requires id=tsuitate and game=tsuitate-view"
                 )
-            if item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
+            if type(item.audio_enabled) is not bool:
+                raise CornerCatalogError("tsuitate accepts only a boolean audio_enabled")
+            if item.duration_minutes is not None or item.fetch_on_start:
                 raise CornerCatalogError("tsuitate does not accept weather-only settings")
         elif item.adapter == "yoso":
-            # Default-disabled, manual-only leaderboard view. The duration is an
-            # optional upper bound (1-14 minutes, same ceiling as weather); the
-            # entry runs only when the owner reserves it. Speech is a separate
+            # Read-only leaderboard view. The duration is an optional upper bound
+            # (1-14 minutes, same ceiling as weather); the catalog row decides
+            # whether it is auto-selected or manual-only. Speech is a separate
             # opt-in because it reads viewer display names aloud.
             if item.id != "yosou-oh" or item.game != "yosou-view":
                 raise CornerCatalogError("yoso requires id=yosou-oh and game=yosou-view")
@@ -148,6 +190,120 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("yosou duration_minutes must be an integer 1-14")
+        elif item.adapter == "doushi":
+            # Auto-rotation-enabled 同志カード大賞 view (design §5).
+            # Same shape as yoso: an optional 1-14 minute ceiling, a boolean
+            # speech opt-in, and no weather-only settings.
+            if item.id != "doushi-card" or item.game != "doushi-view":
+                raise CornerCatalogError("doushi requires id=doushi-card and game=doushi-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "doushi accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("doushi duration_minutes must be an integer 1-14")
+        elif item.adapter == "puyo":
+            # ぷよぷよクローン offline self-play view (Issue #698). Default
+            # disabled and manual-only until the owner approves auto rotation;
+            # audio/fetch/live settings are out of scope for this adapter.
+            if item.id != "puyo-corner" or item.game != "puyo-view":
+                raise CornerCatalogError("puyo requires id=puyo-corner and game=puyo-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "puyo accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "puyo stays manual-only until the owner approves auto rotation"
+                )
+            if item.live_eligible is not False:
+                raise CornerCatalogError("puyo requires live_eligible = false")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("puyo duration_minutes must be an integer 1-14")
+        elif item.adapter == "trpg":
+            # Participatory TRPG / murder-mystery view (Issue #684, PR-3).
+            # Automatic rotation stays disabled; audio is the separate opt-in.
+            if item.id != "trpg-corner" or item.game != "trpg-view":
+                raise CornerCatalogError(
+                    "trpg requires id=trpg-corner and game=trpg-view"
+                )
+            if item.fetch_on_start:
+                raise CornerCatalogError(
+                    "trpg accepts no fetch_on_start"
+                )
+            if type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "trpg accepts only a boolean audio_enabled"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "trpg stays manual-only until the owner approves auto rotation"
+                )
+            if item.live_eligible is not False:
+                raise CornerCatalogError("trpg requires live_eligible = false")
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("trpg duration_minutes must be an integer 1-14")
+        elif item.adapter == "mystery":
+            # Participatory AI探偵ミステリー: one deterministic case per slot.
+            # The duration is the whole-case budget (1-45 minutes; the manager's
+            # session reserve keeps the reveal + restore inside it) and speech
+            # is a separate opt-in. No weather-only settings. The manager
+            # enforces the same bound, so a future config change cannot widen
+            # it without this file's review.
+            if item.id != "mystery" or item.game != "mystery-view":
+                raise CornerCatalogError("mystery requires id=mystery and game=mystery-view")
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "mystery accepts only a boolean audio_enabled (fetch_on_start requires weather)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 45):
+                raise CornerCatalogError("mystery duration_minutes must be an integer 1-45")
+        elif item.adapter == "lawsim":
+            # Auto-rotation-enabled 共産主義法律シミュレーター view (#697, 2026-10-18
+            # owner approval). Same shape as doushi minus speech: narration/TTS is
+            # not wired, so audio_enabled must stay false and weather-only
+            # settings are rejected.
+            if item.id != "communist-law-simulator" or item.game != "lawsim-view":
+                raise CornerCatalogError(
+                    "lawsim requires id=communist-law-simulator and game=lawsim-view"
+                )
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "lawsim accepts no fetch_on_start; audio_enabled is a boolean opt-in (speech wired via lawsim_narration)"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("lawsim duration_minutes must be an integer 1-14")
+        elif item.adapter == "chart":
+            # チャート解説コーナー (issue #659): manual-only, non-live read-only
+            # view. Content is generated offline by the program adapter before
+            # the switch; fetch_on_start is rejected and speech stays opt-in
+            # for a future narration step.
+            if item.id != "chart-659" or item.game != "chart-659":
+                raise CornerCatalogError(
+                    "chart requires id=chart-659 and game=chart-659"
+                )
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "chart accepts no fetch_on_start; audio_enabled is a boolean opt-in"
+                )
+            if item.manual_only is not True:
+                raise CornerCatalogError(
+                    "chart stays manual-only until the owner approves auto rotation"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("chart duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

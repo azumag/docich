@@ -1,0 +1,226 @@
+"""#4468 — a recall A must only leave on a real picker, and interruptions are free.
+
+g1190 2026-11-17: the department G badge on a field general read as the いどう
+destination marker, so the recall sent A on a screen with no picker open and
+the general stayed camped. A month-start scene cut also spent the month's
+recall retry budget, unlike a battle cut. The gateway chapter kept walking the
+whole-island ring instead of using a visible own castle.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich import hanjuku_chart as chart
+from docich.hanjuku import orchestrator as O
+from docich.hanjuku.flows import recall as recall_flow
+from docich.hanjuku.os_layer.pixels import read_png
+from docich.hanjuku.os_layer.screen import parse
+from docich.hanjuku.state.regions import flow as _flow
+
+FIXTURES = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'hanjuku'
+
+
+def test_a_field_general_badge_is_not_an_open_picker():
+    frame = read_png(FIXTURES / 'g1190-ch9-desert-field.png')
+    screen = parse(frame)
+    assert screen.kind == 'map_target' and screen.marker == (140, 120)
+    # The red flag above the G proves it is the army sprite's badge.
+    assert recall_flow._picker_marker(screen, frame) is None
+
+    mem = {'chapter': 9, 'tick': 100, 'captured': [], '_records': []}
+    _flow(mem)['recall'] = {'stage': 'dest', 'steps': 1, 'target': [90, 120], 'goal': 'タオ'}
+    recall_flow.camp_recall_step(screen, mem, frame)
+    assert any(r['decision'] == 'camp_recall_picker_not_open' for r in mem['_records'])
+    assert not any(r['decision'] == 'camp_recall_requested' for r in mem['_records'])
+    assert 'recall' not in _flow(mem)
+
+
+def test_a_genuine_destination_marker_keeps_the_picker():
+    for name, marker in (
+        ('g1190-ch9-riesling-fort-picker.png', (129, 112)),
+        ('g1133-ch6-oceana-target-marker.png', (141, 110)),
+        ('g1075-target-marker-beside-rigua.png', (128, 118)),
+    ):
+        frame = read_png(FIXTURES / name)
+        screen = parse(frame)
+        assert screen.marker == marker
+        assert recall_flow._picker_marker(screen, frame) == marker
+
+
+def test_a_scene_abandonment_marks_the_recall_interrupted():
+    from docich.hanjuku.flows import post_month_status as post
+    from docich.hanjuku_screen import Screen
+
+    recall = {'stage': 'dest', 'steps': 4, 'target': [175, 84], 'scene_resumes': 2}
+    mem = {'tick': 100, 'chapter': 11, 'month': '61-2', 'gold': 250,
+           'flow': {'recall': recall}, '_records': []}
+    assert O._recall_after_scene(mem, recall, 'text', 'concert') is None
+    assert _flow(mem).get('recall_interrupted') == 100
+    assert any(r['decision'] == 'camp_recall_scene_abandoned' for r in mem['_records'])
+
+    # The monthly task re-queues the never-dispatched recall without charging
+    # RECALL_TASK_RETRIES — the same free retry a battle interruption gets.
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='wait_recall', started_tick=100,
+                 job={'kind': 'recall', 'name': 'ヴィーナス'}, tasks=[])
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [{'kind': 'recall', 'name': 'ヴィーナス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    assert any(r['decision'] == 'post_month_recall_requeued' for r in mem['_records'])
+
+
+def test_gateway_visible_candidates_keep_the_camp_on_its_own_side(monkeypatch):
+    cells = chart.castles(11)
+    front, back, hub = 'アルマムーン', 'クラボニア', 'タタール'
+    candidates = [{'castle': front, 'world': list(cells[front]), 'screen': [10, 10]},
+                  {'castle': back, 'world': list(cells[back]), 'screen': [20, 20]},
+                  {'castle': hub, 'world': list(cells[hub]), 'screen': [30, 30]}]
+    monkeypatch.setattr(recall_flow, '_visible_own_candidates', lambda mem, frame: candidates)
+    mem = {'chapter': 11, 'captured': [front, back, hub]}
+    # No `target`, so _bind_camp_origin leaves the measured origin alone.
+    state = {'origin': list(cells[back])}
+    kept = [c['castle'] for c in recall_flow._visible_recall_candidates(mem, state, None)]
+    assert kept == [back]   # same-side castle wins; the hub is not a safe shortcut
+    assert front not in kept
+
+
+def test_gateway_hub_is_not_selected_before_a_same_side_castle(monkeypatch):
+    """DSH #4480: a back-half camp must not be marched at タタール's cliff."""
+    cells = chart.castles(11)
+    back, hub = 'クラボニア', 'タタール'
+    # The hub is first in the roof scan order.
+    candidates = [{'castle': hub, 'world': list(cells[hub]), 'screen': [10, 10]},
+                  {'castle': back, 'world': list(cells[back]), 'screen': [20, 20]}]
+    monkeypatch.setattr(recall_flow, '_visible_own_candidates', lambda mem, frame: candidates)
+    mem = {'chapter': 11, 'captured': [back, hub]}
+    state = {'origin': list(cells[back])}
+    kept = [c['castle'] for c in recall_flow._visible_recall_candidates(mem, state, None)]
+    assert kept == [back]
+
+
+def test_a_hub_only_view_falls_back_to_the_picker(monkeypatch):
+    cells = chart.castles(11)
+    hub = 'タタール'
+    candidates = [{'castle': hub, 'world': list(cells[hub]), 'screen': [10, 10]}]
+    monkeypatch.setattr(recall_flow, '_visible_own_candidates', lambda mem, frame: candidates)
+    mem = {'chapter': 11, 'captured': [hub]}
+    state = {'origin': list(cells['クラボニア'])}
+    assert recall_flow._visible_recall_candidates(mem, state, None) == []
+
+
+def test_no_origin_keeps_every_visible_gateway_candidate(monkeypatch):
+    cells = chart.castles(11)
+    front, back = 'アルマムーン', 'クラボニア'
+    candidates = [{'castle': front, 'world': list(cells[front]), 'screen': [10, 10]},
+                  {'castle': back, 'world': list(cells[back]), 'screen': [20, 20]}]
+    monkeypatch.setattr(recall_flow, '_visible_own_candidates', lambda mem, frame: candidates)
+    mem = {'chapter': 11, 'captured': [front, back]}
+    kept = [c['castle'] for c in recall_flow._visible_recall_candidates(mem, {}, None)]
+    assert kept == [front, back]
+
+
+def test_confirmed_picker_moved_below_red_tent_is_not_aborted_as_field_badge(monkeypatch):
+    """#4885: 本物のピッカー確認後に赤いテント・砦の真下へ動かしても誤爆中断しない。"""
+    from docich.hanjuku_screen import Screen
+    frame_ok = read_png(FIXTURES / 'g1190-ch9-riesling-fort-picker.png')
+    screen_ok = parse(frame_ok)
+    assert recall_flow._picker_marker(screen_ok, frame_ok) == (129, 112)
+
+    mem = {'chapter': 10, 'tick': 771295, 'captured': ['アルマムーン'], '_records': []}
+    _flow(mem)['recall'] = {'stage': 'dest', 'steps': 0, 'target': [129, 112], 'goal': 'アルマムーン'}
+    monkeypatch.setattr(recall_flow, '_cliff_detour_step', lambda *a: [{'type': 'pad', 'buttons': ['down'], 'hold_ms': 100}])
+    assert recall_flow.camp_recall_step(screen_ok, mem, frame_ok) == [{'type': 'pad', 'buttons': ['down'], 'hold_ms': 100}]
+    assert _flow(mem)['recall'].get('picker_confirmed') is True
+
+    # 次フレームで赤い屋根の真下へ動いた場合（_picker_marker 単独では赤ピクセルで None になる）でも
+    # picker_confirmed=True のため camp_recall_picker_not_open に誤爆しない。
+    frame_red_above = read_png(FIXTURES / 'g1190-ch9-desert-field.png')
+    screen_moved = Screen([], None, '', kind='map_target', marker=(140, 120))
+    assert recall_flow._picker_marker(screen_moved, frame_red_above) is None
+    monkeypatch.setattr(recall_flow, '_cliff_detour_step', lambda *a: None)
+    monkeypatch.setattr(recall_flow, 'castle_roofs', lambda _f: [])
+    actions = recall_flow.camp_recall_step(screen_moved, mem, frame_red_above)
+    assert not any(r.get('decision') == 'camp_recall_picker_not_open' for r in mem['_records'])
+    assert 'recall' in _flow(mem)
+    assert actions == [{'type': 'pad', 'buttons': ['y'], 'hold_ms': 100}]
+
+
+def test_menu_opened_picker_on_own_camp_under_red_roof_or_lava_is_confirmed():
+    """#4917: a camp tucked right under a red castle roof or lava gets its
+    genuine いどう picker on the camp's own cell immediately after menu A."""
+    from docich.hanjuku.os_layer.pixels import Frame
+    from docich.hanjuku_screen import Screen
+
+    rgb = bytearray(bytes((24, 80, 88)) * (256 * 224))
+    # Red castle roof / lava right above camp [132, 119]
+    for y in range(110, 118):
+        for x in range(130, 144):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((220, 40, 40))
+    frame = Frame(256, 224, bytes(rgb))
+    screen = Screen([], None, '', kind='map_target', marker=(132, 119))
+    assert recall_flow._picker_marker(screen, frame) is None
+
+    # Directly from menu いどう on camp [132, 119]: confirmed, not aborted.
+    mem = {'chapter': 10, 'tick': 200, 'captured': ['アルマムーン'], '_records': []}
+    _flow(mem)['recall'] = {'stage': 'dest', 'steps': 0, 'target': [132, 119],
+                            'goal': 'アルマムーン', 'picker_from_menu': True}
+    recall_flow.camp_recall_step(screen, mem, frame)
+    assert 'recall' in _flow(mem)
+    assert _flow(mem)['recall'].get('picker_confirmed') is True
+    assert not any(r.get('decision') == 'camp_recall_picker_not_open' for r in mem['_records'])
+
+    # A distant G badge (not on the camp cell) still aborts even with picker_from_menu.
+    mem2 = {'chapter': 10, 'tick': 200, 'captured': ['アルマムーン'], '_records': []}
+    _flow(mem2)['recall'] = {'stage': 'dest', 'steps': 0, 'target': [90, 119],
+                             'goal': 'アルマムーン', 'picker_from_menu': True}
+    recall_flow.camp_recall_step(screen, mem2, frame)
+    assert 'recall' not in _flow(mem2)
+    assert any(r.get('decision') == 'camp_recall_picker_not_open' for r in mem2['_records'])
+
+
+def test_fort_opened_picker_on_own_camp_under_red_carpet_is_confirmed():
+    """Fort sortie confirmation -> map_target right below White House carpet (#4955)."""
+    from docich.hanjuku.os_layer.pixels import Frame
+    from docich.hanjuku_screen import Screen
+
+    rgb = bytearray(bytes((24, 80, 88)) * (256 * 224))
+    # White House red carpet right above fort [138, 114] / picker [139, 113]
+    for y in range(100, 112):
+        for x in range(134, 152):
+            i = (y * 256 + x) * 3
+            rgb[i:i + 3] = bytes((220, 40, 40))
+    frame = Frame(256, 224, bytes(rgb))
+    screen = Screen([], None, '', kind='map_target', marker=(139, 113))
+    assert recall_flow._picker_marker(screen, frame) is None
+
+    # Fort sortie opens picker on [139, 113] next to fort [138, 114]: confirmed.
+    mem = {'chapter': 10, 'tick': 893733, 'captured': ['トルストリア'],
+           'boss_cell': {'chapter': 10, 'cell': [482, 365]}, '_records': []}
+    _flow(mem)['recall'] = {'stage': 'fort_status', 'steps': 0, 'target': [138, 114],
+                            'general': 'グレナデン', 'fort_members': ['グレナデン', 'ベーグル'],
+                            'fort_picker_requested': True}
+    recall_flow.camp_recall_step(screen, mem, frame)
+    assert 'recall' in _flow(mem)
+    assert _flow(mem)['recall'].get('fort') is True
+    assert _flow(mem)['recall'].get('picker_confirmed') is True
+    assert not any(r.get('decision') == 'camp_recall_picker_not_open' for r in mem['_records'])
+
+    # Distant G badge away from the fort cell still aborts as #4468 field badge.
+    distant = Screen([], None, '', kind='map_target', marker=(50, 105))
+    rgb2 = bytearray(bytes((24, 80, 88)) * (256 * 224))
+    for y in range(96, 104):
+        for x in range(48, 64):
+            i = (y * 256 + x) * 3
+            rgb2[i:i + 3] = bytes((220, 40, 40))
+    frame2 = Frame(256, 224, bytes(rgb2))
+    mem2 = {'chapter': 10, 'tick': 893733, 'captured': ['トルストリア'], '_records': []}
+    _flow(mem2)['recall'] = {'stage': 'fort_status', 'steps': 0, 'target': [138, 114],
+                             'general': 'グレナデン', 'fort_members': ['グレナデン', 'ベーグル'],
+                             'fort_picker_requested': True}
+    recall_flow.camp_recall_step(distant, mem2, frame2)
+    assert 'recall' not in _flow(mem2)
+    assert any(r.get('decision') == 'camp_recall_picker_not_open' for r in mem2['_records'])

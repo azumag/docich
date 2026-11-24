@@ -21,12 +21,19 @@ _WORKER_SUMMARY_KEYS = {
     "cycle_index", "last_success_at", "next_cycle_at", "frame_error_count",
     "arbitrage_candidate_count", "new_fill_count", "new_settlement_count",
     "error_codes", "experiment_status", "experiment_reason_code", "experiment_entries_allowed",
+    "slot_count", "slot_active_count", "slot_entries_allowed_count", "slot_blocked_count",
+    "slot_layout_invalid", "common_owned_symbol_count",
 }
 
-_PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions"}
+_PERFORMANCE_COUNT_KEYS = {"position_count", "priced_positions", "valued_positions", "unpaired_sell_count"}
 _PERFORMANCE_MONEY_KEYS = {
-    "realized_total_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
+    "realized_total_jpy", "interval_realized_pnl_jpy", "today_realized_pnl_jpy", "unrealized_pnl_jpy",
     "cumulative_pnl_jpy", "equity_jpy",
+}
+_PERFORMANCE_LEDGER_STATUS = {"ok", "partial", "unavailable", "invalid"}
+_PERFORMANCE_LEDGER_REASONS = {
+    "ok", "ledger_missing", "ledger_read_error", "ledger_schema_invalid",
+    "ledger_invalid_row", "unpaired_sell", "position_snapshot_mismatch",
 }
 _MAX_SKIP_DETAILS = 16
 
@@ -89,6 +96,12 @@ def performance_summary_payload(value: object) -> dict[str, object]:
             result["as_of"] = as_of
     if type(value.get("complete")) is bool:
         result["complete"] = value["complete"]
+    ledger_status = value.get("ledger_status")
+    if isinstance(ledger_status, str) and ledger_status in _PERFORMANCE_LEDGER_STATUS:
+        result["ledger_status"] = ledger_status
+    ledger_reason = value.get("ledger_reason_code")
+    if isinstance(ledger_reason, str) and ledger_reason in _PERFORMANCE_LEDGER_REASONS:
+        result["ledger_reason_code"] = ledger_reason
     for key in _PERFORMANCE_COUNT_KEYS:
         raw = value.get(key)
         if type(raw) is int and raw >= 0:
@@ -159,6 +172,39 @@ def _skip_payloads(
     return result
 
 
+def freshness_summary_payload(
+    market_freshness: Mapping[str, Mapping[str, object]] | None,
+) -> dict[str, object]:
+    """Aggregate per-market freshness into a compact, allowlisted summary."""
+    counts = {"fresh": 0, "stale": 0, "missing": 0, "invalid": 0}
+    reason_counts: dict[str, int] = {}
+    stale_symbols: list[str] = []
+    missing_symbols: list[str] = []
+    for symbol, entry in (market_freshness or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        quality = str(entry.get("quality") or "").strip().lower()
+        if quality not in counts:
+            quality = "invalid"
+        counts[quality] += 1
+        reason = str(entry.get("reason_code") or "").strip()
+        if reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if quality == "stale":
+            stale_symbols.append(str(symbol))
+        elif quality in {"missing", "invalid"}:
+            missing_symbols.append(str(symbol))
+    total = sum(counts.values())
+    return {
+        "total": total,
+        "fresh": counts["fresh"],
+        "stale": counts["stale"],
+        "missing": counts["missing"],
+        "invalid": counts["invalid"],
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "stale_symbols": sorted(stale_symbols),
+        "unavailable_symbols": sorted(missing_symbols),
+    }
 def build_public_status(
     *,
     worker_state: str,
@@ -218,6 +264,7 @@ def build_public_status(
             for symbol, entry in sorted((market_freshness or {}).items())
             if isinstance(entry, Mapping)
         },
+        "freshness_summary": freshness_summary_payload(market_freshness),
         "coverage": dict(coverage or {}),
         "performance_summary": performance_summary_payload(performance_summary),
     }

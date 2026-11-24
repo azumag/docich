@@ -44,6 +44,8 @@ from .naming import (
     validate_runtime_id,
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
+from .hanjuku_log_retention import prune_completed
+from .retire_marker import RetireMarkerError, write_retire_marker
 from .log_redaction import redact_log_detail
 
 
@@ -99,6 +101,31 @@ class InvalidTransitionError(GameSwitchError):
 
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# An in-progress canonical phase that has not been written for this long can
+# no longer have a live driver: claims write the canonical before each retry
+# and the whole transition is bounded by the switch timeout, so silence beyond
+# this bound means the owner died mid-phase.  The bound is deliberately far
+# above the default switch timeout so a slow but live boundary is untouched.
+_STALE_IN_PROGRESS_S = 600.0
+
+
+def _stale_in_progress(updated_at: object, *, now: float | None = None) -> bool:
+    """True when a canonical in-progress phase has gone silent too long."""
+
+    if not isinstance(updated_at, str) or not updated_at:
+        return True
+    try:
+        last = dt.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=dt.timezone.utc)
+    reference = dt.datetime.fromtimestamp(
+        now if now is not None else time.time(), tz=dt.timezone.utc
+    )
+    return (reference - last).total_seconds() > _STALE_IN_PROGRESS_S
 
 
 def _wall_deadline_expired(value: object) -> bool:
@@ -413,11 +440,75 @@ class GameSwitchLock:
         try:
             fcntl.flock(lock_file.fileno(), operation)
         except BlockingIOError as exc:
+            holder = self._read_holder(lock_file)
             lock_file.close()
-            raise GameSwitchBusyError("ゲーム切替が進行中です") from exc
+            detail = "ゲーム切替が進行中です"
+            if holder:
+                detail += f"（直近の排他保持: {holder}）"
+            raise GameSwitchBusyError(detail) from exc
         self._file = lock_file
         self.exclusive = exclusive
+        if exclusive:
+            self._record_holder()
         return self
+
+    def _record_holder(self) -> None:
+        """Leave the last exclusive holder's identity in the lock file.
+
+        ``flock`` alone cannot answer "who is busy"; recording the holder
+        here lets a failed acquisition say which process held the lock
+        (#2937).  Best-effort only — the lock itself is unchanged.
+        """
+
+        if self._file is None:
+            return
+        try:
+            self._file.seek(0)
+            existing = self._file.read().strip()
+            if existing:
+                try:
+                    holder = json.loads(existing)
+                except ValueError:
+                    holder = None
+                if isinstance(holder, dict) and holder.get("pid") == os.getpid():
+                    # Same process re-acquiring keeps its first sighting; a
+                    # rewrite would only churn the timestamp and make the
+                    # record look like a fresh contention point.
+                    return
+            self._file.seek(0)
+            self._file.truncate()
+            json.dump(
+                {
+                    "pid": os.getpid(),
+                    "acquired_at": _utc_now(),
+                },
+                self._file,
+                sort_keys=True,
+            )
+            self._file.flush()
+            os.fsync(self._file.fileno())
+        except OSError:
+            pass
+
+    def _read_holder(self, lock_file) -> str | None:
+        try:
+            lock_file.seek(0)
+            raw = lock_file.read().strip()
+        except OSError:
+            return None
+        if not raw:
+            return None
+        try:
+            holder = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(holder, dict):
+            return None
+        pid = holder.get("pid")
+        acquired_at = holder.get("acquired_at")
+        if not isinstance(pid, int):
+            return None
+        return f"pid={pid} acquired_at={acquired_at}"
 
     def release(self) -> None:
         if self._file is None:
@@ -1465,10 +1556,29 @@ class GameSwitchStore:
 # recoverable step failures.
 
 DEFAULT_REQUEST_TIMEOUT_S = 600.0
+# Admission gate budget for corner start requests (#3174, plan A).  A request
+# admitted with less remaining budget than drain + probe can never reach
+# readiness before its deadline and instead chains doomed rollbacks
+# (observed: the same request failing 4 times in a row).  Both constants are
+# bounded values derived from the production game_switch.log measurement
+# (2026-11-03, issuecomment-6605747649):
+#  - drain estimate: begin->round_boundary_reached p95 352.4s (n=561), rounded
+#    to 360s.  The max 734.5s is intentionally not baked in: it includes the
+#    boundary pathology period fixed by #3172, and combining it with the 600s
+#    request cap would make nearly every switch inadmissible.
+#  - probe floor: recent successful materialize->restore max 37.5s
+#    (2026-11-01+, n=3; samples 4.3/37.4/37.5s), rounded up to 40s.  The
+#    all-period p95 of 5.7s is intentionally not used because the recent
+#    resume path is far above it.
+# 再確認は deploy 後 diagnostics（受入手順4）で行い、必要なら follow-up で
+# 見直す。定数は設定化しない（#3174 の設計判断どおり）。
+SWITCH_DRAIN_BUDGET_S = 360.0
+SWITCH_PROBE_BUDGET_S = 40.0
+SWITCH_MIN_START_BUDGET_S = SWITCH_DRAIN_BUDGET_S + SWITCH_PROBE_BUDGET_S
 QUIESCE_VERIFY_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 0.1
 PREFLIGHT_TIMEOUT_S = 60.0
-ROUND_BOUNDARY_TIMEOUT_S = 7200.0
+ROUND_BOUNDARY_TIMEOUT_S = 3600.0
 ROUND_REACQUIRE_TIMEOUT_S = 10.0
 STOP_AGENT_TIMEOUT_S = 60.0
 START_TIMEOUT_S = 60.0
@@ -1476,6 +1586,13 @@ AGENT_START_TIMEOUT_S = 60.0
 CLEANUP_TIMEOUT_S = 120.0
 PROBE_TIMEOUT_S = 5.0
 AGENT_REPAIR_TIMEOUT_S = 30.0
+# Identical agent-watchdog probe outcomes are emitted once and then
+# suppressed for this window; a changed outcome re-emits immediately and a
+# repeated outcome re-emits when the window elapses.  The 30s maintenance
+# tick would otherwise append the same line ~115 times/hour to the
+# append-only event log (#2937).
+WATCHDOG_PROBE_REPEAT_S = 600.0
+WATCHDOG_PROBE_STATE_FILE = "agent_watchdog_probe.json"
 CANCEL_GRACE_S = 0.5
 ROLLBACK_TIMEOUT_S = 120.0
 # A single non-blocking writer acquisition at request entry is enough to
@@ -1500,6 +1617,28 @@ ERROR_START_FAILED = "start_failed"
 ERROR_READINESS_TIMEOUT = "readiness_timeout"
 ERROR_AGENT_START_FAILED = "agent_start_failed"
 ERROR_ROLLBACK_FAILED = "rollback_failed"
+# Fixed stages a previous-runtime restore can refuse at. A recover refusal used
+# to leave only the generic ``rollback_failed`` code, so an operator could not
+# tell which gate stopped the restore (g1163 2026-11-14: sorengame restore kept
+# failing for hours with no stage evidence).
+RESTORE_STAGE_FILE = "game-switch/restore_stage.json"
+RESTORE_STAGES = frozenset({
+    "unquiesced-runtime",
+    "adapter-unavailable",
+    "singleton-restart-refused",
+    "alive-probe-failed",
+    "readiness-failed",
+    "singleton-recheck-failed",
+    "agent-restart-failed",
+    "continuation-unproven",
+    "rollback-adapter-failed",
+    "rollback-start-failed",
+    # Replace-mode start sub-stages: materialize owns the Soren fresh-start,
+    # readiness waits for the worker after it, agent-start re-issues the agent.
+    "rollback-materialize-failed",
+    "rollback-readiness-failed",
+    "rollback-agent-start-failed",
+})
 ERROR_STATE_CORRUPT = "state_corrupt"
 ERROR_RECOVERY_REQUIRED = "recovery_required"
 ERROR_PROBE_FAILED = "probe_failed"
@@ -1843,6 +1982,43 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
             pass
 
 
+class _BoundaryCancelClaim:
+    """One in-process claim for cancelling a request's round boundary (#2145).
+
+    The first caller performs the adapter call and publishes its result; any
+    concurrent caller waits for that result instead of invoking the adapter a
+    second time. The claim lives as long as its coordinator instance, which is
+    enough for the same-process stale-driver/recovery race; the durable
+    draining identity re-checks keep covering cross-process writers.
+    """
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: tuple[bool, str | None] | None = None
+
+    def finish(self, result: tuple[bool, str | None]) -> None:
+        self.result = result
+        self.event.set()
+
+    def wait(self, timeout: float) -> tuple[bool, str | None]:
+        if not self.event.wait(timeout) or self.result is None:
+            return False, "cancel_boundaryの結果を確認できません"
+        return self.result
+
+
+def _record_restore_stage(state_dir, stage: str) -> None:
+    """Best-effort fixed-token marker for a refused previous-runtime restore."""
+
+    if stage not in RESTORE_STAGES:
+        return
+    try:
+        path = Path(state_dir) / RESTORE_STAGE_FILE
+        _prepare_private_dir(path.parent)
+        atomic_write_json(path, {"schema_version": 1, "stage": stage, "updated_at": _utc_now()})
+    except Exception:
+        pass
+
+
 class GameSwitchCoordinator:
     """Replace-mode state machine over the P0 store (design v2 §5, §7)."""
 
@@ -1885,6 +2061,12 @@ class GameSwitchCoordinator:
         # The retiring loop is serial under the game-switch lock, so one slot
         # is enough: each teardown overwrites it and is read right after.
         self.last_teardown_evidence: TeardownEvidence | None = None
+        # The adapter contract is "cancel the round boundary exactly once per
+        # request". The stale driver's own failure path and a recovering switch
+        # can both observe the same expired drain, so one caller claims the
+        # request and any concurrent caller reuses its result (#2145).
+        self._boundary_cancel_claims: dict[str, _BoundaryCancelClaim] = {}
+        self._boundary_cancel_claims_lock = threading.Lock()
 
     def _log_reset(self, request_id: str, operation: str, target: str | None) -> None:
         _log_ctx_var.set(
@@ -2067,53 +2249,66 @@ class GameSwitchCoordinator:
         adopt_failed_candidate: bool = False,
     ) -> SwitchResult:
         self._log_reset("", "recover", None)
-        try:
-            with self.store.transaction() as tx:
-                deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
-                if expected_snapshot is not None:
-                    # An owner-only recovery can read a stable snapshot and a
-                    # terminal game, but another legitimate switch may start
-                    # before it acquires the canonical writer lock. Refuse to
-                    # act on any changed state *inside* that same transaction.
-                    # Do not log/surface either snapshot; runtime metadata
-                    # belongs to the private store.
-                    observed, missing = self.store.canonical.load()
-                    if missing or observed != expected_snapshot:
-                        self._log("rejected", phase="", result="failed",
-                                  error_code=ERROR_SOURCE_FENCE_LOST)
-                        return SwitchResult(
-                            request_id="", operation="recover", status="failed",
-                            target=None, from_game=None, to_game=None,
-                            generation=None, error_code=ERROR_SOURCE_FENCE_LOST,
-                            detail="recover source changed before execution",
-                            warnings=(), cleanup_pending=True, receipt=None,
-                        )
-                recovered = self._recover_locked(
-                    tx, deadline=deadline, abandon_program_view=abandon_program_view,
-                    adopt_failed_candidate=adopt_failed_candidate,
-                )
-                self._log(
-                    "recovery_finished", phase="",
-                    result=recovered.status, error_code=recovered.error_code,
-                    cleanup_pending=recovered.cleanup_pending,
-                )
-                return recovered
-        except GameSwitchBusyError as exc:
-            self._log("rejected", phase="", result="busy", error_code=ERROR_BUSY)
-            return SwitchResult(
-                request_id="",
-                operation="recover",
-                status="busy",
-                target=None,
-                from_game=None,
-                to_game=None,
-                generation=None,
-                error_code=ERROR_BUSY,
-                detail=_safe_detail(exc),
-                warnings=(),
-                cleanup_pending=False,
-                receipt=None,
-            )
+        deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
+        # The writer is released during boundary waits, so a stale driver
+        # finishing its rollback (or another recovery) can hold it for a few
+        # milliseconds exactly when recover() enters.  One non-blocking attempt
+        # would spuriously report busy here (#2145); retry briefly within the
+        # caller's budget before degrading.  A genuinely live drain outlasts
+        # this window, so real busyness still reports busy.
+        acquire_until = time.monotonic() + min(
+            ENTRY_ACQUIRE_RETRY_S, max(deadline - time.monotonic(), 0.0)
+        )
+        while True:
+            try:
+                with self.store.transaction() as tx:
+                    if expected_snapshot is not None:
+                        # An owner-only recovery can read a stable snapshot and a
+                        # terminal game, but another legitimate switch may start
+                        # before it acquires the canonical writer lock. Refuse to
+                        # act on any changed state *inside* that same transaction.
+                        # Do not log/surface either snapshot; runtime metadata
+                        # belongs to the private store.
+                        observed, missing = self.store.canonical.load()
+                        if missing or observed != expected_snapshot:
+                            self._log("rejected", phase="", result="failed",
+                                      error_code=ERROR_SOURCE_FENCE_LOST)
+                            return SwitchResult(
+                                request_id="", operation="recover", status="failed",
+                                target=None, from_game=None, to_game=None,
+                                generation=None, error_code=ERROR_SOURCE_FENCE_LOST,
+                                detail="recover source changed before execution",
+                                warnings=(), cleanup_pending=True, receipt=None,
+                            )
+                    recovered = self._recover_locked(
+                        tx, deadline=deadline, abandon_program_view=abandon_program_view,
+                        adopt_failed_candidate=adopt_failed_candidate,
+                    )
+                    self._log(
+                        "recovery_finished", phase="",
+                        result=recovered.status, error_code=recovered.error_code,
+                        cleanup_pending=recovered.cleanup_pending,
+                    )
+                    return recovered
+            except GameSwitchBusyError as exc:
+                now = time.monotonic()
+                if now >= acquire_until:
+                    self._log("rejected", phase="", result="busy", error_code=ERROR_BUSY)
+                    return SwitchResult(
+                        request_id="",
+                        operation="recover",
+                        status="busy",
+                        target=None,
+                        from_game=None,
+                        to_game=None,
+                        generation=None,
+                        error_code=ERROR_BUSY,
+                        detail=_safe_detail(exc),
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                time.sleep(min(self.poll_interval_s, max(acquire_until - now, 0.0)))
 
     def resume_queued(
         self,
@@ -2154,6 +2349,18 @@ class GameSwitchCoordinator:
                         cleanup_pending=False,
                         receipt=None,
                     )
+                # Orphan sweep: a request that died mid-flight stays
+                # "accepted"/"allocating" forever and blocks every later
+                # claim through the nonterminal-receipts gate.  A stable,
+                # ownerless canonical means none of them can be a live
+                # driver, so migrate them into the durable FIFO like the
+                # orphaned-accepted path does and let the queue drain them
+                # in order instead of deadlocking every caller.
+                for receipt in list(self.store.receipts.receipts()):
+                    if receipt.get("status") in {"allocating", "accepted"}:
+                        self.store._requeue_request_locked(
+                            tx.lock, str(receipt["request_id"])
+                        )
                 queued = self.store.receipts.queued()
                 if not queued:
                     return SwitchResult(
@@ -2304,11 +2511,34 @@ class GameSwitchCoordinator:
                     )
                     recovered = self._recover_draining_locked(tx, state, deadline)
                     current, _migrated = self.store.canonical.load()
-                    if current.get("phase") != "ready":
+                    # A released drain must keep the FIFO moving from either
+                    # landing state: ``ready`` when the old runtime was
+                    # retained, ``idle`` when the death proof retired it.
+                    if current.get("phase") not in {"ready", "idle"}:
                         return recovered
                 elif phase in {"idle", "ready"}:
                     pass
                 else:
+                    if phase in IN_PROGRESS_PHASES and (
+                        _wall_deadline_expired(state.get("deadline_at"))
+                        or _stale_in_progress(state.get("updated_at"))
+                    ):
+                        # A crashed in-progress phase (e.g. a rollback whose
+                        # driver died) can never finish on its own.  With an
+                        # expired deadline or a stale in-progress write there
+                        # is no live owner to protect, so reconcile it
+                        # through the standard recover path under the same
+                        # transaction and let the canonical reach a declared
+                        # phase rather than wedge the FIFO watchdog forever.
+                        # Calling self.recover() here would open a second
+                        # transaction on the lock we already hold, so the
+                        # locked reconcile runs on this transaction instead.
+                        deadline = time.monotonic() + (
+                            timeout_s
+                            if timeout_s is not None
+                            else self.default_timeout_s
+                        )
+                        return self._recover_locked(tx, deadline=deadline)
                     return SwitchResult(
                         request_id=str(state.get("request_id") or ""),
                         operation=str(state.get("operation") or "maintain_fifo"),
@@ -2347,6 +2577,64 @@ class GameSwitchCoordinator:
         if recovered is not None and not resumed.request_id:
             return recovered
         return resumed
+
+    def _watchdog_probe_suppression(self, signature: str) -> int | None:
+        """Persisted dedup for repeated agent-watchdog probe outcomes.
+
+        The 30s maintenance tick and the corner loops call
+        :meth:`repair_active_agent` from fresh processes, so repeat
+        suppression is kept in a small state file rather than memory.
+        Returns ``None`` when this outcome is a repeat still inside the
+        suppression window (nothing should be logged).  Otherwise records
+        the emission and returns how many repeats of the same outcome were
+        suppressed since it was last emitted (0 for a new outcome).
+        """
+
+        path = Path(self.store.state_dir) / WATCHDOG_PROBE_STATE_FILE
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        now = dt.datetime.now(dt.timezone.utc)
+        emitted_at: dt.datetime | None = None
+        if previous.get("signature") == signature:
+            try:
+                emitted_at = dt.datetime.fromisoformat(
+                    str(previous.get("emitted_at") or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                emitted_at = None
+            if emitted_at is not None and emitted_at.tzinfo is None:
+                emitted_at = emitted_at.replace(tzinfo=dt.timezone.utc)
+        try:
+            suppressed = int(previous.get("suppressed") or 0)
+        except (TypeError, ValueError):
+            suppressed = 0
+        if emitted_at is not None and (now - emitted_at).total_seconds() < WATCHDOG_PROBE_REPEAT_S:
+            self._write_watchdog_probe_state(
+                path,
+                {
+                    "signature": signature,
+                    "emitted_at": str(previous.get("emitted_at")),
+                    "suppressed": suppressed + 1,
+                },
+            )
+            return None
+        self._write_watchdog_probe_state(
+            path,
+            {"signature": signature, "emitted_at": _utc_now(), "suppressed": 0},
+        )
+        return suppressed if emitted_at is not None else 0
+
+    def _write_watchdog_probe_state(self, path: Path, record: dict[str, object]) -> None:
+        try:
+            atomic_write_json(path, record)
+        except OSError:
+            # Probe logging is best-effort; a lost dedup marker only means
+            # the next identical outcome is logged again.
+            pass
 
     def repair_active_agent(
         self,
@@ -2388,6 +2676,25 @@ class GameSwitchCoordinator:
             error_code: str | None = None,
             detail: str | None = None,
         ) -> None:
+            ctx = _log_ctx_get()
+            signature = json.dumps(
+                {
+                    "result": result,
+                    "error_code": error_code,
+                    "detail": detail,
+                    "from_game": ctx.get("from_game"),
+                    "generation": ctx.get("generation"),
+                    "runtime_id": ctx.get("runtime_id"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            suppressed = self._watchdog_probe_suppression(signature)
+            if suppressed is None:
+                return
+            if suppressed:
+                note = f"同一結果を{suppressed}回分間引きました"
+                detail = f"{detail}（{note}）" if detail else note
             self._log(
                 "agent_watchdog",
                 phase="ready",
@@ -3037,14 +3344,71 @@ class GameSwitchCoordinator:
                       error_code=recovered.error_code,
                       cleanup_pending=recovered.cleanup_pending)
             return recovered
+        transition_target = rotate_target if rotate_target is not None else target
+        if acceptance.claimed_from_queue and transition_target == "hanjuku-hero":
+            # A queued/replayed Hanjuku switch runs below the corner's
+            # prepare_start(): once its durable boundary decision is gone or
+            # bound to another request, claim() can only fail inside
+            # materialize_runtime and every replay leaves a doomed candidate
+            # plus a retiring runtime (g1211/g1215, docich#4356).  Prove the
+            # decision is still claimable for this exact request before
+            # staging anything; the terminal ``failed``+``timeout`` receipt is
+            # the same pre-launch shape the corner already settles.
+            try:
+                spec = self._candidate_spec(acceptance, transition_target)
+                probe_adapter = self._make_adapter(spec, deadline)
+                from .hanjuku_resume import start_claimable
+                claimable = bool(start_claimable(probe_adapter, request_id))
+            except Exception:
+                # An unreadable decision is not proof that this request owns it.
+                # Never stage a candidate on an indeterminate probe result.
+                # Do not include exception text (which may contain local paths).
+                claimable = False
+            if not claimable:
+                current, _migrated = self.store.canonical.load()
+                current_active = current.get("active")
+                result = {
+                    "request_id": request_id,
+                    "operation": operation,
+                    "status": "failed",
+                    "from_game": (
+                        current_active.get("game")
+                        if isinstance(current_active, dict)
+                        else None
+                    ),
+                    "to_game": transition_target,
+                    "generation": acceptance.generation,
+                    "error_code": ERROR_TIMEOUT,
+                    "detail": "queued/replayed Hanjuku switch has no claimable boundary decision",
+                }
+                tx.transition(
+                    {"validating"},
+                    "ready" if isinstance(current_active, dict) else "idle",
+                    updates={
+                        "operation": None,
+                        "request_id": None,
+                        "deadline_at": None,
+                        "last_result": result,
+                        "last_error": {
+                            "error_code": ERROR_TIMEOUT,
+                            "detail": result["detail"],
+                        },
+                    },
+                    crash_hook=self.crash_hook,
+                )
+                saved = tx.finish_request(request_id, "failed", result)
+                self._log(
+                    "replay_decision_lost", phase="failed", result="failed",
+                    error_code=ERROR_TIMEOUT, detail=result["detail"],
+                )
+                return _result_from_receipt(saved)
         self._log_update(
-            target=rotate_target if rotate_target is not None else target,
-            to_game=rotate_target if rotate_target is not None else target,
+            target=transition_target,
+            to_game=transition_target,
             generation=acceptance.generation,
             runtime_id=str(acceptance.receipt["runtime_id"]),
         )
         self._log("accepted", phase="validating")
-        transition_target = rotate_target if rotate_target is not None else target
         return self._run_operation_locked(
             tx,
             acceptance,
@@ -3372,6 +3736,37 @@ class GameSwitchCoordinator:
             return None
         return bool(result)
 
+    def _probe_processes_gone(
+        self, adapter: CoordinatorAdapter, deadline: float
+    ) -> bool | None:
+        """Adapter death proof; only a conclusive True retires the runtime.
+
+        Adapters may expose ``runtime_processes_gone`` (docich#4693): a
+        fail-closed check that zero runtime-owned processes -- pane leaders,
+        their descendants and env-tagged orphans -- are still alive.  ``None``
+        covers a missing capability, a probe error and an inconclusive adapter
+        answer; all of them must keep the conservative retained-active path
+        because a stalled-but-live runtime is never a corpse.
+        """
+
+        method = getattr(adapter, "runtime_processes_gone", None)
+        if not callable(method):
+            return None
+        try:
+            result = self._call_adapter(
+                lambda cancel: method(deadline, cancel),
+                deadline,
+                self.step_timeouts.probe_s,
+                "runtime_processes_gone",
+            )
+        except Exception:
+            return None
+        if result is True:
+            return True
+        if result is False:
+            return False
+        return None
+
     def _make_adapter(self, spec: RuntimeSpec, deadline: float) -> CoordinatorAdapter:
         adapter = self._call_adapter(
             lambda cancel: self.adapter_factory(spec), deadline, self.step_timeouts.start_s, "factory"
@@ -3634,6 +4029,56 @@ class GameSwitchCoordinator:
         identity = {key: copy.deepcopy(before.get(key)) for key in identity_keys}
         if identity["phase"] != "draining" or identity["request_id"] != request_id:
             raise RoundBoundaryStateChangedError("cancel開始時にdraining identityが変化しました")
+        # Exactly-once adapter cancellation (#2145): claim this request first.
+        # The stale driver's failure path and a recovering switch can both pass
+        # the identity check below, so a concurrent caller must reuse the
+        # claimer's result instead of cancelling the same boundary again.
+        with self._boundary_cancel_claims_lock:
+            claim = self._boundary_cancel_claims.get(request_id)
+            owner = claim is None
+            if owner:
+                claim = _BoundaryCancelClaim()
+                self._boundary_cancel_claims[request_id] = claim
+        if not owner:
+            timeout = max(self.step_timeouts.round_cancel_s, 0.1)
+            tx.release_for_wait()
+            try:
+                outcome = claim.wait(timeout)
+            finally:
+                tx.reacquire_for_wait(
+                    deadline=time.monotonic() + max(self.round_reacquire_timeout_s, 0.1),
+                    poll_interval_s=self.poll_interval_s,
+                )
+            current, _ = self.store.canonical.load()
+            if any(current.get(key) != identity[key] for key in identity_keys):
+                raise RoundBoundaryStateChangedError("cancel結果待機中にdraining identityが変化しました")
+            return outcome
+        try:
+            outcome = self._cancel_round_boundary_once(tx, method, request_id)
+        except BaseException:
+            claim.finish((False, "cancel_boundaryの結果を確認できません"))
+            self._retire_boundary_cancel_claim(request_id, claim)
+            raise
+        claim.finish(outcome)
+        if outcome[0] is not True:
+            # A refused cancellation keeps ``draining`` durable, so the same
+            # request must stay retryable by the next recovery attempt.
+            self._retire_boundary_cancel_claim(request_id, claim)
+        return outcome
+
+    def _retire_boundary_cancel_claim(self, request_id: str, claim: _BoundaryCancelClaim) -> None:
+        with self._boundary_cancel_claims_lock:
+            if self._boundary_cancel_claims.get(request_id) is claim:
+                self._boundary_cancel_claims.pop(request_id, None)
+
+    def _cancel_round_boundary_once(self, tx, method, request_id: str) -> tuple[bool, str | None]:
+        """Perform the single claimed adapter cancellation for one request."""
+
+        before, _ = self.store.canonical.load()
+        identity_keys = ("phase", "request_id", "active", "candidate", "previous")
+        identity = {key: copy.deepcopy(before.get(key)) for key in identity_keys}
+        if identity["phase"] != "draining" or identity["request_id"] != request_id:
+            raise RoundBoundaryStateChangedError("cancel開始時にdraining identityが変化しました")
         timeout = max(self.step_timeouts.round_cancel_s, 0.1)
         cancel_deadline = time.monotonic() + timeout
         call_error: BaseException | None = None
@@ -3767,6 +4212,30 @@ class GameSwitchCoordinator:
                     cleanup_pending=False,
                     receipt=copy.deepcopy(dict(acceptance.receipt)),
                 )
+        # A boundary can fail because the old runtime is already gone (for
+        # example Hanjuku exited before terminal evidence, docich#3521).
+        # Retaining that corpse as ``active`` leaves a dead game tracked as
+        # live forever: nothing re-queues the drain, the presentation stays
+        # stopped, and the orphaned agent keeps observation-retrying a
+        # runtime nobody can reach.  Probe once on a fresh budget; only a
+        # definitive "not alive" retires the runtime -- an unknown probe
+        # keeps the conservative retained-active path below.
+        if old_adapter is not None and self._probe_alive(
+            old_adapter, time.monotonic() + self.step_timeouts.probe_s
+        ) is False:
+            return self._retire_dead_active_locked(
+                tx,
+                acceptance.request_id,
+                str(acceptance.receipt["operation"]),
+                acceptance.generation,
+                target,
+                old_active,
+                old_adapter,
+                state,
+                error_code=error_code,
+                detail=detail,
+                boundary_cancelled=bool(cancel_boundary),
+            )
         last_result = {
             "request_id": acceptance.request_id,
             "operation": str(acceptance.receipt["operation"]),
@@ -3804,6 +4273,107 @@ class GameSwitchCoordinator:
             detail=detail,
         )
         return _result_from_receipt(receipt)
+
+    def _retire_dead_active_locked(
+        self,
+        tx: GameSwitchTransaction,
+        request_id: str,
+        operation: str,
+        generation: int | None,
+        target: str | None,
+        old_active: Mapping[str, object],
+        old_adapter: CoordinatorAdapter,
+        state: Mapping[str, object],
+        *,
+        error_code: str,
+        detail: str,
+        boundary_cancelled: bool,
+    ) -> SwitchResult:
+        """Collect a boundary failure whose old runtime is confirmed dead.
+
+        The retained-active path exists so a still-playing game survives a
+        failed switch; a confirmed-dead runtime can never be drained again,
+        so it is moved to ``retiring`` first (crash-safe tracking, retried by
+        the normal recovery cleanup) and torn down immediately on a fresh
+        budget -- the request deadline is typically spent by the failed
+        boundary wait, same rule as rollback.  The canonical update must
+        land before teardown: contained adapters refuse to clean a runtime
+        still committed in ``active``/``previous`` (safe-boundary contract),
+        so the runtime is uncommitted first and collected second.  A teardown
+        that cannot be confirmed leaves the entry in ``retiring`` rather than
+        re-publishing the corpse as active.
+        """
+        retiring_entry = {**dict(old_active), "cleanup_role": "failed_boundary_active"}
+        tx.transition(
+            {"draining"},
+            "idle",
+            updates={
+                "active": None,
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "retiring": [retiring_entry, *(state.get("retiring") or [])],
+                "last_error": {"error_code": error_code, "detail": detail},
+            },
+            crash_hook=self.crash_hook,
+        )
+        torn_down = self._teardown_runtime(
+            old_adapter, time.monotonic() + self.rollback_timeout_s
+        )
+        warnings: list[str] = []
+        cleanup_pending = not torn_down
+        if not torn_down:
+            warnings.append("停止確認済みruntimeの回収を確認できませんでした")
+        last_result = {
+            "request_id": request_id,
+            "operation": operation,
+            "status": "failed",
+            "from_game": old_active["game"],
+            "to_game": target,
+            "generation": generation,
+            "error_code": error_code,
+            "detail": detail,
+            "failure_phase": "round_boundary",
+            # The runtime was provably dead, so nothing is retained: the
+            # restore-replay proof in retro_corner must not revive it.
+            "retained_active": None,
+            "active_retired": True,
+            "boundary_cancelled": boundary_cancelled,
+            "cleanup_pending": cleanup_pending,
+        }
+        tx.transition(
+            {"idle"},
+            "idle",
+            updates={
+                "retiring": (
+                    list(state.get("retiring") or [])
+                    if torn_down
+                    else [retiring_entry, *(state.get("retiring") or [])]
+                ),
+                "last_result": last_result,
+            },
+            crash_hook=self.crash_hook,
+        )
+        receipt = tx.finish_request(request_id, "failed", last_result)
+        if torn_down:
+            self._write_retire_marker(retiring_entry, warnings, "idle")
+        try:
+            self._write_mirror(None)
+        except Exception as exc:
+            warnings.append(f"current_game mirror更新失敗: {_safe_detail(exc)}")
+        self._log(
+            "round_boundary_failed",
+            phase="idle",
+            result="failed",
+            error_code=error_code,
+            detail=detail,
+            cleanup_pending=cleanup_pending,
+        )
+        return _result_from_receipt(
+            receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending
+        )
 
     def _round_boundary_stale_result(
         self,
@@ -3921,7 +4491,24 @@ class GameSwitchCoordinator:
                 )
             boundary_method = getattr(old_adapter, "request_round_boundary", None)
             boundary_required = self._round_boundary_required(old_adapter)
-            if callable(boundary_method) or boundary_required:
+            if self._runtime_confirmed_dead(old_adapter, deadline):
+                # Issue #3521: canonical active still tracks a runtime whose
+                # game already exited (e.g. quiesce_failed left it behind and
+                # presentation later went stopped).  A dead runtime has no
+                # round boundary to wait for; reclaim it through the ordinary
+                # quiesce path so stop_agent/cleanup collect the residue and
+                # the switch proceeds instead of re-failing on a stale active.
+                self._log(
+                    "active_stale_reclaim",
+                    phase="preparing",
+                    detail="tracked active runtime is already dead; skipping round boundary",
+                )
+                tx.transition(
+                    {"preparing"}, "quiescing",
+                    updates={"active": None, "previous": old_active},
+                    crash_hook=self.crash_hook,
+                )
+            elif callable(boundary_method) or boundary_required:
                 tx.transition(
                     {"preparing"}, "draining",
                     crash_hook=self.crash_hook,
@@ -4192,6 +4779,20 @@ class GameSwitchCoordinator:
             time.sleep(self.poll_interval_s)
         return self._probe_alive(adapter, deadline) is False
 
+    def _runtime_confirmed_dead(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """True only when the adapter's liveness probe cleanly reports death.
+
+        ``alive() -> False`` is conclusive: window, pane and process are all
+        gone (Issue #3521: presentation stopped while canonical ``active``
+        still tracks the runtime).  ``_probe_alive`` already bounds the call
+        by ``step_timeouts.probe_s`` -- the same budget the boundary-failure
+        probe uses -- and returns a tri-state, so ``is False`` is the only
+        conclusive verdict: a raised error or a timeout is inconclusive, not
+        proof of death, and callers must keep the normal quiesce path in
+        that case (docich#3529).
+        """
+        return self._probe_alive(adapter, deadline) is False
+
     def _teardown_runtime(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
         """Stop agent and game, then confirm the runtime is actually gone.
 
@@ -4262,7 +4863,16 @@ class GameSwitchCoordinator:
                     detail=f"old runtime adapter: {_safe_detail(exc)}",
                     keep_active=True,
                 )
-            if getattr(adapter, "requires_stop_boundary", False):
+            if self._runtime_confirmed_dead(adapter, deadline):
+                # Issue #3521: tracked active is already dead; there is no
+                # boundary to drain and nothing to lose by reclaiming it here.
+                self._log(
+                    "active_stale_reclaim",
+                    phase="validating",
+                    detail="tracked active runtime is already dead; skipping round boundary",
+                )
+                tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
+            elif getattr(adapter, "requires_stop_boundary", False):
                 tx.transition({"validating"}, "draining",
                               updates={"deadline_at": deadline_at}, crash_hook=self.crash_hook)
                 try:
@@ -4434,6 +5044,16 @@ class GameSwitchCoordinator:
                         updates={"candidate": None},
                         crash_hook=self.crash_hook,
                     )
+            # 案c: hanjuku-hero の rollback 後、restore() 未成功かつ runtime
+            # 停止確認済み（torn_down）の場合のみ rolled-back-unconsumed に
+            # 遷移し、prepare() で pending 扱いしない。runtime 停止未確認
+            # （torn_down=False）は claimed のまま（recovery-required）。
+            # 判定は実測値 bool(torn_down) に1元化する。
+            if candidate.get("game") == "hanjuku-hero":
+                from .hanjuku_resume import transition_rollback_claim
+                from types import SimpleNamespace
+                _g = SimpleNamespace(state_dir=self.store.state_dir)
+                transition_rollback_claim(_g, runtime_stopped=bool(torn_down))
 
         state, _migrated = self.store.canonical.load()
         previous = state.get("previous") or state.get("active")
@@ -4533,6 +5153,7 @@ class GameSwitchCoordinator:
                 live_singleton_only = False
         if state.get("candidate") is not None or (state.get("retiring") and not live_singleton_only):
             warnings.append("未停止runtimeがあるためpreviousの再起動を拒否しました")
+            _record_restore_stage(self.store.state_dir, "unquiesced-runtime")
             if cleanup_pending_out is not None:
                 cleanup_pending_out.append(True)
             return None
@@ -4546,10 +5167,12 @@ class GameSwitchCoordinator:
             previous_adapter = self._make_adapter(previous_spec, deadline)
         except Exception as exc:
             warnings.append(f"previous adapter生成失敗: {_safe_detail(exc)}")
+            _record_restore_stage(self.store.state_dir, "adapter-unavailable")
             return None
         previous_alive = self._probe_alive(previous_adapter, deadline)
         if live_singleton_only and previous_alive is not True:
             warnings.append("共有singletonの再起動は許可されていません")
+            _record_restore_stage(self.store.state_dir, "singleton-restart-refused")
             return None
         if previous_alive is None:
             if previous_adapter.name == "program":
@@ -4565,6 +5188,7 @@ class GameSwitchCoordinator:
                 previous_alive = False
             else:
                 warnings.append("previous runtimeの生存確認ができません (probe失敗)")
+                _record_restore_stage(self.store.state_dir, "alive-probe-failed")
                 return None
         if previous_alive:
             # The runtime was quiescing: a living process is not necessarily a
@@ -4585,6 +5209,7 @@ class GameSwitchCoordinator:
                 )
             except Exception as exc:
                 warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
+                _record_restore_stage(self.store.state_dir, "readiness-failed")
                 return None
             if live_singleton_only:
                 try:
@@ -4596,6 +5221,7 @@ class GameSwitchCoordinator:
                     proven = False
                 if proven is not True:
                     warnings.append("共有singletonの復帰直前照合に失敗しました")
+                    _record_restore_stage(self.store.state_dir, "singleton-recheck-failed")
                     return None
             # Persist the new lease in previous BEFORE starting the agent so
             # the new worker can await a canonical identity and the old lease
@@ -4624,6 +5250,7 @@ class GameSwitchCoordinator:
                     # again: an agent-enabled rollback must not publish a
                     # runtime whose agent is gone.
                     warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
+                    _record_restore_stage(self.store.state_dir, "agent-restart-failed")
                     return None
             restored = dict(previous)
             restored["lease_id"] = new_lease
@@ -4652,6 +5279,17 @@ class GameSwitchCoordinator:
                 },
                 crash_hook=self.crash_hook,
             )
+            # Rollback restore commits a runtime: announce it like a switch
+            # commit so the stream title follows the restored game. Without
+            # this the adapter's pre-commit sync was the only writer (removed
+            # 2026-11-05 for flap suppression), leaving e.g. sorengame on air
+            # while soren91 was active.
+            try:
+                restored_game = restored.get("game") if isinstance(restored, dict) else None
+                if isinstance(restored_game, str) and restored_game:
+                    self._emit_post_commit(restored_game)
+            except Exception:
+                pass
             receipt_done = (
                 tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
             )
@@ -4673,9 +5311,11 @@ class GameSwitchCoordinator:
                 )
             except Exception as exc:
                 warnings.append(f"previousの継続証拠を確認できません: {_safe_detail(exc)}")
+                _record_restore_stage(self.store.state_dir, "continuation-unproven")
                 return None
             if allowed is not True:
                 warnings.append("previousの継続証拠がないため新規ゲームへの置換を拒否しました")
+                _record_restore_stage(self.store.state_dir, "continuation-unproven")
                 return None
 
         # Replace mode: the previous game was stopped, so restore it as a
@@ -4711,8 +5351,11 @@ class GameSwitchCoordinator:
             adapter = self._make_adapter(rollback_spec, deadline)
         except Exception as exc:
             warnings.append(f"rollback adapter生成失敗: {_safe_detail(exc)}")
+            _record_restore_stage(self.store.state_dir, "rollback-adapter-failed")
             return None
+        start_stage = "rollback-start-failed"
         try:
+            start_stage = "rollback-materialize-failed"
             self._call_adapter(
                 lambda cancel: adapter.materialize_runtime(deadline, cancel),
                 deadline,
@@ -4720,6 +5363,7 @@ class GameSwitchCoordinator:
                 "materialize",
             )
             self._check_deadline(deadline)
+            start_stage = "rollback-readiness-failed"
             self._call_adapter(
                 lambda cancel: adapter.readiness(deadline, cancel),
                 deadline,
@@ -4727,6 +5371,7 @@ class GameSwitchCoordinator:
                 "readiness",
             )
             if adapter.agent_enabled:
+                start_stage = "rollback-agent-start-failed"
                 self._call_adapter(
                     lambda cancel: adapter.start_agent(deadline, cancel),
                     deadline,
@@ -4759,6 +5404,7 @@ class GameSwitchCoordinator:
                         crash_hook=self.crash_hook,
                     )
             warnings.append(f"rollback起動失敗: {_safe_detail(exc)}")
+            _record_restore_stage(self.store.state_dir, start_stage)
             return None
         last_result = {
             "request_id": request_id,
@@ -4785,6 +5431,14 @@ class GameSwitchCoordinator:
             },
             crash_hook=self.crash_hook,
         )
+        # Same as alive restore above: the rollback commits a runtime, so
+        # announce it through the post-commit hook (flap fix 2026-11-05).
+        try:
+            rollback_game = rollback_rd.get("game") if isinstance(rollback_rd, dict) else None
+            if isinstance(rollback_game, str) and rollback_game:
+                self._emit_post_commit(rollback_game)
+        except Exception:
+            pass
         receipt_done = (
             tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
         )
@@ -4885,6 +5539,16 @@ class GameSwitchCoordinator:
             except Exception as exc:
                 torn_down = False
                 evidence = _evidence_from_exception(exc)
+            if not torn_down and self._retiring_targets_absent(runtime):
+                # A dead candidate leaves no tearable state; keep it in
+                # retiring forever would wedge every later operation.
+                torn_down = True
+                self._log(
+                    "cleanup_dead_runtime", phase=str(state.get("phase")),
+                    generation=runtime.get("generation"),
+                    runtime_id=runtime.get("runtime_id"),
+                    detail=_teardown_detail(evidence, runtime),
+                )
             if not torn_down:
                 cleanup_pending = True
                 remaining.append(runtime)
@@ -4904,6 +5568,7 @@ class GameSwitchCoordinator:
                     result="cleaned",
                     detail=_teardown_detail(evidence, runtime),
                 )
+                self._write_retire_marker(runtime, warnings, str(state.get("phase")))
         if len(remaining) != len(retiring):
             tx.transition(
                 {state["phase"]}, str(state["phase"]),
@@ -4918,7 +5583,79 @@ class GameSwitchCoordinator:
                     _retiring_label(runtime) for runtime in remaining
                 ),
             )
+        self._prune_hanjuku_logs(warnings)
         return cleanup_pending
+
+    def _retiring_targets_absent(self, runtime: Mapping[str, object]) -> bool:
+        """True only when every recorded tmux target is provably gone.
+
+        Strict probes keep tmux-unreachable from counting as absence, so a
+        runtime we cannot verify stays pending instead of being dismissed.
+        """
+        targets = [
+            ("window", runtime.get("game_window")),
+            ("window", runtime.get("agent_window")),
+            ("session", runtime.get("adapter_session")),
+        ]
+        recorded = [(kind, str(value)) for kind, value in targets if value]
+        if not recorded:
+            return False
+        try:
+            tmux = self._probe_tmux()
+            for kind, value in recorded:
+                exists = (tmux.window_target_exists(value, strict=True)
+                          if kind == "window" else
+                          tmux.session_target_exists(value, strict=True))
+                if exists:
+                    return False
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _probe_tmux():
+        """Tmux wrapper for dead-runtime probes (test seam)."""
+        from .tmux import Tmux
+        return Tmux()
+
+    def _write_retire_marker(self, runtime: Mapping[str, object], warnings: list[str], phase: str) -> None:
+        """Common retire marker for every completed generation (docich#3122).
+
+        Written only after teardown is confirmed, so the marker proves the
+        generation was properly retired rather than abandoned. Housekeeping
+        only: a marker failure is a warning, never a rollback reason.
+        """
+        runtime_id = runtime.get("runtime_id")
+        try:
+            if not isinstance(runtime_id, str):
+                raise RetireMarkerError("invalid_runtime_id")
+            write_retire_marker(self.store.state_dir, runtime_id)
+        except Exception as exc:
+            warnings.append(f"retire marker書き込み失敗: {_safe_detail(exc)}")
+            return
+        self._log(
+            "retire_marker_written", phase=phase,
+            generation=runtime.get("generation"),
+            runtime_id=runtime_id,
+        )
+
+    def _prune_hanjuku_logs(self, warnings: list[str]) -> None:
+        """Bounded retention for completed hanjuku decision/event logs (#3132).
+        Failures are warnings, never rollback reasons."""
+        canonical = self.store.canonical
+        try:
+            result = prune_completed(canonical.state_dir, lambda: canonical.load()[0])
+        except Exception as exc:
+            warnings.append(f"hanjuku log retention失敗: {_safe_detail(exc)}")
+            return
+        if result.generations:
+            self._log(
+                "hanjuku_logs_pruned", result="pruned",
+                detail=(f"generations={len(result.generations)} files={result.files_removed}"
+                        f" bytes={result.bytes_removed} skipped={result.skipped}"),
+            )
+        elif result.skipped:
+            self._log("hanjuku_logs_pruned", result="skipped", detail=f"skipped={result.skipped}")
 
     def _retry_retiring_locked(
         self, tx: GameSwitchTransaction, deadline: float, warnings: list[str]
@@ -5043,6 +5780,33 @@ class GameSwitchCoordinator:
                 receipt=copy.deepcopy(dict(receipt)),
             )
 
+        # The cancel was acknowledged.  When the adapter can additionally
+        # prove that no runtime-owned process survives anywhere (docich#4693),
+        # re-publishing that corpse as ``active`` would leave a dead game
+        # tracked as live forever -- nothing re-queues the drain and rotation
+        # never resumes.  Route the acknowledged drain through the same
+        # retire path a boundary failure uses for a dead runtime: a probe
+        # that is missing, inconclusive or sees a survivor keeps the
+        # conservative retained-active path below.
+        current_state, _migrated = self.store.canonical.load()
+        if (
+            self._probe_processes_gone(adapter, deadline) is True
+            and current_state.get("phase") == "draining"
+        ):
+            return self._retire_dead_active_locked(
+                tx,
+                request_id,
+                str(receipt.get("operation") or state.get("operation") or "switch"),
+                receipt.get("generation"),
+                receipt.get("target"),
+                active,
+                adapter,
+                current_state,
+                error_code=ERROR_TIMEOUT,
+                detail="試合終了境界のdeadlineが経過し、runtimeの全process消滅を確認したため回収しました",
+                boundary_cancelled=True,
+            )
+
         last_result = {
             "request_id": request_id,
             "operation": str(receipt.get("operation") or state.get("operation") or "switch"),
@@ -5056,24 +5820,31 @@ class GameSwitchCoordinator:
             "retained_active": copy.deepcopy(active),
             "boundary_cancelled": True,
         }
-        tx.transition(
-            {"draining"},
-            "ready",
-            updates={
-                "active": copy.deepcopy(active),
-                "candidate": None,
-                "previous": None,
-                "operation": None,
-                "request_id": None,
-                "deadline_at": None,
-                "last_result": last_result,
-                "last_error": {
-                    "error_code": ERROR_TIMEOUT,
-                    "detail": last_result["detail"],
+        # Another recovery (e.g. the stale driver itself, or a concurrent
+        # request) may have already transitioned canonical state out of
+        # ``draining`` while this one released the writer lock during the
+        # adapter cancel above.  In that case the transition is already done;
+        # do not raise ``InvalidTransitionError`` (ready -> ready).  Finish
+        # the receipt idempotently and report the same timeout result.
+        if current_state.get("phase") == "draining":
+            tx.transition(
+                {"draining"},
+                "ready",
+                updates={
+                    "active": copy.deepcopy(active),
+                    "candidate": None,
+                    "previous": None,
+                    "operation": None,
+                    "request_id": None,
+                    "deadline_at": None,
+                    "last_result": last_result,
+                    "last_error": {
+                        "error_code": ERROR_TIMEOUT,
+                        "detail": last_result["detail"],
+                    },
                 },
-            },
-            crash_hook=self.crash_hook,
-        )
+                crash_hook=self.crash_hook,
+            )
         saved = tx.finish_request(request_id, "failed", last_result)
         self._log(
             "drain_recovered_timeout",
@@ -5156,6 +5927,7 @@ class GameSwitchCoordinator:
                 and active is None
             )
             released_terminal = None
+            release_detail = None
             if (isinstance(previous, Mapping) and active is None and not cleanup_pending
                     and state.get("candidate") is None and not state.get("retiring")
                     and previous.get("adapter") == "retroarch"
@@ -5164,13 +5936,28 @@ class GameSwitchCoordinator:
                     adapter = self._make_adapter(
                         RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
                     verify = getattr(adapter, "can_release_terminal_previous", None)
-                    if callable(verify) and self._call_adapter(
+                    releasable = bool(callable(verify) and self._call_adapter(
                             lambda cancel: verify(deadline, cancel), deadline,
-                            self.step_timeouts.probe_s, "terminal_previous"):
+                            self.step_timeouts.probe_s, "terminal_previous"))
+                    release_reason = "terminal"
+                    dead_verify = getattr(adapter, "can_release_dead_previous", None)
+                    if not releasable and callable(dead_verify):
+                        # The terminal boundary can never arrive when the
+                        # runtime died first (tmux session loss).  Refusing
+                        # forever is not fail-closed: it strands canonical in
+                        # `failed` and stops the whole rotation.  Only an
+                        # adapter that proves the runtime is gone may release
+                        # it this way, and the proof is recorded.
+                        releasable = bool(self._call_adapter(
+                            lambda cancel: dead_verify(deadline, cancel), deadline,
+                            self.step_timeouts.probe_s, "dead_previous"))
+                        release_reason = "dead-runtime-no-boundary"
+                    if releasable:
                         if not self._teardown_runtime(adapter, deadline):
                             raise AdapterError("terminal previous cleanup is unconfirmed")
                         released_terminal = {key: previous[key] for key in
                                              ("game", "runtime_id", "generation", "lease_id")}
+                        release_detail = release_reason
                         abandon = True
                 except Exception as exc:
                     return self._recover_fail_locked(
@@ -5194,6 +5981,7 @@ class GameSwitchCoordinator:
             if released_terminal is not None:
                 prior = state.get("last_result") or {}
                 last_result.update(released_terminal=released_terminal,
+                                   released_reason=release_detail,
                                    restore_request_id=prior.get("request_id"))
             tx.transition(
                 {"failed"}, "idle",
@@ -5695,8 +6483,13 @@ class GameSwitchCoordinator:
             "cleanup_pending": True if cleanup_pending else None,
         }
         try:
+            # Transition from the phase the store holds *now*: a failed rollback
+            # parks the canonical at ``rolling_back`` after the caller captured
+            # ``state``, and a stale expected phase makes this settle silently
+            # no-op (g1163 2026-11-14: recover left the canonical stuck at
+            # rolling_back/rollback_failed with no driver left to finish it).
             tx.transition(
-                {str(state["phase"])}, "failed",
+                {str(current["phase"])}, "failed",
                 updates={
                     "last_result": last_result,
                     "last_error": {"error_code": error_code, "detail": detail},

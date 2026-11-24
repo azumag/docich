@@ -1,4 +1,5 @@
 """Offline contract tests; all execution and clocks injected, no paid/runtime IO."""
+import contextlib
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -16,6 +17,7 @@ from docich.corner_rotation import (
     RotationError,
     DAY,
     ERROR_KINDS,
+    HEARTBEAT_FRESH_S,
     _error_kind,
 )
 from docich.corner_adapters import CornerExecutionError
@@ -70,8 +72,12 @@ def test_flat_live_catalog_and_financial_boundary():
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
                                      "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
-                                     "yosou-oh"}
+                                     "yosou-oh", "doushi-card", "puyo-corner", "mystery",
+                                     "trpg-corner", "communist-law-simulator", "chart-659"}
     assert all(c.live_eligible is False for c in catalog)
+    # 2026-10-24 オーナー指示 (#2694) で自動抽選へ復帰。
+    lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
+    assert lawsim.enabled and not lawsim.manual_only and lawsim.audio_enabled is True
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
     assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
@@ -84,8 +90,20 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     raw = rotation_config(g)
     assert raw["enabled"] is True
+    assert raw["prediction_hold_wait_minutes"] == 90
+    assert raw["prediction_handoff_seconds"] == 180
     catalog = load_catalog(g)
-    assert len(catalog) == 12
+    # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本。
+    # 2026-11-18: chart-659 (#659) 追加 → 18本（manual-only）。
+    assert len(catalog) == 18
+    # Issue #698: PR-4 activation (owner-approved) makes ぷよぷよクローン
+    # manual-bookable with audio opt-in; auto-rotation still excludes it
+    # until a later approved step drops manual_only.
+    puyo = next(c for c in catalog if c.id == "puyo-corner")
+    assert puyo.enabled and puyo.manual_only and puyo.audio_enabled
+    lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
+    # #2694: 2026-10-24 オーナー指示で manual_only を解除し自動抽選へ復帰。
+    assert lawsim.enabled and not lawsim.manual_only
     weather = next(c for c in catalog if c.id == "weather")
     assert weather.enabled and weather.fetch_on_start
     assert weather.duration_minutes == 4 and weather.audio_enabled is True
@@ -96,12 +114,57 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     assert tsuitate.enabled is True and tsuitate.manual_only is False
     assert tsuitate.game == "tsuitate-view"
     yosou = next(c for c in catalog if c.id == "yosou-oh")
-    assert yosou.enabled is True and yosou.manual_only is True
+    # 2026-10-15 オーナー判断: 自動抽選に組み入れる（manual_only を解除）。
+    assert yosou.enabled is True and yosou.manual_only is False
+    assert yosou.audio_enabled is True
     assert (yosou.adapter, yosou.game) == ("yoso", "yosou-view")
+    doushi = next(c for c in catalog if c.id == "doushi-card")
+    # 2026-10-15 オーナー承認で有効化し、自動抽選の対象へ入れた（manual_only なし）。
+    assert doushi.enabled is True and doushi.manual_only is False
+    assert (doushi.adapter, doushi.game) == ("doushi", "doushi-view")
+    # 2026-11-23 オーナー指示: 同志カード大賞を読み上げる（audio opt-in を有効化）。
+    assert doushi.live_eligible is False and doushi.audio_enabled is True
+    # duration_minutes 未指定は doushi_corner.DEFAULT_DURATION_MINUTES(2分) を使う。
+    assert doushi.duration_minutes is None
     assert {c.id for c in catalog} >= {
         "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
         "hanjuku-hero", "nethack", "paper", "meriken", "tsuitate", "yosou-oh",
+        "doushi-card",
     }
+
+
+def test_prediction_wait_config_is_bounded(tmp_path):
+    from docich.corner_catalog import (
+        prediction_handoff_seconds,
+        prediction_hold_wait_seconds,
+        rotation_config,
+    )
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[corner_rotation]\nenabled=true\n"
+        "prediction_hold_wait_minutes=30\nprediction_handoff_seconds=60\n"
+        "[paths]\nstate_dir=\"run\"\n",
+        encoding="utf-8",
+    )
+    g = load_global(tmp_path, path)
+    assert prediction_hold_wait_seconds(g) == 30 * 60
+    assert prediction_handoff_seconds(g) == 60
+    for key, literal in (
+        ("prediction_hold_wait_minutes", "-1"),
+        ("prediction_hold_wait_minutes", "181"),
+        ("prediction_hold_wait_minutes", "true"),
+        ("prediction_handoff_seconds", "-1"),
+        ("prediction_handoff_seconds", "901"),
+        ("prediction_handoff_seconds", "1.5"),
+    ):
+        path.write_text(
+            f"[corner_rotation]\nenabled=true\n{key}={literal}\n"
+            "[paths]\nstate_dir=\"run\"\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(CornerCatalogError):
+            rotation_config(load_global(tmp_path, path))
 
 
 def test_weather_known_corner_round_trips_through_ledger(tmp_path):
@@ -222,15 +285,22 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
         "state": "finished", "readyForNextRun": True,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 11
-    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate"} <= set(eligible)
-    assert excluded == {"yosou-oh": "manual-only"}
+    # PR-4: puyo is enabled + manual_only -> manual-bookable but auto-excluded.
+    # mystery (#2492) is auto-eligible. lawsim (#2694) is auto-eligible again.
+    assert len(eligible) == 15
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
+            "yosou-oh", "doushi-card", "mystery", "communist-law-simulator"} <= set(eligible)
+    assert excluded == {"puyo-corner": "manual-only", "trpg-corner": "manual-only",
+                        "chart-659": "manual-only"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 10 and "tsuitate" not in eligible
-    assert excluded == {"tsuitate": "adapter-unavailable", "yosou-oh": "manual-only"}
+    assert len(eligible) == 14 and "tsuitate" not in eligible
+    assert excluded == {"tsuitate": "adapter-unavailable",
+                        "puyo-corner": "manual-only",
+                        "trpg-corner": "manual-only",
+                        "chart-659": "manual-only"}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
@@ -363,7 +433,13 @@ def test_manual_meriken_start_scopes_runtime_environment(tmp_path, monkeypatch):
     executor.results.append("completed")
     outcome = holder["manager"].tick()
     assert outcome.get("reason") != "manual-capture-profile-expired"
-    assert len(executor.requests) == 3
+    # The stale manual reservation is released, then the exhausted rotation
+    # continues with its least-cooled corner (the same one, since it is the
+    # only eligible corner).
+    assert len(executor.requests) == 4
+    assert executor.requests[-1]["corner"] == "meriken"
+    assert executor.requests[-1].get("capture_profile") is None
+    assert executor.requests[-1]["cooldown_exempt"] is True
     assert json.loads((tmp_path / "corner_rotation.json").read_text())["manual_pending"] is None
 
     manager.capture_profile = "rejected_png_v1"
@@ -783,6 +859,196 @@ def test_removed_corner_releases_after_its_own_terminal_improvement_failure(setu
     assert len(executor.calls) == 2
 
 
+def test_policy_rejected_improvement_releases_next_corner(setup):
+    # NInvaders' policy gate ends an improvement as ``rejected`` with a
+    # completed_at stamp. That is terminal evidence: keeping the gate closed
+    # wedges the whole rotation (2026-11-15 production incident).
+    _, clock, catalog, executor, make = setup
+    manager = make()
+    manager.tick()
+    state_dir = manager.g.state_dir
+    (state_dir / "retro_corner.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "game": "nsnake",
+            "completed_at": clock[0],
+            "improve_job": {"spawned": True},
+        }),
+        encoding="utf-8",
+    )
+    (state_dir / "corner_improve_nsnake.json").write_text(
+        json.dumps({"status": "rejected", "reason_code": "policy-invalid",
+                    "phase": "llm", "started_at": clock[0] + 1,
+                    "completed_at": clock[0] + 2}),
+        encoding="utf-8",
+    )
+    clock[0] += DAY
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+
+    result = make(remaining).tick()
+
+    assert result["status"] == "ready"
+    assert len(executor.calls) == 2
+
+
+def test_policy_rejection_older_than_corner_end_still_blocks(setup):
+    # The timestamp contract still proves the record belongs to this run.
+    _, clock, catalog, executor, make = setup
+    manager = make()
+    manager.tick()
+    state_dir = manager.g.state_dir
+    (state_dir / "retro_corner.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "game": "nsnake",
+            "completed_at": clock[0],
+            "improve_job": {"spawned": True},
+        }),
+        encoding="utf-8",
+    )
+    (state_dir / "corner_improve_nsnake.json").write_text(
+        json.dumps({"status": "rejected", "started_at": clock[0] - 1,
+                    "completed_at": clock[0] - 0.5}),
+        encoding="utf-8",
+    )
+    clock[0] += DAY
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+
+    result = make(remaining).tick()
+
+    assert result["reason"] == "other-corner-needs-finish-or-recovery"
+    assert len(executor.calls) == 1
+
+
+def test_failed_owner_without_recover_hook_releases_after_stale_proof(setup):
+    """A failed adapter row with no owner-only hook must not block forever."""
+    _, clock, _, executor, make = setup
+    manager = make()
+    manager.save(manager.load(clock[0]))
+    manager.adapters["retro"].states = [{
+        "status": "failed",
+        "rotation_request_id": "stale-request",
+        "started_at": clock[0] - 10,
+        "completed_at": clock[0],
+    }]
+    manager._slot_reusable = lambda *_: True
+
+    clock[0] += 1
+    assert manager.tick()["status"] == "waiting"  # first failed drive: stale=1
+
+    clock[0] = max(clock[0] + 1, (state(manager).get("next_due_at") or 0) + 1)
+    manager.tick()
+
+    final = state(manager)
+    assert final["released_requests"]["retro"]["request_id"] == "stale-request"
+    assert len(executor.calls) == 1
+
+
+def _wedge_improvement_wait(setup):
+    """Reproduce the #4333 wedge: a blocked improvement keeps the wait."""
+    _, clock, catalog, executor, make = setup
+    manager = make()
+    manager.tick()
+    state_dir = manager.g.state_dir
+    (state_dir / "retro_corner.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "game": "nsnake",
+            "completed_at": clock[0],
+            "improve_job": {"spawned": True},
+        }),
+        encoding="utf-8",
+    )
+    (state_dir / "corner_improve_nsnake.json").write_text(
+        json.dumps({"status": "rejected", "started_at": clock[0] - 1,
+                    "completed_at": clock[0] - 0.5}),
+        encoding="utf-8",
+    )
+    clock[0] += DAY
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+    manager = make(remaining)
+    return manager, clock, remaining
+
+
+def test_wait_reason_since_survives_ticks_and_restart(setup):
+    # #4333: reason_since marks when the current wait reason first appeared so
+    # projections can age one unchanged reason past next_due_at. It must also
+    # survive a fresh manager (production runs one process per timer tick).
+    g, clock, catalog, executor, make = setup
+    full_setup = (g, clock, catalog, executor, make)
+    manager, clock, remaining = _wedge_improvement_wait(full_setup)
+
+    assert manager.tick()["reason"] == "other-corner-needs-finish-or-recovery"
+    since = state(manager)["reason_since"]
+    assert since == clock[0]
+
+    clock[0] += 120
+    assert manager.tick()["reason"] == "other-corner-needs-finish-or-recovery"
+    assert state(manager)["reason_since"] == since
+
+    # A new manager over the same ledger keeps the stamp for the same reason.
+    clock[0] += 120
+    restarted = make(remaining)
+    assert restarted.tick()["reason"] == "other-corner-needs-finish-or-recovery"
+    assert state(restarted)["reason_since"] == since
+
+
+def test_wait_reason_since_restamps_on_reason_change(setup):
+    g, clock, catalog, executor, make = setup
+    manager = make()
+    ledger = {"schema_version": 1}
+    ledger["reason"] = "not-due"
+    manager.save(ledger)
+    first = ledger["reason_since"]
+    assert first == clock[0]
+    clock[0] += 60
+    manager.save(ledger)
+    assert ledger["reason_since"] == first
+    ledger["reason"] = "no-enabled-corner"
+    manager.save(ledger)
+    assert ledger["reason_since"] == clock[0]
+    ledger["reason"] = None
+    manager.save(ledger)
+    assert ledger["reason_since"] is None
+
+
+def test_overdue_wait_flags_the_wedged_reason(setup):
+    from docich.corner_rotation import overdue_wait, OVERDUE_WAIT_WARN_S
+
+    manager, clock, _remaining = _wedge_improvement_wait(setup)
+    manager.tick()
+    ledger = state(manager)
+    assert ledger["status"] == "waiting"
+    assert ledger["next_due_at"] < clock[0] - OVERDUE_WAIT_WARN_S
+    # Inside the warn bound the reason is ambiguous with a healthy drain.
+    assert overdue_wait(ledger, clock[0] + OVERDUE_WAIT_WARN_S - 1) is None
+    probe = overdue_wait(ledger, clock[0] + OVERDUE_WAIT_WARN_S)
+    assert probe["reason_age_sec"] == OVERDUE_WAIT_WARN_S
+    assert probe["overdue_sec"] >= OVERDUE_WAIT_WARN_S
+
+
+def test_overdue_wait_requires_both_due_and_unchanged_reason():
+    from docich.corner_rotation import overdue_wait, OVERDUE_WAIT_WARN_S
+
+    now = 100000.0
+    base = {"status": "waiting", "reason": "all-corners-cooling-down"}
+    # An old reason alone is not overdue while next_due_at is barely past.
+    assert overdue_wait({**base, "next_due_at": now - OVERDUE_WAIT_WARN_S + 1,
+                         "reason_since": now - 3600}, now) is None
+    # Past due but the reason just changed.
+    assert overdue_wait({**base, "next_due_at": now - 3600,
+                         "reason_since": now - OVERDUE_WAIT_WARN_S + 1}, now) is None
+    probe = overdue_wait({**base, "next_due_at": now - 3600,
+                          "reason_since": now - 3600}, now)
+    assert probe == {"overdue_sec": 3600, "reason_age_sec": 3600}
+    # A pre-upgrade ledger without reason_since cannot prove continuity.
+    assert overdue_wait({**base, "next_due_at": now - 3600}, now) is None
+    # Only a waiting ledger with a reason is a wedge candidate.
+    assert overdue_wait({"status": "ready", "next_due_at": 0}, now) is None
+    assert overdue_wait({"status": "waiting", "next_due_at": 0,
+                         "reason_since": 0}, now) is None
+
+
 def test_initial_migration_observes_removed_legacy_corner(setup):
     g, clock, catalog, executor, make = setup
     state_dir = Path(g.state_dir)
@@ -852,7 +1118,7 @@ def test_disabled_paused_unavailable_do_not_inflate_denominator(setup):
     assert len(executor.calls) == 1
 
 
-def test_unavailable_and_empty_candidates_wait_without_duplicate(setup):
+def test_unavailable_and_empty_candidates_restart_with_least_cooled(setup):
     _, clock, _, executor, make = setup
     manager = make()
     for adapter in manager.adapters.values():
@@ -862,10 +1128,19 @@ def test_unavailable_and_empty_candidates_wait_without_duplicate(setup):
     saved = state(manager)
     saved["history"] = [dict(corner=c, at=clock[0], source="manual") for c in manager.adapters]
     manager.save(saved)
-    assert make().tick()["reason"] == "all-corners-cooling-down"
+    # Every eligible corner is cooling, but the rotation no longer idles: the
+    # least-cooled corner takes the next slot. All uses tie here, so the
+    # stable corner-id tie-break applies.
+    restarted = make().tick()
+    assert restarted["status"] == "ready"
+    assert restarted["corner"] == "meriken"
+    assert len(executor.calls) == 1
+    # The interval anchor still prevents a duplicate in the same slot.
+    assert make().tick()["reason"] == "not-due"
+    assert len(executor.calls) == 1
 
 
-def test_all_cooling_corners_reanchor_next_due_to_earliest_expiry(setup):
+def test_all_cooling_corners_restart_with_the_least_cooled_corner(setup):
     g, clock, catalog, executor, make = setup
     manager = make()
     now = clock[0]
@@ -888,9 +1163,11 @@ def test_all_cooling_corners_reanchor_next_due_to_earliest_expiry(setup):
 
     result = manager.tick()
 
-    assert result["reason"] == "all-corners-cooling-down"
-    assert state(manager)["next_due_at"] == now - 3600 + DAY
-    assert not executor.calls
+    assert result["status"] == "ready"
+    assert result["corner"] == "meriken"
+    assert state(manager)["next_due_at"] == now + DAY / len(catalog)
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["cooldown_exempt"] is True
 
 
 def test_queue_replay_preserves_identity_across_restart_and_catalog_change(setup):
@@ -933,6 +1210,205 @@ def test_clock_regression_and_large_forward_jump_quarantine(setup):
     clock[0] += 1
     assert make().tick()["status"] == "ready"
     assert len(executor.calls) == 2
+
+
+def _parked_slot(make, clock, *, hb_age=10.0, hb_corner=None, hb_request=None,
+                 status='running'):
+    """A rotation that was parked in a long corner when its process restarted."""
+    manager = make()
+    ledger = manager.load(clock[0])
+    request_id = 'a5bc4982-7a86-46c9-bc82-37ab6413139f'
+    ledger.update(status=status, reason=None,
+                  last_seen_at=clock[0] - 25 * 3600,
+                  pending={'corner': 'retro', 'phase': 'dispatched',
+                           'selected_at': clock[0] - 26 * 3600,
+                           'request_id': request_id, 'resume_latest': True})
+    manager.save(ledger)
+    manager.heartbeat_path.write_text(json.dumps({
+        'schema': 1, 'corner': hb_corner or 'retro',
+        'request_id': hb_request or request_id,
+        'pid': 1, 'at': clock[0] - hb_age,
+    }))
+    return manager
+
+
+def test_parked_slot_heartbeat_skips_clock_gap_quarantine(setup):
+    _, clock, _, executor, make = setup
+    manager = _parked_slot(make, clock)
+    assert manager.tick()['status'] == 'ready'
+    assert 'clock_hold_until' not in state(manager)
+    assert executor.calls and executor.calls[0] == {
+        'corner': 'retro', 'phase': 'dispatched',
+        'selected_at': clock[0] - 26 * 3600,
+        'request_id': 'a5bc4982-7a86-46c9-bc82-37ab6413139f',
+        'resume_latest': True}
+
+
+def test_stale_slot_heartbeat_still_quarantines(setup):
+    _, clock, _, executor, make = setup
+    manager = _parked_slot(make, clock, hb_age=HEARTBEAT_FRESH_S + 1)
+    assert manager.tick()['reason'] == 'clock-gap-quarantine'
+    assert state(manager)['clock_hold_until'] == clock[0] + DAY
+    assert executor.calls == []
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'hb_request': '7b489899-51fa-5cd1-a9ce-49ee5f8b1414'},
+    {'hb_corner': 'paper'},
+    {'status': 'waiting'},
+])
+def test_foreign_or_inactive_heartbeat_does_not_skip_quarantine(setup, kwargs):
+    _, clock, _, executor, make = setup
+    manager = _parked_slot(make, clock, **kwargs)
+    assert manager.tick()['reason'] == 'clock-gap-quarantine'
+    assert state(manager)['clock_hold_until'] == clock[0] + DAY
+    assert executor.calls == []
+
+
+def test_slot_writes_and_clears_its_heartbeat_while_executing(setup):
+    _, _, _, _, make = setup
+    manager = make()
+    seen = {}
+
+    class HeartbeatExecutor:
+        def execute(self, adapter, request):
+            seen['exists'] = manager.heartbeat_path.exists()
+            seen['data'] = json.loads(manager.heartbeat_path.read_text())
+            seen['request'] = request
+            return 'completed'
+
+    manager.executor = HeartbeatExecutor()
+    manager.tick()
+    assert seen['exists'] is True
+    assert seen['data']['request_id'] == seen['request']['request_id']
+    assert seen['data']['corner'] == seen['request']['corner']
+    assert manager.heartbeat_path.exists() is False
+
+
+def test_slot_running_past_quarantine_window_does_not_quarantine(setup):
+    """A slot that owned the lock >24h is busy, not downtime."""
+    _, clock, _, _, make = setup
+    manager = make()
+
+    class SlowExecutor:
+        def execute(self, adapter, request):
+            clock[0] += 30 * 3600
+            return "completed"
+
+    manager.executor = SlowExecutor()
+    assert manager.tick()["status"] == "ready"
+    result = make().tick()
+    assert result.get("reason") != "clock-gap-quarantine"
+    assert "clock_hold_until" not in state(make())
+
+
+def test_long_slot_queued_retry_resumes_without_quarantine(setup):
+    """A >24h slot ending queued keeps its pending resume, not a hold."""
+    _, clock, _, executor, make = setup
+    manager = make()
+    executor.result = "queued"
+
+    class SlowExecutor:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, adapter, request):
+            clock[0] += 30 * 3600
+            return self.inner.execute(adapter, request)
+
+    manager.executor = SlowExecutor(executor)
+    assert manager.tick()["status"] == "waiting"
+    first = executor.calls[0]
+    executor.result = "completed"
+    result = make().tick()
+    assert result.get("reason") != "clock-gap-quarantine"
+    assert executor.calls[1]["request_id"] == first["request_id"]
+    assert "clock_hold_until" not in state(make())
+
+
+def test_resolved_long_slot_ledger_activity_skips_quarantine(setup):
+    """Fresh ledger rows prove life even when last_seen_at stayed stale."""
+    _, clock, _, executor, make = setup
+    manager = make()
+    ledger = manager.load(clock[0])
+    ledger.update(
+        status="ready", reason=None,
+        last_seen_at=clock[0] - 30 * 3600,
+        last_slot_at=clock[0] - 30 * 3600,
+        last_result={"corner": "retro", "request_id": "req-1",
+                     "status": "completed", "at": clock[0] - 60},
+        history=[{"corner": "retro", "at": clock[0] - 60,
+                  "source": "completion"}],
+        next_due_at=clock[0] - 3500,
+    )
+    manager.save(ledger)
+    result = manager.tick()
+    assert result.get("reason") != "clock-gap-quarantine"
+    assert "clock_hold_until" not in state(manager)
+    assert executor.calls
+
+
+def _quarantined_manual(make, clock, *, corner='hanjuku-hero', hold=DAY,
+                       status='waiting', reason='clock-gap-quarantine', queued=True):
+    manager = make()
+    ledger = manager.load(clock[0])
+    ledger.update(status=status, reason=reason,
+                  clock_hold_until=clock[0] + hold)
+    if queued:
+        ledger['queued_manual'] = {
+            'corner': corner, 'selected_at': clock[0],
+            'request_id': '00000000-0000-0000-0000-000000000000'}
+    manager.save(ledger)
+    return manager
+
+
+def test_clear_manual_clock_quarantine_removes_only_the_hold(setup):
+    _, clock, _, executor, make = setup
+    manager = _quarantined_manual(make, clock)
+    before = state(manager)
+    result = manager.clear_manual_clock_quarantine()
+    assert result == {'status': 'cleared', 'corner': 'hanjuku-hero'}
+    after = state(manager)
+    assert 'clock_hold_until' not in after
+    assert after['status'] == 'waiting' and after['reason'] == 'manual-clock-hold-cleared'
+    assert after['queued_manual'] == before['queued_manual']
+    assert executor.calls == []
+    assert manager.clear_manual_clock_quarantine() == {'status': 'not_quarantined'}
+
+
+@pytest.mark.parametrize('mutate,expected', [
+    ({'reason': 'other'}, 'not_quarantined'),
+    ({'status': 'recovery_required'}, 'recovery_required'),
+    ({'hold': 0}, 'not_held'),
+    ({'corner': 'nsnake'}, 'not_queued'),
+    ({'queued': False}, 'not_queued'),
+])
+def test_clear_manual_clock_quarantine_fails_closed(setup, mutate, expected):
+    _, clock, _, _, make = setup
+    manager = _quarantined_manual(make, clock, **mutate)
+    assert manager.clear_manual_clock_quarantine() == {'status': expected}
+    assert 'clock_hold_until' in state(manager) or expected in (
+        'recovery_required', 'not_quarantined')
+
+
+def test_clear_manual_clock_quarantine_refuses_a_regressed_clock(setup):
+    _, clock, _, _, make = setup
+    manager = _quarantined_manual(make, clock)
+    ledger = manager.load(clock[0])
+    ledger['last_seen_at'] = clock[0] + 1
+    manager.save(ledger)
+    assert manager.clear_manual_clock_quarantine() == {'status': 'clock_regressed'}
+    assert state(manager)['clock_hold_until'] == clock[0] + DAY
+
+
+def test_clear_manual_clock_quarantine_is_busy_while_the_lock_is_held(setup):
+    _, clock, _, _, make = setup
+    _quarantined_manual(make, clock)
+    owner = make()
+    with owner.locked() as acquired:
+        assert acquired
+        assert make().clear_manual_clock_quarantine() == {'status': 'busy'}
+    assert state(make())['clock_hold_until'] == clock[0] + DAY
 
 
 def test_manual_running_blocks_and_completed_usage_imports_cooldown(setup):
@@ -1118,6 +1594,167 @@ def test_manual_failed_start_latches_only_without_exact_rollback_proof(
         assert final["manual_pending"]["corner"] == "meriken"
 
 
+def _fail_manual_start(setup, monkeypatch):
+    """Drive a manual start into ``manual-execution-unverified``."""
+    from docich import corner_rotation
+
+    g, clock, _, executor, make = setup
+    rotation = make()
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: rotation)
+    owner = SimpleNamespace(path=g.state_dir / "soren91_corner_manual.json")
+    adapter = rotation.adapters["meriken"]
+    adapter.reconcile_failed_start = lambda request_id, **_: False
+
+    def fail_dispatch(*_args):
+        raise CornerExecutionError("launch failed")
+
+    executor.execute = fail_dispatch
+    with pytest.raises(CornerExecutionError, match="launch failed"):
+        corner_rotation.run_manual(g, owner, ["soren91"])
+    assert state(rotation)["status"] == "recovery_required"
+    return clock, executor, rotation
+
+
+def test_tick_releases_failed_manual_start_once_slot_is_proven_free(setup, monkeypatch):
+    """A failed manual start must not stop the rotation until an operator acts."""
+    clock, executor, rotation = _fail_manual_start(setup, monkeypatch)
+    latched = state(rotation)
+    request_id = latched["manual_pending"]["request_id"]
+    rotation._slot_reusable = lambda *_: True
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] = max(clock[0] + 60, (latched.get("next_due_at") or 0) + 1)
+
+    def next_corner(_adapter, request):
+        executor.calls.append(dict(request))
+        return "completed"
+
+    executor.execute = next_corner
+    calls = len(executor.calls)
+
+    rotation.tick()
+
+    final = state(rotation)
+    assert final["status"] in {"ready", "running", "waiting"}
+    assert final.get("manual_pending") is None
+    row = final["failed_corners"][-1]
+    assert row["corner"] == "meriken"
+    assert row["request_id"] == request_id
+    assert row["resolution"] == "released-unverified"
+    assert row["reason_code"] == "failed-corner-slot-released"
+    assert row["error_kind"] == "execution-error"
+    assert isinstance(row["at"], float)
+    assert any(row["corner"] == "meriken" and row["source"] == "failure"
+               for row in final["history"])
+    # The release is followed by the normal schedule in the same tick.
+    assert len(executor.calls) == calls + 1
+    assert executor.calls[-1]["corner"] != "meriken"
+
+
+def test_tick_keeps_failed_manual_start_latched_while_slot_is_unproven(setup, monkeypatch):
+    clock, executor, rotation = _fail_manual_start(setup, monkeypatch)
+    request_id = state(rotation)["manual_pending"]["request_id"]
+    rotation._slot_reusable = lambda *_: False
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] += 60
+    calls = len(executor.calls)
+
+    outcome = rotation.tick()
+
+    final = state(rotation)
+    assert outcome["status"] == "recovery_required"
+    assert final["manual_pending"]["request_id"] == request_id
+    assert len(executor.calls) == calls
+    assert sum(1 for row in final["failed_corners"] if row["request_id"] == request_id) == 1
+
+
+class _PlaneStore:
+    """Minimal canonical store used by the plane-recovery contract tests."""
+
+    def __init__(self, phase):
+        self.phase = phase
+        self.recover_succeeds = False
+        self.canonical = SimpleNamespace(load=lambda: ({"phase": self.phase}, False))
+
+    def lock(self, exclusive=False):  # noqa: ARG002 - contract shape
+        return contextlib.nullcontext()
+
+
+def _attach_plane(manager, phase="failed"):
+    store = _PlaneStore(phase)
+    calls = []
+
+    class Coordinator:
+        def recover(self, *, timeout_s=None):
+            calls.append(timeout_s)
+            if store.recover_succeeds:
+                store.phase = "ready"
+            return SimpleNamespace(status="succeeded" if store.recover_succeeds else "failed")
+
+    manager.adapters["meriken"].manager = SimpleNamespace(
+        store=store, coordinator=Coordinator(),
+    )
+    return store, calls
+
+
+def test_tick_runs_bounded_plane_recovery_and_releases_manual(setup, monkeypatch):
+    clock, executor, rotation = _fail_manual_start(setup, monkeypatch)
+    latched = state(rotation)
+    store, calls = _attach_plane(rotation, "failed")
+    store.recover_succeeds = True
+    rotation._slot_reusable = lambda *_: store.phase == "ready"
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] = max(clock[0] + 60, (latched.get("next_due_at") or 0) + 1)
+
+    def next_corner(_adapter, request):
+        executor.calls.append(dict(request))
+        return "completed"
+
+    executor.execute = next_corner
+
+    rotation.tick()
+
+    final = state(rotation)
+    assert calls and isinstance(calls[0], float)
+    assert final.get("manual_pending") is None
+    assert "auto_plane_recovery" not in final
+    assert any(row["corner"] == "meriken" and row["source"] == "failure"
+               for row in final["history"])
+
+
+def test_plane_recovery_is_bounded_and_keeps_the_latch(setup, monkeypatch):
+    clock, _executor, rotation = _fail_manual_start(setup, monkeypatch)
+    _store, calls = _attach_plane(rotation, "failed")
+    rotation._slot_reusable = lambda *_: False
+    rotation._leftover_corner_game = lambda *_: False
+
+    for delta in (0.0, 301.0, 901.0, 1801.0):
+        clock[0] += delta
+        rotation.tick()
+
+    final = state(rotation)
+    assert len(calls) == 3
+    assert final["status"] == "recovery_required"
+    assert final["manual_pending"]["corner"] == "meriken"
+    assert final["auto_plane_recovery"]["attempts"] == 3
+    assert final["auto_plane_recovery"]["exhausted_recorded"] is True
+
+
+def test_plane_recovery_does_not_race_an_inflight_switch(setup, monkeypatch):
+    clock, _executor, rotation = _fail_manual_start(setup, monkeypatch)
+    _store, calls = _attach_plane(rotation, "draining")
+    rotation._slot_reusable = lambda *_: False
+    rotation._leftover_corner_game = lambda *_: False
+    clock[0] += 60
+
+    rotation.tick()
+
+    final = state(rotation)
+    assert calls == []
+    assert final["status"] == "recovery_required"
+    assert final["manual_pending"]["corner"] == "meriken"
+    assert "auto_plane_recovery" not in final
+
+
 def test_manual_wait_reason_changes_do_not_prove_a_new_execution_failure(setup, monkeypatch):
     """A queued manual retry keeps historical error_kind and its reservation.
 
@@ -1197,6 +1834,102 @@ def test_stop_queues_durable_request_while_owner_is_starting(tmp_path, monkeypat
     assert isinstance(marker_state["requested_at"], (int, float))
 
 
+def test_terminal_state_file_sweeps_a_stale_durable_stop_request(setup):
+    """A marker for an already-terminal state file must not stop the next run (#4226).
+
+    #4226: the failed corner's wait loop never consumed the durable stop
+    request, so `corner-stop-requests/retro_corner.json` survived its owner
+    and would have instantly stopped the next run on the same file.
+    """
+    g, clock, _, _, make = setup
+    state_dir = Path(g.state_dir)
+    marker_dir = state_dir / "corner-stop-requests"
+    marker_dir.mkdir(parents=True)
+    names = ("retro_corner.json", "retro_corner_manual.json", "paper_corner.json",
+             "soren91_corner.json", "nethack_corner.json")
+    for name in names:
+        (marker_dir / name).write_text(json.dumps(
+            {"state_file": name, "requested_at": clock[0] - 60}))
+    # Terminal targets lose their marker; a live or unproven owner keeps it.
+    (state_dir / "retro_corner.json").write_text(json.dumps({"status": "failed"}))
+    (state_dir / "retro_corner_manual.json").write_text(json.dumps({"status": "interrupted"}))
+    (state_dir / "paper_corner.json").write_text(json.dumps({"status": "completed"}))
+    (state_dir / "soren91_corner.json").write_text(json.dumps({"status": "active"}))
+    (state_dir / "nethack_corner.json").write_text("not-json")
+
+    manager = make()
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    assert manager.tick()["reason"] == "no-enabled-corner"
+
+    assert not (marker_dir / "retro_corner.json").exists()
+    assert not (marker_dir / "retro_corner_manual.json").exists()
+    assert not (marker_dir / "paper_corner.json").exists()
+    assert (marker_dir / "soren91_corner.json").exists()
+    assert (marker_dir / "nethack_corner.json").exists()
+
+
+def test_corrupt_marker_for_a_terminal_file_is_swept_by_name(setup):
+    """A corrupt marker still names the state file it stops (#4226)."""
+    g, clock, _, _, make = setup
+    state_dir = Path(g.state_dir)
+    marker_dir = state_dir / "corner-stop-requests"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "retro_corner.json").write_text("not-json")
+    (state_dir / "retro_corner.json").write_text(json.dumps({"status": "failed"}))
+
+    manager = make()
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    manager.tick()
+
+    assert not (marker_dir / "retro_corner.json").exists()
+
+
+def test_orphaned_auto_restore_record_is_swept_when_its_reservation_is_gone(setup):
+    """A settled reservation leaves no stale replay budget behind (#4226).
+
+    #4226: the released slot kept `auto_restore` with a past next_attempt_at,
+    which diagnostics then showed as a still-queued restore retry.
+    """
+    g, clock, _, _, make = setup
+    manager = make()
+    assert manager.tick()["result"] == "completed"
+    ledger = state(manager)
+    ledger["auto_restore"] = {"request_id": ledger["last_result"]["request_id"],
+                              "corner": ledger["last_result"]["corner"],
+                              "attempts": 1, "next_attempt_at": clock[0] - 1,
+                              "last_status": "queued"}
+    manager.path.write_text(json.dumps(ledger))
+
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    manager.tick()
+
+    assert "auto_restore" not in state(manager)
+
+
+def test_auto_restore_record_is_kept_while_its_reservation_is_live(setup):
+    """The replay budget survives while its own reservation is still latched (#4226)."""
+    g, clock, _, executor, make = setup
+    executor.result = "queued"
+    manager = make()
+    assert manager.tick()["result"] == "queued"
+    ledger = state(manager)
+    request_id = ledger["pending"]["request_id"]
+    ledger["auto_restore"] = {"request_id": request_id,
+                              "corner": ledger["pending"]["corner"],
+                              "attempts": 1, "next_attempt_at": clock[0] + 3600,
+                              "last_status": "queued"}
+    manager.path.write_text(json.dumps(ledger))
+
+    for adapter in manager.adapters.values():
+        adapter.available = False
+    manager.tick()
+
+    assert state(manager)["auto_restore"]["request_id"] == request_id
+
+
 def _policy_config(root, *, mode=None, cooldown_hours=None, interval_minutes=None):
     root.mkdir(parents=True, exist_ok=True)
     lines = ["[corner_rotation]", "enabled=true"]
@@ -1236,6 +1969,95 @@ def test_queue_mode_dispatches_back_to_back_without_interval(tmp_path):
     assert len(set(picks)) == 3
     assert state(manager)["interval_seconds"] is None
     assert state(manager)["next_due_at"] == clock[0]
+
+
+def test_interval_mode_restarts_least_cooled_before_24h_cooldown(tmp_path):
+    """Once every eligible corner has run, the 24h cooldown yields to the
+    exhausted rotation: the least-cooled corner takes the next interval slot
+    (owner decision 2026-11-22)."""
+
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    picks = []
+    for _ in range(3):
+        picks.append(manager.tick()["corner"])
+        clock[0] += 3600
+
+    # t+3h: the interval is due and all three are inside the default 24h
+    # cooldown. The first pick has the shortest remaining cooldown.
+    restarted = manager.tick()
+
+    assert restarted["status"] == "ready"
+    assert restarted["corner"] == picks[0]
+    assert executor.calls[-1]["cooldown_exempt"] is True
+    assert state(manager)["next_due_at"] == clock[0] + 3600
+    rows = {row["corner"]: row for row in state(manager)["history"]}
+    # The relaxed start is still a normal history row, so the next cooldown
+    # restarts from this run.
+    assert rows[picks[0]]["at"] == clock[0]
+    assert rows[picks[0]]["source"] == "completion"
+
+
+def test_exhausted_rotation_notice_names_the_least_cooled_corner(tmp_path):
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    picks = []
+    for _ in range(3):
+        picks.append(manager.tick()["corner"])
+        clock[0] += 3600
+
+    # Half an hour before the next slot, the sidebar is promised the exhausted
+    # rotation's least-cooled corner, not an unknown/blank entry.
+    clock[0] -= 1800
+    waited = manager.tick()
+
+    assert waited["reason"] == "not-due"
+    notice = json.loads((Path(g.state_dir) / "next_corner.json").read_text())
+    assert notice["source"] == "auto"
+    assert notice["corner"] == picks[0]
+    assert notice["due_at"] == 1000000.0 + 3 * 3600
+
+
+def test_exhausted_rotation_does_not_pre_run_a_reserved_manual_corner(tmp_path):
+    g = _policy_config(tmp_path, mode="interval", interval_minutes=60)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+    now = clock[0]
+
+    # meriken is the least recently used corner, but its future manual slot
+    # owns it: the automatic fallback must use the next candidate instead.
+    manager.queue_manual("soren91", trigger_at=now + 1800)
+    manager.save({
+        "schema_version": 1,
+        "seed": "queue-seed",
+        "slot": 3,
+        "last_seen_at": now - 1,
+        "last_slot_at": None,
+        "next_due_at": now,
+        "interval_seconds": 3600,
+        "history": [
+            {"corner": "meriken", "at": now - 3 * 3600, "source": "test"},
+            {"corner": "paper", "at": now - 2 * 3600, "source": "test"},
+            {"corner": "retro", "at": now - 3600, "source": "test"},
+        ],
+        "pending": None,
+        "status": "waiting",
+        "known_corners": {},
+    })
+
+    result = manager.tick()
+
+    assert result["status"] == "ready"
+    assert result["corner"] == "paper"
+    inbox = json.loads((Path(g.state_dir) / "corner_manual_queue.json").read_text())
+    assert inbox["corner"] == "meriken"
 
 
 def test_interval_mode_uses_the_configured_fixed_interval(tmp_path):
@@ -1285,22 +2107,27 @@ def test_interval_minutes_is_bounded_and_numeric(tmp_path):
                     [1000000.0], Executor())
 
 
-def test_queue_mode_uses_configured_cooldown_and_reanchors_when_empty(tmp_path):
+def test_queue_mode_restarts_with_the_least_cooled_corner_when_empty(tmp_path):
     g = _policy_config(tmp_path, mode="queue", cooldown_hours=1)
     clock = [1000000.0]
     executor = Executor()
     manager = _policy_manager(g, clock, executor)
 
-    picks = [manager.tick()["corner"] for _ in range(3)]
-    blocked = manager.tick()
+    picks = []
+    for _ in range(3):
+        picks.append(manager.tick()["corner"])
+        clock[0] += 60
 
-    assert blocked["reason"] == "all-corners-cooling-down"
-    assert state(manager)["next_due_at"] == clock[0] + 3600
-
-    clock[0] += 3601
+    # All three corners are still inside the 1h rolling cooldown. The exhausted
+    # queue continues with the corner whose cooldown ends first (the first
+    # pick), instead of waiting an hour.
     again = manager.tick()
-    assert again["corner"] in picks
+
+    assert again["status"] == "ready"
+    assert again["corner"] == picks[0]
+    assert state(manager)["next_due_at"] == clock[0]
     assert len(executor.calls) == 4
+    assert executor.calls[-1]["cooldown_exempt"] is True
 
 
 @pytest.mark.parametrize("body", [
@@ -2114,6 +2941,40 @@ def _latched_ledger_text():
     })
 
 
+def test_status_cli_names_an_initialization_failure(tmp_path, capsys):
+    """The status probe must distinguish setup from ledger I/O (#4144)."""
+
+    corner_rotation, config, _ = _cli_env(tmp_path, enabled=True)
+    config.write_text("not = [valid\n")
+    code = corner_rotation.main(["--config", str(config), "status"])
+    captured = capsys.readouterr()
+    assert code == 5
+    assert captured.out == ""
+    # A fixed literal only: the ConfigError text must not reach the operator.
+    assert captured.err == "corner-rotation status: initialization failed\n"
+
+
+def test_status_cli_names_a_ledger_read_failure(tmp_path, capsys):
+    corner_rotation, config, state_dir = _cli_env(tmp_path, enabled=True)
+    # A directory at the ledger path makes exists() true and read_text() fail.
+    (state_dir / "corner_rotation.json").mkdir()
+    code = corner_rotation.main(["--config", str(config), "status"])
+    captured = capsys.readouterr()
+    assert code == 6
+    assert captured.out == ""
+    assert captured.err == "corner-rotation status: ledger read failed\n"
+
+
+def test_status_cli_prints_a_healthy_ledger_unchanged(tmp_path, capsys):
+    corner_rotation, config, state_dir = _cli_env(tmp_path, enabled=True)
+    (state_dir / "corner_rotation.json").write_text('{"status":"ready"}')
+    code = corner_rotation.main(["--config", str(config), "status"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == '{"status":"ready"}\n'
+    assert captured.err == ""
+
+
 def test_recover_cli_cannot_claim_success_from_an_unreadable_ledger(tmp_path, capsys):
     corner_rotation, config, state_dir = _cli_env(
         tmp_path, enabled=False, body="{ not json")
@@ -2620,3 +3481,165 @@ def test_paper_adapter_has_no_retro_style_failed_start_reconcile(tmp_path):
         state_file="paper_corner_manual.json") is False
     with pytest.raises(AttributeError):
         GameCornerAdapter.reconcile_failed_start(adapter, "11111111-1111-4111-8111-111111111111")
+
+
+def test_queued_manual_cancel_removes_inbox_request(setup):
+    g, clock, _, executor, make = setup
+    manager = make()
+    manager.queue_manual('nsnake')
+    review = manager.cancel_queued_manual('nsnake')
+    assert review['status'] == 'eligible' and review['location'] == 'inbox'
+    assert review['fingerprint'] and review['corner'] == 'retro'
+    outcome = manager.cancel_queued_manual('nsnake', apply=True,
+                                           expected=review['fingerprint'])
+    assert outcome['status'] == 'cancelled' and outcome['location'] == 'inbox'
+    assert not (Path(g.state_dir) / 'corner_manual_queue.json').exists()
+    assert state(manager)['last_queued_manual_cancel']['reservation']['corner'] == 'retro'
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake')
+    assert caught.value.reason_code == 'queued_request_missing'
+    assert executor.calls == []
+
+
+def test_queued_manual_cancel_removes_imported_ledger_entry(setup):
+    g, clock, _, executor, make = setup
+    manager = make()
+    executor.result = 'queued'
+    manager.tick()
+    live = state(manager)['pending']
+    manager.queue_manual('paper-view')
+    st = manager.load(clock[0])
+    manager._import_manual_queue(st)
+    assert state(manager)['queued_manual']['corner'] == 'paper'
+    review = make().cancel_queued_manual('paper-view')
+    assert review['location'] == 'ledger'
+    outcome = make().cancel_queued_manual('paper-view', apply=True,
+                                          expected=review['fingerprint'])
+    assert outcome['status'] == 'cancelled'
+    after = state(manager)
+    assert after['queued_manual'] is None
+    assert after['pending']['request_id'] == live['request_id']
+    executor.result = 'completed'
+    assert executor.calls[-1]['request_id'] == live['request_id']
+
+
+def test_queued_manual_cancel_records_intent_while_execution_lock_held(setup):
+    _, _, _, _, make = setup
+    owner = make()
+    owner.queue_manual('nsnake')
+    with owner.locked() as acquired:
+        assert acquired
+        busy = make()
+        review = busy.cancel_queued_manual('nsnake')
+        assert review['status'] == 'eligible'
+        assert review['via'] == 'intent'
+        outcome = busy.cancel_queued_manual('nsnake', apply=True,
+                                            expected=review['fingerprint'])
+        assert outcome['status'] == 'cancel_requested'
+    assert owner._manual_queue_path.exists()
+    assert state(owner)['queued_manual_cancel']['expected'] == review['fingerprint']
+
+
+def test_queued_manual_cancel_intent_commits_on_next_free_tick(setup):
+    _, _, _, _, make = setup
+    owner = make()
+    owner.queue_manual('nsnake')
+    with owner.locked() as acquired:
+        assert acquired
+        busy = make()
+        review = busy.cancel_queued_manual('nsnake')
+        outcome = busy.cancel_queued_manual('nsnake', apply=True,
+                                            expected=review['fingerprint'])
+        assert outcome['status'] == 'cancel_requested'
+    after = make().tick()
+    ledger = state(make())
+    assert ledger['queued_manual'] is None
+    assert ledger['queued_manual_cancel'] is None
+    assert (ledger['last_queued_manual_cancel']['reason']
+            == 'owner-cancelled-queued-reservation-cancelled')
+    assert ledger['pending'] is None
+    assert not owner._manual_queue_path.exists()
+
+
+def test_queued_manual_cancel_intent_refuses_changed_reservation(setup):
+    _, _, _, _, make = setup
+    owner = make()
+    owner.queue_manual('nsnake')
+    with owner.locked() as acquired:
+        assert acquired
+        busy = make()
+        review = busy.cancel_queued_manual('nsnake')
+        outcome = busy.cancel_queued_manual('nsnake', apply=True,
+                                            expected=review['fingerprint'])
+        assert outcome['status'] == 'cancel_requested'
+    # Re-queue a different reservation before the intent commits.
+    owner._manual_queue_path.unlink()
+    owner.queue_manual('paper-view')
+    make().tick()
+    ledger = state(make())
+    assert ledger['queued_manual_cancel'] is None
+    cancel = ledger['last_queued_manual_cancel']
+    assert cancel['reason'] == 'owner-cancelled-queued-reservation-reservation_changed'
+    # The refused intent names the re-queued reservation it declined to drop;
+    # that same reservation then dispatched normally through the tick.
+    assert cancel['reservation']['corner'] == 'paper'
+    dispatched = (ledger.get('pending') or {}).get('request_id') or \
+        (ledger.get('last_result') or {}).get('request_id')
+    assert dispatched == cancel['reservation']['request_id']
+
+
+def test_queued_manual_cancel_requires_reviewed_fingerprint(setup):
+    _, _, _, _, make = setup
+    manager = make()
+    manager.queue_manual('nsnake')
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake', apply=True)
+    assert caught.value.reason_code == 'expected_reservation_required'
+    review = manager.cancel_queued_manual('nsnake')
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake', apply=True, expected='0' * 64)
+    assert caught.value.reason_code == 'reservation_changed'
+    assert manager._manual_queue_path.exists()
+
+
+def test_queued_manual_cancel_refuses_dispatched_request(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    request = manager.queue_manual('nsnake')
+    executor.result = 'queued'
+    manager.tick()
+    assert state(manager)['pending']['request_id'] == request['request_id']
+    with pytest.raises(RotationError) as caught:
+        manager.cancel_queued_manual('nsnake')
+    assert caught.value.reason_code == 'queued_request_missing'
+    executor.result = 'completed'
+
+
+def test_hanjuku_resume_discard_unclaimed(setup):
+    g, clock, _, _, make = setup
+    import uuid as _uuid
+    from docich import hanjuku_resume
+    from docich.game_switch import atomic_write_json
+    rid = str(_uuid.uuid4())
+    assert hanjuku_resume.discard_unclaimed(g, rid) == 'absent'
+    root = Path(g.state_dir) / 'hanjuku-resume'
+    root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(root / hanjuku_resume.REQUEST_FILE,
+                      dict(schema=1, status='queued', request_id=rid,
+                           corner='hanjuku-hero', selected_at=clock[0]))
+    sealed = root / (rid + '.state')
+    sealed.write_bytes(b'x')
+    assert hanjuku_resume.discard_unclaimed(g, rid) == 'removed'
+    assert not (root / hanjuku_resume.REQUEST_FILE).exists()
+    assert not sealed.exists()
+    atomic_write_json(root / hanjuku_resume.REQUEST_FILE,
+                      dict(schema=1, status='claimed', request_id=rid,
+                           corner='hanjuku-hero'))
+    from docich.adapters.base import AdapterError
+    with pytest.raises(AdapterError):
+        hanjuku_resume.discard_unclaimed(g, rid)
+    atomic_write_json(root / hanjuku_resume.REQUEST_FILE,
+                      dict(schema=1, status='queued', request_id=str(_uuid.uuid4()),
+                           corner='hanjuku-hero'))
+    with pytest.raises(AdapterError):
+        hanjuku_resume.discard_unclaimed(g, rid)

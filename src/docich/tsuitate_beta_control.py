@@ -13,6 +13,10 @@ import urllib.parse
 import urllib.request
 
 PREFIX = b"beta-control-v1\nPOST\n/beta-control\n"
+#: The only environment keys this capability is ever read from.  Single source
+#: of truth for the corner adapter's scoped environment and for the broadcast
+#: view's own tmux session, so neither can quietly grow a third credential.
+CAPABILITY_ENV_KEYS = ("DOCICH_BETA_CONTROL_SECRET", "DOCICH_BETA_CONTROL_URL")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 STATES = {"stopped", "queued", "playing", "draining", "finished", "queue_timeout", "paused"}
 ERRORS = {"token_not_configured", "run_locked", "run_mismatch", "control_not_configured",
@@ -32,6 +36,12 @@ GAME_REASONS = {
 GAME_CONFIDENCE = {"verified", "unknown"}
 GAME_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z\Z")
 MAX_GAME_MOVES = 100000
+#: Owner-only finished-run history is bounded in both directions: the Worker
+#: returns at most 50 small records, and a drifted or oversized body is dropped.
+MAX_RECORDS = 50
+MAX_RECORDS_RESPONSE = 16384
+GAME_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+BRAIN_VERSION = re.compile(r"[A-Za-z0-9_.:+/-]{1,128}\Z")
 PLAYER_ROLES = {
     "pawn", "lance", "knight", "silver", "gold", "bishop", "rook", "king",
     "tokin", "promotedlance", "promotedknight", "promotedsilver", "horse", "dragon",
@@ -186,11 +196,13 @@ def project_game_result(raw) -> dict | None:
 def signed_request(url: str, secret: str, action: str, run_id: str | None = None,
                    now: int | None = None) -> urllib.request.Request:
     """Only an allowlisted operation, fixed path and method enter the MAC."""
-    if not isinstance(action, str) or action not in {"status", "start", "stop", "reconcile"} or (action != "status" and
-            (not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id))):
+    if (not isinstance(action, str)
+            or action not in {"status", "records", "start", "stop", "reconcile"}
+            or (action not in {"status", "records"}
+                and (not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id)))):
         raise ControlError("invalid_beta_operation", 400)
     payload = {"action": action}
-    if action != "status":
+    if action not in {"status", "records"}:
         payload["runId"] = run_id
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     timestamp = str(int(time.time()) if now is None else now)
@@ -202,7 +214,8 @@ def signed_request(url: str, secret: str, action: str, run_id: str | None = None
     })
 
 
-def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secrets: tuple[str, ...] = ()) -> dict:
+def _control_endpoint(forbidden_secrets: tuple[str, ...]) -> tuple[str, str]:
+    """Validate the fixed capability and origin; return (secret, base URL)."""
     secret = os.environ.get("DOCICH_BETA_CONTROL_SECRET", "")
     if not 32 <= len(secret.encode("utf-8")) <= 4096 or any(secret == value for value in forbidden_secrets if value):
         raise ControlError("control_not_configured")
@@ -216,15 +229,40 @@ def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secre
             or parsed.path not in {"", "/"} or port not in {None, 443}
             or not re.fullmatch(r"docich-tsuitate-bot\.[a-z0-9-]+\.workers\.dev", parsed.hostname or "")):
         raise ControlError("control_not_configured")
-    request = signed_request(url.rstrip("/"), secret, action, run_id)
+    return secret, url.rstrip("/")
+
+
+def _read_control_json(request: urllib.request.Request, limit: int):
+    """POST through the pinned opener; fixed error codes, never raw bodies."""
     try:
         # No redirects and no ambient proxy: never send this capability elsewhere.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(request, timeout=5) as response:
-            raw = response.read(8193)
-        if len(raw) > 8192:
+            raw = response.read(limit + 1)
+        if len(raw) > limit:
             raise ControlError("control_unavailable")
-        data = json.loads(raw)
+        return json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(limit + 1)
+            error = json.loads(raw).get("error") if len(raw) <= limit else None
+        except Exception:
+            error = None
+        finally:
+            exc.close()
+        raise ControlError(error if isinstance(error, str) and error in ERRORS else "control_unavailable",
+                           409 if exc.code == 409 else 503) from None
+    except ControlError:
+        raise
+    except Exception:
+        raise ControlError("control_unavailable") from None
+
+
+def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secrets: tuple[str, ...] = ()) -> dict:
+    secret, base = _control_endpoint(forbidden_secrets)
+    request = signed_request(base, secret, action, run_id)
+    try:
+        data = _read_control_json(request, 8192)
         if not isinstance(data, dict) or data.get("state") not in STATES:
             raise ControlError("control_unavailable")
         # Project fixed status fields only. Unexpected remote data never reaches
@@ -260,17 +298,42 @@ def call_beta_control(action: str, run_id: str | None = None, *, forbidden_secre
         result.update(maxGames=1, queueWaitSeconds=60,
                       errorCode=data.get("errorCode") if data.get("errorCode") in ERRORS else None)
         return result
-    except urllib.error.HTTPError as exc:
-        try:
-            raw = exc.read(8193)
-            error = json.loads(raw).get("error") if len(raw) <= 8192 else None
-        except Exception:
-            error = None
-        finally:
-            exc.close()
-        raise ControlError(error if isinstance(error, str) and error in ERRORS else "control_unavailable",
-                           409 if exc.code == 409 else 503) from None
     except ControlError:
         raise
     except Exception:
         raise ControlError("control_unavailable") from None
+
+
+def project_records(raw) -> dict:
+    """Validate the bounded finished-run listing; reject any shape drift."""
+    if not isinstance(raw, dict) or set(raw) != {"schema", "records", "truncated"} or raw.get("schema") != 1:
+        raise ControlError("control_unavailable")
+    records, truncated = raw.get("records"), raw.get("truncated")
+    if not isinstance(records, list) or len(records) > MAX_RECORDS or type(truncated) is not bool:
+        raise ControlError("control_unavailable")
+    seen = set()
+    projected = []
+    for item in records:
+        if not isinstance(item, dict) or set(item) != {"runId", "gameId", "brainVersion"}:
+            raise ControlError("control_unavailable")
+        run_id, game_id, brain = item["runId"], item["gameId"], item["brainVersion"]
+        if (not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id) or run_id in seen
+                or not isinstance(game_id, str) or not GAME_ID.fullmatch(game_id)
+                or not isinstance(brain, str) or not BRAIN_VERSION.fullmatch(brain)):
+            raise ControlError("control_unavailable")
+        seen.add(run_id)
+        projected.append({"runId": run_id, "gameId": game_id, "brainVersion": brain})
+    return {"schema": 1, "records": projected, "truncated": truncated}
+
+
+def call_beta_records(*, forbidden_secrets: tuple[str, ...] = ()) -> dict:
+    """Owner-only, read-only list of finished runs stored in Cloudflare.
+
+    Only the public identity of a completed game is returned (game id, brain
+    version, opaque run id). The public replay is still the source of moves,
+    result and fouls; live PlayerView and observations never enter this path.
+    """
+    secret, base = _control_endpoint(forbidden_secrets)
+    request = signed_request(base, secret, "records")
+    data = _read_control_json(request, MAX_RECORDS_RESPONSE)
+    return project_records(data)

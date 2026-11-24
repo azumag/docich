@@ -8,6 +8,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow, journal as _journal
 
 
 def memory():
@@ -28,37 +29,39 @@ def screen(kind, words=()):
 def test_interrupt_records_unknown_destination_once_and_blocks_same_general(kind):
     mem = memory()
     p.observe_sortie_transition(screen(kind), mem, 'map_target')
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['active'] is None
-    assert mem['sorties']['1-A2']['target'] is None
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None
+    assert _sorties(mem)['1-A2']['target'] is None
     assert p._en_route(mem) == ({'ゼウス'}, set())
-    assert p.next_order(mem)['step'] != '1-A2'
-    first = deepcopy(mem['sorties'])
-    mem['active'] = '1-A2'  # later source verification must not count as a new interruption
+    next_order = p.next_order(mem)
+    # No other departure is required to exist; the interrupted actor stays busy.
+    assert next_order is None or next_order['step'] != '1-A2'
+    first = deepcopy(_sorties(mem))
+    _plan_region(mem)['active'] = '1-A2'  # later source verification must not count as a new interruption
     p.observe_sortie_transition(screen('general_list'), mem, 'castle_menu')
-    assert mem['sorties'] == first
+    assert _sorties(mem) == first
     assert len([r for r in mem['_records'] if r['decision']=='order_launched_unconfirmed']) == 1
 
 
 def test_hotload_migrates_verified_old_target_without_attempt():
-    mem = memory(); mem.pop('sortie_attempt')
+    mem = memory(); _flow(mem).pop('sortie_attempt')
     p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
 
 
 @pytest.mark.parametrize('active', [None, '1-A2'])
 def test_marker_return_resumes_same_target(active):
     mem = memory()
     p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = active
+    _plan_region(mem)['active'] = active
     p.observe_sortie_transition(screen('map_target'), mem, 'unknown')
-    assert mem['active'] == '1-A2' and mem['orders']['1-A2'] == 'pending'
-    assert not mem['sorties']
-    assert not mem['sortie_attempt'].get('interrupted')
+    assert _plan_region(mem)['active'] == '1-A2' and _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert not _sorties(mem)
+    assert not _flow(mem)['sortie_attempt'].get('interrupted')
 
 
 def test_confirm_before_any_target_is_not_departure():
-    mem = memory(); mem['sortie_attempt']['target_seen'] = False
+    mem = memory(); _flow(mem)['sortie_attempt']['target_seen'] = False
     p.observe_sortie_transition(screen('unknown'), mem, 'sortie_confirm')
     assert not mem.get('sorties')
 
@@ -66,17 +69,17 @@ def test_confirm_before_any_target_is_not_departure():
 def test_real_entry_confirms_actual_not_planned_destination():
     mem = memory(); p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
     p.message_step(screen('attack_started', ['ゼウスしょうぐんがジョンリギじょうにのりこんだ']), mem)
-    assert mem['sorties']['1-A2']['target'] == 'ジョンリギ'
-    assert mem['sorties']['1-A2']['status'] == 'arrived'
-    assert mem['attack']['step'] == '1-A2'
-    assert mem['orders']['1-A2'] == 'launched'
-    assert mem['garrison']['アルマムーン'] == ['どうし']
-    assert not mem.get('sortie_attempt')
+    assert _sorties(mem)['1-A2']['target'] == 'ジョンリギ'
+    assert _sorties(mem)['1-A2']['status'] == 'arrived'
+    assert _plan_region(mem)['attack']['step'] == '1-A2'
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched'
+    assert _world(mem)['garrison']['アルマムーン'] == ['どうし']
+    assert not _flow(mem).get('sortie_attempt')
 
 
 def test_ambiguous_general_does_not_bind_unknown_destination():
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['sorties']['other'] = dict(mem['sorties']['1-A2'])
+    mem['world']['sorties']['other'] = dict(mem['world']['sorties']['1-A2'])
     assert p._match_sortie(mem, 'ジョンリギ', 'ゼウス') == (None, 'ambiguous')
 
 
@@ -101,67 +104,84 @@ def test_a_general_listed_in_an_intervening_own_castle_continues_his_order():
                                  'source': 'スペンソニア', 'tick': mem['tick'] - 10}}
     order = {'step': 'A:1:J1', 'general': 'ゼウス', 'source': 'スペンソニア', 'target': 'けっかい',
              'cards': [], 'after': None, 'note': 't'}
-    mem['chart_plan'] = {'request_id': 'x', 'orders': [order]}
+    _plan_region(mem)['chart_plan'] = {'request_id': 'x', 'orders': [order]}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス', 'リーキ']) == ['A:1:J1']
-    sortie = mem['sorties']['A:1:J1']
+    sortie = _sorties(mem)['A:1:J1']
     assert sortie['status'] == 'arrived' and sortie['target'] == 'ジョンリギ'
     assert sortie['transit_to'] == 'けっかい'
-    assert mem['source_override']['A:1:J1'] == 'ジョンリギ'
-    assert mem['orders']['A:1:J1'] == 'pending'
-    assert mem['garrison']['ジョンリギ'] == ['ゼウス']
+    assert _plan_region(mem)['source_override']['A:1:J1'] == 'ジョンリギ'
+    assert _plan_region(mem)['orders']['A:1:J1'] == 'pending'
+    assert _world(mem)['garrison']['ジョンリギ'] == ['ゼウス']
     assert any(r['decision'] == 'sortie_transit_continue' for r in mem['_records'])
-    # The same order runs again, now from the castle he actually stopped in.
+    # The actual list still holds only the transit actor. Even after the
+    # boss path is unlocked, the castle must keep its last defender.
+    mem['captured'] = list(set(p.chart.CASTLE_NAMES[1]) - {'アルマムーン', 'けっかい'})
+    assert p.next_order(mem) != order
+    # Once the other observed defender is in the garrison, continuing the
+    # original route is allowed from the newly observed source.
+    _world(mem)['garrison']['ジョンリギ'] = ['ゼウス', 'リーキ']
     assert p.next_order(mem) == order
 
 
-def test_a_stale_or_unlisted_general_is_not_a_transit_arrival():
+def test_a_stale_general_listed_mid_route_is_a_transit_arrival():
+    """Owner 2026-11-02 (g1097): no sortie-age bound — a roster is only read
+    when the castle is visited, so a general listed mid-route is a transit
+    arrival no matter how long ago the sortie launched."""
     mem = memory(); mem['tick'] = 5000
     sortie = {'general': 'ゼウス', 'target': 'けっかい', 'status': 'en_route',
               'source': 'スペンソニア', 'tick': mem['tick'] - p.SORTIE_BUSY_TICKS - 1}
     mem['sorties'] = {'A:1:J1': dict(sortie)}
-    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス']) == []
-    mem['sorties']['A:1:J1']['tick'] = mem['tick'] - 1
+    assert p._continue_transit_sorties(mem, 'ジョンリギ', ['ゼウス']) == ['A:1:J1']
+    assert _sorties(mem)['A:1:J1']['status'] == 'arrived'
+    assert _sorties(mem)['A:1:J1']['transit_to'] == 'けっかい'
+
+
+def test_an_unlisted_general_is_not_a_transit_arrival():
+    mem = memory(); mem['tick'] = 5000
+    sortie = {'general': 'ゼウス', 'target': 'けっかい', 'status': 'en_route',
+              'source': 'スペンソニア', 'tick': mem['tick'] - 1}
+    mem['sorties'] = {'A:1:J1': dict(sortie)}
     assert p._continue_transit_sorties(mem, 'ジョンリギ', ['リーキ']) == []
-    assert mem['sorties']['A:1:J1'] == {**sortie, 'tick': mem['tick'] - 1}
+    assert mem['world']['sorties']['A:1:J1'] == sortie
 
 
 @pytest.mark.parametrize('words,expected', [(['ゼウス','どうし'], 'pending'),
                                           (['しょうぐんはおりません'], 'launched')])
 def test_source_evidence_allows_retry_only_when_general_is_still_there(words, expected):
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     actions = p.deploy_step(screen('general_list', words), mem)
     assert actions == [p.pad('b'), p.pad('b')]
-    assert mem['orders']['1-A2'] == expected
-    assert mem['sorties']['1-A2']['target'] is None
-    assert mem['active'] is None
+    assert _plan_region(mem)['orders']['1-A2'] == expected
+    assert _sorties(mem)['1-A2']['target'] is None
+    assert _plan_region(mem)['active'] is None
 
 
 @pytest.mark.parametrize('words', [['どうし'], ['ゼウス'+UNKNOWN], [UNKNOWN]])
 def test_partial_list_does_not_prove_absence_or_select_replacement(words):
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     assert p.deploy_step(screen('general_list', words), mem) == []
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['source_override'] == {'1-A2': 'アルマムーン'}
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['source_override'] == {'1-A2': 'アルマムーン'}
 
 
 def test_unreachable_verification_does_not_fail_or_resend_sortie():
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     p._give_up_source(mem, p._order(mem))
-    assert mem['orders']['1-A2'] == 'launched_unconfirmed'
-    assert mem['sorties']['1-A2']['verification_unavailable']
-    assert mem['active'] is None
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _sorties(mem)['1-A2']['verification_unavailable']
+    assert _plan_region(mem)['active'] is None
 
 
 def test_unknown_source_list_does_not_freeze_forever_or_retry():
     mem = memory(); p.observe_sortie_transition(screen('unknown'), mem, 'map_target')
-    mem['active'] = '1-A2'
+    _plan_region(mem)['active'] = '1-A2'
     for _ in range(2):
         assert p.deploy_step(screen('general_list', ['どうし']), mem) == []
     assert p.deploy_step(screen('general_list', ['どうし']), mem) == [p.pad('b'),p.pad('b')]
-    assert mem['active'] is None and mem['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
 
 
 def test_goal_anchor_survives_cursor_occluding_the_roof(monkeypatch):
@@ -198,13 +218,13 @@ def test_unbound_attack_loss_invalidates_old_garrison_without_guessing_a_home():
          'battle':{'ally':'ゼウス','ally_hp':0,'enemy_hp':21,'castle':'ジョンリギ',
                    'side':'attack','step':None,'away':1}}
     p.battle_end(mem,'map')
-    assert mem['garrison']=={'アルマムーン':['どうし']}
-    assert mem['general_location_unknown']==['ゼウス']
+    assert _world(mem)['garrison']=={'アルマムーン':['どうし']}
+    assert _world(mem)['general_location_unknown']==['ゼウス']
     assert not mem.get('retries')
     assert p._interim_source(mem,'ジョンリギ',{'general':'ゼウス','source':'キカンドン'}, {'キカンドン'},set()) is None
     mem.update(active='1-A2',source_override={'1-A2':'アルマムーン'})
     p._observe_garrison(screen('general_list',['ゼウス']),mem,p._order(mem))
-    assert mem['general_location_unknown']==[]
+    assert _world(mem)['general_location_unknown']==[]
 
 
 def test_decide_hooks_interruption_before_dispatch(monkeypatch):
@@ -214,7 +234,7 @@ def test_decide_hooks_interruption_before_dispatch(monkeypatch):
     monkeypatch.setattr(hanjuku_screen,'parse',lambda f,**k:screen('unknown'))
     _,state=hanjuku_bot.decide(Frame(256,224,bytes(256*224*3)),
                              {'policy':memory(),'screen_kind':'map_target'})
-    assert state['policy']['orders']['1-A2']=='launched_unconfirmed'
+    assert _plan_region(state['policy'])['orders']['1-A2']=='launched_unconfirmed'
 
 
 def test_real_general_row_geometry_ignores_hand_and_distant_border():
@@ -223,7 +243,31 @@ def test_real_general_row_geometry_ignores_hand_and_distant_border():
     assert p._general_visible(sc,'ゼウス')
 
 
+@pytest.mark.parametrize('kind', ['defense_started', 'boss_attack_started', 'battle_intro'])
+def test_battle_interruption_is_recorded_apart_from_other_picker_closes(kind):
+    """docich#5020: 6 of 9 sorties in a battle-heavy month closed the picker as
+    unconfirmed. The cause (a battle taking the frame) must be countable, or the
+    monthly audit cannot tell it from an input the game ignored."""
+    mem = memory()
+    p.observe_sortie_transition(screen(kind), mem, 'map_target')
+    counted = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle']
+    assert len(counted) == 1
+    assert counted[0]['general'] == 'ゼウス'
+    assert counted[0]['observed_metric']['screen'] == kind
+    assert counted[0]['chart_step'] == '1-A2'
+    # The unconfirmed departure itself still closes the attempt as before.
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+
+
+@pytest.mark.parametrize('kind', ['unknown', 'map', 'general_list'])
+def test_other_picker_closes_are_not_counted_as_battle_interruptions(kind):
+    mem = memory()
+    p.observe_sortie_transition(screen(kind), mem, 'map_target')
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert not [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle']
+
+
 def test_unknown_name_does_not_reestablish_defeated_general_location():
-    mem=memory();mem['general_location_unknown']=['ゼウス']
+    mem=memory();_world(mem)['general_location_unknown']=['ゼウス']
     p._observe_garrison(screen('general_list',['ゼウス'+UNKNOWN]),mem,p._order(mem))
-    assert mem['general_location_unknown']==['ゼウス']
+    assert _world(mem)['general_location_unknown']==['ゼウス']

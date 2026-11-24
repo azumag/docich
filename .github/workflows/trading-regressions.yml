@@ -8,6 +8,9 @@ on:
       - 'src/docich/paper_*.py'
       - 'src/docich/trading/*.py'
       - 'src/docich/trading/exchanges/**'
+      - 'src/docich/trading/live/**'
+      - 'src/docich/trading/live_owner/**'
+      - 'src/docich/trading/live_worker/**'
       - 'src/docich/trading/free_strategy/**'
       - 'src/docich/config.py'
       - 'src/docich/hanjuku_narration.py'
@@ -15,8 +18,13 @@ on:
       - 'src/docich/runtime_backend.py'
       - 'src/docich/soren91_corner.py'
       - 'src/docich/webui.py'
+      - 'src/docich/webui_live.py'
       - 'src/docich/trading/dashboard_assets/*'
       - 'tests/test_trading*.py'
+      - 'tests/test_webui_live.py'
+      - 'tests/bitbank_live_support.py'
+      - 'tests/helpers/**'
+      - 'docs/operations/live-worker-systemd.md'
       - 'tests/test_paper*.py'
       - 'tests/test_program_view*.py'
       - 'tests/test_overlay*.py'
@@ -27,6 +35,7 @@ on:
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
+      - 'requirements-trading.txt'
       - 'conftest.py'
   push:
     branches: [main]
@@ -36,6 +45,9 @@ on:
       - 'src/docich/paper_*.py'
       - 'src/docich/trading/*.py'
       - 'src/docich/trading/exchanges/**'
+      - 'src/docich/trading/live/**'
+      - 'src/docich/trading/live_owner/**'
+      - 'src/docich/trading/live_worker/**'
       - 'src/docich/trading/free_strategy/**'
       - 'src/docich/config.py'
       - 'src/docich/hanjuku_narration.py'
@@ -43,8 +55,13 @@ on:
       - 'src/docich/runtime_backend.py'
       - 'src/docich/soren91_corner.py'
       - 'src/docich/webui.py'
+      - 'src/docich/webui_live.py'
       - 'src/docich/trading/dashboard_assets/*'
       - 'tests/test_trading*.py'
+      - 'tests/test_webui_live.py'
+      - 'tests/bitbank_live_support.py'
+      - 'tests/helpers/**'
+      - 'docs/operations/live-worker-systemd.md'
       - 'tests/test_paper*.py'
       - 'tests/test_program_view*.py'
       - 'tests/test_overlay*.py'
@@ -55,6 +72,7 @@ on:
       - 'games/soviet_now'
       - '.github/scripts/soren_gitlink_gate.py'
       - 'requirements-test.txt'
+      - 'requirements-trading.txt'
       - 'conftest.py'
 
 permissions:
@@ -91,6 +109,9 @@ jobs:
             --root-path 'src/docich/paper_*.py' \
             --root-path 'src/docich/trading/*.py' \
             --root-path 'src/docich/trading/exchanges/**' \
+            --root-path 'src/docich/trading/live/**' \
+            --root-path 'src/docich/trading/live_owner/**' \
+            --root-path 'src/docich/trading/live_worker/**' \
             --root-path 'src/docich/trading/free_strategy/**' \
             --root-path 'src/docich/config.py' \
             --root-path 'src/docich/hanjuku_narration.py' \
@@ -98,8 +119,13 @@ jobs:
             --root-path 'src/docich/runtime_backend.py' \
             --root-path 'src/docich/soren91_corner.py' \
             --root-path 'src/docich/webui.py' \
+            --root-path 'src/docich/webui_live.py' \
             --root-path 'src/docich/trading/dashboard_assets/*' \
             --root-path 'tests/test_trading*.py' \
+            --root-path 'tests/test_webui_live.py' \
+            --root-path 'tests/bitbank_live_support.py' \
+            --root-path 'tests/helpers/**' \
+            --root-path 'docs/operations/live-worker-systemd.md' \
             --root-path 'tests/test_paper*.py' \
             --root-path 'tests/test_program_view*.py' \
             --root-path 'tests/test_overlay*.py' \
@@ -109,6 +135,7 @@ jobs:
             --root-path 'config/market-paper.toml' \
             --root-path '.github/scripts/soren_gitlink_gate.py' \
             --root-path 'requirements-test.txt' \
+            --root-path 'requirements-trading.txt' \
             --root-path 'conftest.py' \
             --soren-path 'overlay_notify.sh' \
             --soren-path 'generate_event_overlay.py' \
@@ -147,9 +174,9 @@ jobs:
           tests/test_trading_dashboard_activity_failover.py tests/test_trading_timeframe_chart.py
           tests/test_program_view.py tests/test_program_view_browser_path.py
           tests/test_trading_strategy_store.py tests/test_trading_strategy_lab.py tests/test_trading_strategy_metrics.py tests/test_trading_corner_script.py
-          tests/test_trading_experiment_control.py tests/test_trading_strategy_costs.py tests/test_trading_ai_text.py
+          tests/test_trading_experiment_control.py tests/test_trading_strategy_costs.py tests/test_trading_ai_text.py tests/test_trading_cell_metrics.py tests/test_trading_symbol_slots.py tests/test_trading_slot_worker.py tests/test_paper_improve_slots.py tests/test_trading_slot_display.py tests/test_trading_promotion_shadow.py tests/test_trading_live_policy.py tests/test_trading_live_state.py tests/test_trading_live_control.py tests/test_trading_live_mock_exchange.py tests/test_trading_live_executor.py tests/test_trading_live_reconcile.py tests/test_trading_live_balance.py tests/test_trading_live_views.py tests/test_trading_live_ledger_writers.py tests/test_trading_live_signals.py tests/test_trading_live_sizing.py tests/test_trading_live_inputs.py tests/test_trading_live_cycle.py tests/test_trading_live_decide.py tests/test_trading_live_act.py tests/test_trading_live_deposits.py tests/test_trading_live_shadow.py tests/test_trading_live_ttl.py tests/test_trading_live_runner.py tests/test_trading_live_opening.py tests/test_trading_live_status.py tests/test_trading_live_worker_main.py tests/test_trading_live_invariants.py tests/test_trading_live_owner_cli.py tests/test_trading_live_overview.py tests/test_webui_live.py tests/test_trading_bitbank_live_credentials.py tests/test_trading_bitbank_live_parse.py tests/test_trading_bitbank_live_errors.py tests/test_trading_bitbank_live_reader.py tests/test_trading_bitbank_live_contract.py tests/test_trading_bitbank_live_readonly.py tests/test_trading_bitbank_live_transport.py tests/test_trading_bitbank_live_factory_check.py tests/test_trading_bitbank_spot_sender.py tests/test_trading_bitbank_spot_session.py tests/test_trading_live_probe_order.py
           tests/test_trading_corner_research.py tests/test_trading_paper_improve.py tests/test_paper_improve_retry.py
-          tests/test_paper_improve_lifecycle.py tests/test_paper_ai_canary.py
+          tests/test_paper_improve_lifecycle.py tests/test_paper_ai_canary.py tests/test_paper_improve_schedule.py
           tests/test_trading_free_strategy_accounting.py tests/test_trading_free_strategy_post_fill_drawdown.py
           tests/test_trading_free_strategy_cli.py tests/test_trading_free_strategy_worker.py
           tests/test_trading_free_strategy_dashboard.py tests/test_trading_free_strategy_terminal.py
@@ -159,3 +186,28 @@ jobs:
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
           tests/test_soren91_corner.py
           tests/test_paper_corner_meriken_rotation.py
+      - name: LIVE worker no-key systemd smoke (GitHub-hosted)
+        if: runner.environment == 'github-hosted'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          # The hosted runner has no login session. Start its own ephemeral user
+          # manager only if systemctl --user cannot reach one; never enable linger.
+          if ! systemctl --user show-environment >/dev/null 2>&1; then
+            timeout 30s sudo systemctl start "user@$(id -u).service"
+          fi
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if systemctl --user show-environment >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          systemctl --user show-environment >/dev/null
+          python3 tests/helpers/live_worker_systemd_smoke.py
+      - name: Bitbank read-only transport against the real ccxt (no network)
+        run: |
+          python3 -m pip install -r requirements-trading.txt
+          python3 -c "import ccxt; print('ccxt', ccxt.__version__)"   # an import failure must fail here, not skip
+          python3 -m pytest -q tests/test_trading_bitbank_live_ccxt.py

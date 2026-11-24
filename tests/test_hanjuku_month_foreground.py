@@ -216,7 +216,8 @@ def test_stuck_monthly_roster_dismisses_with_b_without_claiming_roster_opened():
         actions, state = decide(frame, state)
         plans.append(actions)
         assert state['policy']['house']['phase'] == 'month_open'
-    assert plans[0] == [policy.pad('down')]
+    assert plans[0] == [policy.pad('down'),{'type':'wait','ms':60},
+                        policy.pad('down'),{'type':'wait','ms':60},policy.pad('down')]
     assert plans.count([policy.pad('b')]) == 1
     assert all(policy.pad('a') not in actions for actions in plans)
     assert tuple(state['policy']['stats'][key] for key in ('battles', 'wins')) == (183, 183)
@@ -231,7 +232,8 @@ def test_hotload_reobserves_legacy_exhausted_house_navigation(phase):
     state = {'screen_kind': 'month_menu', 'phase': 'month_menu', 'phase_step': 200,
              'policy': mem}
     actions, state = decide(monthly_canvas().frame(), state)
-    assert actions == [policy.pad('down')]
+    assert actions == [policy.pad('down'),{'type':'wait','ms':60},
+                       policy.pad('down'),{'type':'wait','ms':60},policy.pad('down')]
     assert state['policy']['house']['phase'] == 'month_open'
     assert state['policy']['gold'] == 59 and state['policy']['month'] == '2-11'
     assert tuple(state['policy']['stats'][key] for key in ('battles', 'wins')) == (183, 183)
@@ -260,7 +262,10 @@ def test_exhausted_navigation_does_not_poison_a_new_menu_context(change):
         mem['month'] = '2-12'
     else:
         mem['chapter'] = 2
-    assert policy.guarded_menu_to(screen, mem, label, key='month_nav') == policy.pad('down')
+    expected = ([policy.pad('down'),{'type':'wait','ms':60},policy.pad('down'),
+                 {'type':'wait','ms':60},policy.pad('down')]
+                if change == 'label' else policy.pad('down'))
+    assert policy.guarded_menu_to(screen, mem, label, key='month_nav') == expected
 
 
 def test_no_input_fallback_cannot_confirm_an_unread_monthly_selection():

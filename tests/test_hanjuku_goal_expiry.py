@@ -1,0 +1,60 @@
+"""A goal that is never attempted expires so ordinary play can proceed.
+
+g1190 2026-11-19 run 4: egg_recover (queued tick 47685, attempts 0) took every
+map frame for months; the sortie plan stayed pending and the run held 0
+castles to 62-x (#4618).
+"""
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.strategy import goals
+
+KEY = ('egg_recover', None, None)
+
+
+def want(_mem):
+    return {KEY: {'kind': 'egg_recover'}}
+
+
+def memory(queued, tick):
+    return {'chapter': 11, 'tick': tick, '_records': [],
+            'lost': [], 'house_eggs': {}, 'captured': [],
+            'goals': [{'kind': 'egg_recover', 'actor': None, 'target': None,
+                       'targets': ['デュオニソス'], 'queued': queued, 'attempts': 0}]}
+
+
+def test_a_goal_that_never_attempts_expires_after_the_stale_window(monkeypatch):
+    monkeypatch.setattr(goals, '_wanted', want)
+    mem = memory(queued=1000, tick=1000 + goals.GOAL_STALE_TICKS)
+    goals.refresh(mem)
+    assert mem['goals'] == []
+    assert mem['goal_expired']
+    assert any(r.get('decision') == 'goal_expired' for r in mem['_records'])
+
+
+def test_the_expired_goal_is_not_requeued_during_the_cooldown(monkeypatch):
+    monkeypatch.setattr(goals, '_wanted', want)
+    mem = memory(queued=1000, tick=1000 + goals.GOAL_STALE_TICKS)
+    goals.refresh(mem)
+    goals.refresh(mem)
+    assert mem['goals'] == []
+
+
+def test_a_fresh_goal_is_kept(monkeypatch):
+    monkeypatch.setattr(goals, '_wanted', want)
+    mem = memory(queued=5000, tick=5100)
+    goals.refresh(mem)
+    assert [g['kind'] for g in mem['goals']] == ['egg_recover']
+    assert not mem.get('goal_expired')
+
+
+def test_an_attempted_goal_is_not_expired(monkeypatch):
+    monkeypatch.setattr(goals, '_wanted', want)
+    mem = memory(queued=1000, tick=1000 + goals.GOAL_STALE_TICKS * 2)
+    mem['goals'][0]['attempts'] = 2
+    goals.refresh(mem)
+    assert [g['kind'] for g in mem['goals']] == ['egg_recover']

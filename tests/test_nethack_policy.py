@@ -51,21 +51,17 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertTrue(decision.requires_llm)
         self.assertEqual(decision.actions, ())
 
-    def test_severe_status_still_spends_one_wait_turn(self) -> None:
-        # owner decision 2026-09-23: `.` はどんな時でも可。policy の判断
-        # (strategic/requires_llm/no-action) は変わらず rest だけが許可される。
+    def test_severe_status_uses_reviewed_prayer_recovery_when_safe(self) -> None:
         self.assertEqual(REST_EMERGENCY_INTENTS, frozenset({"survival_emergency"}))
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):
                 observation = normalize_tty(frame(condition=condition), cols=80, rows=5)
                 decision = self.policy.decide(observation)
                 self.assertEqual(decision.layer, "strategic")
-                self.assertEqual(decision.intent, "status_emergency")
+                self.assertEqual(decision.intent, "status_recovery")
                 self.assertTrue(decision.requires_llm)
-                self.assertEqual(decision.actions, ())
-                action = rest_action_for_hold(decision, observation)
-                self.assertIsNotNone(action)
-                self.assertEqual(action.text, ".")
+                self.assertEqual([a.text for a in decision.actions], ["#"])
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_prompt_escalates_without_guessing_answer(self) -> None:
         decision = self.decide(frame("Really quit? [yn]"))
@@ -80,6 +76,58 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertFalse(decision.requires_llm)
         self.assertEqual([a.text for a in decision.actions], ["n"])
         assert_p3b_safe(decision)
+
+    def test_descends_only_from_a_remembered_down_staircase(self) -> None:
+        # The '>' is seen one frame before the hero steps on it; the current
+        # frame only shows '@' because the hero glyph hides the terrain.
+        self.policy.decide(normalize_tty(frame(map1="..@>.."), cols=80, rows=5))
+        on_stairs = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        decision = self.policy.decide(on_stairs)
+        self.assertEqual(decision.layer, "midlevel")
+        self.assertEqual(decision.intent, "descend_stairs")
+        self.assertFalse(decision.requires_llm)
+        self.assertEqual([action.text for action in decision.actions], [">"])
+        assert_p3b_safe(decision)
+        # The production resolver leaves the reviewed descend action intact.
+        from docich.nethack_progress import NethackProgressResolver
+        resolver = NethackProgressResolver()
+        resolved = resolver.resolve(decision, on_stairs, self.policy.explorer)
+        self.assertEqual(resolved.intent, "descend_stairs")
+        self.assertEqual([action.text for action in resolved.actions], [">"])
+
+    def test_does_not_descend_without_a_remembered_stair_tile(self) -> None:
+        on_floor = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        decision = self.policy.decide(on_floor)
+        self.assertNotEqual(decision.intent, "descend_stairs")
+
+    def test_stair_memory_is_per_dungeon_level(self) -> None:
+        self.policy.decide(normalize_tty(frame(map1="..@>.."), cols=80, rows=5))
+        deeper = frame(map1="...@..").replace("Dlvl:2", "Dlvl:3")
+        decision = self.policy.decide(normalize_tty(deeper, cols=80, rows=5))
+        self.assertNotEqual(decision.intent, "descend_stairs")
+
+    def test_refused_descent_forgets_the_tile_and_is_not_retried(self) -> None:
+        self.policy.decide(normalize_tty(frame(map1="..@>.."), cols=80, rows=5))
+        refused = normalize_tty(frame("You can't go down here.", map1="...@.."),
+                                cols=80, rows=5)
+        self.assertNotEqual(self.policy.decide(refused).intent, "descend_stairs")
+        after = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        self.assertNotEqual(self.policy.decide(after).intent, "descend_stairs")
+
+    def test_production_safety_rejects_descend_off_the_stair_tile(self) -> None:
+        from docich.nethack_progress import assert_production_safe
+        on_stairs = normalize_tty(frame(map1="...@.."), cols=80, rows=5)
+        decision = PolicyDecision(
+            "midlevel", "descend_stairs", "remembered staircase",
+            (Action(type="text", text=">"),),
+        )
+        assert_production_safe(decision, on_stairs, down_stairs={on_stairs.player})
+        with self.assertRaises(RuntimeError):
+            assert_production_safe(decision, on_stairs, down_stairs={(99, 99)})
+        prompting = normalize_tty(frame("Really attack the goblin? [yn]", map1="...@.."),
+                                  cols=80, rows=5)
+        with self.assertRaises(RuntimeError):
+            assert_production_safe(decision, prompting, down_stairs={prompting.player})
 
     def test_real_frame_still_explores_after_the_save_prompt(self) -> None:
         # Full 3.6.7 frame, status not on the last two rows, save prompt gone.
@@ -129,7 +177,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
             layer="tactical",
             intent="attack",
             reason="bad regression",
-            actions=(Action(type="text", text="h"),),
+            actions=(Action(type="text", text="Q"),),
         )
         with self.assertRaises(RuntimeError):
             assert_p3b_safe(decision)
@@ -173,8 +221,7 @@ class TestNethackPolicyBrain(unittest.TestCase):
         self.assertIn(actions2[0].text, {"h", "j", "k", "l"})
         self.assertEqual(brain.last_decision.intent, "explore_step")
 
-    def test_brain_rests_one_turn_on_severe_status(self) -> None:
-        # owner decision 2026-09-23: 入力なしで永久凍結しない。
+    def test_brain_uses_reviewed_prayer_recovery_on_severe_status(self) -> None:
         brain = build_brain(SimpleNamespace(), self._game())
         obs = Observation(
             game="nethack",
@@ -184,8 +231,8 @@ class TestNethackPolicyBrain(unittest.TestCase):
             kind="text",
             text=frame(condition="Sick"),
         )
-        self.assertEqual([a.text for a in brain.decide(obs)], ["."])
-        self.assertEqual(brain.last_decision.intent, "status_emergency")
+        self.assertEqual([a.text for a in brain.decide(obs)], ["#"])
+        self.assertEqual(brain.last_decision.intent, "status_recovery")
 
     def test_brain_is_restricted_to_cli_nethack(self) -> None:
         from docich.adapters import AdapterError
@@ -198,3 +245,4 @@ class TestNethackPolicyBrain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

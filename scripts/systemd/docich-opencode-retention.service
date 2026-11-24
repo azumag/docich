@@ -6,7 +6,10 @@ Type=oneshot
 Environment=XDG_RUNTIME_DIR=%t
 WorkingDirectory=__DOCICH_ROOT__
 ExecStart=/bin/bash __DOCICH_ROOT__/ops/vm_actions/opencode_db_retention_now.sh --scheduled
-TimeoutStartSec=840
+# Budget (azumag/docich#3140): DB pass deadline 780s + session-file dry-run
+# gate wait 300s + bounded scan margin 120s. Raised from 840s when the
+# dry-run session-file stage was added; still one unit, one hourly schedule.
+TimeoutStartSec=1200
 KillMode=control-group
 SuccessExitStatus=75
 Nice=10

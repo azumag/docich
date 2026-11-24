@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import threading
 import urllib.error
 
 import pytest
@@ -108,8 +109,15 @@ def test_outcomes_cover_disjoint_ranges():
         middle = target // 2
         expected = [2] * middle + [1] * (target - middle) + [0] * (13 - target)
         assert [p.winner(i, target, middle) for i in range(13)] == expected
-    assert p.outcome_titles(2,1) == ['2話突破（新記録）', '1話突破', '1話突破できず']
-    assert p.outcome_titles(6,3) == ['6話突破（新記録）', '3〜5話突破', '3話突破できず']
+    # 4択目（画面停滞で一時終了）は run の終わり方で選ぶため、突破数の区分には入らない。
+    assert p.outcome_titles(2,1) == ['2話突破（新記録）', '1話突破', '1話突破できず',
+                                     '画面停滞で一時終了（同じ状態から再開予定）']
+    assert p.outcome_titles(6,3) == ['6話突破（新記録）', '3〜5話突破', '3話突破できず',
+                                     '画面停滞で一時終了（同じ状態から再開予定）']
+    # 受理は「生成は4択・row が自己申告する3か4択」。#2238 の legacy 互換。
+    legacy, current = p.accepted_outcome_titles(2, 1)
+    assert legacy == p.outcome_titles(2, 1)[:3]
+    assert current == p.outcome_titles(2, 1)
 
 
 def test_reach_two_is_one_clear_and_monotonic(env):
@@ -223,8 +231,15 @@ def test_existing_unrelated_remote_is_never_modified(env, status):
 
 
 @pytest.mark.parametrize('reason', ['game_over', 'screen_stalled', 'input_stalled'])
-@pytest.mark.parametrize('chapter, index', [(1,2), (2,1), (3,0), (7,0)])
-def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapter, index):
+@pytest.mark.parametrize('chapter', [1, 2, 3, 7])
+def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapter):
+    # 4択目（画面停滞で一時終了）は run の終わり方で選ぶため突破数に依存しない。
+    # ただし目標到達が同時に確認できた row は、挑戦終了を待たず達成時点で
+    # outcome-0 に精算される（2026-11-09 オーナー判断）。
+    # game_over / input_stalled は従来どおり突破数で判定する（#2238）。
+    index = {'game_over': {1: 2, 2: 1, 3: 0, 7: 0},
+             'input_stalled': {1: 2, 2: 1, 3: 0, 7: 0},
+             'screen_stalled': {1: 3, 2: 3, 3: 0, 7: 0}}[reason][chapter]
     env.tick()
     progress.record(env.runtime, ID, {'chapter': chapter, 'chapter_evidence': 'header'}, [], DIGEST)
     terminal(env, reason)
@@ -239,6 +254,59 @@ def test_terminal_uses_cleared_maximum_and_frozen_thresholds(env, reason, chapte
     env.tick(131)
     assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
     assert len([c for c in env.remote.calls if c[0] == 'PATCH' and c[2] == 'RESOLVED']) == 1
+
+
+def test_created_prediction_always_offers_four_outcomes(env):
+    """選択肢は run 開始時に固定されるため、checkpoint の有無によらず常に4択（#2238）。"""
+    env.tick()
+    row = env.state()['round']
+    assert row['outcome_titles'] == p.outcome_titles(2, 1)
+    assert len(row['outcome_titles']) == 4 and len(row['outcome_ids']) == 4
+    assert env.remote.rows[0]['outcomes'][3]['title'] == p.STALLED_OUTCOME_TITLE
+    # 同じ4択 row は durable reread（_load）でも受理される。
+    assert p._load(env.g.state_dir, 1)['round']['outcome_ids'] == row['outcome_ids']
+
+
+def test_screen_stalled_without_progress_also_resolves_as_the_fourth_outcome(env):
+    """突破数の証拠が無い停滞終了も CANCELED にせず4択目で記帳する（#2238）。"""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'screen_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'resolved'
+    row = env.state()['round']
+    assert row['result']['reason'] == 'screen_stalled' and row['result']['cleared'] is None
+    assert row['status'] == 'RESOLVED'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
+
+
+def test_input_stalled_without_progress_still_cancels(env):
+    """input_stalled は4択目に含めない（owner 決定 2026-10-15）。"""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'input_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert 'winning_outcome_id' not in env.remote.rows[0]
+
+
+def test_legacy_three_option_row_is_accepted_and_settles_as_before(env):
+    """デプロイ前の3択 row は受理し、停滞終了でも従来どおり CANCELED にする。
+
+    4択へ変えた後に legacy row を `_load` が拒否すると #2213 の invalid_state
+    ループが再発するため、受理だけ legacy を許す（生成は常に4択）。
+    """
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    state = env.state()
+    row = state['round']
+    row['outcome_titles'] = row['outcome_titles'][:3]
+    row['outcome_ids'] = row['outcome_ids'][:3]
+    atomic_write_json(env.g.state_dir / p.FILE, state)
+    env.remote.rows[0]['outcomes'] = env.remote.rows[0]['outcomes'][:3]
+    assert len(p._load(env.g.state_dir, 1)['round']['outcome_titles']) == 3
+    terminal(env, 'screen_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+    assert env.state()['round']['status'] == 'CANCELED'
 
 
 def test_input_stalled_terminal_survives_the_durable_reread(env):
@@ -277,6 +345,114 @@ def test_next_run_uses_new_record(env):
     assert (row['target'], row['middle']) == (6,3)
 
 
+def test_identityless_timer_tick_does_not_starve_the_owner_creation(env):
+    # g1067 2026-10-28: the retro/rotation timers tick without an identity
+    # every minute. With only a finished round on file they consumed the
+    # poll window, so the owner's observe tick (which alone may create) was
+    # always "not yet due" and no prediction opened for the new run.
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    terminal(env, 'screen_stalled')
+    env.tick(101)
+    assert env.state()['round']['status'] in p.DONE
+    env.setup(ID2)
+    before = env.state()['next_poll_at']
+    env.tick(140, None)
+    assert env.state()['next_poll_at'] == before
+    env.tick(141, ID2)
+    assert env.state()['round']['runtime_id'] == ID2['runtime_id']
+
+
+def live_run(env, identity=ID, *, observations=1, observed_at=100.0,
+             terminal=None, canonical=None):
+    """Write the canonical + run sides used by the owner-adoption gates."""
+    runtime = env.g.state_dir / 'runtimes' / identity['runtime_id']
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(env.g.state_dir / 'game_switch.json', {
+        'phase': 'ready', 'active': canonical if canonical is not None else identity})
+    row = {**identity, 'schema': 1, 'observations': observations,
+           'observed_at': observed_at}
+    if terminal is not None:
+        row['terminal_reason'] = terminal
+    atomic_write_json(runtime / 'hanjuku_run.json', row)
+    return runtime
+
+
+def test_active_identity_requires_a_fresh_observed_canonical_run(env):
+    live_run(env)
+    assert p.active_identity(env.g, now=100) == ID
+
+    # No observation yet (the agent has not bound its resume context).
+    live_run(env, observations=0)
+    assert p.active_identity(env.g, now=100) is None
+
+    # A dead or finished run is never adopted.
+    live_run(env, terminal='game_over')
+    assert p.active_identity(env.g, now=100) is None
+
+    live_run(env, observed_at=100 - p.RUN_FRESH_SECONDS - 1)
+    assert p.active_identity(env.g, now=100) is None
+    live_run(env, observed_at=0)
+    assert p.active_identity(env.g, now=100) is None
+
+    # Canonical authority, not the displayed label.
+    live_run(env, canonical={**ID, 'game': 'nethack'})
+    assert p.active_identity(env.g, now=100) is None
+    atomic_write_json(env.g.state_dir / 'game_switch.json',
+                      {'phase': 'draining', 'active': ID})
+    assert p.active_identity(env.g, now=100) is None
+    atomic_write_json(env.g.state_dir / 'game_switch.json',
+                      {'phase': 'ready', 'active': ID, 'operation': 'switch',
+                       'request_id': 'in-flight'})
+    assert p.active_identity(env.g, now=100) is None
+
+    # A run record bound to another generation is not this runtime's owner.
+    live_run(env)
+    atomic_write_json(env.runtime / 'hanjuku_run.json',
+                      {**ID2, 'schema': 1, 'observations': 1, 'observed_at': 100.0})
+    assert p.active_identity(env.g, now=100) is None
+
+
+def test_tick_active_creates_the_round_for_an_observed_live_run(env):
+    live_run(env)
+    result = p.tick_active(env.g, now=100,
+                           client_factory=lambda _: (env.remote, None))
+    assert result['mode'] == 'active'
+    assert [call for call in env.remote.calls if call[0] == 'POST']
+    assert env.state()['round']['runtime_id'] == ID['runtime_id']
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'observations': 0},
+    {'observed_at': 0},
+    {'observed_at': 100 - p.RUN_FRESH_SECONDS - 1},
+    {'terminal': 'screen_stalled'},
+])
+def test_tick_active_never_creates_without_a_live_observed_run(env, kwargs):
+    live_run(env, **kwargs)
+    p.tick_active(env.g, now=100, client_factory=lambda _: (env.remote, None))
+    assert not any(call[0] == 'POST' for call in env.remote.calls)
+
+
+def test_owner_ticker_ticks_only_the_current_live_identity(env, monkeypatch):
+    calls = []
+    stop = threading.Event()
+
+    class FakeModule:
+        @staticmethod
+        def active_identity(_g):
+            return ID
+
+        @staticmethod
+        def tick(_g, identity):
+            calls.append(identity)
+            stop.set()
+
+    monkeypatch.setattr(p.hanjuku_hotload, 'module', lambda _name: FakeModule)
+    p._owner_tick_loop(env.g, ID, 0.01, stop)
+    assert calls == [ID]
+
+
 def test_api_outage_persists_result_and_common_tick_retries_after_teardown(env):
     env.tick()
     progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
@@ -285,19 +461,144 @@ def test_api_outage_persists_result_and_common_tick_retries_after_teardown(env):
     assert env.tick(101)['error'] == 'transport'
     assert env.state()['round']['result']['cleared'] == 2
     assert env.state()['best_cleared'] == 2
+    # 失敗後は 300 秒 backoff を守り、観測 tick ごとに PATCH を再試行しない。
+    calls_after_error = len(env.remote.calls)
+    assert env.tick(200, None)['mode'] != 'resolved'
+    assert len(env.remote.calls) == calls_after_error
     env.setup(ID2)
     env.remote.failure = None
     assert env.tick(401, None)['mode'] == 'resolved'
+    # 停滞終了でも目標到達（2話突破）が確認できているため outcome-0 で精算する
+    # （2026-11-09 オーナー判断。停滞は到達より弱い証拠）。
     assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
 
 
-def test_unknown_score_refunds_instead_of_guessing_zero(env):
+def test_unknown_score_resolves_as_temporary_end_without_guessing_zero(env):
+    """突破数の証拠が無い停滞終了は、0 と推測せず4択目で記帳する（#2238）。"""
     (env.runtime / progress.FILE).unlink()
     env.tick()
     terminal(env, 'screen_stalled')
+    assert env.tick(101)['mode'] == 'resolved'
+    assert env.state()['round']['result']['cleared'] is None
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
+
+
+def test_unknown_score_refunds_instead_of_guessing_zero(env):
+    """停滞終了でも4択目でもない終端（input_stalled）は従来どおり返金する。"""
+    (env.runtime / progress.FILE).unlink()
+    env.tick()
+    terminal(env, 'input_stalled')
     assert env.tick(101)['mode'] == 'canceled'
     assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
     assert env.state()['round']['result']['cleared'] is None
+
+
+def _set_bets(env, users_by_outcome):
+    """Give the created round's outcomes explicit Twitch bet totals."""
+    for index, outcome in enumerate(env.remote.rows[0]['outcomes']):
+        users = users_by_outcome.get(index, 0)
+        outcome['users'] = users
+        outcome['channel_points'] = 100 * users
+
+
+@pytest.mark.parametrize('outcomes, expected', [
+    ([{'users': 0, 'channel_points': 0}, {'users': 2, 'channel_points': 500}], 1),
+    ([{'users': 1}, {'channel_points': 1}], 2),
+    ([{'users': None, 'channel_points': 0}, {'channel_points': 3}], 1),
+    ([{'id': 'a'}], None),
+    ([], None),
+    ([{'users': True}], None),
+    ([{'users': '1'}], None),
+    (['not-an-outcome'], None),
+])
+def test_contested_outcomes_counts_only_readable_bets(outcomes, expected):
+    assert p._contested_outcomes({'outcomes': outcomes}) == expected
+    assert p._contested_outcomes(None) is None
+
+
+def test_no_contest_is_false_when_the_counts_are_unreadable():
+    assert p._no_contest({'outcomes': [{'users': 0}]}) is True
+    assert p._no_contest({'outcomes': [{'users': 1}, {'users': 0}]}) is True
+    assert p._no_contest({'outcomes': [{'users': 1}, {'users': 2}]}) is False
+    assert p._no_contest({'outcomes': [{'id': 'a'}]}) is False
+
+
+def test_a_single_outcome_with_bets_is_canceled_and_refunded(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {1: 2})
+
+    assert _settle(env)['mode'] == 'canceled'
+
+    statuses = [c[2] for c in env.remote.calls if c[0] == 'PATCH']
+    assert statuses == ['LOCKED', 'CANCELED']
+    assert env.state()['round']['status'] == 'CANCELED'
+    # 不成立キャンセルでも参加実績と返金を残す（#933 追記）。
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    round_ = ledger['rounds'][env.remote.rows[0]['id']]
+    assert round_['status'] == 'CANCELED' and round_['cancel_reason'] == 'no-contest'
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 1}
+    assert all(entry['hit'] is None and entry['won'] == 0
+               and entry['refunded'] == entry['used'] for entry in round_['predictors'])
+    # 勝敗が確定していないので的中率の分母には入らない。
+    assert leaderboard.ranking(ledger, min_rounds=1) == []
+
+
+def test_no_bets_at_all_is_canceled_and_refunded(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {})
+
+    assert _settle(env)['mode'] == 'canceled'
+
+    assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 1}
+
+
+def test_a_contested_prediction_resolves_as_before(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {0: 1, 2: 3})
+
+    assert _settle(env)['mode'] == 'resolved'
+
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-1'
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    # 4択すべてに top predictor が1人ずついる（_seed_top_predictors）。
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 0}
+    assert [c[2] for c in env.remote.calls if c[0] == 'PATCH'] == ['LOCKED', 'RESOLVED']
+
+
+def test_unreadable_bet_counts_resolve_as_before(env):
+    # Twitch only omits users/channel_points when the caller cannot see them, so
+    # the old settle path stays in place instead of inventing a cancel.
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+
+    assert _settle(env)['mode'] == 'resolved'
+
+
+def test_the_locked_row_decides_the_contest(env):
+    assert env.tick()['mode'] == 'active'
+    _seed_top_predictors(env)
+    _set_bets(env, {0: 1, 2: 1})
+    original = env.remote.end
+
+    def end_with_a_late_correction(prediction_id, status, outcome_id=None):
+        rows = original(prediction_id, status, outcome_id)
+        if status == 'LOCKED':
+            # Betting is closed at the lock, so this row is authoritative even
+            # when it disagrees with the earlier GET.
+            for index, outcome in enumerate(rows[0]['outcomes']):
+                outcome['users'] = 1 if index == 2 else 0
+                outcome['channel_points'] = 100 if index == 2 else 0
+        return rows
+
+    env.remote.end = end_with_a_late_correction
+
+    assert _settle(env)['mode'] == 'canceled'
+    assert not any(c[0] == 'PATCH' and c[2] == 'RESOLVED' for c in env.remote.calls)
 
 
 def test_wrong_lease_or_bad_terminal_never_settles(env):
@@ -392,12 +693,132 @@ def test_top_outcome_already_known_does_not_open_betting(env):
     assert env.remote.calls == []
 
 
-def test_top_outcome_during_voting_locks_but_waits_for_terminal(env):
+def test_top_outcome_during_voting_settles_at_achievement(env):
+    """目標到達は run の終端を待たず、その時点で outcome-0 に精算する。
+
+    2026-11-09 オーナー判断。到達は検証済み突破数で、後から減らないため
+    挑戦終了まで betting を開けたままにする理由がない。
+    """
     env.tick()
     progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
     env.tick(131)
-    assert env.remote.rows[0]['status'] == 'LOCKED'
+    assert env.remote.rows[0]['status'] == 'RESOLVED'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    row = env.state()['round']
+    assert row['achieved'] == 2 and row.get('result') is None
     assert not (env.runtime / p.RESULT_FILE).exists()
+
+
+def test_goal_achievement_settles_then_opens_the_next_goal_in_the_same_run(env):
+    """達成で精算し、同じ挑戦の続きで次の目標(T+1)の予想を作る（2026-11-09）。"""
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(131)['mode'] == 'resolved'
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    assert env.state()['best_cleared'] == 2
+
+    assert env.tick(161)['mode'] == 'active'
+    row = env.state()['round']
+    assert row['runtime_id'] == ID['runtime_id']
+    assert row['kind'] == p.NEXT_PREDICTION_KIND
+    assert row['target'] == 3 and row.get('middle') is None
+    assert row['title'].startswith('半熟英雄：3話を突破できる？ #')
+    assert row['outcome_titles'] == ['3話突破', '3話突破ならず', '停滞で一時停止']
+    assert len(env.remote.rows) == 2
+    assert env.remote.rows[1]['status'] == 'ACTIVE'
+    # 同じ row は durable reread（_load）でも受理される。
+    assert p._load(env.g.state_dir, 1)['round']['kind'] == p.NEXT_PREDICTION_KIND
+
+    # 次の目標も達成したら、またその場で精算して次へ引き継ぐ。
+    progress.record(env.runtime, ID, {'chapter': 4, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(191)['mode'] == 'resolved'
+    assert env.remote.rows[1]['winning_outcome_id'] == 'outcome-0'
+    assert env.state()['best_cleared'] == 3
+    assert env.tick(221)['mode'] == 'active'
+    assert env.state()['round']['target'] == 4
+
+
+def test_next_goal_is_not_opened_after_a_terminal_settlement(env):
+    """run の終端で精算した場合は、次目標の予想を同じ挑戦に作らない。"""
+    env.tick()
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    terminal(env, 'game_over')
+    assert env.tick(131)['mode'] == 'resolved'
+    env.tick(161)
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+    assert env.state()['round']['target'] == 2
+
+
+def test_next_goal_is_not_opened_after_a_refund(env):
+    """返金で終わった予想のあとに、黙って次の賭けを開かない。"""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'input_stalled', ID2)
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+    env.tick(131, ID2)
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+def test_achievement_refund_continues_to_the_next_goal(env):
+    """達成と同時に不成立返金になっても、同じ挑戦の次目標を作る（2026-11-09）。"""
+    env.tick()
+    _set_bets(env, {0: 1})
+    progress.record(env.runtime, ID, {'chapter': 3, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert env.tick(131)['mode'] == 'canceled'
+    assert env.remote.rows[0]['status'] == 'CANCELED'
+    settled = env.state()['round']
+    assert settled['achieved'] == 2 and settled.get('result') is None
+
+    assert env.tick(161)['mode'] == 'active'
+    row = env.state()['round']
+    assert row['kind'] == p.NEXT_PREDICTION_KIND and row['target'] == 3
+    assert row['title'].startswith('半熟英雄：3話を突破できる？ #')
+    assert env.remote.rows[1]['status'] == 'ACTIVE'
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 2
+
+
+def test_refunded_row_from_an_older_build_continues_from_verified_progress(env):
+    """2026-11-09 以前の build が残した「achieved 無しの返金」でも系列を再開する。"""
+    nonce = '0' * 12
+    row = {**ID, 'kind': p.RESUME_PREDICTION_KIND, 'target': 4, 'middle': None,
+           'nonce': nonce, 'title': p._chapter_title(4, nonce),
+           'outcome_titles': p.resume_outcome_titles(4),
+           'window': 600, 'attempted': True, 'status': 'CANCELED',
+           'id': 'prediction-old', 'outcome_ids': ['old-0', 'old-1', 'old-2']}
+    atomic_write_json(env.g.state_dir / p.FILE, {
+        'schema': 1, 'best_cleared': 3, 'round': row, 'mode': 'canceled',
+        'next_poll_at': 0, 'last_poll_at': 0, 'error': None})
+    assert p._load(env.g.state_dir, 1)['round']['target'] == 4
+    progress.record(env.runtime, ID, {'chapter': 8, 'chapter_evidence': 'header'}, [], DIGEST)
+
+    assert env.tick(200)['mode'] == 'active'
+    created = env.state()['round']
+    assert created['kind'] == p.NEXT_PREDICTION_KIND and created['target'] == 8
+    assert created['title'].startswith('半熟英雄：8話を突破できる？ #')
+    assert created['outcome_titles'] == ['8話突破', '8話突破ならず', '停滞で一時停止']
+    assert env.state()['best_cleared'] == 7
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+def test_chain_target_requires_proven_progress_and_a_live_attempt(env):
+    state = {'best_cleared': 1}
+    row = {**ID, 'target': 4, 'status': 'CANCELED'}
+    assert p._chain_target(env.g.state_dir, row, state) is None
+    progress.record(env.runtime, ID, {'chapter': 5, 'chapter_evidence': 'header'}, [], DIGEST)
+    assert p._chain_target(env.g.state_dir, row, state) == 5
+    assert state['best_cleared'] == 4
+    terminal(env)
+    assert p._chain_target(env.g.state_dir, row, state) is None
+
+
+def test_chain_target_stops_at_the_final_chapter(env):
+    env.tick()
+    state = env.state()
+    row = state['round']
+    row.update(status='RESOLVED', achieved=12)
+    chain_state = {'best_cleared': 11}
+    assert p._chain_target(env.g.state_dir, row, chain_state) is None
+    assert chain_state['best_cleared'] == 12
 
 
 def test_pause_blocks_creation_not_result_recording_or_pending_settlement(env):
@@ -536,9 +957,14 @@ def test_diagnostics_is_allowlisted_and_contains_no_titles_or_tokens(env):
 def test_integration_uses_side_channel_outside_input_gate():
     source = (ROOT/'src/docich/retro_corner.py').read_text()
     loop = source[source.index('    def _wait_hanjuku'):source.index('    def _retry_restoring_tick')]
-    assert loop.index('shared_section(self.g.state_dir, adapter.observe)') < loop.index('prediction_tick(self.g, owned_identity)')
-    assert loop.index('prediction_tick(self.g, owned_identity)') < loop.index('with self._locked():', loop.index('prediction_tick(self.g, owned_identity)'))
-    assert 'prediction_tick(self.g)' in (ROOT/'src/docich/corner_rotation.py').read_text()
+    # The tick is resolved through the hot-load trampoline (#3838), so the
+    # deployed generation -- not a stale import -- runs in the corner worker.
+    tick_call = "module('hanjuku_predictions').tick(\n                self.g, owned_identity)"
+    assert loop.index('shared_section(self.g.state_dir, adapter.observe)') < loop.index(tick_call)
+    assert loop.index(tick_call) < loop.index('with self._locked():', loop.index(tick_call))
+    rotation = (ROOT/'src/docich/corner_rotation.py').read_text()
+    assert "getattr(prediction_module, 'tick_active', None)" in rotation
+    assert 'prediction_tick(self.g)' in rotation
 
 
 def test_saved_settlement_survives_runtime_retention(env):
@@ -552,7 +978,8 @@ def test_saved_settlement_survives_runtime_retention(env):
     shutil.rmtree(env.runtime)
     env.remote.failure = None
     assert env.tick(401, None)['mode'] == 'resolved'
-    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-0'
+    # 画面停滞の終端なので4択目で確定する（#2238）。
+    assert env.remote.rows[0]['winning_outcome_id'] == 'outcome-3'
     assert env.state()['best_cleared'] == 2
 
 
@@ -636,7 +1063,7 @@ def test_settled_round_is_recorded_in_the_yosou_leaderboard(env):
         f'u{index}': outcome['id'] == round_['winning_outcome_id']
         for index, outcome in enumerate(env.remote.rows[0]['outcomes'])
     }
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 0}
 
     # The runtime-retention tick after teardown never counts the round twice.
     env.tick(131)
@@ -664,7 +1091,7 @@ def test_patch_response_without_predictors_uses_one_authoritative_read(env):
                    if call[0] == 'PATCH' and call[2] == 'RESOLVED')
     assert any(call == ('GET', prediction_id) for call in calls[patch_at + 1:])
     ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
-    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 3}
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 4, 'canceled': 0}
 
 
 def test_broken_ledger_keeps_the_settled_round_retryable(env):
@@ -711,6 +1138,51 @@ def test_malformed_settled_row_is_refused_without_recording(env, settled_by):
     assert env.state()['round']['status'] == 'RESOLVED'
 
     # The verified terminal round must not block the next canonical generation.
+    env.setup(ID2)
+    assert env.tick(131 + p.RETRY_SECONDS + 32, ID2)['mode'] == 'active'
+    assert env.state()['round']['runtime_id'] == ID2['runtime_id']
+    assert env.state()['round']['id'] != prediction_id
+    env.tick(131 + p.RETRY_SECONDS + 62, ID2)
+    assert len([call for call in env.remote.calls if call == ('GET', prediction_id)]) == 1
+    assert len([call for call in env.remote.calls if call[0] == 'POST']) == 2
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+@pytest.mark.parametrize('settled_by', ['patch', 'remote'])
+def test_malformed_canceled_row_is_refused_without_recording(env, settled_by):
+    """The P2 invariant (PR #2205) also holds on the no-contest cancel path.
+
+    A cancelled row that violates the record contract must not be recorded, and
+    the round must be held terminal so the old ACTIVE ownership neither keeps
+    re-reading the same id nor blocks the next canonical generation. Without the
+    terminal status the tick would retry the rejected id forever.
+    """
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+    _set_bets(env, {1: 2})
+    # A cancelled prediction cannot name a winner: extract() refuses this row.
+    env.remote.rows[0]['winning_outcome_id'] = 'outcome-1'
+
+    if settled_by == 'patch':
+        result = _settle(env, now=131)
+    else:
+        env.remote.rows[0].update(status='CANCELED')
+        result = env.tick(131)
+
+    assert result['mode'] == 'error' and result['error'] == 'invalid_response'
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+    # Neither a cooldown tick nor a common retry tick re-reads the rejected row.
+    calls = list(env.remote.calls)
+    env.tick(132, None)
+    env.tick(131 + p.RETRY_SECONDS + 1, None)
+    assert env.remote.calls == calls
+    assert env.state()['round']['id'] == prediction_id
+    assert env.state()['round']['status'] == 'CANCELED'
+
+    # The rejected terminal round must not block the next canonical generation.
     env.setup(ID2)
     assert env.tick(131 + p.RETRY_SECONDS + 32, ID2)['mode'] == 'active'
     assert env.state()['round']['runtime_id'] == ID2['runtime_id']
@@ -769,3 +1241,291 @@ def test_unverified_settlement_response_keeps_owned_round_retryable(env, monkeyp
     assert not (env.g.state_dir / leaderboard.FILE).exists()
     assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'resolved'
     assert len(leaderboard.load(env.g.state_dir / leaderboard.FILE)['rounds']) == 1
+
+
+def test_broken_ledger_keeps_the_canceled_round_retryable(env):
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _seed_top_predictors(env)
+    _set_bets(env, {1: 2})
+    path = env.g.state_dir / leaderboard.FILE
+    path.write_text('{broken', encoding='utf-8')
+
+    first = _settle(env, now=131)
+    assert first['mode'] == 'error' and first['error'] == 'leaderboard'
+    assert env.state()['round']['status'] != 'CANCELED'
+    assert path.read_text(encoding='utf-8') == '{broken'
+
+    # The next observation of the already-canceled remote records the refunded
+    # participation exactly once.
+    path.write_text(json.dumps(leaderboard.new_ledger()), encoding='utf-8')
+    assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'canceled'
+    ledger = leaderboard.load(path)
+    assert set(ledger['rounds']) == {prediction_id}
+    assert ledger['rounds'][prediction_id]['cancel_reason'] == 'no-contest'
+    assert leaderboard.stats(ledger)['canceled'] == 1
+    env.tick(131 + 2 * p.RETRY_SECONDS + 2, None)
+    assert len(leaderboard.load(path)['rounds']) == 1
+
+
+def test_a_non_contest_cancel_is_not_recorded(env):
+    """An ``input_stalled`` ending cancels the round, but it is not the refunded
+    no-contest round the 予想王 ledger keeps (Issue #933 scopes the addendum to
+    no-contest cancellations)."""
+    env.setup(identity=ID2, chapter=None)
+    env.tick(100, ID2)
+    terminal(env, 'input_stalled', ID2)
+
+    assert env.tick(101, ID2)['mode'] == 'canceled'
+
+    assert env.state()['round']['status'] == 'CANCELED'
+    assert [c[2] for c in env.remote.calls if c[0] == 'PATCH'] == ['CANCELED']
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+@pytest.mark.parametrize('missing_counts', [False, True])
+def test_cancel_participation_survives_ledger_failure_and_state_reload(env, monkeypatch, missing_counts):
+    assert env.tick()['mode'] == 'active'
+    prediction_id = env.remote.rows[0]['id']
+    _set_bets(env, {0: 1})
+    env.remote.rows[0]['outcomes'][0]['top_predictors'] = [{
+        'user_id': 'u1', 'user_login': 'alice', 'user_name': 'Alice',
+        'channel_points_used': 100, 'channel_points_won': None}]
+    end = env.remote.end
+
+    def end_without_participation(*args):
+        if args[1] == 'CANCELED':
+            # Write-ahead evidence must already be durable when cancel starts.
+            snapshot = p._load_cancel_snapshot(env.g.state_dir, env.state()['round'])
+            assert snapshot['outcomes'][0]['top_predictors'][0]['channel_points_used'] == 100
+        response = end(*args)
+        if args[1] == 'CANCELED':
+            # PATCH and every subsequent GET omit the formerly known voters.
+            for source in (response[0], env.remote.rows[0]):
+                for outcome in source['outcomes']:
+                    outcome.pop('top_predictors', None)
+                    if missing_counts:
+                        outcome.pop('users', None)
+                        outcome.pop('channel_points', None)
+        return response
+
+    monkeypatch.setattr(env.remote, 'end', end_without_participation)
+    save = leaderboard.save
+    attempts = []
+
+    def fail_once(path, ledger):
+        attempts.append(copy.deepcopy(ledger))
+        if len(attempts) == 1:
+            raise OSError('synthetic ledger write failure')
+        save(path, ledger)
+
+    monkeypatch.setattr(leaderboard, 'save', fail_once)
+    assert _settle(env, now=131)['error'] == 'leaderboard'
+    assert len(attempts[0]['rounds'][prediction_id]['predictors']) == 1
+    assert p._load(env.g.state_dir, 1)['round']['status'] not in p.DONE
+    snapshot_path = p._cancel_snapshot_path(env.g.state_dir, env.state()['round'])
+    assert snapshot_path.is_file()
+    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+
+    assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'canceled'
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert leaderboard.stats(ledger) == {'rounds': 1, 'viewers': 1, 'canceled': 1}
+    alice = leaderboard.boards(ledger)['plays'][0]
+    assert (alice['participations'], alice['used'], alice['refunded'], alice['net']) == (1, 100, 100, 0)
+    assert not snapshot_path.exists()
+    before = (env.g.state_dir / leaderboard.FILE).read_bytes()
+    env.tick(131 + 2 * p.RETRY_SECONDS + 2, None)
+    assert (env.g.state_dir / leaderboard.FILE).read_bytes() == before
+
+
+def _locked_cancel_snapshot(env):
+    assert env.tick()['mode'] == 'active'
+    _set_bets(env, {0: 1})
+    remote = env.remote.rows[0]
+    remote['status'] = 'LOCKED'
+    remote['outcomes'][0]['top_predictors'] = [{
+        'user_id': 'u1', 'user_login': 'alice', 'user_name': 'Alice',
+        'channel_points_used': 100}]
+    return env.state()['round'], copy.deepcopy(remote)
+
+
+@pytest.mark.parametrize('failure', ['io', 'oversize', 'invalid_predictor', 'before_replace'])
+def test_snapshot_failure_prevents_cancel(env, monkeypatch, failure):
+    row, remote = _locked_cancel_snapshot(env)
+    snapshot_path = p._cancel_snapshot_path(env.g.state_dir, row)
+    write = p.atomic_write_json
+
+    def fail_snapshot(path, payload):
+        if path == snapshot_path:
+            if failure == 'io':
+                raise OSError('synthetic snapshot write failure')
+            if failure == 'before_replace':
+                def crash(phase, _):
+                    if phase == 'after_file_fsync':
+                        raise OSError('synthetic crash before replace')
+                return atomic_write_json(path, payload, crash_hook=crash)
+        return write(path, payload)
+
+    monkeypatch.setattr(p, 'atomic_write_json', fail_snapshot)
+    if failure == 'oversize':
+        env.remote.rows[0]['padding'] = 'あ' * (p.MAX_CANCEL_SNAPSHOT_BYTES // 3)
+    elif failure == 'invalid_predictor':
+        env.remote.rows[0]['outcomes'][0]['top_predictors'][0]['channel_points_used'] = -1
+
+    assert _settle(env, now=131)['mode'] == 'error'
+    assert env.remote.rows[0]['status'] == 'LOCKED'
+    assert not any(c[0] == 'PATCH' and c[2] == 'CANCELED' for c in env.remote.calls)
+    assert not snapshot_path.exists()
+    assert not list(env.g.state_dir.glob(f'.{snapshot_path.name}.*'))
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+    assert env.state()['round']['status'] not in p.DONE
+
+
+@pytest.mark.parametrize('corruption', ['id', 'outcome', 'predictor', 'empty', 'json', 'oversize', 'symlink'])
+def test_corrupt_or_foreign_snapshot_is_refused_without_empty_record(env, corruption):
+    row, remote = _locked_cancel_snapshot(env)
+    snapshot = p._save_cancel_snapshot(env.g.state_dir, row, remote)
+    path = p._cancel_snapshot_path(env.g.state_dir, row)
+    if corruption == 'id':
+        snapshot['id'] = 'other-prediction'
+    elif corruption == 'outcome':
+        snapshot['outcomes'][0]['id'] = 'other-outcome'
+    elif corruption == 'predictor':
+        snapshot['outcomes'][0]['top_predictors'][0]['channel_points_used'] = -1
+    elif corruption == 'empty':
+        snapshot = {}
+    atomic_write_json(path, snapshot)
+    if corruption == 'json':
+        path.write_text('{broken', encoding='utf-8')
+    elif corruption == 'oversize':
+        path.write_bytes(b' ' * (p.MAX_CANCEL_SNAPSHOT_BYTES + 1))
+    elif corruption == 'symlink':
+        path.unlink()
+        path.symlink_to(env.g.state_dir / 'missing-snapshot')
+    original = None if path.is_symlink() else path.read_bytes()
+    env.remote.rows[0]['status'] = 'CANCELED'
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome.pop('top_predictors', None)
+
+    assert env.tick(131, None)['error'] == 'invalid_state'
+    assert path.is_symlink() if corruption == 'symlink' else path.read_bytes() == original
+    assert env.state()['round']['status'] not in p.DONE
+    assert not (env.g.state_dir / leaderboard.FILE).exists()
+
+
+def test_snapshot_is_not_replaced_by_a_poorer_locked_retry(env):
+    row, remote = _locked_cancel_snapshot(env)
+    p._save_cancel_snapshot(env.g.state_dir, row, remote)
+    path = p._cancel_snapshot_path(env.g.state_dir, row)
+    original = path.read_bytes()
+    for outcome in remote['outcomes']:
+        outcome.pop('top_predictors', None)
+    assert p._save_cancel_snapshot(env.g.state_dir, row, remote)['outcomes'][0]['top_predictors']
+    assert path.read_bytes() == original
+    assert p._load_cancel_snapshot(env.g.state_dir, {**row, 'id': 'other'}) is None
+
+
+def test_large_snapshot_reloads_without_expanding_the_intent(env):
+    row, remote = _locked_cancel_snapshot(env)
+    remote['outcomes'][0]['top_predictors'] = [{
+        'user_id': f'u{i}', 'user_login': f'alice{i}', 'user_name': '同' * 128,
+        'channel_points_used': 100} for i in range(100)]
+    saved = p._save_cancel_snapshot(env.g.state_dir, row, remote)
+    path = p._cancel_snapshot_path(env.g.state_dir, row)
+    assert 16384 < path.stat().st_size <= p.MAX_CANCEL_SNAPSHOT_BYTES
+    assert (env.g.state_dir / p.FILE).stat().st_size < 16384
+    assert p._load(env.g.state_dir, 1)['round']['id'] == row['id']
+    assert p._load_cancel_snapshot(env.g.state_dir, row) == saved
+
+
+def test_cancel_cleanup_failure_retries_a_committed_ledger_without_duplicates(env, monkeypatch):
+    row, remote = _locked_cancel_snapshot(env)
+    snapshot_path = p._cancel_snapshot_path(env.g.state_dir, row)
+    unlink = Path.unlink
+
+    def fail_once(path, *args, **kwargs):
+        if path == snapshot_path and path.exists():
+            assert (env.g.state_dir / leaderboard.FILE).is_file()
+            monkeypatch.setattr(Path, 'unlink', unlink)
+            raise OSError('synthetic cleanup failure after ledger commit')
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'unlink', fail_once)
+    assert _settle(env, now=131)['mode'] == 'error'
+    assert snapshot_path.is_file()
+    assert env.state()['round']['status'] not in p.DONE
+    path = env.g.state_dir / leaderboard.FILE
+    original = path.read_bytes()
+    for outcome in env.remote.rows[0]['outcomes']:
+        outcome.pop('top_predictors', None)
+    assert env.tick(131 + p.RETRY_SECONDS + 1, None)['mode'] == 'canceled'
+    assert path.read_bytes() == original
+    assert not snapshot_path.exists()
+    assert leaderboard.boards(leaderboard.load(path))['plays'][0]['participations'] == 1
+
+
+def test_canceled_response_keeps_its_settlement_time_when_predictors_are_present(env, monkeypatch):
+    _locked_cancel_snapshot(env)
+    end = env.remote.end
+
+    def ended(*args):
+        rows = end(*args)
+        if args[1] == 'CANCELED':
+            rows[0]['ended_at'] = '2026-10-17T06:00:00Z'
+        return rows
+
+    monkeypatch.setattr(env.remote, 'end', ended)
+    assert _settle(env, now=131)['mode'] == 'canceled'
+    ledger = leaderboard.load(env.g.state_dir / leaderboard.FILE)
+    assert next(iter(ledger['rounds'].values()))['ended_at'] == '2026-10-17T06:00:00Z'
+
+
+def test_unreadable_ledger_counts_consecutive_invalid_state_ticks(env):
+    """#2216: the ledger cannot be rewritten, so the streak needs its own record."""
+    atomic_write_json(env.g.state_dir / p.FILE, {'schema': 2})
+    for now in (100, 101):
+        assert env.tick(now, None) == {'mode': 'error', 'error': 'invalid_state'}
+    health = read_record(env.g.state_dir / p.HEALTH_FILE)
+    assert health['schema'] == p.HEALTH_SCHEMA
+    assert health['consecutive_errors'] == 2
+    assert health['last_error'] == 'invalid_state'
+    assert health['last_error_at'] == 101
+    assert health['last_ok_at'] is None
+    # The rejected ledger is never rewritten or discarded by the health path.
+    assert read_record(env.g.state_dir / p.FILE) == {'schema': 2}
+
+    (env.g.state_dir / p.FILE).unlink()
+    atomic_write_json(env.g.state_dir / p.FILE, {
+        'schema': 1, 'best_cleared': 1, 'round': None, 'mode': 'idle',
+        'next_poll_at': 0, 'last_poll_at': 0, 'error': None})
+    outcome = env.tick(200, None)
+    assert (outcome['mode'], outcome['error']) == ('idle', None)
+    health = read_record(env.g.state_dir / p.HEALTH_FILE)
+    assert health['consecutive_errors'] == 0
+    assert health['last_error'] is None
+    assert health['last_ok_at'] == 200
+    assert health['last_error_at'] == 101
+
+
+def test_error_streak_is_capped_and_health_failure_never_changes_the_tick(env, monkeypatch):
+    atomic_write_json(env.g.state_dir / p.FILE, {'schema': 2})
+    atomic_write_json(env.g.state_dir / p.HEALTH_FILE, {
+        'schema': p.HEALTH_SCHEMA, 'consecutive_errors': p.MAX_ERROR_STREAK,
+        'last_error': 'invalid_state', 'last_error_at': 1, 'last_ok_at': None})
+    assert env.tick(100, None)['error'] == 'invalid_state'
+    assert read_record(env.g.state_dir / p.HEALTH_FILE)['consecutive_errors'] == p.MAX_ERROR_STREAK
+
+    original = p.atomic_write_json
+
+    def fail_health_only(path, value):
+        if str(path).endswith(p.HEALTH_FILE):
+            raise OSError('synthetic health write failure')
+        return original(path, value)
+
+    monkeypatch.setattr(p, 'atomic_write_json', fail_health_only)
+    atomic_write_json(env.g.state_dir / p.FILE, {
+        'schema': 1, 'best_cleared': 1, 'round': None, 'mode': 'idle',
+        'next_poll_at': 0, 'last_poll_at': 0, 'error': None})
+    outcome = env.tick(200, None)
+    assert (outcome['mode'], outcome['error']) == ('idle', None)
+    assert read_record(env.g.state_dir / p.HEALTH_FILE)['consecutive_errors'] == p.MAX_ERROR_STREAK

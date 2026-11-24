@@ -80,9 +80,9 @@ if free_worker_argv is not None:
 
     sys.exit(free_worker_main(free_worker_argv))
 
-from .paper_improve_retry import is_paper_improve_invocation
+from .paper_improve_retry import is_paper_improve_invocation, is_paper_improve_scheduled_invocation
 
-if is_paper_improve_invocation(sys.argv[1:]):
+if is_paper_improve_invocation(sys.argv[1:]) or is_paper_improve_scheduled_invocation(sys.argv[1:]):
     from .paper_improve_retry import main as paper_improve_main
 
     sys.exit(paper_improve_main(sys.argv[1:]))

@@ -14,6 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import config, webui
 from docich.webui_resources_loader import LIMITS, ResourceError, ResourceLoader
 
+# 実 HTTP fixture の共有ヘルパー (issue #2346)。応答後に書く handler の完了を
+# 待ってから server を止める (tmp は pytest が消すので競合窓は狭いが揃える)。
+from _webui_http_fixture import (  # noqa: E402
+    shutdown_test_server,
+    tracking_server_class,
+)
+
 PACKAGED = Path(webui.__file__).with_name("webui_resources")
 
 
@@ -36,6 +43,19 @@ def resources(tmp_path):
 
 def loader(root):
     return ResourceLoader(root, webui.WEBUI_ALLOWLIST, webui._validate_value)
+
+
+def _stop_resources_fixture(server, thread):
+    """実 HTTP fixture の server を止め、応答後 writer の完了を待つ (issue #2346)。
+
+    期限内に終わらない handler は黙って見逃さず assertion として報告する。
+    """
+    stuck = shutdown_test_server(server, thread)
+    assert not stuck, (
+        "in-flight handler did not finish before cleanup "
+        f"(stuck: {[t.name for t in stuck]})"
+    )
+    return stuck
 
 
 def test_packaged_extraction_preserves_defaults_and_html(resources):
@@ -208,7 +228,7 @@ def test_same_server_refreshes_ui_and_candidates_without_mutating_saved_settings
     Handler.read_only = False
     Handler.resources = loader(resources)
     Handler.csrf_secret = b'fixture' * 6
-    server = webui.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = tracking_server_class()(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -269,6 +289,105 @@ def test_same_server_refreshes_ui_and_candidates_without_mutating_saved_settings
         assert env.read_bytes() == saved
         assert pause.read_text() == "user paused\n"
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        _stop_resources_fixture(server, thread)
+
+
+class _PostResponseWriterHandler(webui._Handler):
+    """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
+
+    応答送信後に ``post_response_started`` を set し、``release_post_response``
+    が set されるまで保留する。解放後の書込み先は ``soren_root`` 配下なので、
+    後片付けが先に tmp を消せば ``write_text`` が失敗して
+    ``post_response_written`` が set されない (= full-suite flake の再現)。
+    """
+
+    POST_RESPONSE_PATH = "/test/resources-post-response-write"
+    WRITE_RELATIVE = "tmp/debug/resources-post-response-audit.json"
+
+    def do_GET(self):
+        if self.path != self.POST_RESPONSE_PATH:
+            return super().do_GET()
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.server.post_response_started.set()
+        if not self.server.release_post_response.wait(timeout=5):
+            return
+        target = Path(self.soren_root) / self.WRITE_RELATIVE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("post-response write completed", encoding="utf-8")
+        self.server.post_response_written.set()
+
+
+def test_fixture_teardown_waits_for_a_post_response_writer(resources, tmp_path):
+    """応答後に書く handler が残っていても、後片付けが先に tmp を消さないこと。
+
+    issue #2346 の決定的な回帰テスト。``_stop_resources_fixture`` から待ちを
+    外す (``shutdown`` + ``server_close`` だけにする) と、このテストは
+    ``assert not stopped.wait(...)`` で fail する。
+    """
+    soren = tmp_path / "soren"
+    (soren / "tmp/state").mkdir(parents=True)
+    g = config.load_global(tmp_path)
+    g.webui.token = "fixture-token"
+
+    class Handler(_PostResponseWriterHandler):
+        pass
+
+    Handler.g = g
+    Handler.soren_root = soren
+    Handler.read_only = False
+    Handler.resources = loader(resources)
+    Handler.csrf_secret = b'fixture' * 6
+    server = tracking_server_class()(("127.0.0.1", 0), Handler)
+    server.post_response_started = threading.Event()
+    server.release_post_response = threading.Event()
+    server.post_response_written = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    stopped = threading.Event()
+    stop_result = {}
+
+    def _stop_server():
+        try:
+            _stop_resources_fixture(server, thread)
+        except Exception as exc:  # pragma: no cover - assertion で理由を出す
+            stop_result["error"] = exc
+        finally:
+            stopped.set()
+
+    stopper = threading.Thread(target=_stop_server, daemon=True)
+    stopper_started = False
+    try:
+        conn.request("GET", _PostResponseWriterHandler.POST_RESPONSE_PATH)
+        resp = conn.getresponse()
+        assert resp.status == 200
+        resp.read()
+        assert server.post_response_started.wait(timeout=5), (
+            "handler did not reach the post-response write"
+        )
+
+        stopper.start()
+        stopper_started = True
+        # 応答後 writer は保留中なので、後片付けはここで完了してはならない。
+        assert not stopped.wait(timeout=1.0), (
+            "teardown removed the tmp dir without waiting for the post-response writer"
+        )
+        assert soren.exists(), "handler の完了前に tmp dir が消えた"
+    finally:
+        server.release_post_response.set()
+        if stopper_started:
+            stopper.join(timeout=5)
+        else:
+            shutdown_test_server(server, thread)
+        conn.close()
+
+    assert "error" not in stop_result, stop_result.get("error")
+    assert server.post_response_written.is_set(), (
+        "post-response write did not complete before cleanup"
+    )

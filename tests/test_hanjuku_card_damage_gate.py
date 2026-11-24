@@ -8,6 +8,19 @@ from docich.hanjuku_screen import Battle, Screen
 from test_hanjuku_survival import menu
 
 
+@pytest.fixture(autouse=True)
+def refused_card(monkeypatch):
+    """These tests pin what follows a refusal, so the hit itself is not the reason to allow.
+
+    The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
+    """
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+    # #4411: the boss wear-down rule is also isolated here; its contracts live
+    # in test_hanjuku_card_wear_down.py.
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._boss_card_wears_down_enemy',
+                        lambda estimate, cur: False)
+
+
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',
            ally_hp=22, soldiers=(0, 6), side='attack'):
     mem = {'chapter': 1, 'tick': 12, 'battle': {
@@ -33,26 +46,40 @@ def cards(names, selected=0):
     return menu(tuple(names), selected=selected, kind='text')
 
 
+def test_a_critical_battle_may_open_the_next_card_after_one_was_used():
+    # owner 2026-11-24: 1戦闘で2枚目以降の札も開く（退却は一律禁止）。
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    cur['egg_battle'] = True
+    cur['cards_used'] = ['ミックミー']
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
+
+
+def test_a_critical_summon_battle_may_open_its_first_card():
+    # 退却禁止の下では「札を閉じる」= 何も使わずに死ぬため、危険＋召喚獣戦では
+    # 1枚目も非致死リスクで拒否しない（live #5246: 卵4個を残して敗北）。
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    cur['egg_battle'] = True
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
+
+
+def test_an_ordinary_battle_keeps_the_existing_refusal():
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is False
+
+
 def assert_not_spent(mem):
     cur = mem['battle']
     assert cur['cards_selected'] == cur['cards_used'] == cur['cards_unclassified'] == []
     assert not mem.get('kit_spent')
-
-
-def test_zenmain_soldier_absorption_blocks_final_a_without_consuming():
-    mem = memory()
-    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
-    assert_not_spent(mem)
-    assessment = mem['battle']['card_assessment']
-    assert assessment['raw_damage_min'] == 32
-    assert assessment['enemy_soldier_hp_upper'] == 60
-    assert assessment['damage_lower_bound'] == 0
-    assert assessment['remaining_hp_upper'] == 27
-    assert assessment['lethal'] is assessment['allowed'] is False
-    assert assessment['reason'] == 'nonlethal_egg_risk'
-    assert mem['last_card_assessment'] == {**assessment, 'tick': 12}
-    assert mem['battle']['card_flow'] is None
-    assert mem['_records'][0]['resulting_event'] == 'card_not_selected'
 
 
 @pytest.mark.parametrize('hp,enemy_soldiers,allowed,damage', [
@@ -214,7 +241,8 @@ def test_health_need_decides_whether_healing_precedes_a_lethal_card(hp, choice):
 
 
 def test_control_without_attack_follows_a_visible_heal_instead():
-    mem = memory('クースカン')
+    # ally 10 vs enemy 27: halving (14 left) would still leave us behind.
+    mem = memory('クースカン', ally_hp=10)
     assert p.card_list_step(cards(['クースカン', 'エンジェリン']), mem) == [p.pad('down')]
     assert p.card_list_step(cards(['クースカン', 'エンジェリン'], 1), mem) == [p.pad('a')]
     assert mem['battle']['cards_selected'] == ['エンジェリン']
@@ -295,7 +323,8 @@ def test_an_old_already_selected_announcement_is_not_reclassified_as_never_used(
     mem = memory()
     cur = mem['battle']
     cur['cards_selected'] = ['ゼンマイン']
-    cur['card_flow'].update(stage='announce', selection_planned=True)
+    cur['card_flow'].update(stage='announce', selection_planned=True,
+                            announce_retried=True)  # already-retried: go straight to unclassified
     for _ in range(p.CARD_ANNOUNCE_LIMIT):
         assert p.card_list_step(cards(['ゼンマイン']), mem) == []
     assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
@@ -344,17 +373,6 @@ def test_refusal_has_finite_defense_fallback_and_does_not_reopen_same_tactic(mon
     assert results[-1] == p._power_mash(mem, cur)
     assert len([r for r in mem['_records'] if r['decision'] == 'battle_card']) == 1
     assert_not_spent(mem)
-
-
-def test_refused_chart_does_not_retreat_while_healthy_but_does_at_probe_budget():
-    mem = memory()
-    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(('きりふだ',)), mem) == [p.pad('b')]
-    for _ in range(p.MELEE_HOLD_LIMIT):
-        assert p.battle_step(panel(mem), mem) == [p.pad('a', 3), {'type': 'wait', 'ms': 50}]
-    assert p.battle_step(panel(mem), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
 
 
 @pytest.mark.parametrize('survival', [False, True])

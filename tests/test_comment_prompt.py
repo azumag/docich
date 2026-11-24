@@ -37,6 +37,24 @@ def test_full_prompt_is_byte_identical_to_the_legacy_shell(case, tmp_path):
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (case["bytes"], case["sha256"])
 
 
+def test_announcement_template_is_wired_and_renders(tmp_path):
+    assert prompt.category_template("announcement") == "comment_response_announcement.md"
+    ctx = dict(GOLDEN["contexts"]["main"])
+    built = prompt.build_prompt(
+        "announcement",
+        ctx,
+        comments_block="dociai: 第15次遠征は終了しました。",
+        classifications='[{"index":1,"user":"dociai","comment":"第15次遠征は終了しました。","category":"announcement"}]',
+        gacha_list_file=tmp_path / "gacha.txt",
+    )
+    assert "Category: Announcement" in built
+    assert "第15次遠征は終了しました。" in built
+    assert "${self_chat_context}" not in built
+    assert "${CATEGORY_COMMENTS}" not in built
+    rendered = prompt.with_reply_contract(built)
+    assert "分類が announcement の行" in rendered
+
+
 def test_mode_assets_equal_the_legacy_context_values():
     for mode in prompt.MODES:
         expected = GOLDEN["contexts"][mode]
@@ -59,6 +77,13 @@ def test_defaults_resolution(case):
 def test_dominant_category(case):
     expected = case["output"].rstrip("\n") if case["rc"] == 0 else None
     assert prompt.dominant_category(case["classification"]) == expected
+
+
+def test_sanitize_context_preserves_display_names_ending_in_429():
+    line = "的中率トップは同志Alice429（1回中1回）。"
+    assert prompt.sanitize_context(line) == line
+    assert prompt.sanitize_context("HTTP 429 Too Many Requests") == prompt.NONE
+    assert prompt.sanitize_context("API error: 429") == prompt.NONE
 
 
 def test_dominant_category_rejects_malformed_rows_like_the_legacy_exit_1():
@@ -116,7 +141,8 @@ def test_gacha_list_file_default_matches_the_legacy_resolution():
 
 LEGACY_ASSETS = [p.name for p in prompt.PROMPTS_DIR.glob("*.md")
                  if p.name.startswith(("comment_template", "comment_response_", "comment_persona_",
-                                       "comment_ui_memo_", "comment_channel_intro_", "speech_vocabulary_rule"))]
+                                       "comment_ui_memo_", "comment_channel_intro_", "comment_game_rules",
+                                       "speech_vocabulary_rule"))]
 
 
 @pytest.mark.parametrize("name", sorted(LEGACY_ASSETS))

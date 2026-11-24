@@ -1,0 +1,40 @@
+"""docich#4678: an active step that no plan order can run must be released.
+
+ch1 4-8..5-5 (v1184): plan.active named A:8d321713:M98bbef while the plan had
+been rebuilt under request c8c514fd with a different step. next_order returned
+None for two months, no sortie started, and gold fell 242 -> 2.
+"""
+from docich.hanjuku.strategy import orders as O
+from docich.hanjuku.state.regions import plan as _plan, world as _world
+
+
+def memory(active, sorties=None):
+    mem = {'chapter': 1, 'month': '4-8', 'tick': 100, '_records': []}
+    _plan(mem).update({'active': active, 'orders': {}})
+    _world(mem)['sorties'] = sorties or {}
+    return mem
+
+
+def test_a_rebuilt_plan_releases_the_vanished_active_step():
+    mem = memory('A:old:M9')
+    assert O._drop_orphan_active(mem, {'A:new:M1'}, {}) is True
+    assert _plan(mem)['active'] is None
+    assert any(r.get('decision') == 'order_active_orphan' for r in mem['_records'])
+
+
+def test_an_active_step_still_in_the_plan_is_kept():
+    mem = memory('A:new:M1')
+    assert O._drop_orphan_active(mem, {'A:new:M1'}, {}) is False
+    assert _plan(mem)['active'] == 'A:new:M1'
+
+
+def test_a_march_still_walking_is_not_orphaned():
+    mem = memory('A:old:M9', sorties={'g': {'step': 'A:old:M9', 'status': 'en_route'}})
+    assert O._drop_orphan_active(mem, {'A:new:M1'}, {}) is False
+    assert _plan(mem)['active'] == 'A:old:M9'
+
+
+def test_a_launched_unconfirmed_status_is_kept():
+    mem = memory('A:old:M9')
+    assert O._drop_orphan_active(mem, {'A:new:M1'}, {'A:old:M9': 'launched_unconfirmed'}) is False
+    assert _plan(mem)['active'] == 'A:old:M9'

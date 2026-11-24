@@ -4,54 +4,88 @@ Detects chapter changes from observed castles and generals, resets
 chapter-scoped state and repairs legacy home-castle labels.
 """
 from __future__ import annotations
+from ..state.regions import (world as _world, plan as _plan_region,
+                             chapter_scoped_keys)
 
 from ... import hanjuku_chart as chart
 from ...hanjuku_egg_reference import general_debut_chapter
 from ..decision_log import _record
 from ..os_layer.readers import STATUS_NAMES
+from . import card_census as _card_census
+
+
+# Phases of the free monthly country-status visit (house.step level_only).
+# A chapter change can land while this visit is opening the main menu; the
+# visit belongs to the *new* chapter's month, so it is kept instead of being
+# dropped and restarted (v511: the monthly status menu opened twice).
+MONTH_SCAN_RESUME_PHASES = frozenset({
+    'month_open', 'open_roster', 'level_status', 'leave_status', 'leave_roster'})
+
+
+# Chapter-lifetime region dicts physically live under these flat names
+# (the journal region is run lifetime and is never reset here).
+_CHAPTER_REGION_DICTS = ('world', 'plan', 'flow')
+
+
+# Schema-driven reset set (docich#3991): 章遷移で消えるキーの正本は
+# state/regions.py の KEY_OWNERSHIP (lifetime='chapter'/'procedure') に一元化した。
+# ここへ手でキーを足すのではなく、寿命を regions.py で宣言する。
+# 'world'/'plan'/'flow' は領域 dict が章寿命で物理的にこのフラット名に実体化する
+# ため対象に含める ('journal' はラン寿命で消さない)。
+CHAPTER_SCOPE_KEYS = tuple(sorted(
+    set(_CHAPTER_REGION_DICTS) | chapter_scoped_keys()))
+
+
+
+def _reset_chapter_scope(mem):
+    """Drop the route/plan state that belongs to one measured chapter."""
+    for key in CHAPTER_SCOPE_KEYS:
+        mem.pop(key, None)
 
 
 def _enter_chapter(mem, chapter, *, reason, evidence=None):
     previous = mem.get('chapter')
+    house = mem.get('house')
+    month_scan = (dict(house) if isinstance(house, dict) and house.get('level_only')
+                  and house.get('phase') in MONTH_SCAN_RESUME_PHASES else None)
     from ..os_layer.roster import fresh
     previous_roster = fresh(mem)
     if previous_roster and previous_roster.get('complete') is True:
         mem['recruit_payroll_pending'] = list(previous_roster['names'])
     # Route state belongs to the measured map of one chapter. Keep
     # run-wide counters/name evidence, never carry coordinates/orders.
-    for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                'captured', 'card_override', 'rare_card_kit', 'strong_card_kit', 'boss_stock_restart', 'boss_stock_cancelled', 'rare_scan', 'rare_scan_month', 'cursor', 'egg_battle',
-                'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                'month_nav', 'house_nav', 'starter_party',
-                'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                'source_override', 'uncertain', 'month', 'soldiers_seen', 'soldiers_seen_key',
-                'soldiers_seen_basis', 'soldiers_seen_scope', 'army_count_check',
-                'order_context', 'sortie_general', 'sortie_actor_miss',
-                'boss_defeated', 'boss_entry_hold',
-                'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                'garrison', 'unplaced_refuted', 'unplaced_refuted_castles', 'general_location_unknown', 'source_location_rechecks', 'recruit_verification', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
-                'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
-                'sortie_confirm_miss',
-                'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip', 'recall_verification', 'retreat_rechecks', 'retreat_anonymous_budget',
-                'near_goal', 'align_steps', 'unanchored', 'select_tick',
-                'house', 'house_scan_tick', 'house_scan_month', 'house_field_scan', 'house_eggs',
-                'roster_survey', 'roster_status_walk', 'roster_survey_scope', 'house_status_recheck', 'egg_zero_owners',
-                'recruit_roster', 'recruit_roster_floor', 'recruit_roster_recheck', 'recruit_roster_attempts', 'recruit_field_scan_attempts', 'recruit_month_scan_attempts', 'castle_income', 'castle_ownership',
-                'select_used', 'castle_verified', 'last_castle_hold',
-                'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
-                'indep_menu_key', 'indep_menu_action',
-                'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                'monster_menu_choice', 'monster_menu_choice_key', 'monster_menu_choice_scope', 'monster_menu_cursor_recheck', 'monster_panel'):
-        mem.pop(key, None)
+    # country_income / country_wages are last observations (owner 2026-11-04):
+    # keep them until the next country-status read rewrites them, instead of
+    # blanking 現在収入 / 総賃金.
+    _reset_chapter_scope(mem)
     mem['chapter'] = chapter
+    # S3: the chapter reset above drops ``card_stock`` (chapter lifetime), so
+    # the field inventory of the new chapter is unknown. Book the full read;
+    # the first free map after the month's actions performs it.
+    _card_census.book(mem, 'chapter_start')
+    if month_scan is not None:
+        month_scan['chapter'] = chapter
+        mem['house'] = month_scan
     mem['chapter_evidence'] = evidence or 'header'
     mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
     _record(mem, 'chapter_seen', previous_stage=previous,
             observed_metric={'chapter': chapter, **({'evidence': evidence} if evidence else {})},
             resulting_stage=chapter,
             reason=reason)
+
+
+def finish_chapter(mem, *, reason='starter party departed for the next chapter'):
+    """Clear the finished chapter's execution state before the next is measured.
+
+    The starter party appears only between chapters. Keeping the old orders let
+    a chapter-4 site sortie start after the chapter-end save (g1163 2026-11-09
+    04:04, two minutes before the chapter was observed). The new chapter number
+    is still measured later; this only drops what cannot run any more.
+    """
+    _reset_chapter_scope(mem)
+    mem['chapter_transition_pending'] = True
+    _record(mem, 'chapter_scope_cleared',
+            observed_metric={'chapter': mem.get('chapter')}, reason=reason)
 
 
 def observe_chapter_castle(mem, castle):
@@ -64,8 +98,16 @@ def observe_chapter_castle(mem, castle):
     A name absent from this chapter and present in the next one is proof.
     """
     chapter = mem.get('chapter') or 0
-    if (not chapter and mem.get('resume_chapter_pending') is True and castle
-            and castle not in {'アルマムーン', 'あるまむーん', 'ほんじょう', 'ボス'}):
+    # A running memory with no chapter yet (a restart that cleared the state,
+    # a fresh start) still needs its chapter: a unique castle name is proof on
+    # its own. A bare scratch dict (tests, one-off calls) keeps the old rule.
+    running = (mem.get('resume_chapter_pending') is True
+               or type(mem.get('tick')) is int or isinstance(mem.get('journal'), dict))
+    # あるまむーん (hiragana) is chapter 8's own home castle label in the chart
+    # and exists in no other chapter, so it is proof; the katakana アルマムーン
+    # is every other chapter's home castle and stays excluded.
+    if (not chapter and running and castle
+            and castle not in {'アルマムーン', 'ほんじょう', 'ボス'}):
         # A restored party picker has no chapter label. Resolve from a fresh
         # full castle name unique across all chapters, never from the old bot.
         matches = [n for n, names in chart.CASTLE_NAMES.items()
@@ -155,18 +197,19 @@ def _repair_home_alias_failures(mem):
     if mem.get('home_alias_repaired') or (mem.get('chapter') or 0) != 1:
         return
     mem['home_alias_repaired'] = True
-    status = mem.get('orders') or {}
-    launched = mem.get('launched_orders') or {}
+    status = _plan_region(mem).get('orders') or {}
+    launched = _world(mem).get('launched_orders') or {}
     home = chart.home_castle(1)
     restored = []
     for order in chart.orders(1):
         step = order['step']
         if status.get(step) == 'failed' and order['source'] == home and step not in launched:
             status.pop(step, None)
-            for key in ('source_miss', 'source_override', 'general_override'):
-                (mem.get(key) or {}).pop(step, None)
+            (mem.get('source_miss') or {}).pop(step, None)
+            for key in ('source_override', 'general_override'):
+                (_plan_region(mem).get(key) or {}).pop(step, None)
             restored.append(step)
     if restored:
-        mem['active'] = None
+        _plan_region(mem)['active'] = None
         _record(mem, 'orders_restored', observed_metric=restored,
                 reason='本城の城名確認の誤判定（旧チャートラベルと画面実名の不一致）で失敗扱いになった指示を未実行に戻す')

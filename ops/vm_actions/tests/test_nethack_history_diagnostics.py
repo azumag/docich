@@ -28,16 +28,18 @@ class HistoryTests(unittest.TestCase):
         self.daily.mkdir()
 
     def run_record(self, index=0, **extra):
+        progress = dict(status='ok', sample_count=3,
+                        same_frame_sent_pairs=2, max_same_frame_sent_streak=3,
+                        same_frame_hold_pairs=4, max_same_frame_hold_streak=5,
+                        prompt_counts={'unknown': 6, 'SECRET': 99}, secret='SECRET')
+        progress.update(extra.pop('progress', {}))
         raw = dict(schema_version=1, status='dead', expedition=index,
                    started_at='2026-09-29T01:00:00+00:00', last_finished_at='2026-09-30T01:00:00+00:00',
                    score=5, turns=10, max_depth=2, death_reason='SECRET', run_id='SECRET',
                    dump_file='/SECRET', lessons=[{'text': 'SECRET'}],
                    retrospective=dict(schema_version=1, generated_at='2026-09-30T02:00:00+00:00',
                        source='p5a_retrospective', run_id='SECRET', terminal_status='dead',
-                       same_death_total_count=2, progress_evidence=dict(status='ok', sample_count=3,
-                       same_frame_sent_pairs=2, max_same_frame_sent_streak=3,
-                       same_frame_hold_pairs=4, max_same_frame_hold_streak=5,
-                       prompt_counts={'unknown': 6, 'SECRET': 99}, secret='SECRET')))
+                       same_death_total_count=2, progress_evidence=progress))
         raw['run_id'] = f'00000000-0000-0000-0000-{index:012x}'
         raw['retrospective']['run_id'] = raw['run_id']
         raw.update(extra)
@@ -122,6 +124,34 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(result['records']), 8)
         self.assertEqual(result['omitted_records'], 120)
         self.assertLess(len(json.dumps(self.collect()).encode()), 12000)
+
+    def test_recent_run_digest_survives_record_omission(self):
+        for index in range(7):
+            self.run_record(index, last_finished_at=f'2026-09-30T01:00:0{index}+00:00',
+                            progress={'max_depth': 1 + index, 'last_turn': 100 + index})
+        result = self.collect()['completed_runs']
+        summary = result['summary']
+        recent = summary['recent_runs']
+        self.assertEqual(len(recent), diag.NETHACK_RECENT_RUN_LIMIT)
+        self.assertEqual([row['ended_at'] for row in recent],
+                         sorted((row['ended_at'] for row in recent), reverse=True))
+        newest = recent[0]
+        self.assertEqual(newest['terminal_status'], 'dead')
+        self.assertEqual(newest['max_depth'], 2)
+        self.assertEqual(newest['turns'], 10)
+        self.assertEqual(newest['progress_max_depth'], 7)
+        self.assertEqual(newest['progress_last_turn'], 106)
+        self.assertNotIn('SECRET', json.dumps(summary))
+        # The digest is the depth evidence that outlives the record budget.
+        payload = {'nethack_history': {'schema_version': 1, 'collected_at': 1,
+                                       'daily': {'records': []}, 'completed_runs': result}}
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', 1):
+            diag._nethack_history_budget(payload)
+        runs = payload['nethack_history']['completed_runs']
+        self.assertEqual(runs['records'], [])
+        self.assertTrue(runs['output_omitted'])
+        self.assertEqual(len(runs['summary']['recent_runs']), diag.NETHACK_RECENT_RUN_LIMIT)
+        self.assertEqual(runs['summary']['recent_runs'][0]['progress_max_depth'], 7)
 
     def test_latest_order_and_nullable_progress(self):
         self.run_record(0, last_finished_at='2026-09-29T00:00:00+00:00')
@@ -253,6 +283,153 @@ class HistoryTests(unittest.TestCase):
         self.assertTrue(payload['ai']['recent_events_omitted'])
         self.assertEqual(payload['ai']['anomalous_components'], {'preserved': 1})
         self.assertNotIn('output_omitted', payload['nethack_history']['daily'])
+
+    def test_latest_result_summary_beats_cpu_and_audio_details(self):
+        self.run_record(score=42, turns=120, max_depth=7)
+        self.daily.rmdir()
+        components = [
+            {'component': f'worker-{index}-' + 'x' * 48, 'cpu_pct': index,
+             'processes': index + 1}
+            for index in range(12)
+        ]
+        spawns = [
+            {'component': f'worker-{index}-' + 'x' * 48,
+             'spawner': 'poll-worker-' + 'y' * 40, 'count': index + 1}
+            for index in range(12)
+        ]
+        streams = [
+            {'sink': 'sink-0', 'role': 'music', 'mute': index < 2,
+             'corked': False, 'volume_percent': [100], 'player': 'ffmpeg'}
+            for index in range(64)
+        ]
+        payload = {
+            'program_admission_evidence': diag._program_admission_empty(),
+            'nethack_history': self.collect(),
+            'cpu_profile': {
+                'schema_version': 1, 'status': 'ok', 'present': True, 'readable': True,
+                'meta': {'samples': 48, 'ncpu': 4},
+                'host': {'cpu_busy_pct': 72.5, 'processes_end': 23},
+                'components': components, 'components_truncated': 0,
+                'spawns': spawns,
+            },
+            'pulse_sink_inputs': {
+                'schema_version': 1, 'readable': True, 'reason': None,
+                'total': 64, 'muted': 2, 'truncated': False, 'streams': streams,
+            },
+            'ai': {'recent_events': ['old event'], 'anomalous_components': {}},
+            'workers': {'details': {}},
+            'soren91_drop_profile': {'profileStatus': 'missing'},
+        }
+        import copy
+        expected = copy.deepcopy(payload)
+        expected['ai']['recent_events'] = []
+        expected['ai']['recent_events_omitted'] = True
+        profile = expected['cpu_profile']
+        profile.update(
+            components=components[:diag.CPU_PROFILE_FLOOR_COMPONENTS],
+            components_omitted=len(components) - diag.CPU_PROFILE_FLOOR_COMPONENTS,
+            spawns=spawns[:diag.CPU_PROFILE_FLOOR_SPAWNS],
+            spawns_omitted=len(spawns) - diag.CPU_PROFILE_FLOOR_SPAWNS)
+        expected['pulse_sink_inputs'].update(
+            streams=[], truncated=True, output_omitted=True)
+        budget = len(json.dumps(expected, sort_keys=True, ensure_ascii=False).encode())
+
+        with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+            text = diag._diagnostics_budget(payload)
+
+        self.assertLessEqual(len(text.encode()), budget)
+        latest = payload['nethack_history']['completed_runs']['records'][0]
+        self.assertEqual(latest['terminal_status'], 'dead')
+        self.assertEqual(latest['score'], 42)
+        self.assertEqual(latest['turns'], 120)
+        self.assertEqual(latest['max_depth'], 7)
+        self.assertEqual(latest['expedition'], 0)
+        self.assertEqual(payload['cpu_profile']['meta'], {'samples': 48, 'ncpu': 4})
+        self.assertEqual(payload['cpu_profile']['host'],
+                         {'cpu_busy_pct': 72.5, 'processes_end': 23})
+        self.assertEqual(payload['cpu_profile']['components'],
+                         components[:diag.CPU_PROFILE_FLOOR_COMPONENTS])
+        self.assertEqual(payload['cpu_profile']['components_omitted'],
+                         len(components) - diag.CPU_PROFILE_FLOOR_COMPONENTS)
+        self.assertEqual(payload['cpu_profile']['spawns'],
+                         spawns[:diag.CPU_PROFILE_FLOOR_SPAWNS])
+        self.assertEqual(payload['cpu_profile']['spawns_omitted'],
+                         len(spawns) - diag.CPU_PROFILE_FLOOR_SPAWNS)
+        audio = payload['pulse_sink_inputs']
+        self.assertEqual((audio['total'], audio['muted']), (64, 2))
+        self.assertEqual(audio['streams'], [])
+        self.assertTrue(audio['output_omitted'])
+        self.assertEqual(payload, expected)
+
+    def test_latest_result_survives_before_the_cpu_detail_floor(self):
+        """Review of #2406: the CPU floor must never outrank the latest result.
+
+        With the same fixed envelope, the previous all-or-nothing detail drop
+        kept the latest NetHack result while the floor version dropped it. Pin
+        the priority invariant across budgets: whenever the latest record is
+        gone, every optional CPU row must already be gone too, and there must be
+        a budget where dropping only the floor saves the latest result.
+        """
+        import copy
+        self.run_record(score=42, turns=120, max_depth=7)
+        self.daily.rmdir()
+        components = [
+            {'component': f'worker-{index}-' + 'x' * 48, 'cpu_pct': index,
+             'processes': index + 1}
+            for index in range(12)
+        ]
+        spawns = [
+            {'component': f'worker-{index}-' + 'x' * 48,
+             'spawner': 'poll-worker-' + 'y' * 40, 'count': index + 1}
+            for index in range(12)
+        ]
+        streams = [
+            {'sink': f'sink-{index}', 'role': 'music', 'mute': False,
+             'corked': False, 'volume_percent': [100], 'player': 'ffmpeg'}
+            for index in range(64)
+        ]
+        base_payload = {
+            'program_admission_evidence': diag._program_admission_empty(),
+            'nethack_history': self.collect(),
+            'cpu_profile': {
+                'schema_version': 1, 'status': 'ok', 'present': True, 'readable': True,
+                'meta': {'samples': 48, 'ncpu': 4},
+                'host': {'cpu_busy_pct': 72.5, 'processes_end': 23},
+                'components': components, 'components_truncated': 0,
+                'spawns': spawns,
+            },
+            'pulse_sink_inputs': {
+                'schema_version': 1, 'readable': True, 'reason': None,
+                'total': 64, 'muted': 0, 'truncated': False, 'streams': streams,
+            },
+            'ai': {'recent_events': [], 'anomalous_components': {}},
+            'workers': {'details': {}},
+            'soren91_drop_profile': {'profileStatus': 'missing'},
+        }
+        full = len(json.dumps(base_payload, sort_keys=True, ensure_ascii=False).encode())
+        saw_floor_dropped_to_keep_latest = False
+        for budget in range(600, full + 1, 25):
+            trial = copy.deepcopy(base_payload)
+            with mock.patch.object(diag, 'MAX_JSON_BYTES', budget):
+                diag._diagnostics_budget(trial)
+            records = trial['nethack_history']['completed_runs']['records']
+            profile = trial['cpu_profile']
+            has_rows = bool(profile['components']) or bool(profile['spawns'])
+            if not records:
+                self.assertFalse(
+                    has_rows,
+                    f"latest result dropped while CPU detail remained (budget={budget})",
+                )
+            if records and not has_rows:
+                saw_floor_dropped_to_keep_latest = True
+                self.assertEqual(trial['cpu_profile']['components'], [])
+                self.assertEqual(trial['cpu_profile']['spawns'], [])
+                self.assertEqual(profile['components_omitted'], len(components))
+                self.assertEqual(profile['spawns_omitted'], len(spawns))
+        self.assertTrue(
+            saw_floor_dropped_to_keep_latest,
+            'no budget kept the latest result by dropping the CPU floor',
+        )
 
     def test_full_budget_can_drop_latest_only_after_other_reductions(self):
         self.run_record()

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from .actions import Action
 from .nethack_exploration import MOVE_KEYS, NethackExplorer, visible_safe_step
@@ -106,10 +106,87 @@ def _has_any(obs: NethackObservation, names: set[str]) -> bool:
     return any(condition in names for condition in obs.conditions)
 
 
+
+
+SEVERE_RECOVERY_COMMAND = "#"
+
+# NetHack's "go down the stairs" command. Reviewed in #2666: the action is
+# only produced when exploration memory already saw a '>' on the hero's own
+# tile, and on a down staircase the game descends immediately. Used anywhere
+# else the game answers "You can't go down here." without changing the turn,
+# so the decision is never guessed from the current frame alone (the hero
+# glyph hides the terrain).
+DESCEND_COMMAND = ">"
+# NetHack's refusal line when the hero is not on a staircase. It proves the
+# remembered tile is stale, so the tile is forgotten instead of retried.
+DESCEND_REFUSAL = "can't go down here"
+
+# Reviewed prayer recovery (#759).  Verified against the production canary's
+# NetHack 5.0.0 TTY (same source and nethackrc as containers/nethack-canary):
+#   '#'            -> the extended-command getlin prompt (top line shows "#")
+#   'pray' + Enter -> "Are you sure you want to pray? [yn] (n)"
+#   'y'            -> "You begin praying ... --More--" then a 3-turn freeze
+# The plain 'p' key is #pay, not #pray, so the extended command is required.
+# NetHack 5.0.0 defaults paranoid_confirmation to "pray swim trap"
+# (options.c), so dopray() always asks for the confirmation (pray.c).
+PRAY_COMMAND_KEYS = "pray\n"
+PRAY_CONFIRM_KEY = "y"
+# Gehennom (deep levels) prayer cannot help and upsets the god (pray.c
+# prayer_done() Inhell branch); only known shallow levels are eligible.
+MAX_PRAY_DUNGEON_LEVEL = 20
+
+
+def at_extended_command_prompt(obs: NethackObservation) -> bool:
+    """The extended-command getlin: top line is ``#`` plus the word so far."""
+    return obs.prompt == "none" and re.match(r"^#[ ]?[a-z]*$", obs.message or "") is not None
+
+
+def at_pray_confirmation(obs: NethackObservation) -> bool:
+    """The paranoid_confirmation prayer prompt (a whole yes/no question)."""
+    return obs.prompt == "yes_no" and "are you sure you want to pray" in (obs.message or "").lower()
+
+
+# Each reviewed prayer key with the frame predicate that must hold before it is
+# sent.  A frame that does not match abandons the half-typed command rather
+# than inventing keystrokes.
+PRAY_RECOVERY_STEPS: tuple[tuple[str, Callable[[NethackObservation], bool]], ...] = (
+    ("p", at_extended_command_prompt),
+    ("r", at_extended_command_prompt),
+    ("a", at_extended_command_prompt),
+    ("y", at_extended_command_prompt),
+    ("\n", at_extended_command_prompt),
+    (PRAY_CONFIRM_KEY, at_pray_confirmation),
+)
+
+
+def severe_status_recovery_action(obs: NethackObservation) -> Action | None:
+    """Return the reviewed prayer recovery action for a severe status, if safe.
+
+    Prayer is the only recovery action on the reviewed surface so far.  It is
+    deliberately withheld when the frame is not a complete turn or when the
+    dungeon level is unknown/Gehennom.  The presence of an adjacent creature
+    does NOT change the treatment (issue #759: a severe status kills by time
+    alone, so threat avoidance is a separate decision).  Item-specific
+    recovery is intentionally not guessed here; it requires a confirmed
+    inventory observation and is handled separately.
+    """
+    if not turn_ready(obs):
+        return None
+    level = obs.vitals.dungeon_level
+    if level is None or level > MAX_PRAY_DUNGEON_LEVEL:
+        return None
+    if not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS):
+        return None
+    return Action(type="text", text=SEVERE_RECOVERY_COMMAND)
+
+# Status conditions that dominate movement and trigger the reviewed prayer (#759).
+SEVERE_CONDITIONS = frozenset({"Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"})
+
+
 class NethackLayeredPolicy:
     """Fail-closed layered policy over normalized public observation."""
 
-    _SEVERE_CONDITIONS = {"Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"}
+    _SEVERE_CONDITIONS = SEVERE_CONDITIONS
     _FOOD_EMERGENCY = {"Weak", "Fainting", "Fainted", "Starved"}
     _MOVEMENT_IMPAIRING = {"Blind", "Conf", "Stun", "Hallu"}
 
@@ -146,6 +223,15 @@ class NethackLayeredPolicy:
         # Fatal status/hunger must dominate low HP; otherwise critical HP
         # silently turns their fail-closed holds into generic rest/movement.
         if _has_any(obs, self._SEVERE_CONDITIONS):
+            recovery = severe_status_recovery_action(obs)
+            if recovery is not None:
+                return PolicyDecision(
+                    layer="strategic",
+                    intent="status_recovery",
+                    reason="visible severe status condition has a reviewed prayer recovery action",
+                    actions=(recovery,),
+                    requires_llm=True,
+                )
             return PolicyDecision(
                 layer="strategic",
                 intent="status_emergency",
@@ -201,6 +287,26 @@ class NethackLayeredPolicy:
                 reason="player glyph is not uniquely visible; do not guess a move",
             )
 
+        # A refused descent proves the remembered tile is stale (for example a
+        # previous run's level layout). Forget it before choosing a new action
+        # so the hero never re-sends '>' on a tile that is not a staircase.
+        if DESCEND_REFUSAL in obs.message.lower():
+            self.explorer.memory.forget_down_stairs(obs)
+
+        # Descending is the only way a run leaves Dlvl 1 (#2666). It is
+        # deliberately checked before the adjacent-creature hold: standing on
+        # the down staircase is already a safe, reviewed progression action,
+        # and it neither moves into the creature nor attacks it. The tile is
+        # proven from exploration memory because the hero glyph replaces the
+        # staircase on the current frame.
+        if turn_ready(obs) and self.explorer.memory.standing_on_down_stairs(obs):
+            return PolicyDecision(
+                layer="midlevel",
+                intent="descend_stairs",
+                reason="player stands on a remembered down-staircase",
+                actions=(Action(type="text", text=DESCEND_COMMAND),),
+            )
+
         if _visible_creature_contact(obs):
             return PolicyDecision(
                 layer="midlevel",
@@ -226,35 +332,67 @@ class NethackLayeredPolicy:
         )
 
 
+# Production denylist: commands that must never be generated automatically by
+# the production policy, each with a human-readable reason.  Everything else
+# (standard NetHack commands) is allowed; safety is enforced post-hoc via
+# action trace + retrospective (#2743 requirement 3).
+PRODUCTION_DENIED_COMMANDS: dict[str, str] = {
+    "Q": "quit would terminate the run",
+    "S": "save would suspend the run",
+    "!": "shell escape is not a game command",
+    "F": "force-fight bypasses peaceful/pet protection",
+    "X": "explore mode bypasses normal play",
+    "#quit": "extended quit would terminate the run",
+    "#save": "extended save would suspend the run",
+    "#!": "extended shell escape is not a game command",
+}
+
+
+def _production_deny_reason(text: object) -> str | None:
+    # Backwards/alternative names that callers or tests may use for the same
+    # denylist.
+    # (aliases defined below after the dict is complete)
+    if not isinstance(text, str):
+        return None
+    if text in PRODUCTION_DENIED_COMMANDS:
+        return PRODUCTION_DENIED_COMMANDS[text]
+    lowered = text.lower()
+    if lowered.startswith("#wiz"):
+        return "wizard-mode command is not a production action"
+    return None
+
+
 def assert_p3b_safe(decision: PolicyDecision) -> None:
-    """Allow only reviewed safe surface: More-space, decline-save, or one step."""
+    """Denylist gate: reject only commands with a recorded reason.
+
+    The P3b whitelist (More-space / decline-save / one reviewed step) is
+    abolished per #2743.  Standard commands are allowed; only entries in
+    ``PRODUCTION_DENIED_COMMANDS`` (and wizard-mode extended commands) raise.
+    """
     if not decision.actions:
         return
-    if (
-        decision.layer == "tactical"
-        and decision.intent == "advance_message"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == " "
-    ):
-        return
-    if (
-        decision.layer == "tactical"
-        and decision.intent == "decline_save"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == "n"
-    ):
-        return
-    if (
-        decision.layer == "midlevel"
-        and decision.intent == "explore_step"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text in MOVE_KEYS
-    ):
-        return
-    raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
+    for action in decision.actions:
+        if getattr(action, "type", None) != "text":
+            raise RuntimeError(
+                "production policy attempted a non-text action outside the reviewed surface"
+            )
+        text = getattr(action, "text", None)
+        reason = _production_deny_reason(text)
+        if reason is not None:
+            raise RuntimeError(
+                f"production policy attempted a denied command {text!r}: {reason}"
+            )
+
+
+def assert_p3a_safe(decision: PolicyDecision) -> None:
+    """Compatibility entrypoint (P3a). Now delegates to the denylist gate."""
+    assert_p3b_safe(decision)
+
+
+# Backwards/alternative names that callers or tests may use for the same
+# denylist.
+DENIED_COMMANDS = PRODUCTION_DENIED_COMMANDS
+DENYLIST = PRODUCTION_DENIED_COMMANDS
 
 
 # NetHack is turn-based: while the agent does nothing, nothing changes, so the
@@ -294,7 +432,7 @@ def rest_action_for_hold(
     The only fail-closed cases are frames where a literal key could answer a
     question instead of waiting (prompt, unknown screen, player-less frame,
     all rejected by ``turn_ready``) and decisions that already carry a
-    reviewed action. Severe status, every hunger tier and an adjacent
+    reviewed action. Severe status, food_emergency, and an adjacent
     creature may all spend one wait turn (owner decision 2026-09-23).
     """
     if decision.actions or not turn_ready(obs):
@@ -309,7 +447,7 @@ def rest_action_for_hold(
 # ordinary contact attempt. If those reviewed routes are exhausted, the
 # resolver remains fail-closed rather than resting beside the creature; the
 # caller can then surface the blocked state for recovery planning.
-STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food"}
+STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food", "food_acquisition"}
 
 
 def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer) -> Action | None:
@@ -319,7 +457,9 @@ def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer
     action, with a uniquely visible player and no prompt, where the explorer
     can still name a safe step.  ``food_emergency`` and
     ``inspect_screen`` are excluded -- moving cannot help hunger, and without a
-    unique player glyph there is nothing to plan from.
+    unique player glyph there is nothing to plan from.  Severe status
+    (``status_emergency``/``status_recovery``) is also excluded -- it has
+    its own reviewed recovery action.
     """
     if (
         decision.actions
@@ -351,10 +491,3 @@ def assert_rest_safe(actions: list[Action] | tuple[Action, ...]) -> None:
         raise RuntimeError("rest fallback attempted an action outside the reviewed safe surface")
 
 
-def assert_p3a_safe(decision: PolicyDecision) -> None:
-    """Compatibility entrypoint used by the brain; current branch is P3b.
-
-    The function name remains so the stacked P3a tests and brain wiring do not
-    churn.  On P3b it delegates to the expanded reviewed safe surface.
-    """
-    assert_p3b_safe(decision)

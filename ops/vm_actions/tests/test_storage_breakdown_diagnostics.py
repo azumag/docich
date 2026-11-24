@@ -1,7 +1,9 @@
 import importlib.util
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -175,6 +177,9 @@ class StorageBreakdownTests(unittest.TestCase):
             self.prod,
             home_root=self.home,
             voicevox_root=self.voicevox,
+            sys_tmp=self.base / "tmp",
+            var_log=self.base / "varlog",
+            swap_file=self.base / "swapfile",
             max_entries=max_entries,
         )
 
@@ -191,7 +196,7 @@ class StorageBreakdownTests(unittest.TestCase):
 
         result = self.collect()
 
-        self.assertEqual(result["version"], 1)
+        self.assertEqual(result["version"], 2)
         self.assertTrue(result["categories_overlap"])
         self.assertEqual(result["opencode_default"]["present_count"], 2)
         self.assertTrue(result["opencode_default"]["db"]["present"])
@@ -408,6 +413,334 @@ class StorageArchiveFormatContractTests(unittest.TestCase):
         self.assertFalse(result["scan_complete"])
 
 
+class StorageBreakdownV2Tests(unittest.TestCase):
+    """Version 2 fixed roots (azumag/docich#2583).
+
+    Each new root must stay bounded, symlink-safe and identity-free, and a
+    root that does not exist on the scanned host must report present=false
+    with a complete scan instead of pretending zero bytes were verified.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.home = self.base / "home"
+        self.soren = self.home / "soren"
+        self.prod = self.home / "docich"
+        self.voicevox = self.base / "voicevox"
+        self.sys_tmp = self.base / "tmp"
+        self.var_log = self.base / "varlog"
+        self.swapfile = self.base / "swapfile"
+        for path in (self.soren, self.prod, self.voicevox, self.sys_tmp, self.var_log):
+            path.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, path, size):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        return path
+
+    def collect(self, max_entries=1000):
+        return collector._collect_storage_breakdown(
+            self.soren,
+            self.prod,
+            home_root=self.home,
+            voicevox_root=self.voicevox,
+            sys_tmp=self.sys_tmp,
+            var_log=self.var_log,
+            swap_file=self.swapfile,
+            max_entries=max_entries,
+        )
+
+    def test_version_is_2_and_absent_fixed_roots_report_present_false(self):
+        # The var_log root always exists on a real host, so it is redirected
+        # to a directory that itself stays empty here; only its journal child
+        # is asserted absent below.
+        result = self.collect()
+
+        self.assertEqual(result["version"], 2)
+        # Nothing exists under the fixture home beyond soren/docich/voicevox,
+        # so every version 2 root is honestly absent instead of zero-looking.
+        for category in (
+            "gateway_state",
+            "alt_checkout_tmp_sync",
+            "alt_checkout_soren_src",
+            "system_journal",
+            "docich_git_objects",
+            "docich_git_objects_pack",
+        ):
+            item = result[category]
+            self.assertFalse(item["present"], category)
+            self.assertTrue(item["scan_complete"], category)
+            self.assertEqual(item["count"], 0, category)
+            self.assertEqual(item["allocated_bytes"], 0, category)
+        # The var_log and sys_tmp roots themselves exist (setUp) but stay
+        # empty here: present, complete, and only the directory's own blocks.
+        # The allocated size of an empty directory is filesystem-specific
+        # (ext4 reports 4096, APFS reports 0), so the exact byte total is not
+        # asserted; what must hold is that the tree is complete and counted.
+        for category in ("system_log", "sys_tmp"):
+            item = result[category]
+            self.assertTrue(item["present"], category)
+            self.assertTrue(item["scan_complete"], category)
+            self.assertEqual(item["count"], 1, category)
+            self.assertLess(item["allocated_bytes"], 8192, category)
+        self.assertFalse(result["swapfile"]["present"])
+        self.assertTrue(result["swapfile"]["scan_complete"])
+
+    def test_gateway_state_system_roots_and_swapfile_are_counted(self):
+        self.write(self.home / ".local/state/github-vm-ops/bundles/x.bundle", 5000)
+        self.write(self.var_log / "journal/abc/system.journal", 3000)
+        self.write(self.var_log / "soren-loop.log", 2000)
+        self.swapfile.write_bytes(b"s" * 4096)
+        self.write(self.sys_tmp / "scratch.bin", 1000)
+
+        result = self.collect()
+
+        gateway = result["gateway_state"]
+        self.assertTrue(gateway["present"])
+        self.assertTrue(gateway["scan_complete"])
+        self.assertGreaterEqual(gateway["allocated_bytes"], 5000)
+        journal = result["system_journal"]
+        self.assertTrue(journal["present"])
+        self.assertGreaterEqual(journal["allocated_bytes"], 3000)
+        system_log = result["system_log"]
+        self.assertTrue(system_log["present"])
+        # system_log contains the journal tree (overlap by design).
+        self.assertGreater(system_log["allocated_bytes"], journal["allocated_bytes"])
+        self.assertTrue(result["swapfile"]["present"])
+        self.assertGreaterEqual(result["swapfile"]["allocated_bytes"], 4096)
+        self.assertTrue(result["sys_tmp"]["present"])
+        self.assertGreaterEqual(result["sys_tmp"]["allocated_bytes"], 1000)
+
+    def test_alternative_checkouts_are_counted_when_present(self):
+        self.write(self.sys_tmp / "opencode/docich-sync/.git/objects/x", 4000)
+        self.write(self.home / "soren-src/README.md", 500)
+
+        result = self.collect()
+
+        self.assertTrue(result["alt_checkout_tmp_sync"]["present"])
+        self.assertTrue(result["alt_checkout_tmp_sync"]["scan_complete"])
+        self.assertGreaterEqual(result["alt_checkout_tmp_sync"]["allocated_bytes"], 4000)
+        self.assertTrue(result["alt_checkout_soren_src"]["present"])
+        self.assertGreaterEqual(result["alt_checkout_soren_src"]["allocated_bytes"], 500)
+
+    def test_docich_git_subcategories_stay_within_the_git_tree(self):
+        git_dir = self.prod / ".git"
+        self.write(git_dir / "objects/pack/pack-abc.pack", 6000)
+        self.write(git_dir / "objects/loose-xyz", 1000)
+        self.write(git_dir / "HEAD", 10)
+
+        result = self.collect()
+
+        objects = result["docich_git_objects"]
+        pack = result["docich_git_objects_pack"]
+        self.assertTrue(objects["present"])
+        self.assertTrue(pack["present"])
+        self.assertGreater(objects["allocated_bytes"], pack["allocated_bytes"])
+        self.assertGreater(objects["count"], pack["count"])
+        git_total = result["docich_git"]
+        self.assertGreater(git_total["allocated_bytes"], objects["allocated_bytes"])
+
+    def test_symlink_version_2_root_is_not_followed_and_fails_closed(self):
+        outside = self.base / "outside"
+        outside.mkdir()
+        self.write(outside / "large.bin", 1024 * 1024)
+        gateway = self.home / ".local/state/github-vm-ops"
+        gateway.parent.mkdir(parents=True)
+        gateway.symlink_to(outside, target_is_directory=True)
+
+        result = self.collect()
+        item = result["gateway_state"]
+
+        self.assertTrue(item["present"])
+        self.assertFalse(item["scan_complete"])
+        self.assertEqual(item["symlink_entries"], 1)
+        self.assertLess(item["allocated_bytes"], 1024 * 1024)
+        self.assertNotIn(str(outside), json.dumps(result))
+
+    def test_serialized_v2_breakdown_stays_bounded(self):
+        # The gateway caps the whole diagnostics JSON at 65,536 bytes
+        # (#2537); the storage section must stay a small fixed fraction of
+        # that even with the version 2 categories added.
+        self.write(self.home / ".local/state/github-vm-ops/bundles/x.bundle", 5000)
+        self.write(self.var_log / "journal/abc/system.journal", 3000)
+        self.swapfile.write_bytes(b"s" * 4096)
+
+        result = self.collect()
+        encoded = json.dumps(result)
+
+        self.assertLess(len(encoded.encode()), 8192)
+        self.assertNotIn(str(self.base), encoded)
+
+
+    def test_gateway_subtrees_split_bundles_and_releases(self):
+        self.write(self.home / ".local/state/github-vm-ops/bundles/a.bundle", 4000)
+        self.write(self.home / ".local/state/github-vm-ops/releases/docich/sha/f.txt", 6000)
+
+        result = self.collect()
+
+        bundles = result["gateway_bundles"]
+        releases = result["gateway_releases"]
+        self.assertTrue(bundles["scan_complete"])
+        self.assertTrue(releases["scan_complete"])
+        self.assertGreaterEqual(bundles["allocated_bytes"], 4000)
+        self.assertGreaterEqual(releases["allocated_bytes"], 6000)
+        self.assertLessEqual(bundles["allocated_bytes"] + releases["allocated_bytes"],
+                             result["gateway_state"]["allocated_bytes"])
+
+    def test_opencode_subtrees_split_fixed_subpaths(self):
+        # Session-file subtrees of the opencode default data dir
+        # (azumag/docich#3140): each fixed sub-path is measured separately so
+        # the retention baseline attributes growth per sub-path.
+        self.write(self.home / ".local/share/opencode/snapshot/aa/objects/ff", 2000)
+        self.write(self.home / ".local/share/opencode/storage/session_diff/s1.json", 3000)
+        self.write(self.home / ".local/share/opencode/tool-output/t1", 4000)
+        self.write(self.home / ".local/share/opencode/log/opencode.log", 5000)
+
+        result = self.collect()
+
+        for key, minimum in (
+            ("opencode_default_snapshot", 2000),
+            ("opencode_default_storage", 3000),
+            ("opencode_default_tool_output", 4000),
+            ("opencode_default_log", 5000),
+        ):
+            item = result[key]
+            self.assertTrue(item["present"])
+            self.assertTrue(item["scan_complete"])
+            self.assertGreaterEqual(item["allocated_bytes"], minimum)
+
+    def test_opencode_subtrees_absent_report_present_false(self):
+        # A subtree that does not exist on the scanned host reports
+        # present=false with a complete scan, the same contract as the other
+        # absent fixed roots; it must not pretend zero bytes were verified.
+        result = self.collect()
+
+        for key in (
+            "opencode_default_snapshot",
+            "opencode_default_storage",
+            "opencode_default_tool_output",
+            "opencode_default_log",
+            "opencode_default_other",
+        ):
+            self.assertFalse(result[key]["present"])
+            self.assertTrue(result[key]["scan_complete"])
+
+    def test_opencode_other_is_total_minus_known_parts(self):
+        # The derived remainder makes a new data-dir sub-path visible before
+        # an opencode upgrade silently grows it (docich#3140 DSH review).
+        self.write(self.home / ".local/share/opencode/snapshot/aa/obj/ff", 2000)
+        self.write(self.home / ".local/share/opencode/storage/session_diff/s1.json", 3000)
+        self.write(self.home / ".local/share/opencode/tool-output/t1", 4000)
+        self.write(self.home / ".local/share/opencode/log/opencode.log", 5000)
+        self.write(self.home / ".local/share/opencode/repos/cache.bin", 7000)
+        self.write(self.home / ".local/share/opencode/opencode.db", 1000)
+
+        result = self.collect()
+        other = result["opencode_default_other"]
+        total = result["opencode_default_total"]
+        self.assertTrue(other["present"])
+        self.assertTrue(other["scan_complete"])
+        self.assertGreaterEqual(other["allocated_bytes"], 7000)
+        self.assertGreaterEqual(other["count"], 2)
+        known_bytes = result["opencode_default"]["allocated_bytes"]
+        for key in ("opencode_default_snapshot", "opencode_default_storage",
+                    "opencode_default_tool_output", "opencode_default_log"):
+            known_bytes += result[key]["allocated_bytes"]
+        self.assertEqual(other["allocated_bytes"], total["allocated_bytes"] - known_bytes)
+
+
+class OpenCodeSessionFileStatusTests(unittest.TestCase):
+    """Fixed-field projection of the file-stage status (docich#3140)."""
+
+    NOW = 1_800_000_000
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.soren = Path(self.tmp.name)
+        (self.soren / "tmp" / "state").mkdir(parents=True)
+        self.path = self.soren / "tmp" / "state" / "opencode_session_file_retention.json"
+
+    def project(self, payload):
+        self.path.write_text(json.dumps(payload))
+        return collector._collect_opencode_session_file(self.soren, self.NOW)
+
+    def test_projects_only_the_whitelisted_fields(self):
+        item = self.project({
+            "schema": 1,
+            "status": "completed",
+            "mode": "dry-run",
+            "reason": "ok",
+            "completed_at": self.NOW - 60,
+            "cutoff_seconds": 86400,
+            "entries_planned": 5,
+            "entries_confirmed": 5,
+            "entries_selected": 2,
+            "bytes_planned": 123,
+            "bytes_removed": 0,
+            "truncated": True,
+            "state_written": True,
+            "auto_apply": False,
+            # Never projected: the helper plan contains paths and content.
+            "plan": [{"path": "snapshot/secret"}],
+            "path": "/home/ubuntu/.local/share/opencode",
+            "note": "secret",
+        })
+        self.assertTrue(item["present"])
+        self.assertTrue(item["readable"])
+        self.assertEqual(item["status"], "completed")
+        self.assertEqual(item["mode"], "dry-run")
+        self.assertEqual(item["reason"], "ok")
+        self.assertEqual(item["age_sec"], 60)
+        self.assertFalse(item["stale"])
+        self.assertEqual(item["entries_planned"], 5)
+        self.assertTrue(item["truncated"])
+        self.assertTrue(item["state_written"])
+        for dropped in ("plan", "path", "note"):
+            self.assertNotIn(dropped, item)
+        self.assertNotIn("snapshot/", json.dumps(item))
+
+    def test_unknown_enums_and_invalid_numbers_degrade(self):
+        item = self.project({
+            "schema": 1,
+            "status": "SECRET",
+            "mode": "x",
+            "reason": "../../etc/passwd",
+            "entries_planned": -1,
+            "bytes_removed": True,
+            "auto_apply": "yes",
+        })
+        self.assertTrue(item["readable"])
+        self.assertEqual(item["status"], "unknown")
+        self.assertEqual(item["mode"], "unknown")
+        self.assertEqual(item["reason"], "unknown")
+        self.assertNotIn("entries_planned", item)
+        self.assertNotIn("bytes_removed", item)
+        self.assertNotIn("auto_apply", item)
+
+    def test_missing_or_foreign_schema_is_not_readable(self):
+        absent = collector._collect_opencode_session_file(self.soren, self.NOW)
+        self.assertFalse(absent["present"])
+        self.assertFalse(absent["readable"])
+
+        item = self.project({"schema": 2, "status": "completed"})
+        self.assertTrue(item["present"])
+        self.assertFalse(item["readable"])
+        self.assertNotIn("status", item)
+
+    def test_old_status_is_flagged_stale(self):
+        item = self.project({
+            "schema": 1,
+            "status": "completed",
+            "completed_at": self.NOW - 4 * 3600,
+        })
+        self.assertTrue(item["stale"])
+
+
 class StorageSummaryTests(unittest.TestCase):
 
     def test_renders_fixed_opencode_caller_attribution_only(self):
@@ -511,6 +844,38 @@ class StorageSummaryTests(unittest.TestCase):
         self.assertNotIn("/", context)
         self.assertNotIn("home", context)
 
+    def test_context_keys_are_unique_across_db_family_and_tree_categories(self):
+        # #866: the db/wal/shm family sum and the `<family>_total` tree
+        # category are different byte totals, so their flat context keys must
+        # not collide (the previous `{family}_total_bytes` did).
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        family = {
+            "scan_complete": True,
+            "present_count": 3,
+            "allocated_bytes": 600,
+            "db": {**leaf, "allocated_bytes": 100},
+            "wal": {**leaf, "allocated_bytes": 200},
+            "shm": {**leaf, "allocated_bytes": 300},
+        }
+        tree = {**leaf, "count": 7, "allocated_bytes": 900}
+        breakdown = {
+            "version": 1,
+            "opencode_default": family,
+            "opencode_worker": family,
+            "opencode_default_total": tree,
+            "opencode_worker_total": tree,
+        }
+
+        available, _incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        keys = [pair.split("=", 1)[0] for pair in context.split(",")]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertIn("opencode_default_family_bytes=600", context)
+        self.assertIn("opencode_default_total_bytes=900", context)
+        self.assertIn("opencode_worker_family_bytes=600", context)
+        self.assertIn("opencode_worker_total_bytes=900", context)
+
     def test_missing_breakdown_is_explicitly_unavailable(self):
         available, incomplete, context = summary.render({})
         self.assertEqual((available, incomplete), (0, 1))
@@ -562,6 +927,428 @@ class StorageSummaryTests(unittest.TestCase):
             self.assertIn("strategy_archive_plain_count=0", context)
             self.assertIn("strategy_archive_compressed_count=0", context)
             self.assertIn("strategy_archive_compressed_share_pct=0", context)
+
+
+    def test_v2_renders_new_fixed_root_keys(self):
+        # #2583: version 2 payloads project the new fixed roots with the same
+        # fixed key shape; no path, filename or identity is ever emitted.
+        leaf = {"present": True, "scan_complete": True, "count": 3, "allocated_bytes": 777}
+        breakdown = {"version": 2}
+        for category in summary.V2_TREE_CATEGORIES:
+            breakdown[category] = {**leaf, "allocated_bytes": 900 + len(category)}
+
+        available, _incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        self.assertIn("gateway_state_complete=1", context)
+        self.assertIn("gateway_state_bytes=913", context)
+        self.assertIn("gateway_state_count=3", context)
+        self.assertIn("system_journal_complete=1", context)
+        self.assertIn("swapfile_complete=1", context)
+        self.assertIn("sys_tmp_complete=1", context)
+        self.assertIn("docich_git_objects_pack_complete=1", context)
+        self.assertNotIn("/", context)
+        self.assertNotIn("home", context)
+
+    def test_gateway_subtrees_never_change_the_incomplete_flag(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.TREE_CATEGORIES + summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        _a, base_incomplete, _c = summary.render({"storage_breakdown": breakdown})
+
+        # Absent subtrees (older collector) and an incomplete subtree must both
+        # leave the shared flag exactly as it was.
+        _a, absent_incomplete, absent_ctx = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(absent_incomplete, base_incomplete)
+        self.assertNotIn("gateway_releases_complete", absent_ctx)
+
+        breakdown["gateway_releases"] = {**leaf, "scan_complete": False}
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("gateway_releases_complete=0", context)
+
+    def test_opencode_subtrees_optional_and_not_charged_to_incomplete(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.TREE_CATEGORIES + summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        _a, base_incomplete, base_ctx = summary.render({"storage_breakdown": breakdown})
+
+        # An older collector that never emits the opencode subtrees must not
+        # look incomplete and must not invent keys.
+        self.assertNotIn("opencode_default_snapshot_complete", base_ctx)
+
+        breakdown["opencode_default_snapshot"] = {**leaf, "allocated_bytes": 2000, "count": 40}
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_snapshot_complete=1", context)
+        self.assertIn("opencode_default_snapshot_bytes=2000", context)
+        self.assertIn("opencode_default_snapshot_count=40", context)
+
+        breakdown["opencode_default_other"] = {**leaf, "allocated_bytes": 3000, "count": 5}
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_other_complete=1", context)
+        self.assertIn("opencode_default_other_bytes=3000", context)
+        self.assertIn("opencode_default_other_count=5", context)
+
+        # A truncated remainder must be rendered as unknown, not as a number:
+        # absent bytes/count cannot be misread as growth or reclamation.
+        breakdown["opencode_default_other"]["scan_complete"] = False
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_other_complete=0", context)
+        self.assertNotIn("opencode_default_other_bytes", context)
+        self.assertNotIn("opencode_default_other_count", context)
+
+        breakdown["opencode_default_snapshot"]["scan_complete"] = False
+        _a, incomplete, context = summary.render({"storage_breakdown": breakdown})
+        self.assertEqual(incomplete, base_incomplete)
+        self.assertIn("opencode_default_snapshot_complete=0", context)
+
+    def test_session_file_retention_renders_fixed_fields_only(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.TREE_CATEGORIES + summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        data = {
+            "storage_breakdown": breakdown,
+            "opencode_session_file": {
+                "present": True,
+                "readable": True,
+                "status": "gate_timeout",
+                "mode": "dry-run",
+                "reason": "gate_timeout",
+                "age_sec": 120,
+                "entries_planned": 7,
+                "bytes_removed": 0,
+                "plan": [{"path": "snapshot/secret"}],
+            },
+        }
+        available, _incomplete, context = summary.render(data)
+        self.assertEqual(available, 1)
+        self.assertIn("session_file_retention=gate_timeout", context)
+        self.assertIn("session_file_retention_reason=gate_timeout", context)
+        self.assertIn("session_file_retention_mode=dry-run", context)
+        self.assertIn("session_file_retention_age_sec=120", context)
+        self.assertIn("session_file_retention_planned=7", context)
+        self.assertIn("session_file_retention_removed_bytes=0", context)
+        self.assertNotIn("snapshot/", context)
+
+        # Older collectors do not emit the key at all: unknown, never invented.
+        data.pop("opencode_session_file")
+        _a, _i, context = summary.render(data)
+        self.assertIn("session_file_retention=unknown", context)
+
+    def test_v2_incomplete_root_flags_the_shared_incomplete(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 10}
+        breakdown = {"version": 2}
+        for category in summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+        breakdown["sys_tmp"] = {**leaf, "scan_complete": False}
+
+        _available, incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(incomplete, 1)
+        self.assertIn("sys_tmp_complete=0", context)
+
+    def test_v1_breakdown_does_not_invent_v2_keys(self):
+        leaf = {"present": True, "scan_complete": True, "count": 1, "allocated_bytes": 123}
+        breakdown = {"version": 1, "soren_logs": leaf}
+
+        available, incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        self.assertIn("soren_logs_bytes=123", context)
+        for category in summary.V2_TREE_CATEGORIES:
+            self.assertNotIn(f"{category}_complete", context)
+        # Missing v2 keys must not be charged against the shared incomplete
+        # flag while the deployed collector is still version 1.
+        self.assertNotIn("gateway_state", context)
+
+    def test_v2_context_keys_are_unique(self):
+        leaf = {"present": True, "scan_complete": True, "count": 2, "allocated_bytes": 55}
+        breakdown = {"version": 2, "soren_logs": leaf}
+        for category in summary.V2_TREE_CATEGORIES:
+            breakdown[category] = leaf
+
+        available, _incomplete, context = summary.render({"storage_breakdown": breakdown})
+
+        self.assertEqual(available, 1)
+        keys = [pair.split("=", 1)[0] for pair in context.split(",")]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_unsupported_breakdown_version_is_unavailable(self):
+        available, incomplete, context = summary.render(
+            {"storage_breakdown": {"version": 3, "soren_logs": {}}}
+        )
+        self.assertEqual((available, incomplete), (0, 1))
+        self.assertEqual(context, "storage_breakdown_unavailable=1")
+
+
+class SysTmpReclaimCandidateTests(unittest.TestCase):
+    """Case A of azumag/docich#2735: identity-free dry-run candidate count.
+
+    Every gate must pass for an entry to count. Git and /proc are faked so the
+    tests stay deterministic; the fixture paths and names must never leak.
+    """
+
+    NOW = 1_800_000_000
+    IDLE = 24 * 3600
+    MIN_BYTES = 32 * 1024
+    BIG = 128 * 1024
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.sys_tmp = self.base / "tmp"
+        self.proc = self.base / "proc"
+        self.sys_tmp.mkdir()
+        self.proc.mkdir()
+        self.git_dirty = set()
+        self.git_error = None
+        self.git_bare = set()
+        self.git_calls = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fake_run(self, args, **kwargs):
+        self.git_calls.append(args)
+        if self.git_error is not None:
+            raise self.git_error
+        repo = args[args.index("-C") + 1]
+        if "rev-parse" in args:
+            out = b"false\n" if repo in self.git_bare else b"true\n"
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr=b"")
+        out = b" M file.txt\n" if repo in self.git_dirty else b""
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr=b"")
+
+    def sweep(self, **overrides):
+        kwargs = dict(
+            now=self.NOW,
+            proc_root=self.proc,
+            min_bytes=self.MIN_BYTES,
+            idle_sec=self.IDLE,
+            euid=os.geteuid(),
+        )
+        kwargs.update(overrides)
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            return collector._sweep_sys_tmp_reclaim_candidates(self.sys_tmp, **kwargs)
+
+    def make_repo(self, name, *, git_file=False, size=None, age=2 * 24 * 3600):
+        repo = self.sys_tmp / name
+        if git_file:
+            repo.mkdir(parents=True)
+            (repo / ".git").write_text("gitdir: /nowhere\n")
+        else:
+            (repo / ".git" / "objects").mkdir(parents=True)
+        (repo / "data.bin").write_bytes(b"x" * (self.BIG if size is None else size))
+        self.age_tree(repo, self.NOW - age)
+        return repo
+
+    def age_tree(self, path, mtime):
+        for root, dirs, files in os.walk(path):
+            for name in dirs + files:
+                os.utime(os.path.join(root, name), (mtime, mtime), follow_symlinks=False)
+        os.utime(path, (mtime, mtime))
+
+    def make_proc(self, pid, *, cmdline=b"/usr/bin/sleep\0infinity\0", cwd=None, fd=None):
+        base = self.proc / str(pid)
+        (base / "fd").mkdir(parents=True)
+        (base / "cmdline").write_bytes(cmdline)
+        if cwd is not None:
+            os.symlink(cwd, base / "cwd")
+        if fd is not None:
+            os.symlink(fd, base / "fd" / "3")
+
+    def test_clean_idle_repo_with_git_dir_is_counted_without_identity(self):
+        repo = self.make_repo("clone-a")
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["scan_complete"])
+        self.assertGreaterEqual(result["allocated_bytes"], self.BIG)
+        self.assertNotIn("clone-a", json.dumps(result))
+        self.assertNotIn(str(repo), json.dumps(result))
+
+    def test_linked_worktree_with_git_file_is_counted(self):
+        self.make_repo("wt-b", git_file=True)
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["scan_complete"])
+
+    def test_directory_without_git_marker_is_excluded(self):
+        plain = self.sys_tmp / "plain"
+        plain.mkdir()
+        (plain / "data.bin").write_bytes(b"x" * self.BIG)
+        self.age_tree(plain, self.NOW - 2 * 24 * 3600)
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_top_level_symlink_is_never_followed(self):
+        outside = self.base / "outside-repo"
+        (outside / ".git").mkdir(parents=True)
+        (outside / "data.bin").write_bytes(b"x" * self.BIG)
+        self.age_tree(outside, self.NOW - 2 * 24 * 3600)
+        os.symlink(outside, self.sys_tmp / "link")
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+
+    def test_small_repo_below_size_gate_is_excluded(self):
+        self.make_repo("small", size=1024)
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_recent_file_keeps_repo(self):
+        repo = self.make_repo("recent")
+        os.utime(repo / "data.bin", (self.NOW - 60, self.NOW - 60))
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_recent_git_dir_keeps_repo_before_git_runs(self):
+        repo = self.make_repo("recent-objects")
+        os.utime(repo / ".git", (self.NOW - 60, self.NOW - 60))
+
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            result = collector._sweep_sys_tmp_reclaim_candidates(
+                self.sys_tmp, now=self.NOW, proc_root=self.proc,
+                min_bytes=self.MIN_BYTES, idle_sec=self.IDLE,
+            )
+
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(self.git_calls, [])
+
+    def test_dirty_tree_is_excluded(self):
+        repo = self.make_repo("dirty")
+        self.git_dirty.add(str(repo))
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_git_timeout_or_missing_git_fails_closed(self):
+        self.make_repo("slow")
+        for error in (subprocess.TimeoutExpired(cmd="git", timeout=5), OSError("no git")):
+            with self.subTest(error=type(error).__name__):
+                self.git_error = error
+                result = self.sweep()
+                self.assertEqual(result["count"], 0)
+                self.assertFalse(result["scan_complete"])
+        self.git_error = None
+
+    def test_bare_or_non_worktree_repo_is_kept_without_flagging(self):
+        repo = self.make_repo("bare")
+        self.git_bare.add(str(repo))
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(result["scan_complete"])
+
+    def test_foreign_user_process_cwd_is_not_read_but_cmdline_still_keeps(self):
+        repo = self.make_repo("foreign")
+        other_uid = os.geteuid() + 1
+        self.make_proc(910003, cwd=str(repo))
+
+        result = self.sweep(euid=other_uid)
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["scan_complete"])
+
+        for child in self.proc.iterdir():
+            shutil.rmtree(child)
+        self.make_proc(910004, cmdline=f"tool\0{repo}\0".encode())
+        result = self.sweep(euid=other_uid)
+        self.assertEqual(result["count"], 0)
+
+    def test_process_cmdline_cwd_and_fd_references_keep_repo(self):
+        repo = self.make_repo("referenced")
+        cases = {
+            "cmdline": {"cmdline": f"tool\0{repo}\0".encode()},
+            "cwd": {"cwd": str(repo / "sub")},
+            "fd": {"fd": str(repo / "data.bin")},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(reference=label):
+                self.make_proc(910001, **kwargs)
+                result = self.sweep()
+                self.assertEqual(result["count"], 0)
+                self.assertTrue(result["scan_complete"])
+                for child in self.proc.iterdir():
+                    shutil.rmtree(child)
+
+    def test_unrelated_process_does_not_keep_repo(self):
+        self.make_repo("unrelated")
+        self.make_proc(910002, cwd="/", fd="/dev/null")
+
+        result = self.sweep()
+
+        self.assertEqual(result["count"], 1)
+
+    def test_missing_proc_root_is_incomplete_and_counts_nothing(self):
+        self.make_repo("no-proc")
+
+        result = self.sweep(proc_root=self.base / "absent-proc")
+
+        self.assertEqual(result["count"], 0)
+        self.assertFalse(result["scan_complete"])
+
+    def test_entry_bound_marks_scan_incomplete(self):
+        self.make_repo("bound-a")
+        self.make_repo("bound-b")
+
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            result = collector._sweep_sys_tmp_reclaim_candidates(
+                self.sys_tmp, max_entries=1, now=self.NOW, proc_root=self.proc,
+                min_bytes=self.MIN_BYTES, idle_sec=self.IDLE,
+            )
+
+        self.assertFalse(result["scan_complete"])
+
+    def test_unexpected_error_is_contained_and_reported_incomplete(self):
+        self.make_repo("boom")
+
+        with patch.object(collector, "_storage_tree_usage", side_effect=RuntimeError("boom")):
+            result = self.sweep()
+
+        self.assertEqual(result["count"], 0)
+        self.assertFalse(result["scan_complete"])
+
+    def test_breakdown_carries_the_new_key_and_stays_identity_free(self):
+        self.make_repo("in-breakdown")
+        soren = self.base / "home" / "soren"
+        prod = self.base / "home" / "docich"
+        soren.mkdir(parents=True)
+        prod.mkdir(parents=True)
+
+        with patch.object(collector.subprocess, "run", side_effect=self.fake_run):
+            result = collector._collect_storage_breakdown(
+                soren, prod, home_root=self.base / "home",
+                voicevox_root=self.base / "voicevox",
+                sys_tmp=self.sys_tmp, var_log=self.base / "varlog",
+                swap_file=self.base / "swapfile",
+            )
+
+        self.assertIn("sys_tmp_reclaim_candidates", result)
+        self.assertEqual(set(result["sys_tmp_reclaim_candidates"]),
+                         {"count", "allocated_bytes", "scan_complete"})
+        self.assertNotIn("in-breakdown", json.dumps(result))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "corner": "puyo-puyo-clone",
+  "fixtureId": "fixed-puyo_puyo_clone-game-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production fixed fixture for the ぷよぷよクローン corner, used only for planning and input-contract acceptance. It is a synthetic example, not a real match, and not the original Puyo Puyo.",
+  "game": {
+    "title": "Synthetic Fixture: ぷよぷよクローン",
+    "gameId": "fixed-puyo_puyo_clone-001",
+    "genre": "falling-block connect-4+ puzzle",
+    "referenceWork": "Puyo Puyo (Sega, 1991)",
+    "originalIpNote": "Original implementation in the same genre. Not the original Puyo Puyo work; no Sega assets, names, or artwork are reproduced. 「ぷよぷよ」 is a trademark of its owner.",
+    "boardSize": {
+      "columns": 6,
+      "rows": 12,
+      "hiddenRows": 1
+    },
+    "colors": [
+      "red",
+      "blue",
+      "green",
+      "yellow",
+      "purple"
+    ],
+    "piecePair": {
+      "size": 2,
+      "naming": "axis + satellite",
+      "spawn": "center columns, hidden row"
+    },
+    "rotationModes": [
+      "clockwise",
+      "counterclockwise"
+    ],
+    "controls": {
+      "left": "move pair left",
+      "right": "move pair right",
+      "rotateClockwise": "rotate the satellite clockwise around the axis",
+      "rotateCounterClockwise": "rotate the satellite counterclockwise",
+      "softDrop": "accelerate the falling pair",
+      "hardDrop": "drop the pair to the lowest free cell"
+    },
+    "gravityMode": "connected groups fall after a clear; re-evaluate chains",
+    "connectionRule": "4 or more orthogonally adjacent same-color puyo are cleared",
+    "chainMechanics": {
+      "minConnection": 4,
+      "simultaneousClear": true,
+      "gravitySettle": true,
+      "chainReevaluation": true
+    },
+    "scoring": {
+      "perPuyo": 10,
+      "chainBonus": "increases with chain length and color count",
+      "simultaneousBonus": "bonus for clearing several colors at once",
+      "allClearBonus": "bonus when the board is emptied"
+    },
+    "winCondition": "the opponent's spawn column is blocked by settled puyo",
+    "lossCondition": "own spawn cannot place a new pair",
+    "matchType": "one-on-one",
+    "matchFormat": "best-of-N rounds against the AI or a 同志",
+    "players": 2,
+    "playerCount": 2,
+    "realTime": true,
+    "turnBased": false,
+    "multiplayer": true,
+    "aiOpponent": {
+      "enabled": true,
+      "difficultyLevels": [
+        "easy",
+        "normal",
+        "hard"
+      ]
+    },
+    "difficulty": [
+      "easy",
+      "normal",
+      "hard"
+    ],
+    "comradeMatch": true,
+    "spectatorView": "shared board overlay with both fields, the next pairs, the chain counter, and the score",
+    "chatCommands": [
+      "!puyo join",
+      "!puyo left",
+      "!puyo right",
+      "!puyo rotate",
+      "!puyo drop",
+      "!puyo leave"
+    ],
+    "roundStructure": "a round ends on a top-out; the corner advances to the next round or the reveal",
+    "thirtySecondSummary": "合成fixture: ぷよぷよクローン コーナーの入力契約確認用 planning 例。",
+    "oneLineSummary": "合成fixture: ぷよぷよクローン コーナーの入力例。",
+    "labelsPolicy": {
+      "fact": "confirmed by the board state or the ruleset",
+      "analysis": "interpretation of the position or the expected outcome",
+      "forecast": "conditional prediction of chains or the result"
+    },
+    "segmentLabels": [
+      "fact",
+      "analysis",
+      "forecast"
+    ],
+    "limitations": "合成 fixture であり、実試合・実対戦・原作の検証は未実施。",
+    "uncertainty": "未確認のチェーン結果、操作遅延、対戦相手の選択。",
+    "figureOrDiagram": "board・piece pair・chain・score を overlay 用に分離した概念図。",
+    "youtubeIndependentDraft": "YouTube 切り出しでは30秒要約、ルール、手順、チェーン、結果、観戦の見どころを独立原稿として再構成。",
+    "primarySources": [
+      "https://example.org/puyo-puyo-clone/synthetic"
+    ],
+    "sourcePriority": [
+      "original-or-primary-document",
+      "official-institution",
+      "established-media-multiple",
+      "academic-or-thinktank",
+      "fact-check-source"
+    ],
+    "citationKeepUrl": true,
+    "url": "https://example.org/puyo-puyo-clone/synthetic"
+  },
+  "verifiedWebMaterial": {
+    "status": "partial",
+    "items": [
+      {
+        "url": "https://example.org/puyo-puyo-clone/synthetic",
+        "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "text_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "excerpt_sha256": "8f168b8e33f565a2ab48dd80ba13c0c814a8e3925ee63102e168801e5cdd60bc",
+        "excerpt": "Synthetic verified puyo-puyo-clone material excerpt for planning only.",
+        "query_indexes": [
+          0
+        ]
+      }
+    ],
+    "queries_used": [
+      "synthetic puyo-puyo-clone planning"
+    ]
+  },
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimOriginalIp": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryAndInstitutions": true,
+    "mustIncludeFactAnalysisForecastLabels": true,
+    "mustIncludeMultiplePerspectives": true,
+    "mustStateOriginalIpNote": true,
+    "overlayAndProgressSplitAfterInputContract": true,
+    "partialCompletionAllowed": true,
+    "independentYouTubeDraftRequired": true
+  }
+}

@@ -1,0 +1,60 @@
+# VRChat OSC 連携 (Issue #316) — 解説は docs/vrchat-osc.md
+#
+# 既定値は「VRChat と docich が同じ PC で動く」構成です。
+# 別 PC の VRChat とつなぐ場合は vrchat_host を VRChat PC の LAN IP に、
+# listen_host を LAN から届く待受アドレス (例 "0.0.0.0") に変更してください。
+# VRChat 側の起動引数は公式順序で `--osc=inPort:outIP:outPort`。outIP は
+# この bridge を動かす PC、outPort は listen_port (既定 9001) です:
+#   `--osc=9000:<この bridge を動かす PC の LAN IP>:9001`
+# 外部公開は想定しません。localhost / LAN 内に閉じてください。
+
+[osc]
+vrchat_host = "127.0.0.1"
+vrchat_port = 9000
+listen_host = "127.0.0.1"
+listen_port = 9001
+poll_interval_ms = 100
+send_min_interval_ms = 50
+echo_suppress_ms = 400
+max_sends_per_second = 30
+
+[speaking]
+# say_enqueue.sh が書く実際の発話状態 (soren root からの相対パス)
+file = "tmp/state/speaking.json"
+parameter = "AI_Talking"
+# 発話ファイルが消えてから口を閉じるまでの猶予。連続チャンクのちらつき防止。
+grace_ms = 500
+
+[paths]
+event_spool = "vrchat_osc/events.jsonl"
+action_spool = "vrchat_osc/actions.jsonl"
+status = "vrchat_osc/status.json"
+state = "vrchat_osc/state.json"
+
+# 送信する Avatar Parameter の allowlist。ここにない名前は送りません。
+[parameters.AI_Talking]
+type = "bool"
+
+[parameters.AI_Emotion]
+type = "int"
+hold_ms = 8000
+
+[parameters.Alert]
+type = "bool"
+hold_ms = 3000
+
+[parameters.Mode]
+type = "int"
+persist = true
+
+# VRChat -> docich の allowlist。ここにない Parameter は受信しても捨てます。
+[inbound.Mode]
+action = "mode"
+values = ["normal", "doushi", "capitalism"]
+min_interval_ms = 500
+
+[inbound.Alert]
+action = "notify"
+title = "VR同志"
+body = "VRChat アバターから通知が届きました"
+min_interval_ms = 1000

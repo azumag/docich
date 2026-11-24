@@ -51,6 +51,46 @@ TREE_CATEGORIES = (
     "voicevox_archive",
 )
 
+# Version 2 fixed roots (azumag/docich#2583): the share of a decline window
+# that version 1 could not attribute. Same key shape as TREE_CATEGORIES, same
+# overlap rule (system_log contains system_journal, docich_git contains the
+# object subcategories). A version 1 payload (old collector) simply does not
+# carry them, so nothing is invented and the shared incomplete flag stays
+# untouched until the reviewed collector is deployed.
+V2_TREE_CATEGORIES = (
+    "gateway_state",
+    "alt_checkout_tmp_sync",
+    "alt_checkout_soren_src",
+    "system_journal",
+    "system_log",
+    "swapfile",
+    "sys_tmp",
+    "docich_git_objects",
+    "docich_git_objects_pack",
+)
+
+# Subtrees of gateway_state (azumag/docich#365). Optional: emitted only when
+# the collector publishes them, and never charged to the shared incomplete
+# flag, so a collector deployed before this split cannot look incomplete.
+GATEWAY_SUBTREE_CATEGORIES = (
+    "gateway_bundles",
+    "gateway_releases",
+)
+
+# Subtrees of the opencode default data dir (azumag/docich#3140). Same
+# opt-in contract as GATEWAY_SUBTREE_CATEGORIES: emitted only when the
+# collector publishes them, and never charged to the shared incomplete flag,
+# so a collector deployed before this split cannot look incomplete.
+OPENCODE_SUBTREE_CATEGORIES = (
+    "opencode_default_snapshot",
+    "opencode_default_storage",
+    "opencode_default_tool_output",
+    "opencode_default_log",
+    "opencode_default_other",
+)
+
+SUPPORTED_BREAKDOWN_VERSIONS = (1, 2)
+
 # Fixed on-disk formats of the strategy permanent archive. The split is what
 # makes "growth stays bounded" checkable without reading any strategy content.
 STRATEGY_ARCHIVE_FORMATS = ("plain", "compressed")
@@ -67,7 +107,7 @@ def render(data):
     if not isinstance(data, dict):
         return 0, 1, "storage_breakdown_unavailable=1"
     breakdown = data.get("storage_breakdown")
-    if not isinstance(breakdown, dict) or breakdown.get("version") != 1:
+    if not isinstance(breakdown, dict) or breakdown.get("version") not in SUPPORTED_BREAKDOWN_VERSIONS:
         return 0, 1, "storage_breakdown_unavailable=1"
 
     parts = ["overlap=1"]
@@ -82,7 +122,12 @@ def render(data):
             leaf_complete = isinstance(leaf, dict) and leaf.get("scan_complete") is True
             incomplete = incomplete or not leaf_complete
             parts.append(f"{family}_{suffix}_bytes={_uint(leaf, 'allocated_bytes')}")
-        parts.append(f"{family}_total_bytes={_uint(item, 'allocated_bytes')}")
+        # The db/wal/shm family sum. It must not flatten to
+        # `{family}_total_bytes`: the `<family>_total` tree category below
+        # already publishes that key, so the two different byte totals would
+        # collide in the flat `key=value` context and make category-wise
+        # attribution ambiguous (azumag/docich#866).
+        parts.append(f"{family}_family_bytes={_uint(item, 'allocated_bytes')}")
 
     for category in TREE_CATEGORIES:
         item = breakdown.get(category)
@@ -91,6 +136,42 @@ def render(data):
         parts.append(f"{category}_complete={int(complete)}")
         parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
         parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    # Version 2 fixed roots (azumag/docich#2583). Version 1 payloads never
+    # reach this block, so an old collector cannot look incomplete here.
+    if breakdown.get("version") == 2:
+        for category in V2_TREE_CATEGORIES:
+            item = breakdown.get(category)
+            complete = isinstance(item, dict) and item.get("scan_complete") is True
+            incomplete = incomplete or not complete
+            parts.append(f"{category}_complete={int(complete)}")
+            parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
+            parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    if breakdown.get("version") == 2:
+        for category in GATEWAY_SUBTREE_CATEGORIES:
+            item = breakdown.get(category)
+            if not isinstance(item, dict):
+                continue
+            parts.append(f"{category}_complete={int(item.get('scan_complete') is True)}")
+            parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
+            parts.append(f"{category}_count={_uint(item, 'count')}")
+
+    if breakdown.get("version") == 2:
+        for category in OPENCODE_SUBTREE_CATEGORIES:
+            item = breakdown.get(category)
+            if not isinstance(item, dict):
+                continue
+            complete = item.get("scan_complete") is True
+            parts.append(f"{category}_complete={int(complete)}")
+            if category == "opencode_default_other" and not complete:
+                # The remainder is derived by subtraction. When any input was
+                # truncated it is meaningless, so emit no bytes/count at all:
+                # absent = unknown. Publishing a number here reads either as
+                # new growth or as reclamation, both of which are wrong.
+                continue
+            parts.append(f"{category}_bytes={_uint(item, 'allocated_bytes')}")
+            parts.append(f"{category}_count={_uint(item, 'count')}")
 
     formats = breakdown.get("strategy_archive_formats")
     formats = formats if isinstance(formats, dict) else {}
@@ -160,6 +241,25 @@ def render(data):
         if state not in {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"}:
             state = "unknown"
         parts.append(f"retention_{label}={state}")
+
+    # File-stage retention (azumag/docich#3140). Only fixed enums and numbers
+    # are rendered; the helper's plan paths never reach diagnostics.
+    session_file = data.get("opencode_session_file") or {}
+    state = session_file.get("status")
+    if state not in {"completed", "failed", "gate_timeout"}:
+        state = "unknown"
+    reason = session_file.get("reason")
+    if not isinstance(reason, str) or not reason.replace("_", "").isalnum():
+        reason = "unknown"
+    mode = session_file.get("mode")
+    if mode not in {"dry-run", "apply"}:
+        mode = "unknown"
+    parts.append(f"session_file_retention={state}")
+    parts.append(f"session_file_retention_reason={reason}")
+    parts.append(f"session_file_retention_mode={mode}")
+    parts.append(f"session_file_retention_age_sec={_uint(session_file, 'age_sec')}")
+    parts.append(f"session_file_retention_planned={_uint(session_file, 'entries_planned')}")
+    parts.append(f"session_file_retention_removed_bytes={_uint(session_file, 'bytes_removed')}")
     return 1, int(incomplete), ",".join(parts)
 
 

@@ -14,7 +14,7 @@ WebUIの `/api/corners` は別の投影で、今回の変更対象ではない�
 | --- | --- | --- |
 | Soren | score history、戦略比較、観測ログ。Soren #579の計器表示がmainにある | 既存の情報を維持 |
 | nInvaders / nSnake / Bastet / Moon Buggy / Pac-Man | `retro_corner{,_manual}.json`、`scores/<game>.jsonl`、`resolver/improve_log.jsonl`。全期間の成績・推移・ランキング | **第一群**: 今回成績、結果時刻、残り試合/時間、記録された次段階・理由 |
-| 半熟英雄 | runtimeの `hanjuku_run.json` / `hanjuku_bot.json`、canonical identity。城・兵力・戦闘・駐留・行軍など | 戦略は別担当。今回変更なし |
+| 半熟英雄 | runtimeの `hanjuku_run.json` / `hanjuku_bot.json`、canonical identity。城・兵力・将軍数（完全名簿）・戦闘・駐留・行軍など | 戦略は別担当。今回変更なし |
 | NetHack | corner state、RunStoreのcurrent/run/history。遠征番号・状態・score・turns・depth | 観測時刻・次判断の表示候補。intro parser #1674・復帰の別担当と調整し、重複実装しない |
 | Soren91 / Meriken | `soren91/tmp/summaries/game_*.json` の確定順位、corner state | 現runの進捗・次行動・順位観測時刻が候補 |
 | JEV | corner state、`tmp/jev_player/runs/*/report.json`。既存表示は中断を含み得るreported scoreと明示 | 別担当領域。今回変更なし |

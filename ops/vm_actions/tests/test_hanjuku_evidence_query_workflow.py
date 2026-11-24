@@ -1,6 +1,7 @@
 """Hanjuku Actions evidence query contracts; synthetic, no production access."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -23,6 +24,33 @@ from temp_roots import real_tempdir
 
 AUTH_PATH = HERE / "authorize_hanjuku_evidence_query.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "hanjuku-evidence-query.yml"
+
+
+def list_validator_source():
+    """The exact python block the workflow runs on the candidate list."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    section = workflow.split("- name: List completed Hanjuku runtimes", 1)[1]
+    heredoc = section.split("<<'PY'\n", 1)[1]
+    return textwrap.dedent(heredoc.split("\n          PY\n", 1)[0])
+
+
+def run_list_validator(payload):
+    with real_tempdir() as directory:
+        path = Path(directory) / "candidates.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-", str(path)], input=list_validator_source(),
+            text=True, capture_output=True)
+
+
+def native_terminal_reasons():
+    """Terminal reasons the producer (src/docich/hanjuku_run.py) can emit."""
+    source = (ROOT / "src/docich/hanjuku_run.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignment = next(n for n in tree.body if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "TERMINAL_REASONS"
+                              for t in n.targets))
+    return set(ast.literal_eval(assignment.value.args[0]))
 
 
 def load(path: Path, name: str):
@@ -183,6 +211,28 @@ class QueryGatewayTests(EvidenceFixture, unittest.TestCase):
         payload = json.loads(gateway._completed_candidates(self.state))
         self.assertEqual(payload["runtimes"], [])
 
+    def test_every_native_terminal_candidate_passes_the_workflow_validator(self):
+        # #2290: the run at dad97e6e failed with the generic "invalid Hanjuku
+        # candidate" and no artifact because the validator's accepted
+        # terminal_reason set lagged the producer (input_stalled was missing).
+        # Bind the gateway's own candidate payload to the workflow validator
+        # for every native terminal reason so the schemas cannot drift again.
+        for reason in sorted(native_terminal_reasons()):
+            with self.subTest(reason=reason):
+                fields = {}
+                if reason == "screen_stalled":
+                    fields["unchanged_seconds"] = 300
+                elif reason == "input_stalled":
+                    fields.update(observed_monotonic=612, last_input_monotonic=10,
+                                  observations=130, last_input_observations=5)
+                (self.run / "hanjuku_run.json").write_bytes(
+                    gateway.evidence._dump(run_state(terminal_reason=reason, **fields)))
+                payload = json.loads(gateway._completed_candidates(self.state))
+                self.assertEqual(
+                    [item["terminal_reason"] for item in payload["runtimes"]], [reason])
+                result = run_list_validator(payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_runtime_scan_has_independent_bound(self):
         with patch.object(gateway, "MAX_RUNTIME_ENTRIES", 0), self.assertRaisesRegex(
             Exception, "runtime_scan_limit"
@@ -254,6 +304,62 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("path: $" + "{{ runner.temp }}/hanjuku-query/output", upload)
         self.assertNotIn("/ssh", upload)
 
+    # --- #2290: the list validator must name the failing field so a rejected
+    # run is diagnosable, without echoing any candidate value. The accepted
+    # terminal-reason set is covered by
+    # ops/vm_actions/tests/test_hanjuku_evidence_candidate_terminals.py.
+
+    def list_validator_source(self):
+        return list_validator_source()
+
+    def run_list_validator(self, payload):
+        return run_list_validator(payload)
+
+    @staticmethod
+    def candidate(**kw):
+        return {"runtime_id": RID, "generation": 7, "terminal_reason": "game_over",
+                "observations": 10, "actions_sent": 200, **kw}
+
+    @staticmethod
+    def candidate_list(*items):
+        return {"schema": 1, "status": "ok", "runtimes": list(items), "truncated": False}
+
+    def test_list_validator_accepts_a_well_formed_candidate(self):
+        result = self.run_list_validator(self.candidate_list(self.candidate()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_list_validator_rejects_with_finite_field_classification(self):
+        cases = {
+            "field=terminal_reason": self.candidate(terminal_reason="manual_stop"),
+            "field=runtimes.keys": self.candidate(unexpected="x"),
+            "field=runtimes.item": "not-a-dict",
+            "field=runtime_id": self.candidate(runtime_id="h7-1234abcd"),
+            "field=generation": self.candidate(generation=8),
+            "field=observations": self.candidate(observations=-1),
+            "field=actions_sent": self.candidate(actions_sent=True),
+        }
+        for expected, item in cases.items():
+            with self.subTest(item=item):
+                result = self.run_list_validator(self.candidate_list(item))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                # Only the fixed field name is published, never a dump.
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertNotIn("manual_stop", result.stderr)
+
+    def test_list_validator_still_rejects_broken_envelope(self):
+        for payload in (
+            {"schema": 2, "status": "ok", "runtimes": [], "truncated": False},
+            {"schema": 1, "status": "error", "runtimes": [], "truncated": False},
+            {"schema": 1, "status": "ok", "runtimes": [self.candidate()] * 21,
+             "truncated": False},
+        ):
+            with self.subTest(payload=payload):
+                result = self.run_list_validator(payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid Hanjuku candidate list", result.stderr)
+
     def test_shell_blocks_parse(self):
         blocks = re.findall(r"        run: \|\n((?:          [^\n]*\n|\n)+)", self.workflow)
         self.assertGreaterEqual(len(blocks), 5)
@@ -291,3 +397,22 @@ class WorkflowContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HanjukuEvidenceConcurrencyGroupTests(unittest.TestCase):
+    EXPORT_WORKFLOW = ROOT / ".github" / "workflows" / "hanjuku-evidence-export.yml"
+    MONITOR_WORKFLOW = ROOT / ".github" / "workflows" / "vm-storage-monitor.yml"
+
+    def test_query_and_export_own_concurrency_groups(self):
+        query = WORKFLOW.read_text(encoding="utf-8")
+        export = self.EXPORT_WORKFLOW.read_text(encoding="utf-8")
+        monitor = self.MONITOR_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("group: hanjuku-evidence-query-${{ github.repository }}", query)
+        self.assertNotIn("group: vm-storage-monitor-v2-${{ github.repository }}", query)
+        self.assertIn("group: hanjuku-evidence-export-${{ github.repository }}", export)
+        self.assertNotIn("group: vm-storage-monitor-v2-${{ github.repository }}", export)
+        self.assertIn("group: vm-storage-monitor-v2-${{ github.repository }}", monitor)
+        self.assertIn("cancel-in-progress: false", query)
+        self.assertIn("cancel-in-progress: false", export)
+        self.assertIn("cancel-in-progress: false", monitor)

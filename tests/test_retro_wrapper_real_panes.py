@@ -205,6 +205,37 @@ def test_moon_buggy_without_high_score_skips_name_entry(tmp_path):
     assert [s["score"] for s in scores] == [8]
 
 
+def test_moon_buggy_stuck_high_score_screen_records_the_match_once(tmp_path):
+    # The game-over/high-score pane keeps the in-play HUD line
+    # ("level: 1 lives: 0 score: N") while it also offers "y,RET:new game".
+    # When nothing dismisses it (MAX_MATCHES is already reached, or the next
+    # match never starts) that same pane is captured on every poll, so the
+    # finished match must be recorded once instead of once per poll.
+    panes = [
+        pane(MOONBUGGY_PLAY, "16"), pane(MOONBUGGY_NEW_GAME, "16"),
+        pane(MOONBUGGY_NEW_GAME, "16"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "moon-buggy_docich.sh", "MOONBUGGY_BIN", "MOONBUGGY_SCORELOG", panes,
+    )
+    assert [s["score"] for s in scores] == [16]
+
+
+def test_moon_buggy_repeated_high_score_screen_does_not_leak_into_next_match(tmp_path):
+    # A game-over/high-score pane that lingers (captured more than once) after
+    # the first match must not re-seed max_score; otherwise the first match's
+    # score leaks into the second match's record (issue #192 P2).
+    panes = [
+        pane(MOONBUGGY_PLAY, "16"), pane(MOONBUGGY_NEW_GAME, "16"),
+        pane(MOONBUGGY_NEW_GAME, "16"),
+        pane(MOONBUGGY_PLAY, "8"), pane(MOONBUGGY_NEW_GAME, "8"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "moon-buggy_docich.sh", "MOONBUGGY_BIN", "MOONBUGGY_SCORELOG", panes,
+    )
+    assert [s["score"] for s in scores] == [16, 8]
+
+
 def test_moon_buggy_wrapper_records_the_selected_ab_arm_and_hash(tmp_path):
     state_dir = tmp_path / "run"
     staged = moon_buggy_ab.stage(
@@ -288,6 +319,83 @@ def test_pacman_flushes_match_when_game_over_screen_was_skipped(tmp_path):
     keys, scores = run_wrapper(tmp_path, "pacman4console_docich.sh", "PACMAN_BIN", "PACMAN_SCORELOG", panes)
     assert keys == []
     assert [s["score"] for s in scores] == [523]
+
+
+@pytest.mark.parametrize("game,prefix,play,finished,restart_key", [
+    pytest.param("bastet", "BASTET", BASTET_BOARD, BASTET_TRY_AGAIN,
+                 ["-t", "%9", "Enter"], id="bastet"),
+    pytest.param("pacman4console", "PACMAN", PACMAN_PLAY, PACMAN_GAME_OVER,
+                 ["-t", "%9", "-l", " "], id="pacman"),
+])
+@pytest.mark.parametrize("frames,limit,expected_scores,expected_restarts", [
+    pytest.param(
+        [("play", "300"), ("finished", "300"), ("finished", "300")],
+        1, [300], 0, id="parked-positive-at-limit",
+    ),
+    pytest.param(
+        [("play", "0"), ("finished", "0"), ("finished", "0")],
+        1, [0], 0, id="parked-zero-at-limit",
+    ),
+    pytest.param(
+        [("play", "300"), ("finished", "300"), ("finished", "300")],
+        3, [300], None, id="parked-below-limit-keeps-retrying",
+    ),
+    pytest.param(
+        [("play", "120"), ("finished", "300"), ("finished", "300"),
+         ("play", "0"), ("play", "40"), ("finished", "100"),
+         ("finished", "100")],
+        3, [300, 100], None, id="lower-next-match-without-score-leak",
+    ),
+    pytest.param(
+        [("play", "120"), ("finished", "300"), ("play", "0")],
+        1, [300], 0, id="first-terminal-hud-keeps-final-increment",
+    ),
+    pytest.param(
+        [("play", "000008"), ("finished", "000009"), ("finished", "000009")],
+        1, [9], 0, id="leading-zero-final-score-is-decimal",
+    ),
+    pytest.param(
+        [("finished", "300"), ("finished", "300")],
+        3, [], None, id="terminal-without-play-does-not-invent-match",
+    ),
+    pytest.param(
+        [("play", "600"), ("finished", "523"), ("finished", "523")],
+        3, [600], None, id="terminal-score-drop-is-not-a-new-match",
+    ),
+    pytest.param(
+        [("play", "300"), ("finished", "300"), ("finished", "300"),
+         ("play", "300"), ("finished", "300"), ("finished", "300")],
+        2, [300, 300], 2, id="equal-scores-are-distinct-matches",
+    ),
+    pytest.param(
+        [("play", "120"), ("finished", "300"), ("finished", "300"),
+         ("play", "0"), ("play", "40"), ("finished", "100"),
+         ("finished", "100"), ("play", "0"), ("finished", "0"),
+         ("finished", "0")],
+        3, [300, 100, 0], 4, id="restarts-stop-at-third-match",
+    ),
+])
+def test_score_wrapper_records_each_match_once_on_repeated_terminal_panes(
+    tmp_path, game, prefix, play, finished, restart_key,
+    frames, limit, expected_scores, expected_restarts,
+):
+    # Execute the tracked wrapper, helper and real captured pane layouts.
+    # The fake tmux repeats the final pane for six more polls, including
+    # after MAX_MATCHES: score suppression must not suppress retries below it.
+    panes = [pane(play if phase == "play" else finished, score, "2")
+             for phase, score in frames]
+    keys, scores = run_wrapper(
+        tmp_path, f"{game}_docich.sh", f"{prefix}_BIN", f"{prefix}_SCORELOG", panes,
+        extra_env={f"{prefix}_MAX_MATCHES": str(limit)},
+    )
+    assert [(row["game"], row["score"]) for row in scores] == [
+        (game, score) for score in expected_scores
+    ]
+    assert all(key == restart_key for key in keys)
+    if expected_restarts is None:
+        assert len(keys) >= 2  # keep trying while the end pane remains
+    else:
+        assert len(keys) == expected_restarts
 
 
 NIN = ("ninvaders_docich.sh", "NINVADERS_BIN", "NINVADERS_SCORELOG")

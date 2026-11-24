@@ -38,7 +38,8 @@ CONTEXT_NAMES = [
     "past_topics", "celebration_history_context", "comment_thumbnail_ocr_context",
     "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE", "SOVIET_CREATION_HISTORY_FILE",
     "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context", "_comment_ui_memo",
-    "_comment_channel_intro", "_comment_length_policy", "sing_reference", "_prediction_cycle_games",
+    "_comment_channel_intro", "_comment_game_rules", "_comment_game_rules_ja", "_comment_length_policy",
+    "sing_reference", "_prediction_cycle_games", "self_chat_context",
 ]
 
 COMMENTS_BLOCK = ("viewer_a: 音声が聞こえません\n"
@@ -57,6 +58,9 @@ def context(mode, sn):
     for name, stem in (("_comment_persona", "comment_persona"), ("_comment_ui_memo", "comment_ui_memo"),
                        ("_comment_channel_intro", "comment_channel_intro")):
         ctx[name] = (sn / "prompts" / f"{stem}_{mode}.md").read_text(encoding="utf-8").rstrip("\n")
+    # Mode-independent: the shell loads these with $(cat ...) (trailing newlines dropped).
+    ctx["_comment_game_rules"] = (sn / "prompts" / "comment_game_rules.md").read_text(encoding="utf-8").rstrip("\n")
+    ctx["_comment_game_rules_ja"] = (sn / "prompts" / "comment_game_rules_ja.md").read_text(encoding="utf-8").rstrip("\n")
     ctx.update(current_time="21:07", time_period="夜", _prediction_cycle_games="12",
                twitch_comments_for_prompt=COMMENTS_BLOCK)
     ctx["_comment_length_policy"] = soren91_policies(sn)[0] if mode == "soren91" else ""
@@ -301,7 +305,7 @@ def generate(sn, commit, out_path):
                      "codex_advice_candidates", "comment_advice_context", "previous_comments_context",
                      "recent_spoken_comment_context", "viewer_memory_context", "comment_followup_hints",
                      "celebration_history_context", "comment_thumbnail_ocr_context", "game_state_context",
-                     "comment_ops_context"]
+                     "comment_ops_context", "self_chat_context"]
     defaults = []
     for case in ({}, {name: f"値 {name}\nError: drop me\n残す" for name in default_names}):
         dump = ('python3 -c \'import json,os,sys;print(json.dumps({n: os.environ.get(n) for n in sys.argv[1:]}))\' '

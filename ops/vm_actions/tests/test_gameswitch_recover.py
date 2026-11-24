@@ -1,0 +1,836 @@
+"""Contracts for the fixed owner-only GameSwitch recover operator (#1960).
+
+The previous revision passed CI while the workflow could not run at all, so
+this suite pins the three layers that matter:
+
+1. the authorizer's fixed env contract (owner/protected main/SHA/confirm) and
+   every output the workflow consumes,
+2. the VM helper's guards (fixed shape, declared mismatch, ownership proof)
+   and its fixed exit codes,
+3. the workflow's pinned supply chain and its single fixed execution path.
+"""
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[3]
+AUTH = ROOT / "ops/vm_actions/authorize_gameswitch_recover.py"
+HELPER = ROOT / "ops/vm_actions/gameswitch_recover.py"
+VM_SCRIPT = ROOT / "ops/vm_actions/gameswitch_recover.sh"
+WF = ROOT / ".github/workflows/gameswitch-recover.yml"
+
+SPEC = importlib.util.spec_from_file_location("gameswitch_recover", HELPER)
+HELPER_MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(HELPER_MODULE)
+
+WORKFLOW_REF = "azumag/docich/.github/workflows/gameswitch-recover.yml@refs/heads/main"
+PINNED_CHECKOUT = "d23441a48e516b6c34aea4fa41551a30e30af803"
+
+
+# ---------------------------------------------------------------- authorizer
+
+
+def base_env():
+    return {
+        "GITHUB_REPOSITORY": "azumag/docich",
+        "GITHUB_REPOSITORY_ID": "1327276249",
+        "GITHUB_REPOSITORY_OWNER": "azumag",
+        "GITHUB_REPOSITORY_OWNER_ID": "9018513",
+        "GITHUB_ACTOR": "azumag",
+        "GITHUB_ACTOR_ID": "9018513",
+        "GITHUB_TRIGGERING_ACTOR": "azumag",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REF_PROTECTED": "true",
+        "GITHUB_DEFAULT_BRANCH": "main",
+        "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+        "GITHUB_SHA": "a" * 40,
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "INPUT_OPERATION": "recover_gameswitch",
+        "INPUT_PHASE": "recovery_required",
+        "INPUT_CLEANUP_PENDING": "false",
+        "INPUT_CONFIRM": "production",
+    }
+
+
+def run_auth(output_path=None, **overrides):
+    env = base_env()
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    if output_path is not None:
+        env["GITHUB_OUTPUT"] = str(output_path)
+    return subprocess.run(
+        [sys.executable, str(AUTH)], env=env, capture_output=True, text=True
+    )
+
+
+class AuthorizeContractTests(unittest.TestCase):
+    def test_valid_declaration_succeeds(self):
+        result = run_auth(INPUT_PHASE="recovery_required", INPUT_CLEANUP_PENDING="false")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(
+            data,
+            {"operation": "recover_gameswitch", "target": "production", "ref": "main",
+             "phase": "recovery_required", "cleanup_pending": "false"},
+        )
+
+    def test_failed_phase_with_cleanup_pending_succeeds(self):
+        result = run_auth(INPUT_PHASE="failed", INPUT_CLEANUP_PENDING="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["phase"], "failed")
+
+    def test_every_declared_output_is_written(self):
+        """The workflow consumes these outputs; an empty one must fail here."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "github_output"
+            out.write_text("", encoding="utf-8")
+            result = run_auth(output_path=out)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            keys = {}
+            for line in out.read_text(encoding="utf-8").splitlines():
+                name, _, value = line.partition("=")
+                keys[name] = value
+            for name in ("operation", "target", "ref", "phase", "cleanup_pending", "decision"):
+                self.assertIn(name, keys)
+                self.assertTrue(keys[name], name)
+            decision = json.loads(keys["decision"])
+            self.assertEqual(decision["operation"], "recover_gameswitch")
+            self.assertEqual(decision["phase"], "recovery_required")
+
+    def test_unknown_phase_is_rejected(self):
+        for phase in ("idle", "ready", "draining", "stopping", "unknown", ""):
+            with self.subTest(phase=phase):
+                self.assertNotEqual(run_auth(INPUT_PHASE=phase).returncode, 0)
+
+    def test_unknown_cleanup_pending_is_rejected(self):
+        for value in ("", "yes", "no", "1", "0", "TRUE", "FALSE"):
+            with self.subTest(cleanup_pending=value):
+                self.assertNotEqual(run_auth(INPUT_CLEANUP_PENDING=value).returncode, 0)
+
+    def test_missing_production_confirmation_is_rejected(self):
+        result = run_auth(INPUT_CONFIRM=None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("confirmation", result.stderr)
+
+    def test_wrong_production_confirmation_is_rejected(self):
+        for value in ("", "staging", "PRODUCTION", "production ", "true"):
+            with self.subTest(confirm=value):
+                self.assertNotEqual(run_auth(INPUT_CONFIRM=value).returncode, 0)
+
+    def test_owner_protected_main_contract_is_enforced(self):
+        cases = {
+            "GITHUB_ACTOR": "other",
+            "GITHUB_ACTOR_ID": "42",
+            "GITHUB_TRIGGERING_ACTOR": "other",
+            "GITHUB_REPOSITORY": "other/repo",
+            "GITHUB_REPOSITORY_ID": "1",
+            "GITHUB_REPOSITORY_OWNER": "other",
+            "GITHUB_REPOSITORY_OWNER_ID": "1",
+            "GITHUB_DEFAULT_BRANCH": "topic",
+            "GITHUB_REF": "refs/heads/topic",
+            "GITHUB_REF_PROTECTED": "false",
+            "GITHUB_WORKFLOW_REF": "azumag/docich/.github/workflows/vm-operations.yml@refs/heads/main",
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_SHA": "notasha",
+            "INPUT_OPERATION": "exec",
+        }
+        for key, value in cases.items():
+            with self.subTest(**{key: value}):
+                self.assertNotEqual(run_auth(**{key: value}).returncode, 0)
+
+    def test_public_repository_is_permitted_for_the_fixed_operation(self):
+        source = AUTH.read_text(encoding="utf-8")
+        for forbidden in ("visibility", "is_private", "GITHUB_REPOSITORY_PRIVATE"):
+            self.assertNotIn(forbidden, source)
+        self.assertEqual(run_auth().returncode, 0)
+
+
+# --------------------------------------------------------------------- helper
+
+
+def runtime(seat_generation=3, runtime_id=None, **overrides):
+    seat = {
+        "game": "sorengame",
+        "adapter": "soren",
+        "generation": seat_generation,
+        "runtime_id": runtime_id or f"g{seat_generation}-abcdef",
+        "lease_id": "lease-1",
+        "game_window": f"game-g{seat_generation}",
+        "agent_window": f"agent-g{seat_generation}",
+        "adapter_session": f"docich-game-g{seat_generation}",
+        "started_at": "2026-10-16T20:00:00Z",
+    }
+    seat.update(overrides)
+    return seat
+
+
+def canonical(**overrides):
+    state = {
+        "schema_version": 2,
+        "revision": 0,
+        "phase": "failed",
+        "operation": None,
+        "request_id": None,
+        "deadline_at": None,
+        "next_generation": 2,
+        "active": None,
+        "candidate": None,
+        "previous": None,
+        "retiring": [],
+        "last_result": None,
+        "last_error": None,
+        "updated_at": "2026-10-16T20:00:00Z",
+    }
+    state.update(overrides)
+    return state
+
+
+def write_state(root, state):
+    path = root / HELPER_MODULE.STATE_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+class HelperShapeTests(unittest.TestCase):
+    def test_minimal_failed_state_is_accepted(self):
+        self.assertEqual(HELPER_MODULE.validate_shape(canonical())["phase"], "failed")
+
+    def test_missing_required_key_is_unknown_drift(self):
+        state = canonical()
+        del state["revision"]
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.validate_shape(state)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_UNKNOWN_DRIFT)
+
+    def test_unknown_schema_or_phase_is_unknown_drift(self):
+        for state in (canonical(schema_version=1), canonical(phase="teleporting")):
+            with self.subTest(state=state):
+                with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                    HELPER_MODULE.validate_shape(state)
+                self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_UNKNOWN_DRIFT)
+
+    def test_operation_and_request_id_must_move_together(self):
+        state = canonical(operation="switch")
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.validate_shape(state)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_UNKNOWN_DRIFT)
+
+    def test_seat_invariants_are_enforced(self):
+        idle_with_seat = canonical(phase="idle", active=runtime())
+        ready_without_active = canonical(phase="ready")
+        recovery_without_error = canonical(phase="recovery_required")
+        for state in (idle_with_seat, ready_without_active, recovery_without_error):
+            with self.subTest(phase=state["phase"]):
+                with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                    HELPER_MODULE.validate_shape(state)
+                self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_UNKNOWN_DRIFT)
+
+    def test_malformed_seat_is_unknown_drift(self):
+        for broken in (runtime(runtime_id="runtime-3"), runtime(game_window="game-g9"),
+                       runtime(agent_window="agent-g9"), runtime(adapter_session="docich-game"),
+                       runtime(lease_id=7), runtime(generation=0)):
+            with self.subTest(broken=broken):
+                state = canonical(phase="ready", active=broken, next_generation=9)
+                with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                    HELPER_MODULE.validate_shape(state)
+                self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_UNKNOWN_DRIFT)
+
+    def test_duplicate_generations_and_stale_next_generation_are_refused(self):
+        duplicate = canonical(phase="draining", active=runtime(), previous=runtime(),
+                              next_generation=4)
+        stale = canonical(phase="ready", active=runtime(), next_generation=3)
+        for state in (duplicate, stale):
+            with self.subTest(state=state):
+                with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                    HELPER_MODULE.validate_shape(state)
+                self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_UNKNOWN_DRIFT)
+
+
+class HelperDeclaredTests(unittest.TestCase):
+    def test_matching_declaration_passes(self):
+        HELPER_MODULE.declared_matches(canonical(), "failed", False)
+
+    def test_phase_mismatch_is_declared_mismatch(self):
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.declared_matches(canonical(phase="recovery_required"), "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_DECLARED_MISMATCH)
+
+    def test_cleanup_pending_mismatch_is_declared_mismatch(self):
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.declared_matches(canonical(retiring=[runtime()]), "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_DECLARED_MISMATCH)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.declared_matches(
+                canonical(last_result={"cleanup_pending": True}), "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_DECLARED_MISMATCH)
+
+    def test_declared_cleanup_pending_true_matches_retiring(self):
+        HELPER_MODULE.declared_matches(canonical(retiring=[runtime()]), "failed", True)
+
+
+class HelperOwnershipTests(unittest.TestCase):
+    def test_missing_runtime_directory_is_ownership_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = runtime(game="nsnake", adapter="cli")
+            state = canonical(phase="ready", active=seat, next_generation=4)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_soren_seat_needs_no_runtime_directory(self):
+        # soren/soren91 never materialize spec.runtime_dir, so demanding one
+        # refused every rollback whose previous seat was sorengame.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            HELPER_MODULE.verify_ownership(
+                root, canonical(phase="ready", active=runtime(), next_generation=4))
+
+    def test_present_runtime_directory_proves_ownership(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = runtime()
+            (root / HELPER_MODULE.RUNTIMES_REL / seat["runtime_id"]).mkdir(parents=True)
+            HELPER_MODULE.verify_ownership(
+                root, canonical(phase="ready", active=seat, next_generation=4))
+
+    def test_missing_or_foreign_receipt_is_ownership_missing(self):
+        request_id = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
+        state = canonical(operation="switch", request_id=request_id,
+                          deadline_at="2026-10-16T21:00:00Z")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / HELPER_MODULE.REQUESTS_REL
+            receipts.mkdir(parents=True)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+            (receipts / f"{request_id}.json").write_text(
+                json.dumps({"request_id": "11111111-2222-3333-4444-555555555555"}),
+                encoding="utf-8")
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+            (receipts / f"{request_id}.json").write_text(
+                json.dumps({"request_id": request_id}), encoding="utf-8")
+            HELPER_MODULE.verify_ownership(root, state)
+
+
+FAILED_REQUEST = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
+
+
+def failed_candidate_state(seat, *, previous=None, retiring=None, **overrides):
+    """One failed switch whose candidate seat is the given runtime."""
+
+    previous = previous or runtime(seat_generation=seat["generation"] - 1)
+    state = canonical(
+        phase="failed",
+        candidate=seat if retiring is None else None,
+        previous=previous,
+        retiring=[] if retiring is None else [retiring],
+        next_generation=seat["generation"] + 1,
+        last_result={
+            "status": "failed",
+            "request_id": FAILED_REQUEST,
+            "generation": seat["generation"],
+            "to_game": seat["game"],
+            "error_code": "rollback_failed",
+            "cleanup_pending": True,
+        },
+    )
+    state.update(overrides)
+    return state
+
+
+def write_failed_receipt(root, seat, request_id=FAILED_REQUEST, **overrides):
+    receipt = {
+        "request_id": request_id,
+        "status": "failed",
+        "generation": seat["generation"],
+        "runtime_id": seat["runtime_id"],
+        "target": seat["game"],
+        "result": {
+            "status": "failed",
+            "error_code": "rollback_failed",
+            "to_game": seat["game"],
+            "generation": seat["generation"],
+        },
+    }
+    receipt.update(overrides)
+    path = root / HELPER_MODULE.REQUESTS_REL / f"{request_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+
+class HelperDeadSeatOwnershipTests(unittest.TestCase):
+    """A failed candidate that lost its runtime directory stays recoverable.
+
+    2026-11-14: the standard recover always refused with ownership_missing
+    because the failed view candidate's working directory was already gone, so
+    the canonical CLI -- the only surface that settles the dead seat -- could
+    never run and the whole corner rotation latched.
+    """
+
+    def seat(self, **overrides):
+        return runtime(seat_generation=3, game="mystery-view", adapter="program", **overrides)
+
+    def test_missing_candidate_directory_is_owned_by_its_terminal_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            HELPER_MODULE.verify_ownership(root, state)
+
+    def test_missing_candidate_directory_without_the_receipt_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code,
+                             HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE)
+
+    def test_the_receipt_must_name_the_same_candidate_identity(self):
+        broken = (
+            {"runtime_id": "g3-999999"},
+            {"generation": 4},
+            {"target": "sorengame"},
+            {"status": "rolled_back"},
+            {"result": {"status": "succeeded"}},
+        )
+        for overrides in broken:
+            with self.subTest(overrides=overrides):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    seat = self.seat()
+                    state = failed_candidate_state(seat)
+                    (root / HELPER_MODULE.RUNTIMES_REL
+                     / state["previous"]["runtime_id"]).mkdir(parents=True)
+                    write_failed_receipt(root, seat, **overrides)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(root, state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE)
+
+    def test_missing_candidate_directory_without_a_failed_result_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(seat, last_result=None)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code,
+                             HELPER_MODULE.EX_OWNERSHIP_MISSING_CANDIDATE)
+
+    def test_retiring_failed_candidate_is_covered_by_the_same_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat(cleanup_role="failed_candidate")
+            state = failed_candidate_state(seat, retiring=seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            HELPER_MODULE.verify_ownership(root, state)
+
+    def test_retiring_seat_without_the_failed_candidate_role_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat(cleanup_role="retired")
+            state = failed_candidate_state(seat, retiring=seat)
+            (root / HELPER_MODULE.RUNTIMES_REL / state["previous"]["runtime_id"]).mkdir(
+                parents=True)
+            write_failed_receipt(root, seat)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code,
+                             HELPER_MODULE.EX_OWNERSHIP_MISSING_RETIRING)
+
+    def test_a_stable_seat_keeps_the_original_ownership_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seat = self.seat()
+            state = failed_candidate_state(
+                seat, previous=runtime(seat_generation=2, game="nsnake", adapter="cli"))
+            # previous (the game we must restore) has no directory and is never
+            # covered by the candidate's terminal failure.
+            write_failed_receipt(root, seat)
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.verify_ownership(root, state)
+            self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+
+class HelperDirlessAdapterContractTests(unittest.TestCase):
+    """The dirless-adapter list is a fixed contract (#4206).
+
+    soren keeps one shared runtime for sorengame and soren91 rides that
+    same process, so neither adapter's seat ever materializes a per-runtime
+    directory and ``verify_ownership`` must not demand one. The set is pinned
+    literally rather than derived from ``src/docich/adapters`` because the
+    exemption reflects the shared-process runtime contract, not whether an
+    adapter's source happens to touch ``spec.runtime_dir``.
+    """
+
+    def test_dirless_adapters_is_the_fixed_set(self):
+        self.assertEqual(
+            HELPER_MODULE.DIRLESS_ADAPTERS, frozenset({"soren", "soren91"}))
+
+    def test_every_dirless_adapter_seat_skips_the_directory_requirement(self):
+        for adapter in sorted(HELPER_MODULE.DIRLESS_ADAPTERS):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    HELPER_MODULE.verify_ownership(Path(tmp), state)
+
+    def test_dirless_exemption_applies_to_every_seat_position(self):
+        # The 2026-11-14 incident was a rollback whose previous (restore
+        # target) seat was sorengame: every seated position is exempt, not
+        # just active.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = canonical(
+                phase="failed",
+                previous=runtime(seat_generation=1, runtime_id="g1-abcdef",
+                                 adapter="soren"),
+                retiring=[runtime(seat_generation=2, runtime_id="g2-abcdef",
+                                  adapter="soren91")],
+                candidate=runtime(seat_generation=3, runtime_id="g3-abcdef",
+                                  adapter="soren"),
+            )
+            HELPER_MODULE.verify_ownership(Path(tmp), state)
+
+    def test_non_dirless_adapters_still_require_the_directory(self):
+        for adapter in ("cli", "retroarch", "browser", "program"):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(Path(tmp), state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+    def test_dirless_match_is_exact_and_fail_closed(self):
+        for adapter in ("soren ", "SOREN", "soren2", "soren91x"):
+            with self.subTest(adapter=adapter):
+                with tempfile.TemporaryDirectory() as tmp:
+                    seat = runtime(adapter=adapter)
+                    state = canonical(phase="ready", active=seat, next_generation=4)
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.verify_ownership(Path(tmp), state)
+                    self.assertEqual(ctx.exception.code,
+                                     HELPER_MODULE.EX_OWNERSHIP_MISSING)
+
+
+class HelperCliTests(unittest.TestCase):
+    def _root_with_launcher(self, exit_code=0):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        (root / "bin").mkdir(parents=True)
+        (root / "config").mkdir(parents=True)
+        (root / HELPER_MODULE.CONFIG_REL).write_text("", encoding="utf-8")
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$0\" \"$@\" > \"" + str(root) + "/argv.txt\"\n"
+            f"exit {exit_code}\n",
+            encoding="utf-8")
+        launcher.chmod(0o755)
+        write_state(root, canonical())
+        self.addCleanup(tmp.cleanup)
+        return root
+
+    def test_canonical_cli_is_called_once_with_a_bounded_timeout(self):
+        root = self._root_with_launcher()
+        self.assertEqual(HELPER_MODULE.run_canonical_recover(root), 0)
+        argv = (root / "argv.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(argv, [
+            str(root / HELPER_MODULE.LAUNCHER_REL), "--config",
+            str(root / HELPER_MODULE.CONFIG_REL), "recover",
+            "--timeout", str(HELPER_MODULE.CLI_RECOVER_TIMEOUT_S),
+        ])
+        self.assertLessEqual(HELPER_MODULE.CLI_RECOVER_TIMEOUT_S, 600)
+
+    def test_missing_launcher_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                HELPER_MODULE.run_canonical_recover(Path(tmp))
+            self.assertEqual(ctx.exception.code, 25)
+
+    def test_cli_exit_codes_are_mapped_to_fixed_reasons(self):
+        pending = self._root_with_launcher(exit_code=1)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(pending, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_RECOVERY_PENDING)
+        rejected = self._root_with_launcher(exit_code=9)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(rejected, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_RECOVERY_REJECTED)
+
+    def test_cli_zero_without_recovered_state_is_invalid_result(self):
+        root = self._root_with_launcher()
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_with_ready_state_succeeds(self):
+        root = self._root_with_launcher()
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        # Model the canonical CLI committing a ready state before returning.
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(seat_generation=1), next_generation=2))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        self.assertEqual(HELPER_MODULE.recover(root, "failed", False), 0)
+
+    def test_cli_zero_with_foreign_generation_is_invalid(self):
+        root = self._root_with_launcher()
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=5))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n", encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_with_stale_revision_is_invalid(self):
+        root = self._root_with_launcher()
+        write_state(root, canonical(revision=8))
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4, revision=7))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n", encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_with_foreign_result_request_is_invalid(self):
+        root = self._root_with_launcher()
+        request_a = "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60"
+        request_b = "11111111-2222-3333-4444-555555555555"
+        write_state(root, canonical(last_result={"request_id": request_a, "status": "failed"}))
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4, last_result={'request_id': request_b}))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 0\n", encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_zero_stop_recovery_preserves_active_lineage(self):
+        result = {
+            "request_id": "", "operation": "recover", "status": "succeeded",
+            "from_game": "sorengame", "to_game": None, "generation": 1,
+            "error_code": None, "detail": None,
+        }
+        cases = [
+            ({}, 9, True),
+            ({"from_game": "other"}, 9, False),
+            ({"generation": 2}, 9, False),
+            ({"generation": True}, 9, False),
+            ({"operation": "stop"}, 9, False),
+            ({"status": "failed"}, 9, False),
+            ({}, 8, False),
+        ]
+        for overrides, revision, succeeds in cases:
+            with self.subTest(overrides=overrides, revision=revision):
+                root = self._root_with_launcher()
+                write_state(root, canonical(
+                    revision=8, active=runtime(seat_generation=1),
+                    last_result={"request_id": "0f5d2a1c-3b4e-4a5d-8f6a-1b2c3d4e5f60",
+                                 "status": "failed"},
+                ))
+                post = canonical(phase="idle", revision=revision,
+                                 last_result={**result, **overrides})
+                launcher = root / HELPER_MODULE.LAUNCHER_REL
+                launcher.write_text(
+                    "#!/bin/sh\n"
+                    f"printf '%s' '{json.dumps(post)}' "
+                    f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+                    "exit 0\n", encoding="utf-8",
+                )
+                launcher.chmod(0o755)
+                if succeeds:
+                    self.assertEqual(HELPER_MODULE.recover(root, "failed", False), 0)
+                else:
+                    with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+                        HELPER_MODULE.recover(root, "failed", False)
+                    self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_INVALID_RESULT)
+
+    def test_cli_one_remains_pending_even_if_state_is_ready(self):
+        root = self._root_with_launcher(exit_code=1)
+        launcher = root / HELPER_MODULE.LAUNCHER_REL
+        launcher.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' '{json.dumps(canonical(phase='ready', active=runtime(), next_generation=4))}' "
+            f"> '{root / HELPER_MODULE.STATE_REL}'\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        with self.assertRaises(HELPER_MODULE.FixedRecoverExit) as ctx:
+            HELPER_MODULE.recover(root, "failed", False)
+        self.assertEqual(ctx.exception.code, HELPER_MODULE.EX_RECOVERY_PENDING)
+
+
+class HelperProcessTests(unittest.TestCase):
+    """The fixed exit codes are the workflow's only rejection vocabulary."""
+
+    def _run(self, argv, cwd, root=None):
+        # Resolve so macOS /tmp symlinks cannot make Path.cwd() differ from
+        # DOCICH_ROOT and trip the fixed production-root guard instead.
+        cwd_path = Path(cwd).resolve()
+        root_path = Path(root).resolve() if root is not None else cwd_path
+        env = dict(os.environ)
+        env["DOCICH_ROOT"] = str(root_path)
+        return subprocess.run(
+            [sys.executable, str(HELPER), *argv], cwd=str(cwd_path), env=env,
+            capture_output=True, text=True,
+        )
+
+    def test_bad_usage_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._run([], Path(tmp)).returncode, 2)
+
+    def test_out_of_form_declaration_exits_64(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(["teleporting", "false"], Path(tmp))
+            self.assertEqual(result.returncode, 64, result.stderr)
+
+    def test_foreign_root_exits_3(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            result = self._run(["failed", "false"], Path(other), root=Path(tmp))
+            self.assertEqual(result.returncode, 3, result.stderr)
+
+    def test_declared_mismatch_exits_80_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_state(root, canonical(phase="failed"))
+            result = self._run(["recovery_required", "false"], root)
+            self.assertEqual(result.returncode, 80, result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+
+# ------------------------------------------------------------------ workflow
+
+
+PINNED_ACTION_RE = re.compile(r"^\s*uses:\s*(\S+)", re.M)
+CHECKOUT_RE = re.compile(r"^\s*uses:\s*actions/checkout@(\S+)", re.M)
+
+
+class WorkflowContractTests(unittest.TestCase):
+    def setUp(self):
+        self.text = WF.read_text(encoding="utf-8")
+
+    def test_dispatch_inputs_are_the_fixed_set(self):
+        inputs = re.findall(r"^      ([a-z_]+):$", self.text, re.M)
+        self.assertEqual(sorted(inputs),
+                         ["cleanup_pending", "confirm", "operation", "phase"])
+        self.assertIn("options: [recover_gameswitch]", self.text)
+        self.assertIn("options: [failed, recovery_required]", self.text)
+        self.assertIn("options: [true, false]", self.text)
+
+    def test_every_action_is_pinned_to_a_full_sha(self):
+        uses = PINNED_ACTION_RE.findall(self.text)
+        self.assertTrue(uses)
+        for reference in uses:
+            name, _, version = reference.partition("@")
+            self.assertRegex(version, r"^[0-9a-f]{40}$", name)
+        self.assertEqual(CHECKOUT_RE.findall(self.text), [PINNED_CHECKOUT])
+        self.assertIn("persist-credentials: false", self.text)
+
+    def test_execution_is_bounded_and_serialized(self):
+        self.assertIn("timeout-minutes: 20", self.text)
+        self.assertIn("concurrency:", self.text)
+        self.assertIn("cancel-in-progress: false", self.text)
+
+    def test_owner_and_protected_main_guard_is_present(self):
+        self.assertIn("github.actor_id == 9018513", self.text)
+        self.assertIn("github.triggering_actor == 'azumag'", self.text)
+        self.assertIn("github.ref == 'refs/heads/main'", self.text)
+        self.assertIn("github.ref_protected == true", self.text)
+        self.assertIn("environment: vm-operations", self.text)
+
+    def test_workflow_runs_the_fixed_vm_script_through_the_gateway(self):
+        self.assertIn("control/ops/vm_actions/gameswitch_recover.sh", self.text)
+        self.assertIn("exec docich production $SHA", self.text)
+        self.assertIn("status docich production $SHA", self.text)
+        self.assertIn("bash -n control/ops/vm_actions/gameswitch_recover.sh", self.text)
+
+    def test_workflow_passes_the_declaration_and_the_confirmation(self):
+        self.assertIn("GS_RECOVER_PHASE=%s", self.text)
+        self.assertIn("GS_RECOVER_CLEANUP_PENDING=%s", self.text)
+        self.assertIn("INPUT_CONFIRM: ${{ inputs.confirm }}", self.text)
+        self.assertIn("steps.auth.outputs.phase", self.text)
+        self.assertIn("steps.auth.outputs.cleanup_pending", self.text)
+
+    def test_workflow_maps_every_fixed_helper_exit_code(self):
+        for code in ("64", "70", "71", "72", "80", "81", "82"):
+            self.assertIn(f"{code})", self.text, code)
+
+    def test_workflow_has_no_stub_execution_or_empty_decision_chain(self):
+        self.assertNotIn("The actual recovery command is executed", self.text)
+        self.assertNotIn("needs.authorize.outputs.decision", self.text)
+        self.assertNotIn("checkout@v4", self.text)
+
+
+class VmScriptContractTests(unittest.TestCase):
+    def setUp(self):
+        self.text = VM_SCRIPT.read_text(encoding="utf-8")
+
+    def test_script_is_fixed_and_argument_free(self):
+        self.assertIn("set -euo pipefail", self.text)
+        self.assertIn('[[ "$#" -eq 0 ]] || exit 2', self.text)
+        self.assertNotIn("eval", self.text)
+        self.assertNotIn("$1", self.text)
+
+    def test_script_pins_its_own_production_root(self):
+        self.assertIn('[[ "$(pwd -P)" == /home/ubuntu/docich ]] || exit 3', self.text)
+
+    def test_script_validates_the_declared_parameters(self):
+        self.assertIn("GS_RECOVER_PHASE", self.text)
+        self.assertIn("GS_RECOVER_CLEANUP_PENDING", self.text)
+        self.assertIn("failed|recovery_required", self.text)
+        self.assertIn("true|false", self.text)
+
+    def test_script_runs_the_reviewed_helper_with_a_bounded_deadline(self):
+        self.assertIn("timeout --kill-after=5s 480s", self.text)
+        self.assertIn("python3 ops/vm_actions/gameswitch_recover.py", self.text)
+
+
+if __name__ == "__main__":
+    unittest.main()

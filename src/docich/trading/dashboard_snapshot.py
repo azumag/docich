@@ -24,6 +24,8 @@ from .dashboard import (
 )
 from .free_strategy.contract import decode as free_strategy_decode
 from .free_strategy.evaluation import public_summary as free_strategy_public_summary
+from .slot_overview import build_slot_overview
+from .corner_interval import get_cursor
 from .performance import build_performance, realized_pnl_for_fill, recent_orders
 from .status import signal_context_payload
 
@@ -121,13 +123,16 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         for symbol, values in closes.items()
         if isinstance(values, list) and values
     }
+    db_path = target / "paper.sqlite3"
+    cursor = get_cursor(db_path, "paper")
     performance = build_performance(
-        target / "paper.sqlite3",
+        db_path,
         capital_reference=snapshot.get("capital_reference", "0"),
         positions={symbol: amount for symbol, amount in raw_positions},
         prices=prices,
         now=moment,
         market_cache_path=target / "market_cache.json",
+        interval_start=cursor,
     )
     valued_positions = performance.get("positions")
     positions = list(valued_positions)[:MAX_POSITIONS] if isinstance(valued_positions, list) else []
@@ -176,6 +181,12 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         )
 
     data_as_of = _finite(snapshot.get("snapshot_generated_at"))
+    eligible = snapshot.get("eligible_symbols")
+    slots = build_slot_overview(
+        target, now=moment,
+        universe=[str(item) for item in eligible] if isinstance(eligible, list) else (),
+        focus_symbols=[str(item.get("symbol", "")) for item in fills],
+    )
     free_directory = target / "free-strategies"
     free_strategies = free_strategy_public_summary(
         free_directory / "lab.sqlite3",
@@ -222,6 +233,9 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
             "skipped": skipped,
         },
         "fills": fills,
+        # Dedicated per-symbol slots (Issue #3623 §2.9). Symbols listed here
+        # trade on their own experiment, not on the common one.
+        "slots": slots,
         "orders": [
             {
                 "symbol": order.get("symbol"),

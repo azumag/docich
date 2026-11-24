@@ -311,3 +311,155 @@ class TestRuntimeFencedAudio(unittest.TestCase):
 
         self.assertEqual(events, ["terminal-drain"])
         run.assert_not_called()
+
+class TestAudioQueuePathAdapter(unittest.TestCase):
+    """Pure callbacks: no shell, audio worker, real .env or queue files."""
+
+    def _queue_case(self, environment, dotenv, expected, *, publish=True, fence=None):
+        import fnmatch
+        import json
+        import subprocess
+        from types import SimpleNamespace
+        from docich import yoso_narration as yn
+
+        root = Path("/synthetic/soren")
+        context = "hanjuku_commentary" if fence is not None else "yosou:intro"
+        markers = set()
+        calls = []
+
+        def read_text(path, *args, **kwargs):
+            self.assertEqual(path, root / ".env")
+            if dotenv is None:
+                raise FileNotFoundError("synthetic missing .env")
+            return dotenv
+
+        def glob(path, pattern):
+            return iter(marker for marker in markers
+                        if marker.parent == path and fnmatch.fnmatchcase(marker.name, pattern))
+
+        def run(command, **kwargs):
+            # Model only the shell's literal queue lookup, not shell execution.
+            child = kwargs.get("env", os.environ)
+            queue = Path(child.get("COMMENT_QUEUE_DIR") or "tmp/.comment_queue")
+            if not queue.is_absolute():
+                queue = Path(kwargs["cwd"]) / queue
+            calls.append((command, kwargs, queue))
+            if publish:
+                markers.add(queue / f"comment_announce_1_2_3_{command[4]}.txt")
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch.object(soren_output, "resolve_soren_root", return_value=root), \
+             mock.patch.object(yn, "resolve_soren_root", return_value=root), \
+             mock.patch.object(soren_output, "_retry_pending_hanjuku_terminal") as drain, \
+             mock.patch.object(Path, "read_text", read_text), \
+             mock.patch.object(Path, "glob", glob), \
+             mock.patch.object(subprocess, "run", side_effect=run):
+            before = dict(os.environ)
+            soren_output.enqueue_audio_text(
+                None, "synthetic intro", context=context, speaker="14",
+                runtime_fence=fence,
+            )
+            drain.assert_called_once_with(None)
+            command, kwargs, queue = calls[0]
+            self.assertEqual(queue, Path(expected))
+            self.assertEqual(yn.voice_queue_dir(None), queue)
+            self.assertIn("env", kwargs)
+            self.assertTrue(Path(kwargs["env"]["COMMENT_QUEUE_DIR"]).is_absolute())
+            self.assertEqual(kwargs["env"], {**before, "COMMENT_QUEUE_DIR": str(queue)})
+            self.assertEqual(dict(os.environ), before)
+            self.assertIsNot(kwargs["env"], os.environ)
+            self.assertEqual({key: value for key, value in kwargs.items() if key != "env"},
+                             {"cwd": str(root), "text": True, "capture_output": True,
+                              "timeout": 30.0, "check": False})
+            self.assertEqual(command[:2], ["bash", "-c"])
+            self.assertEqual(command[3:6], ["synthetic intro", context, "14"])
+            self.assertNotIn(".env", command[2])
+            if fence is None:
+                self.assertEqual(len(command), 6)
+                self.assertNotIn('"$3"', command[2])
+            else:
+                self.assertEqual(json.loads(command[6]), fence)
+                self.assertIn('"$3"', command[2])
+            pending = int(publish and fence is None)
+            self.assertEqual(yn.voice_items_in_flight(None), pending)
+            if publish:
+                queued = next(iter(markers))
+                markers.remove(queued)
+                markers.add(queued.with_suffix(".playing"))
+                self.assertEqual(yn.voice_items_in_flight(None), pending)
+                markers.clear()
+            self.assertEqual(yn.voice_items_in_flight(None), 0)
+
+    def test_audio_queue_matches_reader_for_literal_overrides(self):
+        inherited = {"PATH": "/synthetic/bin", "COMMENT_AUDIO_DEDUP_TTL_SEC": "120"}
+        cases = (
+            ({}, "", "/synthetic/soren/tmp/.comment_queue"),
+            ({}, None, "/synthetic/soren/tmp/.comment_queue"),
+            ({"COMMENT_QUEUE_DIR": ""}, "", "/synthetic/soren/tmp/.comment_queue"),
+            ({}, "COMMENT_QUEUE_DIR=\n", "/synthetic/soren/tmp/.comment_queue"),
+            ({}, "COMMENT_QUEUE_DIR=tmp/env_queue\n", "/synthetic/soren/tmp/env_queue"),
+            ({}, 'COMMENT_QUEUE_DIR="tmp/env_queue" # literal\n', "/synthetic/soren/tmp/env_queue"),
+            ({}, "COMMENT_QUEUE_DIR=/synthetic/absolute\n", "/synthetic/absolute"),
+            ({"COMMENT_QUEUE_DIR": ""}, "COMMENT_QUEUE_DIR=tmp/env_queue\n", "/synthetic/soren/tmp/env_queue"),
+            ({"COMMENT_QUEUE_DIR": "tmp/custom"}, "", "/synthetic/soren/tmp/custom"),
+            ({"COMMENT_QUEUE_DIR": "/synthetic/custom"}, "", "/synthetic/custom"),
+            ({"COMMENT_QUEUE_DIR": "tmp/winner"}, "COMMENT_QUEUE_DIR=tmp/ignored\n", "/synthetic/soren/tmp/winner"),
+            ({}, "UNRELATED_DOTENV=synthetic\nCOMMENT_QUEUE_DIR=tmp/env_queue\n", "/synthetic/soren/tmp/env_queue"),
+        )
+        for environment, dotenv, expected in cases:
+            with self.subTest(environment=environment, dotenv=dotenv):
+                self._queue_case({**inherited, **environment}, dotenv, expected)
+
+    def test_audio_queue_environment_does_not_change_fence_or_sink_noops(self):
+        fence = {"game": "hanjuku-hero", "runtime_id": "g1-abcdef", "generation": 1,
+                 "lease_id": "synthetic-lease", "expires_at": 1234}
+        self._queue_case({}, "COMMENT_QUEUE_DIR=tmp/env_queue\n",
+                         "/synthetic/soren/tmp/env_queue", fence=fence)
+        # Paused/content-deduplicated sinks still return success without a marker.
+        self._queue_case({}, "COMMENT_QUEUE_DIR=tmp/env_queue\n",
+                         "/synthetic/soren/tmp/env_queue", publish=False)
+
+    def test_audio_rejection_and_timeout_keep_existing_errors(self):
+        import subprocess
+        from types import SimpleNamespace
+
+        with mock.patch.object(soren_output, "resolve_soren_root", return_value=Path("/synthetic/soren")), \
+             mock.patch.object(soren_output, "comment_queue_dir", return_value=Path("/synthetic/queue")), \
+             mock.patch.object(soren_output, "_retry_pending_hanjuku_terminal"), \
+             mock.patch.object(subprocess, "run") as run:
+            run.return_value = SimpleNamespace(returncode=1, stderr="rejected")
+            with self.assertRaisesRegex(soren_output.SorenOutputError, "Soren audio queue rejected notification: rejected"):
+                soren_output.enqueue_audio_text(None, "synthetic")
+            run.side_effect = subprocess.TimeoutExpired("synthetic", 30.0)
+            with self.assertRaisesRegex(soren_output.SorenOutputError, "Soren audio queue delivery failed"):
+                soren_output.enqueue_audio_text(None, "synthetic")
+
+    def test_empty_or_pending_audio_never_resolves_or_starts_a_queue(self):
+        import subprocess
+
+        with mock.patch.object(soren_output, "resolve_soren_root") as root, \
+             mock.patch.object(soren_output, "comment_queue_dir") as queue, \
+             mock.patch.object(soren_output, "_retry_pending_hanjuku_terminal") as drain, \
+             mock.patch.object(subprocess, "run") as run:
+            for text in ("", "   "):
+                with self.assertRaisesRegex(soren_output.SorenOutputError, "empty audio text"):
+                    soren_output.enqueue_audio_text(None, text)
+            drain.assert_not_called()
+            drain.side_effect = soren_output.HanjukuTerminalPendingError("synthetic pending")
+            with self.assertRaises(soren_output.HanjukuTerminalPendingError):
+                soren_output.enqueue_audio_text(None, "synthetic")
+            root.assert_not_called()
+            queue.assert_not_called()
+            run.assert_not_called()
+
+    def test_chat_keeps_its_existing_implicit_environment(self):
+        import subprocess
+        from types import SimpleNamespace
+
+        with mock.patch.object(soren_output, "resolve_soren_root", return_value=Path("/synthetic/soren")), \
+             mock.patch.object(soren_output, "comment_queue_dir") as queue, \
+             mock.patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            soren_output.enqueue_chat(None, "synthetic chat", delivery_key="synthetic-key")
+            self.assertNotIn("env", run.call_args.kwargs)
+            queue.assert_not_called()

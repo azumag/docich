@@ -95,6 +95,35 @@ class TestStrategyScan(unittest.TestCase):
         self.assertEqual(reversion[0].reason_code, "mean_reversion_discount")
         self.assertGreater(reversion[0].expected_edge_bps, 0)
 
+    def test_momentum_volume_surge_boosts_score(self):
+        from docich.trading.strategies import _momentum_volume_factor
+        from decimal import Decimal as D
+        uniform_volumes = (D("10"),) * 7
+        surge_volumes = (D("10"), D("10"), D("10"), D("10"), D("20"), D("20"), D("20"))
+        self.assertEqual(_momentum_volume_factor(uniform_volumes, 6), D("1"))
+        self.assertGreater(_momentum_volume_factor(surge_volumes, 6), D("1"))
+        # Integration: surge must not reduce the score vs uniform volume.
+        closes = [100, 100, 101, 102, 103, 104, 105]
+        uniform = MarketFrame(
+            symbol="BTC/JPY",
+            timeframe_seconds=300,
+            timestamps=tuple(NOW - (len(closes) - i) * 300 for i in range(len(closes))),
+            closes=tuple(D(str(v)) for v in closes),
+            volumes=tuple(D("10") for _ in closes),
+        )
+        surge = MarketFrame(
+            symbol="BTC/JPY",
+            timeframe_seconds=300,
+            timestamps=tuple(NOW - (len(closes) - i) * 300 for i in range(len(closes))),
+            closes=tuple(D(str(v)) for v in closes),
+            volumes=surge_volumes,
+        )
+        r_uniform = scan_opportunities({"BTC/JPY": uniform}, now=NOW, policy=StrategyPolicy(momentum_threshold_bps=D("300")))
+        r_surge = scan_opportunities({"BTC/JPY": surge}, now=NOW, policy=StrategyPolicy(momentum_threshold_bps=D("300")))
+        m_uniform = [x for x in r_uniform if x.strategy_id == "momentum-v1"][0]
+        m_surge = [x for x in r_surge if x.strategy_id == "momentum-v1"][0]
+        self.assertGreaterEqual(m_surge.score, m_uniform.score)
+
     def test_opportunity_ids_are_deterministic_and_strategy_scoped(self):
         frames = {"BTC/JPY": frame("BTC/JPY", [100, 100, 101, 102, 103, 104, 105, 90])}
         first = scan_opportunities(frames, now=NOW, policy=StrategyPolicy(momentum_threshold_bps=D("1"), mean_reversion_z=D("-1")))

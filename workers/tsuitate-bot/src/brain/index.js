@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v11";
+export const BRAIN_VERSION = "tsuitate-brain-v15";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -10,12 +10,12 @@ const RECAPTURE_AGE_LIMIT = 2;
 // A long move crosses squares we cannot see, so it can be blocked and foul.
 // This only lowers the ordering score; it never claims a move is legal or not.
 const PATH_RISK_WEIGHT = 0.25;
-// While checked, a king escape is worth probing only while some way out still
-// looks sheltered. When every escape scores at least this exposure, probing
-// them all spends the foul budget one certain foul at a time; blocks and
-// captures that address the check geometry are tried first instead. Ordering
-// only: neither threshold claims any move is legal.
-const ESCAPE_EXPOSURE_LIMIT = 18;
+// While checked, a visible king escape is tried before a blind block/capture.
+// The 2026-11-24 50-game replay A/B found that probing even highly exposed
+// escapes first reduced fouls and foul-limit losses versus switching to blocks
+// at 18; the final single attempt still uses the response pool. Ordering only:
+// this threshold never claims any move is legal.
+const ESCAPE_EXPOSURE_LIMIT = 48;
 const FEATURE_NAMES = ["advance", "centrality", "promotion", "drop", "kingMove", "distance", "repeat"];
 const SQUARE = /^[1-9][a-i]$/;
 const USI_MOVE = /^(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])$/;
@@ -468,6 +468,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
         - pathRisk(observation, candidate);
     return { usi: candidate.usi, role: candidate.role, features: values, score, priority: 0 };
   });
+  // A drop needs its destination to be empty, while a path-safe non-king move
+  // to the same unknown square can capture a hidden occupant. Defer only that
+  // fragile drop for one trial; if the move itself fouls, it is excluded on the
+  // retry and the drop returns to the normal pool. This is ordering only and
+  // never treats the hidden square as occupied or the move as legal.
+  const pathSafeMoveDestinations = new Set(scored.filter((candidate) => candidate.usi[1] !== "*"
+    && candidate.role !== "K" && pathRisk(observation, candidate) === 0)
+    .map((candidate) => candidate.usi.slice(2, 4)));
+  for (const candidate of scored) {
+    if (candidate.usi[1] === "*" && pathSafeMoveDestinations.has(candidate.usi.slice(2, 4))) {
+      candidate.priority = -1;
+    }
+  }
   // 王手時は、新鮮な証拠（自分の駒が消えたマス）への幾何応手を先頭にする。
   // そこが実際の王手駒なら捕獲で王手が解ける。打駒は捕獲できないので含めない。
   if (observation.inCheck === true && evidenceResponses.length) {
@@ -493,6 +506,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
       .map((candidate) => ({ candidate, exposure: escapeExposure(observation, checkedKing.square, candidate.usi.slice(2, 4)) }))
       .sort((a, b) => a.exposure - b.exposure || b.candidate.score - a.candidate.score)
       .forEach((entry, index) => { entry.candidate.priority = -index; });
+  }
+  // When the visible escapes are exhausted we are guessing at the hidden
+  // checker. A non-king move can capture it or block the line; a drop can only
+  // block. The 51-game replay A/B preferred those moves over drops in the
+  // response pool: fouls 298→284, captured value 1273→1311, foul-limit ends
+  // 20→14 versus v14. King moves keep their existing order (the final attempt
+  // must not spend itself on a king probe). Ordering only: no legality claim.
+  if (observation.inCheck === true && !prioritizeEscapes) {
+    for (const candidate of scored) {
+      if (candidate.priority === 0 && candidate.role !== "K" && candidate.usi[1] !== "*") {
+        candidate.priority = 1;
+      }
+    }
   }
   const topPriority = Math.max(...scored.map((candidate) => candidate.priority));
   const pool = scored.filter((candidate) => candidate.priority === topPriority);

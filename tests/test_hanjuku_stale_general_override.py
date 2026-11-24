@@ -1,0 +1,137 @@
+"""Stale general_override on pending orders must not deadlock next_order (#4849).
+
+Live g1190-ch1v4 ch9 (34-x..35-12): all 8 pending イソ -> イデ！ move orders
+kept an older general_override (シフォン / チキータ) after those generals had
+already left イソ, even though 8 other generals (including each order's planned
+general) stood at イソ. ``_source_spare_missing`` checked the override first and
+rejected every order forever.
+"""
+from docich.hanjuku.strategy import orders as O
+
+
+def _ch9_mem(*, override='シフォン', status='pending', active=None,
+             garrison_iso=None, sorties=None):
+    all_castles = [
+        'アルマムーン', 'ハヤク', 'タオ', 'サヌト', 'オシロガ', 'ドンドン',
+        'オオキク', 'ナッテ', 'シマウ', 'カラ', 'イソ', 'イデ！',
+    ]
+    garrison = {c: [] for c in all_castles}
+    garrison['イソ'] = (
+        ['どうし', 'ブラマンジェ', 'ローズマリー', 'バタール']
+        if garrison_iso is None else garrison_iso
+    )
+    garrison['イデ！'] = ['ブラウニー']
+    step = 'A:3814542a:Mf0523b'
+    return {
+        'chapter': 9,
+        'tick': 738032,
+        'month': '35-12',
+        'captured': list(all_castles),
+        '_records': [],
+        'world': {
+            'captured': list(all_castles),
+            'garrison': garrison,
+            'sorties': {} if sorties is None else sorties,
+            'launched_orders': {},
+        },
+        'plan': {
+            'active': active,
+            'orders': {step: status} if status is not None else {},
+            'general_override': {step: override} if override is not None else {},
+            'source_override': {},
+            'card_override': {},
+            'chart_plan': {
+                'request_id': '3814542ad20ac134',
+                'source': 'mechanical',
+                'orders': [{
+                    'step': step,
+                    'local_step': 'Mf0523b',
+                    'purpose': 'move',
+                    'source': 'イソ',
+                    'target': 'イデ！',
+                    'general': 'ブラマンジェ',
+                    'cards': [],
+                    'after': None,
+                }],
+            },
+        },
+    }
+
+
+def test_stale_general_override_on_pending_order_is_cleared_and_order_starts():
+    mem = _ch9_mem(override='シフォン', status='pending')
+    chosen = O.next_order(mem)
+    assert chosen is not None
+    assert chosen['step'] == 'A:3814542a:Mf0523b'
+    assert chosen['general'] == 'ブラマンジェ'
+    assert 'A:3814542a:Mf0523b' not in (mem['plan'].get('general_override') or {})
+    cleared = [r for r in mem['_records'] if r['decision'] == 'stale_general_override_cleared']
+    assert len(cleared) == 1
+    assert cleared[0]['observed_metric']['stale_override'] == 'シフォン'
+
+
+def test_present_general_override_is_preserved():
+    mem = _ch9_mem(override='ローズマリー', status='pending')
+    chosen = O.next_order(mem)
+    assert chosen is not None
+    assert mem['plan']['general_override']['A:3814542a:Mf0523b'] == 'ローズマリー'
+    assert not any(r['decision'] == 'stale_general_override_cleared' for r in mem['_records'])
+
+
+def test_active_order_override_is_not_cleared():
+    mem = _ch9_mem(override='シフォン', status='pending', active='A:3814542a:Mf0523b')
+    O._clear_stale_pending_overrides(mem)
+    assert mem['plan']['general_override']['A:3814542a:Mf0523b'] == 'シフォン'
+
+
+def test_unread_source_garrison_does_not_clear_override():
+    mem = _ch9_mem(override='シフォン', status='pending')
+    mem['world']['garrison']['イソ'] = None
+    O._clear_stale_pending_overrides(mem)
+    assert mem['plan']['general_override']['A:3814542a:Mf0523b'] == 'シフォン'
+
+
+def test_live_sortie_override_is_not_cleared():
+    mem = _ch9_mem(
+        override='シフォン',
+        status='pending',
+        sorties={'A:3814542a:Mf0523b': {'status': 'launched_unconfirmed', 'general': 'シフォン', 'tick': 738000}},
+    )
+    O._clear_stale_pending_overrides(mem)
+    assert mem['plan']['general_override']['A:3814542a:Mf0523b'] == 'シフォン'
+
+
+def test_cursor_picked_general_not_in_stale_garrison_is_not_cancelled_mid_deploy():
+    """Live g1190 ch9 743473->743474: _cursor_take picked チキータ from イソ's
+    live list (setting general_override & sortie_general & garrison_partial),
+    and the very next card_select/map_target frame cancelled the sortie via
+    _source_spare_missing because チキータ wasn't in the older full garrison.
+    """
+    mem = _ch9_mem(override='チキータ', status='pending', active='A:3814542a:Mf0523b')
+    mem['plan']['sortie_general'] = {'A:3814542a:Mf0523b': 'チキータ'}
+    order = mem['plan']['chart_plan']['orders'][0]
+    assert O._source_spare_missing(order, mem, allow_probe=False) is False
+
+    # Even without active/sortie_general, a general confirmed in garrison_partial is present.
+    mem2 = _ch9_mem(override='チキータ', status='pending', active=None)
+    mem2['world']['garrison_partial'] = {'イソ': ['どうし', 'チキータ', 'ローズマリー', 'ブラマンジェ']}
+    order2 = mem2['plan']['chart_plan']['orders'][0]
+    assert O._source_spare_missing(order2, mem2, allow_probe=False) is False
+
+
+def test_equivalent_source_defender_cancel_releases_when_month_advances():
+    """An equivalent_sortie_cancels entry must release on a new month (matching
+    orders._source_defender_suppressed), so a transient cancel never locks a
+    route for dozens of months.
+    """
+    from docich import hanjuku_policy as p
+    mem = _ch9_mem(override=None, status='pending')
+    mem['month'] = '38-10'
+    order = mem['plan']['chart_plan']['orders'][0]
+    from docich.hanjuku.flows import sortie_retry_guard as srg
+    srg._remember_cancel(order, mem, 'sortie_held_source_defender')
+    assert not p._ready(order, mem)
+
+    mem['month'] = '38-11'
+    assert p._ready(order, mem)
+    assert any(r['decision'] == 'sortie_equivalent_released' for r in mem['_records'])

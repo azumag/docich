@@ -75,6 +75,10 @@ def main() -> None:
             fail("unsupported issue event")
         if env.get("GITHUB_ISSUE_NUMBER") != COMMAND_ISSUE:
             fail("unexpected PAPER command issue")
+        # The issues:edited event can be delivered for a closed issue; the
+        # bridge is only valid while the command issue is open.
+        if env.get("GITHUB_ISSUE_STATE") != "open":
+            fail("PAPER command issue is not open")
         if env.get("GITHUB_ISSUE_AUTHOR") != OWNER or env.get("GITHUB_ISSUE_AUTHOR_ID") != OWNER_ID:
             fail("unexpected PAPER command issue owner")
         operation, nonce = _issue_payload(env.get("GITHUB_ISSUE_BODY", ""))

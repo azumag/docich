@@ -2,6 +2,10 @@
 
 Cloudflare側のproject rootは `workers/discord-chat`、Worker名は `docich-discord-chat`。通常のwatch対象はこのディレクトリとcanonical personaです。`builds-plan.json` は設定案でありCloudflareへ自動適用されません。
 
+Node.jsはこのディレクトリの `.node-version` に合わせて22.23.4を使用し、依存関係は `npm ci` で固定lockfileから導入します。Cloudflare側に明示的な `NODE_VERSION` build variableがあれば、次回build前に22.23.4へ揃えてください。
+
+`cf@1.0.0-beta.28`・`wrangler@4.158.0` に更新。新しいMiniflare 5.20261104.0-betaは `sharp@0.35.5` / `undici@7.30.1` を直接解決するためoverrideは不要。cf更新時は引き続き依存解決（sharp / undici / zod）を再確認します。
+
 Build command:
 
 ```sh

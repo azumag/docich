@@ -4,8 +4,10 @@ Walks the month menu, starts purchases, recruits and chikujou according to
 the economy plan, and verifies each transaction against the visible receipt.
 """
 from __future__ import annotations
+from ..state.regions import world as _world
 
 import re
+import unicodedata
 
 from ..os_layer.screen import Screen
 from ..os_layer.font import UNKNOWN
@@ -15,25 +17,44 @@ from ..decision_log import _record
 from .egg_recovery import MONTH_SUB_EXIT_KINDS, _egg_recovery_step, _individual_egg_selected
 from .shop import quantity_step
 from ..judgment.battle import _egg_quantities_unknown, _own_egg_empty
+from ..state import egg_memory
 from ..os_layer.commands import MENU_NAV_PRESS_LIMIT, guarded_menu_to, menu_to, pad
 from ..os_layer.readers import (RECRUIT_GOODBYE, RECRUIT_INTRO, STATUS_NAMES, _current, _month_dialog_body,
                                 _month_dialog_unread, _month_menu_quiet, _options, month_menu_ready)
 from ..os_layer.world import NAME
-from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
+from ..strategy import goals
+from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_ABANDON_BACKS,
+                                   MONTH_SUB_ABORT_B_LIMIT, MONTH_SUB_LIMIT,
                                 MONTH_SUB_MENU_WAIT, RECRUIT_CANDIDATE_LIMIT, RECRUIT_COST, SOLDIER_ENOUGH,
-                                WAGE_RESERVE, _army_count_increment, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
+                                WAGE_SPEND_HOLD, _army_count_increment, _batch_active, _chikujou_affordable, _chikujou_candidates, _chikujou_reserve,
+                                _collapsed_army, _collapsed_refill_budget,
                                 _defer_recruit_cash, _defer_recruit_for_egg, _depleted_eggs, _egg_before_soldiers,
-                                _egg_estimate, _egg_measured_cost, _egg_recovery_targets, _egg_recovery_wage_floor,
-                                _hero_egg_wage_floor, _house_repair_reserve, _limit_soldier_refill, _soldier_spendable,
-                                _month_held_reserve, _month_key, _plan, _prepare_recruit_egg_check,
+                                _egg_estimate, _egg_measured_cost, _egg_recovery_targets,
+                                _house_repair_reserve, _limit_soldier_refill, _soldier_spendable, _soldier_target,
+                                _low_army_planned, _low_army_refill, _month_held_reserve, _month_key, _plan,
+                                _prepare_recruit_egg_check,
                                 _prioritise_recruit, _recruit_cash_floor, _recruit_dialog_cash_ready,
-                                _recruit_egg_ready, _recruit_fee_observed, _recruit_spare_after_necessities,
+                                _recruit_egg_ready, _recruit_fee_observed, _recruit_spare_after_necessities, _recruit_units,
                                 _refresh_egg_priority, _soldier_count_current, _soldier_count_scope,
                                 _soldiers_enough, _stop_uneconomic_recruit, _stop_unneeded_recruit,
-                                _zero_army_refill)
+                                low_army_first, refill_outcome)
 
 
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
+
+
+RECRUIT_READ_DELAY = 40        # ticks after a join before the home roster is read
+
+
+def _schedule_recruit_roster_read(mem):
+    """Schedule the home roster receipt without delaying an earlier probe."""
+    due = mem.setdefault('roster_read_due', {})
+    home = chart.home_castle(mem.get('chapter') or 0)
+    new_due = int(mem.get('tick') or 0) + RECRUIT_READ_DELAY
+    existing_due = due.get(home)
+    # A recruitment receipt must not postpone a castle capture, return,
+    # or reinforcement roster probe already scheduled for this castle.
+    due[home] = min(existing_due, new_due) if type(existing_due) is int else new_due
 
 
 def army_count_owned(mem):
@@ -59,6 +80,8 @@ def army_count_pending_step(screen, mem):
     if screen.kind not in ('text', 'unknown'):
         state.update(stage='unverified', result='unverified')
         if isinstance(mem.get('shop'), dict) and not mem['shop'].get('soldier_receipt'):
+            refill_outcome(mem, mem['shop'], 'cancelled', screen=screen.kind,
+                           reason='兵数確認・補充の途中で別の画面に移ったため当月の補充を中止。購入はしていない')
             mem['shop']['soldiers_done'] = True
         return None  # a recognized battle/event keeps its own input owner
     if state.get('stage') != 'closing':
@@ -67,8 +90,14 @@ def army_count_pending_step(screen, mem):
         state.update(stage='closing', result='unverified')
     if (state.get('result') == 'unverified' and isinstance(mem.get('shop'), dict)
             and not mem['shop'].get('soldier_receipt')):
+        refill_outcome(mem, mem['shop'], 'unverified', screen=screen.kind,
+                       reason='兵数確認・補充の画面を有限回読めないため当月の補充を中止。購入はしていない')
         mem['shop']['soldiers_done'] = True
-    return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+    if _army_count_increment(state, 'exit_presses', 4) <= 3:
+        return [pad('b')]
+    if screen.kind == 'text':
+        return _month_text_advance(screen, mem, 'へいしほじゅう') or []
+    return []
 
 
 def _month_army_count_check(screen, mem, shop):
@@ -92,6 +121,7 @@ def _month_army_count_check(screen, mem, shop):
                 reason='兵数未確認のため補充予定0でも実人数を確認する。確認入力では購入しない')
     if state.get('stage') == 'measured' and not known:
         state.update(stage='closing', result='unverified')
+        refill_outcome(mem, shop, 'unverified', reason='確認後の実兵数が未読になったため当月の補充を中止')
         if shop:
             shop['soldiers_done'] = True
         _record(mem, 'army_count_unverified', month=scope[-1],
@@ -100,6 +130,8 @@ def _month_army_count_check(screen, mem, shop):
             and not intro and month_menu_ready(screen) and _month_menu_quiet(screen)):
         if _army_count_increment(state, 'refill_waits', 4) >= 4:
             state.update(stage='closing', result='unverified')
+            refill_outcome(mem, shop, 'attempt_limit', waits=state['refill_waits'],
+                           reason='補充の数量画面が有限回の待機で開かないため当月の補充を打ち切る。購入はしていない')
             if shop:
                 shop['soldiers_done'] = True
             return [pad('b')]
@@ -111,12 +143,29 @@ def _month_army_count_check(screen, mem, shop):
             state['stage'] = ('measured' if state.get('result') == 'measured'
                               and _soldier_count_current(mem, screen.header) else 'unverified')
             return None
-        return [pad('b')] if _army_count_increment(state, 'exit_presses', 4) <= 3 else []
+        if _army_count_increment(state, 'exit_presses', 4) <= 3:
+            return [pad('b')]
+        # g1097 43-3: a leftover plain-text message over the menu ignores B
+        # and only A dismisses it; without this the check held [] forever.
+        advance = _month_text_advance(screen, mem, 'へいしほじゅう')
+        if advance is not None:
+            return advance
+        # g1105 43-5: a foreground screen that can neither be closed nor
+        # advanced must not stay owned forever - army_count_owned kept the
+        # no-input escape suppressed and the menu froze until screen_stalled.
+        # Hold this tick, then release the check as 'unverified' so the next
+        # observation is handled like any other month-menu screen.
+        state['stage'] = 'unverified'
+        _record(mem, 'army_count_unverified', month=(state.get('scope') or [None, None, None])[-1],
+                reason='兵数確認の終了処理中の画面を有限回で閉じられないため所有を手放す。購入はしていない')
+        return []
     if state.get('stage') == 'quantity_requested':
         # The real stock question needs one A to reach the digit editor.
         # Repeating that A on a delayed editor could confirm its default 01.
         if _army_count_increment(state, 'waits', 4) >= 4:
             state.update(stage='closing', result='unverified')
+            refill_outcome(mem, shop, 'attempt_limit', waits=state['waits'],
+                           reason='兵数確認の数量画面が有限回の待機で開かないため当月の補充を打ち切る')
             return [pad('b')]
         return []
     if _soldier_count_current(mem, screen.header):
@@ -127,26 +176,167 @@ def _month_army_count_check(screen, mem, shop):
         return [pad('b')]  # the count dialogue/quantity editor is still open
     if _army_count_increment(state, 'observations', 24) >= 24:
         state.update(stage='closing', result='unverified')
+        refill_outcome(mem, shop, 'attempt_limit', observations=state['observations'],
+                       reason='兵数の確認が有限上限に達したため当月の補充を打ち切る')
         _record(mem, 'army_count_unverified', month=scope[-1],
                 reason='兵数の確認が有限上限に達したため購入せず戻る。未読を0や充足と扱わない')
         return [pad('b')]
     if state.get('stage') == 'requested':
         if _army_count_increment(state, 'waits', 4) >= 4:
             state.update(stage='closing', result='unverified')
+            refill_outcome(mem, shop, 'attempt_limit', waits=state['waits'],
+                           reason='兵士補充の会話が有限回の待機で開かないため当月の補充を打ち切る')
             return [pad('b')]
         return []  # do not repeat A over a still-visible parent menu
     move = _month_menu_move(screen, mem, 'へいしほじゅう')
-    if move == 'here':
+    if _month_opened(move, mem, 'へいしほじゅう'):
         state['stage'] = 'requested'
-        return [pad('a')]
+        return move if isinstance(move, list) else [pad('a')]
     return move if isinstance(move, list) else [move] if move else []
 
 
+def _month_menu_row_col(screen: Screen, label: str):
+    """(row, column) of ``label`` in the measured two-column month menu.
+
+    Rows sit at y=47/63/79/95 (16 px apart); the right column starts at x=128.
+    The label is matched without its punctuation so the game's も〜おしまい!
+    and the caller's spelling agree.
+    """
+    def norm(text):
+        return (text or '').replace('!', '').replace('！', '').replace('〜', '～')
+    want = norm(label)
+    for line in screen.lines:
+        for x, word in line.spans():
+            got = norm(word)
+            if not got:
+                continue
+            if got == want or (len(want) >= 2 and want.startswith(got[:2])):
+                row = (line.y - 47) // 16
+                if 0 <= row <= 3:
+                    return row, 1 if x >= 128 else 0
+    return None
+
+
+def _month_nav_stuck(mem):
+    """The guarded walk already cancelled once without reaching the target."""
+    nav = mem.get('month_nav')
+    return isinstance(nav, dict) and nav.get('cancel_sent') is True
+
+
+def _month_opened(move, mem, label: str):
+    """'here' from the guarded walk, or a blind-nav plan ending on ``label``.
+
+    The blind plan's trailing 'a' opens the target exactly like the 'here'
+    branch's A, so callers apply the same opened-state (month_sub, refill
+    stage, exit/merchant flags). The marker is one tick old: reaching the
+    guarded walk below clears it, and a stale label cannot match a walk move.
+    """
+    if move == 'here':
+        return True
+    if isinstance(move, list) and mem.get('month_blind_opened') == label:
+        mem.pop('month_blind_opened', None)
+        return True
+    return False
+
+
+def _blind_nav_exhausted(mem, label) -> bool:
+    """The blind walk for this label already spent its tries this month."""
+    state = mem.get('month_blind_nav_exhausted')
+    return (isinstance(state, dict) and state.get('label') == label
+            and state.get('month') == mem.get('month'))
+
+
+def blind_nav_active(mem) -> bool:
+    """A blind month-menu walk may still take the next input.
+
+    An exhausted walk (tries at the limit) no longer owns the screen. The
+    leftover state used to stay in the policy for the rest of the chapter and
+    boss_pursuit read any month_blind_nav as a busy month menu (live g1288
+    2026-11-21 21:02), so the pursuit stayed off while the boss wave stood on
+    its waypoint. Field owners use this accessor instead of the raw key.
+    """
+    state = mem.get('month_blind_nav')
+    return (isinstance(state, dict)
+            and int(state.get('tries') or 0) < MONTH_BLIND_NAV_LIMIT)
+
+
 def _month_menu_move(screen: Screen, mem, label: str):
+    hand = screen.hand
+    # The hand can also sit on a menu row (g1190 2026-11-16 19-9: menu_nav_stuck
+    # every ~84 observations with the same rows). The measured two-column
+    # layout plus the exit label identifies this screen whatever the hand
+    # reads, so blind navigation is the fallback once the walk provably cannot
+    # work: the hand sits on the dialogue window (y>=175), or a guarded walk
+    # already cancelled once without progress. A merely missing hand is not
+    # evidence: menu_to holds then, the same as before the blind walk existed.
+    # The menu proves itself by its own item labels, not only the じゅうじキー
+    # hint: an income message (「ししき…せんとうさいかいですじゃ」 g1190 39-2)
+    # replaces the hint and the menu still held forever without the blind nav.
+    # Never blind-walk into a live dialogue: the presses would reach the
+    # message, not the menu. The only exempt body is the menu's own じゅうじキー
+    # hint line; any other foreground text is owned by _month_text_advance or
+    # the hold path.
+    dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
+    exhausted = _blind_nav_exhausted(mem, label)
+    if (not exhausted
+            and ((hand and hand[1] >= 175) or _month_nav_stuck(mem))
+            and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
+            and screen.has(label.replace('!', '').replace('！', ''))
+            and dialogue_free):
+        # The hand reads the dialogue window under the menu (measured
+        # g1190 2026-11-16: hand (202,197) on the 「じゅうじキー」 hint while
+        # the menu rows sit at y47-95), so the hand-driven navigation cannot
+        # reach も〜おしまい! and the month menu held forever. Walk the
+        # measured two-column layout blind instead: top-left, down three,
+        # right, confirm, bounded.
+        row_col = _month_menu_row_col(screen, label)
+        state = mem.get('month_blind_nav')
+        if not isinstance(state, dict) or state.get('label') != label:
+            state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
+        if row_col is not None and state['tries'] < MONTH_BLIND_NAV_LIMIT:
+            state['tries'] += 1
+            row, col = row_col
+            _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
+                    observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
+                                     'row': row, 'col': col,
+                                     'limit': MONTH_BLIND_NAV_LIMIT},
+                    reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
+            # Give each press time to reach the menu's own scan: a rapid
+            # burst is dropped (the same cadence lesson as the しろ list, v920).
+            keys = (['up'] * 4 + ['right' if col else 'left']
+                    + ['down'] * row + ['a'])
+            # The blind 'a' opens the target like the 'here' branch's A: mark
+            # which label it confirmed so the caller applies the same
+            # opened-state (month_sub, refill stage, exit/merchant flags)
+            # instead of returning the steps with the open unrecorded.
+            mem['month_blind_opened'] = label
+            steps = []
+            for key in keys:
+                steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
+            return steps
+        if row_col is not None and not exhausted:
+            # The blind walk spent its tries and took no input. Release the
+            # screen: the leftover state used to stay in the policy for the
+            # rest of the chapter, and boss_pursuit treats any
+            # month_blind_nav as a busy month menu. One exhausted しょうにん
+            # walk therefore stopped every boss pursuit (live g1288
+            # 2026-11-21 21:02): the wave kept standing on its waypoint while
+            # the measured boss had 1 HP left. The give-up marker keeps the
+            # same label from restarting the same blind plan this month; a
+            # new month may try the measured layout again.
+            mem.pop('month_blind_nav', None)
+            mem['month_blind_nav_exhausted'] = {
+                'label': label, 'month': mem.get('month'),
+                'tick': int(mem.get('tick') or 0)}
+    mem.pop('month_blind_opened', None)
     move = guarded_menu_to(screen, mem, label, key='month_nav')
     if move == []:
         return _month_text_advance(screen, mem, label) or move
     return move
+
+
+MONTH_BLIND_NAV_LIMIT = 4
+MONTH_BLIND_NAV_WAIT_MS = 120
 
 
 def _month_text_advance(screen: Screen, mem, label: str):
@@ -201,15 +391,44 @@ def _recalc_soldiers(screen, mem, shop):
 
 
 MONTH_EXIT_REFUSAL_LIMIT = 3   # refused month exits per month before leaving anyway
+MONTH_AMOUNT_BACK_LIMIT = 3    # bounded B presses out of the gold amount overlay
+
+
+def _month_soldier_budget(mem, shop, header, gold):
+    """Cash bound on this month's soldier plan inside the recruit branches.
+
+    Normally the refill sees only what the month's holds (egg, repair and the
+    pending recruit fee) leave. A collapsed army (a measured count at or below
+    half the refill target, #4555) rebuilds first instead: every hold except
+    the house repair money waits, so the plan may use the month's balance.
+    """
+    budget = max(0, gold - _month_held_reserve(shop) - shop.get('recruit_reserve', 0))
+    if _collapsed_army(mem, shop, header, _soldier_target(mem, shop, header)):
+        rebuild = _collapsed_refill_budget(shop, gold)
+        if rebuild is not None:
+            budget = rebuild
+    return budget
+
 
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
     body = _month_dialog_body(screen)
+    # The amount-setting overlay draws the hand on the gold and the
+    # 「じゅうじキー…ケタ…すうじ…」 hint over the month menu (measured g1190
+    # 2026-11-16 19-9: the menu then held forever with the hand parked on the
+    # gold and no menu cursor visible). The hand on the gold IS the amount
+    # picker: let quantity_step drive it (v930 tried a bounded B there and the
+    # overlay never closed).
+    hand = screen.hand
     if shop:
         _refresh_egg_priority(mem, shop, screen.header)
-        _zero_army_refill(mem, shop, screen.header)
+        _low_army_refill(mem, shop, screen.header)
         _prioritise_recruit(mem, shop, (screen.header or {}).get('gold'))
         _limit_soldier_refill(mem, shop, screen.header)
+    # The soldier plan must be sized first: the picker reads shop['soldiers'].
+    if (screen.has('じゅうじキー') and (not screen.has('へいしほじゅう')
+                                       or (hand and hand[1] >= 175))):
+        return quantity_step(screen, mem, soldiers=True)
     if (mem.get('month_sub', {}).get('kind') == 'recruit'
             and month_menu_ready(screen) and _month_menu_quiet(screen)):
         if not _finish_month_sub(screen, mem, shop):
@@ -242,15 +461,23 @@ def month_step(screen: Screen, mem):
                     reason='実測した募集導入文と費用条件が一致したため失われた会話追跡を再開')
             return month_sub_step(screen, mem)
         return []
-    if screen.has('じゅうじキー'):
+    # The month menu itself draws the 「じゅうじキー…ケタが…」 hint in its
+    # message window, so the hint alone is not the quantity picker. Requiring
+    # the absence of the menu's own item labels keeps the main menu out of the
+    # soldier-quantity flow (g1190 2026-11-16: the menu held forever because
+    # quantity_step waited on a picker that was never open).
+    if screen.has('じゅうじキー') and not screen.has('へいしほじゅう'):
         return quantity_step(screen, mem, soldiers=True)
     if ((mem.get('shop') or {}).get('soldier_receipt') or {}).get('status') == 'pending':
         # observe_events settles the receipt before another paid command can
         # change the balance. A few unchanged menu frames are not a receipt.
         return []
     if screen.has('うむッ') and screen.has('いかんッ'):
-        # "よろしいですかな?" after も〜おしまい!: confirm only our own exit.
-        choice = 'うむッ!' if mem.get('month_exit') or mem.get('month_sub') else 'いかんッ!'
+        # "よろしいですかな?" after も〜おしまい! confirms our own exit; the
+        # same prompt also gates the merchant (しょうにん) we just opened.
+        choice = ('うむッ!' if (mem.get('month_exit') or mem.get('month_sub')
+                               or mem.pop('month_merchant_confirm', None))
+                  else 'いかんッ!')
         scope = _soldier_count_scope(mem, screen.header)
         check = mem.get('army_count_check')
         check = check if isinstance(check, dict) else {}
@@ -272,28 +499,95 @@ def month_step(screen: Screen, mem):
                 mem['month_exit'] = False
             else:
                 if shop:
+                    refill_outcome(mem, shop, 'attempt_limit', refusals=refusals['count'] - 1,
+                                   reason='兵士補充・兵数確認が月初メニュー内で完了しないまま、月終了を断る上限に達した')
                     shop['soldiers_done'] = True
                 _record(mem, 'month_exit_refusal_bound', month=month_key,
                         observed_metric={'refusals': refusals['count'] - 1, 'unchecked': bool(unchecked),
                                          'soldiers_planned': (shop or {}).get('soldiers')},
                         reason='兵士補充・兵数確認が月初メニュー内で完了しないため、上限回数で打ち切って月を進める')
         move = _month_menu_move(screen, mem, choice)
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, choice)
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             if choice == 'うむッ!':
                 mem['month_exit'] = False
+                # An observed exit, not the earlier purchase-complete flag, arms
+                # the roster-first field sequence for the current month.
+                from .post_month_status import arm as arm_post_month_status
+                arm_post_month_status(mem)
             _record(mem, 'month_confirm', choice=choice, reason='月初メニュー終了の確認')
-            return [pad('a')]
+            return move if isinstance(move, list) else [pad('a')]
         return [move] if move else [pad('b')]
     count_check = _month_army_count_check(screen, mem, shop)
     if count_check is not None:
         return count_check
-    if shop and not shop['merchant_done'] and shop['items']:
+    # Owner: 将軍募集を切り札購入 (しょうにん/ちくじょう) より優先する。
+    # 将軍が十分でなければ出撃できないため、募集が未決 (pending/check) や
+    # 卵回復待ち (deferred_egg) の間は、募集の要否が決まる前に商人の札・築城へ
+    # 進まない。卵回復と兵士補充は別扱い。人数未確認 (deferred_roster) の月は
+    # 従来の購入順位を保ち、翌月の国ステータスで人数を読む。
+    if shop:
+        _settle_unverified_egg(mem, shop, screen.header)
+    if shop and not mem.get('month_sub') and _recruit_precedes_cards(shop):
+        extra = _month_extra(screen, mem, shop, recruit_only=True)
+        if extra is not None:
+            return extra
+        _hold_month_cards(mem, shop)
+    if (shop and shop.get('cards_held') == 'recruit_pending'
+            and not _recruit_precedes_cards(shop)):
+        # The held flag outlived the recruit question: a deferred_roster month
+        # keeps the normal purchase order (comment above), so the cards and
+        # merchant must be released or the menu loops forever (g1190 40-8).
+        shop.pop('cards_held')
+        if shop.pop('chikujou_held', None) and shop.get('chikujou') == 'skipped':
+            shop['chikujou'] = 'check'
+        _record(mem, 'month_cards_released', month=shop.get('key'),
+                observed_metric={'recruit': shop.get('recruit'),
+                                 'chikujou': shop.get('chikujou')},
+                reason='将軍募集が当月実行不能に確定したため、保留していた切り札・商人・築城を解放する')
+    if (shop and not shop.get('merchant_done') and not shop.get('items')
+            and not shop.get('bargain_deferred')):
+        # Nothing to buy: the merchant gate below needs shop['items'], so with an
+        # empty list the merchant never runs and merchant_done never clears — the
+        # month then refuses to exit and loops (g1190 41-1). A month with no
+        # purchase list is a month whose merchant is already done.
+        #
+        # A deferred plan is not an empty month: the egg recovery / recruitment
+        # still owns the menu and plan_bargains will fill the list once it is
+        # settled (v1376 93-12 / 94-1 closed the merchant here before either
+        # ran). plan_bargains clears the mark when it can plan again, so the
+        # ordinary no-purchase month still closes here.
+        shop['merchant_done'] = True
+        _record(mem, 'month_merchant_skipped', month=shop.get('key'),
+                observed_metric={'gold': shop.get('gold_start')},
+                reason='購入対象が無いため商人を完了扱いにして月を終わらせる')
+    # Owner (2026-10-17): a low army's refill is bought before the cards.
+    if (shop and not shop.get('cards_held') and not shop['merchant_done']
+            and shop['items'] and not low_army_first(shop)):
         move = _month_menu_move(screen, mem, 'しょうにん')
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, 'しょうにん')
+        if isinstance(move, list) and not opened:
             return move
-        return [pad('a')] if move == 'here' else [move] if move else []
+        if opened:
+            # The merchant entry asks 「うむッ/いかんッ」 (g1190 39-2: answering
+            # いかんッ kept the merchant closed and the menu looped). Remember
+            # the intent so the next うむッ/いかんッ prompt confirms the entry.
+            mem['month_merchant_confirm'] = True
+            return move if isinstance(move, list) else [pad('a')]
+        return [move] if move else []
+    if (shop and shop.get('items') and not shop.get('merchant_skip_logged')
+            and not shop.get('cards_held')):
+        # Diagnostic only: planned merchant items were skipped by the gate above
+        # (g1059 8-5: bargain_plan, then month_done with bought []; no merchant
+        # decision). Records which gate closed it, once per month.
+        shop['merchant_skip_logged'] = True
+        _record(mem, 'merchant_skipped', month=shop.get('key'),
+                observed_metric={'merchant_done': bool(shop.get('merchant_done')),
+                                 'low_army_first': bool(low_army_first(shop)),
+                                 'planned': [list(row) for row in shop['items'][:4]]},
+                reason='商人の予定品があるのに月初メニューから商人へ入らなかった理由を記録する')
     if (mem.get('month_sub', {}).get('kind') == 'egg'
             and screen.has('おはらいのひつような') and screen.has('たまごはありませんぞ')):
         mem.pop('month_sub')
@@ -321,11 +615,11 @@ def month_step(screen: Screen, mem):
         if type(gold) is not int:
             return []
         shop['recruit_reserve'] = (0 if shop.get('recruit') == 'done' else
-                                   min(RECRUIT_COST, max(0, gold - _month_held_reserve(shop) - WAGE_RESERVE)))
+                                   min(RECRUIT_COST * _recruit_units(shop),
+                                       max(0, gold - _month_held_reserve(shop))))
         if not shop.get('soldiers_done'):
             shop['soldiers'] = min(shop.get('soldiers', 0),
-                                   max(0, gold - _month_held_reserve(shop)
-                                       - shop['recruit_reserve'] - WAGE_RESERVE))
+                                   _month_soldier_budget(mem, shop, screen.header, gold))
             shop['soldiers_done'] = shop['soldiers'] == 0
         shop['recruit_measured_budget'] = True
     if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
@@ -336,13 +630,15 @@ def month_step(screen: Screen, mem):
         extra = _month_extra(screen, mem, shop, egg_only=True)
         if extra is not None:
             return extra
-        # Too little money, unreadable recovery, or an unverified attempt:
-        # preserve the recovery money instead of spending it on more troops.
-        # A measured empty army is the exception: its refill already holds
-        # the recovery reserve, and zeroing it here while _zero_army_refill
-        # re-armed it every frame looped the month menu (g747 2-4, #2116).
-        if not (_soldier_count_current(mem, screen.header) and mem.get('soldiers_seen') == 0
-                and shop.get('zero_army_refill_recorded')):
+        # A known skip may release the unusable egg hold for a measured
+        # shortage in this same observation. Unverified payments still hold.
+        _refresh_egg_priority(mem, shop, screen.header)
+        # Keep a planned low-army refill (formerly zero-army only) if no
+        # new deferral applies.
+        if (_egg_before_soldiers(shop)
+                and not (_low_army_planned(mem, shop, screen.header)
+                         or (_soldier_count_current(mem, screen.header) and mem['soldiers_seen'] == 0
+                             and shop.get('zero_army_refill_recorded')))):
             shop['soldiers'] = 0
             shop['soldiers_done'] = True
     if (shop and shop.get('recruit_priority')
@@ -355,14 +651,16 @@ def month_step(screen: Screen, mem):
             return []
     if shop and not shop['soldiers_done']:
         move = _month_menu_move(screen, mem, 'へいしほじゅう')
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, 'へいしほじゅう')
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             check = mem.get('army_count_check')
             if (isinstance(check, dict) and check.get('stage') == 'measured'
                     and check.get('scope') == _soldier_count_scope(mem, screen.header)):
                 check['refill_requested'] = True
-        return [pad('a')] if move == 'here' else [move] if move else []
+            return move if isinstance(move, list) else [pad('a')]
+        return [move] if move else []
     if mem.get('month_sub') and not _finish_month_sub(screen, mem, shop):
         # g462 18:06:04: the menu frame still predates the game's reaction to
         # the A press that opened the sub. Pressing anything here (も〜おしまい!
@@ -371,22 +669,259 @@ def month_step(screen: Screen, mem):
     extra = _month_extra(screen, mem, shop)
     if extra is not None:
         return extra
-    if shop and not shop.get('closed') and _await_month_roster_scan(mem, shop):
+    if shop and shop.get('bargain_deferred'):
+        # Closing the month: the mark only delays the empty-items close while
+        # an egg/recruit step is still pending. The exit below (month_done and
+        # も〜おしまい!) is not gated on the merchant, but a month whose
+        # necessity never resolves must not carry the mark into the next
+        # frame's empty-items close. Nothing was planned, so dropping it here
+        # is the same "no purchase list" close as above.
+        shop.pop('bargain_deferred', None)
+    # 月一の将軍人数は国ステータスから直接取得するため、一覧巡回待ちは不要。
+    if shop and not shop.get('closed') and _await_level_scan(mem, shop):
         return []
     if shop and not shop.get('closed'):
         shop['closed'] = True
+        _note_chikujou_skip_unexplained(mem, shop)
+        soldiers = _refill_month_outcome(mem, shop, screen.header)
         _record(mem, 'month_done', month=shop['key'], gold_after=(screen.header or {}).get('gold'),
                 observed_metric={'bought': shop.get('bought', []),
                                  'gold_start': shop['gold_start'],
-                                 'gold_end': (screen.header or {}).get('gold')},
+                                 'gold_end': (screen.header or {}).get('gold'),
+                                 'soldiers': soldiers},
                 reason='月一の購入を終了')
     move = _month_menu_move(screen, mem, 'も〜おしまい!')
-    if isinstance(move, list):
+    opened = _month_opened(move, mem, 'も〜おしまい!')
+    if isinstance(move, list) and not opened:
         return move
-    if move == 'here':
+    if opened:
         mem['month_exit'] = True
-        return [pad('a')]
+        return move if isinstance(move, list) else [pad('a')]
     return [move] if move else []
+
+
+def _note_chikujou_skip_unexplained(mem, shop):
+    """Name a month that closed 築城 as skipped without any recorded cause.
+
+    The audit only files when none of the known holds is present (refusal,
+    recruit hold, unreadable row, reserve/hero-repair eval). A month that
+    skipped with none of those leaves the issue with no reason to read
+    (docich#5278: gold 9975, candidate イデ！, shop_status skipped). Record the
+    state once so the next occurrence is diagnosable from the decision log.
+    This is diagnostic only: the audit does not treat it as an explanation.
+    """
+    if not isinstance(shop, dict) or shop.get('chikujou') != 'skipped':
+        return
+    if shop.get('chikujou_held'):
+        return
+    month = shop.get('key')
+    last_eval = shop.get('chikujou_last_eval')
+    if (isinstance(last_eval, dict) and last_eval.get('affordable') is False
+            and last_eval.get('month') in (None, month)):
+        return
+    refused = mem.get('chikujou_refused')
+    tried = shop.get('chikujou_tried') or []
+    if isinstance(refused, dict) and refused.get('castles'):
+        if not any(name not in tried for name in _chikujou_candidates(mem)):
+            return
+    # A bounded wait that gave up on the screen transition is a cause too
+    # (docich#5326: chikujou_held -> skipped). Name it instead of calling the
+    # month unexplained; the audit still files, but the log now points at the
+    # real failure.
+    held_reason = None
+    for row in reversed(mem.get('_records') or ()):
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
+            continue
+        if row.get('month') not in (None, month):
+            continue
+        held_reason = row.get('deviation_reason') or row.get('reason')
+        break
+    seen = shop.get('chikujou_skip_logged')
+    if seen == month:
+        return
+    shop['chikujou_skip_logged'] = month
+    if held_reason:
+        _record(mem, 'chikujou_skip_after_hold', month=month,
+                observed_metric={'gold': (shop.get('gold_start')),
+                                 'chikujou': shop.get('chikujou'),
+                                 'tried': list(tried)[:8],
+                                 'candidates': sorted(_chikujou_candidates(mem))[:8],
+                                 'held_reason': held_reason},
+                reason='築城の画面遷移を有限回待っても確認できずに skipped のまま月を終えた')
+        return
+    _record(mem, 'chikujou_skip_unexplained', month=month,
+            observed_metric={'gold': (shop.get('gold_start')),
+                             'chikujou': shop.get('chikujou'),
+                             'tried': list(tried)[:8],
+                             'candidates': sorted(_chikujou_candidates(mem))[:8],
+                             'has_refusal': isinstance(refused, dict)},
+            reason='築城を skipped のまま月を終えたが、拒否・保留・読取不可・予約不足の記録が無い')
+
+
+def _refill_month_outcome(mem, shop, header):
+    """Summarize the month's refill for month_done; name an unrecorded unpaid end.
+
+    Only a paid receipt is a purchase. g809 5-8 (5 soldiers, 65G) and 6-1 (29
+    soldiers, 84G) closed unpaid with no record of why (Issue #2366).
+    """
+    receipt = shop.get('soldier_receipt') or {}
+    count = mem.get('soldiers_seen')
+    current = _soldier_count_current(mem, header)
+    summary = {'outcome': None, 'soldiers': count if current else None}
+    if receipt.get('status') == 'paid':
+        summary.update(outcome='paid', qty=receipt.get('qty'))
+        return summary
+    if receipt:
+        refill_outcome(mem, shop, 'unverified', qty=receipt.get('qty'),
+                       reason='兵士補充の支払いを照合できないまま月を終える。購入人数を加算しない')
+    elif not shop.get('refill_outcome') and _soldier_count_scope(mem, header) is not None:
+        if current and count >= SOLDIER_ENOUGH:
+            summary['outcome'] = 'not_needed'
+            return summary
+        gold = (header or {}).get('gold')
+        repair = _house_repair_reserve(shop)
+        if not current:
+            refill_outcome(mem, shop, 'unverified',
+                           reason='当月の実兵数を確認できないまま月を終えるため補充しない')
+        elif type(gold) is not int or repair is None:
+            refill_outcome(mem, shop, 'unverified', reason='所持金または修理予約を読めないため補充しない')
+        else:
+            held = {'wage_hold': WAGE_SPEND_HOLD, 'repair': repair,
+                    'egg_reserve': shop.get('reserve', 0), 'recruit_reserve': shop.get('recruit_reserve', 0),
+                    'egg': shop.get('egg'), 'recruit': shop.get('recruit'),
+                    'spendable': _soldier_spendable(mem, shop, header)}
+            if gold - repair <= 0:
+                refill_outcome(mem, shop, 'insufficient_funds', **held,
+                               reason='兵士が不足しているが、修理費を残すと補充に回せる資金がない')
+            else:
+                refill_outcome(mem, shop, 'not_attempted', **held,
+                               reason='兵士が不足し修理費の外に資金があったが、他の予約・優先順位で当月は補充しなかった')
+    summary['outcome'] = shop.get('refill_outcome')
+    return summary
+
+
+RECRUIT_BEFORE_CARDS = frozenset({'pending', 'check', 'deferred_egg'})
+
+
+def _recruit_precedes_cards(shop):
+    """Owner: an unresolved general recruitment outranks 商人 cards / 築城."""
+    if shop.get('recruit') == 'deferred_egg':
+        # docich#4980: deferred_egg re-pends only while this month's recovery
+        # question is still live. A settled egg (done/not_needed/skipped)
+        # or no egg question at all makes the deferral final, so the cards
+        # and castle must not stay held for it. 'unverified' stays
+        # preceding: the payment may have been spent but its completion is
+        # unconfirmed, and the recovery-before-recruit design freezes
+        # sub-screen opening until that question resolves.
+        return shop.get('egg') not in ('done', 'not_needed', 'skipped', None)
+    return shop.get('recruit') in RECRUIT_BEFORE_CARDS
+
+
+def _keep_egg_receipt(shop, sub):
+    """docich#5045: remember an unverified recovery's payment expectation.
+
+    An interrupted sub cannot supply a receipt: its own guard already
+    refuses every later balance change as evidence, so nothing is kept.
+    A sub that never left the month menu cannot have paid either: its
+    balance delta is a stale background, not a receipt
+    (test_payment_delta_on_a_stale_background_is_not_a_recovery_completion_receipt).
+    While the sub stayed tracked it owned the screen, so every debit since
+    ``gold_before`` is either its own fee or a spend recorded after the
+    mark - each baselined here for ``_settle_unverified_egg``.
+    """
+    if (sub.get('kind') != 'egg' or sub.get('payment_interrupted')
+            or sub.get('key') != shop.get('key')
+            or sub.get('left_menu') is not True
+            or type(sub.get('gold_before')) is not int):
+        return
+    cost = sub.get('quoted_cost')
+    shop['egg_receipt'] = {
+        'before': sub['gold_before'],
+        'cost': cost if type(cost) is int and cost > 0 else None,
+        'bought': len(shop.get('bought') or []),
+        'refill_status': (shop.get('soldier_receipt') or {}).get('status'),
+        'upgrades': len(shop.get('chikujou_upgrades') or []),
+        'recruit': shop.get('recruit')}
+
+
+def _settle_unverified_egg(mem, shop, header):
+    """docich#5045: settle an unverified recovery against the later balance.
+
+    A tracked sub owned the screen until the mark, so the only debit it
+    could make is its own fee; afterwards the recruit/cards/castle freeze
+    leaves only spends the ledger records. Subtracting those recorded
+    spends from the balance delta isolates the recovery's answer:
+
+    - rest == 0: the fee never left - unpaid, so 'skipped', the same
+      terminal a pre-quote abandon uses. ``egg_recheck_settled`` keeps the
+      month's re-pending paths from reopening it (no retry loop).
+    - rest == quoted_cost: the fee is the only debit left - 'done', the
+      same receipt standard ``_finish_month_sub`` uses.
+    - anything else stays 'unverified': never retried, never claimed done.
+    """
+    if (shop.get('egg') != 'unverified' or shop.get('egg_recheck_settled')
+            or mem.get('month_sub')):
+        return
+    receipt = shop.get('egg_receipt')
+    before = (receipt or {}).get('before')
+    gold = (header or {}).get('gold')
+    if type(before) is not int or type(gold) is not int or gold > before:
+        return
+    others = 0
+    refill = shop.get('soldier_receipt') or {}
+    if refill.get('status') != receipt.get('refill_status'):
+        # The receipt row cannot be replaced once present, so a changed status
+        # is a refill that ran after the mark and shares the delta.
+        if refill.get('status') != 'paid':
+            return  # a post-mark refill with an unread spend
+        qty = refill.get('qty')
+        if type(qty) is not int or qty <= 0:
+            return  # a paid refill whose cost cannot be read shares the delta
+        others += qty   # the refill receipt is exact: 1G per soldier
+    bought, start = shop.get('bought') or [], receipt.get('bought')
+    if type(start) is not int or len(bought) < start:
+        return
+    for row in bought[start:]:
+        if (not isinstance(row, (list, tuple)) or len(row) < 3
+                or type(row[1]) is not int or type(row[2]) is not int):
+            return  # an unpriced merchant row shares the delta
+        others += row[1] * row[2]  # [name, qty, unit_price] as bought records it
+    if (len(shop.get('chikujou_upgrades') or []) != receipt.get('upgrades')
+            or (shop.get('recruit') in ('done', 'unverified')
+                and shop.get('recruit') != receipt.get('recruit'))):
+        return  # a castle upgrade or a recruit fee could share the delta
+    rest = before - gold - others
+    if rest == 0:
+        settled = 'skipped'
+    elif type(receipt.get('cost')) is int and rest == receipt['cost']:
+        settled = 'done'
+    else:
+        return
+    shop['egg_recheck_settled'] = True
+    shop['egg'] = settled
+    _record(mem, 'egg_unverified_settled', month=shop.get('key'),
+            observed_metric={'gold_before': before, 'gold_after': gold,
+                             'quoted_cost': receipt.get('cost'), 'others': others,
+                             'settled': settled},
+            reason=('放棄した卵回復は残金変動を他の出費で説明し尽くせたため支払い不成立と確定し、'
+                    '当月は未実施として切り札・築城の保留を解放する'
+                    if settled == 'skipped' else
+                    '放棄した卵回復の残金減少が提示額と一致したため支払い済みと確定し、'
+                    '切り札・築城の保留を解放する'))
+
+
+def _hold_month_cards(mem, shop):
+    """Skip this month's card/castle purchases until the recruit question is settled."""
+    if shop.get('cards_held'):
+        return
+    shop['cards_held'] = 'recruit_pending'
+    if shop.get('chikujou') == 'check':
+        shop['chikujou'] = 'skipped'
+        shop['chikujou_held'] = True
+    held = [list(row) for row in (shop.get('items') or [])[:4]]
+    _record(mem, 'month_cards_held_for_recruit', month=shop.get('key'),
+            observed_metric={'recruit': shop.get('recruit'), 'planned': held},
+            reason='将軍募集が未決のため、切り札・築城の購入より募集を先に確定させる')
 
 
 def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
@@ -426,18 +961,19 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         if sub == 'egg' and status == 'check':
             # After the soldiers: recover the eggs only from what is left.
             cost = _egg_estimate(shop)
-            floor = WAGE_RESERVE
+            floor = WAGE_SPEND_HOLD
             if NAME in _depleted_eggs(mem):
-                # Hero-only recovery (g604): 50G over this month's real payroll.
-                cost, floor = min(cost, EGG_RECOVER_COST), _hero_egg_wage_floor(mem)
+                # Hero-only recovery (g604): 50G plus repair reservations.
+                cost, floor = min(cost, EGG_RECOVER_COST), WAGE_SPEND_HOLD
             elif any(observed_uses((mem.get('egg_uses') or {}).get(n)) in (0, 1)
                      for n in _egg_recovery_targets(mem)):
-                cost, floor = min(cost, EGG_RECOVER_COST), _egg_recovery_wage_floor(mem)
+                cost, floor = min(cost, EGG_RECOVER_COST), WAGE_SPEND_HOLD
             if type(gold) is not int or gold < cost + floor + shop.get('hero_repair_reserve', 0):
                 shop[sub] = 'skipped'
                 _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'cost': cost, 'gold': gold},
-                        reason='兵士補充の後の残金が卵の回復費と賃金リザーブに足りないため見送る')
+                        reason='兵士補充の後の残金が卵の回復費と修理予約に足りないため見送る')
+                goals.note_attempt(mem, 'egg_recover', 'skipped')
                 continue
         elif sub == 'recruit':
             spare, evidence = _recruit_spare_after_necessities(mem, shop, gold)
@@ -445,13 +981,13 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 _defer_recruit_cash(mem, shop, gold, evidence)
                 continue
             # Owner rule (2026-09-27): recruit only when the soldiers got
-            # their full 99 and the fee plus the wage reserve is still left.
+            # their full 99 and the fee plus necessary reservations is still left.
             floor = _recruit_cash_floor(shop)
             if (type(gold) is not int or (not shop.get('recruit_priority') and shop.get('soldiers', 0) < SOLDIER_ENOUGH
                     and not _soldiers_enough(mem, shop, screen.header))
                     or floor is None or gold < floor):
                 if (shop.get('recruit_priority') and type(gold) is int
-                        and gold >= RECRUIT_COST + WAGE_RESERVE + _house_repair_reserve(shop)
+                        and gold >= RECRUIT_COST + _house_repair_reserve(shop)
                         and shop.get('egg') in ('pending', 'check')):
                     # g498: estimate 150G, actual recovery only 50G; the
                     # early check must not permanently skip recruitment.
@@ -464,31 +1000,32 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
                 shop[sub] = 'skipped'
                 _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
-                        reason=('募集費と卵回復・賃金リザーブが足りないため資金を温存して次月へ待つ'
+                        reason=('募集費と卵回復・修理の予約が足りないため資金を温存して次月へ待つ'
                                 if shop.get('recruit_priority') else
-                                '必要な兵士の補充と賃金リザーブの後に募集費が残っていないため将軍を募集しない'))
+                                '必要な兵士の補充と他の必要予約の後に募集費が残っていないため将軍を募集しない'))
+                goals.note_attempt(mem, 'recruit', 'skipped')
                 continue
         elif (type(gold) is not int or gold < cost + shop.get('hero_repair_reserve', 0)
-              + (_egg_recovery_wage_floor(mem) if low_egg else
-                 WAGE_RESERVE if shop.get('hero_repair_reserve') or shop.get('egg_priority')
-                 or shop.get('egg_before_recruit') else 0)):
+              + 0):
             shop[sub] = 'skipped'
             _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
                     reason='所持金が卵の回復費に足りないため見送る')
+            goals.note_attempt(mem, 'egg_recover', 'skipped')
             continue
         move = _month_menu_move(screen, mem, label)
-        if isinstance(move, list):
+        opened = _month_opened(move, mem, label)
+        if isinstance(move, list) and not opened:
             return move
-        if move == 'here':
+        if opened:
             shop[sub] = 'opened'
             mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
                                 'left_menu': False}
             if sub == 'recruit':
                 mem['month_sub']['generals_before'] = sorted({
-                    g for gs in (mem.get('garrison') or {}).values() for g in gs or ()})
+                    g for gs in (_world(mem).get('garrison') or {}).values() for g in gs or ()})
             _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
                     reason=f'{label}を選択')
-            return [pad('a')]
+            return move if isinstance(move, list) else [pad('a')]
         if move is None:
             if sub == 'egg' and shop.get('egg_before_recruit'):
                 waits = int(shop.get('egg_menu_wait') or 0) + 1
@@ -524,36 +1061,82 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
         elif sub == 'egg':
             shop.pop('egg_menu_wait', None)
         return [move]
-    return None if recruit_only or egg_only else _month_chikujou(screen, mem, shop)
+    if recruit_only or egg_only or shop.get('cards_held'):
+        return None
+    return _month_chikujou(screen, mem, shop)
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
+CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
 
 
-MONTH_ROSTER_WAIT = 4   # menu observations held for the free roster scan to start
+LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
 
 
-def _await_month_roster_scan(mem, shop):
-    """Hold the month open briefly so a deferred roster recruit can be read.
+def _await_level_scan(mem, shop):
+    """Hold the month open briefly so the country-status level can be read.
 
-    g684 2-10 15:24:44: recruit was deferred_roster, the egg sub ended and
-    month_done fired in the same observation, before the monthly roster
-    scan (house.step) could start; the scan ran on the field instead and the
-    month passed without recruitment at 103G. Bounded: the month still
-    closes if the scan never starts.
+    Issue #3011 (owner): 半熟レベル14以上では半熟値を稼ぐ行為を控える。その
+    判定には当月の観測値が要るため、購入を終えた月イチメニューは国の
+    ステータス確認（house.step の月次訪問）の開始を有限回だけ待つ。訪問が
+    既に走った月は再待機しない。
     """
-    if shop.get('recruit') != 'deferred_roster' or mem.get('month_sub'):
+    if mem.get('month_sub') or mem.get('house'):
+        return False
+    scope = [mem.get('chapter'), mem.get('month')]
+    from .house import _level_given_up
+    if (mem.get('hanjuku_level_seen') or {}).get('scope') == scope or _level_given_up(mem):
         return False
     attempts = mem.get('recruit_month_scan_attempts') or {}
-    if attempts.get('scope') == [mem.get('chapter'), mem.get('month')] and attempts.get('count', 0) >= 1:
+    if attempts.get('scope') == scope and attempts.get('count', 0) >= 2:
+        return False   # the month's visit budget is already spent
+    waits = int(shop.get('level_scan_wait') or 0)
+    if waits >= LEVEL_SCAN_WAIT:
         return False
-    waits = int(shop.get('roster_scan_wait') or 0)
-    if waits >= MONTH_ROSTER_WAIT:
-        return False
-    shop['roster_scan_wait'] = waits + 1
+    shop['level_scan_wait'] = waits + 1
     if waits == 0:
-        _record(mem, 'month_roster_scan_wait', month=shop.get('key'),
-                reason='募集が一覧確認待ちのため、月一メニューを閉じる前に一覧確認の開始を短く待つ')
+        _record(mem, 'month_level_scan_wait', month=shop.get('key'),
+                reason='半熟レベル未読のため、月一メニューを閉じる前に国のステータス確認の開始を短く待つ')
     return True
+
+
+def _chikujou_castle_key(name):
+    """Fold width variants for display matching; keep catalog labels as state."""
+    return ''.join(unicodedata.normalize('NFKC', name or '').split())
+
+
+def _chikujou_name_labels(chapter):
+    """Map folded native labels to catalog-facing labels; reject ambiguous maps."""
+    labels = {}
+    for castle in chart.CASTLE_NAMES.get(chapter or 1, ()):
+        label = STATUS_NAMES.get(castle, castle)
+        key = _chikujou_castle_key(label)
+        if not key or key in labels:
+            return None
+        labels[key] = label
+    return labels
+
+
+def _chikujou_list_rows(screen, chapter):
+    labels = _chikujou_name_labels(chapter)
+    if labels is None:
+        return None
+    rows = sorted((x, y, word) for x, y, word in _options(screen)
+                  if _chikujou_castle_key(word) in labels)
+    return labels, rows
+
+
+def _chikujou_screen_label(screen, name, chapter):
+    """Return the unique native spelling for a catalog candidate, if visible."""
+    labels = _chikujou_name_labels(chapter)
+    key = _chikujou_castle_key(name)
+    if labels is None or key not in labels:
+        return None
+    matches = [word for _, _, word in _options(screen) if _chikujou_castle_key(word) == key]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _chikujou_text_has_castle(text, name, suffix):
+    return _chikujou_castle_key(f'{name}{suffix}') in _chikujou_castle_key(text)
 
 
 def _chikujou_wait(screen, mem, sub, reason):
@@ -577,10 +1160,12 @@ def _chikujou_scroll(screen, mem, sub):
     bound both ignored inputs and an entire traversal (including wrap).
     """
     chapter = mem.get('chapter') or 1
-    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(chapter, ())}
-    rows = sorted((x, y, w) for x, y, w in _options(screen) if w in known)
+    resolved = _chikujou_list_rows(screen, chapter)
+    if resolved is None:
+        return _chikujou_wait(screen, mem, sub, 'castle_list_unread')
+    labels, rows = resolved
     cur = _current(screen)
-    if (len(rows) != 4 or len({r[2] for r in rows}) != 4
+    if (len(rows) != 4 or len({_chikujou_castle_key(r[2]) for r in rows}) != 4
             or len({r[0] for r in rows}) != 1
             or any(b[1] - a[1] != 16 for a, b in zip(rows, rows[1:]))
             or cur not in rows):
@@ -589,7 +1174,7 @@ def _chikujou_scroll(screen, mem, sub):
     state = sub.setdefault('build_scroll', {})
     stalled = int(state.get('stalled') or 0) + 1 if state.get('signature') == signature else 0
     presses = int(state.get('presses') or 0)
-    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(known) + 4:
+    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(labels) + 4:
         sub['declined'] = True
         sub['aborted'] = True
         _record(mem, 'chikujou_held', deviation_reason='castle_scroll_no_progress',
@@ -620,6 +1205,17 @@ def _month_chikujou(screen, mem, shop):
     from ..os_layer.roster import run_identity
     if shop.get('chikujou') != 'check':
         return None
+    # A refused list is stable while the castle set holds: the refusal was
+    # observed with this exact candidate list (live g1190 ch9: identical
+    # refusal text for 20+ months). Reopening cost ~6 s plus two
+    # chikujou_leftover records. Retry when the candidates change and every
+    # third month anyway, so a transient cause is rediscovered bounded-late.
+    refused = mem.get('chikujou_refused') or {}
+    if (refused.get('castles') == sorted(_chikujou_candidates(mem))
+            and int(refused.get('skips') or 0) < 2):
+        refused['skips'] = int(refused.get('skips') or 0) + 1
+        shop['chikujou'] = 'skipped'
+        return None
     tried = shop.setdefault('chikujou_tried', [])
     if not any(c not in tried for c in _chikujou_candidates(mem)):
         shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
@@ -627,18 +1223,61 @@ def _month_chikujou(screen, mem, shop):
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
     if not _chikujou_affordable(gold, reserve):
-        shop['chikujou'] = 'done' if shop.get('chikujou_upgrades') else 'skipped'
+        # Keep the row open: a reserve released later in this same menu (an
+        # egg/recruit skip, a repair deferral, a completed roster) frees the
+        # build margin, so affordability is re-evaluated every observation.
+        # Record each newly failing (gold, reserve) pair on the shop and in
+        # the decision log, so the month audit names why the month ended
+        # unbuilt instead of filing a reason-less chikujou_available_at_end
+        # (docich#5163, #5186, #5195, #5200, #5201).
+        last = shop.get('chikujou_last_eval')
+        if not (isinstance(last, dict) and last.get('gold') == gold
+                and last.get('reserve') == reserve):
+            shop['chikujou_last_eval'] = {'month': shop.get('key'), 'gold': gold,
+                                          'reserve': reserve, 'affordable': False}
+            _record(mem, 'month_chikujou_skipped', month=shop.get('key'), gold=gold,
+                    observed_metric={'reserve': reserve, 'gold': gold,
+                                     'upgrades': len(shop.get('chikujou_upgrades') or [])},
+                    deviation_reason='reserve_unsettled' if reserve is None else None,
+                    reason=('必要費の予約額が未確定のため築城に回せる余剰を判定できず、当月の築城を保留する'
+                            if reserve is None else
+                            '必要資金の予約を残すと築城費が足りないため、余剰が出るまで築城を見送る'))
         return None
+    shop['chikujou_last_eval'] = {'month': shop.get('key'), 'gold': gold,
+                                  'reserve': reserve, 'affordable': True}
     # Bounded like every other month row (g684 2-8 14:52: a soldier-count
     # dialogue stayed in front of the menu and the unguarded walk pressed
     # down at an unmoving hand every observation).
     move = _month_menu_move(screen, mem, 'ちくじょう')
-    if isinstance(move, list):
+    opened = _month_opened(move, mem, 'ちくじょう')
+    if isinstance(move, list) and not opened:
         return move
     if move is None:
+        # The month menu can be unreadable for a frame or two while the
+        # month's earlier purchases settle. Closing ちくじょう on the first
+        # unread frame spent the month's only build slot silently: live g1190
+        # ch1 9-1 (docich#5076) ended with every castle still buildable, no
+        # ちくじょう record at all and the audit reason empty. Re-read the
+        # menu a bounded number of times instead, then record why the month
+        # ended without building so the next audit names the cause.
+        waits = int(shop.get('chikujou_menu_wait') or 0) + 1
+        shop['chikujou_menu_wait'] = waits
+        if waits <= CHIKUJOU_MENU_WAIT:
+            _record(mem, 'chikujou_menu_unreadable', month=shop.get('key'),
+                    observed_metric={'waits': waits, 'gold': gold, 'reserve': reserve,
+                                     'screen': screen.kind,
+                                     'options': [word for _, _, word in _options(screen)][:8]},
+                    reason='月メニューのちくじょう行を読めないため、当月の築城を閉じずに再観測する')
+            return []
         shop['chikujou'] = 'skipped'
+        _record(mem, 'chikujou_menu_unreadable', month=shop.get('key'),
+                observed_metric={'waits': waits, 'gold': gold, 'reserve': reserve,
+                                 'screen': screen.kind, 'skipped': True,
+                                 'options': [word for _, _, word in _options(screen)][:8]},
+                deviation_reason='menu_row_unreadable',
+                reason='有限回待ってもちくじょう行を読めないため、当月は築城せずに月を終える')
         return None
-    if move != 'here':
+    if not opened:
         return [move]
     shop['chikujou'] = 'opened'
     mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key'),
@@ -648,15 +1287,18 @@ def _month_chikujou(screen, mem, shop):
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
             observed_metric={'reserve': reserve, 'tried': list(tried)},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')
-    return [pad('a')]
+    return move if isinstance(move, list) else [pad('a')]
 
 
 def _chikujou_visible_maxed(screen, mem):
     """Read level 5 only from this native castle-list window, never a saved cap."""
     options = _options(screen)
-    known = chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())
-    rows = sorted((x, y, word) for x, y, word in options if word in known)
-    if (not 1 <= len(rows) <= 4 or len({r[2] for r in rows}) != len(rows)
+    resolved = _chikujou_list_rows(screen, mem.get('chapter') or 1)
+    if resolved is None:
+        return []
+    labels, rows = resolved
+    if (not 1 <= len(rows) <= 4
+            or len({_chikujou_castle_key(r[2]) for r in rows}) != len(rows)
             or any(x != 168 or y != 39 + i * 16 for i, (x, y, _) in enumerate(rows))
             or _current(screen) not in rows):
         return []
@@ -666,7 +1308,7 @@ def _chikujou_visible_maxed(screen, mem):
         if len(values) != 1 or values[0] not in ('1', '2', '3', '4', '5'):
             return []
         if values[0] == '5':
-            levels.append(name)
+            levels.append(labels[_chikujou_castle_key(name)])
     return levels
 
 
@@ -677,8 +1319,10 @@ def _chikujou_continue_list(screen, mem, sub):
     identity = run_identity(mem.get('_run_identity'))
     key = sub.get('key')
     header = screen.header or {}
-    known = {STATUS_NAMES.get(c, c) for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())}
-    rows = sorted((x, y, word) for x, y, word in _options(screen) if word in known)
+    resolved = _chikujou_list_rows(screen, mem.get('chapter') or 1)
+    if resolved is None:
+        return None
+    _, rows = resolved
     if (identity is None or identity != run_identity(sub.get('chikujou_identity'))
             or sub.get('chikujou_chapter') != mem.get('chapter')
             or key is None or key != mem.get('month') or key != shop.get('key')
@@ -686,7 +1330,8 @@ def _chikujou_continue_list(screen, mem, sub):
             or _month_key(header) != key or sub.get('payment_interrupted')
             or 'ぞうちくなさいます' not in screen.text
             or screen.has('うむッ') or screen.has('いかんッ')
-            or not 1 <= len(rows) <= 4 or len({r[2] for r in rows}) != len(rows)
+            or not 1 <= len(rows) <= 4
+            or len({_chikujou_castle_key(r[2]) for r in rows}) != len(rows)
             or any(x != 168 or y != 39 + i * 16 for i, (x, y, _) in enumerate(rows))
             or _current(screen) not in rows):
         return None
@@ -754,7 +1399,7 @@ def _chikujou_step(screen, mem, sub):
     if 'になりましたぞ' in text:
         chosen = sub.get('chosen')
         if not (sub.get('confirm_sent') and chosen
-                and f'{chosen}じょうのレベルが' in text):
+                and _chikujou_text_has_castle(text, chosen, 'じょうのレベルが')):
             return _chikujou_wait(screen, mem, sub, 'result_castle_unconfirmed')
         sub['upgraded'] = True
         sub['build_wait'] = 0
@@ -768,28 +1413,40 @@ def _chikujou_step(screen, mem, sub):
     if screen.has('うむッ') and screen.has('いかんッ'):
         if sub.get('decline_sent'):
             return [pad('b')]
-        quote = re.search(r'(\d+)Gかかりますが', text)
+        # The aggregate joins readable glyphs: an occluded 16G becomes 6G
+        # or1G. The native price field is two cells wide from x24/y199 and
+        # right-aligned: 16G starts at x24, but 5G is a blank cell then 5 at
+        # x32 (g889 live frame). Preserve every raw cell, accept only that
+        # one-digit shape, and reject gaps/unknown digits instead of
+        # authorizing a false quote.
+        rows = [r for r in screen.lines if r.y == 199]
+        digits = '0123456789０１２３４５６７８９'
+        first = rows[0].cells[0] if len(rows) == 1 and rows[0].cells else None
+        quote = (re.fullmatch(r'([0-9０-９]' + ('' if first[0] == 32 else '+') + r')Gかかりますが.*',
+                              rows[0].span(24, 176))
+                 if first and first[0] in (24, 32) and first[1] in digits else None)
         gold = (screen.header or {}).get('gold')
-        cost = int(quote[1]) if quote else None
+        cost = int(quote[1].translate(str.maketrans('０１２３４５６７８９', '0123456789'))) if quote else None
         reserve = _chikujou_reserve(mem, mem.get('shop') or {})
         if (sub.get('declined') or cost is None or type(gold) is not int
                 or reserve is None or gold - cost < reserve):
             if (not sub.get('declined') and cost is not None and type(gold) is int
                     and reserve is not None and sub.get('chosen')
-                    and f"{sub['chosen']}じょうですな" in text):
+                    and _chikujou_text_has_castle(text, sub['chosen'], 'じょうですな')):
                 sub['cost_declined'] = True  # this castle's price only
             sub['declined'] = True
             move = menu_to(screen, 'いかんッ!')
             if not sub.get('decline_recorded'):
                 sub['decline_recorded'] = True
-                _record(mem, 'chikujou_declined',
+                _record(mem, 'chikujou_declined', month=key,
                         observed_metric={'cost': cost, 'gold': gold, 'reserve': reserve},
                         reason='築城の実費が不明か必要資金を割るため、支払わず見送る')
             if move == 'here':
                 sub['decline_sent'] = True
             return [pad('a')] if move == 'here' else [move] if move else [pad('b')]
         chosen = sub.get('chosen')
-        if not (chosen in _chikujou_candidates(mem) and f'{chosen}じょうですな' in text):
+        if not (chosen in _chikujou_candidates(mem)
+                and _chikujou_text_has_castle(text, chosen, 'じょうですな')):
             return _chikujou_wait(screen, mem, sub, 'quote_castle_unconfirmed')
         move = menu_to(screen, 'うむッ!')
         if move == 'here':
@@ -797,7 +1454,7 @@ def _chikujou_step(screen, mem, sub):
             sub['confirm_gold'] = gold
             sub['confirm_sent'] = True
             sub['build_wait'] = 0
-            _record(mem, 'chikujou_confirm',
+            _record(mem, 'chikujou_confirm', month=key,
                     observed_metric={'castle': chosen, 'cost': cost, 'gold': gold, 'reserve': reserve},
                     reason=f'{chosen}を{cost}Gで増築し、実際の支払いを照合して次の城へ進む')
             return [pad('a')]
@@ -818,6 +1475,17 @@ def _chikujou_step(screen, mem, sub):
             tried = sub.setdefault('rows_tried', [])
             if chosen not in tried:
                 tried.append(chosen)
+            if 'しょうぐんがおりませなんだ' in text:
+                # Live observation: the chosen castle has no general inside.
+                # Mark the garrison empty so later months stop offering it
+                # until a roster read staffs it again (g1190: staffed on
+                # record, marched out to the boss → refused every month).
+                garrison = _world(mem).setdefault('garrison', {})
+                real = next((c for c in chart.CASTLE_NAMES.get(mem.get('chapter') or 1, ())
+                             if _chikujou_castle_key(STATUS_NAMES.get(c, c))
+                             == _chikujou_castle_key(chosen)), chosen)
+                if garrison.get(real) != []:
+                    garrison[real] = []
             sub['rejected_frame'] = text
             sub.pop('chosen', None)
             sub.pop('quoted_cost', None)
@@ -863,6 +1531,11 @@ def _chikujou_step(screen, mem, sub):
         for name in names:
             move = menu_to(screen, name)
             if move is None:
+                label = _chikujou_screen_label(screen, name, mem.get('chapter') or 1)
+                if label is None:
+                    continue
+                move = menu_to(screen, label)
+            if move is None:
                 continue
             if move == 'here':
                 sub['chosen'] = name
@@ -878,6 +1551,23 @@ def _chikujou_step(screen, mem, sub):
     return _chikujou_wait(screen, mem, sub, 'build_screen_unclassified')
 
 
+def _note_chikujou_tried(shop, sub):
+    """Keep the month's tried ledger when a chikujou sub is dropped unfinished.
+
+    ``_finish_month_sub`` merges ``rows_tried`` + ``chosen`` on a measured
+    return; a lost or abandoned sub must not silently forget which castles
+    were already refused or upgraded this month (docich#5026).
+    """
+    if (not isinstance(shop, dict) or not isinstance(sub, dict)
+            or sub.get('kind') != 'chikujou'
+            or sub.get('key') is None or shop.get('key') != sub.get('key')):
+        return
+    tried = shop.setdefault('chikujou_tried', [])
+    for castle in [*(sub.get('rows_tried') or []), *([sub['chosen']] if sub.get('chosen') else [])]:
+        if castle not in tried:
+            tried.append(castle)
+
+
 def interrupt_month_payment(mem):
     """An unrelated event cannot supply the old monthly action's fee receipt."""
     sub = mem.get('month_sub')
@@ -888,6 +1578,55 @@ def interrupt_month_payment(mem):
     _record(mem, 'month_payment_interrupted', month=sub.get('key'),
             observed_metric={'kind': sub['kind'], 'recruit_fee_observed': _recruit_fee_observed(sub)},
             reason='別イベントを確認したため旧月初取引の残金差を支払証拠にせず、既確認の募集費だけ保持する')
+
+
+def _unpaid_egg_return(screen, mem, shop, sub):
+    """A canceled pre-confirmation flow with an unchanged, same-month balance."""
+    header = screen.header or {}
+    return (sub.get('kind') == 'egg' and sub.get('aborted') is True
+            and sub.get('left_menu') is True and sub.get('stage') in (None, 'choosing')
+            and not sub.get('payment_interrupted')
+            and all(sub.get(k) is None for k in ('quoted_cost', 'confirm_identity', 'confirm_chapter', 'confirm_actor'))
+            and all(type(header.get(k)) is int for k in ('year', 'month', 'gold'))
+            and header['gold'] >= 0 and type(sub.get('gold_before')) is int
+            and header['gold'] == sub['gold_before']
+            and _soldier_count_scope(mem, header) is not None
+            and sub.get('key') == (shop or {}).get('key') == _month_key(header)
+            and month_menu_ready(screen) and _month_menu_quiet(screen))
+
+
+def _continue_recruit_batch(mem, shop, sub, paid, gold):
+    """Issue: 月初の不足人数分をまとめて募集する (owner 2026-11-02).
+
+    Only a verified payment advances the batch, and only while the cash left
+    after the existing reservations still covers another fee. Anything else
+    ends the batch, so a stalled round never spends on a guess.
+    """
+    if not shop or not _batch_active(shop):
+        return
+    batch = shop['recruit_batch']
+    if not paid:
+        batch['left'] = 0
+        _record(mem, 'recruit_batch_stopped', month=sub.get('key'),
+                observed_metric={'done': batch.get('done', 0), 'initial': batch.get('initial')},
+                reason='募集費の支払いを照合できないため、まとめ募集を打ち切り次の判断へ戻す')
+        return
+    batch['left'] -= 1
+    batch['done'] = int(batch.get('done') or 0) + 1
+    held = _month_held_reserve(shop)
+    if (batch['left'] > 0 and type(gold) is int and type(held) is int
+            and gold >= RECRUIT_COST + held):
+        shop['recruit'] = 'pending'
+        shop['recruit_reserve'] = RECRUIT_COST * batch['left']
+        _record(mem, 'recruit_batch_continue', month=sub.get('key'),
+                observed_metric={'done': batch['done'], 'left': batch['left'], 'gold': gold,
+                                 'held': held},
+                reason='不足人数が残り、予約を引いても募集費が残るため、同じ月の訪問で次の将軍を募集する')
+        return
+    batch['left'] = 0
+    _record(mem, 'recruit_batch_end', month=sub.get('key'),
+            observed_metric={'done': batch['done'], 'initial': batch.get('initial'), 'gold': gold},
+            reason='まとめ募集を終える(不足を満たした、または残金が募集費と予約に足りない)')
 
 
 def _finish_month_sub(screen, mem, shop) -> bool:
@@ -963,6 +1702,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         if wait < MONTH_SUB_MENU_WAIT:
             return False
     sub = mem.pop('month_sub')
+    unpaid_egg = not paid and _unpaid_egg_return(screen, mem, shop, sub)
     if sub['kind'] == 'egg' and sub.get('key') == mem.get('month'):
         from ..os_layer.roster import dirty_status
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
@@ -970,16 +1710,19 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         dirty_status(mem, [actor] if actor
                      else _egg_recovery_targets(mem), fields=('egg',))
     if shop and shop.get(sub['kind']) == 'opened':
-        shop[sub['kind']] = 'done' if paid else 'unverified'
+        shop[sub['kind']] = 'done' if paid else 'skipped' if unpaid_egg else 'unverified'
+        if sub['kind'] == 'egg' and shop[sub['kind']] == 'unverified':
+            _keep_egg_receipt(shop, sub)
     if sub['kind'] == 'recruit':
         from ..os_layer.roster import invalidate
         invalidate(mem)  # payment/return never proves an extra general
         if shop and paid:
             shop['recruit_reserve'] = 0
+        _continue_recruit_batch(mem, shop, sub, paid, gold)
         # A recruit joins the hero's castle, which need not be home.
         # Invalidate its old list; observe the candidate there before claiming
         # admission. Payment alone is not a roster increase.
-        garrison = mem.get('garrison') or {}
+        garrison = _world(mem).get('garrison') or {}
         placements = {c for c, gs in garrison.items() if NAME in (gs or ())}
         placements.add(chart.home_castle(mem.get('chapter') or 0))
         for c in placements:
@@ -1000,24 +1743,29 @@ def _finish_month_sub(screen, mem, shop) -> bool:
         # the original 76 soldiers then spent the wage reserve down to 18G.
         # All paid recruits need the actual balance, not only broken heroes.
         previous_soldiers = shop.get('soldiers', 0)
-        shop['soldiers'] = min(previous_soldiers, max(0, gold
-                               - _month_held_reserve(shop) - _egg_recovery_wage_floor(mem)
-                               - shop.get('recruit_reserve', 0)))
+        shop['soldiers'] = min(previous_soldiers,
+                               _month_soldier_budget(mem, shop, screen.header, gold))
         shop['soldiers_done'] = shop['soldiers'] == 0
         if paid and sub['kind'] == 'recruit':
             _record(mem, 'soldier_budget_after_recruit', month=sub.get('key'),
                     observed_metric={'gold_after': gold, 'soldiers_before': previous_soldiers,
-                                     'soldiers': shop['soldiers'], 'wage_reserve': _egg_recovery_wage_floor(mem)},
-                    reason='募集後の実残金から兵士予算を再計算し、追加出費で賃金予備を使い込まない')
+                                     'soldiers': shop['soldiers'], 'wage_reserve': WAGE_SPEND_HOLD},
+                    reason='募集後の実残金から兵士予算を再計算し、予約済みの必要費を二重に使わない')
     if paid and sub['kind'] == 'egg':
         actor = (NAME if sub.get('hero_selected') is True and sub.get('full_selected') is not True
                  else sub.get('individual_actor') if _individual_egg_selected(mem, sub) else None)
         if actor:
-            # Only this actor's real payment was observed. Other generals'
-            # counts/rechecks and every known zero retain their evidence.
-            if _own_egg_empty(mem, {'ally': actor}):
-                mem['egg_zero_owners'] = sorted(set(mem.get('egg_zero_owners') or []) | {actor})[:32]
+            # A paid recovery restores this actor's egg; keeping the
+            # pre-payment zero here made the next battle refuse the visible
+            # たまごをつかう row (owner 2026-11-22).  Other generals' zero
+            # evidence is untouched.
+            mem['egg_zero_owners'] = [n for n in (mem.get('egg_zero_owners') or []) if n != actor]
             (mem.get('egg_uses') or {}).pop(actor, None)
+            # #4439: the paid actor's count goes unknown, but the newer
+            # recovery-list presence must survive: dropping the record
+            # re-adopted an older 「卵なし」 status row and briefly removed the
+            # recovered general from the boss wave.
+            egg_memory.invalidate_uses(mem, actor)
             if actor in (mem.get('house_eggs') or {}):
                 mem['house_eggs'][actor]['uses'] = None
             mem['egg_recheck'] = [n for n in mem.get('egg_recheck') or [] if n != actor]
@@ -1034,7 +1782,7 @@ def _finish_month_sub(screen, mem, shop) -> bool:
             mem.pop('egg_recheck', None)
         if shop and (shop.get('egg_priority') or shop.get('egg_before_recruit')):
             if not shop.get('soldiers_done'):
-                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - _egg_recovery_wage_floor(mem) - shop.get('reserve', 0)
+                shop['soldiers'] = min(shop.get('soldiers', 0), max(0, gold - shop.get('reserve', 0)
                     - _house_repair_reserve(shop) - shop.get('recruit_reserve', 0)))
                 shop['soldiers_done'] = shop['soldiers'] == 0
     if sub['kind'] == 'chikujou':
@@ -1086,12 +1834,15 @@ def _finish_month_sub(screen, mem, shop) -> bool:
                              'full_selected': sub.get('full_selected'), 'quoted_cost': cost,
                              'individual_actor': sub.get('individual_actor'),
                              'payment_verified': bool(paid),
+                             'unpaid_decline_verified': bool(unpaid_egg),
                              'menu_ready': month_menu_ready(screen),
                              'fee_receipt_gold': sub.get('recruit_paid_gold'),
                              'joined_announced': sub.get('joined_names', [])},
-            deviation_reason=(None if paid else 'payment_interrupted'
+            deviation_reason=(None if paid or unpaid_egg else 'payment_interrupted'
                               if sub.get('payment_interrupted') else 'cost_not_observed'),
             reason=('月一メニュー復帰時の所持金で実行を確認' if paid else
+                    '支払い確定前の中止と同月メニューの残金不変を確認。回復は見送り、兵士補充は別途判定する'
+                    if unpaid_egg else
                     '別イベント割込み後の残金差は旧取引の支払証拠にしない'
                     if sub.get('payment_interrupted') else
                     '月一メニュー復帰時の支払い・操作可能状態を照合できない'))
@@ -1120,6 +1871,11 @@ def chikujou_leftover(screen, mem) -> bool:
                 observed_metric={'text': screen.text[-60:]},
                 deviation_reason='chikujou_state_lost',
                 reason='ちくじょうの画面を方策状態なしで確認したためBで閉じる')
+    if 'これいじょう' in screen.text or 'しょうぐんがおりませなんだ' in screen.text:
+        # Only an observed refusal line may suppress the next months: a bare
+        # castle list left behind by a dropped sub is still selectable
+        # (docich#5026), so closing it must not mark the candidates refused.
+        mem['chikujou_refused'] = {'castles': sorted(_chikujou_candidates(mem)), 'skips': 0}
     return True
 
 
@@ -1148,6 +1904,12 @@ def recruit_input_guard(screen, mem):
     """A remembered recruitment does not own a fade or a merchant purchase."""
     sub = mem.get('month_sub')
     if not isinstance(sub, dict) or sub.get('kind') != 'recruit':
+        return None
+    # #4633: the recruit candidate roster reads like a price list
+    # (「どの しょうぐんを かいこに?」 + nameG rows) and can classify as a
+    # shop kind; that own screen must not be treated as a foreign purchase
+    # (1079 consecutive holds on the local ch1 run).
+    if screen.has('かいこに'):
         return None
     if screen.kind in RECRUIT_SHOP_KINDS or screen.has('じゅうじキー'):
         return 'foreign_purchase'
@@ -1197,11 +1959,33 @@ def month_sub_step(screen: Screen, mem):
     rule) and うむッ! on confirmations, at most MONTH_SUB_LIMIT presses; then
     B out and record. A map or battle means the month is over: drop it.
     """
-    sub = mem['month_sub']
+    sub = mem.get('month_sub')
+    if not isinstance(sub, dict):
+        return None                  # abandoned for this month (MONTH_SUB_ABANDON_BACKS)
     kind = screen.kind
     if kind != 'month_menu':
         sub['left_menu'] = True     # the flow really left the month menu
     if kind in MONTH_SUB_EXIT_KINDS:
+        # An interrupted purchase is not abandoned for the month when no
+        # payment could have happened: it re-queues at 'pending' instead of
+        # staying 'opened' unreachable (the queue ledger keeps the intent
+        # and the attempt count either way).
+        shop = mem.get('shop') or {}
+        unpaid = not (sub.get('stage') == 'recovering' or sub.get('confirm_sent')
+                      or sub.get('paid_candidates') or sub.get('recruit_paid_gold') is not None
+                      or sub.get('payment_interrupted'))
+        if (unpaid and sub.get('kind') in ('egg', 'recruit')
+                and shop.get('key') == sub.get('key')
+                and shop.get(sub['kind']) == 'opened'):
+            shop[sub['kind']] = 'pending'
+            _record(mem, 'month_sub_requeued', month=sub.get('key'),
+                    observed_metric={'kind': sub['kind'], 'screen': kind,
+                                     'presses': sub.get('presses')},
+                    reason='月一の実行中に別画面へ移ったが支払い確定前のため、当月の再試行待ちへ戻す')
+        goal_kind = {'egg': 'egg_recover', 'recruit': 'recruit'}.get(sub.get('kind'))
+        if goal_kind:
+            goals.note_attempt(mem, goal_kind, 'interrupted')
+        _note_chikujou_tried(shop, sub)
         mem.pop('month_sub')
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
@@ -1271,8 +2055,26 @@ def month_sub_step(screen: Screen, mem):
             joined = re.fullmatch(r'([^�]+)がはいかにくわわった!', line.known.replace(' ', '').replace('！', '!'))
             if joined and joined[1] not in sub.setdefault('joined_names', []):
                 sub['joined_names'].append(joined[1])
-                from ..os_layer.roster import invalidate
+                from ..os_layer.roster import invalidate, record_join
+                record_join(mem, joined[1])  # keep a confirmed join in the count
+                # Payment alone is not a general. A unique join notice is.
+                from ..os_layer.roster import run_identity, MAX_GENERALS
+                country = mem.get('country_general_count')
+                if (isinstance(country, dict)
+                        and country.get('scope') == [mem.get('chapter'), mem.get('month')]
+                        and country.get('identity') == run_identity(mem.get('_run_identity'))
+                        and type(country.get('count')) is int
+                        and country['count'] < MAX_GENERALS
+                        and joined[1] not in country.setdefault('joined', [])):
+                    country['count'] += 1
+                    country['joined'].append(joined[1])
                 invalidate(mem)
+                # The new general is placed in our country; the home castle's
+                # own list is the receipt. Without a due nobody opens it and
+                # the join stays "unclassified" while the country count and
+                # the visible garrison disagree (g1163 2026-11-13 22:5x:
+                # カシュー joined, no garrison listed him).
+                _schedule_recruit_roster_read(mem)
                 _record(mem, 'recruit_join_announced', general=joined[1], month=sub.get('key'),
                         observed_metric={'placement': 'unclassified'},
                         reason='募集の実加入告知を確認。配置は次の在城一覧で照合する')
@@ -1298,6 +2100,30 @@ def month_sub_step(screen: Screen, mem):
                     reason='月一の未測定画面が上限回数で終わらないためBで離脱')
         backs = int(sub.get('abort_backs') or 0) + 1
         sub['abort_backs'] = backs
+        if backs >= MONTH_SUB_ABANDON_BACKS:
+            # The menu keeps offering the same sub-action while B cannot close
+            # it, so the abort path has to end somewhere: g1163 2026-11-11
+            # 23:08-23:25 flipped month menu and shop list every 1.5 s and the
+            # repetition detector latched screen_stalled. Drop the sub for this
+            # month, mark its menu entry done and let the month plan move on.
+            shop = mem.get('shop')
+            # docich#5046: a recovery abandoned after its quote was accepted
+            # may already have been paid. 'skipped' claims it was not done and
+            # lets the same month reopen and repay it; the payment stays
+            # 'unverified' instead (never retried, like a lost receipt).
+            status = ('unverified' if sub.get('kind') == 'egg'
+                      and sub.get('stage') == 'recovering' else 'skipped')
+            if isinstance(shop, dict) and sub.get('kind') in shop:
+                shop[sub['kind']] = status
+                if status == 'unverified':
+                    _keep_egg_receipt(shop, sub)
+            _note_chikujou_tried(shop, sub)
+            mem.pop('month_sub', None)
+            _record(mem, 'month_sub_abandoned', screen=kind,
+                    observed_metric={'backs': backs, 'kind': sub.get('kind'),
+                                     'shop_status': status},
+                    reason='離脱のBで閉じない月一画面を上限回数で諦め、今月は実行しない')
+            return [pad('b')]
         # B cannot close a plain message box (g662: 109 B, 300 s, corner
         # ended). After a bounded number of ignored Bs, a dialogue with no
         # menu cursor and no yes/no is advanced with A - A on plain text

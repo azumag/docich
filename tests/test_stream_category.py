@@ -21,11 +21,15 @@ from docich.adapters.program import PAPER_VIEW_NAME  # noqa: E402
 from docich.stream_category import (  # noqa: E402
     PAPER_CATEGORY_ID,
     PAPER_CATEGORY_NAME,
+    MYSTERY_CATEGORY_ID,
+    MYSTERY_CATEGORY_NAME,
+    MYSTERY_VIEW_NAME,
     SCRIPT_NAME,
     StreamCategoryError,
     announce_running_view,
     announce_stream_game,
     announce_stream_paper,
+    announce_stream_mystery,
     announce_stream_flyhome,
     announce_running_view,
     FLYHOME_CATEGORY_ID,
@@ -35,6 +39,9 @@ from docich.stream_category import (  # noqa: E402
     twitch_category,
     viewer_title_args,
     VIEWER_GAME_NAMES,
+    intended_stream_game,
+    last_announced_game,
+    reconcile_stream_metadata,
 )
 
 
@@ -94,7 +101,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 "nethack",
                 "--games-dir",
                 str(Path(self.g.games_dir).resolve()),
-                "--activity", "NetHack", "--strategy", "AIプレイ配信",
+                "--activity", "NetHack", "--strategy", "AIが迷宮を探索！ 道具と知恵で生き延びられるか",
             ],
         )
         # The script loads its own .env from the Soren root, so it must run
@@ -118,11 +125,45 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
+                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
             ],
         )
         self.assertNotIn("--game", call["argv"])
         self.assertNotIn("--title-prefix", call["argv"])
+
+    def test_mystery_view_uses_explicit_category_and_title(self) -> None:
+        script = self._install_script()
+
+        self.assertTrue(announce_stream_mystery(self.g, spawn=self._recorder))
+
+        call = self.spawned[0]
+        self.assertEqual(
+            call["argv"],
+            [
+                str(script.resolve()),
+                "--category-id",
+                MYSTERY_CATEGORY_ID,
+                "--category-name",
+                MYSTERY_CATEGORY_NAME,
+                "--activity", "AI探偵ミステリー",
+                "--strategy", "視聴者参加型の推理ゲーム！ みんなで犯人の謎を解き明かそう",
+            ],
+        )
+        self.assertEqual(MYSTERY_CATEGORY_ID, "509658")
+        self.assertEqual(MYSTERY_CATEGORY_NAME, "Just Chatting")
+        self.assertNotIn("--game", call["argv"])
+
+    def test_commit_hook_follows_the_mystery_view_and_restores_the_previous_game(
+            self) -> None:
+        self._install_script()
+
+        self.assertTrue(announce_running_view(self.g, MYSTERY_VIEW_NAME, spawn=self._recorder))
+        self.assertIn("--category-id", self.spawned[-1]["argv"])
+        self.assertNotIn("--game", self.spawned[-1]["argv"])
+
+        # The restore re-announces the displaced game through its own TOML.
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[-1]["argv"][1:3], ["--game", "nethack"])
 
     def test_flyhome_view_uses_its_own_category_and_title(self) -> None:
         script = self._install_script()
@@ -260,7 +301,7 @@ class TestRunningView(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの検証配信",
+                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
             ],
         )
 
@@ -303,7 +344,7 @@ class TestRunningView(StreamCategoryTestBase):
 
     def test_unknown_safe_id_is_explicit_and_bad_ids_are_rejected(self) -> None:
         self.assertEqual(viewer_title_args("new-game"),
-                         ["--activity", "new-game", "--strategy", "AIプレイ配信"])
+                         ["--activity", "new-game", "--strategy", "AIはどこまで進めるか？ 試行錯誤のゲーム挑戦"])
         for game in ("", "../secret", "x;id", "bad name"):
             with self.assertRaises(ValueError):
                 viewer_title_args(game)
@@ -323,6 +364,13 @@ class TestRunningView(StreamCategoryTestBase):
         script = self.soren / SCRIPT_NAME
         shutil.copyfile(source, script)
         script.chmod(0o755)
+        # The updater composes public titles through lib/stream_title_public.py
+        # and fails closed when it is missing (docich#789). Mirror the deployed
+        # soren layout — script plus its lib/ — instead of a stripped copy.
+        helper = Path(__file__).resolve().parents[1] / "games/soviet_now/lib/stream_title_public.py"
+        self.assertTrue(helper.is_file(), "pinned soviet_now lacks the public title helper")
+        (self.soren / "lib").mkdir(exist_ok=True)
+        shutil.copyfile(helper, self.soren / "lib" / "stream_title_public.py")
         stub_dir = self.root / "stub-bin"
         stub_dir.mkdir()
         result = self.root / "patch.json"
@@ -337,7 +385,7 @@ class TestRunningView(StreamCategoryTestBase):
             " pathlib.Path(a[a.index('-o')+1]).write_text('')\n"
             " print('204',end='')\n"
             "elif any('oauth2/validate' in x for x in a):\n"
-            " print(json.dumps({'client_id':'test','login':'test','scopes':['channel:manage:broadcast']}))\n"
+            " print(json.dumps({'client_id':'test','login':'test','user_id':'test-only','scopes':['channel:manage:broadcast']}))\n"
             "else:\n"
             " print(json.dumps({'data':[{'title':'OLD PRIVATE WORK','game_id':'1','game_name':'Old'}]}))\n",
             encoding="utf-8",
@@ -535,6 +583,185 @@ class StreamTitleSyncSkipObservationTests(StreamCategoryTestBase):
         run.reset_mock()
         _record_title_sync_skip(self.g, "PRIVATE-TITLE")
         run.assert_not_called()
+
+
+class TestReconcileStreamMetadata(StreamCategoryTestBase):
+    """Metadata that no switch commit owns still has to follow the screen (#2673)."""
+
+    def _write_plane(self, phase: str, *, game: str | None = None, generation: int = 1) -> None:
+        state = {"phase": phase}
+        state["active"] = (
+            {"game": game, "generation": generation, "runtime_id": f"g{generation}-aaaaaaaa",
+             "lease_id": "lease", "adapter": "cli"}
+            if game else None
+        )
+        path = Path(self.g.state_dir) / "game_switch.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+
+    def _write_background_state(self, *, age_s: float = 0.0) -> Path:
+        path = self.soren / "game_state.json"
+        path.write_text('{"state": "MOVE"}', encoding="utf-8")
+        if age_s:
+            past = time.time() - age_s
+            os.utime(path, (past, past))
+        return path
+
+    def _write_sorengame(self) -> None:
+        (self.root / "config" / "games" / "sorengame.toml").write_text(
+            '[game]\nname = "sorengame"\ntitle = "sorengame"\nadapter = "soren"\n'
+            '[soren]\nroot = "%s"\n'
+            '[twitch]\ncategory_id = "1530787860"\ncategory_name = "Soren Game"\n'
+            'title_prefix = "[Soren]"\n' % self.soren,
+            encoding="utf-8",
+        )
+
+    def _write_hanjuku(self, *, cleared: int) -> None:
+        (self.root / "config" / "games" / "hanjuku-hero.toml").write_text(
+            '[game]\nname = "hanjuku-hero"\ntitle = "半熟英雄"\nadapter = "retroarch"\n'
+            '[twitch]\ncategory_id = "11585"\ncategory_name = "Hanjuku Hero"\n',
+            encoding="utf-8",
+        )
+        identity = {"game": "hanjuku-hero", "generation": 9,
+                    "runtime_id": "g9-aaaaaaaa", "lease_id": "lease"}
+        self._write_plane("ready", game="hanjuku-hero", generation=9)
+        runtime = Path(self.g.state_dir) / "runtimes" / "g9-aaaaaaaa"
+        runtime.mkdir(parents=True, exist_ok=True)
+        digest = "a" * 64
+        (runtime / "hanjuku_run.json").write_text(json.dumps({
+            **identity, "schema": 1, "frame_sha256": digest, "playing": True,
+            "observed_at": time.time(), "terminal_candidate": False,
+            "terminal_reason": None}), encoding="utf-8")
+        (runtime / "hanjuku_progress.json").write_text(json.dumps({
+            **identity, "schema": 1, "cleared": cleared, "ambiguous": False,
+            "frame_sha256": digest}), encoding="utf-8")
+
+    def test_hanjuku_clear_reannounces_only_the_title_for_the_next_goal(self) -> None:
+        """突破話数が増えたときだけ、カテゴリを触らずタイトルを次目標へ変える。"""
+        self._install_script()
+        self._write_hanjuku(cleared=2)
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        first = self.spawned[0]["argv"]
+        self.assertNotIn("--title-only", first)
+        self.assertIn("この冒険で第2話まで突破", " ".join(first))
+
+        # Same goal: no repeat announce.
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(len(self.spawned), 1)
+
+        # A cleared chapter moves the title to the next goal, title only.
+        self._write_hanjuku(cleared=3)
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        second = self.spawned[-1]["argv"]
+        self.assertIn("--title-only", second)
+        self.assertIn("この冒険で第3話まで突破", " ".join(second))
+        self.assertIn("第4話", " ".join(second))
+
+    def test_hanjuku_untrusted_progress_does_not_look_like_a_goal_change(self) -> None:
+        self._install_script()
+        self._write_hanjuku(cleared=2)
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        runtime = Path(self.g.state_dir) / "runtimes" / "g9-aaaaaaaa"
+        run = json.loads((runtime / "hanjuku_run.json").read_text(encoding="utf-8"))
+        run["observed_at"] = 1
+        (runtime / "hanjuku_run.json").write_text(json.dumps(run), encoding="utf-8")
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(len(self.spawned), 1)
+
+    def test_idle_plane_announces_the_live_background_game(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+
+        self.assertEqual(len(self.spawned), 1)
+        argv = self.spawned[0]["argv"]
+        self.assertEqual(argv[1:3], ["--game", "sorengame"])
+        self.assertEqual(last_announced_game(self.g), "sorengame")
+
+    def test_same_runtime_is_not_re_announced(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(len(self.spawned), 1)
+
+    def test_ready_plane_follows_the_committed_seat(self) -> None:
+        self._install_script()
+        self._write_plane("ready", game="nethack")
+
+        self.assertTrue(reconcile_stream_metadata(self.g, spawn=self._recorder))
+
+        argv = self.spawned[0]["argv"]
+        self.assertEqual(argv[1:3], ["--game", "nethack"])
+
+    def test_transition_phases_are_left_alone(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("failed")
+        self._write_background_state()
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+        self.assertIsNone(intended_stream_game(self.g))
+
+    def test_stale_background_state_is_not_treated_as_running(self) -> None:
+        self._write_sorengame()
+        self._install_script()
+        self._write_plane("idle")
+        self._write_background_state(age_s=600)
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+
+    def test_missing_updater_is_non_fatal(self) -> None:
+        # No script installed: the announce raises, reconciliation swallows it.
+        self._write_sorengame()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+
+    def test_announce_records_the_runtime_it_asked_for(self) -> None:
+        self._install_script()
+
+        self.assertTrue(announce_stream_game(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(last_announced_game(self.g), "nethack")
+
+    def test_commit_hook_records_view_announces_too(self) -> None:
+        self._install_script()
+        hook = commit_hook(self.g, spawn=self._recorder)
+
+        hook("nethack")
+
+        self.assertEqual(last_announced_game(self.g), "nethack")
+
+    def test_failed_dispatch_backs_off_before_retrying(self) -> None:
+        self._write_sorengame()
+        self._write_plane("idle")
+        self._write_background_state()
+
+        def boom(argv, *, cwd, log_path):
+            raise OSError("updater unavailable")
+
+        # No script installed: the first attempt fails and is remembered.
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=boom))
+        # Immediately afterwards the same intended runtime is not retried.
+        self.assertFalse(reconcile_stream_metadata(self.g, spawn=boom))
+
+        record = json.loads(
+            (Path(self.g.state_dir) / "stream_metadata_last.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["game"], "sorengame")
 
 
 if __name__ == "__main__":

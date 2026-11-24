@@ -687,3 +687,16 @@ class TestWebUIAllowedOriginsEnv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_periodic_savestate_is_opt_in_seconds():
+    from docich.config import ConfigError, GameLifecycleConfig
+
+    assert GameLifecycleConfig().periodic_savestate_s is None
+    assert GameLifecycleConfig(periodic_savestate_s=900).periodic_savestate_s == 900
+    for bad in (0, -5, True, '900', 1.5):
+        try:
+            GameLifecycleConfig(periodic_savestate_s=bad)
+        except ConfigError:
+            continue
+        raise AssertionError(f'{bad!r} must be rejected')

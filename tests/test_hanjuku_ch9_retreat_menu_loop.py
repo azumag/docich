@@ -1,0 +1,49 @@
+"""Chapter 9 non-hero battles must not reopen a retreat menu they cannot use.
+
+g1190 2026-11-16 (local ch9): シェーブル (27 HP) vs ジェラート (49 HP).
+battle_hero_retreat_open opened the command menu, battle_retreat_forbidden
+(ch9: only the hero retreats) refused the row, the spent rescue had already
+used its single closing B, and the menu stayed open (the game paused) for
+101 observations until the no-input fallback. Then the cycle repeated.
+"""
+from docich.hanjuku.flows.battle import _hero_retreat_open
+from test_hanjuku_card_damage_gate import memory
+
+
+def nonhero(chapter=9):
+    mem = memory('ゼンマイン', enemy='ジェラート', enemy_hp=49, ally='シェーブル', ally_hp=1,
+                 soldiers=(0, 0))
+    mem['chapter'] = chapter
+    cur = mem['battle']
+    cur['card_flow'] = None
+    return mem, cur
+
+
+def test_chapter_nine_non_hero_does_not_open_the_retreat_menu():
+    mem, cur = nonhero()
+    assert _hero_retreat_open(mem, cur) is None
+    assert not cur.get('hero_retreat')
+
+
+def test_the_hero_and_other_chapters_still_open_it():
+    mem, cur = nonhero(chapter=8)
+    assert _hero_retreat_open(mem, cur) is not None
+    mem, cur = nonhero()
+    cur['ally'] = 'どうし'
+    assert _hero_retreat_open(mem, cur) is not None
+
+
+def test_a_spent_rescue_menu_that_stays_open_is_closed_again_bounded():
+    from docich.hanjuku.flows.battle_menus import _survival_menu, RESCUE_RECLOSE_LIMIT
+    from test_hanjuku_survival import menu
+    from docich.hanjuku.judgment.battle import _survival_state
+    mem, cur = nonhero()
+    rescue = _survival_state(mem, cur)
+    rescue.update(exhausted=True, exhausted_closed=True, menu_ticks=20)
+    screen = menu(('きりふだ',))
+    inputs = []
+    for _ in range(40):
+        actions = _survival_menu(screen, mem, cur) or []
+        inputs += [a['buttons'] for a in actions if a.get('type') == 'pad']
+    assert inputs == [['b']] * RESCUE_RECLOSE_LIMIT
+    assert any(r['decision'] == 'battle_menu_rescue_reclose' for r in mem['_records'])

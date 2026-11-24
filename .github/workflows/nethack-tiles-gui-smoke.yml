@@ -22,6 +22,7 @@ on:
       - 'src/docich/watchdog.py'
       - 'src/docich/xkit.py'
       - 'tests/test_nethack_tiles_gui_smoke.py'
+      - 'tests/nethack_gui_failure_diagnostics.py'
       - 'requirements-test.txt'
       - 'conftest.py'
   push:
@@ -46,6 +47,7 @@ on:
       - 'src/docich/watchdog.py'
       - 'src/docich/xkit.py'
       - 'tests/test_nethack_tiles_gui_smoke.py'
+      - 'tests/nethack_gui_failure_diagnostics.py'
       - 'requirements-test.txt'
       - 'conftest.py'
 
@@ -84,3 +86,4 @@ jobs:
         run: python3 -m pip install -r requirements-test.txt
       - name: Run isolated NetHack tile GUI smoke
         run: PYTHONPATH=src python3 -m pytest -q tests/test_nethack_tiles_gui_smoke.py
+

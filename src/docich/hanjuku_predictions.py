@@ -1,17 +1,23 @@
 """One durable Hanjuku prediction, separate from Soren's 48-game round state.
 
-Only the corner owner may create. Common rotation ticks may retry settlement
-of an already-owned round after game teardown. All Twitch I/O is outside the
+The live run owns creation. The run-side agent is the primary creator, and the
+common rotation timer may adopt the canonical active runtime when that owner
+disappeared. Both paths must present the full canonical identity and a fresh
+observed run; identity-less timer ticks still retry settlement of an
+already-owned round but can never create one. All Twitch I/O is outside the
 RetroArch input gate and failures cannot prevent game completion.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import hashlib
+import json
 import math
 import os
 from pathlib import Path
 import secrets
+import threading
 import time
 
 from . import hanjuku_hotload
@@ -23,10 +29,29 @@ from .hanjuku_prediction_api import APIError, configured_client
 from .naming import runtime_directory
 from .retroarch_boundary import read_record
 
+#: The Hanjuku logic generation this module loaded (#1469); see hanjuku_bot.
+#: The corner resolves this module through the hot-load trampoline (#3838), so a
+#: predictions deploy reaches the running corner worker without a restart.
+LOGIC_GENERATION = hanjuku_hotload.logic_generation()
+
 FILE = 'hanjuku_predictions.json'
 RESULT_FILE = 'hanjuku_prediction_result.json'
+#: Consecutive failing ticks, kept in a separate bounded record so that a ledger
+#: `_load` rejection (the #2213 class) is still observable. The ledger itself is
+#: never written when it cannot be read.
+HEALTH_FILE = 'hanjuku_predictions_health.json'
+HEALTH_SCHEMA = 1
+MAX_ERROR_STREAK = 1_000_000
+MAX_CANCEL_SNAPSHOT_BYTES = 256 * 1024
 POLL_SECONDS = 30
 RETRY_SECONDS = 300
+#: A timer/agent tick may adopt a run only while its own record is fresh. The
+#: agent observes about every 1.5 s; this is a liveness bound, not a session
+#: deadline (a stalled screen still keeps observing).
+RUN_FRESH_SECONDS = 120.0
+#: The run-side owner is the primary creator. It polls cheaply and lets the
+#: prediction ledger's own POLL_SECONDS gate the remote reads.
+OWNER_TICK_SECONDS = 5.0
 LIVE = {'ACTIVE', 'LOCKED'}
 DONE = {'RESOLVED', 'CANCELED'}
 ERRORS = {'transport', 'auth', 'rate_limited', 'rejected', 'invalid_response',
@@ -34,6 +59,24 @@ ERRORS = {'transport', 'auth', 'rate_limited', 'rejected', 'invalid_response',
           'remote_mismatch', 'clock_regressed', 'leaderboard'}
 MODES = {'incompatible_soren', 'idle', 'disabled', 'explore', 'unconfigured', 'paused', 'blocked', 'pending',
          'active', 'settling', 'resolved', 'canceled', 'known_result', 'complete_record', 'error'}
+
+#: 4つ目の選択肢（owner 決定 2026-10-15 / Issue #2238）。画面停滞（フレーム静止）または
+#: 入力ループで「一時終了」した run をここで確定する。予想は run 開始時に作られ選択肢が
+#: 固定されるため、checkpoint の有無で出し分けず常に4択にする。
+STALLED_OUTCOME_TITLE = '画面停滞で一時終了（同じ状態から再開予定）'
+#: 4択目を使う終端理由。`hanjuku_run.TERMINAL_REASONS` のうち `game_over` は従来どおり
+#: 突破数で判定し、`input_stalled` は4択目に含めない。
+STALLED_REASON = 'screen_stalled'
+#: デプロイ前に作られた予想の選択肢数（受理だけ legacy として許す）。
+LEGACY_OUTCOME_COUNT = 3
+#: A resumed challenge starts with a wager for the chapter it resumed into.
+RESUME_PREDICTION_KIND = 'resume-chapter'
+#: After a goal is reached mid-run, the next wager asks for the next chapter.
+#: Owner decision 2026-11-09: settle at achievement, then carry the same
+#: challenge forward to the next goal instead of waiting for the run to end.
+NEXT_PREDICTION_KIND = 'next-chapter'
+CHAPTER_PREDICTION_KINDS = frozenset({RESUME_PREDICTION_KIND, NEXT_PREDICTION_KIND})
+RESUME_STALLED_OUTCOME_TITLE = '停滞で一時停止'
 
 
 def thresholds(best):
@@ -50,7 +93,57 @@ def thresholds(best):
 def outcome_titles(target, middle):
     middle_title = (f'{middle}話突破' if middle == target - 1
                     else f'{middle}〜{target - 1}話突破')
-    return [f'{target}話突破（新記録）', middle_title, f'{middle}話突破できず']
+    return [f'{target}話突破（新記録）', middle_title, f'{middle}話突破できず',
+            STALLED_OUTCOME_TITLE]
+
+
+def accepted_outcome_titles(target, middle):
+    """Titles a stored intent may declare: the new 4-choice and the legacy 3-choice.
+
+    選択肢は予想の作成時に固定される。4択へ変えた後に、デプロイ前に作られた3択の
+    row を `_load` が拒否すると #2213 の `invalid_state` ループが再発するため、
+    「生成は4択・受理は row が自己申告する3か4択」とする（Issue #2238）。
+    """
+    titles = outcome_titles(target, middle)
+    return (titles[:LEGACY_OUTCOME_COUNT], titles)
+
+
+def resume_outcome_titles(target):
+    if type(target) is not int or not 1 <= target <= progress.MAX_CHAPTER:
+        raise ValueError('invalid resume prediction target')
+    return [f'{target}話突破', f'{target}話突破ならず', RESUME_STALLED_OUTCOME_TITLE]
+
+
+def resolve_index(row, result):
+    """Outcome index for one terminal result, or ``None`` when it must be canceled.
+
+    4択の row で画面停滞/ループ終了（``reason=screen_stalled``）だったときだけ
+    4択目を使う。``game_over`` は従来どおり突破数で判定し、``input_stalled``
+    （画面は観測できているが操作AIが無入力）は4択目に含めない（owner 決定
+    2026-10-15 / Issue #2238）。legacy 3択の row は作成時の選択肢を変えられない
+    ため、停滞終了でも従来の判定のままにする。
+
+    ``resume-chapter`` と ``next-chapter`` は「この章を突破できるか」の3択なので、
+    突破数の到達・ゲームオーバー・停滞を同じ規則で判定する。
+    """
+    if row.get('kind') in CHAPTER_PREDICTION_KINDS:
+        cleared = result.get('cleared')
+        if cleared is not None:
+            progress.count(cleared)
+            if cleared >= row['target']:
+                return 0
+        if result.get('reason') in {'screen_stalled', 'input_stalled'}:
+            return 2
+        if result.get('reason') == 'game_over' and cleared is not None:
+            return 1
+        return None
+    titles = row.get('outcome_titles')
+    if (isinstance(titles, list) and len(titles) > LEGACY_OUTCOME_COUNT
+            and result.get('reason') == STALLED_REASON):
+        return LEGACY_OUTCOME_COUNT
+    if result.get('cleared') is None:
+        return None
+    return winner(result['cleared'], row['target'], row['middle'])
 
 
 def voting_window(target, ending_window):
@@ -87,6 +180,18 @@ def _stamp(value):
     return value
 
 
+def _checked_achieved(row):
+    """An early-settled chapter total, when the row carries one.
+
+    Only a verified clear (0..12) is a valid total; a malformed value is
+    refused instead of being read as "not achieved yet".
+    """
+    value = row.get('achieved')
+    if value is None:
+        return
+    progress.count(value)
+
+
 def _checked_result(value, identity):
     # The accepted reasons must be exactly the terminals hanjuku_run can report:
     # _result() writes evidence['terminal_reason'] verbatim into the durable
@@ -121,19 +226,33 @@ def _load(root, seed):
     row = state.get('round')
     if row is not None:
         progress.checked_identity(row)
-        winner(0, row.get('target'), row.get('middle'))
+        _checked_achieved(row)
+        kind = row.get('kind')
+        if kind is None:
+            winner(0, row.get('target'), row.get('middle'))
+            expected_titles = accepted_outcome_titles(row['target'], row['middle'])
+            expected_title = _title(row.get('nonce'))
+        elif kind in CHAPTER_PREDICTION_KINDS:
+            if row.get('middle') is not None:
+                raise ValueError('chapter prediction cannot carry range middle')
+            expected_titles = (resume_outcome_titles(row.get('target')),)
+            expected_title = _chapter_title(row['target'], row.get('nonce'))
+        else:
+            raise ValueError('invalid prediction kind')
         if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
                 or any(c not in '0123456789abcdef' for c in row['nonce'])
                 or type(row.get('attempted')) is not bool
                 or row.get('status') not in LIVE | DONE | {'INTENT'}
                 or type(row.get('window')) is not int or not 1 <= row['window'] <= 1800
-                or row.get('title') != _title(row['nonce'])
-                or row.get('outcome_titles') != outcome_titles(row['target'], row['middle'])):
+                or row.get('title') != expected_title
+                or row.get('outcome_titles') not in expected_titles):
             raise ValueError('invalid prediction intent')
         if row.get('id') is not None:
             ids = row.get('outcome_ids')
+            expected = len(row['outcome_titles'])
             if (not isinstance(row['id'], str) or not 1 <= len(row['id']) <= 128
-                    or not isinstance(ids, list) or len(ids) != 3 or len(set(ids)) != 3
+                    or not isinstance(ids, list) or len(ids) != expected
+                    or len(set(ids)) != expected
                     or not all(isinstance(i, str) and 1 <= len(i) <= 128 for i in ids)):
                 raise ValueError('invalid prediction ownership')
         if row.get('result') is not None:
@@ -141,8 +260,75 @@ def _load(root, seed):
     return state
 
 
+def _load_recoverable(root, seed):
+    """``_load`` for the owner-only recovery operator (#2216).
+
+    The ordinary tick must stay fail-closed, so a ledger it cannot validate is
+    never rewritten. That is exactly why a stalled round needs an operator: the
+    #2213 class is a record the module *itself* wrote and then refused. This
+    loader applies the same checks but classifies the durable terminal result
+    loosely, so a reviewed recovery can still cancel or sync the round it owns.
+
+    It stays strict about everything that decides *which* round is owned and
+    whether that ownership is well-formed: identity, thresholds, title, window,
+    nonce, status and the remote ids. It refuses anything else, and it never
+    repairs or rewrites the offending field.
+    """
+    state = read_record(root / FILE)
+    if not state:
+        return {'schema': 1, 'best_cleared': seed, 'round': None, 'mode': 'idle',
+                'next_poll_at': 0, 'last_poll_at': 0, 'error': None}
+    if (type(state.get('schema')) is not int or state['schema'] != 1
+            or state.get('mode') not in MODES or state.get('error') not in ERRORS | {None}):
+        raise ValueError('invalid predictions state')
+    progress.count(state.get('best_cleared'))
+    if state['best_cleared'] < seed:
+        state['best_cleared'] = seed
+    for key in ('next_poll_at', 'last_poll_at'):
+        _stamp(state.get(key))
+    row = state.get('round')
+    if row is not None:
+        progress.checked_identity(row)
+        _checked_achieved(row)
+        kind = row.get('kind')
+        if kind is None:
+            winner(0, row.get('target'), row.get('middle'))
+            expected_titles = accepted_outcome_titles(row['target'], row['middle'])
+            expected_title = _title(row.get('nonce'))
+        elif kind in CHAPTER_PREDICTION_KINDS:
+            if row.get('middle') is not None:
+                raise ValueError('chapter prediction cannot carry range middle')
+            expected_titles = (resume_outcome_titles(row.get('target')),)
+            expected_title = _chapter_title(row['target'], row.get('nonce'))
+        else:
+            raise ValueError('invalid prediction kind')
+        if (not isinstance(row.get('nonce'), str) or len(row['nonce']) != 12
+                or any(c not in '0123456789abcdef' for c in row['nonce'])
+                or type(row.get('attempted')) is not bool
+                or row.get('status') not in LIVE | DONE | {'INTENT'}
+                or type(row.get('window')) is not int or not 1 <= row['window'] <= 1800
+                or row.get('title') != expected_title
+                or row.get('outcome_titles') not in expected_titles):
+            raise ValueError('invalid prediction intent')
+        if row.get('id') is not None:
+            ids = row.get('outcome_ids')
+            expected = len(row['outcome_titles'])
+            if (not isinstance(row['id'], str) or not 1 <= len(row['id']) <= 128
+                    or not isinstance(ids, list) or len(ids) != expected
+                    or len(set(ids)) != expected
+                    or not all(isinstance(i, str) and 1 <= len(i) <= 128 for i in ids)):
+                raise ValueError('invalid prediction ownership')
+        if row.get('result') is not None and not isinstance(row['result'], dict):
+            raise ValueError('invalid prediction result')
+    return state
+
+
 def _title(nonce):
     return f'半熟英雄：どこまでゲーム到達できるか？ #{nonce}'
+
+
+def _chapter_title(target, nonce):
+    return f'半熟英雄：{target}話を突破できる？ #{nonce}'
 
 
 @contextmanager
@@ -160,6 +346,69 @@ def locked(root):
             yield True
         finally:
             fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def _resume_prediction_context(root, identity):
+    receipt = read_record(runtime_directory(root, identity['runtime_id']) / 'hanjuku_resume.json')
+    if not receipt or receipt.get('explicit_resume') is not True or receipt.get('start_mode') != 'resume':
+        return None
+    if (receipt.get('status') != 'verified'
+            or receipt.get('gameplay_context') != 'verified_checkpoint_foreground'
+            or any(receipt.get(k) != identity[k] for k in progress.KEYS)):
+        raise ValueError('invalid verified Hanjuku resume receipt')
+    chapter = receipt.get('chapter')
+    if chapter is None:
+        from .hanjuku_resume import source_chapter
+        chapter = source_chapter(root, receipt)
+    if chapter is not None and (type(chapter) is not int or not 1 <= chapter <= progress.MAX_CHAPTER):
+        raise ValueError('invalid verified Hanjuku resume chapter')
+    return {'chapter': chapter}
+
+
+def _row_target_cleared(root, row):
+    """The verified clear total when this row's own goal is achieved.
+
+    ``None`` means the goal is not provably achieved yet. The same verified
+    count settles a chapter wager and a normal "new record" wager, so both
+    resolve at the moment of achievement (owner decision 2026-11-09) rather
+    than at the end of the attempt.
+    """
+    cleared = progress.completed_count(runtime_directory(root, row['runtime_id']),
+                                       {k: row[k] for k in progress.KEYS})
+    if cleared is None or cleared < row['target']:
+        return None
+    return cleared
+
+
+def _chain_target(root, row, state):
+    """The next goal target for a live run that already reached the wager's goal.
+
+    The wager may have settled as a win at achievement (``RESOLVED``) or been
+    refunded as a no-contest at the same moment (``CANCELED``); builds before
+    2026-11-09 recorded only the refund and no ``achieved`` marker. Both are
+    mid-run settlements of the same challenge, so the series continues to the
+    next chapter (owner decisions 2026-11-09). ``None`` means the attempt is
+    over (a durable terminal result or terminal evidence exists), the goal is
+    not proven yet, the row did not settle mid-run, or the record already
+    reached the final chapter. The cleared total carries forward into
+    ``best_cleared``, so a prediction that settles after the next chapter is
+    already clear never opens a wager for a known result.
+    """
+    if row.get('status') not in DONE or row.get('result') is not None:
+        return None
+    runtime = runtime_directory(root, row['runtime_id'])
+    identity = {k: row[k] for k in progress.KEYS}
+    if hanjuku_hotload.terminal(runtime, identity) is not None:
+        return None
+    achieved = row.get('achieved')
+    if achieved is not None:
+        progress.count(achieved)
+    cleared = progress.completed_count(runtime, identity)
+    best = max((value for value in (achieved, cleared) if value is not None), default=None)
+    if best is None or best < row.get('target', 0):
+        return None
+    state['best_cleared'] = max(state['best_cleared'], best)
+    return None if best >= progress.MAX_CHAPTER else best + 1
 
 
 def _result(root, identity):
@@ -203,6 +452,57 @@ def _has_predictors(remote):
                and outcome['top_predictors'] for outcome in outcomes)
 
 
+def _contested_outcomes(remote):
+    """Number of outcomes that received at least one bet, or None if unreadable.
+
+    Twitch exposes ``users`` and ``channel_points`` per outcome to the
+    broadcaster token. Unreadable counts return None so the caller keeps the
+    existing behaviour instead of inventing a settle rule.
+    """
+    outcomes = remote.get('outcomes') if isinstance(remote, dict) else None
+    if not isinstance(outcomes, list) or not outcomes:
+        return None
+    counted = known = 0
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            return None
+        for key in ('users', 'channel_points'):
+            value = outcome.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            known += 1
+            if value > 0:
+                counted += 1
+                break
+    return counted if known else None
+
+
+def _no_contest(remote):
+    """True only while the counts prove that fewer than two outcomes were bet.
+
+    A prediction where only one outcome (or none) ever received a bet never
+    formed a contest: resolving it would take points from viewers who had no
+    opposing side, so it is canceled and refunded instead (オーナー判断
+    2026-10-15).
+    """
+    counted = _contested_outcomes(remote)
+    return counted is not None and counted <= 1
+
+
+def _evidence_rank(remote):
+    """How much participation one candidate row proves; richer always wins.
+
+    A sparse ``CANCELED`` response that omits ``users``/``channel_points`` must
+    never be recorded in place of a source that still carries the counts: the
+    record would show 0 participants and 0 points while the real evidence is
+    deleted with the snapshot. Ranking keeps the best available source
+    regardless of the order the caller passes them in.
+    """
+    if _has_predictors(remote):
+        return 2
+    return 1 if _contested_outcomes(remote) is not None else 0
+
+
 def _record_settled(root, remote, now, client):
     """Record one RESOLVED prediction in the 予想王 leaderboard (fail-closed).
 
@@ -232,13 +532,188 @@ def _record_settled(root, remote, now, client):
         raise APIError('leaderboard') from None
 
 
+def _canceled_candidate(row):
+    """Reuse a verified row as evidence of a refunded no-contest round.
+
+    A ``CANCELED`` row is already in the right shape. A ``LOCKED`` row is the
+    authoritative betting snapshot (betting is closed), and the cancellation we
+    already verified turns it into refunded participation evidence.
+    """
+    if not isinstance(row, dict):
+        return None
+    if row.get('status') == 'CANCELED':
+        return row
+    if row.get('status') == 'LOCKED':
+        return {**row, 'status': 'CANCELED', 'winning_outcome_id': None}
+    return None
+
+
+def _cancel_snapshot_path(root, row):
+    # Never put a remote id into a filesystem path. Each owned prediction has
+    # its own retry evidence; another generation cannot consume or replace it.
+    digest = hashlib.sha256(row['id'].encode('utf-8')).hexdigest()
+    return root / f'hanjuku_prediction_cancel_{digest}.json'
+
+
+def _check_cancel_snapshot(snapshot, row):
+    from . import prediction_leaderboard as leaderboard
+
+    if (not isinstance(snapshot, dict) or snapshot.get('status') != 'CANCELED'
+            or not _matches(snapshot, row)
+            or not _no_contest(snapshot)):
+        raise ValueError('invalid cancel snapshot ownership')
+    leaderboard.extract(snapshot)
+    return snapshot
+
+
+def _load_cancel_snapshot(root, row):
+    # Keep the main intent small: its existing 16 KiB readers need no change.
+    path = _cancel_snapshot_path(root, row)
+    snapshot = read_record(path, limit=MAX_CANCEL_SNAPSHOT_BYTES)
+    if not snapshot and not path.exists() and not path.is_symlink():
+        return None
+    return _check_cancel_snapshot(snapshot, row)
+
+
+def _save_cancel_snapshot(root, row, remote):
+    """Write verified closed-betting evidence BEFORE the irreversible cancel."""
+    if remote.get('status') != 'LOCKED':
+        raise APIError('invalid_response')
+    existing = _load_cancel_snapshot(root, row)
+    if existing is not None:
+        # A failed/unknown PATCH may still leave the remote LOCKED. Never
+        # overwrite known participation with a poorer response on that retry.
+        return existing
+    try:
+        snapshot = _check_cancel_snapshot(_canceled_candidate(remote), row)
+        payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n'
+        if len(payload.encode('utf-8')) > MAX_CANCEL_SNAPSHOT_BYTES:
+            raise ValueError('cancel snapshot exceeds the byte limit')
+    except ValueError:
+        raise APIError('invalid_response') from None
+    try:
+        atomic_write_json(_cancel_snapshot_path(root, row), snapshot)
+    except OSError:
+        raise APIError('leaderboard') from None
+    return snapshot
+
+
+def _record_canceled(root, now, client, *, sources=()):
+    """Record a no-contest CANCELED round's participation in the 予想王 ledger.
+
+    The round is stored once per prediction id with the refunded stake and the
+    fixed reason ``no-contest``. A row without predictors is still stored (the
+    per-outcome counts are the evidence); no viewer, count or point is invented
+    when the row does not prove one. A contract violation is refused and a
+    ledger read/write failure raises ``APIError('leaderboard')`` so the same id
+    is retried later.
+    """
+    from . import prediction_leaderboard as leaderboard
+
+    candidate = None
+    for source in sources:
+        annotated = _canceled_candidate(source)
+        if annotated is None:
+            continue
+        try:
+            leaderboard.extract(annotated)
+        except leaderboard.LeaderboardError:
+            raise APIError('invalid_response') from None
+        if candidate is None or _evidence_rank(annotated) > _evidence_rank(candidate):
+            candidate = annotated
+    if candidate is None or not _has_predictors(candidate):
+        prediction_id = next((s.get('id') for s in sources
+                              if isinstance(s, dict) and isinstance(s.get('id'), str)), None)
+        if isinstance(prediction_id, str):
+            rows = client.list(prediction_id)
+            match = next((r for r in rows
+                          if isinstance(r, dict) and r.get('id') == prediction_id), None)
+            annotated = _canceled_candidate(match)
+            if annotated is not None and (candidate is None
+                                         or _evidence_rank(annotated) > _evidence_rank(candidate)):
+                candidate = annotated
+    if candidate is None:
+        raise APIError('invalid_response')
+    try:
+        leaderboard.extract(candidate)
+    except leaderboard.LeaderboardError:
+        raise APIError('invalid_response') from None
+    try:
+        return leaderboard.record_settled(root, candidate, corner='hanjuku',
+                                          now=int(now), cancel_reason='no-contest')
+    except (leaderboard.LeaderboardError, OSError):
+        raise APIError('leaderboard') from None
+
+
 def summary(state):
     row = state.get('round') or {}
     return {'mode': state.get('mode'), 'error': state.get('error'),
             'best_cleared': state.get('best_cleared'), 'target': row.get('target'),
             'middle': row.get('middle'), 'status': row.get('status'),
-            'cleared': (row.get('result') or {}).get('cleared'),
+            # A goal settled mid-run has no terminal result; its verified
+            # count is `achieved` (2026-11-09). Diagnostics read only counts.
+            'cleared': ((row.get('result') or {}).get('cleared')
+                        if row.get('result') is not None else row.get('achieved')),
             'next_poll_at': state.get('next_poll_at')}
+
+
+def _bounded_clock(value):
+    if type(value) not in (int, float) or isinstance(value, bool):
+        return None
+    try:
+        if not math.isfinite(value) or value < 0:
+            return None
+    except (OverflowError, ValueError, TypeError):
+        return None
+    return value
+
+
+def _health(root):
+    """Prior health record, or an empty one when unreadable/untrusted."""
+    try:
+        record = read_record(root / HEALTH_FILE, limit=4096)
+    except Exception:
+        return {}
+    if type(record.get('schema')) is not int or record['schema'] != HEALTH_SCHEMA:
+        return {}
+    return record
+
+
+def _update_health(root, outcome, now):
+    """Best-effort consecutive-error counter; never changes the prediction.
+
+    A failing tick must stay observable even when ``_load`` rejects the durable
+    ledger and the ledger therefore cannot be rewritten. Only fixed error codes,
+    counters and clocks are persisted, and a health write failure is ignored so
+    the prediction path is never held or failed by telemetry.
+    """
+    try:
+        prior = _health(root)
+        streak = prior.get('consecutive_errors')
+        streak = streak if type(streak) is int and 0 <= streak <= MAX_ERROR_STREAK else 0
+        failed = outcome.get('mode') == 'error'
+        error = outcome.get('error') if failed else None
+        error = error if isinstance(error, str) and error in ERRORS else ('unexpected' if failed else None)
+        record = {
+            'schema': HEALTH_SCHEMA,
+            'consecutive_errors': min(streak + 1, MAX_ERROR_STREAK) if failed else 0,
+            'last_error': error,
+            'last_error_at': _bounded_clock(now if failed else prior.get('last_error_at')),
+            'last_ok_at': _bounded_clock(prior.get('last_ok_at') if failed else now),
+        }
+        atomic_write_json(root / HEALTH_FILE, record)
+    except Exception:
+        pass
+
+
+def _note_health_after_failure(root, now):
+    """Record an unreadable-ledger tick; skip when another tick holds the lock."""
+    try:
+        with locked(root) as acquired:
+            if acquired:
+                _update_health(root, {'mode': 'error', 'error': 'invalid_state'}, now)
+    except Exception:
+        pass
 
 
 def _advance(g, root, state, identity, now, enabled, ending_window, client_factory):
@@ -254,13 +729,29 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     for result in (completed, owned_completed):
         if result and result['cleared'] is not None:
             state['best_cleared'] = max(state['best_cleared'], result['cleared'])
-    new_terminal = bool(owned_completed and not row.get('result'))
+    achieved_count = (_row_target_cleared(root, row)
+                      if row and row['status'] not in DONE else None)
+    target_reached = achieved_count is not None
+    # Bypass the normal poll cooldown only the first time the achievement is
+    # seen. The marker is persisted before any API call, so an outage (even in
+    # the remote read) falls back to the 300 s error backoff instead of turning
+    # every observation tick into a retry.
+    fresh_reached = target_reached and row.get('achieved') is None
+    if fresh_reached:
+        row['achieved'] = achieved_count
+        state['best_cleared'] = max(state['best_cleared'], achieved_count)
+    new_settlement = bool(owned_completed and not row.get('result')) or fresh_reached
     if owned_completed:
         row['result'] = owned_completed
     atomic_write_json(root / FILE, state)
     if now < state['last_poll_at']:
         raise APIError('clock_regressed')
-    if now < state['next_poll_at'] and not new_terminal:
+    if now < state['next_poll_at'] and not new_settlement:
+        return
+    if identity is None and (not row or row['status'] in DONE) and not new_settlement:
+        # g1067 2026-10-28: identity-less timer ticks can never create. Consuming
+        # the poll window here starved the owner's observe tick. The live-run
+        # adoption entry passes an identity, so it does not take this branch.
         return
     state.update(last_poll_at=now, next_poll_at=now + POLL_SECONDS, error=None)
     if not enabled:
@@ -296,6 +787,18 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                     if exc.code == 'invalid_response':
                         row['status'] = 'RESOLVED'
                     raise
+            elif remote['status'] == 'CANCELED':
+                # 不成立キャンセルで落ちた参加実績を、再観測・再起動のあとでも
+                # 一度だけ記録する（#933 追記）。
+                snapshot = _load_cancel_snapshot(root, row)
+                if snapshot is not None or _no_contest(remote):
+                    try:
+                        _record_canceled(root, now, client, sources=(remote, snapshot))
+                    except APIError as exc:
+                        if exc.code == 'invalid_response':
+                            row['status'] = 'CANCELED'
+                        raise
+                    _cancel_snapshot_path(root, row).unlink(missing_ok=True)
             row['status'] = remote['status']
             # Persist adopted ownership before any PATCH; API retries are idempotent.
             atomic_write_json(root / FILE, state)
@@ -303,25 +806,53 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                 state['mode'] = remote['status'].lower()
                 return
             result = owned_completed
-            cancel = bool(result and result['cleared'] is None)
+            # 4択の row では画面停滞/ループ終了を4択目で確定する。突破数の証拠が
+            # 無い停滞終了（従来は CANCELED）も、この選択肢がある run は記帳する。
+            # 目標達成の証拠がある row は、挑戦終了を待たずその時点で精算する
+            # （2026-11-09 オーナー判断）。突破数は減らないので後から覆らない。
+            index = 0 if target_reached else resolve_index(row, result) if result else None
+            cancel = bool(result) and index is None
             # An explicit ready different runtime is an interruption, not a loss.
-            cancel = cancel or (ready and not same(row) and result is None)
+            cancel = cancel or (ready and not same(row) and result is None
+                                and not target_reached)
             if not ready and result is None:
+                # The goal is already proven while the seat changes hands.
+                # Close betting so nobody can bet on a known result, and
+                # settle on the first tick that can read the confirmed seat.
+                if target_reached and remote['status'] == 'ACTIVE':
+                    client.end(row['id'], 'LOCKED')
                 state['mode'] = 'pending'
                 return
-            if result or cancel:
+            if target_reached:
+                state['best_cleared'] = max(state['best_cleared'], achieved_count)
+            if result or target_reached or cancel:
                 state['mode'] = 'settling'
                 atomic_write_json(root / FILE, state)
+                cancel_reason = None
                 if cancel:
                     response = client.end(row['id'], 'CANCELED')
                     desired = 'CANCELED'
                 else:
-                    index = winner(result['cleared'], row['target'], row['middle'])
                     # Lock before publishing the winner, including early endings.
+                    settled_from = remote
                     if remote['status'] == 'ACTIVE':
-                        client.end(row['id'], 'LOCKED')
-                    response = client.end(row['id'], 'RESOLVED', row['outcome_ids'][index])
-                    desired = 'RESOLVED'
+                        locked = client.end(row['id'], 'LOCKED')
+                        # Betting is closed after the lock, so the locked row is
+                        # the authoritative count when it carries one.
+                        if (isinstance(locked, list) and len(locked) == 1
+                                and _matches(locked[0], row)
+                                and _contested_outcomes(locked[0]) is not None):
+                            settled_from = locked[0]
+                    if _no_contest(settled_from):
+                        # 賭けが成立していない予想は勝者を出さず中止し、投票済みの
+                        # チャンネルポイントを全額返却する。
+                        snapshot = _save_cancel_snapshot(root, row, settled_from)
+                        response = client.end(row['id'], 'CANCELED')
+                        desired = 'CANCELED'
+                        cancel_reason = 'no-contest'
+                    else:
+                        response = client.end(row['id'], 'RESOLVED', row['outcome_ids'][index])
+                        desired = 'RESOLVED'
                 if len(response) != 1 or not _matches(response[0], row) or response[0]['status'] != desired:
                     raise APIError('invalid_response')
                 if desired == 'RESOLVED':
@@ -331,16 +862,21 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
                         if exc.code == 'invalid_response':
                             row['status'] = desired
                         raise
+                elif cancel_reason is not None:
+                    # 不成立キャンセルの参加実績を残す。記録に失敗したら round を
+                    # terminal にせず、次の観測で CANCELED を再読取して再試行する。
+                    try:
+                        _record_canceled(root, now, client,
+                                         sources=(response[0], snapshot))
+                    except APIError as exc:
+                        if exc.code == 'invalid_response':
+                            row['status'] = desired
+                        raise
+                    _cancel_snapshot_path(root, row).unlink(missing_ok=True)
                 row['status'] = desired
                 state['mode'] = desired.lower()
                 return
             state['mode'] = 'active'
-            # End voting when the top outcome is already provable; do not resolve
-            # early (the final record still belongs to the entire attempt).
-            cleared = progress.completed_count(runtime_directory(root, row['runtime_id']),
-                                               {k: row[k] for k in progress.KEYS})
-            if remote['status'] == 'ACTIVE' and cleared is not None and cleared >= row['target']:
-                client.end(row['id'], 'LOCKED')
             return
         if row.get('id'):
             raise APIError('remote_missing')
@@ -355,31 +891,70 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     else:
         if not live_owner:
             return
-        if row and same(row) and row['status'] in DONE:
+        chain = _chain_target(root, row, state) if (row and same(row)) else None
+        if row and same(row) and row['status'] in DONE and chain is None:
             # A remotely ended prediction belongs to this attempt even when it
             # was canceled/refunded. Respect that terminal state and do not
-            # silently open a second wager in the same run.
+            # silently open a second wager in the same run. The one exception
+            # is a goal settled at achievement: the same challenge carries on
+            # to the next goal (2026-11-09 owner decision).
             return
         if paused:
             state['mode'] = 'paused'
             return
-        bounds = thresholds(state['best_cleared'])
-        if bounds is None:
-            state['mode'] = 'complete_record'
-            return
+        resume = None
+        if chain is not None:
+            bounds = {'target': chain}
+        else:
+            resume = _resume_prediction_context(root, identity)
+            if resume is not None:
+                target = resume['chapter']
+                if target is None:
+                    # The game may continue, but do not invent the resumed chapter just to open a wager.
+                    state['mode'] = 'pending'
+                    return
+                bounds = {'target': target}
+            else:
+                bounds = thresholds(state['best_cleared'])
+                if bounds is None:
+                    state['mode'] = 'complete_record'
+                    return
         cleared = progress.completed_count(runtime_directory(root, identity['runtime_id']), identity)
         if cleared is not None and cleared >= bounds['target']:
-            state['mode'] = 'known_result'
-            return
+            if chain is None:
+                state['mode'] = 'known_result'
+                return
+            # The next chapter cleared between settling the last wager and
+            # opening this one: carry the goal forward instead of betting on
+            # a known result.
+            state['best_cleared'] = max(state['best_cleared'], cleared)
+            if state['best_cleared'] >= progress.MAX_CHAPTER:
+                state['mode'] = 'complete_record'
+                return
+            bounds = {'target': state['best_cleared'] + 1}
+            chain = bounds['target']
         remote_rows = client.list()
         if any(r['status'] in LIVE for r in remote_rows):
             state['mode'] = 'blocked'
             return
         nonce = secrets.token_hex(6)
-        row = {**identity, **bounds, 'nonce': nonce, 'title': _title(nonce),
-               'outcome_titles': outcome_titles(**bounds),
-               'window': voting_window(bounds['target'], ending_window),
-               'attempted': False, 'status': 'INTENT'}
+        if chain is not None:
+            row = {**identity, **bounds, 'kind': NEXT_PREDICTION_KIND, 'nonce': nonce,
+                   'title': _chapter_title(bounds['target'], nonce),
+                   'outcome_titles': resume_outcome_titles(bounds['target']),
+                   'window': voting_window(bounds['target'], ending_window),
+                   'attempted': False, 'status': 'INTENT'}
+        elif resume is not None:
+            row = {**identity, **bounds, 'kind': RESUME_PREDICTION_KIND, 'nonce': nonce,
+                   'title': _chapter_title(bounds['target'], nonce),
+                   'outcome_titles': resume_outcome_titles(bounds['target']),
+                   'window': voting_window(bounds['target'], ending_window),
+                   'attempted': False, 'status': 'INTENT'}
+        else:
+            row = {**identity, **bounds, 'nonce': nonce, 'title': _title(nonce),
+                   'outcome_titles': outcome_titles(**bounds),
+                   'window': voting_window(bounds['target'], ending_window),
+                   'attempted': False, 'status': 'INTENT'}
         state['round'] = row
     # A previous rejected POST may be retried much later. Recheck that the
     # result/owner has not changed while GET was in flight before accepting bets.
@@ -416,6 +991,111 @@ def _advance(g, root, state, identity, now, enabled, ending_window, client_facto
     state['mode'] = 'active'
 
 
+def active_identity(g, *, now=None):
+    """Canonical identity of the live Hanjuku run, or ``None``.
+
+    Creation is owned by the run, not by the corner's observe loop. A caller
+    may act for this identity only while all of the following are true:
+
+    * the canonical ledger is ``ready`` and its active seat is Hanjuku;
+    * the per-runtime ``hanjuku_run.json`` belongs to that exact identity;
+    * the run has observed at least once (resume context is available);
+    * the run is not terminal and its last observation is fresh.
+
+    A stale/dead run is never adopted: creating a wager for a runtime nobody
+    observes would just open a round that cannot settle. All failures are
+    "no live owner" rather than exceptions, so both the common timer and the
+    run-side ticker can probe without affecting the corner.
+    """
+    now = time.time() if now is None else now
+    try:
+        if type(now) not in (int, float) or isinstance(now, bool) or not math.isfinite(now):
+            return None
+        root = Path(g.state_dir)
+        canonical = read_record(root / 'game_switch.json', limit=256 * 1024)
+        if canonical.get('phase') != 'ready':
+            return None
+        # Never open a wager while a transition still owns the plane. The
+        # canonical active seat is only the live target once every in-flight
+        # marker is clear.
+        if (canonical.get('operation') is not None
+                or canonical.get('request_id') is not None
+                or canonical.get('deadline_at') is not None
+                or canonical.get('candidate') is not None
+                or canonical.get('previous') is not None
+                or canonical.get('retiring')):
+            return None
+        active = canonical.get('active')
+        if not isinstance(active, dict) or active.get('game') != 'hanjuku-hero':
+            return None
+        identity = progress.checked_identity({key: active.get(key) for key in progress.KEYS})
+        runtime = runtime_directory(root, identity['runtime_id'])
+        run = hanjuku_run.load(runtime, identity)
+        if not run:
+            return None
+        if run.get('terminal_reason') in hanjuku_run.TERMINAL_REASONS:
+            return None
+        observations = run.get('observations')
+        if type(observations) is not int or observations < 1:
+            return None
+        observed_at = run.get('observed_at')
+        if type(observed_at) not in (int, float) or isinstance(observed_at, bool):
+            return None
+        if not math.isfinite(observed_at) or observed_at <= 0:
+            return None
+        if not 0 <= now - observed_at <= RUN_FRESH_SECONDS:
+            return None
+        return identity
+    except Exception:
+        return None
+
+
+def tick_active(g, **kwargs):
+    """Tick the live run with its canonical identity (timer fallback).
+
+    When no live run exists this is exactly the old identity-less timer tick:
+    it still retries settlement of an already-owned round, but can never
+    create one. Passing the canonical identity is what lets the common timer
+    adopt a run whose corner/agent owner disappeared.
+    """
+    identity = active_identity(g, now=kwargs.get('now'))
+    if identity is None:
+        return tick(g, **kwargs)
+    return tick(g, identity, **kwargs)
+
+
+def _owner_tick_loop(g, identity, interval, stop):
+    """Run-side owner loop; never raises into the agent's game loop."""
+    from . import hanjuku_hotload
+
+    while not stop.is_set():
+        try:
+            module = hanjuku_hotload.module('hanjuku_predictions')
+            probe = getattr(module, 'active_identity', None)
+            if callable(probe) and probe(g) == identity:
+                module.tick(g, identity)
+        except Exception:
+            pass
+        if stop.wait(interval):
+            return
+
+
+def start_owner_ticker(g, identity, *, interval=OWNER_TICK_SECONDS):
+    """Start the run-side primary prediction ticker for one owned runtime.
+
+    Returns the daemon thread. The game/agent process owns this thread for its
+    lifetime; a lost fence exits the process and the daemon goes with it. The
+    common rotation timer calls :func:`tick_active` as a fallback.
+    """
+    identity = progress.checked_identity(identity)
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_owner_tick_loop, args=(g, identity, interval, stop),
+        name='hanjuku-predictions-owner', daemon=True)
+    thread.start()
+    return thread
+
+
 def tick(g, identity=None, *, now=None, client_factory=configured_client):
     """Best-effort side channel. A failure never tears down or holds game input."""
     state = None
@@ -444,6 +1124,9 @@ def tick(g, identity=None, *, now=None, client_factory=configured_client):
                 # Malformed ledgers themselves never reach this write path.
                 state.update(mode='error', error='invalid_state', next_poll_at=now + RETRY_SECONDS)
             atomic_write_json(root / FILE, state)
-            return summary(state)
+            outcome = summary(state)
+            _update_health(root, outcome, now)
+            return outcome
     except Exception:
+        _note_health_after_failure(root, now if now is not None else time.time())
         return {'mode': 'error', 'error': 'invalid_state'}

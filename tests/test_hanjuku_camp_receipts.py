@@ -15,6 +15,8 @@ from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import camp_menu
+from docich.hanjuku.state.regions import flow as _flow, journal as _journal
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
 ID = {'game': 'hanjuku-hero', 'runtime_id': 'g514-8937051b', 'generation': 514, 'lease_id': 'lease-test'}
 
@@ -39,24 +41,30 @@ def pending():
     state = {'policy': {'chapter': 2, 'tick': 50, 'recall': {'stage': 'dest', 'steps': 0}}}
     actions, state = decide(frame, state)
     assert actions == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert state['policy']['recall']['goal'] == 'アルマムーン'
+    assert state['policy']['flow']['recall']['goal'] == 'アルマムーン'
     return actions, state
 
 
-@pytest.mark.parametrize('selected,button', [(0, 'down'), (1, 'down'), (2, 'down'), (3, 'a')])
+# docich#5105: the menu target is always いどう (row 0; owner 2026-11-19
+# 「きかん禁止・いどう→Y」), so the cursor walks up from a lower row and the
+# A lands on row 0 instead of walking down to the retired きかん fallback.
+@pytest.mark.parametrize('selected,button', [(0, 'a'), (1, 'up'), (2, 'up'), (3, 'up')])
 def test_recall_menu_uses_observed_cursor_instead_of_saved_down_count(selected, button):
     mem = {'chapter': 2, '_records': [], 'recall': {'stage': 'menu', 'steps': 0, 'downs': 3}}
     assert p.camp_recall_step(camp_menu(selected), mem, None) == [p.pad(button)]
-    assert mem['recall']['stage'] == ('dest' if selected == 3 else 'menu')
+    assert _flow(mem)['recall']['stage'] == ('dest' if selected == 0 else 'menu')
 
 
 def test_repeated_same_cursor_never_becomes_confirmation_and_stops_finitely():
     mem = {'chapter': 2, 'tick': 100, '_records': [], 'recall': {'stage': 'menu', 'steps': 0}}
-    screen = camp_menu(0)
+    # docich#5105: the menu target is いどう (row 0), so pin the cursor on
+    # row 3 (きかん) — it walks up toward いどう and never arrives on the
+    # fixed fixture, then the recall cancels instead of confirming blindly.
+    screen = camp_menu(3)
     for _ in range(p.RECALL_LIMIT):
-        assert p.camp_recall_step(screen, mem, None) == [p.pad('down')]
+        assert p.camp_recall_step(screen, mem, None) == [p.pad('up')]
     assert p.camp_recall_step(screen, mem, None) == [p.pad('b')]
-    assert not mem.get('recall') and mem['recall_skip']['tick'] == 100
+    assert not _flow(mem).get('recall') and _flow(mem)['recall_skip']['tick'] == 100
 
 
 def test_missing_hand_and_partial_menu_never_use_legacy_down_then_a():
@@ -67,7 +75,7 @@ def test_missing_hand_and_partial_menu_never_use_legacy_down_then_a():
     assert p.camp_recall_step(screen, mem, None) == []
     assert p.camp_recall_step(screen, mem, None) == []
     assert p.camp_recall_step(screen, mem, None) == [p.pad('b')]
-    assert not mem.get('recall')
+    assert not _flow(mem).get('recall')
     assert sum(r['decision'] == 'camp_menu_unread' for r in mem['_records']) == 1
 
 
@@ -75,17 +83,17 @@ def test_actual_recall_picker_keeps_proposal_without_changing_sortie_or_owner():
     frame = picker(); screen = parse(frame, phase=classify(frame))
     assert screen.kind == 'world_map'
     mem = {'chapter': 2, 'tick': 50, '_records': [],
-           'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}},
+           'world': {'sorties': {'old': {'general': p.NAME, 'status': 'en_route', 'target': 'ドミノーラ'}}},
            'recall': {'stage': 'dest', 'steps': 0, 'hero': True, 'sorties': ['old']}}
     assert p.world_map_step(screen, mem, frame) == [p.pad('a'), {'type': 'wait', 'ms': 700}, p.pad('a')]
-    assert mem['recall']['stage'] == 'await_dispatch'
-    assert mem['sorties']['old']['status'] == 'en_route'
+    assert _flow(mem)['recall']['stage'] == 'await_dispatch'
+    assert mem['world']['sorties']['old']['status'] == 'en_route'
     assert not any(r['decision'] in ('hero_recalled', 'camp_recall') for r in mem['_records'])
     # Same picker after the proposal must not get another pair of A's or Y.
     assert p.world_map_step(screen, mem, frame) == []
 
 
-def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_path):
+def test_actual_sender_receipts_bind_request_then_record_a_dispatched_return(tmp_path):
     module = command_bot(); actions, state = pending(); frame = picker()
     atomic_write_json(tmp_path / 'hanjuku_run.json', {**ID, 'frame_sha256': frame.digest()})
     module.persist(tmp_path, state, state.pop('_records'), {'hanjuku': ID},
@@ -96,16 +104,20 @@ def test_actual_sender_receipts_bind_request_then_leave_arrival_unconfirmed(tmp_
     one = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
     assert one['a_inputs'] == 1
     _, first = decide(frame, state, recall_inputs=one)
-    assert not first['policy']['recall'].get('input_sent')
+    assert not first['policy']['flow']['recall'].get('input_sent')
     hanjuku_run.action_sent(tmp_path, ID, action)
     receipt = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
     assert receipt['a_inputs'] == 2
-    mem = state['policy']; mem['_records'] = []; mem['_recall_inputs'] = receipt
+    mem = state['policy']; mem['_records'] = []; _journal(mem)['_recall_inputs'] = receipt
     assert p.camp_recall_step(Screen([], None, '', kind='map'), mem, None) == []
-    assert not mem.get('recall')
-    assert mem['recall_verification']['input_sent'] and mem['recall_verification']['picker_closed']
-    assert mem['recall_verification']['status'] == 'arrival_unconfirmed'
-    assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_unconfirmed']
+    assert not _flow(mem).get('recall')
+    assert _flow(mem)['recall_verification']['input_sent'] and _flow(mem)['recall_verification']['picker_closed']
+    # docich#4978: a closed picker is the game accepting the return. The record
+    # is a dispatch, not an unconfirmed failure; the arrival read stays pending
+    # in recall_verification for camp_recheck's named roster read.
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
+    assert [r['decision'] for r in mem['_records']] == ['camp_recall_input_sent', 'camp_recall_dispatched']
+    assert not mem.get('uncertain')
 
 
 def test_unread_cursor_snapshot_uses_existing_ring_without_an_unrelated_chart_context(tmp_path):
@@ -121,7 +133,7 @@ def test_unread_cursor_snapshot_uses_existing_ring_without_an_unrelated_chart_co
 def test_receipt_reader_rejects_old_identity_frame_time_and_duplicate_lines(tmp_path):
     module = command_bot(); _, state = pending()
     trace = {**ID, 'decision_id': 'g514-8937051b:514:1', 'frame_sha256': picker().digest(), 'planned_at': 100}
-    state['policy']['recall']['request_trace'] = trace
+    state['policy']['flow']['recall']['request_trace'] = trace
     good = {'event': 'input_sent', 'decision_id': trace['decision_id'],
             'decision_frame_sha256': trace['frame_sha256'], 'at': 101,
             'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}
@@ -138,15 +150,39 @@ def test_receipt_reader_rejects_old_identity_frame_time_and_duplicate_lines(tmp_
     assert module.recall_input_receipts(tmp_path, state, {'hanjuku': ID}) is None
 
 
+def test_card_scroll_receipt_is_bound_to_run_frame_and_delivered_up(tmp_path):
+    module = command_bot()
+    trace = {**ID, 'decision_id': 'synthetic:1', 'frame_sha256': 'a' * 64, 'planned_at': 100}
+    state = {'policy': {'card_upper_boundary': {'await_input': True, 'request_trace': trace}}}
+    good = {'event': 'input_sent', 'decision_id': trace['decision_id'],
+            'decision_frame_sha256': trace['frame_sha256'], 'at': 101,
+            'type': 'pad', 'buttons': ['up'], 'hold_ms': 100}
+    bad = [{**good, 'at': 99}, {**good, 'decision_id': 'different'},
+           {**good, 'decision_frame_sha256': 'b' * 64}, {**good, 'buttons': ['a']}]
+    (tmp_path / 'hanjuku_events.jsonl').write_text('\n'.join(json.dumps(x) for x in bad + [good, good]))
+    assert module.card_scroll_receipt(tmp_path, state, {'hanjuku': ID})['up_inputs'] == 1
+    assert module.card_scroll_receipt(tmp_path, state, {'hanjuku': {**ID, 'lease_id': 'other'}}) is None
+
+
 def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
     _, state = pending(); mem = state['policy']; mem['_records'] = []
+    _flow(mem)['camp_recall_blocked'] = {'アルマムーン': 1}
     view = parse(picker(), phase='field')
     for _ in range(5):
         assert p.world_map_step(view, mem, picker()) == []
     assert p.world_map_step(view, mem, picker()) == [p.pad('b')]
-    assert not mem.get('recall')
-    assert not mem['recall_verification'].get('input_sent')
-    assert mem['recall_verification']['status'] == 'dispatch_unconfirmed'
+    assert not _flow(mem).get('recall')
+    assert not _flow(mem)['recall_verification'].get('input_sent')
+    assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
+    record = next(row for row in mem['_records']
+                  if row['decision'] == 'camp_recall_unconfirmed')
+    assert record['resulting_event'] == 'dispatch_unconfirmed'
+    assert '到着' not in record['reason']
+    assert record['observed_metric']['stage'] == 'await_dispatch'
+    assert record['observed_metric']['steps'] == 6
+    # The A was never receipt-confirmed, so the selected castle was not
+    # contacted and must not be learned as a refusing destination.
+    assert _flow(mem)['camp_recall_blocked'] == {'アルマムーン': 1}
 
 
 @pytest.mark.parametrize('kind',['unknown','yes_no'])
@@ -155,7 +191,7 @@ def test_unclassified_return_after_recall_does_not_get_legacy_a(monkeypatch,kind
     _,state=pending()
     monkeypatch.setattr(hanjuku_screen,'parse',lambda *_a,**_k:Screen([],None,'',kind=kind))
     actions,state=decide(picker(),state)
-    assert actions==[] and state['policy']['recall']['stage']=='await_dispatch'
+    assert actions==[] and state['policy']['flow']['recall']['stage']=='await_dispatch'
 
 
 @pytest.mark.parametrize('stage',['dest','await_dispatch'])
@@ -165,5 +201,129 @@ def test_recall_target_screen_never_confirms_a_different_chart_sortie(stage):
          'sortie_attempt':{'step':'1-A2','target_seen':True},
          'recall':{'stage':stage},'_records':[]}
     p.observe_sortie_transition(Screen([],None,'',kind='world_map'),mem,'map_target')
-    assert mem['orders']['1-A2']=='pending' and not mem.get('sorties')
+    assert _plan_region(mem)['orders']['1-A2']=='pending' and not _world(mem).get('sorties')
     assert not mem['_records']
+
+
+def _verified_memory(tick=1600, dispatched=900, location='camp', reread=1500):
+    mem = {'tick': tick, '_records': [],
+           'general_statuses': {'statuses': {
+               'ナストリーニ': {'location': location, 'hp': 66, 'tick': reread}}}}
+    _flow(mem)['camp_verify'] = {'tick': dispatched, 'castle': 'アルマムーン',
+                                 'camp': [132, 120], 'generals': ['ナストリーニ']}
+    return mem
+
+
+def test_a_camped_general_still_camped_after_the_wait_is_named():
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _verified_memory()
+    assert recall_flow.camp_arrival_check(mem) is True
+    decisions = [r['decision'] for r in mem['_records']]
+    assert 'camp_recall_arrival_timeout' in decisions
+    metric = [r for r in mem['_records'] if r['decision'] == 'camp_recall_arrival_timeout'][0]['observed_metric']
+    assert metric['still_camped'] == ['ナストリーニ']
+    assert _flow(mem).get('recall_goal_failures')['132,120']['アルマムーン'] == 1
+    assert 'camp_verify' not in _flow(mem)
+
+
+def test_an_unread_status_keeps_the_arrival_check_pending():
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _verified_memory()
+    mem['general_statuses']['statuses']['ナストリーニ']['tick'] = 850   # older than dispatch
+    assert recall_flow.camp_arrival_check(mem) is None
+    assert 'camp_verify' in _flow(mem)
+    assert not any(r['decision'] == 'camp_recall_arrival_timeout' for r in mem['_records'])
+
+
+def test_a_general_that_left_the_camp_confirms_the_arrival():
+    from docich.hanjuku.flows import recall as recall_flow
+    mem = _verified_memory(location='castle')
+    assert recall_flow.camp_arrival_check(mem) is True
+    assert any(r['decision'] == 'camp_recall_arrival_confirmed' for r in mem['_records'])
+    assert 'camp_verify' not in _flow(mem)
+
+
+def test_cliff_escape_request_is_not_a_camp_recall_or_arrival_read():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'target': [134, 120], 'kind': 'camp'}
+    actions = [p.pad('a')]
+    assert recall_flow._request_recall(
+        mem, state, 'アルマムーン', actions,
+        escape_move=True, target_cell=[135, 121]) == actions
+    assert 'roster_read_due' not in mem
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_requested']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_requested'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['target_cell'] == [135, 121]
+
+
+@pytest.mark.parametrize('goal', [None, 'アルマムーン'])
+def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 5, 'goal': goal,
+             'target': [134, 120], 'target_cell': [135, 121],
+             'kind': 'camp', 'escape_move': True, 'a_inputs': 1}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='text'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_unconfirmed']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_unconfirmed'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['camp'] == [134, 120]
+    assert row['observed_metric']['target_cell'] == [135, 121]
+    assert row['observed_metric']['stage'] == 'await_dispatch'
+    assert row['observed_metric']['steps'] == 6
+    assert row['observed_metric']['input_receipt_confirmed'] is False
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatch_unconfirmed'
+    assert 'recall_verification' not in flow
+    assert 'camp_recall_blocked' not in flow
+    assert mem['uncertain'] is True
+
+
+def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 0, 'goal': None,
+             'target': [134, 120], 'kind': 'camp', 'escape_move': True,
+             'a_inputs': 1, 'input_sent': True}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='map'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_dispatched']
+    assert mem['_records'][0]['resulting_event'] == 'field_move_accepted'
+    assert mem['_records'][0]['observed_metric']['input_receipt_confirmed'] is True
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatched'
+    assert 'recall_verification' not in flow
+    assert 'camp_verify' not in flow
+    assert not mem.get('uncertain')
+
+
+@pytest.mark.parametrize('decision', [
+    'camp_escape_move_requested', 'camp_escape_move_dispatched',
+    'camp_escape_move_unconfirmed'])
+def test_cliff_escape_decisions_keep_their_frame_and_input_context(tmp_path, decision):
+    module = command_bot()
+    frame = picker()
+    state = {'step': 242, 'screen_kind': 'text',
+             'policy': {'active': 'unrelated'}}
+    record = {'decision': decision, 'chart_step': 'camp_escape',
+              'strategy_variant': 'escape_move',
+              'deviation_reason': 'cliff_exit'}
+    module.persist(tmp_path, state, [record], {'hanjuku': ID},
+                   actions=[], frame_sha256=frame.digest(), frame=frame)
+    plan = json.loads((tmp_path / 'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    assert plan['chart_step'] == 'camp_escape'
+    assert plan['strategy_variant'] == 'escape_move'
+    assert plan['deviation_reason'] == 'cliff_exit'
+    assert plan['snapshot'] == 'decision-002.png'
+    assert (tmp_path / 'hanjuku_frames' / 'decision-002.png').exists()

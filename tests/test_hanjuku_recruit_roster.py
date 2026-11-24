@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as p, hanjuku_house as house, hanjuku_roster as r
 from docich.hanjuku_screen import Screen
 import pytest
+from docich.hanjuku.state.regions import world as _world, plan as _plan_region, flow as _flow, journal as _journal
 
 NAMES = ['どうし', 'ゼウス', 'ヴィーナス', 'ココット', 'バジル', 'ミント',
          'クミン', 'チコリ', 'ビーツ', 'ヘーゼル', 'ラズベリー', 'カシュー',
@@ -78,12 +79,42 @@ def test_roles_can_be_overridden_by_chapter_and_adopted_chart(monkeypatch):
     mem=memory(castles=6)
     monkeypatch.setitem(p.chart.RECRUITMENT_BY_CHAPTER,1,{'per_castle':1,'attack':2})
     assert p._recruit_target(mem)==8
-    mem['chart_plan']={'recruitment':{'per_castle':2,'attack':4}}
+    _plan_region(mem)['chart_plan']={'recruitment':{'per_castle':2,'attack':4}}
     assert p._recruit_target(mem)==16
-    mem['chart_plan']['recruitment']={'per_castle':True,'attack':3}
+    _plan_region(mem)['chart_plan']['recruitment']={'per_castle':True,'attack':3}
     assert p._recruit_target(mem) is None
     mem['captured'].append('unknown castle')
     assert p._recruit_target(mem) is None
+
+
+def test_cash_spare_counts_every_field_castle_not_only_owned():
+    # Owner 2026-11-04: 1000G以上なら所有城ではなく章の全城（ボス城を除く）で数える。
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    assert p._recruit_target(mem) == 2 * 2 + 3       # 所持金未観測は従来どおり所有城
+    mem['gold'] = 999
+    assert p._recruit_target(mem) == 2 * 2 + 3
+    mem['gold'] = 1000
+    # 第1話はボスのけっかいを含む8城。フィールド上の守備対象は7城。
+    assert p._recruit_target(mem) == 2 * 7 + 3
+    mem['gold'] = None
+    assert p._recruit_target(mem) == 7
+
+
+def test_cash_spare_respects_chart_roles_and_the_general_cap(monkeypatch):
+    mem = memory(NAMES, complete=True, castles=1)
+    mem['gold'] = 1000
+    monkeypatch.setitem(p.chart.RECRUITMENT_BY_CHAPTER, 1, {'per_castle': 4, 'attack': 8})
+    assert p._recruit_target(mem) == 32                # 4*7+8=36 を上限32で切る
+
+
+def test_cash_spare_makes_a_previously_sufficient_roster_short_again():
+    mem = memory(NAMES[:6], complete=True, castles=2)
+    mem['gold'] = 999
+    assert p._recruit_shortage(mem)['target'] == 7
+    mem['gold'] = 1000
+    shortage = p._recruit_shortage(mem)
+    assert shortage['target'] == 17
+    assert shortage['count_lower_bound'] == 6
 
 
 def test_receipt_union_requires_one_scan_and_wrap_not_repeated_page():
@@ -112,21 +143,22 @@ def test_partial_duplicate_page_and_month_join_or_defeat_invalidate():
     assert r.fresh(mem) is None and state['roster_invalidated']
 
 
-@pytest.mark.parametrize('income,allowed', [(18,False),(19,True),(100,True)])
-def test_normal_income_covers_actual_wages_and_additional_max15(income,allowed):
+@pytest.mark.parametrize('income', [18, 19, 100])
+def test_income_and_wages_do_not_gate_recruitment(income):
+    # Issue #2367: income/payroll alone never holds a necessary recruitment.
     mem=memory(income=income) # hero0 + Zeus4 + candidate max15
     assert r.economics(mem,{'アルマムーン'})['wages']==4
-    assert p._stop_uneconomic_recruit(mem,shop()) is (not allowed)
+    assert p._stop_uneconomic_recruit(mem,shop()) is False
 
 
-def test_unknown_member_or_unobserved_castle_income_is_not_zero():
+def test_unknown_member_or_unobserved_castle_income_does_not_hold_recruitment():
     for mutate in [lambda m:m['recruit_roster']['wages'].update({'ゼウス':None}),
                    lambda m:m['castle_income'].clear(),
                    lambda m:m['castle_income']['アルマムーン'].update(month='1-6')]:
         mem=memory();mutate(mem);s=shop()
-        assert p._stop_uneconomic_recruit(mem,s)
-        assert s['recruit']=='deferred_economy' and s['recruit_reserve']==50
-        assert mem['recruit_hold']['reason']=='income_or_payroll_unknown'
+        assert p._stop_uneconomic_recruit(mem,s) is False
+        assert s['recruit']=='check' and s['recruit_reserve']==50
+        assert 'recruit_hold' not in mem
     assert r.fixed_wage('ゼウ') is None and r.fixed_wage('unknown') is None
 
 
@@ -136,8 +168,10 @@ def test_pending_employed_generals_after_chapter_change_prevent_understated_payr
     mem.update(month='1-8',recruit_roster={'chapter':2,'month':'1-8','tick':100,
         'names':['どうし','ゼウス'],'wages':{'どうし':0,'ゼウス':9},'complete':True})
     assert r.economics(mem,{'アルマムーン'}) is None
-    s=shop();assert p._stop_uneconomic_recruit(mem,s)
-    assert mem['recruit_hold']['reason']=='pending_employees'
+    s=shop();s['key']='1-8'
+    assert p._stop_uneconomic_recruit(mem,s) is False
+    assert mem['recruit_payroll_pending']==NAMES[:6]
+    assert 'recruit_hold' not in mem
     state={'chapter':2,'phase':'roster','seen':NAMES[:6]};mem['house']=state;r.begin(mem,state)
     r.page(mem,NAMES[:6]);state['roster_wrapped']=True
     assert r.complete(mem,state) and not mem.get('recruit_payroll_pending')
@@ -148,7 +182,7 @@ def test_global_scan_counts_field_generals_without_inventing_castle_placements()
     mem['house']=state;r.begin(mem,state);r.page(mem,['どうし','バジル'])
     r.wage(mem,{'general':'バジル','wage':7,'location':'field'})
     assert mem['recruit_roster']['wages']=={'バジル':7}
-    assert 'バジル' not in mem['garrison']['アルマムーン']
+    assert 'バジル' not in _world(mem)['garrison']['アルマムーン']
 
 
 def test_fixed_wages_match_pinned_sfc_data_and_maximum_when_submodule_present():
@@ -171,13 +205,16 @@ def test_measured_global_roster_scrolls_across_pages_then_wraps_to_first():
     for index,name in enumerate(names):
         page=names[:6] if index<6 else names[6:]
         offset=index if index<6 else index-6
-        assert feed(mem,roster(page,offset))==[p.pad('a')]
+        if index==0:assert feed(mem,roster(page,offset))==[p.pad('a')]
         assert feed(mem,status(name,egg='エラベルエッグ4'))==[p.pad('b')]
         assert feed(mem,roster(page,offset))==[p.pad('down')]
         next_index=(index+1)%len(names)
         next_page=names[:6] if next_index<6 else names[6:]
         next_offset=next_index if next_index<6 else next_index-6
-        assert feed(mem,roster(next_page,next_offset))==[]
+        # Issue #3194: the moved cursor is acted on in the same observation,
+        # so the next row's A (or the wrapped list's B) comes straight away.
+        want=[p.pad('a')] if next_index else [p.pad('b')]
+        assert feed(mem,roster(next_page,next_offset))==want
     assert feed(mem,roster(names[:6],0))==[p.pad('b')]
     assert house.step(Screen([],None,'',kind='map'),mem,None)==[]
     got=r.fresh(mem)
@@ -289,7 +326,7 @@ def test_paid_receipt_invalidates_membership_without_adding_a_general():
     assert p._finish_month_sub(parse(month_canvas(50)),mem,s)
     assert r.fresh(mem) is None and s['recruit']=='done'
     assert mem['recruit_roster_recheck']
-    assert {n for gs in mem['garrison'].values() for n in gs} <= set(NAMES[:2])
+    assert {n for gs in _world(mem)['garrison'].values() for n in gs} <= set(NAMES[:2])
 
 
 def test_hp_defeat_invalidates_scan_without_inferring_death():
@@ -326,13 +363,15 @@ def _drive_survey(state, names, month):
     assert actions==[p.pad('a')]
     for i,name in enumerate(names):
         frame=_survey_header(roster(names,i),month)
-        actions,state=decide(frame,state);assert actions==[p.pad('a')]
+        if i==0 or len(names)==1:
+            actions,state=decide(frame,state);assert actions==[p.pad('a')]
         actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),month),state)
         assert actions==[p.pad('b')]
         actions,state=decide(frame,state);assert actions==[p.pad('down')]
         if len(names)>1:
             actions,state=decide(_survey_header(roster(names,(i+1)%len(names)),month),state)
-            assert actions==[]
+            # Issue #3194: acts on the moved cursor in the same observation.
+            assert actions==([p.pad('a')] if i+1<len(names) else [p.pad('b')])
         else:
             for _ in range(6):actions,state=decide(frame,state)
             assert actions==[p.pad('b')]
@@ -345,7 +384,7 @@ def _drive_survey(state, names, month):
 
 
 @pytest.mark.parametrize('names',[['どうし'],['どうし','ゼウス']])
-def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(names):
+def test_field_scan_then_month_boundary_rescans_with_count_only(names):
     from docich.hanjuku_bot import decide
     from test_hanjuku_chart_bot import month_canvas
     def field(x,y):
@@ -372,18 +411,27 @@ def test_field_scan_then_month_boundary_rescans_and_reaches_paid_recruitment(nam
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
     assert actions==[p.pad('a')]
     assert state['policy']['house']['month_scan']
-    assert state['policy']['recruit_roster']['tick']>old_tick
-    state=_drive_survey(state,names,7)
-    actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
-    assert actions==[] and not state['policy'].get('house')
-    assert r.fresh(state['policy'])['complete']
-    # Recruitment is tested after the game's recovery-not-needed receipt.
-    p._plan(state['policy'], {'year': 1, 'month': 7, 'gold': 250})['egg'] = 'not_needed'
-    # Native monthly frames navigate to, and actually open, recruitment.
-    actions,state=decide(month_canvas(250,on='しょうぐんぼしゅう',month=7),state)
-    assert actions==[p.pad('a')]
-    assert state['policy']['month_sub']['kind']=='recruit'
-    assert state['policy']['shop']['recruit']=='opened'
+    assert state['policy']['recruit_roster']['tick']==old_tick
+    mem = state['policy']
+    mem['month']='1-7'
+    # This month only the country status is visited; no names are enumerated.
+    from docich.hanjuku_screen import parse
+    from test_hanjuku_level_scan import _main_on, _country_page1, _country_page2
+    main_frame=_main_on('しょうぐん')
+    assert house.step(parse(main_frame),mem,main_frame)==[p.pad('down')]
+    status_frame=_main_on('ステータス')
+    assert house.step(parse(status_frame),mem,status_frame)==[p.pad('a')]
+    page1=_country_page1()
+    assert house.step(parse(page1),mem,page1)==[p.pad('a')]
+    page2=_country_page2()
+    assert house.step(parse(page2),mem,page2)==[p.pad('b')]
+    assert house.step(parse(status_frame),mem,status_frame)==[]
+    assert house.step(parse(status_frame),mem,status_frame)==[p.pad('b')]
+    month_frame=month_canvas(250,on='メインメニュー',month=7)
+    assert house.step(parse(month_frame),mem,month_frame)==[]
+    assert not mem.get('house')
+    assert mem['country_general_count']['count']==10
+    assert r.fresh(mem) is None  # previous month's roster was not misdated
     assert state['policy']['castle_income']['アルマムーン']['tick']==10
 
 
@@ -469,39 +517,53 @@ def _survey_field():
 
 
 def _month_roster(state, visited=None):
-    """Actual decide menu/status flow; Down at the final row never wraps.
-
-    `visited` stops the walk early, leaving listed names unread. Reaching
-    every listed name completes the receipt even though the cursor never
-    returned to the first row; a partial walk never completes.
-    """
-    from docich.hanjuku_bot import decide
+    """Drive the monthly status-only count, without opening しょうぐん."""
+    from docich.hanjuku_screen import parse
     from test_hanjuku_chart_bot import month_canvas
-    from test_hanjuku_house import roster,status
-    month=month_canvas(250,on='メインメニュー',month=7)
-    actions,state=decide(month,state);assert actions==[p.pad('a')]
-    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('a')]
-    names=['どうし','ゼウス']
-    walk=names if visited is None else names[:visited]
-    for i,name in enumerate(walk):
-        frame=_survey_header(roster(names,i),7)
-        actions,state=decide(frame,state);assert actions==[p.pad('a')]
-        actions,state=decide(_survey_header(status(name,'エラベルエッグ4'),7),state)
-        assert actions==[p.pad('b')]
-        actions,state=decide(frame,state);assert actions==[p.pad('down')]
-        if i+1<len(walk):
-            actions,state=decide(_survey_header(roster(names,i+1),7),state);assert actions==[]
-    for _ in range(9):actions,state=decide(frame,state)
-    assert actions==[p.pad('b')] and not state['policy']['house']['roster_wrapped']
-    actions,state=decide(_survey_main(7),state);assert actions==[p.pad('b')]
-    actions,state=decide(month,state);assert actions==[]
-    assert not state['policy'].get('house')
-    assert state['policy']['recruit_roster']['complete'] is (visited is None)
+    from test_hanjuku_level_scan import _main_on, _country_page1, _country_page2
+    mem = state['policy']
+    month_frame = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(month_frame), mem, month_frame) == [p.pad('a')]
+    main_frame = _main_on('しょうぐん')
+    assert house.step(parse(main_frame), mem, main_frame) == [p.pad('down')]
+    status_frame = _main_on('ステータス')
+    assert house.step(parse(status_frame), mem, status_frame) == [p.pad('a')]
+    if visited is None:
+        page1 = _country_page1(soldiers=70)
+    else:
+        from test_hanjuku_house import Canvas
+        c = Canvas()
+        c.text(56, 7, '1わ1ねん7のつき250G')
+        c.text(24, 39, 'わがくにの じょうたい')
+        c.text(24, 71, 'しゅうにゅう 300G')
+        page1 = c.frame()  # no readable headcount; not zero
+    assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+    page2 = _country_page2()
+    assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+    assert house.step(parse(status_frame), mem, status_frame) == []
+    if visited is not None:
+        # The count page never yielded a headcount: the visit re-opens
+        # ステータス once for the same month's count before leaving.
+        assert house.step(parse(status_frame), mem, status_frame) == [p.pad('a')]
+        assert house.step(parse(page1), mem, page1) == [p.pad('a')]
+        assert house.step(parse(page2), mem, page2) == [p.pad('b')]
+        assert house.step(parse(status_frame), mem, status_frame) == []
+    assert house.step(parse(status_frame), mem, status_frame) == [p.pad('b')]
+    assert house.step(parse(month_frame), mem, month_frame) == []
+    assert not mem.get('house')
+    assert ('country_general_count' in mem) is (visited is None)
     return state
 
 
 def _failed_month_roster(state):
-    return _month_roster(state, visited=1)
+    state = _month_roster(state, visited=1)
+    # The failed roster observation leaves the month's spending plan pending;
+    # these tests isolate the next roster attempt, so settle that plan first.
+    state['policy']['shop'] = {'key': state['policy']['month'], 'items': [],
+        'merchant_done': True, 'soldiers': 0, 'soldiers_done': True, 'egg': 'done',
+        'recruit': 'skipped', 'chikujou': 'done', 'reserve': 0,
+        'recruit_reserve': 0, 'closed': True}
+    return state
 
 
 def test_two_failed_month_scans_release_field_repair_scan_in_native_flow():
@@ -538,9 +600,9 @@ def test_completed_month_scan_is_not_repeated_after_its_receipt_expires():
     mem=memory(complete=False);mem.pop('recruit_roster')
     state=_month_roster({'policy':mem})
     mem=state['policy']
-    assert mem['recruit_roster']['complete'] is True
+    assert mem['country_general_count']['count'] == 10
     assert mem['recruit_month_scan_attempts']['count']==1
-    assert r.surveyed(mem)
+    assert not r.surveyed(mem)  # national count is not a named survey
     # The short-lived receipt goes stale; the completed month does not.
     mem['tick']+=r.FRESH_TICKS
     actions,state=decide(month_canvas(250,on='メインメニュー',month=7),state)
@@ -548,19 +610,20 @@ def test_completed_month_scan_is_not_repeated_after_its_receipt_expires():
     assert mem['recruit_month_scan_attempts']['count']==1
 
 
-def test_one_completed_month_scan_replaces_the_redundant_field_walk():
+def test_completed_month_count_does_not_claim_statuses_so_field_walk_opens():
     from docich.hanjuku_bot import decide
     mem=memory(complete=False);mem['tick']=300;mem.pop('recruit_roster')
     for row in mem['castle_income'].values():row['tick']=250
     state=_month_roster({'policy':mem})
     mem=state['policy']
-    assert mem['recruit_roster']['complete'] is True
-    assert not mem['recruit_roster_recheck']
-    # Nothing to repair and the payroll income is current, so the second walk
-    # of the same statuses adds no information.
+    assert mem['country_general_count']['count'] == 10
+    # The monthly status count read no HP/egg/location, so it is not a
+    # status survey. The bounded field walk still observes those when needed.
+    assert r.completed_survey(mem) is None
     actions,state=decide(_survey_field(),state)
-    assert not state['policy'].get('house')
-    assert mem['recruit_field_scan_attempts']['count']==0
+    assert actions==[p.pad('x')]
+    assert state['policy']['house']['month_scan'] is False
+    assert mem['recruit_field_scan_attempts']['count']==1
 
 
 def test_field_walk_still_dispatches_a_repair_found_by_the_month_scan():
@@ -643,8 +706,8 @@ def test_hotload_freezes_legacy_field_exhaustion_before_two_new_month_scans():
     assert state['policy']['recruit_field_scan_attempts']['count']==2
 
 
-@pytest.mark.parametrize('egg,opens', [('unverified', True), ('pending', False), ('check', False)])
-def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, opens):
+@pytest.mark.parametrize('egg', ['unverified', 'pending', 'check'])
+def test_monthly_counts_precede_unopened_egg_recovery(egg):
     # g684 1-12 / 2-1: recovery paid (309->259) but 'unverified'; the month
     # roster scan never ran and recruitment stayed deferred_roster.
     from test_hanjuku_chart_bot import month_canvas
@@ -654,11 +717,12 @@ def test_an_unverified_egg_recovery_does_not_block_the_month_roster_scan(egg, op
     mem['egg_uses']={'ゼウス':3}
     mem['shop']={'key':'1-7','egg':egg,'recruit':'deferred_roster'}
     actions=house.step(parse(month_canvas(250,on='メインメニュー',month=7)),mem,None)
-    assert (actions==[p.pad('a')])==opens
+    assert actions == [p.pad('a')]
+    assert mem['house']['level_only'] is True
 
 
-@pytest.mark.parametrize('income,held', [(40, False), (5, True)])
-def test_an_unread_castle_does_not_hold_a_payroll_the_read_castles_cover(income, held):
+@pytest.mark.parametrize('income', [40, 5])
+def test_an_unread_castle_never_holds_recruitment_now(income):
     # g684 2-2: ゴーメン (owned, never read) made economics None and every
     # month's recruitment was 'deferred_economy' although 74G covered 25+15.
     mem = memory(castles=3, income=income)
@@ -668,5 +732,283 @@ def test_an_unread_castle_does_not_hold_a_payroll_the_read_castles_cover(income,
     bound = r.economics(mem, owned, lower_bound=True)
     assert bound['castles_read'] == 2 and bound['income'] == 2 * income
     s = {'key': '1-7', 'recruit': 'pending'}
-    assert p._stop_uneconomic_recruit(mem, s) is held
-    assert (s['recruit'] == 'deferred_economy') is held
+    assert p._stop_uneconomic_recruit(mem, s) is False
+    assert s['recruit'] == 'pending'
+
+
+@pytest.mark.parametrize('gold,repair,reserved', [(200, 50, 50), (60, 50, 10), (50, 50, 0)])
+def test_completed_current_shortage_resumes_cached_membership_hold(gold, repair, reserved):
+    mem = memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    mem['recruit_hold'] = {'reason': 'pending_employees', 'status': 'deferred_economy'}
+    current = shop()
+    current.update(recruit='deferred_economy', recruit_priority=False,
+                   reserve=0, hero_repair_reserve=repair, recruit_budget_version=2)
+    p._prioritise_recruit(mem, current, gold)
+    assert current['recruit'] == 'check'
+    assert current['recruit_priority'] is True
+    assert current['recruit_reserve'] == reserved
+    assert current['hero_repair_reserve'] == repair
+    assert mem['recruit_payroll_pending'] == ['ココット']
+    assert 'recruit_hold' not in mem
+    assert not mem.get('lost') and not mem.get('recruited')
+    assert r.economics(mem, {'アルマムーン'}) is None
+
+
+@pytest.mark.parametrize('change', ['partial', 'old_month', 'stale', 'enough'])
+def test_retained_members_do_not_make_unknown_or_sufficient_rosters_a_shortage(change):
+    mem = memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    if change == 'partial':
+        mem['recruit_roster']['complete'] = False
+    elif change == 'old_month':
+        mem['recruit_roster']['month'] = '1-6'
+    elif change == 'stale':
+        mem['recruit_roster']['tick'] = -1000
+    else:
+        mem['recruit_roster']['names'] = NAMES
+    current = shop()
+    current['recruit'] = 'deferred_economy'
+    p._prioritise_recruit(mem, current, 500)
+    assert current['recruit'] == ('not_needed' if change == 'enough' else 'deferred_roster')
+    assert not current['recruit_priority']
+    assert mem['recruit_payroll_pending'] == ['ココット']
+
+
+@pytest.mark.parametrize('side', ['current', 'receipt'])
+@pytest.mark.parametrize('field,value', [('chapter', True), ('chapter', 1.0),
+                                        ('month', '1-07'), ('month', '1-13'),
+                                        ('month', None)])
+def test_invalid_scope_cannot_release_retained_members(side, field, value):
+    mem = memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    (mem if side == 'current' else mem['recruit_roster'])[field] = value
+    current = shop()
+    current['key'] = mem.get('month')
+    p._prioritise_recruit(mem, current, 500)
+    assert current['recruit'] == 'deferred_roster'
+    assert mem['recruit_payroll_pending'] == ['ココット']
+
+
+@pytest.mark.parametrize('location', ['current', 'receipt', 'scope', 'status'])
+@pytest.mark.parametrize('value', [True, 2.0])
+def test_invalid_completed_survey_chapter_cannot_release_members(location, value):
+    from test_hanjuku_current_roster_budget import memory as surveyed_memory
+    mem = surveyed_memory()
+    mem['recruit_payroll_pending'] = ['ココット']
+    mem.pop('recruit_roster', None)
+    survey = mem['roster_survey']
+    if location == 'current':
+        mem['chapter'] = value
+    elif location == 'receipt':
+        survey['receipt']['chapter'] = value
+    elif location == 'scope':
+        survey['scope'][0] = value
+    else:
+        next(iter(survey['statuses'].values()))['observed_chapter'] = value
+    assert r.completed_survey(mem) is None
+    assert r.fresh(mem) is None
+    current = shop(); current['key'] = mem['month']
+    p._prioritise_recruit(mem, current, 500)
+    assert current['recruit'] == 'deferred_roster'
+    assert mem['recruit_payroll_pending'] == ['ココット']
+
+
+IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef12', 'generation': 1,
+            'lease_id': 'lease'}
+
+
+def test_completed_roster_is_kept_for_the_status_card_across_a_partial_page():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True)
+    r._remember_complete(mem, receipt)
+    kept = mem[r.LAST_COMPLETE_KEY]
+    assert kept['names'] == NAMES[:3] and (kept['chapter'], kept['month']) == (1, '1-7')
+    assert kept['identity'] == IDENTITY
+    # A single roster page outside a scan replaces the receipt, never the copy.
+    r.page(mem, NAMES[3:5])
+    assert mem['recruit_roster']['complete'] is False
+    assert mem[r.LAST_COMPLETE_KEY] == kept
+    # Invalidating the receipts keeps the count basis: the card still shows
+    # the last complete list plus confirmed joins until the next full walk.
+    r.invalidate(mem)
+    assert mem[r.LAST_COMPLETE_KEY] == kept
+
+
+def test_failed_or_untrusted_roster_does_not_replace_the_kept_count():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    kept = mem[r.LAST_COMPLETE_KEY]
+    for broken in (dict(mem['recruit_roster'], complete=False),
+                   dict(mem['recruit_roster'], complete=True, month='1-13'),
+                   dict(mem['recruit_roster'], complete=True, names=['どうし', 'どうし']),
+                   dict(mem['recruit_roster'], complete=True, names=[]),
+                   dict(mem['recruit_roster'], complete=True, tick=True)):
+        r._remember_complete(mem, broken)
+        assert mem[r.LAST_COMPLETE_KEY] == kept
+    mem.pop('_run_identity')
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    assert mem[r.LAST_COMPLETE_KEY] == kept
+
+
+def test_forget_defeated_removes_the_general_from_the_kept_count():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True, wages={}, identity=dict(IDENTITY))
+    mem['recruit_roster'] = dict(receipt)
+    mem['roster_survey'] = {
+        'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-7'], 'receipt': dict(receipt),
+        'statuses': {name: {'general': name, 'month': '1-7', 'observed_chapter': 1,
+                            'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
+        'dirty': {}, 'defeated': [NAMES[1]]}
+    r._remember_complete(mem, receipt)
+    _world(mem)['general_location_unknown'] = [NAMES[0], NAMES[1]]
+    assert r.forget_defeated(mem, NAMES[1]) is True
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
+    assert mem[r.LAST_COMPLETE_KEY]['tick'] == receipt['tick']
+    assert _world(mem)['general_location_unknown'] == [NAMES[0]]
+
+
+def test_month_status_headcount_does_not_invent_a_complete_named_roster():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    before = dict(mem['recruit_roster'])
+    _month_roster({'policy': mem})
+    assert mem['country_general_count']['count'] == 10
+    assert mem['country_general_count']['identity'] == IDENTITY
+    assert mem['recruit_roster'] == before
+    assert r.LAST_COMPLETE_KEY not in mem
+
+
+def test_unread_month_status_count_leaves_named_roster_unchanged():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    before = dict(mem['recruit_roster'])
+    _failed_month_roster({'policy': mem})
+    assert 'country_general_count' not in mem
+    assert mem['recruit_roster'] == before
+    assert r.LAST_COMPLETE_KEY not in mem
+
+
+def test_confirmed_joins_add_to_the_kept_count_and_departures_subtract():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    assert r.record_join(mem, 'ココット') is True
+    assert r.record_join(mem, 'ココット') is False  # duplicate announcement
+    assert r.record_join(mem, 'どうし') is False  # already on the list
+    assert r.record_join(mem, '') is False
+    assert mem[r.PENDING_JOINS_KEY] == ['ココット']
+    # A confirmed departure removes a joined name first, then a listed one.
+    assert r.record_departure(mem, 'ココット') is True
+    assert mem[r.PENDING_JOINS_KEY] == []
+    assert r.record_departure(mem, NAMES[1]) is True
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
+    assert r.record_departure(mem, 'だれか') is False
+    # A new complete list clears the pending joins (it already contains them).
+    r.record_join(mem, 'ココット')
+    r._remember_complete(mem, dict(mem['recruit_roster'], complete=True))
+    assert r.PENDING_JOINS_KEY not in mem
+
+
+def test_observed_member_records_a_join_and_invalidate_keeps_the_count():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True, identity=dict(IDENTITY))
+    mem['recruit_roster'] = dict(receipt)
+    mem['roster_survey'] = {
+        'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-7'], 'receipt': dict(receipt),
+        'statuses': {name: {'general': name, 'month': '1-7', 'observed_chapter': 1,
+                            'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
+        'dirty': {}, 'defeated': []}
+    r._remember_complete(mem, receipt)
+    r.observed_member(mem, ['ココット'])
+    assert mem[r.PENDING_JOINS_KEY] == ['ココット']
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
+    assert r.completed_survey(mem) is None  # the old survey no longer applies
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:3]
+
+
+@pytest.mark.parametrize('held_payroll', [False, True])
+def test_new_roster_names_update_kept_count_without_current_status_survey(held_payroll):
+    # g1147: the previous complete roster had four names, while the current
+    # page visibly contained six. A month change left no reusable survey.
+    mem = memory(NAMES[:4])
+    mem['_run_identity'] = dict(IDENTITY)
+    r._remember_complete(mem, dict(mem['recruit_roster'], identity=dict(IDENTITY)))
+    mem.update(month='1-8', tick=110)
+    mem.pop('recruit_roster')
+    if held_payroll:
+        # Even an existing bill containing the new names must not suppress
+        # the independent count update on a later roster observation.
+        mem['payroll_membership_hold'] = {
+            'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-8'],
+            'wages': {name: r.fixed_wage(name) for name in NAMES[:6]},
+            'saturated': False}
+    r.page(mem, NAMES[:6])
+    r.page(mem, NAMES[:6])
+    assert mem[r.PENDING_JOINS_KEY] == NAMES[4:6]
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == NAMES[:4]
+    assert len(mem[r.LAST_COMPLETE_KEY]['names']) + len(mem[r.PENDING_JOINS_KEY]) == 6
+    # Seeing a page updates membership additions, not full-list/status proof.
+    assert r.fresh(mem)['names'] == NAMES[:6]
+    assert r.fresh(mem)['complete'] is False
+    assert r.completed_survey(mem) is None
+    assert 'country_general_count' not in mem
+    assert ('payroll_membership_hold' in mem) is held_payroll
+
+
+def test_confirmed_departure_keeps_a_number_and_refreshes_the_kept_list():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    receipt = dict(mem['recruit_roster'], complete=True, identity=dict(IDENTITY))
+    mem['recruit_roster'] = dict(receipt)
+    mem['roster_survey'] = {
+        'schema': 1, 'identity': dict(IDENTITY), 'scope': [1, '1-7'], 'receipt': dict(receipt),
+        'statuses': {name: {'general': name, 'month': '1-7', 'observed_chapter': 1,
+                            'observed_tick': 95, 'broken': False} for name in NAMES[:3]},
+        'dirty': {}, 'defeated': [NAMES[1]]}
+    r._remember_complete(mem, receipt)
+    assert r.forget_defeated(mem, NAMES[1]) is True
+    assert mem[r.LAST_COMPLETE_KEY]['names'] == [NAMES[0], NAMES[2]]
+    assert r.LAST_COMPLETE_KEY in mem  # the card subtracts instead of showing 不明
+
+
+def test_month_country_status_count_is_retained_for_this_month_only():
+    mem = memory(NAMES[:3])
+    mem['_run_identity'] = dict(IDENTITY)
+    _month_roster({'policy': mem})
+    marker = mem['country_general_count']
+    assert marker['scope'] == [mem['chapter'], mem['month']]
+    assert marker['count'] == 10
+    assert not mem.get('month_roster_scan')
+    # A second monthly-menu visit must not trigger a names scan.
+    mem['shop'] = {'key': mem['month'], 'items': [], 'merchant_done': True,
+                   'soldiers': 0, 'soldiers_done': True, 'egg': 'done',
+                   'recruit': 'skipped', 'chikujou': 'done', 'reserve': 0,
+                   'recruit_reserve': 0, 'closed': True}
+    from test_hanjuku_chart_bot import month_canvas
+    from docich.hanjuku_screen import parse
+    before = len([row for row in mem.get('_records') or []
+                  if row.get('decision') == 'house_scan_started'])
+    frame = month_canvas(250, on='メインメニュー', month=7)
+    assert house.step(parse(frame), mem, frame) is None
+    after = len([row for row in mem.get('_records') or []
+                 if row.get('decision') == 'house_scan_started'])
+    assert after == before
+
+
+def test_a_full_country_at_the_cap_needs_no_recruit_even_with_blank_garrisons(monkeypatch):
+    """g1163 2026-11-14 00:0x: country 32 = MAX, month still logged roster_unknown."""
+    from docich.hanjuku.os_layer.roster import MAX_GENERALS, run_identity
+    # The production month could not derive the target at all; the cap alone
+    # makes a recruit pointless.
+    monkeypatch.setattr(p, '_recruit_target', lambda mem: None)
+    mem = memory(NAMES[:2], False, 1)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1, 'lease_id': 'x'}
+    mem['_run_identity'] = identity
+    mem['country_general_count'] = {'count': MAX_GENERALS, 'scope': [1, '1-7'],
+                                    'identity': run_identity(identity)}
+    assert p._recruit_sufficient(mem)

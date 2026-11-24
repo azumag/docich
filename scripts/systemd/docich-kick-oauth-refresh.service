@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the broadcaster Kick token in Soren's .env before it expires
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich-kick-oauth --config __DOCICH_ROOT__/config/docich.soren-live.toml refresh
+TimeoutStartSec=120
+UMask=0077
+Nice=10

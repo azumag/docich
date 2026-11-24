@@ -68,16 +68,35 @@ driver() {
     sleep 2
     [ -n "$PANE" ] || continue
     text="$(tmux capture-pane -p -t "$PANE" 2>/dev/null)" || continue
+    # moon-buggy keeps the in-play HUD line ("level: ... score:") visible on
+    # its game-over / high-score / name-entry panes, so "level:" alone does not
+    # prove a match is running.  Treating those panes as play re-armed
+    # seen_game on every poll and appended the same finished score again on
+    # each one (issue #192).  Keep this marker set aligned with the brain's
+    # decide() guard: a pane counts as in play only when it shows the HUD and
+    # none of the transition markers.
+    in_play=0
+    case "$text" in
+      *"start game"*|*"new game"*|*"game over"*|*"main menu"*|*"difficulty"*|*"press any key"*|*"enter your name"*|*"high score"*|*"paused"*) ;;
+      *"level:"*) in_play=1 ;;
+    esac
+    # Only track the max score while a match is actually in progress (in_play)
+    # or while a just-finished match has not yet been recorded (seen_game).
+    # A game-over/high-score pane that lingers after the match was recorded
+    # (seen_game=0) must not re-seed max_score: otherwise the previous
+    # match's score leaks into the next match's record (issue #192 P2).
     cur="$(printf '%s' "$text" | grep -oE 'score: [0-9]+' | tail -1 | grep -oE '[0-9]+')"
     if [ -n "$cur" ]; then
       cur="$(dec "$cur")"
-      if [ "$cur" -gt "$max_score" ]; then
-        max_score="$cur"
+      if [ "$in_play" = "1" ] || [ "$seen_game" = "1" ]; then
+        if [ "$cur" -gt "$max_score" ]; then
+          max_score="$cur"
+        fi
       fi
     fi
-    case "$text" in
-      *"level:"*) seen_game=1 ;;
-    esac
+    if [ "$in_play" = "1" ]; then
+      seen_game=1
+    fi
     case "$text" in
       *"enter your name"*)
         # A score that ranks in the high-score table stops at a name prompt

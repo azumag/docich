@@ -20,6 +20,7 @@ from __future__ import annotations
 import shlex
 from typing import Mapping
 
+from .cc_translation_adapter import describe_health, probe_health
 from .config import GlobalConfig
 from .game_switch import GameSwitchError, GameSwitchStore
 from .state import State
@@ -256,9 +257,13 @@ def collect_status(g: GlobalConfig, *, tmux: Tmux | None = None, xkit: XKit | No
     cleanup_pending = bool(isinstance(retiring, list) and len(retiring) > 0)
 
     stream: dict = {"mode": g.stream.mode}
+    # Read-only loopback healthz of the translation adapter (#2894). Probed only
+    # when a stream is configured; the adapter reports its upstream name only.
     if g.stream.mode == "null":
+        stream["cc_translation_adapter"] = "skipped (stream.mode=null)"
         stream.update({"ffmpeg": None, "captions_active": False, "captions_detail": "配信しない設定です"})
     else:
+        stream["cc_translation_adapter"] = describe_health(probe_health())
         try:
             runtime = resolve_runtime(g, mask_key=True)
             detail = runtime.caption_detail

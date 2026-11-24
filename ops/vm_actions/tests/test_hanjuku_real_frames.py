@@ -103,7 +103,10 @@ class RealFrameTests(unittest.TestCase):
                              'ally_hp': 34, 'enemy_hp': 59, 'start_ally_hp': 34,
                              'start_enemy_hp': 59}}
         self.assertEqual(battle_menu_step(screen, memory), [pad('b')])
-        self.assertEqual(memory['_records'][-1]['decision'], 'battle_okunote_risk_declined')
+        # 2026-11-04 (#3358): with the soldier panel unread, the parent rescue
+        # menu conserves the okunote instead of declining on invisible
+        # candidates. Both paths return B without opening a random choice.
+        self.assertEqual(memory['_records'][-1]['decision'], 'battle_okunote_risk_conserved')
 
     def test_merchant_sprite_does_not_hide_confirmation_hand(self):
         frame = vision._frame((FIXTURES / 'g478-merchant.png').read_bytes())

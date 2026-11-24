@@ -10,14 +10,15 @@ from urllib.request import urlopen
 
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
-from ..tsuitate_beta_control import ControlError, call_beta_control
+from ..tsuitate_beta_control import CAPABILITY_ENV_KEYS, ControlError, call_beta_control
 from ..tsuitate_view import DEFAULT_PORT, VIEW_NAME
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
-from .program import ProgramViewAdapter, _browser_bin
-
-#: ``src/`` of this checkout, the import path the view needs at runtime.
-DOCICH_SRC = Path(__file__).resolve().parents[2]
+from .program import (
+    ProgramViewAdapter,
+    broadcast_browser_command,
+    broadcast_view_session_env,
+)
 
 
 def tsuitate_view_game_config() -> GameConfig:
@@ -41,6 +42,7 @@ class TsuitateProgramViewAdapter(ProgramViewAdapter):
         return [
             sys.executable, "-m", "docich.tsuitate_view",
             "--port", str(self.dashboard_port),
+            "--state-dir", str(self.g.state_dir),
             "--runtime-id", self.spec.runtime_id,
             "--generation", str(self.spec.generation),
             "--lease-id", self.spec.lease_id,
@@ -50,29 +52,28 @@ class TsuitateProgramViewAdapter(ProgramViewAdapter):
         # The view runs as ``python -m docich.tsuitate_view`` inside this
         # generation's own tmux session.  tmux starts that command from the
         # server environment and never inherits the operator's PYTHONPATH, so
-        # without this the pane dies on ModuleNotFoundError before ownership can
-        # be verified — the session is already gone by the time
+        # without the import path the pane dies on ModuleNotFoundError before
+        # ownership can be verified — the session is already gone by the time
         # create_game_session_owned reads it back, which surfaces as
         # "no such session: $N" and rolls the whole switch back.
-        return {"PYTHONPATH": str(DOCICH_SRC)}
+        #
+        # The same rule applies to the beta-control capability: the broadcast
+        # view calls ``POST /beta-control status`` server-side to decide between
+        # a lifecycle label and 「制御接続を確認できません」.  Without the two
+        # capability keys in this session it can never answer ``ok:true``, the
+        # adapter's readiness loop above never settles, and the start switch
+        # burns its deadline and rolls back.  Only the reviewed control keys are
+        # carried; WebUI operator/viewer tokens are never passed.
+        return broadcast_view_session_env(capability_keys=CAPABILITY_ENV_KEYS)
 
     def _viewer_command(self) -> list[str]:
-        browser = _browser_bin()
-        if not browser:
-            raise AdapterError("chromium が見つかりません (tsuitate HTML view)")
-        command = [
-            browser,
-            f"--app=http://127.0.0.1:{self.dashboard_port}/broadcast",
-            "--window-size=960,540",
-            "--window-position=0,0",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--hide-scrollbars",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-features=Translate,BackForwardCache",
-            f"--user-data-dir={self.spec.runtime_dir / 'tsuitate-browser-profile'}",
-        ]
+        command = broadcast_browser_command(
+            f"http://127.0.0.1:{self.dashboard_port}/broadcast",
+            window_size=(960, 540),
+            window_position=(0, 0),
+            profile_dir=self.spec.runtime_dir / "tsuitate-browser-profile",
+            label="tsuitate HTML view",
+        )
         display = self.g.display
         if display.viewport_width > 0 and display.viewport_height > 0:
             from pathlib import Path

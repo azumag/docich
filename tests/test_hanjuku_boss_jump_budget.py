@@ -1,0 +1,11 @@
+"""A far boss/ambush jump gets a bounded move budget large enough to arrive.
+
+Live g1288 2026-11-20 19:50: the ambush jump stopped at moves=14 with residual
+[-5.2,-8.4] view px short, abandoned, and retried from the same origin. The
+boss budget is larger than the ordinary castle jump's and still bounded.
+"""
+from docich.hanjuku.os_layer import navigation as nav
+
+
+def test_the_boss_jump_budget_is_larger_but_bounded():
+    assert nav.Y_JUMP_MOVES < nav.BOSS_JUMP_MOVES <= 128

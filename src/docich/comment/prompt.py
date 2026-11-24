@@ -28,21 +28,22 @@ MIXED_TEMPLATE_VARS = (
     "comment_batch_context", "strategy_advice_candidates", "comment_advice_candidates",
     "codex_advice_candidates", "comment_advice_context", "previous_comments_context",
     "recent_spoken_comment_context", "viewer_memory_context", "comment_followup_hints",
-    "past_topics", "celebration_history_context", "comment_thumbnail_ocr_context",
+    "past_topics", "self_chat_context", "celebration_history_context", "comment_thumbnail_ocr_context",
     "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE", "SOVIET_CREATION_HISTORY_FILE",
     "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context", "_comment_ui_memo",
-    "_comment_channel_intro", "_comment_length_policy", "sing_reference", "_prediction_cycle_games",
+    "_comment_channel_intro", "_comment_game_rules", "_comment_game_rules_ja", "_comment_length_policy",
+    "sing_reference", "_prediction_cycle_games",
 )
 CATEGORY_TEMPLATE_VARS = (
     "CATEGORY_COMMENTS", "COMMENT_CLASSIFICATIONS", "twitch_comments_for_prompt", "_comment_persona",
     "current_time", "time_period", "comment_batch_context", "strategy_advice_candidates",
     "comment_advice_candidates", "codex_advice_candidates", "comment_advice_context",
     "previous_comments_context", "recent_spoken_comment_context", "viewer_memory_context",
-    "comment_followup_hints", "past_topics", "celebration_history_context",
+    "comment_followup_hints", "past_topics", "self_chat_context", "celebration_history_context",
     "comment_thumbnail_ocr_context", "PAST_RADIO_TOPICS", "RUSSIA_CREATION_HISTORY_FILE",
     "SOVIET_CREATION_HISTORY_FILE", "ROLLING_SCORES_FILE", "game_state_context", "comment_ops_context",
-    "_comment_ui_memo", "_comment_channel_intro", "_comment_length_policy", "sing_reference",
-    "_prediction_cycle_games", "gacha_completion_note",
+    "_comment_ui_memo", "_comment_channel_intro", "_comment_game_rules", "_comment_game_rules_ja",
+    "_comment_length_policy", "sing_reference", "_prediction_cycle_games", "gacha_completion_note",
 )
 MODES = ("main", "soren91")
 NONE = "（なし）"
@@ -81,6 +82,9 @@ def mode_assets(mode: str) -> dict[str, str]:
         "_comment_persona": asset(f"comment_persona_{mode}.md").rstrip("\n"),
         "_comment_ui_memo": asset(f"comment_ui_memo_{mode}.md").rstrip("\n"),
         "_comment_channel_intro": asset(f"comment_channel_intro_{mode}.md").rstrip("\n"),
+        # Mode-independent default (the Soviet game's rules); a game profile may replace them.
+        "_comment_game_rules": asset("comment_game_rules.md").rstrip("\n"),
+        "_comment_game_rules_ja": asset("comment_game_rules_ja.md").rstrip("\n"),
         "_comment_length_policy": asset("comment_length_policy_soren91.md") if mode == "soren91" else "",
     }
 
@@ -105,7 +109,7 @@ _ERROR_PATTERNS = [re.compile(p, re.I) for p in (
     r"(?:何も言えません|語ることはできません|控えておくべき|確認させてください|どうすればよい|何を.*すれば)",
     r"(?:tool_call|tool_result|assistant_response|System Context|permission denied|no such file or directory|file not found|read failed|edit failed|write failed)",
     r"(?:unexpected token|syntaxerror|referenceerror|typeerror|could not find oldstring|no changes to apply|rejected permission)",
-    r"(?:invalid bearer token|authentication_error|api error|request_id|invalid token|not logged in|please run /login|rate limit|too many requests|429\b|quota|usage limit)",
+    r"(?:invalid bearer token|authentication_error|api error|request_id|invalid token|not logged in|please run /login|rate limit|too many requests|(?:http(?:\s+status)?|status(?:\s+code)?|error(?:\s+code)?|code)\s*[:=]?\s*429\b|^429\b|quota|usage limit)",
     r"(?:ユーザーからの.*指示がなく|システム設定.*だけが提供|具体的なタスク指示が見当たりません)",
     r"(?:提供いただいた|提供していただいた).*(?:実際の記事本文|本文ではなく|テンプレート|管理情報|テキスト).*?(?:含まれていない|ありません|成立していません)",
     r"(?:検索|WebFetch|インターネット|外部.*アクセス).*(?:できません|ありません|許可|確認できません)",
@@ -147,6 +151,7 @@ def with_defaults(ctx: dict) -> dict:
         out[name] = sanitize_context(default(name, value))
     out["celebration_history_context"] = default("celebration_history_context", NONE)
     out["comment_thumbnail_ocr_context"] = sanitize_context(default("comment_thumbnail_ocr_context", NONE))
+    out["self_chat_context"] = sanitize_context(default("self_chat_context", NONE))
     out["game_state_context"] = sanitize_context(default("game_state_context", "（取得失敗）"))
     out["comment_ops_context"] = sanitize_context(default("comment_ops_context", "（取得失敗）"))
     return out

@@ -3,11 +3,13 @@ name: Discord voice contracts
 on:
   pull_request:
     paths:
+      - '.node-version'
       - 'runtimes/discord-voice/**'
       - '.github/workflows/discord-voice-offline.yml'
   push:
     branches: [main]
     paths:
+      - '.node-version'
       - 'runtimes/discord-voice/**'
       - '.github/workflows/discord-voice-offline.yml'
 
@@ -29,7 +31,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.18.0'
+          node-version-file: .node-version
       - name: Synthetic PCM and fake providers only
         run: node --test runtimes/discord-voice/test/*.test.mjs
       - name: Local STT audio and progress-text contracts without a model
@@ -47,10 +49,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.18.0'
+          node-version-file: .node-version
       - name: Install pinned Discord voice dependencies
         working-directory: runtimes/discord-voice
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+      - name: Audit dependencies
+        working-directory: runtimes/discord-voice
+        run: npm audit --audit-level=high
       - name: Verify DAVE, Opus and raw PCM bootstrap without Discord login
         working-directory: runtimes/discord-voice
         run: npm run check:live

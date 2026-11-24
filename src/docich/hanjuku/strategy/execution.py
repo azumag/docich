@@ -11,6 +11,7 @@ from ... import hanjuku_chart as chart, hanjuku_reference as reference
 from ...hanjuku_egg_reference import general_max_hp
 from ..os_layer.roster import run_identity
 from ..os_layer.world import NAME
+from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 
 
 def _role_cards(raw, cards):
@@ -84,7 +85,7 @@ def confirm_departure_order(order, mem, general, source, cards):
         'step': order['step'], 'confirm_tick': mem.get('tick'),
         'general': general, 'source': source, 'cards': list(cards),
         'roles': {'rare': rare, 'strong': strong,
-                  'override': (_role_cards((mem.get('card_override') or {}).get(order['step'], []), list(cards))
+                  'override': (_role_cards((_plan_region(mem).get('card_override') or {}).get(order['step'], []), list(cards))
                                if rare is None else [])},
     }
     return snapshot if _valid_departure(snapshot, mem) else None
@@ -92,16 +93,17 @@ def confirm_departure_order(order, mem, general, source, cards):
 
 def execution_order(mem, step):
     """Resolve an in-flight attempt first, then its independently saved sortie."""
-    context = (mem.get('order_context') or {}).get(step) or {}
-    attempt = mem.get('sortie_attempt') or {}
+    context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
+    attempt = _flow(mem).get('sortie_attempt') or {}
     confirmed = context.get('departure_order')
-    if (attempt.get('step') == step and _valid_departure(confirmed, mem)
+    if (attempt.get('step') == step and not attempt.get('interrupted')
+            and _valid_departure(confirmed, mem)
             and type(attempt.get('confirmation_tick')) is int
             and attempt.get('confirmation_tick') == confirmed['departure_binding']['confirm_tick']):
         return {**deepcopy(confirmed), '_execution_bound': True}
-    snapshot = (mem.get('launched_orders') or {}).get(step)
-    sortie = (mem.get('sorties') or {}).get(step) or {}
-    if ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
+    snapshot = (_world(mem).get('launched_orders') or {}).get(step)
+    sortie = _sorties(mem).get(step) or {}
+    if ((_plan_region(mem).get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
             and _valid_departure(snapshot, mem)
             and type(sortie.get('confirmation_tick')) is int
             and sortie.get('confirmation_tick') == snapshot['departure_binding']['confirm_tick']
@@ -120,7 +122,7 @@ def bound_fields(order, mem):
 
 def departure_snapshot(order, mem, general, source):
     """Save actual metadata; untagged legacy context acquires no new authority."""
-    confirmed = ((mem.get('order_context') or {}).get(order['step']) or {}).get('departure_order')
+    confirmed = ((_plan_region(mem).get('order_context') or {}).get(order['step']) or {}).get('departure_order')
     if confirmed is not None:
         if not _valid_departure(confirmed, mem):
             return None
@@ -135,9 +137,34 @@ def departure_snapshot(order, mem, general, source):
 
 
 def execution_claimed(mem, step):
-    """A stale tagged execution must not fall through to a new plan's actor."""
-    attempt = mem.get('sortie_attempt') or {}
-    snapshot = (mem.get('launched_orders') or {}).get(step) or {}
-    return ((attempt.get('step') == step and 'confirmation_tick' in attempt)
-            or ((mem.get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
+    """A stale tagged execution must not fall through to a new plan's actor.
+
+    ``interrupted`` marks the attempt already reconciled into a sortie record
+    (flows.map.observe_sortie_transition): the launched record owns the claim
+    while it lives. Once that sortie resolves and the order is pending again,
+    the leftover attempt must not resolve the re-picked step to None - g1107
+    2026-11-03 looped order_start + silent B on every castle menu for months.
+
+    The claim only holds while the attempt is fresh: an attempt whose
+    confirmation died ages ago still matched every fresh mint of the same
+    castle pair, so ``_order_for_step`` returned None on each observation and
+    the castle jump aborted 'order_changed' five ticks in, forever (g1190 ch9
+    2026-11-16: オオキク>ナッテ:24 pinned by a ~12000-tick-old attempt; zero
+    sorties left while order_start repeated). The age bound mirrors
+    ``_sortie_in_flight``'s, which already stops treating the same record as a
+    live launch.
+    """
+    attempt = _flow(mem).get('sortie_attempt') or {}
+    snapshot = (_world(mem).get('launched_orders') or {}).get(step) or {}
+    confirm = attempt.get('confirmation_tick')
+    fresh = (type(confirm) is not int
+             or 0 <= int(mem.get('tick') or 0) - confirm <= _attempt_claim_ttl())
+    return ((attempt.get('step') == step and 'confirmation_tick' in attempt
+             and not attempt.get('interrupted') and fresh)
+            or ((_plan_region(mem).get('orders') or {}).get(step) in ('launched', 'launched_unconfirmed')
                 and 'departure_binding' in snapshot))
+
+
+def _attempt_claim_ttl() -> int:
+    from .corridor import SORTIE_ATTEMPT_TTL
+    return SORTIE_ATTEMPT_TTL

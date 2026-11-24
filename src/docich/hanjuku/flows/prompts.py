@@ -15,9 +15,11 @@ from ..judgment.battle import _hold_general_loss_metric, _migrate_card_evidence
 from ..judgment.events import trade_accept_weak
 from ..os_layer.font import UNKNOWN
 from ..os_layer.commands import menu_to, pad
-from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _egg_row, _is_general_trade_prompt,
-                                _is_goninja_prompt, _options, _summer_bonus_rows, _trade_named_general)
+from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _current, _egg_row, _is_bijin_request,
+                                _is_general_trade_prompt, _is_goninja_prompt, _options,
+                                _summer_bonus_rows, _trade_named_general)
 from ..os_layer.world import _owned
+from ..state import egg_memory
 from ..strategy.campaign import (_enter_chapter, _repair_home_alias_failures, _repair_home_name_chapter,
                                  observe_chapter_castle)
 from ..strategy.economy import GONINJA_MIN_GOLD, _goninja_budget, _month_key
@@ -26,13 +28,112 @@ from ..strategy.economy import GONINJA_MIN_GOLD, _goninja_budget, _month_key
 TRADE_GUARD_OBSERVATIONS = 40   # ~60 s: lead-in, the offer and its choice
 # Arming needs trade-only wording; 'しょうぐんどうし' can be the hero's name.
 TRADE_GUARD_TOKENS = ('トレード', 'いちもんめ', 'イキのいいの', 'いきのいいの')
+# The measured closing sentence "これにてトレードしゅうりょう!". Matching only the
+# tail keeps the release working when OCR garbles the トレード half. Not an offer
+# word, so it never arms the guard; it releases it (same token as PR #3637).
+TRADE_COMPLETED_TOKENS = ('しゅうりょう',)
+# The 花いちもんめ event draws its song line as "は〜ない〜ちも〜んめ"; the OCR
+# keeps those 〜 marks, so 'いちもんめ' never matched the raw text and the guard
+# never armed (g1139 2026-11-07 00:47: ゼウス was traded for カシス while every
+# frame got the generic A). Only the marks are stripped, never other glyphs.
+TRADE_MATCH_TILDES = ('〜', '~')
+
+
+def _trade_flat(text: str) -> str:
+    flat = ''.join((text or '').split())
+    for mark in TRADE_MATCH_TILDES:
+        flat = flat.replace(mark, '')
+    return flat
 
 
 TRADE_CHOICE_PAIRS = (('OK', 'NO'), ('そうする', 'やめる'))
 
+# 章末のセーブ確認（g1059 2026-10-28 05:21:42 / g1153 2026-11-07 22:48:34）:
+# 「セーブをしゅうりょうして よろしいですかな?」の直後に先発隊の選択が始まり、
+# 次章の画面が続く。章の結果メニューやHUDの「2わ」より先に来るため、この確認を
+# 読んだことだけを flows/starter.py の章確定の前提として記録する（この時点では
+# 章を進めない）。トレード完了の「しゅうりょう」と区別するため両方の語を要求する。
+CHAPTER_END_SAVE_TOKENS = ('セーブ', 'しゅうりょうして')
+
+
+BIJIN_MIN_GOLD = 1000   # 以上なら家を選ぶ（オーナー指示 2026-10-21）
+# オーナー指示（issue #3011）: 半熟レベル14以上では半熟値を稼ぐ行為を控える。
+# ボットが意図的に半熟値を稼ぐ唯一の行為は美女の「いえ」購入（+100）であり、
+# 白兵・召喚・月イチの受動イベント・剣の稽古は稼ぎ目的の選択肢ではない。
+HANJUKU_LEVEL_CAP = 14
+BIJIN_GUARD_OBSERVATIONS = 40   # ~60 s: her speech and its choice
+# A held request must never outlive the corner's 300 s unchanged-screen watchdog
+# (retro_corner end_reason='screen_stalled', 2026-10-21): after ~60 s without a
+# readable choice, decline by the measured row order (upper accept / lower
+# refuse). The purchase menu has no refusal row, so its own bound ends the event
+# with the cheapest non-house item (at most 100G) instead of stalling the run.
+BIJIN_GUARD_HOLD_MAX = 40
+BIJIN_GIFT_HOLD_MAX = 40
+# docich#4632: a readable yes/no (うむッ!/いかんッ!) whose hand or row position
+# stays unreadable must not hold the corner: the g1190 concert invitation sat
+# 107 observations with no input while the orange hand blended into the scene.
+# After this many held observations the prompt is answered with the measured
+# default anyway (unclassified prompts accept; reviewed prompts keep their
+# computed choice row).
+YES_NO_UNREAD_BOUND = 12       # ~18 s: well inside the 120-obs input stall
+# docich#4650: a prompt the classifier could not name keeps the game's own
+# default (accept) and these prompts open on the upper row, so A is already
+# the wanted answer without locating the hand. Waiting the full unread bound
+# burned ~17 s per concert invitation on the fresh chapter-1 run
+# (g1190 2026-11-19: three 17 s holds in 20 minutes). A short settle still
+# lets a mid-transition frame resolve before the press.
+YES_NO_ACCEPT_SETTLE = 3
+YES_NO_FORCED_MAX = 4          # forced presses per unchanged prompt episode
+# 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
+# うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
+BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
+# このイベントだけが使う固有の選択表記。依頼文の読み取りが欠けても、この選択行が
+# 選択肢帯に読めれば美女の依頼だと確定できる（月イチ画面の所有判定に使う）。
+BIJIN_NATIVE_ACCEPT_TOKENS = ('うんデヘヘ',)
+BIJIN_NATIVE_TOKENS = BIJIN_NATIVE_ACCEPT_TOKENS + ('けえんな', 'けーんな')
+
+# 下部の会話パネル（g684/g745 で実測）: 本文の行は 135/151/167、選択肢帯は 176〜208
+# （_trade_choice_pair と同じ帯）。本文の内側列だけを読み、パネル外枠のタイルは除く。
+PROSE_ROWS = range(135, 176)
+PROSE_COLUMNS = (24, 232)
+
+
+def readable_prose_screen(screen: Screen) -> bool:
+    """「完全に読める別の頁」を、生のグリフセルから判定する。
+
+    trade_guard / bijin_guard は「依頼文が無い・選択肢帯が無い・手が無い」という
+    証拠の*不在*を保留の解除に使う。その不在の証拠を ``screen.text`` に求めると
+    足りない: ``screen.text`` は ``joined()`` が各行の両端の ``UNKNOWN`` を
+    ``strip`` して作るため、行頭・行末の欠字や全UNKNOWN行が消え、所持金ヘッダだけの
+    頁でも「読める本文」に見える（PR #2325 レビューのP1）。本文帯の生セルを読み、
+    実際に読める本文が1つ以上あり、かつ部分的にしか読めなかった行が無い時だけ真を返す。
+
+    帯に本文が無い（所持金ヘッダだけ）頁と、全部が未読の頁はどちらも偽になる。
+    外枠は本文の内側列に含めない。濁点等はparseが原画像で付随markと確認したセル
+    だけを除き、内側の全UNKNOWN行も終了を示す証拠にはしない。
+    """
+    if screen.kind != 'text' or screen.hand is not None:
+        return False
+    x0, x1 = PROSE_COLUMNS
+    if any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+           for line in screen.lines):
+        return False
+    readable = False
+    for line in screen.lines:
+        if line.y not in PROSE_ROWS:
+            continue
+        cells = [ch for x, ch in line.cells if x0 <= x < x1
+                 and (x, line.y) not in screen.prose_attached_marks]
+        known = [ch for ch in cells if ch != UNKNOWN and ch != ' ']
+        if UNKNOWN in cells:
+            return False   # 行頭・行末の欠字も全未読本文行も終了証拠にしない
+        if known:
+            readable = True
+    return readable
+
 
 def _trade_choice_pair(options):
-    band = [(x, y, word) for x, y, word in options if 176 <= y <= 207]
+    band = [(x, y, word) for x, y, word in options if 176 <= y <= 208]
     pairs = []
     for yes, no in TRADE_CHOICE_PAIRS:
         accepts = [row for row in band if row[2] == yes]
@@ -66,16 +167,42 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     guard = mem.get('trade_guard')
     if isinstance(guard, dict):
         guard.pop('held', None)  # ownership is recomputed for this observation
-    if mem.get('month_sub') or phase not in (None, 'dialogue'):
+    tick = int(mem.get('tick') or 0)
+    flat = _trade_flat(screen.text)
+    # The result line "これにて トレードしゅうりょう!" is the end of the event, not a
+    # pending choice. It sits on the bottom row of the message box (y=183, inside
+    # the 176-208 choice band) and its first word has no trade token, so the
+    # guard read it as an unlabelled choice row, set choice_seen and held every
+    # frame with no input (g1139 2026-11-07 00:48 and again 19:50, until
+    # screen_stalled). Release before arming so the trade token on this very line
+    # cannot re-arm the guard; the generic A then advances the dialogue.
+    if (screen.kind in ('text', 'unknown')
+            and any(tok in flat for tok in TRADE_COMPLETED_TOKENS)):
+        mem.pop('trade_guard', None)
+        return None
+    trade_seen = any(tok in flat for tok in TRADE_GUARD_TOKENS)
+    # g1139/g1145: the completed exchange still says トレード, but is
+    # no longer a choice. Release ownership before re-arming the guard.
+    # Require an explicit completion phrase; こうかん alone also occurs in offers.
+    if 'トレードしゅうりょう' in flat or 'トレード終了' in flat:
+        mem.pop('trade_guard', None)
+        return None
+    # The measured monthly event is drawn on the red-curtain scene: classify()
+    # returns 'concert' for the frame (g1067/g1107/g1139), never 'dialogue', so
+    # the old phase boundary skipped this guard there and the generic A pressed
+    # the default upper row. g1139 2026-11-06 23:13: カシス (73/15) was traded
+    # for チキータ while every frame got the concert fallback A. Take ownership
+    # in the monthly scene whenever the trade wording is on screen; combat and
+    # menu phases keep the old boundary. This mirrors the 美女 fix (#2632).
+    monthly_scene = phase in ('concert', 'event')
+    if mem.get('month_sub') or (phase not in (None, 'dialogue')
+                                and not (monthly_scene and trade_seen)):
         mem.pop('trade_guard', None)
         return None   # a monthly owner keeps its dialogue (measured yes/no still declines)
-    tick = int(mem.get('tick') or 0)
-    flat = ''.join(screen.text.split())
-    if (any(tok in flat for tok in TRADE_GUARD_TOKENS)
-            and screen.kind in ('text', 'unknown')):
+    if trade_seen and screen.kind in ('text', 'unknown'):
         if not isinstance(guard, dict):
             guard = mem['trade_guard'] = {'tick': tick, 'chosen': False}
-            _record(mem, 'trade_offer_seen', screen=screen.kind,
+            _record(mem, 'trade_offer_seen', screen=screen.kind, phase=phase,
                     observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None},
                     reason='将軍トレード（花いちもんめ）の申し出を検出。選択肢は断る側を選ぶ')
         guard['tick'] = tick
@@ -100,19 +227,20 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     if screen.kind not in ('text', 'unknown'):
         return None
     options = _options(screen)
-    pair = (None if any(UNKNOWN in line.text for line in screen.lines if 176 <= line.y <= 207)
+    pair = (None if any(ch == UNKNOWN for line in screen.lines
+                      if 176 <= line.y <= 208
+                      for x, ch in line.cells if PROSE_COLUMNS[0] <= x <= PROSE_COLUMNS[1])
             else _trade_choice_pair(options))
     labels = {word for words in TRADE_CHOICE_PAIRS for word in words}
-    if (guard.get('choice_seen') and screen.kind == 'text' and screen.hand is None
-            and flat and UNKNOWN not in flat and not _trade_named_general(flat)
+    if (guard.get('choice_seen') and readable_prose_screen(screen)
+            and not _trade_named_general(flat)
             and not any(tok in flat for tok in TRADE_GUARD_TOKENS)
-            and not any(word in labels for _, _, word in options)
-            and not any(176 <= line.y <= 207 for line in screen.lines)):
+            and not any(word in labels for _, _, word in options)):
         mem.pop('trade_guard', None)  # a readable different prose screen
         return None
     suspect_choice = (screen.hand is not None or pair is not None
                       or any(word in labels for _, _, word in options)
-                      or any(176 <= y <= 207 and not (
+                      or any(176 <= y <= 208 and not (
                           _trade_named_general(word) or any(tok in word for tok in TRADE_GUARD_TOKENS))
                              for _, y, word in options))
     if suspect_choice:
@@ -144,6 +272,239 @@ def trade_guard_step(screen: Screen, mem, *, phase=None):
     return [pad('a')]
 
 
+def _level_capped(mem):
+    """Observed 半熟レベル at or above the owner cap (#3011).
+
+    Levels never decrease within a run, so the latest observation stays
+    authoritative even a month later; an unobserved level never engages.
+    """
+    level = mem.get('hanjuku_level')
+    return type(level) is int and level >= HANJUKU_LEVEL_CAP
+
+
+def _bijin_gold(screen: Screen):
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int or gold < 0:
+        return None
+    return gold
+
+
+def _bijin_native_choice(screen: Screen) -> bool:
+    """このイベント固有の選択行（うんデヘヘ/けえんな）が選択肢帯に読める。"""
+    return any(176 <= y <= 208 and word.startswith(token)
+               for _, y, word in _options(screen) for token in BIJIN_NATIVE_TOKENS)
+
+
+def _bijin_choice_rows(screen: Screen):
+    """The two measured choice rows, readable or not (upper accept / lower refuse).
+
+    The glyphs can be lost to OCR while the rows and the hand stay visible; the
+    raw cells still give the two y positions. Anything other than exactly two
+    rows is not the measured request (e.g. the three-row purchase menu).
+    """
+    rows = sorted({line.y for line in screen.lines
+                   if 176 <= line.y <= 208 and line.cells})
+    return rows if len(rows) == 2 else None
+
+
+def _bijin_decline_by_position(screen: Screen):
+    """One press toward the measured refusal row; 'a' when already on it.
+
+    Never guesses an accept: without a readable hand or the two measured rows
+    this returns None and the caller keeps observing.
+    """
+    rows = _bijin_choice_rows(screen)
+    if rows is None:
+        return None
+    target = rows[1]          # うんデヘヘ above / けえんな below (measured)
+    cur = _current(screen)
+    if cur is None or min(abs(cur[1] - y) for y in rows) > 2:
+        return None
+    if abs(cur[1] - target) <= 2:
+        return 'a'
+    return 'down' if target > cur[1] else 'up'
+
+
+def _bijin_hold_fallback(screen: Screen, mem, guard, gold):
+    """Bounded fail-safe for a held request: decline by the measured rows.
+
+    The corner ends after 300 s without a screen change, so an unreadable choice
+    may not hold forever. After ``BIJIN_GUARD_HOLD_MAX`` observations (~60 s),
+    move to the lower (refusal) row and confirm it. A move is returned first so
+    the next observation can confirm; no A is sent without a visible hand.
+    """
+    held = int(guard.get('held_ticks') or 0) + 1
+    guard['held_ticks'] = held
+    if held <= BIJIN_GUARD_HOLD_MAX:
+        return None
+    move = _bijin_decline_by_position(screen)
+    if move is None:
+        if not guard.get('bound_unactionable'):
+            guard['bound_unactionable'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'bijin_guard': True, 'gold': gold, 'held_observations': held},
+                    reason='美女の保留上限に達したが、選択行と手を読めず位置でも断れない')
+        return None
+    if move == 'a':
+        guard['chosen'] = True
+        _record(mem, 'prompt', choice='けえんな（位置）', prompt=screen.text[-60:],
+                strategy_variant='decline_bijin_position',
+                observed_metric={'gold': gold, 'held_observations': held},
+                reason='美女の選択行を読めないまま保留上限を超えたため、実測の行順（下=断り）で断る')
+        return [pad('a')]
+    return [pad(move)]
+
+
+def bijin_guard_step(screen: Screen, mem, *, phase=None):
+    """1000G以上なら依頼を受けて家へ進み、それ以外・読取不明は断る。
+
+    選択肢と現在行を確認できない間は決定せず、既存の画面所有境界を保つ。
+    実測の月イチイベント画面は紅幕の会場で ``phase='concert'`` になるため、
+    依頼文か固有の選択行が見えている間は phase 境界より先に所有する。
+    """
+    if mem.get('bijin_gift_hold') is True:
+        if (mem.get('month_sub') or screen.kind in (
+                'map', 'map_target', 'world_map', 'month_menu', 'battle',
+                'battle_menu', 'egg_battle_menu', 'monster_menu')
+                or readable_prose_screen(screen)):
+            mem.pop('bijin_gift_hold', None)
+            mem.pop('bijin_gift_waits', None)
+        elif screen.kind != 'gift_request':
+            # Losing the text classifier is not evidence that the item menu
+            # ended. Keep its owner across OCR misses instead of blind A/B.
+            return []
+    guard = mem.get('bijin_guard')
+    if isinstance(guard, dict):
+        guard.pop('held', None)  # ownership is recomputed for this observation
+    # The measured monthly event is drawn on the red-curtain scene: classify()
+    # returns 'concert' for the frame (gcgx ninja.png), never 'dialogue', so
+    # the old phase boundary skipped this guard in production and the
+    # generic A accepted the request. Take ownership whenever the request is
+    # on screen -- by its wording or by the event's own choice labels -- and
+    # keep the phase boundary only for unrelated frames. A pending monthly
+    # purchase still owns its own dialogue first (the event fires before the
+    # monthly command, so the two never share a frame in the measured flow).
+    native = _bijin_native_choice(screen)
+    request_seen = native or _is_bijin_request(screen.text)
+    if mem.get('month_sub') or (phase not in (None, 'dialogue') and not request_seen):
+        mem.pop('bijin_guard', None)
+        return None   # 月イチの購入額確定などの所有者を邪魔しない
+    tick = int(mem.get('tick') or 0)
+    if request_seen and screen.kind in ('text', 'unknown', 'yes_no'):
+        if not isinstance(guard, dict):
+            guard = mem['bijin_guard'] = {'tick': tick, 'chosen': False}
+            _record(mem, 'bijin_request_seen', screen=screen.kind, phase=phase,
+                    observed_metric={'text': screen.text[-80:], 'hand': screen.hand is not None,
+                                     'native_choice': native, 'gold': _bijin_gold(screen)},
+                    reason='美女の依頼（月イチイベント）を検出。所持金1000G以上なら家へ進み、未満・読取不明なら断る')
+        guard['tick'] = tick
+    if not isinstance(guard, dict):
+        return None
+    if guard.get('chosen') or screen.kind in ('map', 'map_target', 'month_menu', 'battle', 'world_map'):
+        mem.pop('bijin_guard', None)
+        return None
+    # The lead-in lease expires as before. Once a choice is seen, time alone is
+    # not evidence that it ended: a blinking hand or partial OCR must not
+    # release the same pending request to the generic A.
+    if tick - int(guard.get('tick') or 0) > BIJIN_GUARD_OBSERVATIONS and not guard.get('choice_seen'):
+        mem.pop('bijin_guard', None)
+        return None
+    gold = _bijin_gold(screen)
+    capped = _level_capped(mem)
+    accept = gold is not None and gold >= BIJIN_MIN_GOLD and not capped
+    if not request_seen:
+        if screen.kind == 'gift_request':
+            mem.pop('bijin_guard', None)
+            return None   # the purchase menu has its own bounded owner (gift_step)
+        if guard.get('choice_seen') and screen.kind in ('text', 'unknown', 'yes_no'):
+            # A positively readable page without the request wording, without
+            # any bottom choice row and without a blinking hand is the same end
+            # evidence trade_guard accepts ("a readable different prose screen",
+            # L114-L119). Without this boundary the hold below stays true on an
+            # unrelated readable dialogue and orchestrator L407 skips the
+            # no-input fallback for good, so the bot sends nothing at all.
+            # Read the raw cells of the message band: a partly unread page (or
+            # a page left with nothing but the gold header) is not end evidence,
+            # so this can never re-open the owner-review blind A.
+            if readable_prose_screen(screen):
+                mem.pop('bijin_guard', None)
+                return None
+            # Owner review (2026-10-15, PR #2286): the choices of this request
+            # have already been seen, so a partly unread question is not end
+            # evidence. The hand may still blink over the accept line (a 500G
+            # request could be confirmed), so keep the pending episode held
+            # instead of returning None and letting the generic A through.
+            # Release only happens on an explicit end condition: a read
+            # decline/accept row, a new monthly/frame owner or a map/battle
+            # screen. The monthly-event phase ('concert') does not release it.
+            guard['held'] = True
+            action = _bijin_hold_fallback(screen, mem, guard, gold)
+            if action is not None:
+                return action
+            if not guard.get('unread_question_recorded'):
+                guard['unread_question_recorded'] = True
+                _record(mem, 'situation_held', screen=screen.kind,
+                        observed_metric={'bijin_guard': True, 'gold': gold,
+                                         'text': screen.text[-80:]},
+                        reason='美女の依頼の設問が一時的に読めないため保留する（選択肢は確認済みで終了証拠ではない）')
+            return []
+        return None
+    band = [word for _, y, word in _options(screen) if 176 <= y <= 208 and word]
+    if screen.hand is None and not band:
+        return None   # 依頼文の読み上げだけが見えている頁。進行は既存の経路に任せる
+    guard['choice_seen'] = True
+    move = None
+    for label in (BIJIN_NATIVE_ACCEPT_TOKENS + ('うむッ',) if accept
+                  else BIJIN_DECLINE_TOKENS):
+        move = menu_to(screen, label, exact=False)
+        if move is not None:
+            break
+    if move is None:
+        guard['held'] = True
+        action = _bijin_hold_fallback(screen, mem, guard, gold)
+        if action is not None:
+            return action
+        if not guard.get('unread_choice_recorded'):
+            guard['unread_choice_recorded'] = True
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'bijin_guard': True, 'gold': gold, 'text': screen.text[-80:]},
+                    reason='美女の依頼の選択行と現在行を確定できないため決定せず再観測')
+        return []
+    guard.pop('held_ticks', None)
+    guard.pop('bound_unactionable', None)
+    if move != 'here':
+        return [move]
+    guard['chosen'] = True
+    cur = _current(screen)
+    _record(mem, 'prompt', choice=(cur[2] if cur else label), prompt=screen.text[-60:],
+            strategy_variant=('decline_bijin_level_cap' if capped else
+                              'accept_bijin_house' if accept else
+                              'decline_bijin_unread_gold' if gold is None else 'decline_bijin_below_floor'),
+            observed_metric={'gold': gold,
+                             **({'hanjuku_level': mem['hanjuku_level']}
+                                if type(mem.get('hanjuku_level')) is int else {})},
+            reason=('半熟レベル14以上を確認したため半熟値を稼ぐ家の依頼を断る' if capped else
+                    '所持金1000G以上を確認したため依頼を受けて家を選ぶ' if accept else
+                    '所持金1000G以上を確認できないため依頼を断る'))
+    return [pad('a')]
+
+
+def _arm_chapter_end_save(mem):
+    """Record the measured chapter-end save once; never advance a chapter here.
+
+    The advance needs the advance-party screen and the finished boss that
+    ``flows/starter.py`` checks, so an unknown/absent chapter only skips the
+    record. The marker carries the tick so a stale one can expire.
+    """
+    chapter = mem.get('chapter')
+    if type(chapter) is not int or not 1 <= chapter <= 12:
+        return
+    armed = mem.get('chapter_end_save')
+    if isinstance(armed, dict) and armed.get('chapter') == chapter:
+        return
+    mem['chapter_end_save'] = {'chapter': chapter, 'tick': mem.get('tick')}
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     metric = None
@@ -151,21 +512,44 @@ def yes_no_step(screen: Screen, mem):
         choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
     elif _is_goninja_prompt(text):
         # 月イチイベント「ゴニンジャー」: 50Gで敵将軍の暗殺を依頼する。成功率は低い。
-        # Owner rule (2026-10-06): 所持金1000G以上の時だけ依頼する。
+        # Owner rule (2026-10-17): 所持金300G未満なら断る。
         budget = metric = _goninja_budget(mem, screen.header)
         if budget is None:
             choice, reason, variant = ('いかんッ!', '所持金が読めないためゴニンジャーへの依頼を見送る',
                                        'decline_goninja_unreadable')
         elif budget['gold'] >= GONINJA_MIN_GOLD:
-            choice, reason, variant = ('うむッ!', '所持金が1000G以上あるためゴニンジャーへ依頼する',
+            choice, reason, variant = ('うむッ!', f'所持金が{GONINJA_MIN_GOLD}G以上あるためゴニンジャーへ依頼する',
                                        'accept_goninja')
         else:
-            choice, reason, variant = ('いかんッ!', '所持金が1000G未満のためゴニンジャーへの依頼を断る',
+            choice, reason, variant = ('いかんッ!', f'所持金が{GONINJA_MIN_GOLD}G未満のためゴニンジャーへの依頼を断る',
                                        'decline_goninja_below_floor')
+    elif _is_bijin_request(text):
+        # Owner rule (2026-10-15, 2026-10-21): the monthly 美女 request is
+        # declined unless the 1000G floor is proven. Its measured frame is
+        # phase 'concert' and a pending monthly owner can preempt
+        # bijin_guard_step, so this measured yes/no listing must apply the same
+        # floor instead of falling through to the default accept.
+        gold = _bijin_gold(screen)
+        metric = {'gold': gold, 'minimum_gold': BIJIN_MIN_GOLD}
+        if _level_capped(mem):
+            metric['hanjuku_level'] = mem['hanjuku_level']
+            choice, reason, variant = ('いかんッ!', '半熟レベル14以上のため半熟値が上がる家の依頼を断る',
+                                       'decline_bijin_level_cap')
+        elif gold is not None and gold >= BIJIN_MIN_GOLD:
+            choice, reason, variant = ('うむッ!', '所持金1000G以上を確認したため美女の依頼を受ける',
+                                       'accept_bijin_house')
+        elif gold is None:
+            choice, reason, variant = ('いかんッ!', '所持金1000G以上を確認できないため美女の依頼を断る',
+                                       'decline_bijin_unread_gold')
+        else:
+            choice, reason, variant = ('いかんッ!', '所持金1000G未満のため美女の依頼を断る',
+                                       'decline_bijin_below_floor')
     elif 'はたしあい' in text or 'ごあいて' in text:
         # Owner decision (2026-09-25): accept. A duel fought with the blue
-        # gauge spent properly is a near-certain win, so the hero no longer
-        # needs shielding from the offer.
+        # gauge spent properly is a near-certain win. Owner correction
+        # (2026-11-15): this is the castle-attack duel that recruits the
+        # enemy general for free, so it must always be taken -- never
+        # declined for a lower HP panel.
         choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
         variant = 'accept_duel'
     elif _is_general_trade_prompt(text):
@@ -181,19 +565,104 @@ def yes_no_step(screen: Screen, mem):
         else:
             choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）で強い・判定不能の将軍が指定されたため断る'
             variant = 'decline_general_trade'
+    elif all(token in text for token in CHAPTER_END_SAVE_TOKENS):
+        # 章末のセーブ確認。実画面の文言だけで判断し、章の番号や月からは推測しない。
+        # 次章の確定材料は直後の先発隊画面（flows/starter.py）に限定する。
+        choice, reason, variant = ('うむッ!',
+                                   '章末のセーブ確認を実画面で読んだため進行し、直後の先発隊で次章を確定する',
+                                   'chapter_end_save')
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)
+    hold = mem.get('yes_no_unread')
+    if not isinstance(hold, dict):
+        hold = None
+    key = f'{choice}:{text[-40:]}'
     if move == 'here':
+        mem.pop('yes_no_unread', None)
+        if variant == 'chapter_end_save':
+            _arm_chapter_end_save(mem)
         _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason,
                 strategy_variant=variant, observed_metric=metric)
         return [pad('a')]
-    if move is None:
+    if move is not None:
+        # The cursor moved off the game's default (upper) row toward the
+        # computed choice, so a later forced answer may confirm that row
+        # directly instead of walking again.
+        mem['yes_no_unread'] = {'key': key, 'held': 0, 'moved': True, 'forced': 0}
+        return [move]
+    same = hold is not None and hold.get('key') == key
+    held = (int(hold.get('held') or 0) + 1) if same else 1
+    moved = bool(hold.get('moved')) if same else False
+    forced = int(hold.get('forced') or 0) if same else 0
+    settle = (YES_NO_ACCEPT_SETTLE
+              if variant == 'unclassified_prompt' and choice == 'うむッ!'
+              else YES_NO_UNREAD_BOUND)
+    if held <= settle or forced >= YES_NO_FORCED_MAX:
+        mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': moved, 'forced': forced}
         _record(mem, 'situation_held', screen=screen.kind,
                 observed_metric={'choice': choice, 'hand_visible': screen.hand is not None,
-                                 **({'goninja': metric} if metric else {})},
+                                 'held_observations': held,
+                                 **({'prompt_metric': metric} if metric else {})},
                 reason='確認画面の選択位置を読めないため決定せず再観測')
-    return [move] if move else []
+        return []
+    if choice != 'うむッ!' and not moved:
+        # Walk the cursor toward the lower (decline) row first: the game opens
+        # these prompts on the upper row and no input was sent during the
+        # hold, so one down lands on the measured refusal row.
+        mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': True,
+                                'forced': forced + 1}
+        _record(mem, 'yes_no_forced_move', screen=screen.kind, choice=choice,
+                observed_metric={'held_observations': held,
+                                 'hand_visible': screen.hand is not None,
+                                 **({'prompt_metric': metric} if metric else {})},
+                reason='選択肢は読めるが選択位置を確定できないまま保留上限を超えたため、下の行へ1回だけ動かして再観測')
+        return [pad('down')]
+    mem['yes_no_unread'] = {'key': key, 'held': held, 'moved': moved,
+                            'forced': forced + 1}
+    if variant == 'chapter_end_save':
+        _arm_chapter_end_save(mem)
+    _record(mem, 'yes_no_forced_answer', screen=screen.kind, choice=choice,
+            strategy_variant=variant, prompt=text[-40:],
+            observed_metric={'held_observations': held,
+                             'hand_visible': screen.hand is not None,
+                             'moved': moved,
+                             **({'prompt_metric': metric} if metric else {})},
+            reason='選択肢が読める確認画面の選択位置を長時間確定できないため、既定応答をAで決定して停滞を解消する')
+    return [pad('a')]
+
+
+def _summer_bonus_choice_band(screen: Screen) -> bool:
+    """True while the 8月 prompt's own choice band can still be on screen.
+
+    ``confirmation_planned`` only says A was sent; it is not evidence that the
+    menu went away. The band is denied by its own drawn rows and by the choice
+    cursor the prompt always shows: either one means the 3-choice menu is still
+    up, so an unread row (まとめて解雇 included) must not be confirmed.
+
+    The band covers the third choice row at y=208, not 207: the upper two rows
+    and the hand can be the only things that disappear, and a lone 208 row is
+    still the menu.
+
+    Measured dialogue window (g825 evidence, 2ねん8がつ): every response page
+    keeps the panel's outer frame tiles — a single unknown cell at x=248 on
+    the band rows — so an edge-only row is a response page, not a choice row
+    (tests/fixtures/hanjuku/g825-summer-response.png). Only cells inside the
+    panel's inner columns (PROSE_COLUMNS) keep the menu alive: the label rows
+    (x=176) and the post-A fade (inner tiles at x=32..224,
+    g825-summer-post-a-fade.png) still re-observe; the border-only response
+    page does not.
+    """
+    if screen.hand is not None:
+        return True
+    x0, x1 = PROSE_COLUMNS
+    # The choice label's tail can land exactly on the inner column boundary
+    # (x=232): the tail is a real choice label cell, so the inner check must
+    # include it. The response page's outer frame stays at x=248 and is still
+    # denied. The x=232 case comes from a synthetic reproduction; the x=248
+    # outer-frame case comes from the measured g825 fixture.
+    return any(176 <= line.y <= 208 and any(x0 <= x <= x1 for x, _ in line.cells)
+               for line in screen.lines)
 
 
 def summer_bonus_continue(screen: Screen, mem):
@@ -222,6 +691,23 @@ def summer_bonus_continue(screen: Screen, mem):
             screen.kind = 'summer_bonus_message'
             _record(mem, 'summer_bonus_message', target=plan['target'],
                     reason='夏イベントの選択後に出る固有の応答文を読んだため会話を進める')
+        # A planned A is not evidence that the menu went away: the prompt's own
+        # question and a single unread tile both live in the prose band, so the
+        # band alone cannot distinguish the response page from the prompt. Only
+        # advance when the choice band itself is denied (see
+        # ``_summer_bonus_choice_band``): while the band or its hand can still be
+        # on screen, re-observe instead of confirming an unread choice.
+        elif plan and plan.get('confirmation_planned') and not same_menu:
+            band_gone = not _summer_bonus_choice_band(screen)
+            has_dialogue_content = any(
+                line.y in PROSE_ROWS and (line.cells or line.spans())
+                for line in screen.lines)
+            if band_gone and has_dialogue_content:
+                screen.kind = 'summer_bonus_message'
+                _record(mem, 'summer_bonus_message', target=plan['target'],
+                        reason='夏イベントの選択確定後に選択肢帯とカーソルが消え、応答文領域に内容があるため会話を進める（応答文は未読）')
+            else:
+                return True  # the choice band cannot be denied; re-observe
         elif plan or old_choice:
             return True
     # A different recognized screen or the observed post-choice response ends
@@ -296,8 +782,88 @@ def summer_bonus_step(screen: Screen, mem):
     return [move]
 
 
-def observe_events(screen: Screen, mem):
+def _settle_road_defeats(mem):
+    """A march measured as defeated on the road is never still in flight.
+
+    The planner's own settlement only runs when a plan is rebuilt, so a
+    battle-heavy month left road-defeated records at ``en_route`` for months
+    (g1190 2026-11-18 65-1..65-5: ピオーネ→トリフェ kept ``en_route`` with
+    ``road_defeat`` set, and the retake waves never concentrated — #4579).
+    """
+    from ..state.regions import world as _world
+    sorties = _world(mem).get('sorties') or {}
+    if not isinstance(sorties, dict):
+        return
+    for step, sortie in list(sorties.items()):
+        if (isinstance(sortie, dict) and type(sortie.get('road_defeat')) is int
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')):
+            sortie['status'] = 'overdue'
+            _record(mem, 'sortie_road_defeat_settled', chart_step=step,
+                    observed_metric={'general': sortie.get('general'),
+                                     'target': sortie.get('target')},
+                    reason='道中敗北の記録があるため、行軍を決着済みとして片付ける')
+
+
+# docich#4535: a battery-save load after a title return (game over) silently
+# rewinds the run's month and castle holdings. The bot re-reads the screen and
+# follows, so nothing recorded the rollback itself (local chapter 11,
+# 60-4 -> 58-4 on 2026-11-18). A same-chapter month reading that drops by more
+# than this many months is logged once per (chapter, before, after) rollback
+# as progress_regressed; smaller backward reads are header flicker, and a
+# month observed under another chapter is not this chapter's regression.
+MONTH_REGRESS_MIN = 2
+
+
+def _month_ordinal(key):
+    """Sequential index of a 'year-month' key, or None when it cannot be read."""
+    if not isinstance(key, str):
+        return None
+    year, sep, month = key.partition('-')
+    if not sep:
+        return None
+    try:
+        year, month = int(year), int(month)
+    except ValueError:
+        return None
+    if year < 1 or not 1 <= month <= 12:
+        return None
+    return year * 12 + month
+
+
+def _observe_progress_regress(mem, month_before, month_after, chapter_before,
+                              previous_phase):
+    """Record a same-chapter month rollback once (docich#4535).
+
+    ``mem['captured']``/``mem['lost']`` still hold the pre-rollback view at
+    this point, so the record keeps the holdings the load rewound.
+    """
+    if chapter_before is None or mem.get('chapter') != chapter_before:
+        return   # a chapter transition or an undecided chapter is not a regression
+    month_chapter = mem.get('month_chapter')
+    if month_chapter is not None and month_chapter != chapter_before:
+        # The save row's だいNわ can retarget mem['chapter'] without a chapter
+        # transition, so a month observed under another chapter must not be
+        # compared against this chapter's header (cross-chapter load).
+        return
+    before, after = _month_ordinal(month_before), _month_ordinal(month_after)
+    if before is None or after is None or before <= after + MONTH_REGRESS_MIN:
+        return
+    key = [chapter_before, month_before, month_after]
+    if mem.get('progress_regressed') == key:
+        return   # a flickering header must not log the same rollback twice
+    mem['progress_regressed'] = key
+    _record(mem, 'progress_regressed',
+            observed_metric={'month_before': month_before, 'month_after': month_after,
+                             'captured': sorted(mem.get('captured') or ()),
+                             'lost': sorted(mem.get('lost') or ()),
+                             'home_lost': bool(mem.get('home_lost')),
+                             'previous_phase': previous_phase},
+            reason='同一章で月が大きく逆行したため、タイトル復帰のセーブロード等による進行ロールバックとして記録する')
+
+
+def observe_events(screen: Screen, mem, previous_phase=None):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _settle_road_defeats(mem)
     _repair_home_name_chapter(mem)
     _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
@@ -324,6 +890,10 @@ def observe_events(screen: Screen, mem):
         eggs = mem.setdefault('egg_uses', {})
         if row:
             mem.setdefault('egg_types', {})[row[0]] = row[1]
+            # #4415: the sortie row is a dated observation, unlike the flat
+            # egg_types mirror, so a stale egg type can no longer outrank it.
+            egg_memory.observe(mem, row[0], egg=row[1], uses=row[2],
+                               present=True, source=egg_memory.SORTIE)
             if row[0] in (mem.get('egg_recheck') or []):
                 mem['egg_recheck'].remove(row[0])
         if row and eggs.get(row[0]) != row[2]:
@@ -332,18 +902,43 @@ def observe_events(screen: Screen, mem):
                     reason='出撃画面のたまご行から卵の残り使用回数を記録')
     header = screen.header
     if header:
+        month_before, chapter_before = mem.get('month'), mem.get('chapter')
         chapter = header.get('chapter')
         if chapter and chapter != mem.get('chapter'):
             _enter_chapter(mem, chapter, reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
+            _observe_progress_regress(mem, month_before, key, chapter_before,
+                                      previous_phase)
+            previous = mem.get('month_start_tick')
             mem['month'] = key
+            mem['month_chapter'] = mem.get('chapter')
             mem['gold'] = header['gold']
+            now = int(mem.get('tick') or 0)
+            mem['month_start_tick'] = now
+            if type(previous) is int and now > previous:
+                durations = mem.setdefault('month_durations', [])
+                durations.append(now - previous)
+                del durations[:-6]
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
     castle = CASTLE_STATUS.search(screen.text)
-    if castle and mem.get('resume_chapter_pending') is True:
+    chapter_open = mem.get('resume_chapter_pending') is True or not mem.get('chapter')
+    if castle and chapter_open:
         observe_chapter_castle(mem, castle[1])
+    elif chapter_open and screen.text:
+        # CASTLE_STATUS needs the full 「<城> … LvN しょうぐん」 row, so a screen
+        # that only names a castle (the castle menu) never resolved the chapter
+        # and the chart stayed unavailable. A known castle name standing alone
+        # on its own line is the same evidence. Two or more names are ambiguous,
+        # so nothing is confirmed rather than guessing the first one.
+        from ... import hanjuku_chart as _chart
+        known = {n for names in _chart.CASTLE_NAMES.values() for n in names if n}
+        named = {line.strip() for line in screen.text.splitlines() if line.strip() in known}
+        if len(named) == 1:
+            observe_chapter_castle(mem, next(iter(named)))
+    if mem.get('chapter'):
+        mem.pop('chapter_probe', None)
     if mem.get('resume_chapter_pending') is True and type(mem.get('chapter')) is int and 1 <= mem['chapter'] <= 12:
         mem.pop('resume_chapter_pending', None)
     income = re.search(r'しゅうにゅう(\d{1,3})Gレベル\d+しょうぐん', screen.text)
@@ -397,9 +992,39 @@ def observe_events(screen: Screen, mem):
     _observe_soldier_receipt(screen, mem, directly_seen=seen if m else None)
 
 
+def _bijin_gift_bound(screen: Screen, mem, gold, items):
+    """Bounded escape for the measured purchase menu (no refusal row).
+
+    Only an item choice ends this menu; a hold without input would leave the
+    frame unchanged until the 300 s corner watchdog ends the run (retro_corner
+    end_reason='screen_stalled', 2026-10-21, 907G). After
+    ``BIJIN_GIFT_HOLD_MAX`` observations (~60 s), end the event with the
+    cheapest readable non-house item (こうすい100G), never いえ. This can spend
+    at most 100G and only fires after the decision to not buy the house.
+    """
+    waits = int(mem.get('bijin_gift_waits') or 0) + 1
+    mem['bijin_gift_waits'] = waits
+    if waits <= BIJIN_GIFT_HOLD_MAX:
+        return []
+    candidates = [(price, name) for price, name in items if name != 'いえ']
+    if not candidates:
+        return []
+    price, name = min(candidates)
+    move = menu_to(screen, name, exact=False)
+    if move == 'here':
+        mem.pop('bijin_gift_waits', None)
+        _record(mem, 'gift', strategy_variant='bijin_hold_bound_cheapest',
+                item=name, price=price, gold=gold, deviation_reason='bijin_item_hold_bound',
+                observed_metric={'price': price, 'waits': waits,
+                                 'affordable': gold is not None and gold >= price},
+                reason='美女の購入画面で家（または断り）を確定できないまま保留上限を超えたため、最安品でイベントを終える（停滞によるrun終了を防ぐ）')
+        return [pad('a')]
+    return [move] if move else []
+
+
 def gift_step(screen: Screen, mem):
-    """「なにを かいあたえますか?」: the chart resets here; the bot cannot, so
-    it buys the cheapest listed item and records the deviation."""
+    """美女は1000G以上で家を選ぶ。それ以外の贈り物は従来の方針。"""
+    mem.pop('bijin_gift_hold', None)
     items = []
     for line in screen.lines:
         # The live gift prompt shares the first price row. Restrict the
@@ -408,6 +1033,51 @@ def gift_step(screen: Screen, mem):
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))
+    bijin = ('どれかほしい' in screen.text.replace(' ', '')
+             or any(name in ('こうすい', 'くるま', 'いえ') for _, name in items))
+    if bijin:
+        mem['bijin_gift_hold'] = True
+        gold = _bijin_gold(screen)
+        if gold is None or gold < BIJIN_MIN_GOLD:
+            for label in BIJIN_DECLINE_TOKENS:
+                move = menu_to(screen, label, exact=False)
+                if move is not None:
+                    mem.pop('bijin_gift_waits', None)
+                    return [pad('a')] if move == 'here' else [move]
+            # Already in the item menu: never purchase the house without the
+            # cash condition; the bound ends the menu cheaply if it never clears.
+            return _bijin_gift_bound(screen, mem, gold, items)
+        if _level_capped(mem):
+            # Issue #3011: the house earns 半熟値; at the owner cap the event
+            # still has to end, so the cheapest non-earning item is bought.
+            others = [(price, name) for price, name in items if name != 'いえ']
+            if not others:
+                return _bijin_gift_bound(screen, mem, gold, items)
+            price, name = min(others)
+            move = menu_to(screen, name, exact=False)
+            if move is None:
+                return _bijin_gift_bound(screen, mem, gold, items)
+            if move == 'here':
+                mem.pop('bijin_gift_waits', None)
+                _record(mem, 'gift', strategy_variant='bijin_level_cap', item=name, price=price,
+                        gold=gold, observed_metric={'price': price, 'hanjuku_level': mem.get('hanjuku_level'),
+                                                    'affordable': gold >= price},
+                        reason='半熟レベル14以上のため半熟値を稼ぐ家を避け最安品でイベントを終える')
+                return [pad('a')]
+            return [move]
+        houses = [(price, name) for price, name in items if name == 'いえ' and price == 500]
+        if len(houses) != 1:
+            return _bijin_gift_bound(screen, mem, gold, items)
+        price, name = houses[0]
+        move = menu_to(screen, name, exact=False)
+        if move == 'here':
+            mem.pop('bijin_gift_waits', None)
+            _record(mem, 'gift', strategy_variant='bijin_house', item=name, price=price,
+                    gold=gold, observed_metric={'price': price, 'affordable': True},
+                    reason='所持金1000G以上のため半熟値を上げる家を選ぶ')
+            return [pad('a')]
+        return [move] if move else []
+    mem.pop('bijin_gift_waits', None)
     if not items:
         return []
     price, name = min(items)

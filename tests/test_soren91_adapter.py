@@ -8,7 +8,10 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import uuid
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -25,7 +28,11 @@ from docich.adapters.soren91 import (  # noqa: E402
     is_tailscale_ipv4,
     parse_udp_listeners,
 )
-from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
+from docich.game_switch import (  # noqa: E402
+    GameSwitchCoordinator, GameSwitchStore, ReadinessTimeoutError,
+    RuntimeSpec, runtime_state_dict,
+)
+from docich.adapters.cli_game import CliCoordinatorAdapter  # noqa: E402
 from docich.tmux import PaneState, TmuxOwnership  # noqa: E402
 
 MAC_IP = "100.90.0.1"
@@ -117,7 +124,10 @@ class Soren91AdapterTestBase(unittest.TestCase):
             '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
             '[agent]\nenabled=false\n'
             '[lifecycle]\nrequire_round_boundary=false\n'
-            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n',
+            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n'
+            # Production soren91 shares the Soren Game IGDB category; the
+            # commit_hook path requires [twitch] to announce (flap fix).
+            '[twitch]\ncategory_id="1530787860"\ncategory_name="Soren Game"\n',
             encoding="utf-8",
         )
         self.g = config.load_global(self.root)
@@ -276,6 +286,22 @@ class TestSrtAndViewer(Soren91AdapterTestBase):
         self.assertIn("--title", cmd)
         self.assertIn("docich-present-g3-abcdef12", cmd)
         self.assertIn(f"srt://{OCI_IP}:19192?mode=listener", cmd)
+
+    def test_viewer_records_why_it_never_appeared(self):
+        # docich#1221: the SRT viewer only materializes on the first frame from
+        # the renderer. The presenter pane dies with its tmux window, so the
+        # reason must be written into the runtime dir for readiness to report.
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 90
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        adapter = self._adapter()
+        cmd = adapter._xterm_command()
+        self.assertIn("--failure-state", cmd)
+        self.assertEqual(
+            Path(cmd[cmd.index("--failure-state") + 1]),
+            adapter.spec.runtime_dir / "presentation_failure.json",
+        )
 
     def test_viewer_plays_game_audio_into_the_broadcast_sink(self):
         # Issue #303 feedback: the SRT viewer used to drop audio with `-an`,
@@ -495,8 +521,70 @@ class TestLifecycle(Soren91AdapterTestBase):
         with self._bound_listener(True), self._http():
             self.http_plan = [(200, {"ok": True, "running": True})]
             adapter.materialize_runtime(time.monotonic() + 30, None)
-            self.http_plan = [(200, {"ok": True, "running": True})]
+            # One probe before the viewer wait, one polling status.
+            self.http_plan = [
+                (200, {"ok": True, "running": True}),
+                (200, {"ok": True, "running": True}),
+            ]
             adapter.readiness(time.monotonic() + 30, None)
+
+    def test_readiness_does_not_sync_twitch_pre_commit(self):
+        # 2026-11-05: renderer ready/stop flaps caused soren91 <-> sorengame
+        # title flaps before commit, overwriting the active game's title.
+        # Twitch ownership is the coordinator's post-commit hook only.
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.http_plan = [
+                (200, {"ok": True, "running": True}),
+                (200, {"ok": True, "running": True}),
+            ]
+            with mock.patch.object(adapter, "_sync_twitch") as sync:
+                adapter.readiness(time.monotonic() + 30, None)
+            sync.assert_not_called()
+            self.assertFalse(adapter._twitch_synced)
+
+    def test_readiness_fails_fast_when_renderer_host_unreachable(self):
+        # #2260: an unreachable renderer host must fail before the presenter's
+        # 240s viewer wait, not after it.
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.http_plan = [urllib.error.URLError("no route")]
+            with mock.patch(
+                "docich.adapters.cli_game.CliCoordinatorAdapter.readiness"
+            ) as viewer_wait:
+                with self.assertRaises(ReadinessTimeoutError) as ctx:
+                    adapter.readiness(time.monotonic() + 30, None)
+        viewer_wait.assert_not_called()
+        self.assertIn("viewer 待ち前に失敗", str(ctx.exception))
+
+    def test_readiness_fails_fast_when_renderer_exited_after_start(self):
+        # #2260 (Muse 2026-10-28 08:15): the renderer exited ~17s after start.
+        # Status shows running=false with lastExit at/after our start: fail now,
+        # before the viewer wait, even if the exit was never seen as "running".
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [
+                (200, {"ok": True, "running": False}),  # status before start
+                (202, {"ok": True, "started": True}),  # start
+            ]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+            exited_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+            self.http_plan = [(200, {
+                "ok": True,
+                "running": False,
+                "lastExit": {"code": 0, "signal": None, "at": exited_at.isoformat()},
+            })]
+            with mock.patch(
+                "docich.adapters.cli_game.CliCoordinatorAdapter.readiness"
+            ) as viewer_wait:
+                with self.assertRaises(ReadinessTimeoutError) as ctx:
+                    adapter.readiness(time.monotonic() + 240, None)
+        viewer_wait.assert_not_called()
+        self.assertIn("起動後に終了しました", str(ctx.exception))
 
     def test_readiness_fails_closed_when_renderer_not_running(self):
         adapter = self._adapter()
@@ -506,6 +594,31 @@ class TestLifecycle(Soren91AdapterTestBase):
             self.http_plan = [(200, {"ok": True, "running": False})]
             with self.assertRaises(ReadinessTimeoutError):
                 adapter.readiness(time.monotonic() + 1.5, None)
+
+    def test_readiness_reports_the_presenters_viewer_failure(self):
+        # docich#1221: the presenter gives up when no SRT frame arrives and its
+        # tmux window disappears. readiness must report that recorded cause
+        # instead of the bare "game windowがありません" symptom.
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+        (adapter.spec.runtime_dir / "presentation_failure.json").write_text(
+            json.dumps({
+                "status": "viewer_timeout",
+                "reason": "native game viewer did not appear",
+                "viewer_wait_sec": 240,
+                "elapsed_s": 240.0,
+                "viewer_exit_code": None,
+            }),
+            encoding="utf-8",
+        )
+        self.tmux.windows.pop("docich-game-g3:game-g3")
+        with self.assertRaises(ReadinessTimeoutError) as ctx, self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.readiness(time.monotonic() + 30, None)
+        self.assertIn("viewer_timeout", str(ctx.exception))
+        self.assertIn("viewer_wait_sec=240", str(ctx.exception))
 
     def test_alive_reflects_agent_status(self):
         adapter = self._adapter()
@@ -1039,6 +1152,19 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
             adapter._sync_twitch("soren91")
         self.assertEqual(calls, [])
 
+    def test_twitch_sync_survives_an_unreadable_soren_root(self):
+        # Some hosted runners have an unreadable /home/ubuntu, where is_file()
+        # raises instead of returning False. The sync is best-effort on the
+        # on-air path, so that must not fail the corner.
+        from docich.adapters import soren91 as mod
+
+        calls = []
+        adapter = self._adapter()
+        with mock.patch.object(mod.Path, "is_file", side_effect=PermissionError(13, "denied")), \
+                mock.patch.object(mod.subprocess, "run", lambda *a, **k: calls.append(a)):
+            adapter._sync_twitch("soren91")
+        self.assertEqual(calls, [])
+
     def test_cleanup_restores_the_main_title_even_on_a_fresh_adapter(self):
         # The coordinator and the manual cross-process stop clean up through a
         # different adapter instance than the one that started, so the restore
@@ -1052,6 +1178,236 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
                 self.http_plan = [(202, {"ok": True, "stopping": True})]
                 adapter.cleanup_runtime(time.monotonic() + 30, None)
         self.assertEqual(calls, ["sorengame"])
+
+    def test_cleanup_does_not_restore_over_a_different_active_identity(self):
+        store = GameSwitchStore(self.g.state_dir)
+        store.initialize()
+        # A new game, another generation of the same game, and a re-leased
+        # rollback of the same runtime must all fence out this old adapter.
+        for changes in (
+            {"game": "hanjuku-hero", "adapter": "retroarch"},
+            {"generation": 4, "runtime_id": "g4-abcdef12", "game_window": "game-g4",
+             "agent_window": "agent-g4", "adapter_session": "docich-game-g4"},
+            {"lease_id": str(uuid.uuid4())},
+        ):
+            with self.subTest(changes=changes):
+                active = runtime_state_dict(replace(self.spec, **changes), "2026-10-19T00:00:00Z")
+                state, _ = store.canonical.load()
+                state.update(phase="ready", active=active, next_generation=5)
+                store.canonical.save(state)
+                adapter = self._adapter()
+                with mock.patch.object(adapter, "_sync_twitch") as sync:
+                    with self._bound_listener(False), self._http():
+                        adapter.cleanup_runtime(time.monotonic() + 30, None)
+                sync.assert_not_called()
+                self.assertEqual(store.canonical.load()[0]["active"], active)
+
+    def test_cleanup_with_corrupt_canonical_still_tears_down_without_metadata(self):
+        store = GameSwitchStore(self.g.state_dir)
+        store.initialize()
+        store.canonical.path.write_text("{broken", encoding="utf-8")
+        adapter = self._adapter()
+        self.tmux.sessions[self.spec.adapter_session] = (self.spec.runtime_id, 3, "adapter")
+        with mock.patch.object(adapter, "_sync_twitch") as sync:
+            with self._bound_listener(False), self._http():
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+        sync.assert_not_called()
+        self.assertNotIn(self.spec.adapter_session, self.tmux.sessions)
+
+
+class TestSoren91MetadataCoordinator(Soren91AdapterTestBase):
+    """Real coordinator + fresh adapters; every external effect is a fake."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = GameSwitchStore(self.g.state_dir)
+        self.store.initialize()
+        self.syncs = []
+        self.pending = []
+        self.defer_hook = False
+        self.fail_retirement = False
+        self.fail_cleanup_phase = "ready"
+        self.fail_readiness = set()
+        self.instances = []
+        self.cleanups = []
+        self.metadata = None
+        script = self.root / "update_stream_game.sh"
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o700)
+        (Path(self.g.games_dir) / "hanjuku-hero.toml").write_text(
+            '[game]\nname="hanjuku-hero"\nadapter="cli"\n'
+            '[twitch]\ncategory_id="12345"\n', encoding="utf-8",
+        )
+
+        def sync(_adapter, game):
+            self.syncs.append(game)
+            self.metadata = game
+
+        def materialize(adapter, deadline, cancel):
+            self.tmux.sessions[adapter.spec.adapter_session] = (
+                adapter.spec.runtime_id, adapter.spec.generation, "adapter",
+            )
+
+        original_cleanup = Soren91CoordinatorAdapter.cleanup_runtime
+
+        def cleanup(adapter, deadline, cancel):
+            state, _ = self.store.canonical.load()
+            self.cleanups.append((adapter.spec, state["phase"]))
+            if self.fail_retirement and state["phase"] == self.fail_cleanup_phase:
+                self.fail_retirement = False
+                raise AdapterError("transient retirement failure")
+            return original_cleanup(adapter, deadline, cancel)
+
+        def readiness(adapter, deadline, cancel):
+            if adapter.spec.game in self.fail_readiness:
+                raise ReadinessTimeoutError("fixture readiness failure")
+
+        patches = (
+            mock.patch.object(CliCoordinatorAdapter, "preflight"),
+            mock.patch.object(Soren91CoordinatorAdapter, "preflight"),
+            mock.patch.object(CliCoordinatorAdapter, "materialize_runtime", materialize),
+            mock.patch.object(Soren91CoordinatorAdapter, "materialize_runtime", materialize),
+            mock.patch.object(CliCoordinatorAdapter, "readiness", readiness),
+            mock.patch.object(Soren91CoordinatorAdapter, "_agent_running", return_value=True),
+            mock.patch.object(Soren91CoordinatorAdapter, "_listener_bound",
+                              lambda a: a.spec.adapter_session in self.tmux.sessions),
+            mock.patch.object(Soren91CoordinatorAdapter, "_sync_twitch", sync),
+            mock.patch.object(Soren91CoordinatorAdapter, "cleanup_runtime", cleanup),
+            mock.patch("docich.stream_category.script_path", return_value=script),
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.http_context = self._http()
+        self.http_context.__enter__()
+        self.addCleanup(self.http_context.__exit__, None, None, None)
+
+        def factory(spec):
+            if spec.game == "soren91":
+                adapter = Soren91CoordinatorAdapter(self.g, self.game, spec)
+            else:
+                adapter = CliCoordinatorAdapter(self.g, replace(self.game, name=spec.game), spec)
+            self.instances.append(adapter)
+            return adapter
+
+        def spawn(argv, **kwargs):
+            game = argv[argv.index("--game") + 1]
+            self.assertIn("--activity", argv)
+            self.assertEqual(self.store.canonical.load()[0]["active"]["game"], game)
+            if self.defer_hook:
+                self.pending.append(game)
+            else:
+                sync(None, game)
+
+        from docich.stream_category import commit_hook
+        self.coordinator = GameSwitchCoordinator(
+            self.store, factory, post_commit=commit_hook(self.g, spawn=spawn),
+            poll_interval_s=0.001, quiesce_verify_timeout_s=0.1,
+        )
+
+    def _start(self):
+        self.assertEqual(self.coordinator.start("soren91").status, "succeeded")
+        self.syncs.clear()
+
+    def _switch_to_hanjuku(self):
+        self._start()
+        original = self.store.canonical.load()[0]["active"]
+        result = self.coordinator.switch("hanjuku-hero")
+        self.assertEqual(result.status, "succeeded")
+        committed = self.store.canonical.load()[0]
+        self.assertEqual(committed["active"]["game"], "hanjuku-hero")
+        if result.cleanup_pending:
+            self.assertEqual(committed["retiring"][0]["runtime_id"], original["runtime_id"])
+            self.assertEqual(committed["retiring"][0]["lease_id"], original["lease_id"])
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.store.canonical.load()[0]["active"], committed["active"])
+        self.assertEqual(self.store.canonical.load()[0]["retiring"], [])
+        # The pre-commit cleanup must still return the base game's metadata.
+        expected = ["sorengame"] if self.defer_hook else ["sorengame", "hanjuku-hero"]
+        self.assertEqual(self.syncs, expected)
+        for game in self.pending:
+            self.syncs.append(game)
+            self.metadata = game
+        self.assertEqual(self.metadata, "hanjuku-hero")
+        cleanups = [spec for spec, _ in self.cleanups if spec.runtime_id == original["runtime_id"]]
+        self.assertGreaterEqual(len(cleanups), 2)
+        self.assertTrue(all(spec.lease_id == original["lease_id"] for spec in cleanups))
+        self.assertEqual(len(self.instances), len({id(a) for a in self.instances}))
+        return result
+
+    def test_completed_post_commit_update_survives_retiring_cleanup(self):
+        self._switch_to_hanjuku()
+
+    def test_async_post_commit_can_finish_after_retiring_cleanup(self):
+        self.defer_hook = True
+        self._switch_to_hanjuku()
+
+    def test_recover_retries_retirement_without_overwriting_active_metadata(self):
+        self.fail_retirement = True
+        self.assertTrue(self._switch_to_hanjuku().cleanup_pending)
+
+    def test_standalone_stop_restores_base_metadata_and_idle(self):
+        self._start()
+        self.assertEqual(self.coordinator.stop().status, "succeeded")
+        self.assertEqual(self.syncs, ["sorengame"])
+        state, _ = self.store.canonical.load()
+        self.assertEqual(state["phase"], "idle")
+        self.assertIsNone(state["active"])
+
+    def test_idle_recover_still_restores_base_metadata(self):
+        self._start()
+        state, _ = self.store.canonical.load()
+        state.update(phase="idle", retiring=[state["active"]], active=None)
+        self.store.canonical.save(state)
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.syncs, ["sorengame"])
+        self.assertEqual(self.store.canonical.load()[0]["retiring"], [])
+
+    def test_failed_stop_recover_still_restores_base_metadata(self):
+        self._start()
+        self.fail_retirement = True
+        self.fail_cleanup_phase = "stopping"
+        self.assertEqual(self.coordinator.stop().status, "failed")
+        self.assertEqual(self.store.canonical.load()[0]["active"]["game"], "soren91")
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.syncs, ["sorengame"])
+        self.assertEqual(self.store.canonical.load()[0]["phase"], "idle")
+
+    def test_failed_start_returns_metadata_to_external_base(self):
+        self.fail_readiness.add("soren91")
+        self.assertEqual(self.coordinator.start("soren91").status, "failed")
+        self.assertEqual(self.syncs, ["sorengame"])
+        self.assertEqual(self.metadata, "sorengame")
+        self.assertIsNone(self.store.canonical.load()[0]["active"])
+
+    def test_failed_switch_rolls_back_soren91_in_a_new_generation(self):
+        self._start()
+        old = self.store.canonical.load()[0]["active"]
+        self.fail_readiness.add("hanjuku-hero")
+        self.assertEqual(self.coordinator.switch("hanjuku-hero").status, "rolled_back")
+        active = self.store.canonical.load()[0]["active"]
+        self.assertEqual(active["game"], "soren91")
+        self.assertGreater(active["generation"], old["generation"])
+        self.assertNotEqual(active["lease_id"], old["lease_id"])
+        self.assertEqual(self.syncs, ["sorengame", "soren91"])
+        self.assertEqual(self.metadata, "soren91")
+
+    def test_recover_failed_candidate_does_not_overwrite_active_hanjuku(self):
+        self.assertEqual(self.coordinator.start("hanjuku-hero").status, "succeeded")
+        self.syncs.clear()
+        state, _ = self.store.canonical.load()
+        active = state["active"]
+        candidate = runtime_state_dict(self.spec, "2026-10-19T00:00:00Z")
+        candidate["cleanup_role"] = "failed_candidate"
+        state.update(retiring=[candidate], next_generation=4)
+        self.store.canonical.save(state)
+        self.tmux.sessions[self.spec.adapter_session] = (self.spec.runtime_id, 3, "adapter")
+        self.assertEqual(self.coordinator.recover().status, "succeeded")
+        self.assertEqual(self.store.canonical.load()[0]["active"], active)
+        self.assertEqual(self.syncs, [])
+        self.assertEqual(self.metadata, "hanjuku-hero")
+        self.assertEqual(self.store.canonical.load()[0]["retiring"], [])
+        self.assertNotIn(self.spec.adapter_session, self.tmux.sessions)
 
 
 WIN_IP = "100.90.0.9"
@@ -1134,6 +1490,45 @@ class TestRendererFailover(Soren91AdapterTestBase):
         self.assertEqual(self._bot_cdp_url(), f"http://{MAC_IP}:9322")
         attempts = soren91_renderer.load_selection(self.g.state_dir)["attempts"]
         self.assertIn("CDP proxy", attempts[0]["error"])
+
+    def test_renderer_exit_during_viewer_wait_fails_fast(self):
+        # #2260 (2026-10-28): the Mac CDP child exited ~17s after it came up,
+        # and the adapter waited out the presenter's 240s viewer wait. A
+        # renderer that stops after its CDP proxy answered must fail the wait.
+        adapter = self._adapter(self._enabled_game())
+        cdp_up = [True]
+        adapter._cdp_proxy_ready = lambda: cdp_up[0]
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    urllib.error.URLError("no route"),  # windows /v1/status
+                    urllib.error.URLError("no route"),  # windows best-effort /v1/stop
+                    (200, {"ok": True, "running": False}),  # mac /v1/status
+                    (202, {"ok": True, "started": True}),  # mac /v1/start
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        self.assertTrue(adapter._renderer_up_seen)
+
+        viewer_entered = []
+
+        def viewer_wait(self_, deadline, cancel):
+            # The presenter wait polls _check_active; the renderer dies here.
+            viewer_entered.append(True)
+            cdp_up[0] = False
+            while True:
+                self_._check_active(deadline, cancel)
+                time.sleep(0.01)
+
+        with mock.patch("docich.adapters.soren91.RENDERER_WATCH_INTERVAL_S", 0.0), \
+                mock.patch.object(CliCoordinatorAdapter, "readiness", new=viewer_wait), \
+                self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            started = time.monotonic()
+            with self.assertRaises(ReadinessTimeoutError) as ctx:
+                adapter.readiness(time.monotonic() + 240, None)
+        self.assertTrue(viewer_entered)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("起動後に停止", str(ctx.exception))
 
     def test_mode_pins_one_host(self):
         soren91_renderer.save_mode(self.g.state_dir, "mac")

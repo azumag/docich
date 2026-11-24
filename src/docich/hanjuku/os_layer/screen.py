@@ -11,21 +11,37 @@ import collections
 import hashlib
 import re
 
-from .font import UNKNOWN, TextLine, dark, joined, light, read_lines, row_masks
-from .pixels import Frame
+from .font import UNKNOWN, TextLine, attached_mark_cells, dark, joined, light, read_lines, row_masks, white
+from .pixels import Frame, band_bits, bit_points, near_bits, union_bits
+from ... import hanjuku_reference as _reference
 
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
 PRICE = re.compile(r'^(\S+?)(\d+)G$')
 HAND_COLORS = ((255, 174, 82), (205, 105, 24), (205, 149, 32))
+
+
+def resume_bijin_gift_panel(screen) -> bool:
+    """Recognize the complete native gift menu without guessing a chapter."""
+    header = screen.header or {}
+    if (screen.kind != 'gift_request' or header.get('chapter') is not None
+            or any(type(header.get(k)) is not int for k in ('year', 'month', 'gold'))
+            or not 1 <= header['month'] <= 12):
+        return False
+    rows = [''.join(word for x, word in line.spans() if x >= 144)
+            for line in screen.lines]
+    items = [row for row in rows if PRICE.fullmatch(row) and row != f"{header['gold']}G"]
+    return len(items) == 3 and set(items) == {'こうすい100G', 'くるま200G', 'いえ500G'}
 # Summoned-monster turn menu: a knight sprite sits left of the selected option
 # row, and the stacked HP panel carries an ally (red) / enemy (blue) drop mark.
 # Both measurements come from live frames (decision-003/024/029).
 KNIGHT_COLORS = ((230, 105, 74), (230, 149, 74), (148, 80, 230), (123, 56, 222),
-                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74))
+                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74),
+                 (160, 132, 88), (160, 80, 64), (176, 104, 112))
 ALLY_MARK = (222, 72, 65)
 ENEMY_MARK = (57, 121, 189)
 MENU_ROW_Y = 148          # option rows live in the bottom command box band
 # Increasing effect order; choose the strongest of the three offered moves.
+OKUNOTE_SELF_DAMAGE_CHOICES = frozenset({'ヤケクソ'})
 OKUNOTE_CHOICES = ('ヤケクソ', 'おどす', 'よたる', 'あやまる', 'うそなき',
                    'しんだフリ', 'てぶくろ', 'ハダカでぶつかる', 'せっとく',
                    'くすぐってみる', 'せいしゅん', 'いあつする', 'ブンシーンもどき',
@@ -49,15 +65,9 @@ def find_hand(frame: Frame, *, option_positions=None):
             0 <= x - box[2] <= 48 and abs(y - (box[1] + 6)) <= 2
             for x, y in option_positions)
 
-    points = set()
-    rgb, width = frame.rgb, frame.width
-    for y in range(frame.height):
-        base = y * width * 3
-        for x in range(width):
-            i = base + 3 * x
-            pixel = (rgb[i], rgb[i + 1], rgb[i + 2])
-            if pixel[0] >= 195 and any(_near(pixel, c) for c in HAND_COLORS):
-                points.add((x, y))
+    points = set(bit_points(frame, union_bits(*(
+        band_bits(frame, (max(195, r - 10), r + 10), (g - 10, g + 10), (b - 10, b + 10))
+        for r, g, b in HAND_COLORS))))
     if len(points) < 40:
         return None
     xs, ys = zip(*points)
@@ -94,10 +104,10 @@ def find_hand(frame: Frame, *, option_positions=None):
 
 def _target_marker(frame: Frame):
     """The deployment target marker: a 12x12 blue square with a white G."""
-    pts = [(x, y) for y in range(frame.height) for x in range(frame.width)
-           if _near(frame.pixel(x, y), (0, 64, 189), 14)]
-    if not 60 <= len(pts) <= 140:
+    bits = near_bits(frame, (0, 64, 189), 14)
+    if not 60 <= bits.count(0x31) <= 140:
         return None
+    pts = bit_points(frame, bits)
     x0, y0 = min(p[0] for p in pts), min(p[1] for p in pts)
     x1, y1 = max(p[0] for p in pts), max(p[1] for p in pts)
     if x1 - x0 > 13 or y1 - y0 > 13:
@@ -138,15 +148,43 @@ def _free_cursor(masks_white, frame: Frame):
     return found[0] if len(found) == 1 else None
 
 
+# Chapter 6 draws the enemy castle with a slate roof: (74,88,139) lit, (49,64,90)
+# shaded (g1133 2026-11-04 23:40 オケアナ and 23:20 カバルッサ: roofs=0 at the
+# target, the cursor wandered and the sortie was cancelled). Neither is the blue
+# of chapters 1-5, so a component counts only when it holds both tones.
+SLATE_LIT = (74, 88, 139)
+SLATE_SHADE = (49, 64, 90)
+SLATE_TOLERANCE = 3
+SLATE_SHADE_MIN = 8
+
+
+def _slate_near(p, target, tol):
+    return all(abs(a - b) <= tol for a, b in zip(p, target))
+
+
 def _roof_kind(r, g, b):
     if r <= 50 and 80 <= g <= 120 and 120 <= b <= 160:
         return 'enemy'
+    if (_slate_near((r, g, b), SLATE_LIT, SLATE_TOLERANCE)
+            or _slate_near((r, g, b), SLATE_SHADE, SLATE_TOLERANCE)):
+        return 'enemy_slate'
     if r >= 190 and g <= 70 and 30 <= b <= 85:
         return 'own'
     return None
 
 
 def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
+    """Sprite-verified castles, with colour-roof fallback for unreadable shapes."""
+    from .castles import match_castles, merge_roofs
+
+    occlusions = [tuple(exclude)] if exclude else []
+    for cursor in (_target_marker(frame), _free_cursor(row_masks(frame, white), frame)):
+        if cursor:
+            occlusions.append((cursor[0], cursor[1], cursor[0] + 15, cursor[1] + 15))
+    return merge_roofs(_colour_roofs(frame, exclude), match_castles(frame, occlusions))
+
+
+def _colour_roofs(frame: Frame, exclude=None) -> list[dict]:
     """Castle roof components with a bottom-centre anchor, in screen pixels."""
     labels = {}
     for y in range(0, frame.height, 1):
@@ -154,7 +192,7 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
             kind = _roof_kind(*frame.pixel(x, y))
             if kind and not (exclude and exclude[0] <= x <= exclude[2] and exclude[1] <= y <= exclude[3]):
                 labels[(x, y)] = kind
-    seen, out = set(), []
+    seen, out, slate = set(), [], []
     for start, kind in labels.items():
         if start in seen:
             continue
@@ -171,15 +209,143 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
                         stack.append(n)
         if len(pts) < 25:
             continue
+        slate_roof = kind == 'enemy_slate'
+        if slate_roof:
+            shade = sum(1 for q in pts if _slate_near(frame.pixel(*q), SLATE_SHADE, SLATE_TOLERANCE))
+            if shade < SLATE_SHADE_MIN or shade == len(pts):
+                continue            # one tone alone is rock or shadow, not a roof
+            kind = 'enemy'
         x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
         y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
         if x1 - x0 > 40 or y1 - y0 > 30:
+            continue
+        if slate_roof:
+            slate.append((x0, y0, x1, y1))
             continue
         clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
         out.append({'kind': kind, 'box': (x0, y0, x1, y1), 'clipped': clipped,
                     # Cursor top-left that selects this castle.
                     'target': ((x0 + x1) // 2, y1 - 8)})
+    for x0, y0, x1, y1 in _merge_boxes(slate, SLATE_MERGE_GAP):
+        clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
+        # The slate roof is only the top of the sprite: the castle body hangs
+        # SLATE_BODY_BELOW px under it, so the selecting cell is that far lower
+        # than for a roof that covers the whole castle (live: cursor y = roof
+        # bottom + 1 on オケアナ 2026-11-04 23:40).
+        out.append({'kind': 'enemy', 'box': (x0, y0, x1, y1), 'clipped': clipped,
+                    'target': ((x0 + x1) // 2, y1 + SLATE_BODY_BELOW - 8)})
     return out
+
+
+SLATE_MERGE_GAP = 6        # the tower and the body of one castle are separate roof pieces
+SLATE_BODY_BELOW = 9       # castle body below the slate roof's bottom edge, px
+
+
+# あたしの家: a hut flying an own-coloured roof/heart mark. castle_roofs keeps
+# a 25 px component floor and the deployment marker's 16x16 box is drawn over
+# the blob's lower-right corner exactly where the entry cell sits (the house
+# roof delta in flows/house.py), so the surviving blob often lands under the
+# floor just when it matters (docich#4737). The house scan keeps a lower
+# floor and the heart's brighter red, but requires the hut's dark outline
+# under the blob, so a bare flag fragment or banner row is never a house.
+HOUSE_RED_MIN = 8          # own-red pixels surviving the marker's overlap
+HOUSE_BLOB_BOX = (40, 30)  # same generous bounds as a castle roof piece
+HOUSE_BODY_DEPTH = 18    # px under the blob where the hut walls/door sit
+HOUSE_BODY_HALF = 16     # the hut is about this wide either side of the blob
+HOUSE_BODY_MIN = 8       # dark hut outline/door pixels required
+HOUSE_BODY_FLOOR = 8     # a visible wall's lowest channel; below it is the void
+
+
+def _house_red(pixel) -> bool:
+    # The own-roof red plus the heart mark's brighter banner red.
+    return _roof_kind(*pixel) == 'own' or _camp_flagish(pixel)
+
+
+def _house_body(p) -> bool:
+    # The hut's outline is a rendered dark tone, while pure black is the
+    # unlit background past the map's edge. Counting the void as a wall
+    # would make any dark ground under a bare flag read as a hut
+    # (docich#4737), so body pixels must be visibly dark, not just unlit.
+    # Require a near-neutral outline rather than chromatic terrain (e.g.
+    # grass RGB 16,72,57). This is a conservative candidate filter, not
+    # a sprite identity proof.
+    return (dark(*p) and max(p) >= HOUSE_BODY_FLOOR
+            and max(p) - min(p) <= 12)
+
+
+def house_roofs(frame: Frame, roofs=None) -> list[dict]:
+    """あたしの家 anchors under the castle scan's component floor.
+
+    Same record shape as a colour roof (bottom-centre anchor), with kind
+    'house', so the caller merges it with the castle_roofs candidates.
+    ``roofs`` is the caller's castle_roofs result; a blob inside a
+    sprite-verified castle box belongs to that castle's flags, not a hut.
+    """
+    if roofs is None:
+        roofs = castle_roofs(frame)
+    castle_boxes = [r['sprite_box'] for r in roofs if r.get('sprite_box')]
+    red = set()
+    for y in range(frame.height):
+        for x in range(frame.width):
+            if _house_red(frame.pixel(x, y)):
+                red.add((x, y))
+    seen, out = set(), []
+    for start in red:
+        if start in seen:
+            continue
+        stack, pts = [start], []
+        seen.add(start)
+        while stack:
+            q = stack.pop()
+            pts.append(q)
+            for dx in range(-3, 4):
+                for dy in range(-3, 4):
+                    n = (q[0] + dx, q[1] + dy)
+                    if n in red and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        if len(pts) < HOUSE_RED_MIN:
+            continue
+        x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+        y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+        if x1 - x0 > HOUSE_BLOB_BOX[0] or y1 - y0 > HOUSE_BLOB_BOX[1]:
+            continue
+        if any(not (x1 < b[0] or x0 > b[2] or y1 < b[1] or y0 > b[3])
+               for b in castle_boxes):
+            continue            # a castle's flag fragment, not a house
+        cx = (x0 + x1) // 2
+        body = sum(1 for y in range(y1 + 1, min(frame.height, y1 + HOUSE_BODY_DEPTH + 1))
+                   for x in range(max(0, cx - HOUSE_BODY_HALF),
+                                  min(frame.width, cx + HOUSE_BODY_HALF + 1))
+                   if _house_body(frame.pixel(x, y)))
+        if body < HOUSE_BODY_MIN:
+            continue            # a bare flag or banner with no hut under it
+        clipped = x0 <= 1 or y0 <= 1 or x1 >= frame.width - 2 or y1 >= frame.height - 2
+        out.append({'kind': 'house', 'box': (x0, y0, x1, y1), 'clipped': clipped,
+                    'source': 'house',
+                    # Same convention as a colour roof: cursor top-left that
+                    # selects the building's entry cell.
+                    'target': (cx, y1 - 8)})
+    return out
+
+
+def _merge_boxes(boxes, gap):
+    boxes = list(boxes)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if (a[0] - gap <= b[2] and b[0] - gap <= a[2]
+                        and a[1] - gap <= b[3] and b[1] - gap <= a[3]):
+                    boxes[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return boxes
 
 
 # Our camping tent (野営): a yellow/orange body with a light-blue base band
@@ -198,6 +364,20 @@ def _camp_flagish(p) -> bool:
     return p[0] >= 190 and p[1] <= 110 and p[2] <= 110
 
 
+# The camp body's palette entries shift by up to 6 per channel when a core's
+# 16-bit RGB565 pixels are expanded to 8 bits (the measured (238,198,65)
+# becomes (232,196,64)). An exact compare missed a tent that was on screen,
+# so no recall ever started and the camp sat unattended (local g1190
+# 2026-11-15, production state via the 1.61 core). The production 8-bit
+# capture matches exactly, so this only widens the accepted pixels.
+CAMP_COLOUR_TOLERANCE = 6
+
+
+def _near_camp(pixel, colour) -> bool:
+    return all(abs(int(a) - int(b)) <= CAMP_COLOUR_TOLERANCE
+               for a, b in zip(pixel, colour))
+
+
 def own_camps(frame: Frame) -> list[dict]:
     """Our camping tents (野営) with the cursor cell that selects them.
 
@@ -206,9 +386,10 @@ def own_camps(frame: Frame) -> list[dict]:
     with the light-blue band) still counts, and the target may sit above
     the screen so the servo scrolls the camera until the flag appears.
     """
-    body = {(x, y) for y in range(frame.height) for x in range(frame.width)
-            if frame.pixel(x, y) in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)}
-    found, seen = [], set()
+    body = set(bit_points(frame, union_bits(*(
+        near_bits(frame, colour, CAMP_COLOUR_TOLERANCE)
+        for colour in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)))))
+    found, seen, bodies = [], set(), {}
     for start in sorted(body):
         if start in seen:
             continue
@@ -230,18 +411,22 @@ def own_camps(frame: Frame) -> list[dict]:
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
         if x1 - x0 > 16 or y1 - y0 > 16:
             continue
-        yellow = sum(1 for c in comp if frame.pixel(*c) == CAMP_YELLOW)
-        orange = sum(1 for c in comp if frame.pixel(*c) == CAMP_ORANGE)
-        band = sum(1 for c in comp if frame.pixel(*c) == CAMP_BAND)
+        yellow = sum(1 for c in comp if _near_camp(frame.pixel(*c), CAMP_YELLOW))
+        orange = sum(1 for c in comp if _near_camp(frame.pixel(*c), CAMP_ORANGE))
+        band = sum(1 for c in comp if _near_camp(frame.pixel(*c), CAMP_BAND))
         if yellow < 6 or orange < 6 or band < 3:
             continue
-        flag = None
-        for yy in range(max(0, y0 - 4), y0):
-            hits = [(xx, yy) for xx in range(max(0, x0 - 6), min(frame.width, x1 + 7))
-                    if _camp_flagish(frame.pixel(xx, yy))]
-            if len(hits) >= 2:
-                flag = hits[0]
-                break
+        # The flag flutters: a thin phase paints one red pixel per row
+        # (live g1075 2026-10-30 16:20, chapter-4 camp; the recall never
+        # fired while the tent stayed on screen). Two adjacent flagish
+        # pixels anywhere in the window still mean the flag is up.
+        hits = {(xx, yy) for yy in range(max(0, y0 - 4), y0)
+                for xx in range(max(0, x0 - 6), min(frame.width, x1 + 7))
+                if _camp_flagish(frame.pixel(xx, yy))}
+        anchored = [h for h in hits if any(
+            (h[0] + dx, h[1] + dy) in hits
+            for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy)]
+        flag = min(anchored, key=lambda h: (h[1], h[0]), default=None)
         clipped = y0 - 6 < 0
         if flag is None and not clipped:
             continue
@@ -250,6 +435,102 @@ def own_camps(frame: Frame) -> list[dict]:
                for t in found):
             continue
         found.append({'target': target, 'clipped': flag is None})
+        bodies[target] = ((x0 + x1) // 2, (y0 + y1) // 2)
+    for dome in _dome_camps(frame):
+        if not any(abs(t['target'][0] - dome['target'][0]) <= 8
+                   and abs(t['target'][1] - dome['target'][1]) <= 8 for t in found):
+            found.append(dome)
+    _CAMP_BODIES[frame.digest()] = bodies
+    return found
+
+
+_CAMP_BODIES = {}
+
+
+def camp_body_target(frame: Frame, target):
+    """The tent body centre whose flag cell is ``target`` (fallback select).
+
+    A on the flag cell can leave the bare map (the hero's larger tent,
+    g1190 2026-11-15). The body centre is the other selectable cell. Kept
+    separate from ``own_camps`` so its documented dict shape stays stable.
+    """
+    if not isinstance(frame, Frame) or not isinstance(target, (list, tuple)) or len(target) != 2:
+        return None
+    bodies = _CAMP_BODIES.get(frame.digest())
+    if bodies is None:
+        own_camps(frame)
+        bodies = _CAMP_BODIES.get(frame.digest()) or {}
+    for cell, body in bodies.items():
+        if abs(cell[0] - target[0]) <= 12 and abs(cell[1] - target[1]) <= 12:
+            return list(body)
+    return None
+
+
+# Our camp drawn as a dome with a brown door under the same red/orange flag
+# (g1075 2026-10-29 13:34 and 14:25, chapter 3 beside the cave, where ゼウス
+# and others camped and never came back). The owner reads it as the tent of
+# two or more generals; every saved frame of it is winter, so it may also be
+# the winter tent. Colours measured on that sprite (frame 13:34 x174-187,
+# y42-57); a full flag is required, a clipped dome waits for the camera.
+DOME_DOOR = (123, 88, 0)
+DOME_DOOR_TOLERANCE = 1   # the same tile is (123, 89, 0) through a libretro 565 readback
+# The local libretro core expands RGB565 by a plain shift: the door reads
+# (120, 88, 0), the body (128, 196, 216)/(112, 148, 192)/(200, 204, 240) and
+# the flag (248, 0, 0)/(232, 112, 56) - 3 to 7 per channel off - so the 砦 of
+# two generals beside タオ was never seen (g1190 2026-11-16, owner: 砦になった
+# キャンプで帰還シーケンスが働かない). Production's 8-bit capture is exact.
+DOME_565_TOLERANCE = 8
+DOME_BODY = ((131, 198, 222), (115, 149, 197), (205, 206, 246))
+DOME_OUTLINE = (32, 32, 32)
+
+
+def _dome_camps(frame: Frame) -> list[dict]:
+    door = set(bit_points(frame, near_bits(frame, DOME_DOOR, DOME_565_TOLERANCE)))
+    near = lambda p, c: all(abs(int(a) - int(b)) <= DOME_565_TOLERANCE for a, b in zip(p, c))
+    found, seen = [], set()
+    for start in sorted(door):
+        if start in seen:
+            continue
+        stack, comp = [start], []
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if n in door and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        xs = [c[0] for c in comp]
+        ys = [c[1] for c in comp]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        if not 6 <= len(comp) <= 24 or x1 - x0 > 5 or y1 - y0 > 4 or y0 < 14:
+            continue
+        window = [(x, y) for y in range(y0 - 14, min(frame.height, y1 + 2))
+                  for x in range(max(0, x0 - 8), min(frame.width, x1 + 9))]
+        body = [c for c in window if any(near(frame.pixel(*c), b) for b in DOME_BODY)]
+        outline = [c for c in window if frame.pixel(*c) == DOME_OUTLINE]
+        flag = [c for c in window if c[1] < y0 - 6]
+        red = [c for c in flag if near(frame.pixel(*c), CAMP_FLAG)]
+        orange = [c for c in flag if near(frame.pixel(*c), CAMP_ORANGE)]
+        # A dome pushed against the top edge loses its flag: the body and
+        # outline still identify the fort, and the recall must scroll the
+        # camera up to reveal the flag instead of ignoring it (owner
+        # 2026-11-15: 砦になったキャンプはまだ無視されている).
+        clipped = y0 < 24 and (len(red) < 2 or len(orange) < 2)
+        if len(body) < 20 or len(outline) < 25:
+            continue
+        if not clipped and (len(red) < 2 or len(orange) < 2):
+            continue
+        shape = body + outline
+        if clipped:
+            target = (min(c[0] for c in shape) - 8, y0 - 6)
+            found.append({'target': target, 'clipped': True, 'kind': 'dome'})
+            continue
+        # Same cell as the small tent: one left of the body, bottom-aligned 16 px.
+        target = (min(c[0] for c in shape) - 1, max(c[1] for c in shape) - 15)
+        found.append({'target': target, 'clipped': False, 'kind': 'dome'})
     return found
 
 
@@ -259,6 +540,75 @@ class Battle:
     enemy_hp: int | None
     ally: str | None
     ally_hp: int | None
+
+
+# ぶつかり合いの連打ゲージ (青ゲージ)。gcgx battle.html: ぶつかった際にバーが
+# 青くなるので、その間にA連打で踏ん張って前進しやすくなる。実測 (g809
+# decision-001/026/029/031、g684 frame-089/094 の白兵パネル): 各HP表示の下
+# y=195..203、敵側 x=24..86 / 味方側 x=152..214 の63px幅。赤系はゲージ残存
+# (g809 戦闘開始直後の両側)、緑系は消耗しきり (デュオニソス戦で敵側が数秒で
+# 緑へ遷移し戦闘を通して戻らない — gcgx/triplequotation の敵側決定的消費と
+# 一致)。接触時の「青」状態は保存実機フレーム480枚のどこにもなく、
+# CLASH_GAUGE_BLUE は空で始まる。実機の青フレームで校正するまで state
+# 'blue' は絶対に報告しない (Phase 1 契約: 未校正のpixel閾値を作らない)。
+CLASH_GAUGE_ROWS = range(195, 204)
+CLASH_GAUGE_BOX = {'enemy': (24, 86), 'ally': (152, 214)}
+CLASH_GAUGE_RED = ((205, 40, 16), (222, 80, 16))
+CLASH_GAUGE_GREEN = ((189, 206, 156), (148, 133, 139))
+CLASH_GAUGE_DARK_RED = ((164, 32, 16),)
+# Owner 2026-11-22: the blue contact window exists only in the chapter-1
+# tutorial. Later fights are normally red and the window instead dims
+# slightly. This tone (a lighter red measured in the local decision log) is
+# that dim window; it is a cue, not a calibrated blue palette.
+CLASH_GAUGE_DIM = ((216, 80, 16),)
+CLASH_GAUGE_BLUE: tuple = ()      # UNCALIBRATED: live blue frames only
+# 判定に必要な彩色の下限。メニューや会話で枠が隠れた観測を状態扱いしない。
+CLASH_GAUGE_MIN_FILL = 0.5
+
+
+@dataclass
+class ClashGauge:
+    """One side's measured 連打ゲージ bar; every field is a screen fact.
+
+    ``state`` maps the dominant tone through the measured palette tables.
+    ``'blue'`` (the contact window) can only appear once CLASH_GAUGE_BLUE
+    holds a live-calibrated palette, so an uncalibrated bot never reports
+    it. ``tones`` keeps the raw dominant colors for later calibration.
+    """
+
+    side: str                       # 'enemy' | 'ally'
+    box: tuple[int, int, int, int]
+    filled: float | None            # colored extent / measured bar width
+    tones: tuple
+    state: str | None               # 'red' | 'green' | 'dark_red' | 'blue' | 'dim' | None
+
+
+def _clash_gauge(frame: Frame, side: str) -> ClashGauge | None:
+    """One side's 連打ゲージ below the HP field, or None when it is absent."""
+    x0, x1 = CLASH_GAUGE_BOX[side]
+    y0, y1 = min(CLASH_GAUGE_ROWS), max(CLASH_GAUGE_ROWS)
+    tones: collections.Counter = collections.Counter()
+    colored = 0
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            pixel = frame.pixel(x, y)
+            if pixel in ((238, 238, 238), (213, 214, 197), (197, 198, 205),
+                         (189, 149, 131), (32, 32, 32)):
+                continue            # panel background and ink, not gauge fill
+            tones[pixel] += 1
+            colored += 1
+    width = (x1 - x0 + 1) * (y1 - y0 + 1)
+    filled = colored / width
+    if filled < CLASH_GAUGE_MIN_FILL:
+        return None                 # hidden or absent: no gauge fact
+    dominant = tuple(tone for tone, _ in tones.most_common(2))
+    state = next((name for name, table in (('blue', CLASH_GAUGE_BLUE),
+                                            ('dim', CLASH_GAUGE_DIM),
+                                            ('red', CLASH_GAUGE_RED),
+                                            ('green', CLASH_GAUGE_GREEN),
+                                            ('dark_red', CLASH_GAUGE_DARK_RED))
+                  if tones and tones.most_common(1)[0][0] in table), None)
+    return ClashGauge(side, (x0, y0, x1, y1), filled, dominant, state)
 
 
 @dataclass
@@ -283,17 +633,141 @@ class Screen:
     options: list = field(default_factory=list)
     menu_rows: list[TextLine] = field(default_factory=list)
     menu_cursor: int | None = None
+    # Chapter-clear password screen: the scrollable right-hand word list as
+    # (y, word) rows (grey text the light mask does not read).
+    password_list: list = field(default_factory=list)
     egg_rows: list[EggRow] = field(default_factory=list)
     # (味方, 敵) の兵士数。読めない側は None、フィールド計測なしは全体で None。
     field_soldiers: tuple[int | None, int | None] | None = None
+    # ぶつかり合いの連打ゲージ実測 (敵側・味方側)。パネルが無い時は空。
+    clash_gauges: list[ClashGauge] = field(default_factory=list)
     hidden_battle_commands: bool = False
     # The two-row item box with every row disabled (measured g534 07:51).
     disabled_item_box: bool = False
+    # きりふだ/たいきゃく が灰色で おくのて だけが選べる召喚中の戦闘メニュー。
+    # この箱は B で閉じない (g1097)。g1163 2026-11-13 は同じ画面のまま B を
+    # 5時間送り続けて戦闘が進まなかったため、専用の有界操作対象として持つ。
+    okunote_only_box: bool = False
+    mixed_item_box: bool = False
+    monster_menu_drawing: bool = False
     priest_ritual_scene: bool = False
     priest_ritual_dialogue: bool = False
+    # Positive pixel evidence only; raw lines retain all unknown message cells.
+    prose_attached_marks: frozenset[tuple[int, int]] = frozenset()
+    # Normalised RGB digest of the frame this screen came from. A flow may
+    # compare it with the previous observation to tell "the same picture came
+    # back" from a real redraw; Screen objects built by hand leave it None.
+    frame_sha256: str | None = None
+    # きりふだ panel scroll arrows (▲/▼) when a caller builds a Screen without
+    # pixels. Production measures them in _measured_card_select; None means no
+    # arrow evidence and is never treated as "nothing is scrolled off".
+    card_more_above: bool | None = None
+    card_more_below: bool | None = None
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
+
+
+# フィールドで X →「きりふだ」を選ぶと出る全所持一覧 (v1352/S3 で実測)。
+# 左の枠に 8 行 (y=39,55,...,151)、各行は「カタカナの札名 (x=40) + 枚数
+# (x=104/112 の右詰め)」。右の枠に X メニューの語 (x=168)、下の窓に
+# 「コマンドせんたくに もどりますぞ!」を描く。カーソルの手は無い。
+FIELD_CARD_LIST_ROWS = (39, 55, 71, 87, 103, 119, 135, 151)
+FIELD_CARD_LIST_MENU = ('ステータス', 'しょうぐん', 'しろ', 'きりふだ', 'システム',
+                        'けんのけいこ', 'セーブ')
+FIELD_CARD_LIST_FOOTER = ('コマンドせんたくに', 'もどりますぞ')
+
+
+def field_card_list_row(screen: Screen, y: int):
+    """(card, stock) for one measured list row, or None when anything is unread.
+
+    The name occupies the eight-pixel tiles from x=40; the stock is right
+    aligned at x=112 with its tens digit at x=104 (live 19/17-kind pages,
+    probe 2026-11-22). The longest catalogue name is ファイアーボイス (8
+    tiles, x=40..96), so the name window ends before the tens tile. Any other
+    readable tile in the left panel row makes the row unreadable: it could be
+    a second word, a clipped glyph or a layout this reader was not measured on.
+    """
+    line = next((line for line in screen.lines if line.y == y), None)
+    if line is None or not line.cells:
+        return None
+    cells = dict(line.cells)
+    ones = cells.get(112)
+    if ones not in tuple('0123456789'):
+        return None
+    tens = cells.get(104)
+    if tens in tuple('123456789'):
+        stock = int(tens + ones)
+        stock_xs = (104, 112)
+    else:
+        stock = int(ones)
+        stock_xs = (112,)
+    name_cells = [(x, ch) for x, ch in line.cells if 40 <= x < 104]
+    if not name_cells or name_cells[0][0] != 40:
+        return None
+    if [x for x, _ in name_cells] != list(range(40, 40 + 8 * len(name_cells), 8)):
+        return None
+    if any(ch == UNKNOWN for _, ch in name_cells):
+        return None
+    name = ''.join(ch for _, ch in name_cells)
+    if name not in _reference.ALL_CARD_IDS:
+        return None
+    allowed = set(range(40, 104, 8)) | set(stock_xs)
+    if any(x < 160 and x not in allowed for x in cells):
+        return None
+    return name, stock
+
+
+def field_card_list_rows(screen: Screen, *, min_rows: int = 1):
+    """Every readable row of one page in card-ID order, or None if any is bad.
+
+    The list is top-packed: a blank line is only the trailing padding of a
+    short last page, never a hole between rows. A row that is present but
+    partially readable rejects the whole page, and the caller treats it as an
+    unreadable observation instead of inventing a missing card.
+    """
+    rows, blank = [], False
+    for y in FIELD_CARD_LIST_ROWS:
+        row = field_card_list_row(screen, y)
+        if row is None:
+            line = next((line for line in screen.lines if line.y == y), None)
+            if line is not None and any(x < 160 for x, _ in line.cells):
+                return None
+            blank = True
+            continue
+        if blank:
+            return None
+        rows.append(row)
+    if len(rows) < min_rows:
+        return None
+    ids = [_reference.ALL_CARD_IDS[card] for card, _ in rows]
+    if ids != sorted(ids) or len(set(ids)) != len(ids):
+        return None
+    return rows
+
+
+def _field_card_list_panel(screen: Screen) -> bool:
+    """The field きりふだ list, never the X menu that opened it.
+
+    The hand cursor is the menu's; the list has none. The unique footer text
+    is the strongest cue, but a dropped glyph must not turn the list into
+    ``main_menu`` (the generic close rule would then press B and lose the
+    census), so the right menu labels plus six readable rows are accepted as
+    the second, independent form.
+    """
+    if screen.hand is not None:
+        return False
+    labels = {word for line in screen.lines for x, word in line.spans()
+              if x == 168 and word in FIELD_CARD_LIST_MENU}
+    if len(labels) < 4:
+        return False
+    readable = sum(1 for y in FIELD_CARD_LIST_ROWS if field_card_list_row(screen, y))
+    if not readable:
+        return False
+    flat = (screen.text or '').replace(' ', '')
+    if any(needle in flat for needle in FIELD_CARD_LIST_FOOTER):
+        return True
+    return readable >= 6
 
 
 def fake_hero_announcement_chapter(screen: Screen) -> int | None:
@@ -330,6 +804,9 @@ def _selected(lines: list[TextLine], hand) -> str | None:
     return None
 
 
+HP_PANEL_TINT = 8      # max channel spread of the panel paper/HP ink
+
+
 def _human_hp(frame: Frame, line: TextLine, x0: int) -> int | None:
     """Read the entire right-aligned three-cell field, including blank cells.
 
@@ -344,7 +821,11 @@ def _human_hp(frame: Frame, line: TextLine, x0: int) -> int | None:
     for y in range(176, 184):
         for x in range(x0, x0 + 24):
             r, g, b = frame.pixel(x, y)
-            if r != g or g != b:
+            # The panel's paper reads (232,236,232) through the core's
+            # readback, not a pure gray: a strict r==g==b rejected every real
+            # battle panel (g1190 2026-11-15: attacks reached the fight and
+            # battle_entry_expired, so no card/egg was ever chosen).
+            if max(r, g, b) - min(r, g, b) > HP_PANEL_TINT:
                 return None
     cells = dict(line.cells)
     text = ''.join(cells.get(x, ' ') for x in range(x0, x0 + 24, 8))
@@ -589,6 +1070,32 @@ def _boss_command_rows(screen):
     return _box_rows(screen.menu_rows)
 
 
+def _okunote_only_box(frame, screen):
+    """きりふだ/たいきゃく が灰色で おくのて だけが生きた召喚中の箱か。
+
+    g1163 2026-11-13 09:1x: 城防衛の召喚戦で きりふだ y176 / たいきゃく y192 が
+    灰色、おくのて y208 だけが白で、カーソルは灰色の きりふだ 行にあった。
+    光る行が おくのて だけなので ``hidden_battle_commands`` (3行すべて灰色) にも
+    ``disabled_item_box`` (たまご+きりふだ の2行) にも当たらず、通常の戦闘メニュー
+    として B を送り続けた。B はこの箱を閉じない (g1097) ため、同じ画面のまま
+    5時間 戦闘が進まなかった。実測の灰色2行 + 白い おくのて 1行だけを根拠にする。
+    """
+    if screen.kind != 'battle_menu':
+        return False
+    lit = [(line.y, label) for line in screen.menu_rows
+           for x, label in line.spans() if x >= 176]
+    if lit != [(208, 'おくのて')]:
+        return False
+    grey = read_lines(frame, predicate=lambda r, g, b: 95 <= min(r, g, b)
+                      and max(r, g, b) <= 120 and max(r, g, b) - min(r, g, b) <= 5,
+                      rect=(176, 176, 256, 216))
+    grey_rows = {(line.y, label) for line in grey
+                 for x, label in line.spans() if x >= 176}
+    # たまごをつかう が見える3行箱は既存の hidden_battle_commands が持つ。
+    return (grey_rows == {(176, 'きりふだ'), (192, 'たいきゃく')}
+            and screen.menu_cursor in (176, 192, 208))
+
+
 def _human_commands(screen):
     return bool(_boss_command_rows(screen)) or any((line.y == y and line.spans() == [(176, label)])
                or (line.y in (176, 192, 208) and line.spans() == [(176, 'おくのて')])
@@ -604,11 +1111,52 @@ def _partial_human_commands(screen):
             and screen.menu_rows[0].spans() == [(176, 'たまごをつかう')])
 
 
+# The summoned monster's skill box never appears in one frame. It slides up
+# with the HP panel from below (g1075 2026-10-29 18:05-18:12: ミカンをおす at
+# y188-208, the panel's ally row on the same y, the last row cut off) or pans
+# in from the right as the enemy general's box leaves (only ミカ/あた/たま at
+# x240). Both read 'text', and the generic A confirmed the top skill: of 9
+# おめでとり turns, 7 were taken that way. Those turns never reached the
+# skill-stall count (it saw 2), so ミカンをおす ran 9 times before あたためる.
+# Our general's own box against an enemy summon pans in the same way
+# (19:16:33 こ/も/た at x248, 19:16:47 こうげき/もうこうげ/たまごをつ at x216):
+# both A's confirmed こうげき, and デュオニソス (54, egg in hand) fell to
+# マシンナイト (479) without the egg battle ever seeing its menu.
+EGG_BATTLE_COMMANDS = ('こうげき', 'もうこうげき', 'たまごをつかう')
+
+
+def _partial_monster_menu(frame, screen):
+    if screen.battle is not None:
+        return False
+    from ...hanjuku_reference import MONSTER_SKILLS
+    from .readers import _fold_skill
+    # The screen reads もっとはやく!! where the reference has もっとはやく！！
+    # (g1075 20:15:33): compare folded, as the settled box does.
+    boxes = [[_fold_skill(label) for label in (*skills, 'たまごに')]
+             for skills in MONSTER_SKILLS.values()]
+    rows = screen.menu_rows
+    first = rows[0].spans() if rows else []
+    if (rows and rows[0].y > 176 and len(first) == 1 and first[0][0] == 176
+            and any(_fold_skill(first[0][1]) in labels[:-1] for labels in boxes)):
+        return any(row.y == rows[0].y for row in screen.egg_rows or _egg_rows(frame))
+    # Only a box's first letter shows at the right edge when it starts to pan.
+    fragments = [_fold_skill(word) for line in screen.lines if line.y in (176, 192, 208)
+                 for x, word in line.spans() if x > 176 and (len(word) >= 2 or x >= 240)]
+    boxes.append([_fold_skill(label) for label in EGG_BATTLE_COMMANDS])
+    return any(sum(any(label.startswith(word) for label in labels) for word in fragments) >= 2
+               for labels in boxes) and bool(screen.egg_rows or _egg_rows(frame))
+
+
 def egg_choice_names(screen):
-    """The measured Elabel summon picker, not monster skills or HP panels."""
+    """Complete Elabel candidates or slot reels, not skills or HP panels.
+
+    A slot reel can show ハズレ. A single frame does not establish that these
+    three rows are selectable; the flow uses the actor's egg type or this
+    slot-only label to distinguish stopping a reel from choosing a summon.
+    """
     from ...hanjuku_reference import MONSTER_SKILLS
     digit_fold = str.maketrans('０１２３４５６７８９', '0123456789')
-    known = {name.translate(digit_fold) for name in MONSTER_SKILLS}
+    known = {name.translate(digit_fold) for name in MONSTER_SKILLS} | {'ハズレ'}
     rows = {line.y: line.spans() for line in screen.menu_rows}
     choices = []
     for y in (176, 192, 208):
@@ -632,8 +1180,8 @@ def month_confirmation_positions(screen):
     return [(x, y) for x, y, _ in choices]
 
 
-_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *(\d+)G')
-_KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu',
+_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *[+＋]?(\d+)G')
+_KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu', 'monster_menu_pending',
                               'egg_battle_menu', 'okunote_menu', 'egg_choice_menu', 'card_select'})
 
 
@@ -670,6 +1218,7 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     text = joined(lines)
     hand = find_hand(frame)
     screen = Screen(lines=lines, hand=hand, text=text)
+    screen.frame_sha256 = frame.digest()
     screen.header = _header(lines)
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
@@ -677,8 +1226,28 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         # 召喚メニューのフレームでは _battle() は None (敵側は兵士ではなく
         # 召喚獣なので上書きしない)。読み取りは直近の通常戦闘フレームのもの。
         screen.field_soldiers = _field_soldiers(frame)
+        screen.clash_gauges = [g for g in (_clash_gauge(frame, side)
+                                           for side in ('enemy', 'ally')) if g]
     screen.menu_rows = _menu_rows(lines)
     box_rows = _box_rows(screen.menu_rows)
+    # A defense item box can overlay the summon menu with its egg enabled
+    # and its card row disabled. The old background fierce-attack label is
+    # still visible above it, so use both foreground rows and their knight,
+    # but never add the disabled card to the selectable menu rows.
+    if not box_rows and any(r.y in (192, 196) and r.spans() == [(176, 'たまごをつかう')]
+                            for r in screen.menu_rows):
+        grey = read_lines(frame, predicate=lambda r,g,b: 95 <= min(r,g,b)
+                          and max(r,g,b) <= 120 and max(r,g,b)-min(r,g,b) <= 5,
+                          rect=(176,176,256,216))
+        for y in (192, 196):
+            egg = next((r for r in screen.menu_rows if r.y == y
+                        and r.spans() == [(176, 'たまごをつかう')]), None)
+            card = next((r for r in grey if r.y == y + 16
+                         and r.spans() == [(176, 'きりふだ')]), None)
+            if egg and card and _menu_cursor(frame, [egg, card]) in (egg.y, card.y):
+                box_rows = [egg, card]
+                screen.mixed_item_box = True
+                break
     if not screen.menu_rows:
         # Measured disabled text is (106,105,106), not white. Keep it out
         # of selectable labels: only use all three exact rows to detect the
@@ -707,15 +1276,40 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.hidden_battle_commands &= screen.menu_cursor is not None
         screen.disabled_item_box &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
+    screen.monster_menu_drawing = _partial_monster_menu(frame, screen)
+    if screen.monster_menu_drawing and not screen.egg_rows:
+        screen.egg_rows = _egg_rows(frame)   # the panel names whose box is moving
     command_menu = classify_text(screen) in (_KNIGHT_MENU_KINDS - {'card_select'})
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event') and not command_menu:
         # Command menus have no map-selection cursor. Their coarse phase can
         # still be 'event'; do not scan the entire battle art for a map G.
         # Sortie/card/castle panels retain their actual background map reads.
         screen.marker = _target_marker(frame)
-        white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
-        screen.cursor = _free_cursor(white, frame)
+        screen.cursor = _free_cursor(row_masks(frame, white), frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'password_entry':
+        # The right-hand list sits on the green panel: available words are
+        # white (248,252,248) and already-used ones grey (120,120,120); the
+        # normal light mask misses the grey rows entirely. Read both so the
+        # entry order comes from the actual collected order (#5325).
+        rows = {}
+        grey = set()
+        for predicate, is_grey in (
+                (lambda r, g, b: min(r, g, b) >= 170, False),
+                (lambda r, g, b: 95 <= min(r, g, b) <= 165
+                 and max(r, g, b) - min(r, g, b) <= 12, True)):
+            for ln in read_lines(frame, predicate=predicate, rect=(160, 15, 252, 145)):
+                text = ''.join(w for _, w in ln.spans())
+                if text:
+                    rows.setdefault(ln.y, text)
+                    if is_grey:
+                        grey.add(ln.y)
+        screen.password_list = sorted(rows.items())
+        screen.password_list_grey = grey
+    screen.okunote_only_box = _okunote_only_box(frame, screen)
+    if screen.kind == 'text':
+        screen.prose_attached_marks = attached_mark_cells(
+            frame, screen.lines, rect=(24, 135, 232, 176), masks=masks)
     if screen.kind not in _KNIGHT_MENU_KINDS and not _card_picker_rows(screen):
         # Palette pixels beside dialogue words are not a command cursor
         # (g745: the God's dialogue contributed nine knight-colour pixels).
@@ -724,6 +1318,13 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         from .font import without_attached_marks
         screen.priest_ritual_scene = True
         screen.lines = without_attached_marks(frame, screen.lines, rect=(16, 135, 240, 215))
+        if _priest_continue_marker(frame):
+            # The measured g1147 dialogue-advance ornament occupies exactly
+            # these two bottom tiles. Never discard other unread message ink.
+            screen.lines = [TextLine(line.y, tuple(
+                (x, ch) for x, ch in line.cells
+                if not (line.y == 207 and x in (120, 128) and ch == UNKNOWN)))
+                for line in screen.lines]
         # The same sprite remains through the chant and the result dialogue.
         # It is not a menu cursor. Ambiguous/other hands and incomplete text
         # cannot become permission to acknowledge an unread option.
@@ -747,21 +1348,74 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
                             for v in variants)]
         screen.hand = find_hand(frame, option_positions=positions)
         screen.selected = _selected(lines, screen.hand)
-    if screen.kind == 'unknown' and is_world_map(frame):
+    if screen.kind in ('unknown', 'map_target') and is_world_map(frame):
+        # The sortie G on the Y view is the target marker's blue square. With
+        # no enemy flag left it is the only blue there once it covers the
+        # chapter 3 cave's blue gate, so the open view read as the field
+        # target screen and the next Y closed it (g1075 2026-10-29 14:28:16).
         screen.kind = 'world_map'
+        screen.marker = None
+    if screen.field_soldiers is None and screen.kind == 'battle_menu':
+        # 通常戦闘のコマンドメニューでは HP パネルが隠れて _battle() が None
+        # になるが、兵士スプライトはフィールドに残る (g713-24401/24407 の
+        # たまごをつかうメニューで (6,5)/(6,4)、g749-30774 で (1,4) を実測)。
+        # メニュー中の卵・退却判断が最新の兵士数を見られるよう、通常戦闘
+        # メニューのフレームでも計測する。卵戦・召喚獣メニューは兵士不在の
+        # ため対象外 (egg_battle_menu では _field_soldiers が (None,None) を
+        # 返すのも実測で確認済み)。メニュー箱に半分隠れた兵士は fragment/
+        # edge 規則でその側が None になり、誤読は採用しない契約を維持する。
+        screen.field_soldiers = _field_soldiers(frame)
     return screen
 
 
 WORLD_SEA = (106, 165, 205)
 WORLD_BORDER = (57, 40, 16)
+WORLD_BACKDROP = (0, 40, 0)
+WORLD_SEA_MIN = 1500           # chapter 1/2 views: 2106-2470 sampled sea pixels
+# Chapter 3's island fills more of the view: 1519-1526 with the cursor on land
+# and 1479 with the gold G over the sea (g1075 2026-10-29 12:11:41). That view
+# read 'unknown', the scene-confirm A fired and the target jump landed on the
+# sea (5 of 26 jumps in 2 h closed before confirming). Below WORLD_SEA_MIN the
+# view still counts when the dark green backdrop beside the gold frame is
+# intact: 1008/1008 samples on every Y view of chapters 1-3, at most 10 on any
+# other saved frame.
+WORLD_SEA_FRAMED_MIN = 1000
+WORLD_BACKDROP_MIN = 900       # of 1008 samples
+WORLD_BACKDROP_FRAME_ONLY_MIN = 1000   # frame + backdrop alone, no sea colour needed
+
+
+def _world_backdrop(frame: Frame) -> int:
+    return sum(1 for y in range(0, 224, 4) for x in (*range(0, 40, 4), *range(216, 248, 4))
+               if frame.pixel(x, y) == WORLD_BACKDROP)
+
+
+def _near_color(pixel, color, tolerance=2) -> bool:
+    """A measured colour, allowing the 16-bit RGB565 capture quantisation.
+
+    The gold frame's measured (57,40,16) becomes (56,40,16) when the core's
+    RGB565 pixels are expanded to 8 bits; an exact compare rejected the real
+    Y view and every target jump closed after the unknown-frame holds (local
+    g1190 2026-11-15, production state resumed with the 1.61 core).
+    """
+    return all(abs(int(a) - int(b)) <= tolerance for a, b in zip(pixel, color))
 
 
 def is_world_map(frame: Frame) -> bool:
     """The Y whole-island view: open sea inside the gold frame (measured 2026-09-28)."""
-    if frame.pixel(128, 10) != WORLD_BORDER:
+    if not _near_color(frame.pixel(128, 10), WORLD_BORDER):
         return False
     sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
-    return sea >= 1500
+    if sea >= WORLD_SEA_MIN:
+        return True
+    backdrop = _world_backdrop(frame)
+    if sea >= WORLD_SEA_FRAMED_MIN and backdrop >= WORLD_BACKDROP_MIN:
+        return True
+    # Chapter 6 paints the sea grey-green, so no pixel is WORLD_SEA at all
+    # (g1133 2026-11-04 22:23: 0 sampled; every jump closed as 'unknown' and
+    # the owners were never read). The gold frame plus the intact dark green
+    # backdrop identify the view on their own: 1008/1008 on every saved Y view
+    # and under 10 on every other saved frame.
+    return backdrop >= WORLD_BACKDROP_FRAME_ONLY_MIN
 
 
 # 月イチイベント「8月バカンス」(odoru7094 のイベントデータと gcgx event.html
@@ -813,6 +1467,14 @@ def classify_text(s: Screen) -> str:
         return 'barrier_removed'
     if 'なまえのかきとり' in t:
         return 'name_entry'
+    if 'パスワードヲ' in t.replace(' ', '') and 'ジュンバンニ' in t:
+        # #4564: オヴァリウム入城パスワード入力。リスト+3x3グリッド画面で
+        # shop 系に誤分類されると B 連打で 300 秒停止する。
+        return 'password_entry'
+    if 'パスワードヲ' in t and 'イレテクダサイ' in t:
+        # Chapter clear: the word list on the right is entered in the story's
+        # order (g1190 2026-11-18 62-2: the bot pressed B there for 20 minutes).
+        return 'password_entry'
     if 'きりふだセレクト' in t:
         return 'card_select'
     if 'しょうぐん' in t and 'かいこに' in t:
@@ -828,6 +1490,13 @@ def classify_text(s: Screen) -> str:
     if 'よろしいでっか' in t or 'なりまんな' in t:
         return 'shop_quantity'
     if 'かいあたえ' in t or 'ほしいな' in t or 'だからなんかかって' in t:
+        return 'gift_request'
+    # A partly unread request must not turn the unique bijin item menu into
+    # the merchant's three-price shop list. Require the entire fixed set.
+    gift_rows = [''.join(word for x, word in line.spans() if x >= 144)
+                 for line in s.lines]
+    gifts = [word for word in gift_rows if PRICE.fullmatch(word)]
+    if len(gifts) == 3 and set(gifts) == {'こうすい100G', 'くるま200G', 'いえ500G'}:
         return 'gift_request'
     if summer_bonus_seen(t):
         # 8月の月イチイベント (odoru7094 / gcgx event.html)。3択だが片方が
@@ -850,7 +1519,23 @@ def classify_text(s: Screen) -> str:
         return 'okunote_menu'
     if egg_choice_names(s):
         return 'egg_choice_menu'
-    if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box:
+    if (s.egg_rows and any(r.spans() == [(176, 'もうこうげき')] for r in s.menu_rows)
+            and any(r.spans() == [(176, 'おくのて')] for r in s.menu_rows)):
+        # 卵戦コマンド箱を1行下へスクロールした表示: 灰色のたまごをつかうの下に
+        # おくのてが見える。おくのてだけの救済メニューや敵将軍の左箱 (x40) と
+        # 誤認しないよう、両行が自軍の箱位置 x176 のときだけ認める (v362)。
+        return 'egg_battle_menu'
+    if s.mixed_item_box and s.egg_rows:
+        # g1190 2026-11-18 04:55-07:25: a castle-defence summon battle shows the
+        # egg-battle box (もうこうげき / たまごをつかう / grey きりふだ) over the
+        # live monster panel. The pixel read sets mixed_item_box, which used to
+        # fall through to battle_menu here -- before the egg rules below could
+        # run -- so a generic A hit the grey row for 2.5 h. The stacked ally and
+        # enemy HP rows (egg_rows) prove a summon turn, not a kit-read box with
+        # no monster (the #4456 defense box keeps its battle_menu owner). Route
+        # it to the egg battle owner, which already nudges an unread cursor up.
+        return 'egg_battle_menu'
+    if _human_commands(s) or s.hidden_battle_commands or s.disabled_item_box or s.mixed_item_box:
         return 'battle_menu'
     if _partial_human_commands(s):
         return 'battle_menu_pending'
@@ -873,6 +1558,8 @@ def classify_text(s: Screen) -> str:
     if 'たまごに' in t and 'もどれ' in t and any('もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         # Our summoned monster's own turn: the option box with たまごに もどれ.
         return 'monster_menu'
+    if s.monster_menu_drawing:
+        return 'monster_menu_pending'
     if 'しゅつげき' in t and 'ステータス' in t:
         # The general list opens beside the castle menu; its hand is right of it.
         if s.hand and s.hand[0] > 100:
@@ -895,10 +1582,29 @@ def classify_text(s: Screen) -> str:
         return 'sealed_castle'
     if 'じょう' in t and 'しゅうにゅう' in t and 'しょうぐん' in t:
         return 'castle_info'
+    if _field_card_list_panel(s):
+        # The list keeps the X menu's own labels on the right, so the main
+        # menu rule below would claim it and the generic panel close would
+        # press B. The hand-less left rows plus the footer prove the list.
+        return 'field_card_list'
     if 'ステータス' in t and 'システム' in t:
         return 'main_menu'
     if s.battle:
         return 'battle'
+    # These panels can leave the map's white bracket visible behind them.
+    # They still own the foreground: calling the named status a map discards
+    # its recall owner before it can read the person and close with B.
+    # A partial sortie question can retain this same status panel. Its two
+    # readable answers must keep the existing confirmation/backout dispatch.
+    if not ('うむッ' in t and 'いかんッ' in t):
+        if all(word in t for word in ('いどう', 'ステータス', 'キャンプ', 'きかん')):
+            return 'text'
+        for x, y in ((24, 39), (16, 31)):
+            title = next((row for row in s.lines if row.y == y), None)
+            hp = next((row for row in s.lines if row.y == y + 16), None)
+            if (title and title.span(x + 64, x + 112) == 'しょうぐん'
+                    and hp and hp.span(x, x + 16) == 'HP'):
+                return 'text'
     if s.marker:
         return 'map_target'
     if s.cursor:
@@ -925,11 +1631,20 @@ def egg_ritual_recitation_panel(screen: Screen) -> bool:
 
 
 def _priest_sprite(frame: Frame) -> bool:
-    """Measured g731/g739 ritual priest art, independent of the dialogue text."""
+    """Measured g731/g739 and g1147 priest art, independent of dialogue text."""
     if (frame.width, frame.height) != (256, 224):
         return False
     raw = bytes(c for y in range(80, 104) for x in range(108, 148) for c in frame.pixel(x, y))
-    return hashlib.sha256(raw).hexdigest() == '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980'
+    return hashlib.sha256(raw).hexdigest() in {
+        '021ae70f38cddd6a354d1aee2a508db7f57ca05dfd743f795745ad68da76f980',
+        '7a27f65fc4d31567cb70e60e8e98f4b2d998f4d97d6946ef16c487e1652f3ff9',
+    }
+
+
+def _priest_continue_marker(frame: Frame) -> bool:
+    """Only the exact native g1147 bottom-centre continue ornament."""
+    raw = bytes(c for y in range(207, 215) for x in range(120, 136) for c in frame.pixel(x, y))
+    return hashlib.sha256(raw).hexdigest() == '6ddd33c177ba8769804df3da325f13ecff77ba3bff3fb4a8c65109bdcd623f1d'
 
 
 def _priest_dialogue_body(screen: Screen) -> bool:

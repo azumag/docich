@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import stat
 import sys
+
+import pytest
 from decimal import Decimal
 from pathlib import Path
 
@@ -32,6 +34,15 @@ from docich.trading.strategy_runtime import set_active_experiment  # noqa: E402
 
 D = Decimal
 NOW = 1_800_000_000.0
+
+
+@pytest.fixture(autouse=True)
+def reset_active_experiment():
+    # The improvement path loads the persisted experiment into process-local
+    # strategy_runtime state. Never let it change the following test's signals.
+    set_active_experiment(None)
+    yield
+    set_active_experiment(None)
 
 
 def frame(symbol: str, prices: list[object]) -> MarketFrame:

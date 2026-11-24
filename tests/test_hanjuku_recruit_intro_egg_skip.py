@@ -22,6 +22,11 @@ def intro(gold):
 def open_recruit(gold):
     mem = memory(gold, uses=2)
     mem['captured'] = ['キカンドン', 'ジョンリギ']
+    # This suite starts after the free monthly count inspection. The actual
+    # recruitment/fee decisions below must keep their own resource checks.
+    for key, count in (('country_general_count', 2), ('country_soldier_count', 99)):
+        mem[key] = {'scope': [1, '1-7'], 'identity': None,
+                    'tick': mem['tick'], 'count': count}
     shop = p._plan(mem, {'year': 1, 'month': 7, 'gold': gold})
     # This month's recovery has already been checked and skipped. Without
     # this flag adoption correctly asks for a recovery check first.
@@ -112,18 +117,18 @@ def test_shortage_unpaid_fee_confirmation_keeps_wages(gold):
 def test_shortage_fee_confirmation_rechecks_repair_and_exact_floor(repair, extra):
     state = open_recruit(300)
     state['policy']['shop']['hero_repair_reserve'] = repair
-    gold = p.RECRUIT_COST + p.WAGE_RESERVE + repair + state['policy']['shop'].get('reserve', 0) + extra
+    gold = p.RECRUIT_COST + repair + state['policy']['shop'].get('reserve', 0) + extra
     actions, state = decide(fee_confirmation(gold), state)
     assert actions == [p.pad('b' if extra < 0 else 'a')]
     assert bool(state['policy']['month_sub'].get('aborted')) == (extra < 0)
 
 
-@pytest.mark.parametrize('gold', [129, 130])
+@pytest.mark.parametrize('gold', [99, 100])
 def test_unpaid_fee_keeps_the_entry_egg_reserve(gold):
     state = open_recruit(300)
     state['policy']['shop']['reserve'] = 50
     actions, state = decide(fee_confirmation(gold), state)
-    assert actions == [p.pad('b' if gold < 130 else 'a')]
+    assert actions == [p.pad('b' if gold < 100 else 'a')]
     assert 'recruit_paid_gold' not in state['policy']['month_sub']
 
 

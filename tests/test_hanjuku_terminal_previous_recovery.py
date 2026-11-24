@@ -134,3 +134,126 @@ def test_stopped_game_without_agent_still_requires_matching_saved_bytes(adapter,
     (adapter.spec.runtime_dir/'states/hanjuku.state').write_bytes(b'changed')
     with pytest.raises(AdapterError):
         adapter.can_release_terminal_previous(time.monotonic()+1,None)
+
+
+def test_dead_committed_runtime_is_released_without_terminal_evidence(recovery):
+    """A runtime that died before its boundary must not strand canonical.
+
+    The 2026-11-14 tmux-session loss left Hanjuku committed as ``previous``
+    with no boundary record: every recovery replay failed and the whole corner
+    rotation stayed blocked.  Releasing it is only allowed when the adapter
+    proves the runtime is gone, and the reason is recorded.
+    """
+    mgr, old, original_id, original = recovery
+    old.can_release_terminal_previous = lambda deadline, cancel: False
+    old.can_release_dead_previous = lambda deadline, cancel: True
+    result = mgr.coordinator.recover()
+    assert result.status == 'succeeded', result
+    canonical, _ = mgr.store.canonical.load()
+    assert canonical['phase'] == 'idle'
+    assert canonical['previous'] is None
+    last = canonical['last_result']
+    assert last['released_reason'] == 'dead-runtime-no-boundary'
+    assert last['released_terminal']['runtime_id'] == old.spec.runtime_id
+    assert last['restore_request_id'] == original_id
+    assert old.runtime.events == ['agent_stop', 'cleanup']
+    assert mgr.store.receipts.load(original_id) == original
+
+
+def test_unproved_dead_release_is_never_recorded(recovery):
+    mgr, old, _, _ = recovery
+    old.can_release_terminal_previous = lambda deadline, cancel: False
+    old.can_release_dead_previous = lambda deadline, cancel: False
+    mgr.coordinator.recover()
+    state, _ = mgr.store.canonical.load()
+    assert 'released_terminal' not in (state.get('last_result') or {})
+    assert 'cleanup' not in old.runtime.events
+
+
+def test_provably_dead_requires_no_window_agent_or_command_port(adapter, monkeypatch):
+    from unittest.mock import Mock
+    from docich.adapters import retroarch
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    # The spaced second probe is shortened here; its own test pins the spacing.
+    monkeypatch.setattr(retroarch, 'DEAD_PROBE_SPACING_S', 0.0)
+    deadline = time.monotonic() + 1
+    # A live game window is never provably dead.
+    assert adapter.runtime_provably_dead(deadline, None) is False
+    del adapter.tmux.windows['docich:game-g1']
+    # A live command port proves a detached presenter/RetroArch survived.
+    assert adapter.runtime_provably_dead(deadline, None) is False
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd', Mock(return_value=None))
+    assert adapter.runtime_provably_dead(deadline, None) is True
+    assert adapter.can_release_dead_previous(deadline, None) is True
+    # Any surviving agent window also blocks the release.
+    adapter.tmux.windows['docich:agent-g1'] = (adapter.spec.runtime_id, 1, 'agent')
+    assert adapter.runtime_provably_dead(deadline, None) is False
+    assert adapter.can_release_dead_previous(deadline, None) is False
+
+
+def test_provably_dead_requires_two_spaced_unanswered_probes(adapter, monkeypatch):
+    """One lost UDP round trip must not release a live runtime (#4193)."""
+    from docich.adapters import retroarch
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    monkeypatch.setattr(retroarch, 'DEAD_PROBE_SPACING_S', 0.05)
+    del adapter.tmux.windows['docich:game-g1']
+    calls = []
+
+    def probe(*args, **kwargs):
+        calls.append(time.monotonic())
+        return None
+
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd', probe)
+    assert adapter.runtime_provably_dead(time.monotonic() + 5, None) is True
+    assert len(calls) == 2
+    assert calls[1] - calls[0] >= 0.05
+
+
+def test_one_answered_probe_keeps_the_runtime_alive(adapter, monkeypatch):
+    """A transient miss (delayed response) on the first probe is not death."""
+    from docich.adapters import retroarch
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    monkeypatch.setattr(retroarch, 'DEAD_PROBE_SPACING_S', 0.0)
+    del adapter.tmux.windows['docich:game-g1']
+    replies = iter([None, 'GET_STATUS PAUSED snes,hanjuku,crc32=abcd\n'])
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd',
+                        lambda *args, **kwargs: next(replies))
+    assert adapter.runtime_provably_dead(time.monotonic() + 5, None) is False
+
+
+def test_a_miss_is_retried_after_spacing_not_with_a_longer_timeout(adapter, monkeypatch):
+    """The retry is a spaced second call; the .1 s reply window is not stretched."""
+    from unittest.mock import Mock
+    from docich.adapters import retroarch
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    monkeypatch.setattr(retroarch, 'DEAD_PROBE_SPACING_S', 0.01)
+    del adapter.tmux.windows['docich:game-g1']
+    probe = Mock(return_value=None)
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd', probe)
+    assert adapter.runtime_provably_dead(time.monotonic() + 5, None) is True
+    assert [call.kwargs['wait_reply_s'] for call in probe.call_args_list] == [0.1, 0.1]
+
+
+def test_an_immediate_answer_short_circuits_the_second_probe(adapter, monkeypatch):
+    from unittest.mock import Mock
+    from docich.adapters import retroarch
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    monkeypatch.setattr(retroarch, 'DEAD_PROBE_SPACING_S', 0.0)
+    del adapter.tmux.windows['docich:game-g1']
+    probe = Mock(return_value='GET_STATUS PAUSED snes,hanjuku,crc32=abcd\n')
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd', probe)
+    assert adapter.runtime_provably_dead(time.monotonic() + 5, None) is False
+    assert probe.call_count == 1
+
+
+def test_insufficient_budget_leaves_death_unproven(adapter, monkeypatch):
+    from unittest.mock import Mock
+    from docich.adapters import retroarch
+    monkeypatch.setattr('docich.hanjuku_run.enabled', lambda game: True)
+    monkeypatch.setattr(retroarch, 'DEAD_PROBE_SPACING_S', 5.0)
+    del adapter.tmux.windows['docich:game-g1']
+    probe = Mock(return_value=None)
+    monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd', probe)
+    # The deadline cannot fit a spaced second probe: do not claim death.
+    assert adapter.runtime_provably_dead(time.monotonic() + 1, None) is False
+    assert probe.call_count == 1

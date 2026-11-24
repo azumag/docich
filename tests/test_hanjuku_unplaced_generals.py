@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import hanjuku_policy as p
+from docich.hanjuku.state.regions import plan as _plan_region
 
 
 def memory(joiners_month='2-5'):
@@ -25,8 +26,16 @@ def memory(joiners_month='2-5'):
 def test_joiners_make_the_heros_castle_a_sortie_source():
     mem = memory()
     assert p._unplaced_castle_generals(mem) == ['アマンディーヌ', 'カシュー']
+    # v305: one joiner leaving would leave the hero with one other; only a
+    # probe that reads the real list may still open it.
+    assert not [o for o in p.interim_candidates(mem).values() if o.get('source') == 'アルマムーン'
+                and o['general'] != p.MOVE_ANY_GENERAL]
+    mem['house_eggs']['ミント'] = {'location': 'castle', 'month': '2-5'}
     picks = [o for o in p.interim_candidates(mem).values() if o.get('source') == 'アルマムーン']
-    assert picks and picks[0]['general'] == 'アマンディーヌ'
+    # A monthly status does not prove which castle received a joiner.
+    # Keep the source as a live-list probe rather than naming one prematurely.
+    assert picks and picks[0]['general'] == p.MOVE_ANY_GENERAL
+    assert picks[0]['source_probe'] is True
     order = {'step': 'A:x:P1', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ナキューメラ', 'cards': [], 'after': None}
     assert p._source_spare_missing(order, mem) is False
@@ -49,7 +58,7 @@ def test_a_read_list_refutes_the_arrival_assumption_until_the_unplaced_set_chang
     mem = memory()
     order = {'step': 'A:x:P1', 'general': 'どうし', 'source': 'アルマムーン',
              'target': 'ナキューメラ', 'cards': [], 'after': None, 'purpose': 'retake'}
-    mem['orders'] = {'A:x:P1': 'pending'}
+    _plan_region(mem)['orders'] = {'A:x:P1': 'pending'}
     assert p._source_spare_missing(order, mem) is False
     from unittest import mock
     with mock.patch.object(p, '_present_generals', return_value=['どうし']):

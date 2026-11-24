@@ -24,6 +24,58 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 - preview command は `bubblewrap` で network と production filesystem から分離した一時コピー上で実行します。
 - production command の stdout/stderr は Actions log に返さず、VM private logへ mode 0600 で保存します。command input に token/password を直接書かないでください。
 
+## Owner-only PAPER issue command bridge（ChatGPT connector）
+
+`.github/workflows/paper-corner-operator.yml` は `workflow_dispatch` に加えて、owner が作成した command Issue **#293** の body 編集（`issues: edited`）でも起動できます。GitHub connector が `workflow_dispatch` を直接叩けない場合に、Issue 編集を固定操作の入口にするための経路です。
+
+### Command schema（完全一致）
+
+body は次の3キーだけを持つ1個の JSON object です。余分なキーは拒否されます。
+
+```json
+{"operation":"start","confirm":"production","nonce":"20261018-example"}
+```
+
+- `operation`: `start` または `reload-worker` のみ。
+- `confirm`: 完全一致で `production`。
+- `nonce`: `[A-Za-z0-9._:-]{1,64}`。監査・相関用で、現在 replay の一意性検査はありません。
+- `duration_minutes` は廃止済みで、`start` / `reload-worker` のどちらでも受け付けません。
+- body は JSON として解析され、shell へは渡されません。token / password / 任意 command を書かないでください。
+
+### 実行の性質と安全境界
+
+- owner login + immutable actor ID `9018513`、`github.triggering_actor == azumag`、protected `main`、main 上の workflow copy、Issue #293、Issue 作者が owner であることを検証します。
+- 操作前に production が配備済み reviewed baseline にあることを要求します（`status=configured`、かつ production HEAD が現在の protected main の SHA と完全一致、またはその reviewed ancestor。docich#2681 の `ops/vm_actions/check_operator_parity.py` が main 履歴との ancestor 証明を検証します。証明は public repository の anonymous git fetch と 50 commit の深さ上限に依存し、範囲外・fetch 失敗は fail-closed で deploy 要求になります）。
+- **body の編集が実行トリガーです。** 編集後に別の確認ダイアログはありません。編集＝本番操作要求として扱ってください。
+- `issues: edited` は Issue が closed でも配送され得ます。現在の workflow と authorizer は Issue が `open` のときだけ許可し、closed #293 の編集は skip / fail-closed します。bridge を使うときは #293 を再オープンしてください。
+- VM 側は reviewed な固定 launcher のみを実行し、stdout/stderr は VM private log に留めます。
+
+### body を安全に更新する手順
+
+編集が本番実行になるため、次のいずれかを使います。通常は A を推奨します。
+
+**A. workflow を一時停止して編集する（推奨）**
+
+1. owner が workflow を無効化する:
+   `gh workflow disable paper-corner-operator.yml --repo azumag/docich`
+2. #293 の body を新しい JSON に更新する（`duration_minutes` を入れない）。
+3. body が上記 schema と完全一致することを確認する。
+4. workflow を有効化する:
+   `gh workflow enable paper-corner-operator.yml --repo azumag/docich`
+5. 有効化だけでは実行されません。実行するときは、準備ができた時点で nonce を変えるなど body をもう一度編集します。その `edited` がトリガーです。
+
+**B. no-op の `validate` operation を追加する（将来の選択肢）**
+
+- authorization と production SHA 一致だけを確認し、VM を変更しない `validate` operation を追加できれば、body を安全に試験できます。**本改訂では未実装**です。`validate` を allowlist / workflow に追加する reviewed PR が入るまで、この operation は使えません。
+
+**C. bridge を新しい Issue に移行する**
+
+- 新しい owner 作成 Issue を用意し、`ops/vm_actions/authorize_paper_corner.py` の `COMMAND_ISSUE` と `.github/workflows/paper-corner-operator.yml` の issue number guard を更新し、回帰テストを追加して main へ merge します。移行までは #293 だけが受け付けられます。
+
+### #293 の現在の状態
+
+#293 は 2026-10-17 に実装完了として close 済みです。body には旧 schema の `duration_minutes` が残っているため、そのまま編集すると authorization で fail-closed します。closed のままの編集は新しい guard で skip されます。bridge を使う場合は、#293 を再オープンし、上の A の手順で body を更新してください。closed 中に操作が必要な場合は、#293 を再オープンせず owner の `workflow_dispatch` を使ってください。
+
 ## Production deployment
 
 `/home/ubuntu/docich` は既存 Git worktree を維持します。production payload は tar 上書きではなく Git bundle です。
@@ -41,8 +93,14 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 2026-09-15、production checkout が手動 `git reset --hard origin/main` で out-of-band に進み、recorded baseline と乖離して canonical deploy が `tracked_vm_drift` / baseline 不一致で失敗する事象がありました（Issue #412）。復旧は owner-only `rebaseline`（tracked-clean かつ HEAD が requested commit の ancestor のときだけ現在 HEAD を baseline に採用）→ canonical `deploy` のみを使います。
 
 - production checkout へ remote を追加して `git pull` / `git reset --hard origin/main` をしない。更新は docich main への merge → `VM operations` deploy のみ。
+- `/home/ubuntu/docich` 上で `gh pr merge`、branch switch、開発・merge 作業をしない。PR merge は checkout を変えない GitHub API/UI または別 worktree から行い、merge 後に必要なら承認手順で production checkout を `main` へ正規化する。
 - out-of-band な HEAD/baseline 移動は hourly `vm-storage-monitor` の `[VM deploy] production baseline alert` が検知する。`git_clean(root)==false` は `[VM deploy] tracked drift alert` が検知する。
 - 監査は `/home/ubuntu/docich` の `git reflog` を read-only で確認する。
+
+ゲスト OS 自体が無応答（SSH banner exchange タイムアウト + WebUI 無応答）のときは、この
+gateway を含む全 operation が使えない。復旧は
+`docs/operations/vm-guest-unresponsive-recovery.md` の帯域外通常再起動だけを使う
+（オーナー明示承認が前提。自動再起動・権限新設はしない）。
 
 ### turn-based 戦略を人手の PR で上書き反映する手順
 
@@ -137,6 +195,14 @@ Git bundle は `ops/vm_actions/prune_bundles.py` と `.github/workflows/vm-bundl
 `.github/workflows/vm-storage-monitor.yml` は毎時17分・47分にproduction `status` だけをforced-command gateway経由で読み、80%でWARN、90%でCRITICALのGitHub Issueを1件だけ作ります。同一severityのopen Issueがあれば最新snapshotへ更新し、severity変化時は旧Issueを閉じて新しいseverityを作成し、80%未満へ戻るとopen alertを閉じます。通知には使用率・空き容量・総容量・workflow URLだけを載せ、VMログ、filesystem path、資格情報、command outputは載せません。手動確認は workflow_dispatch でも実行できます。
 
 インストール済みgatewayは `/usr/local/libexec/azumag-vm-ops/gateway.py` を実行するため、gateway sourceを更新したmainをproductionへdeployしただけでは実行ファイルは切り替わりません。既存のowner-only運用経路でroot-owned installed copyを明示更新し、repo sourceとの一致とproduction statusの新フィールドを確認してから反映済みと扱います。
+
+## OpenCode / runtime reclaim helpers（#3109 / #3122 / #3140）
+
+いずれも **dry-run 既定**です。apply は reviewed plan の sha256（`--expect-plan` / `EXPECT_PLAN`）が一致したときだけ実行し、唯一の例外は `opencode_session_file_reclaim.py` の `--auto-apply`（既定 OFF・2-pass 連続性の機械検証）です。VM への適用は owner 確認後の別作業です。
+
+- `opencode_session_file_reclaim.py`（#3140 / ADR 0006）: `~/.local/share/opencode/` の `snapshot/<session>/` と `storage/session_diff/*.json` のうち cutoff（既定 24h）超のものだけを plan します。`tool-output/`・`log/`・`repos/`・`shell/`・`auth.json`・`storage/migration`・`opencode.db*` は対象外、symlink/非 regular は fail-closed。hourly `docich-opencode-retention.service` の DB pass 直後に owner 承認（#3140 comment 6635080145）を受けて **auto-apply** 配線済みで、`--state-file`（mode 0600、store 外）に plan を保存し、`--manifest-file` に削除監査を追記します。`--auto-apply` は「前 pass の plan に載り、全 stamp が不変で、今回も cutoff 超」のエントリだけを削除する continuity モードです。削減効果は `opencode_default_{snapshot,storage,tool_output,log,other}` の allocated bytes で観測します（`other` は未知サブパスの検知用）。
+- `runtime_bulky_reclaim.py`（#3109）: 完了済み runtime 世代の `hanjuku_commentary.jsonl` / `hanjuku_narration.jsonl` だけを対象にします。`RUN_ID`・canonical state（active/retiring 除外）・`terminal_identity` のゲートを通し、世代ディレクトリ自体、ログ、frames は削除しません。
+- `runtime_browser_profile_reclaim.py`（#3122）: 完了済み世代の `*-browser-profile` のみを対象にします。完了判定は hanjuku の `terminal_identity` 記録 **または** game-switch が teardown 確認後に書く共通 retire マーカー `retired.json`（`src/docich/retire_marker.py`、schema 1・`kind=runtime_retired`・runtime_id/generation 一致が必須）のいずれかです。run record が存在するのに terminal 検証に落ちる世代は `not_completed` として fail-closed skip し、marker でも救済しません。symlink/hardlink/oversize など unreadable な run record は `unsafe_run_record` として同じく fail-closed skip し、marker へ fallback しません。最新 `--keep-recent` 世代と `--min-age-hours`（既定 24h）未満の profile は残し、hanjuku ログと frames は削除しません。marker 導入前に retire 済みの旧世代（proof なし）は既定では `no_completion_evidence` で skip し、移行レビュー用の opt-in `--include-legacy`（wrapper は Phase 1 で `INCLUDE_LEGACY=1`）でのみ `legacy_no_evidence` タグ付きで列挙します。この opt-in は **dry-run 専用**で、`--apply` と併用すると `include_legacy_dry_run_only` で拒否します。`browser_profile_reclaim_now.sh` が owner 同意の 2 段階（dry-run → `EXPECT_PLAN` 指定 apply）wrapper です。
 
 ## Operational notes
 
@@ -309,3 +375,50 @@ public guard を弱めたり、任意 command/argument を受けたりしませ�
 - 稼働中の `audio_worker` が無ければ exit 66 で何も積まない。enqueue 自体の失敗は exit 1（何も積まれていないので再実行可）。積んだ後は最大90秒、worker の `tmp/.say_queue/debug.log` にその項目名で記録される結果を待つ: `再生完了` で exit 0、`再生失敗`／`重複スキップ`（同じ文が直近50件の再生済みハッシュにある）／`破棄`（mode不一致）で exit 3、記録なしは exit 2（未claim・再生中・記録なし消失を区別してstderrに出す）。**exit 2/3 は積み済みなので、再実行すると二重に読まれうる。キューファイルの消失だけでは成功扱いしない。exit 0 は say_enqueue への受け渡し成功であり、配信ミックスでの可聴は別途確認が必要。**
 - 本文は**配信で読み上げられ、かつ workflow run の入力として公開リポジトリ上に残る**。秘密情報は入れない。実行出力は gateway が VM private log に退避する（Actions には出ない）。
 - 話者は audio_worker 既定。変更したい場合は別 PR で固定の許可リスト入力を追加する。
+
+### `PR merge audio report`（main への merge を audio-worker で報告する owner-only workflow）
+
+`.github/workflows/pr-merge-audio-report.yml`。protected `main` への push のうち、owner が pull request を main へマージしたときに、変更内容を平易な日本語1文（240字以内）にして `report_pr_merge_audio.sh` 経由で audio_worker に積みます（enqueue 成功で終了し、再生完了は待たない）。文面は PR本文の `## 音声サマリー` → owner設定のOpenAI互換APIによる自動要約 → 本文の `概要` → タイトルの順に選び、AI失敗時も fallback して通知を失いません。AIは既定で無効で、`PR_MERGE_AUDIO_LLM_*` の変数/secretがある場合だけランナー上で呼び、VM gatewayのロックを保持しません。`authorize_pr_merge_audio.py` が owner / protected main / workflow path / push payload を完全一致で検証し、`pr_merge_audio_report.py` が merged PR の選択・sanitize・base64 化を行います。PR が無い push は VM に接続せず skip します。deploy と競合した `gateway_busy` だけを上限付きで再試行し、共有 concurrency group は置かずに連続 merge の取りこぼしを防ぎます。本文・AI応答は Actions log に出さず、失敗しても merge / deploy は止めません。詳細は [docs/operations/pr-merge-audio-report.md](../../docs/operations/pr-merge-audio-report.md)。
+
+### program admission の読取専用投影
+
+`diagnostics.program_admission_evidence` は、通常の `pending` が `dispatched`
+になってから owner が作られるまでの観測を補います。固定catalog対応の owner と
+`selected_at == queue.requested_at` の一致、registry の `owner_free`、FIFO の
+先行待機、prediction worker とローカル ACTIVE/LOCKED・要求後の確定境界、
+既存 audio queue の queued/playing/quiet/readable を別々に返します。queue には
+request UUID がないため、一致は同一リクエストの所有証明ではありません。
+
+- program lock は変更も取得もせず、存在だけを観測します。state は常に `unknown`。
+- FIFO は waiting/waiting_turn の厳密な先行時刻だけを数え、同時刻や
+  waiting_boundary を先行扱いしません。抽選用の3時間cutoffは適用しません。
+- 欠損・未知schema・読取失敗・不完全走査・読取中の更新は依存する値を null にします。
+  前後再照合は atomic snapshot/lease ではなく、観測後の変化も防ぎません。
+- audio は既存collectorと同じqueue解決を再利用します。Soren `.env` や稼働workerの
+  環境は読みません。`source_basis:collector_env_or_default` で観測したqueueのcountsと
+  quietだけを返し、`runtime_source_verified:false` は常に固定です。`quiet:true` 単独では
+  実runtime queueの静止を証明しません。
+- request/corner/runtime識別子、PID、パス、自由文、audio本文を返しません。
+  `recovery_authority:false` は固定です。復旧許可や aggregate ready 判定を追加しません。
+- collector 内だけの変更なので、現行gateway契約では通常のreview済みmain配布で
+  読まれます。新しいroot-owned installer/helper/allowlist更新は不要です。
+  実機gateway版・稼働collectorとの一致や配布済みであることは別途確認が必要です。
+
+既存の診断budget削減順序は変えず、latest NetHack履歴より前にCPU/audio詳細を
+削減する方針を保ちます。新投影がある場合も同じ順序を回帰テストします。
+
+失敗時も `observation:rechecked_non_atomic` は観測方式の固定語彙です。
+`recheck_completed:true` が全sourceの再照合完了を示し、unknown/早期returnではfalseです。
+`failure_stage` と `failure_code` は固定enumだけを返し、安全path拒否、非regular、
+64KiB超過、JSON/schema不正、走査上限、途中更新、読取失敗を区別します。
+例外本文、filename/path、request値を返さず、失敗時の依存値は従来どおりnullです。
+これらはcollectorの読取失敗分類であり、runtimeの待機理由や復旧許可を表しません。
+
+audio scanの対象は固定名 `comment_*.txt` / `comment_*.playing` のみです。
+通常writerが作る `audio_dedup` / `.weather_audio_receipts` など対象外のentryは、
+名前一覧には保持しますがstat・内容読取・symlink追跡・子directoryへの降下はしません。
+全entryの128件上限、親dirの前後fingerprint、名前一覧再照合は維持します。
+対象音声はno-follow statとregular必須、metadata fingerprint再照合を維持し、
+symlink/非regularはnullへ倒します。FIFOのscanは全entry regular-onlyのままです。
+current_predictionの公開writerにstatusがない形式も、local_active/waitingを
+推測せずnullに保つ回帰で扱います。

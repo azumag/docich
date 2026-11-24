@@ -491,6 +491,19 @@ class TestCliStatusReaderContracts(unittest.TestCase):
             self.assertIn("BTC/JPY", safe["market_freshness"])
             self.assertEqual(safe["coverage"]["total"], 1)
 
+    def test_safe_existing_status_keeps_freshness_summary(self):
+        from docich.trading.cli import _safe_existing_status
+        from docich.trading.status import freshness_summary_payload
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            gateway = Gateway(["BTC/JPY"])
+            run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW,
+                             observation_now_fn=lambda: NOW)
+            safe = _safe_existing_status(g.state_dir / "trading" / "status.json")
+            self.assertIn("freshness_summary", safe)
+            self.assertEqual(safe["freshness_summary"]["total"],
+                             safe["market_freshness"] and len(safe["market_freshness"]) or 0)
+
     def test_safe_existing_status_tolerates_absent_new_fields(self):
         from docich.trading.cli import _safe_existing_status
         with tempfile.TemporaryDirectory() as tmp:
@@ -501,3 +514,4 @@ class TestCliStatusReaderContracts(unittest.TestCase):
             safe = _safe_existing_status(path)
             self.assertIsNone(safe["snapshot_seq"])
             self.assertEqual(safe["market_freshness"], {})
+            self.assertEqual(safe["freshness_summary"]["total"], 0)

@@ -16,6 +16,20 @@ import time
 SOREN = Path("/home/ubuntu/soren")
 DOCICH = Path("/home/ubuntu/docich")
 
+FOUNDING_MARKER = Path("tmp/markers/.soviet_created")
+OBSERVATION = Path("tmp/state/game_observation.json")
+# Same rule as soviet_now lib/founding_marker.py: a marker written next to the
+# board it describes is never older than it, and game_state.json mtime only
+# advances when the board changes.
+FOUNDING_MARKER_MTIME_GRACE_SECONDS = 5.0
+# soviet_now#714 contract (mirrored from lib/founding_marker.py): only a
+# schema-valid, fresh observation describing this exact board counts as live
+# evidence for a match-identity comparison.
+OBSERVATION_SCHEMA = 1
+OBSERVATION_FRESH_SECONDS = 15.0
+OBSERVATION_FUTURE_SECONDS = 5.0
+_BOARD_FIELDS = ("state", "score", "makeSorenCount", "pieces")
+
 
 def _json(path):
     try:
@@ -23,6 +37,100 @@ def _json(path):
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _identity(value):
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if not token or len(token) > 64 or any(character.isspace() for character in token):
+        return None
+    return token
+
+
+def _match_identity(marker):
+    """Identity recorded inside the marker; legacy ``"<turn>"`` payloads have none."""
+    try:
+        payload = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if "|" not in payload:
+        return None
+    return _identity(payload.split("|")[-1])
+
+
+def _observed_match_identity(soren):
+    record = _json(soren / OBSERVATION)
+    return _identity(record.get("game_id")) if record else None
+
+
+def _board_view(state):
+    """The board fields the bridge records, projected out of a full state."""
+    if not isinstance(state, dict):
+        return None
+    return {field: state.get(field) for field in _BOARD_FIELDS}
+
+
+def _live_observation(soren, *, now=None):
+    """Observation record that is intact and fresh, or ``None`` (soviet_now#714)."""
+    now = time.time() if now is None else now
+    record = _json(soren / OBSERVATION)
+    if record is None or record.get("schema") != OBSERVATION_SCHEMA:
+        return None
+    if _identity(record.get("game_id")) is None:
+        return None
+    try:
+        epoch = float(record.get("observed_epoch"))
+    except (TypeError, ValueError):
+        return None
+    if epoch > now + OBSERVATION_FUTURE_SECONDS or now - epoch > OBSERVATION_FRESH_SECONDS:
+        return None
+    if not isinstance(record.get("board"), dict):
+        return None
+    return record
+
+
+def founding_marker_is_current(soren, state_path, *, now=None):
+    """True when the marker may belong to the board this recovery would replace.
+
+    A marker left behind by an earlier match used to refuse the only available
+    recovery forever (#2345: a board frozen for ~15h40m). Ownership is decided
+    by the bridge's per-match ``game_id`` — but only while the observation is
+    live evidence: schema-valid, freshly timestamped, and describing this same
+    board (soviet_now#714). Without that, a mere mtime gap no longer declares
+    the marker stale: a board advancing past the marker does not prove a new
+    match, and unclear evidence must keep refusing this recovery (fail-safe —
+    a wrongly recovered founding match is worse than a refused manual action).
+    """
+    now = time.time() if now is None else now
+    marker = soren / FOUNDING_MARKER
+    try:
+        marker_mtime = marker.stat().st_mtime
+    except OSError:
+        return False
+    live = _live_observation(soren, now=now)
+    if live is not None:
+        wanted = _board_view(_json(state_path))
+        board = live.get("board")
+        if wanted is not None and board != wanted:
+            # Re-read once for a torn combination before distrusting it.
+            live = _live_observation(soren, now=now)
+            if live is None:
+                return True
+            board = live.get("board")
+            if wanted is not None and board != wanted:
+                return True
+        recorded = _match_identity(marker)
+        if recorded is None:
+            return True  # legacy marker cannot be tied to the live match id
+        return recorded == _identity(live.get("game_id"))
+    try:
+        state_mtime = state_path.stat().st_mtime
+    except OSError:
+        return True
+    if marker_mtime + FOUNDING_MARKER_MTIME_GRACE_SECONDS >= state_mtime:
+        return True
+    return True  # mtime-only gap: unknown, keep refusing (soviet_now#714)
 
 
 def _birth_time(proc, pid):
@@ -56,7 +164,7 @@ def eligible(soren=SOREN, docich=DOCICH, proc=Path("/proc"), now=None):
             or type(state.get("makeSorenCount")) not in (int, float)
             or state.get("makeSorenCount") != 0):
         raise ValueError("game is not a non-founding STOP")
-    if (soren / "tmp/markers/.soviet_created").exists():
+    if founding_marker_is_current(soren, path, now=now):
         raise ValueError("founding marker is present")
     if not 60 <= now - path.stat().st_mtime <= 86400:
         raise ValueError("STOP is not safely stale")

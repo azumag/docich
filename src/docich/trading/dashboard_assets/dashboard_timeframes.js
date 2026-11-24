@@ -67,6 +67,14 @@
   function drawMini(canvas, view, fills) {
     const bars = Array.isArray(view.bars) ? view.bars : [];
     const closes = bars.map((bar) => finite(bar.c)).filter((value) => value !== null);
+    const candles = bars.map((bar) => ({
+      t: finite(bar.t), o: finite(bar.o), h: finite(bar.h), l: finite(bar.l),
+      c: finite(bar.c), closed: bar.closed !== false, gapBefore: bar.gap_before === true,
+    }));
+    const hasOhlc = candles.length >= 2 && candles.every((bar) =>
+      bar.t !== null && bar.o !== null && bar.h !== null && bar.l !== null && bar.c !== null &&
+      bar.h >= bar.l && bar.h >= Math.max(bar.o, bar.c) && bar.l <= Math.min(bar.o, bar.c));
+    const values = hasOhlc ? candles.flatMap((bar) => [bar.h, bar.l]) : closes;
     const dpr = window.devicePixelRatio || 1;
     const W = 122;
     const H = 30;
@@ -77,7 +85,7 @@
     const g = canvas.getContext("2d");
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
-    if (closes.length < 2) {
+    if (values.length < 2) {
       g.fillStyle = "#6f86a8";
       g.font = "10px monospace";
       g.textAlign = "center";
@@ -87,25 +95,28 @@
     }
     const upper = finite(view.bb_upper);
     const lower = finite(view.bb_lower);
-    let lo = Math.min(...closes);
-    let hi = Math.max(...closes);
+    let lo = Math.min(...values);
+    let hi = Math.max(...values);
     if (upper !== null) hi = Math.max(hi, upper);
     if (lower !== null) lo = Math.min(lo, lower);
-    if (!(hi > lo)) {
-      hi = lo + 1;
-      lo = Math.max(0, lo - 1);
-    }
+    if (!(hi > lo)) { hi = lo + 1; lo = Math.max(0, lo - 1); }
     const span = hi - lo;
     const plotW = W - PAD.l - PAD.r;
     const plotH = H - PAD.t - PAD.b;
-    const x = (i) => PAD.l + (plotW * i) / (closes.length - 1);
+    const minTime = hasOhlc ? candles[0].t : 0;
+    const maxTime = hasOhlc ? candles[candles.length - 1].t : Math.max(1, closes.length - 1);
+    const timeSpan = Math.max(1, maxTime - minTime);
+    const x = (i) => hasOhlc
+      ? PAD.l + (plotW * (candles[i].t - minTime)) / timeSpan
+      : PAD.l + (plotW * i) / (closes.length - 1);
     const y = (value) => PAD.t + plotH - ((value - lo) / span) * plotH;
 
     if (upper !== null && lower !== null && upper > lower) {
+      const count = hasOhlc ? candles.length : closes.length;
       g.beginPath();
       g.moveTo(x(0), y(upper));
-      for (let i = 1; i < closes.length; i++) g.lineTo(x(i), y(upper));
-      for (let i = closes.length - 1; i >= 0; i--) g.lineTo(x(i), y(lower));
+      for (let i = 1; i < count; i++) g.lineTo(x(i), y(upper));
+      for (let i = count - 1; i >= 0; i--) g.lineTo(x(i), y(lower));
       g.closePath();
       g.fillStyle = "rgba(56,189,248,0.12)";
       g.fill();
@@ -113,35 +124,74 @@
       g.lineWidth = 1;
       g.beginPath();
       g.moveTo(x(0), y(upper));
-      g.lineTo(x(closes.length - 1), y(upper));
+      g.lineTo(x(count - 1), y(upper));
       g.moveTo(x(0), y(lower));
-      g.lineTo(x(closes.length - 1), y(lower));
+      g.lineTo(x(count - 1), y(lower));
       g.stroke();
     }
 
-    g.beginPath();
-    for (let i = 0; i < closes.length; i++) {
-      if (i === 0) g.moveTo(x(i), y(closes[i]));
-      else g.lineTo(x(i), y(closes[i]));
+    if (hasOhlc) {
+      const step = plotW / Math.max(1, candles.length);
+      const bodyWidth = Math.max(1.2, Math.min(4.5, step * 0.62));
+      candles.forEach((bar, index) => {
+        const center = x(index);
+        const rising = bar.c >= bar.o;
+        const color = rising ? "#34d399" : "#fb7185";
+        const openY = y(bar.o);
+        const closeY = y(bar.c);
+        g.strokeStyle = color;
+        g.fillStyle = color;
+        g.lineWidth = 1;
+        g.beginPath();
+        g.moveTo(center, y(bar.h));
+        g.lineTo(center, y(bar.l));
+        g.stroke();
+        const top = Math.min(openY, closeY);
+        const height = Math.max(1, Math.abs(closeY - openY));
+        if (bar.closed) {
+          g.fillRect(center - bodyWidth / 2, top, bodyWidth, height);
+        } else {
+          g.setLineDash([1, 1]);
+          g.strokeRect(center - bodyWidth / 2, top, bodyWidth, height);
+          g.setLineDash([]);
+        }
+        if (bar.gapBefore && index > 0) {
+          g.fillStyle = "#fbbf24";
+          g.fillRect(center - 0.5, PAD.t, 1, 2);
+        }
+      });
+    } else {
+      g.beginPath();
+      for (let i = 0; i < closes.length; i++) {
+        if (i === 0) g.moveTo(x(i), y(closes[i]));
+        else g.lineTo(x(i), y(closes[i]));
+      }
+      g.strokeStyle = view.trend === "下降" ? "#fb7185" : "#34d399";
+      g.lineWidth = 1.4;
+      g.stroke();
+      const lastX = x(closes.length - 1);
+      const lastY = y(closes[closes.length - 1]);
+      g.beginPath();
+      g.arc(lastX, lastY, 2.4, 0, Math.PI * 2);
+      g.fillStyle = "#e6edf7";
+      g.fill();
     }
-    g.strokeStyle = view.trend === "下降" ? "#fb7185" : "#34d399";
-    g.lineWidth = 1.4;
-    g.stroke();
-
-    const lastX = x(closes.length - 1);
-    const lastY = y(closes[closes.length - 1]);
-    g.beginPath();
-    g.arc(lastX, lastY, 2.4, 0, Math.PI * 2);
-    g.fillStyle = "#e6edf7";
-    g.fill();
 
     if (Array.isArray(fills) && fills.length) drawMarks(g, view, fills, x, y);
+  }
+
+  function timeText(value) {
+    const n = finite(value);
+    return n === null ? "--" : new Date(n * 1000).toLocaleTimeString("ja-JP", {
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
   }
 
   const SHORT_LABELS = {
     "日足": "日足",
     "1時間足": "1時間",
     "15分足": "15分",
+    "5分足（公開OHLC）": "5分OHLC",
     "1分足": "1分",
     "5分足(戦略)": "5分戦略",
   };
@@ -165,12 +215,17 @@
       if (!view || !view.timeframe) continue;
       const cell = cellFor(strip, String(view.timeframe), shortLabel(String(view.label || view.timeframe)));
       const available = view.available === true;
-      cell.change.textContent = available ? `${view.trend || ""} ${fmtPct(view.range_change_pct)}` : "取得待ち";
+      cell.change.textContent = available
+        ? (view.window_label ? view.window_label + " " : "") + (view.trend || "") + " " + fmtPct(view.range_change_pct)
+        : "取得待ち";
       cell.change.className = `tf-change ${available ? trendClass(view.trend) : "muted"}`;
       const latest = symbolFills[0];
       const signal = latest ? signalText(latest.signal_context) : "";
       cell.root.title = available
         ? `${view.label}: ${view.bar_count || 0}本 ${view.bb_phrase || ""}` +
+          " / 足開始 " + timeText(view.as_of) + " / 取得 " + timeText(view.fetched_at) +
+          (view.window_label ? " / 対象 " + view.window_label : "") +
+          (Array.isArray(view.bars) && view.bars.some((bar) => bar.gap_before === true) ? " / 欠測区間あり" : "") +
           (signal ? ` / 直近約定の根拠: ${signal}` : "") +
           (view.stale ? "（更新遅延）" : "")
         : `${view.label}: 公開データを取得できませんでした`;
@@ -181,7 +236,7 @@
 
   function renderStrategyCell(strip, strategy, symbolFills) {
     if (!strategy || !strategy.label) return;
-    const cell = cellFor(strip, String(strategy.timeframe || "5m"), shortLabel(String(strategy.label)));
+    const cell = cellFor(strip, "strategy-" + String(strategy.timeframe || "5m"), shortLabel(String(strategy.label)));
     const available = strategy.available === true;
     cell.change.textContent = available ? fmtPct(strategy.momentum_pct) : "取得待ち";
     cell.change.className = `tf-change ${available ? trendClass(strategy.trend) : "muted"}`;
@@ -248,6 +303,7 @@
   let inFlight = false;
 
   async function pollTimeframes() {
+    if (document.hidden) return;
     if (inFlight) return;
     inFlight = true;
     try {
@@ -261,5 +317,9 @@
   }
 
   pollTimeframes();
-  setInterval(pollTimeframes, POLL_MS);
+  let timeframeTimer = setInterval(pollTimeframes, POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { if (timeframeTimer) { clearInterval(timeframeTimer); timeframeTimer = null; } }
+    else { if (!timeframeTimer) { pollTimeframes(); timeframeTimer = setInterval(pollTimeframes, POLL_MS); } }
+  });
 })();

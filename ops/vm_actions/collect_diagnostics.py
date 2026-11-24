@@ -18,7 +18,11 @@ Observed sources (all read-only):
   - fixed Soren supervisor unit/pidfile/start-time and public script/FD-255
     fingerprints only; these do not attest already-defined Bash functions
   - one bounded owner-only Soren stream-title journal, projected to fixed enums,
-    UTC time, SHA and two nonsecret ID presence booleans only; title and integrated stream-log bodies are never read
+    UTC time, SHA and two nonsecret ID presence booleans only
+  - bounded tails of three fixed title-updater logs, classified in memory to
+    reviewed outcomes only, plus the daily script's mode and fixed user/system
+    unit states. Bodies, identities, URLs and arbitrary paths are never emitted;
+    historical observations never attest a current failure or the same run
   - fixed, known temporary shared-object filename families under /tmp plus
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
@@ -27,12 +31,25 @@ Observed sources (all read-only):
     plaintext/compressed format split: counts and bytes only, never
     filenames), Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
+  - the fixed host metrics ring (the first of the reviewed candidate
+    locations under <home>, docich#2578): host counters sampled once a minute onto the
+    persistent root disk so the hour before a guest-OS hang (#2278) survives
+    the reboot that follows it. Projected to fixed numeric fields, baked-in
+    retention constants, the fixed unit-state mask and derived down-unit names
+    only -- ring lines, paths and any other free text are never emitted, and
+    unit names are never read from configuration.
+  - a fixed-label Chromium process inventory (owner / type / count / CPU /
+    RSS / age only; cmdline, URL, path and PID are never emitted) for #970
+    browser attribution.
   - docich program/corner state under the production state_dir
     (game_switch.json, game-switch/requests/*.json, weather_corner.json, tsuitate_corner.json,
-    yoso_corner.json, retro_corner.json, paper_corner.json,
+    yoso_corner.json, doushi_corner.json, lawsim_corner.json, retro_corner.json,
+    paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json, trading/paper_experiment_control.json,
-    trading/paper_strategy_evaluation.json): lifecycle statuses, timestamps,
+    trading/paper_strategy_evaluation.json, trading/paper_improve_slots_status.json,
+    trading/slots/<BASE>_<QUOTE>/{slot,paper_experiment_control,
+    paper_strategy_evaluation}.json): lifecycle statuses, timestamps,
     counters and finite PAPER result totals only. Strategy identity, rules,
     announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
@@ -59,6 +76,13 @@ Observed sources (all read-only):
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No
     unrelated log body is read.
+  - a bounded, redacted tail (last lines only) of the Soren bridge log
+    (soren_root/tmp/soviet_local.log, or the newest
+    soviet_local.log.hung-<stamp> left by a hung-log evacuation), emitted
+    only while the bridge shows the #3154 stuck-live anomaly signature: the
+    bridge pid is alive while game_state.json sits MOVE-frozen past the
+    stuck window, or a JEV player_state has no board at all. Healthy runs
+    emit no log body.
   - bounded, redacted captures of the committed NetHack runtime's tmux
     windows (window names, the birth/process window TTY, and the agent window)
     so a corner that is active but not progressing stays diagnosable. Never
@@ -70,6 +94,10 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the shared comment/audio queue the corners also gate on
+    (${COMMENT_QUEUE_DIR:-tmp/.comment_queue}): only comment_*.txt /
+    comment_*.playing counts, a fixed reason enum and the oldest item's age.
+    Item names, texts and the Soren .env are never read out.
   - Soren game-lifecycle pause provenance (tmp/state/game_lifecycle/
     request.json, ack.json and the four fixed pause-ownership records):
     only the fixed request/ack status enums, whether a handover is active,
@@ -112,6 +140,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import errno
 import math
 import os
 import re
@@ -127,7 +156,9 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.stream_identity import is_docich_runner_args as _is_docich_stream_runner  # noqa: E402
 from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
+from docich.hanjuku.state.regions import plan as _plan_region  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
 
@@ -141,7 +172,28 @@ def _load_registry():
     return module
 
 
+def _load_founding_marker_rule():
+    """The recovery guard's marker-ownership rule, shared instead of re-derived.
+
+    Diagnostics report the same answer the guard acts on (#2345). A load
+    failure must not fail the whole diagnostics operation, so it degrades to
+    "unknown" rather than to a wrong answer.
+    """
+    try:
+        spec = _importlib_util.spec_from_file_location(
+            "recover_soren_game_rule", str(PROD_ROOT / "ops" / "vm_actions" / "recover_soren_game.py")
+        )
+        module = _importlib_util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.founding_marker_is_current
+    except Exception:
+        # Diagnostics must never fail closed here: an unavailable rule degrades
+        # the two derived fields to null instead of failing the operation.
+        return None
+
+
 _REG = _load_registry()
+_FOUNDING_MARKER_IS_CURRENT = _load_founding_marker_rule()
 DIAG_WINDOW_SEC = _REG.DIAG_WINDOW_SEC
 DUPLICATES_FRESH_SEC = _REG.DUPLICATES_FRESH_SEC
 KNOWN_LANES = _REG.KNOWN_LANES
@@ -151,11 +203,47 @@ MAX_COMPONENTS = _REG.MAX_COMPONENTS
 MAX_ERROR_PREVIEW_LEN = _REG.MAX_ERROR_PREVIEW_LEN
 MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
 # The gateway reads this document over SSH with a 64 KiB stdout cap and then
-# re-serializes it under a 48 KiB cap after adding its own metadata; exceeding
+# re-serializes it under a 64 KiB cap after adding its own metadata; exceeding
 # either fails the whole diagnostics operation closed. Detail reductions aim at
 # the softer MAX_JSON_BYTES target, and only the last-resort reductions below
-# fall back to this hard ceiling.
+# fall back to this hard ceiling. The ceiling is a guarantee, not a target: the
+# final step of ``_diagnostics_budget`` drops whole sections until the envelope
+# is under it, so the collector never returns a document the gateway rejects.
 HARD_JSON_BYTES = 56 * 1024
+# Heaviest-first drop order for the hard ceiling. ``corners`` is the largest
+# remaining block (measured 23,374 B of a 50,280 B production envelope, #2533),
+# so it goes first; the later entries only matter for a payload that is still
+# over the ceiling once the corner projections are gone. ``host_metrics`` is
+# deliberately last: it is the #2578 forensic evidence for the hour before a
+# guest-OS hang (#2278), it cannot be reconstructed after the reboot, and the
+# softer MAX_JSON_BYTES path already sheds half its sample list before any
+# whole-section drop, so it yields only after every other section is gone.
+_HARD_DROP_ORDER = ("corners", "ai", "workers", "nethack_history",
+                    "soren91_drop_profile", "host_metrics")
+# Sections that survive every ceiling reduction (#2805). ``corners`` is the
+# first whole section dropped and every 予想王 input lives inside it, so while
+# the production envelope stays above the ceiling the 予想王 ledger can only be
+# observed from a run that happened to fit. ``prediction`` duplicates the same
+# already-bounded dicts under a key the whole-section drops never take away.
+_HARD_KEEP = ("meta", "prediction", "lawsim", "severity_triggers")
+# Fixed tokens that let a reduced ``hanjuku_tactical`` section still say why
+# its detail is missing (live status otherwise collapses every cause into
+# ``output_omitted``: g1163 2026-11-14 13:38 could not tell a stopped game
+# loop from a bot that had not written its record).
+_HANJUKU_DETAIL_STATUSES = frozenset({
+    "ok", "stale", "unavailable", "unsupported_chapter", "identity_changed",
+})
+_HANJUKU_DETAIL_REASONS = frozenset({
+    "record_not_ready", "record_unbound", "identity_mismatch", "terminal",
+    "unsupported_policy", "record_stale",
+})
+# Production thresholds of the 予想王 boards, kept in sync with
+# ``docich.prediction_leaderboard.DEFAULT_MIN_ROUNDS`` /
+# ``DEFAULT_MIN_PARTICIPATIONS``: the yoso adapter passes no ``--min-rounds`` or
+# ``--min-participations`` override, so the defaults are the deployed values.
+# The collector runs against a fixed argv and does not import the docich package.
+_PREDICTION_MIN_ROUNDS = 3
+_PREDICTION_MIN_PARTICIPATIONS = 1
 MAX_JSONL_SCAN_BYTES = _REG.MAX_JSONL_SCAN_BYTES
 MAX_JSONL_SCAN_LINES = _REG.MAX_JSONL_SCAN_LINES
 MAX_RECENT_EVENTS = _REG.MAX_RECENT_EVENTS
@@ -210,6 +298,30 @@ TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
 
 STORAGE_MAX_ENTRIES = 100000
+# File-stage retention status projection (azumag/docich#3140). The helper
+# writes only these fixed fields; anything else is dropped, so a compromised
+# or future status file can never widen the diagnostics payload.
+SESSION_FILE_STATUS_SCHEMA = 1
+SESSION_FILE_MAX_AGE_SEC = 3 * 60 * 60
+SESSION_FILE_ENUMS = {
+    "status": {"completed", "failed", "gate_timeout"},
+    "mode": {"dry-run", "apply"},
+    "reason": {
+        "ok", "gate_timeout", "invalid_batch", "invalid_gate_wait",
+        "invalid_mode", "state_required", "manifest_required",
+        "state_in_store", "manifest_in_store", "state_unreadable",
+        "state_invalid", "state_policy_mismatch", "state_write",
+        "manifest_invalid", "manifest_write", "plan_mismatch",
+        "source_changed", "unsafe_entry", "tree_scan", "tree_scan_limit",
+        "top_scan_limit", "io_error",
+    },
+}
+SESSION_FILE_NUMBERS = (
+    "completed_at", "cutoff_seconds", "entries_planned",
+    "entries_confirmed", "entries_selected", "bytes_planned",
+    "bytes_removed",
+)
+SESSION_FILE_BOOLEANS = ("auto_apply", "truncated", "state_written")
 # Fixed on-disk formats of the strategy permanent archive (by_hash). "plain" is
 # what the soviet_now readers open today; "compressed" is what a reviewed
 # reclaim step may produce once every reader can fall back to it. Bounded
@@ -232,6 +344,116 @@ OPENCODE_CALLER_BUCKETS = (
 OPENCODE_CALLER_TITLES = {
     f"docich:{bucket}": bucket for bucket in OPENCODE_CALLER_BUCKETS
 }
+
+
+TWITCH_OAUTH_STATUSES = frozenset({
+    "ok", "not_configured", "reauth_required", "network_error",
+    "validate_unavailable", "token_endpoint_unavailable", "token_response_invalid",
+    "env_unreadable", "token_format_rejected", "new_token_not_broadcaster",
+    "new_token_missing_scopes", "new_token_token_invalid", "io_error",
+    "consent_denied", "state_missing", "state_mismatch_or_expired",
+    "client_credentials_missing", "refresh_token_missing",
+})
+TWITCH_OAUTH_SCOPES = frozenset({
+    "channel:manage:broadcast", "chat:edit", "chat:read", "user:write:chat",
+    "clips:edit", "channel:manage:polls", "channel:manage:predictions",
+    "channel:read:goals",
+})
+KICK_OAUTH_STATUSES = frozenset({
+    "ok", "not_configured", "reauth_required", "network_error",
+    "validate_unavailable", "token_endpoint_unavailable", "token_response_invalid",
+    "env_unreadable", "token_format_rejected", "new_token_not_broadcaster",
+    "new_token_missing_scopes", "new_token_token_invalid",
+    "new_token_token_inactive", "new_token_not_user_token",
+    "new_token_principal_unreadable", "io_error",
+    "consent_denied", "state_missing", "state_mismatch_or_expired",
+    "client_credentials_missing", "client_id_missing", "refresh_token_missing",
+})
+KICK_OAUTH_SCOPES = frozenset({
+    "channel:read", "channel:write",
+})
+KICK_OAUTH_BROADCASTER_RE = re.compile(r"\A[1-9][0-9]{0,18}\Z")
+
+
+def _twitch_oauth_timestamp(value):
+    """Normalize a producer timestamp, never forward arbitrary source text."""
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|\+00:00)", value):
+        return None, None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return stamp.isoformat(timespec="seconds"), stamp.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None, None
+
+
+def _collect_oauth_status(now, subdir, statuses, scopes):
+    """Read only the fixed status record, not credentials or live OAuth APIs.
+
+    These are historical producer observations, not evidence that a token is
+    currently valid/expired. Error records intentionally have no expiry facts.
+    """
+    result = {"present": False, "readable": False, "status": "unknown",
+              "action": None, "checked_at": None, "expires_at": None,
+              "age_sec": None, "checked_at_future": None,
+              "missing_scopes": [], "missing_scopes_known": False}
+    fd = directory = None
+    try:
+        fd, directory, before = _stream_title_open_fixed(
+            _program_state_dir(), (subdir, "status.json"))
+        result["present"] = True
+        if before.st_size > 4096:
+            return result
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(4097)
+        after = os.fstat(fd)
+        named = os.stat("status.json", dir_fd=directory, follow_symlinks=False)
+        if (len(raw) > 4096
+                or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                or _stream_title_file_identity(after) != _stream_title_file_identity(named)):
+            return result
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            return result
+        result["readable"] = True
+        status = data.get("status")
+        if isinstance(status, str) and status in statuses:
+            result["status"] = status
+        action = data.get("action")
+        if isinstance(action, str) and action in {"authorized", "refreshed", "no_change"}:
+            result["action"] = action
+        result["checked_at"], checked = _twitch_oauth_timestamp(data.get("checked_at"))
+        result["expires_at"], _ = _twitch_oauth_timestamp(data.get("expires_at"))
+        if checked is not None:
+            result["checked_at_future"] = checked > now
+            if checked <= now:
+                result["age_sec"] = min(int(now - checked), 2**31 - 1)
+        missing = data.get("missing_scopes")
+        if (isinstance(missing, list) and len(missing) <= len(scopes)
+                and all(isinstance(s, str) and s in scopes for s in missing)):
+            result["missing_scopes"] = sorted(set(missing))
+            result["missing_scopes_known"] = True
+        broadcaster = data.get("broadcaster_user_id")
+        if isinstance(broadcaster, str) and KICK_OAUTH_BROADCASTER_RE.fullmatch(broadcaster):
+            result["broadcaster_user_id"] = broadcaster
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, RecursionError, _StreamTitleUnsafe):
+        result["present"] = True
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    return result
+
+
+def _collect_twitch_oauth(now):
+    return _collect_oauth_status(now, "twitch_oauth", TWITCH_OAUTH_STATUSES, TWITCH_OAUTH_SCOPES)
+
+
+def _collect_kick_oauth(now):
+    return _collect_oauth_status(now, "kick_oauth", KICK_OAUTH_STATUSES, KICK_OAUTH_SCOPES)
 
 
 def _collect_opencode_retention(soren, now):
@@ -336,6 +558,32 @@ def _storage_base_result():
         "symlink_entries": 0,
         "hardlink_duplicates": 0,
     }
+
+
+def _storage_remaining_usage(total, parts):
+    """Derived remainder of disjoint fixed parts of one measured tree.
+
+    ``parts`` must be non-overlapping children (or the db family at the root)
+    of ``total``. The result is clamped at zero so a scan that lost entries
+    cannot manufacture negative bytes. Completeness is true only when the
+    total and every part completed, so the caller can tell a real zero from a
+    partial scan.
+    """
+    complete = isinstance(total, dict) and total.get("scan_complete") is True
+    remaining = _storage_base_result()
+    remaining["present"] = bool(isinstance(total, dict) and total.get("present"))
+    count = int(total.get("count", 0)) if isinstance(total, dict) else 0
+    allocated = int(total.get("allocated_bytes", 0)) if isinstance(total, dict) else 0
+    for part in parts:
+        if not isinstance(part, dict) or part.get("scan_complete") is not True:
+            complete = False
+            continue
+        count -= int(part.get("count", part.get("present_count", 0)) or 0)
+        allocated -= int(part.get("allocated_bytes", 0) or 0)
+    remaining["scan_complete"] = complete
+    remaining["count"] = max(0, count)
+    remaining["allocated_bytes"] = max(0, allocated)
+    return remaining
 
 
 def _storage_tree_usage(path, *, max_entries=STORAGE_MAX_ENTRIES):
@@ -511,34 +759,487 @@ def _storage_db_family(db_path):
     }
 
 
+def _classify_sys_tmp_top_level(path, *, max_entries=STORAGE_MAX_ENTRIES):
+    """Identity-free top-level classification of a /tmp-style directory.
+
+    Returns counts and bytes per class so a runaway can be coarsely attributed
+    without SSH: (1) git worktree/clone (directory containing a ``.git``
+    marker), (2) files grouped by extension, (3) everything else. No names or
+    content are reported. Partial scans set ``scan_complete=False``.
+    """
+    path = Path(path)
+    result = {"git_worktree": {"count": 0, "allocated_bytes": 0},
+              "by_extension": {},
+              "other": {"count": 0, "allocated_bytes": 0},
+              "scan_complete": True}
+    try:
+        root_st = os.lstat(path)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["scan_complete"] = False
+        return result
+    if not stat.S_ISDIR(root_st.st_mode):
+        result["scan_complete"] = False
+        return result
+
+    seen = 0
+    try:
+        entries = os.scandir(path)
+    except OSError:
+        result["scan_complete"] = False
+        return result
+    with entries:
+        for entry in entries:
+            if seen >= max_entries:
+                result["scan_complete"] = False
+                break
+            seen += 1
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except (FileNotFoundError, OSError):
+                result["scan_complete"] = False
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                result["other"]["count"] += 1
+                result["other"]["allocated_bytes"] += _storage_allocated_bytes(st)
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    has_git = (Path(entry.path) / ".git").exists()
+                except OSError:
+                    has_git = False
+                    result["scan_complete"] = False
+                if has_git:
+                    result["git_worktree"]["count"] += 1
+                    result["git_worktree"]["allocated_bytes"] += _storage_allocated_bytes(st)
+                else:
+                    result["other"]["count"] += 1
+                    result["other"]["allocated_bytes"] += _storage_allocated_bytes(st)
+                continue
+            # file
+            name = entry.name
+            ext = ""
+            if "." in name and not name.startswith("."):
+                ext = name.rsplit(".", 1)[-1].lower()[:16]
+            if not ext:
+                ext = "(none)"
+            bucket = result["by_extension"].setdefault(ext, {"count": 0, "allocated_bytes": 0})
+            bucket["count"] += 1
+            bucket["allocated_bytes"] += _storage_allocated_bytes(st)
+    return result
+
+# Case A of azumag/docich#2735: dry-run evidence only. A top-level /tmp entry is
+# counted as a reclaim candidate when every gate passes; nothing is read for
+# write, deleted or changed here. Deletion is a separate, later decision.
+SYS_TMP_RECLAIM_MIN_BYTES = 100 * 1024 * 1024
+SYS_TMP_RECLAIM_IDLE_SEC = 24 * 3600
+SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC = 5
+SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES = 1024 * 1024
+
+
+def _sys_tmp_recently_touched(entry_path, *, now, idle_sec):
+    """Cheap pre-gate: the entry, its .git and .git/objects mtimes.
+
+    Returns ``(recent, complete)``. An unreadable entry is ``complete=False``
+    and is kept by the caller.
+    """
+    for candidate in (entry_path, entry_path / ".git", entry_path / ".git" / "objects"):
+        try:
+            st = os.lstat(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            return True, False
+        if now - st.st_mtime < idle_sec:
+            return True, True
+    return False, True
+
+
+def _sys_tmp_recent_activity(path, *, now, idle_sec, max_entries):
+    """Return ``(recent, complete)`` for regular files under ``path``.
+
+    Symlinks are never followed. Any file whose mtime is within ``idle_sec``
+    (a future mtime included) makes the tree recent. An unreadable or
+    over-bound walk returns ``complete=False`` so the caller keeps the entry.
+    """
+    seen = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > max_entries:
+                        return False, False
+                    st = entry.stat(follow_symlinks=False)
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(Path(entry.path))
+                    elif not stat.S_ISLNK(st.st_mode) and now - st.st_mtime < idle_sec:
+                        return True, True
+        except OSError:
+            return False, False
+    return False, True
+
+
+def _sys_tmp_git_clean(path):
+    """Tri-state git check: True clean work tree, False verified not-clean
+    (dirty, or a bare/non-work-tree repo), None when git could not verify.
+    """
+    base = [
+        "git", "-c", "core.fsmonitor=false", "--no-optional-locks", "-C", str(path),
+    ]
+    try:
+        inside = subprocess.run(
+            base + ["rev-parse", "--is-inside-work-tree"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
+            check=False,
+        )
+        if inside.returncode != 0:
+            return None
+        inside_out = inside.stdout.strip()
+        if inside_out == b"false":
+            return False
+        if inside_out != b"true":
+            return None
+        status = subprocess.run(
+            base + ["status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SYS_TMP_RECLAIM_GIT_TIMEOUT_SEC,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if status.returncode != 0:
+        return None
+    return status.stdout == b""
+
+
+def _sys_tmp_reference_scan(roots, *, proc_root, max_proc_fds, own_pid, euid):
+    """Return ``(referenced, complete)`` for the byte paths in ``roots``.
+
+    A root is referenced when any process cmdline contains it. cwd and fd are
+    read only for processes owned by ``euid`` (the same scope as the tmp .so
+    scanner and the reviewed shell helper's effective view); other users'
+    cwd/fd are not readable and must not make the whole scan incomplete.
+    Fd overflow and a missing proc root return ``complete=False``.
+    """
+    referenced = set()
+    complete = True
+    fds_seen = 0
+    try:
+        proc_entries = os.scandir(proc_root)
+    except OSError:
+        return referenced, False
+
+    def _mark(target):
+        for root in roots:
+            if target == root or target.startswith(root + b"/"):
+                referenced.add(root)
+
+    with proc_entries:
+        for proc_entry in proc_entries:
+            if not proc_entry.name.isdigit() or int(proc_entry.name) == own_pid:
+                continue
+            base = Path(proc_entry.path)
+            try:
+                with open(base / "cmdline", "rb") as handle:
+                    cmdline = handle.read(SYS_TMP_RECLAIM_PROC_CMDLINE_BYTES)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+                continue
+            for root in roots:
+                if root in cmdline:
+                    referenced.add(root)
+            try:
+                if proc_entry.stat(follow_symlinks=False).st_uid != euid:
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+                continue
+            try:
+                _mark(os.fsencode(os.readlink(base / "cwd")))
+            except FileNotFoundError:
+                pass
+            except OSError:
+                complete = False
+            try:
+                with os.scandir(base / "fd") as fds:
+                    for fd_entry in fds:
+                        fds_seen += 1
+                        if fds_seen > max_proc_fds:
+                            return referenced, False
+                        try:
+                            _mark(os.fsencode(os.readlink(fd_entry.path)))
+                        except FileNotFoundError:
+                            continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                complete = False
+    return referenced, complete
+
+
+def _sys_tmp_reclaim_gate(path, *, now, max_entries, min_bytes, idle_sec, result, passed):
+    """Append ``(root_bytes, allocated_bytes)`` for entries passing gates 1-5.
+
+    Gate order is fixed: form, idle pre-gate, size, full idle walk, clean tree.
+    Each doubt keeps the entry and clears ``result["scan_complete"]`` only when
+    the scan itself was partial; a single doubtful entry never adds a count.
+    """
+    try:
+        entries = os.scandir(path)
+    except OSError:
+        result["scan_complete"] = False
+        return
+    with entries:
+        seen = 0
+        for entry in entries:
+            seen += 1
+            if seen > max_entries:
+                result["scan_complete"] = False
+                break
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                result["scan_complete"] = False
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                continue
+            entry_path = Path(entry.path)
+            try:
+                if not (entry_path / ".git").exists():
+                    continue
+                recent, touch_complete = _sys_tmp_recently_touched(
+                    entry_path, now=now, idle_sec=idle_sec
+                )
+                if not touch_complete:
+                    result["scan_complete"] = False
+                if recent or not touch_complete:
+                    continue
+                usage = _storage_tree_usage(entry_path, max_entries=max_entries)
+                if not usage["scan_complete"]:
+                    result["scan_complete"] = False
+                    continue
+                if usage["allocated_bytes"] < min_bytes:
+                    continue
+                recent, walk_complete = _sys_tmp_recent_activity(
+                    entry_path, now=now, idle_sec=idle_sec, max_entries=max_entries
+                )
+                if not walk_complete:
+                    result["scan_complete"] = False
+                    continue
+                if recent:
+                    continue
+                clean = _sys_tmp_git_clean(entry_path)
+                if clean is None:
+                    result["scan_complete"] = False
+                    continue
+                if not clean:
+                    continue
+            except OSError:
+                result["scan_complete"] = False
+                continue
+            passed.append((os.fsencode(entry.path), usage["allocated_bytes"]))
+
+
+def _sweep_sys_tmp_reclaim_candidates(
+    path,
+    *,
+    max_entries=STORAGE_MAX_ENTRIES,
+    now=None,
+    proc_root="/proc",
+    min_bytes=SYS_TMP_RECLAIM_MIN_BYTES,
+    idle_sec=SYS_TMP_RECLAIM_IDLE_SEC,
+    euid=None,
+):
+    """Identity-free dry-run count of /tmp entries a reclaim could consider.
+
+    Only top-level directories that contain ``.git`` (clone or linked worktree)
+    are considered, and an entry counts only when all of these hold: at least
+    ``min_bytes`` allocated, no file touched within ``idle_sec``, a clean git
+    work tree, and no running process whose cmdline, cwd or fd points at it.
+    Symlinks are never followed. Anything that cannot be proven yields
+    ``scan_complete=False`` and is not counted. Nothing is deleted or written.
+    """
+    now = time.time() if now is None else now
+    result = {"count": 0, "allocated_bytes": 0, "scan_complete": True}
+    passed = []
+    try:
+        path = Path(path)
+        try:
+            root_st = os.lstat(path)
+        except FileNotFoundError:
+            return result
+        except OSError:
+            result["scan_complete"] = False
+            return result
+        if not stat.S_ISDIR(root_st.st_mode):
+            result["scan_complete"] = False
+            return result
+        _sys_tmp_reclaim_gate(
+            path,
+            now=now,
+            max_entries=max_entries,
+            min_bytes=min_bytes,
+            idle_sec=idle_sec,
+            result=result,
+            passed=passed,
+        )
+        if passed:
+            referenced, refs_complete = _sys_tmp_reference_scan(
+                [root for root, _size in passed],
+                proc_root=Path(proc_root),
+                max_proc_fds=TMP_SO_MAX_PROC_FDS,
+                own_pid=os.getpid(),
+                euid=os.geteuid() if euid is None else int(euid),
+            )
+            if not refs_complete:
+                result["scan_complete"] = False
+            for root, allocated in passed:
+                if not refs_complete or root in referenced:
+                    continue
+                result["count"] += 1
+                result["allocated_bytes"] += allocated
+    except Exception:
+        # The collector must never raise; partial proven counts are kept.
+        result["scan_complete"] = False
+    return result
+
+
+def _collect_opencode_session_file(soren, now):
+    """Project the file-stage status file with fixed fields only.
+
+    The helper writes ``tmp/state/opencode_session_file_retention.json`` with
+    enums and non-negative integers only (never plan paths or content). A
+    missing/old/foreign file degrades to ``present``/``readable`` booleans, so
+    an old collector or a pre-deploy VM stays complete.
+    """
+    path = Path(soren) / "tmp" / "state" / "opencode_session_file_retention.json"
+    result = {"present": False, "readable": False}
+    try:
+        st = path.lstat()
+        result["present"] = True
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > 4096:
+            return result
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                raise ValueError()
+            data = json.loads(handle.read(4097))
+        if not isinstance(data, dict) or data.get("schema") != SESSION_FILE_STATUS_SCHEMA:
+            return result
+        result["readable"] = True
+        for key, allowed in SESSION_FILE_ENUMS.items():
+            value = data.get(key)
+            if isinstance(value, str):
+                result[key] = value if value in allowed else "unknown"
+        for key in SESSION_FILE_NUMBERS:
+            value = data.get(key)
+            if type(value) is int and 0 <= value < 2**63:
+                result[key] = value
+        for key in SESSION_FILE_BOOLEANS:
+            value = data.get(key)
+            if type(value) is bool:
+                result[key] = value
+        stamp = result.get("completed_at")
+        if stamp is not None:
+            result["age_sec"] = max(0, int(now - stamp))
+            result["stale"] = stamp > now + 60 or now - stamp > SESSION_FILE_MAX_AGE_SEC
+    except (OSError, ValueError):
+        pass
+    return result
+
+
 def _collect_storage_breakdown(
     soren,
     prod_root,
     *,
     home_root=None,
     voicevox_root=Path("/opt/voicevox"),
+    sys_tmp=Path("/tmp"),
+    var_log=Path("/var/log"),
+    swap_file=Path("/swapfile"),
     max_entries=STORAGE_MAX_ENTRIES,
 ):
     """Fixed, bounded, identity-free storage attribution.
 
     Categories overlap by design and must not be summed. No file content is
     read, symlinks are never followed, and partial scans are marked incomplete.
+
+    Version 2 (azumag/docich#2583) adds the fixed roots version 1 could not
+    see, so the unattributed share of a decline window becomes attributable:
+    the gateway's own state tree (bundles and preview releases), the known
+    alternative checkouts, the system fixed areas (journal, /var/log, the
+    swapfile), /tmp, and fixed subcategories of the production .git that
+    separate repack churn from retained history. The container layers
+    (/var/lib/docker) stay out on purpose: the collector uid cannot traverse
+    them, and a permanently unreadable root would flip the shared incomplete
+    flag forever instead of attributing bytes.
     """
     soren = Path(soren)
     prod_root = Path(prod_root)
     home = Path(home_root) if home_root is not None else soren.parent
     voicevox_root = Path(voicevox_root)
+    sys_tmp = Path(sys_tmp)
+    var_log = Path(var_log)
+    swap_file = Path(swap_file)
     default_db = home / ".local" / "share" / "opencode" / "opencode.db"
     worker_db = soren / "tmp" / "state" / "xdg_data" / "opencode" / "opencode.db"
+    default_total = _storage_tree_usage(default_db.parent, max_entries=max_entries)
+    default_family = _storage_db_family(default_db)
+    default_snapshot = _storage_tree_usage(
+        default_db.parent / "snapshot", max_entries=max_entries
+    )
+    default_storage = _storage_tree_usage(
+        default_db.parent / "storage", max_entries=max_entries
+    )
+    default_tool_output = _storage_tree_usage(
+        default_db.parent / "tool-output", max_entries=max_entries
+    )
+    default_log = _storage_tree_usage(
+        default_db.parent / "log", max_entries=max_entries
+    )
 
     return {
-        "version": 1,
+        "version": 2,
         "categories_overlap": True,
         "max_entries_per_tree": int(max_entries),
-        "opencode_default": _storage_db_family(default_db),
+        "opencode_default": default_family,
         "opencode_worker": _storage_db_family(worker_db),
-        "opencode_default_total": _storage_tree_usage(default_db.parent, max_entries=max_entries),
+        "opencode_default_total": default_total,
         "opencode_worker_total": _storage_tree_usage(worker_db.parent, max_entries=max_entries),
+        # Subtrees of the opencode default data dir (azumag/docich#3140): the
+        # session-file store outside opencode.db, split per fixed sub-path so
+        # the retention baseline attributes growth without SSH. Same opt-in
+        # shape as the gateway_state subtrees (optional keys, never charged
+        # to the shared incomplete flag).
+        "opencode_default_snapshot": default_snapshot,
+        "opencode_default_storage": default_storage,
+        "opencode_default_tool_output": default_tool_output,
+        "opencode_default_log": default_log,
+        # Derived remainder (DSH review, azumag/docich#3140): total minus the
+        # known subtrees and the db family. It makes a new opencode data-dir
+        # sub-path visible before an upgrade silently grows it, and is a
+        # precondition for enabling automatic file retention.
+        "opencode_default_other": _storage_remaining_usage(
+            default_total,
+            (default_family, default_snapshot, default_storage,
+             default_tool_output, default_log),
+        ),
         "soren_logs": _storage_tree_usage(soren / "logs", max_entries=max_entries),
         "soren_tmp": _storage_tree_usage(soren / "tmp", max_entries=max_entries),
         "say_queue": _storage_tree_usage(soren / "tmp" / ".say_queue", max_entries=max_entries),
@@ -560,19 +1261,712 @@ def _collect_storage_breakdown(
         ),
         "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
         "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
+        # ---- version 2 fixed roots (azumag/docich#2583) ----
+        "gateway_state": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops", max_entries=max_entries
+        ),
+        # Overlapping subtrees of gateway_state (azumag/docich#365): bundles
+        # are the git bundles, releases are the preview checkouts. Split so
+        # the retention design can measure each without guessing.
+        "gateway_bundles": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops" / "bundles", max_entries=max_entries
+        ),
+        "gateway_releases": _storage_tree_usage(
+            home / ".local" / "state" / "github-vm-ops" / "releases", max_entries=max_entries
+        ),
+        "alt_checkout_tmp_sync": _storage_tree_usage(
+            sys_tmp / "opencode" / "docich-sync", max_entries=max_entries
+        ),
+        "alt_checkout_soren_src": _storage_tree_usage(home / "soren-src", max_entries=max_entries),
+        "system_journal": _storage_tree_usage(var_log / "journal", max_entries=max_entries),
+        "system_log": _storage_tree_usage(var_log, max_entries=max_entries),
+        "swapfile": _storage_file_usage(swap_file),
+        "sys_tmp": _storage_tree_usage(sys_tmp, max_entries=max_entries),
+        "sys_tmp_top_level": _classify_sys_tmp_top_level(sys_tmp, max_entries=max_entries),
+        "sys_tmp_reclaim_candidates": _sweep_sys_tmp_reclaim_candidates(
+            sys_tmp, max_entries=max_entries
+        ),
+        "docich_git_objects": _storage_tree_usage(
+            prod_root / ".git" / "objects", max_entries=max_entries
+        ),
+        "docich_git_objects_pack": _storage_tree_usage(
+            prod_root / ".git" / "objects" / "pack", max_entries=max_entries
+        ),
     }
 
+
+# Fixed host metrics ring (docich#2578). The sampler writes
+# ``<home>/.local/state/docich/host-metrics/ring.jsonl`` once a minute on the
+# persistent root disk. That path is deliberately not the program ``state_dir``
+# and not ``soren/tmp``: both are cleaned, while this ring has to survive the
+# reboot that follows a guest-OS hang (#2278). The collector is installed and
+# run standalone, so it must not import the sampler -- the contract constants
+# are duplicated here and a regression test parses ``host_metrics.py`` with
+# importlib and fails when the two sets drift. The single source of truth is
+# ops/vm_actions/host_metrics_contract.md.
+INTERVAL_SEC = 60                 # systemd timer OnCalendar=*:*:00
+MAX_POINTS = 240                  # 4 hours of history
+MAX_BYTES = 256 * 1024
+SAMPLES_MAX = 8
+STALE_SEC = 3 * INTERVAL_SEC
+SCHEMA_VERSION = 1
+UNIT_ORDER = (
+    "docich-corner-rotation.timer",
+    "docich-corner-rotation.service",
+    "docich-webui.service",
+    "docich-paper-corner.timer",
+    "soren-runtime.service",
+    "docich-audio-priority.service",
+)
+# The ring's fixed candidate locations, in the sampler's reviewed order. The
+# XDG state home is first, but on the production VM ``~/.local/state`` and its
+# ``docich`` child are root-owned (created by a root-time ``install -d`` in the
+# gateway/canary installers), so the unprivileged sampler cannot create
+# anything below it and falls back to the ubuntu-owned ``~/.local/share`` tree,
+# then to a plain home directory. The reader checks them in the same order and
+# reports which one it read as ``ring_path_kind`` -- never the path itself.
+HOST_METRICS_RING_CANDIDATES = (
+    ("state", Path(".local") / "state" / "docich" / "host-metrics"),
+    ("share", Path(".local") / "share" / "docich" / "host-metrics"),
+    ("home", Path("docich-host-metrics")),
+)
+# A ring that already broke its own MAX_BYTES bound is refused instead of
+# projecting a partial read as if it were the retained history.
+HOST_METRICS_MAX_READ_BYTES = MAX_BYTES + 4096
+def _host_metrics_count(value, maximum=2**63 - 1):
+    if type(value) is not int or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _host_metrics_float(value, maximum=10**12):
+    if type(value) not in (int, float):
+        return None
+    value = float(value)
+    if not math.isfinite(value) or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _host_metrics_round(value):
+    return None if value is None else round(float(value), 2)
+
+
+def _host_metrics_line(line, now):
+    """Parse one ring line into the contract's fixed values, or ``None``.
+
+    A v1 point is kept as long as ``v`` and ``t`` are valid; every other source
+    is optional and may legitimately be ``null`` (the sampler writes null when a
+    source was unreadable on that tick). A malformed value still makes the line
+    malformed -- an unknown shape is skipped, never guessed at -- but a degraded
+    record with a valid timestamp stays a real point. Nothing from the line is
+    carried through except these fixed values.
+    """
+    try:
+        record = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(record, dict) or type(record.get("v")) is not int:
+        return None
+    if record["v"] != SCHEMA_VERSION:
+        return None
+    t = record.get("t")
+    if type(t) is not int or not 0 <= t <= max(0, now) + 86400:
+        return None
+
+    boot = record.get("boot")
+    if boot is not None and (
+            not isinstance(boot, str)
+            or re.fullmatch(r"[0-9a-f]{12}", boot) is None):
+        return None
+    uptime_s = record.get("uptime_s")
+    if uptime_s is not None and (type(uptime_s) is not int or uptime_s < 0):
+        return None
+    units = record.get("units")
+    if units is not None and (type(units) is not int or units < 0):
+        return None
+
+    cpu = record.get("cpu")
+    if cpu is not None:
+        if (not isinstance(cpu, (list, tuple)) or len(cpu) != 3
+                or any(type(item) is not int or item < 0 for item in cpu)):
+            return None
+        cpu = tuple(cpu)
+
+    load = record.get("load")
+    if load is not None:
+        if not isinstance(load, (list, tuple)) or len(load) != 3:
+            return None
+        load_values = []
+        for item in load:
+            value = _host_metrics_float(item, maximum=10**6)
+            if value is None:
+                return None
+            load_values.append(value)
+        load = tuple(load_values)
+
+    # A missing or unknown ``mem_kb`` key is the same honest "not reported" as
+    # an explicit null; neither is ever turned into a guessed 0.
+    mem_values = {
+        "available": None, "dirty": None, "swap_free": None,
+        "swap_total": None, "total": None, "writeback": None,
+    }
+    mem = record.get("mem_kb")
+    if mem is not None:
+        if not isinstance(mem, dict):
+            return None
+        for key in mem_values:
+            value = mem.get(key)
+            if value is None:
+                continue
+            parsed = _host_metrics_count(value)
+            if parsed is None:
+                return None
+            mem_values[key] = parsed
+
+    # Both PSI halves are kept: ``some`` shows contention, ``full`` shows
+    # everyone stalled -- the strongest pre-hang signal -- so neither may be
+    # sampled and then discarded. Null stays null per half.
+    psi_values = [(None, None), (None, None), (None, None)]
+    psi = record.get("psi")
+    if psi is not None:
+        if not isinstance(psi, dict):
+            return None
+        for index, key in enumerate(("cpu", "io", "mem")):
+            pair = psi.get(key)
+            if pair is None:
+                continue
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                return None
+            parsed = []
+            for item in pair:
+                if item is None:
+                    parsed.append(None)
+                    continue
+                value = _host_metrics_float(item)
+                if value is None:
+                    return None
+                parsed.append(value)
+            psi_values[index] = tuple(parsed)
+
+    disk_sectors = record.get("disk_sectors")
+    if disk_sectors is not None:
+        if (not isinstance(disk_sectors, (list, tuple)) or len(disk_sectors) != 2
+                or any(type(item) is not int or item < 0
+                       for item in disk_sectors)):
+            return None
+        disk_sectors = tuple(disk_sectors)
+    disk_io_ms = None
+    disk_ms = record.get("disk_ms")
+    if disk_ms is not None:
+        if (not isinstance(disk_ms, (list, tuple)) or len(disk_ms) != 2
+                or any(type(item) is not int or item < 0 for item in disk_ms)):
+            return None
+        disk_io_ms = disk_ms[0]
+
+    return {
+        "boot": boot,
+        "t": t,
+        "uptime_s": uptime_s,
+        "cpu": cpu,
+        "load": load,
+        "mem": mem_values,
+        "psi": tuple(psi_values),
+        "disk_sectors": disk_sectors,
+        "disk_io_ms": disk_io_ms,
+        "units": units,
+    }
+
+
+#: 2-bit unit states. ``0b11`` is "unknown" (activating/reloading/deactivating,
+#: a scope without the unit, or a failed probe) and is deliberately NOT "down":
+#: at boot every unit is transiently activating, and a unit that does not exist
+#: in this scope must not look like a failed one.
+UNIT_STATE_INACTIVE = 0b00
+UNIT_STATE_ACTIVE = 0b01
+UNIT_STATE_FAILED = 0b10
+UNIT_STATE_UNKNOWN = 0b11
+
+
+def _host_metrics_down_units(units):
+    """Fixed names that are installed but stopped or failed; null is unknown."""
+    if units is None:
+        return []
+    return [
+        name for index, name in enumerate(UNIT_ORDER)
+        if ((units >> (2 * index)) & 0b11) in (UNIT_STATE_INACTIVE,
+                                               UNIT_STATE_FAILED)
+    ]
+
+
+HOST_METRICS_BOUNDARY_BOOTS = 2
+
+
+def _host_metrics_home():
+    """Runtime user's home by the sampler's rule; PROD_ROOT.parent fallback.
+
+    The sampler writes ``pwd.getpwuid(...).pw_dir``-based paths, so the reader
+    must resolve the same directory or a moved checkout would silently read a
+    different (absent) ring. The production passwd entry is
+    ``/home/ubuntu`` -- identical to the deployed checkout's parent today; the
+    fallback only covers environments without ``pwd``.
+    """
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, OSError):
+        return PROD_ROOT.parent
+
+
+def _host_metrics_trim_samples(samples, limit,
+                               max_previous_boots=HOST_METRICS_BOUNDARY_BOOTS):
+    """Keep the newest ``limit`` points plus the last point of older boots.
+
+    "Newest N" alone is not enough for #2578: after the reboot that follows a
+    guest-OS hang, the sampler refills the window with post-boot points, and a
+    diagnostics run more than N intervals later would hide the last point before
+    the hang -- the only evidence of the final hour. The last point of up to
+    ``max_previous_boots`` older boots is therefore kept as a boundary, whatever
+    the newest window contains. ``boot`` may be null (unknown); equality is the
+    only test, because a null boot never proves a reboot either way.
+    """
+    if limit <= 0 or not samples:
+        return []
+    keep = set(range(max(0, len(samples) - limit), len(samples)))
+    added = 0
+    for index in range(len(samples) - 2, -1, -1):
+        if samples[index]["boot"] == samples[index + 1]["boot"]:
+            continue
+        keep.add(index)
+        added += 1
+        if added >= max_previous_boots:
+            break
+    return [samples[index] for index in sorted(keep)]
+
+
+# Read-only health of the #2578 sampler units themselves. The first production
+# deploy of the ring failed inside the deploy hook with the VM-side output
+# withheld, and the ring stayed absent: without these fields a dead sampler is
+# invisible to the only sanctioned channel. Everything here is a fixed enum,
+# count or age; the journal text and any path never leave the collector.
+HOST_METRICS_SERVICE_UNIT = "docich-host-metrics.service"
+HOST_METRICS_TIMER_UNIT = "docich-host-metrics.timer"
+HOST_METRICS_JOURNAL_LINES = 40
+# Five probes run per collection; a hung user manager must not eat the
+# collector's 60 s gateway budget, so each probe gets a short leash.
+HOST_METRICS_PROBE_TIMEOUT_SEC = 2.0
+HOST_METRICS_UNIT_STATE_ENUMS = (
+    "active", "inactive", "failed", "activating", "deactivating", "reloading",
+)
+HOST_METRICS_RESULT_ENUMS = (
+    "success", "exit-code", "signal", "oom", "core-dump", "timeout",
+    "start-limit-hit",
+)
+# Fixed journal classification, worst-first. Only the enum leaves; a run that
+# finished normally therefore reads "finished" only when nothing worse matched.
+# ``sampler_refused`` is the sampler's own bounded refusal line (its record
+# could not fit the ring's line bound); the byte count it carries is parsed
+# into ``refused_record_bytes`` and the journal text itself never leaves.
+HOST_METRICS_JOURNAL_SIGNATURES = (
+    "oom", "timeout", "python_traceback", "sampler_refused", "exited",
+    "finished", "starting", "other",
+)
+
+
+def _host_metrics_runtime_state(name):
+    """``systemctl --user is-active`` for one fixed unit, as a fixed enum."""
+    proc = _systemctl_user(["is-active", name],
+                           timeout=HOST_METRICS_PROBE_TIMEOUT_SEC)
+    if proc is None:
+        return "unknown"
+    lines = (proc[1] or "").splitlines()
+    state = lines[0].strip().lower() if lines else ""
+    return state if state in HOST_METRICS_UNIT_STATE_ENUMS else "unknown"
+
+
+def _host_metrics_runtime_enabled(name):
+    """``systemctl --user is-enabled`` for one fixed unit, as a boolean."""
+    proc = _systemctl_user(["is-enabled", name],
+                            timeout=HOST_METRICS_PROBE_TIMEOUT_SEC)
+    if proc is None:
+        return None
+    lines = (proc[1] or "").splitlines()
+    value = lines[0].strip().lower() if lines else ""
+    if value in ("enabled", "enabled-runtime"):
+        return True
+    if value in ("disabled", "static", "masked"):
+        return False
+    return None
+
+
+def _host_metrics_runtime_properties():
+    """Exit classification of the last service run from ``systemctl --user show``."""
+    result = {
+        "service_result": None,
+        "service_exec_code": None,
+        "service_exec_status": None,
+        "service_n_restarts": None,
+    }
+    proc = _systemctl_user(
+        ["show", HOST_METRICS_SERVICE_UNIT,
+         "-p", "Result", "-p", "ExecMainCode", "-p", "ExecMainStatus",
+         "-p", "NRestarts"],
+        timeout=HOST_METRICS_PROBE_TIMEOUT_SEC,
+    )
+    if proc is None or proc[0] != 0:
+        return result
+    # Parse ``Key=Value`` lines instead of ``--value``: the value-only form
+    # prints the properties in systemd's own order, not the ``-p`` order, and
+    # the positional read mislabeled the real exit status (the incident was
+    # exit 2, read as 1, for two deploy cycles #2578).
+    values = {}
+    for line in (proc[1] or "").splitlines():
+        key, separator, raw = line.partition("=")
+        if separator:
+            values[key.strip()] = raw.strip()
+    outcome = values.get("Result", "").lower()
+    if outcome in HOST_METRICS_RESULT_ENUMS:
+        result["service_result"] = outcome
+    for key, prop in (("service_exec_code", "ExecMainCode"),
+                      ("service_exec_status", "ExecMainStatus"),
+                      ("service_n_restarts", "NRestarts")):
+        if re.fullmatch(r"-?\d{1,10}", values.get(prop, "")):
+            result[key] = int(values[prop])
+    return result
+
+
+def _host_metrics_runtime_journal(now):
+    """Classify the bounded unit journal into one fixed enum; no text leaves."""
+    out = {"readable": False, "lines": 0, "newest_age_sec": None,
+           "signature": None, "refused_record_bytes": None}
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    try:
+        proc = subprocess.run(
+            ["journalctl", "--user-unit", HOST_METRICS_SERVICE_UNIT,
+             "-n", str(HOST_METRICS_JOURNAL_LINES), "--no-pager",
+             "-o", "short-unix"],
+            capture_output=True, text=True,
+            timeout=HOST_METRICS_PROBE_TIMEOUT_SEC, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    if proc.returncode != 0:
+        return out
+    lines = [line for line in (proc.stdout or "").splitlines() if line]
+    out["readable"] = True
+    out["lines"] = len(lines)
+    newest = None
+    signatures = []
+    for line in lines:
+        fields = line.split(None, 1)
+        try:
+            stamp = float(fields[0])
+        except (IndexError, ValueError, TypeError, OverflowError):
+            stamp = None
+        # ``inf``/``nan``/``1e400`` are a hostile or corrupt journal line, not
+        # a timestamp; parsing them into an age would raise and take the whole
+        # diagnostics operation down -- the one channel that must survive.
+        if stamp is not None and math.isfinite(stamp):
+            newest = stamp
+        lower = line.lower()
+        if (re.search(r"\boom\b", lower) or "out of memory" in lower):
+            signature = "oom"
+        elif "timed out" in lower:
+            signature = "timeout"
+        elif "traceback (most recent call last)" in lower:
+            signature = "python_traceback"
+        elif "cannot write host metrics ring" in lower:
+            signature = "sampler_refused"
+            match = re.search(r"record_bytes=(\d{1,20})", line)
+            if match is not None:
+                out["refused_record_bytes"] = int(match.group(1))
+        elif "main process exited" in lower or "failed with" in lower:
+            signature = "exited"
+        elif "finished " in lower:
+            signature = "finished"
+        elif "starting " in lower:
+            signature = "starting"
+        else:
+            signature = "other"
+        signatures.append(signature)
+    if newest is not None:
+        try:
+            out["newest_age_sec"] = max(0, int(now - newest))
+        except (ValueError, TypeError, OverflowError):
+            pass
+    for signature in HOST_METRICS_JOURNAL_SIGNATURES:
+        if signature in signatures:
+            out["signature"] = signature
+            break
+    return out
+
+
+def _collect_host_metrics_runtime(now):
+    """Fixed-shape, read-only health of the #2578 sampler units (no raw text)."""
+    return {
+        "service_state": _host_metrics_runtime_state(HOST_METRICS_SERVICE_UNIT),
+        "service_enabled": _host_metrics_runtime_enabled(
+            HOST_METRICS_SERVICE_UNIT),
+        "timer_state": _host_metrics_runtime_state(HOST_METRICS_TIMER_UNIT),
+        "timer_enabled": _host_metrics_runtime_enabled(
+            HOST_METRICS_TIMER_UNIT),
+        **_host_metrics_runtime_properties(),
+        "journal": _host_metrics_runtime_journal(now),
+    }
+
+
+def _collect_host_metrics(home_root=None, now=None):
+    """Project the fixed host metrics ring (#2578) without exposing its file.
+
+    The ring lives at the first of the reviewed candidate directories under
+    the runtime user's home (``~/.local/state/docich/host-metrics``, then
+    ``~/.local/share/docich/host-metrics``, then ``~/docich-host-metrics``).
+    ``main`` passes the runtime user's home explicitly (``soren.parent``); this
+    projection never resolves a path from config or the environment, because
+    the location is part of the sampler contract and the ring is reboot-
+    persistent evidence that must not follow a mutable state_dir. Only fixed
+    contract fields are emitted: never a path, a raw line or free text.
+    ``ring_bytes`` is the bounded byte count actually read (0 when absent or
+    refused), so the ring's on-disk size stays measurable.
+    """
+    now = int(time.time()) if now is None else int(now)
+    home = Path(home_root) if home_root is not None else PROD_ROOT.parent
+    result = {
+        "status": "absent",
+        "retention": {
+            "interval_sec": INTERVAL_SEC,
+            "max_points": MAX_POINTS,
+            "max_bytes": MAX_BYTES,
+        },
+        "unit_order": list(UNIT_ORDER),
+        "ring_bytes": 0,
+        "points_available": 0,
+        "points": 0,
+        "samples_omitted": 0,
+        "oldest_age_sec": None,
+        "newest_age_sec": None,
+        "ring_path_kind": None,
+        "boots": 0,
+        "current_boot": None,
+        "spans_reboot": False,
+        # Read-only health of the sampler units themselves: a stopped, failing
+        # or OOM-killed sampler must be visible through this same section
+        # instead of silently reading as an absent ring (#2578 deploy evidence).
+        "runtime": _collect_host_metrics_runtime(now),
+        "samples": [],
+    }
+    fd = None
+    kind = None
+    refused = None
+    info = None
+    try:
+        # The writer skips candidates it cannot use; the reader must too, or a
+        # dead first candidate (unreadable, or a symlink/directory where the
+        # ring belongs) hides a live ring further down the list. The first
+        # refusal is remembered and reported only when no candidate yielded
+        # evidence -- absence is never reported while a ring exists.
+        for name, relpath in HOST_METRICS_RING_CANDIDATES:
+            path = home / relpath / "ring.jsonl"
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                if refused is None:
+                    refused = name
+                continue
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                if refused is None:
+                    refused = name
+                os.close(fd)
+                fd = None
+                continue
+            kind = name
+            break
+        if fd is None or info is None:
+            if refused is not None:
+                return {**result, "status": "unreadable"}
+            return result
+        if info.st_size > MAX_BYTES:
+            # Compaction failed; a partial read of the newest lines would look
+            # authoritative while silently missing retained history.
+            return {**result, "status": "invalid",
+                    "ring_path_kind": kind}
+        raw = os.read(fd, HOST_METRICS_MAX_READ_BYTES + 1)
+        if len(raw) > HOST_METRICS_MAX_READ_BYTES:
+            return {**result, "status": "invalid", "ring_path_kind": kind}
+        # Bounded bytes actually read. It is a count, never a path, and it
+        # stays at 0 when nothing was read (absent/unreadable/refused).
+        result["ring_bytes"] = min(len(raw), MAX_BYTES)
+        # Which fixed candidate was read: an enum, never the path itself.
+        result["ring_path_kind"] = kind
+    except (OSError, ValueError):
+        # Permission/IO errors and the ``O_NOFOLLOW`` symlink refusal.
+        return {**result, "status": "unreadable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    records = []
+    for line in raw.splitlines():
+        parsed = _host_metrics_line(line, now)
+        if parsed is not None:
+            records.append(parsed)
+    if not records:
+        # Present but nothing parseable: empty file, torn lines, or a schema
+        # version this collector does not know (never guessed at).
+        return {**result, "status": "invalid"}
+    records = records[-MAX_POINTS:]
+
+    # Per-interval deltas only between consecutive records of the same boot.
+    # Both sides must also carry the source, and a null boot never matches:
+    # a degraded record is not evidence about the interval (docich#2578).
+    intervals = []
+    previous = None
+    for record in records:
+        delta = {
+            "cpu_busy_pct": None,
+            "disk_read_sectors": None,
+            "disk_write_sectors": None,
+            "disk_io_ms": None,
+        }
+        same_boot = (
+            previous is not None
+            and record["boot"] is not None
+            and previous["boot"] == record["boot"]
+        )
+        if same_boot:
+            if previous["cpu"] is not None and record["cpu"] is not None:
+                d_total = record["cpu"][0] - previous["cpu"][0]
+                d_idle = record["cpu"][1] - previous["cpu"][1]
+                d_iowait = record["cpu"][2] - previous["cpu"][2]
+                if d_total > 0:
+                    busy = 100.0 * (d_total - d_idle - d_iowait) / d_total
+                    delta["cpu_busy_pct"] = round(
+                        min(100.0, max(0.0, busy)), 2)
+            if (previous["disk_sectors"] is not None
+                    and record["disk_sectors"] is not None):
+                # A counter reset inside one boot is not negative I/O; clamp
+                # it to zero instead of projecting an impossible value.
+                delta["disk_read_sectors"] = max(
+                    0, record["disk_sectors"][0] - previous["disk_sectors"][0])
+                delta["disk_write_sectors"] = max(
+                    0, record["disk_sectors"][1] - previous["disk_sectors"][1])
+            if previous["disk_io_ms"] is not None and record["disk_io_ms"] is not None:
+                delta["disk_io_ms"] = max(
+                    0, record["disk_io_ms"] - previous["disk_io_ms"])
+        intervals.append(delta)
+        previous = record
+
+    samples = []
+    for record, delta in zip(records, intervals):
+        load = record["load"]
+        samples.append({
+            "age_sec": max(0, now - record["t"]),
+            "boot": record["boot"],
+            "t": record["t"],
+            "uptime_s": record["uptime_s"],
+            "load1": None if load is None else round(load[0], 2),
+            "load5": None if load is None else round(load[1], 2),
+            "load15": None if load is None else round(load[2], 2),
+            "cpu_busy_pct": delta["cpu_busy_pct"],
+            "mem_available_kb": record["mem"]["available"],
+            "mem_total_kb": record["mem"]["total"],
+            "swap_free_kb": record["mem"]["swap_free"],
+            "swap_total_kb": record["mem"]["swap_total"],
+            "dirty_kb": record["mem"]["dirty"],
+            "writeback_kb": record["mem"]["writeback"],
+            "psi_cpu_some10": _host_metrics_round(record["psi"][0][0]),
+            "psi_cpu_full10": _host_metrics_round(record["psi"][0][1]),
+            "psi_io_some10": _host_metrics_round(record["psi"][1][0]),
+            "psi_io_full10": _host_metrics_round(record["psi"][1][1]),
+            "psi_mem_some10": _host_metrics_round(record["psi"][2][0]),
+            "psi_mem_full10": _host_metrics_round(record["psi"][2][1]),
+            "disk_read_sectors": delta["disk_read_sectors"],
+            "disk_write_sectors": delta["disk_write_sectors"],
+            "disk_io_ms": delta["disk_io_ms"],
+            "units": record["units"],
+            "down_units": _host_metrics_down_units(record["units"]),
+        })
+    samples = _host_metrics_trim_samples(samples, SAMPLES_MAX)
+
+    newest = records[-1]
+    oldest = records[0]
+    # A future timestamp (clock step) is clamped to age 0 rather than reported
+    # as negative age; it is not evidence of health either way.
+    newest_age_sec = max(0, now - newest["t"])
+    # Only non-null boot IDs identify a reboot; a null boot is unknown and must
+    # not collapse into a fake "same boot" or a fake second boot.
+    boots = {record["boot"] for record in records if record["boot"] is not None}
+    current_boot = next(
+        (record["boot"] for record in reversed(records)
+         if record["boot"] is not None),
+        None,
+    )
+    result.update({
+        "status": "stale" if newest_age_sec > STALE_SEC else "ok",
+        "points_available": len(records),
+        "points": len(samples),
+        "oldest_age_sec": max(0, now - oldest["t"]),
+        "newest_age_sec": newest_age_sec,
+        "boots": len(boots),
+        "current_boot": current_boot,
+        "spans_reboot": len(boots) > 1,
+        "samples": samples,
+    })
+    return result
 
 
 CPU_PROFILE_REPORT = Path("/tmp/docich-cpu-profile-latest.json")
 CPU_PROFILE_MAX_BYTES = 32768
 CPU_PROFILE_MAX_COMPONENTS = 30
 CPU_PROFILE_MAX_SPAWNS = 30
+CPU_PROFILE_MAX_TELEMETRY = 8
+CPU_PROFILE_TELEMETRY_COUNTERS = (
+    "cycles", "awaits", "observes", "decides", "acts", "waits",
+    "actions_completed", "hotload_publish_failures",
+    "captures", "capture_spawns", "brain_spawns",
+)
+CPU_PROFILE_TELEMETRY_TIMERS = (
+    "fence_lock_s", "observe_s", "decide_s", "act_s", "hotload_publish_s",
+    "capture_s",
+)
 # Output-pressure caps. The producer already orders both lists busiest-first,
 # so only the tail is dropped, and the omitted counts stay visible.
 CPU_PROFILE_BUDGET_COMPONENTS = 10
 CPU_PROFILE_BUDGET_SPAWNS = 10
+# Last-resort floor. Even under the hardest output pressure the busiest rows
+# stay, so the projection can still name the top consumers / spawn paths
+# (azumag/docich#970) rather than showing host totals only.
+CPU_PROFILE_FLOOR_COMPONENTS = 5
+CPU_PROFILE_FLOOR_SPAWNS = 5
 CPU_PROFILE_FRESH_SEC = 900
+
+
+# Fixed broadcast-audio gap measurement (docich#1811). The one-shot reviewed
+# helper writes this bounded report; the collector projects only fixed fields.
+AUDIO_GAP_REPORT = Path("/tmp/docich-audio-gap-latest.json")
+AUDIO_GAP_MAX_BYTES = 32768
+AUDIO_GAP_FRESH_SEC = 900
+AUDIO_GAP_MAX_ITEMS = 50
+
+# Read-only projection of the audio-priority keeper (docich#1811): the
+# root-owned installed copies vs the deployed tree, the systemd unit state,
+# the keeper process, per-target thread priorities, and the hanjuku mirror's
+# effective capture framerate. Nothing here mutates the VM.
+AUDIO_PRIORITY_SCRIPT = Path("/usr/local/libexec/azumag-vm-ops/audio_priority/priority.py")
+AUDIO_PRIORITY_UNIT_FILE = Path("/etc/systemd/system/docich-audio-priority.service")
+AUDIO_PRIORITY_SERVICE = "docich-audio-priority"
+AUDIO_PRIORITY_MAX_FILE_BYTES = 262144
+AUDIO_PRIORITY_TARGET_NICE = -10
+AUDIO_PRIORITY_KINDS = ("retroarch", "pulseaudio", "encoder-ffmpeg", "twica-feeder")
+AUDIO_PRIORITY_MAX_PIDS_PER_KIND = 8
+AUDIO_PRIORITY_JOURNAL_LINES = 400
+AUDIO_PRIORITY_ENABLED_STATES = frozenset({
+    "enabled", "enabled-runtime", "disabled", "masked", "masked-runtime",
+    "not-found", "static", "alias", "linked", "linked-runtime", "indirect", "bad",
+})
 
 
 def _cpu_profile_number(value, *, maximum=10**12):
@@ -608,6 +2002,19 @@ def _cpu_profile_label(value):
     if re.fullmatch(r"worker:[a-z0-9_-]{1,48}", value):
         return value
     return None
+
+
+def _cpu_profile_comm_label(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,15}", value):
+        return None
+    return value
+
+
+def _cpu_profile_safe_label(value):
+    """Fixed-shape label for telemetry game/brain names (no paths/argv)."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+        return None
+    return value
 
 
 def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
@@ -725,6 +2132,96 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
                 continue
             spawns.append({"component": component, "spawner": spawner, "count": int(count)})
 
+    telemetry = []
+    raw_telemetry = data.get("telemetry")
+    if isinstance(raw_telemetry, dict):
+        raw_snapshots = raw_telemetry.get("snapshots")
+        if isinstance(raw_snapshots, list):
+            for item in raw_snapshots[:CPU_PROFILE_MAX_TELEMETRY]:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                if role not in ("agent", "corner"):
+                    continue
+                game = _cpu_profile_safe_label(item.get("game"))
+                brain = _cpu_profile_safe_label(item.get("brain"))
+                if game is None or brain is None:
+                    continue
+                row = {"role": role, "game": game, "brain": brain,
+                       "counters": {}, "seconds": {}}
+                counters = item.get("counters")
+                if isinstance(counters, dict):
+                    for key in CPU_PROFILE_TELEMETRY_COUNTERS:
+                        value = _cpu_profile_number(counters.get(key), maximum=10**9)
+                        if value is not None:
+                            row["counters"][key] = int(value)
+                seconds = item.get("seconds")
+                if isinstance(seconds, dict):
+                    for key in CPU_PROFILE_TELEMETRY_TIMERS:
+                        value = _cpu_profile_number(seconds.get(key), maximum=10**6)
+                        if value is not None:
+                            row["seconds"][key] = value
+                written_at = _cpu_profile_number(item.get("written_at"),
+                                                maximum=253402300799)
+                if written_at is not None:
+                    row["written_at"] = int(written_at)
+                telemetry.append(row)
+
+    # Compact summary that survives output pressure: even when the per-row
+    # lists are trimmed to nothing, the top CPU consumers and spawn paths stay
+    # visible (azumag/docich#970). The byte size is not a fixed cap: in the
+    # synthetic fixture the value part is 58B usually (217B with long labels)
+    # for cpu_top and 75B usually (375B with long labels) for spawn_top; labels
+    # are already bounded to 64 chars and sanitized by _cpu_profile_label.
+    cpu_top_parts = []
+    for row in components[:3]:
+        component = row.get("component")
+        pct = row.get("cpu_pct")
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            cpu_top_parts.append(f"{component} {pct:.0f}%")
+        else:
+            cpu_top_parts.append(str(component))
+    cpu_top = " | ".join(cpu_top_parts)
+    if len(components) > 3:
+        # The aggregate tail is labeled `others` (plural) so it cannot be
+        # confused with a real `other` component row in the head.
+        others = 0.0
+        for row in components[3:]:
+            pct = row.get("cpu_pct")
+            if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                others += pct
+        cpu_top = (cpu_top + f" | others {others:.0f}%") if cpu_top else f"others {others:.0f}%"
+
+    spawn_top_parts = []
+    for row in spawns[:3]:
+        component = row.get("component")
+        spawner = row.get("spawner")
+        if component is None or spawner is None:
+            continue
+        count = row.get("count")
+        if isinstance(count, (int, float)) and not isinstance(count, bool):
+            spawn_top_parts.append(f"{component}<-{spawner} {count:.0f}")
+        else:
+            spawn_top_parts.append(f"{component}<-{spawner}")
+    spawn_top = " | ".join(spawn_top_parts)
+
+    # The residual `other` component is otherwise opaque. Expose only the
+    # profiler's sanitized comm labels (<=16 chars, lowercase) and their CPU,
+    # so the short-lived/generic consumers can be attributed without emitting
+    # argv, paths or PIDs.
+    other_top_parts = []
+    raw_other = data.get("other_comms")
+    if isinstance(raw_other, list):
+        for item in raw_other[:5]:
+            if not isinstance(item, dict):
+                continue
+            comm = _cpu_profile_comm_label(item.get("comm"))
+            pct = _cpu_profile_number(item.get("cpu_pct"), maximum=10**6)
+            if comm is None or pct is None:
+                continue
+            other_top_parts.append(f"{comm} {pct:.0f}%")
+    other_top = " | ".join(other_top_parts)
+
     return {
         "schema_version": 1,
         "status": "ok" if age_sec <= CPU_PROFILE_FRESH_SEC else "stale",
@@ -737,7 +2234,740 @@ def _collect_cpu_profile(now, path=CPU_PROFILE_REPORT):
         "components_truncated": max(len(raw_components) - len(components), 0)
             if isinstance(raw_components, list) else 0,
         "spawns": spawns,
+        "cpu_top": cpu_top,
+        "spawn_top": spawn_top,
+        "other_top": other_top,
+        "telemetry": telemetry,
     }
+
+
+def _collect_audio_gaps(now, path=AUDIO_GAP_REPORT):
+    """Project one fixed broadcast-audio gap measurement (docich#1811) without
+    exposing arbitrary /tmp JSON. The helper only records the encoder input
+    monitor and counts digital-zero runs, so this projection carries the fixed
+    counters and never raw audio or paths."""
+    result = {
+        "schema_version": 1,
+        "status": "missing",
+        "present": False,
+        "readable": False,
+    }
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= AUDIO_GAP_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        raw = os.read(fd, AUDIO_GAP_MAX_BYTES + 1)
+        if len(raw) > AUDIO_GAP_MAX_BYTES:
+            return {**result, "present": True, "status": "invalid"}
+        data = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return result
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {**result, "present": True, "status": "unreadable"}
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    if not isinstance(data, dict) or data.get("schema") != "docich.audio_gap.v1":
+        return {**result, "present": True, "status": "invalid"}
+    meta = data.get("meta")
+    gaps = data.get("gaps")
+    if not isinstance(meta, dict) or not isinstance(gaps, dict):
+        return {**result, "present": True, "status": "invalid"}
+
+    generated_at = _cpu_profile_number(meta.get("generated_at"), maximum=253402300799)
+    # The methodology (#1811) is the encoder input monitor at 48kHz stereo,
+    # so anything else is not this measurement.
+    if (meta.get("monitor") != "soren_null.monitor"
+            or meta.get("rate") != 48000 or meta.get("channels") != 2
+            or generated_at is None):
+        return {**result, "present": True, "status": "invalid"}
+    duration = _cpu_profile_number(meta.get("duration_sec"), maximum=10000)
+    if duration is None or not 80 <= duration <= 120:
+        return {**result, "present": True, "status": "invalid"}
+    ratio = meta.get("nonzero_frame_ratio")
+    if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
+            or not math.isfinite(ratio) or not 0 <= ratio <= 1):
+        return {**result, "present": True, "status": "invalid"}
+
+    age_sec = int(now - generated_at)
+    if age_sec < -5:
+        return {**result, "present": True, "status": "invalid"}
+
+    count = _cpu_profile_number(gaps.get("count"), maximum=10000)
+    total_ms = _cpu_profile_number(gaps.get("total_ms"), maximum=10_000_000)
+    max_ms = _cpu_profile_number(gaps.get("max_ms"), maximum=1000)
+    long_silences = _cpu_profile_number(gaps.get("long_silences"), maximum=100_000)
+    if count is None or total_ms is None or max_ms is None or long_silences is None:
+        return {**result, "present": True, "status": "invalid"}
+
+    raw_items = gaps.get("items")
+    items = []
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if len(items) >= AUDIO_GAP_MAX_ITEMS:
+                break
+            if not isinstance(item, dict):
+                continue
+            start_ms = _cpu_profile_number(item.get("start_ms"), maximum=10_000_000)
+            ms = _cpu_profile_number(item.get("ms"), maximum=1000)
+            if start_ms is None or ms is None:
+                continue
+            items.append({"start_ms": start_ms, "ms": ms})
+
+    return {
+        "schema_version": 1,
+        "status": "ok" if age_sec <= AUDIO_GAP_FRESH_SEC else "stale",
+        "present": True,
+        "readable": True,
+        "age_sec": age_sec,
+        "meta": {
+            "generated_at": int(generated_at),
+            "monitor": "soren_null.monitor",
+            "rate": 48000,
+            "channels": 2,
+            "duration_sec": round(duration, 2),
+            "nonzero_frame_ratio": round(ratio, 4),
+        },
+        "gaps": {
+            "count": count,
+            "total_ms": total_ms,
+            "max_ms": max_ms,
+            "long_silences": long_silences,
+            "items": items,
+        },
+    }
+
+
+def _audio_priority_sha256(path, limit=AUDIO_PRIORITY_MAX_FILE_BYTES):
+    """Hash one installed copy without following symlinks; None when the
+    file is absent, oversized, or not a regular file."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    digest = hashlib.sha256()
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+            return None
+        remaining = info.st_size
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    return digest.hexdigest()
+
+
+def _audio_priority_module():
+    """Load the keeper's own classification from the deployed tree so the
+    target summary can never drift from priority.py's matching rules.
+    Returns None whenever the reviewed module cannot be loaded; the summary
+    then degrades to `classification: unavailable` instead of guessing."""
+    path = PROD_ROOT / "ops" / "audio_priority" / "priority.py"
+    name = "docich_ops_audio_priority"
+    try:
+        spec = _importlib_util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return None
+        module = _importlib_util.module_from_spec(spec)
+        # dataclassの型解決はsys.modulesを参照するため、実行前に登録する。
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+    except Exception:
+        return None
+    return module if hasattr(module, "wanted") and hasattr(module, "Proc") else None
+
+
+def _audio_priority_thread_nice(proc_root, pid, tid):
+    """Read one task's current nice from /proc/<pid>/task/<tid>/stat. The comm
+    field may contain spaces or ')', so split after the last ')' like the
+    keeper's own _thread() parser."""
+    text = _read_text_capped(proc_root / str(pid) / "task" / str(tid) / "stat", limit=2048)
+    if not text:
+        return None
+    rest = text.rsplit(")", 1)
+    if len(rest) != 2:
+        return None
+    fields = rest[1].split()
+    try:
+        return int(fields[16])
+    except (IndexError, ValueError):
+        return None
+
+
+def _audio_priority_cgroup(proc_root, pid):
+    """Project the unified cgroup path of one audio process (#2008).
+
+    A read-only, bounded system path. It answers a question diagnostics could
+    not answer before: whether the shared PulseAudio server lives inside the
+    ``soren-bgm.service`` cgroup (killed by that unit's restart, 2026-10-11
+    05:55/08:05) or under the user manager as intended. Anything unexpected is
+    projected as None, never guessed.
+    """
+    raw = _read_text_capped(proc_root / str(pid) / "cgroup", limit=4096)
+    if not raw:
+        return None
+    for line in raw.splitlines():
+        # Unified hierarchy is the only line we read: "0::/system.slice/x.service".
+        if not line.startswith("0::"):
+            continue
+        path = line[3:].strip()
+        if not path.startswith("/") or len(path) > 256:
+            return None
+        if not all(ch.isalnum() or ch in "/@._:-" for ch in path):
+            return None
+        return path
+    return None
+
+
+def _audio_priority_scan(proc_root, uid, module):
+    """One bounded /proc pass. Returns (targets, keeper, mirror):
+    targets maps each keeper kind to a bounded summary, keeper is the keeper
+    process dict, mirror is the hanjuku mirror ffplay summary."""
+    targets = {
+        kind: {"present": False, "processes": 0, "threads": 0,
+               "max_nice": None, "at_target": 0, "cgroup": None}
+        for kind in AUDIO_PRIORITY_KINDS
+    }
+    keeper = {"present": False, "pid": None, "threads": 0}
+    mirror = {"present": False, "framerate": None}
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        return targets, keeper, mirror
+    try:
+        pids = sorted(int(name) for name in names if name.isdigit())
+    except ValueError:
+        return targets, keeper, mirror
+    wanted = getattr(module, "wanted", None)
+    proc_cls = getattr(module, "Proc", None)
+    for pid in pids[:4000]:
+        base = proc_root / str(pid)
+        comm = _read_text_capped(base / "comm", limit=64)
+        if not comm:
+            continue
+        comm = comm.strip()
+        cmdline = _read_text_capped(base / "cmdline", limit=4096)
+        argv = tuple(part for part in (cmdline or "").split("\0") if part)
+        try:
+            owner = os.stat(base).st_uid
+        except OSError:
+            continue
+        if comm.startswith("python") and any(
+                arg.endswith("audio_priority/priority.py") for arg in argv):
+            try:
+                threads = len(os.listdir(base / "task"))
+            except OSError:
+                threads = 0
+            keeper = {"present": True, "pid": pid, "threads": threads}
+            continue
+        if comm == "ffplay" and "x11grab" in argv:
+            # presentation.py L484 launches the mirror ffplay with the
+            # single-dash "-framerate" (ffmpeg input option), not "--framerate";
+            # accept both spellings so the effective value is readable either way.
+            for index, arg in enumerate(argv):
+                if arg in ("--framerate", "-framerate") and index + 1 < len(argv):
+                    try:
+                        mirror = {"present": True,
+                                  "framerate": min(max(int(argv[index + 1]), 0), 240)}
+                    except ValueError:
+                        mirror = {"present": True, "framerate": None}
+                    break
+            else:
+                mirror = {"present": True, "framerate": None}
+            continue
+        if wanted is None or proc_cls is None or owner != uid:
+            continue
+        try:
+            proc = proc_cls(pid=pid, uid=owner, comm=comm, argv=argv)
+        except TypeError:
+            # The deployed keeper's Proc grew required fields; never guess.
+            continue
+        kind = wanted(proc, uid)
+        if kind not in targets:
+            continue
+        summary = targets[kind]
+        summary["present"] = True
+        if summary["processes"] < AUDIO_PRIORITY_MAX_PIDS_PER_KIND:
+            summary["processes"] += 1
+        # The first process of each kind defines its owning cgroup; one bounded
+        # path per kind is what the #2008 safety question needs.
+        if summary["cgroup"] is None:
+            summary["cgroup"] = _audio_priority_cgroup(proc_root, pid)
+        try:
+            tids = os.listdir(base / "task")
+        except OSError:
+            continue
+        for tid in tids:
+            nice = _audio_priority_thread_nice(proc_root, pid, tid)
+            if nice is None:
+                continue
+            summary["threads"] += 1
+            summary["max_nice"] = nice if summary["max_nice"] is None else max(summary["max_nice"], nice)
+            if nice <= AUDIO_PRIORITY_TARGET_NICE:
+                summary["at_target"] += 1
+    return targets, keeper, mirror
+
+
+def _audio_priority_journal_tail(timeout=5):
+    """Bounded recent keeper journal text, or None when journalctl is
+    unavailable or refuses the reader (e.g. no membership). Output never
+    leaves this collector; only fixed counters are projected."""
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    try:
+        proc = subprocess.run(
+            ["journalctl", "-u", f"{AUDIO_PRIORITY_SERVICE}.service",
+             "--since", "-24h", "-n", str(AUDIO_PRIORITY_JOURNAL_LINES),
+             "--no-pager", "-o", "cat"],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or ""
+
+
+def _collect_audio_priority(proc_root=Path("/proc"), uid=None,
+                            script_path=None, unit_file=None,
+                            deployed_script=None, deployed_unit=None):
+    """Read-only projection of the audio-priority keeper state (docich#1811).
+
+    Every sub-part fails open: a missing file, an unreadable journal, or an
+    unavailable systemd query degrades to `None`/`unknown` and never raises,
+    so one broken probe cannot blank the rest of diagnostics. The section
+    never mutates the VM and never affects the top-level payload status; the
+    owner reads the composite `status` to see whether the installed root-owned
+    copies still match the deployed reviewed tree."""
+    if uid is None:
+        uid = os.getuid()
+    script_path = Path(script_path) if script_path is not None else AUDIO_PRIORITY_SCRIPT
+    unit_file = Path(unit_file) if unit_file is not None else AUDIO_PRIORITY_UNIT_FILE
+    deployed_script = (Path(deployed_script) if deployed_script is not None
+                       else PROD_ROOT / "ops" / "audio_priority" / "priority.py")
+    deployed_unit = (Path(deployed_unit) if deployed_unit is not None
+                     else PROD_ROOT / "ops" / "audio_priority" / "docich-audio-priority.service")
+
+    files = {}
+    for label, installed, deployed in (
+            ("script", script_path, deployed_script),
+            ("unit", unit_file, deployed_unit)):
+        installed_sha = _audio_priority_sha256(installed)
+        if installed_sha is None:
+            # An absent copy carries its whole fact in present=false; the
+            # huge-telemetry envelope has no room for null padding.
+            files[label] = {"present": False}
+            continue
+        deployed_sha = _audio_priority_sha256(deployed)
+        files[label] = {
+            "present": True,
+            # 16-hex prefix + the boolean verdict is the evidence; the full
+            # digest of the deployed side is reproducible from the repo.
+            "sha256_16": installed_sha[:16],
+            "matches_deployed": installed_sha == deployed_sha,
+        }
+
+    service = {}
+    result = _systemctl_system(["is-enabled", AUDIO_PRIORITY_SERVICE])
+    if result is not None and result[1] in AUDIO_PRIORITY_ENABLED_STATES:
+        service["enabled"] = result[1]
+    active = _unit_is_active(AUDIO_PRIORITY_SERVICE, scope="system")
+    if active is not None:
+        service["active"] = active
+    result = _systemctl_system(
+        ["show", AUDIO_PRIORITY_SERVICE, "--property=SubState",
+         "--property=NRestarts", "--property=ExecMainStartTimestamp"])
+    if result is not None and result[0] == 0:
+        # systemctl show prints Key=Value lines in its own property order,
+        # never the request order, so parse by label -- the positional read
+        # mis-assigned SubState ("running") into started_at in production.
+        for line in result[1].splitlines():
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key == "SubState" and re.fullmatch(r"[a-z]+", value):
+                service["sub_state"] = value
+            elif key == "NRestarts" and re.fullmatch(r"\d{1,7}", value):
+                service["n_restarts"] = int(value)
+            elif (key == "ExecMainStartTimestamp" and 0 < len(value) <= 64
+                  and re.fullmatch(r"[0-9A-Za-z:+\- ]+", value)):
+                service["started_at"] = value
+
+    module = _audio_priority_module()
+    targets, keeper, mirror = _audio_priority_scan(
+        proc_root, uid, module if module is not None else None)
+
+    # Zero counters and empty breakdowns are omitted (absence means zero) so
+    # the idle shape stays byte-cheap under the huge-telemetry envelope.
+    journal = {"available": False}
+    reniced_by_kind = {}
+    text = _audio_priority_journal_tail()
+    if text is not None:
+        journal["available"] = True
+        reniced = warnings = scan_failures = restarts = 0
+        for line in text.splitlines():
+            if line.startswith("audio-priority: reniced "):
+                reniced += 1
+                match = re.search(r"kind=([a-z-]+)", line)
+                kind = match.group(1) if match else "other"
+                if kind not in AUDIO_PRIORITY_KINDS:
+                    kind = "other"
+                reniced_by_kind[kind] = reniced_by_kind.get(kind, 0) + 1
+            elif line.startswith("audio-priority: warning"):
+                warnings += 1
+            elif line.startswith("audio-priority: scan failed"):
+                scan_failures += 1
+            elif line.startswith("audio-priority: started "):
+                restarts += 1
+        if reniced:
+            journal["reniced_24h"] = reniced
+        if warnings:
+            journal["warnings_24h"] = warnings
+        if scan_failures:
+            journal["scan_failures_24h"] = scan_failures
+        if restarts:
+            journal["restarts_24h"] = restarts
+    if reniced_by_kind:
+        journal["reniced_by_kind"] = reniced_by_kind
+
+    enabled = service.get("enabled")
+    if enabled == "not-found":
+        status = "missing"
+    elif enabled is None and "active" not in service:
+        status = "unknown"
+    elif (service.get("active") is True and keeper["present"]
+          and files["script"].get("matches_deployed") is True
+          and files["unit"].get("matches_deployed") is True):
+        status = "ok"
+    else:
+        status = "degraded"
+
+    # Absent targets/kinds and unknown service fields are omitted rather than
+    # serialized as null so the fixed section stays small under the envelope.
+    section = {
+        "schema_version": 1,
+        "status": status,
+        "uid": uid,
+        "service": service,
+        "files": files,
+        "targets": {kind: summary for kind, summary in targets.items()
+                    if summary["present"]},
+        "journal": journal,
+    }
+    if module is None:
+        # The classification is worth its bytes only when it broke.
+        section["classification"] = "unavailable"
+    if keeper["present"]:
+        section["keeper"] = keeper
+    if mirror["present"]:
+        section["mirror"] = mirror
+    return section
+
+
+BROWSER_OWNER_LABELS = (
+    "soren-shared-overlay",
+    "soren-game",
+    "twica",
+    "nethack-tiles",
+    "obs",
+    "webui",
+    "other",
+)
+BROWSER_TYPE_LABELS = ("browser", "gpu", "renderer", "utility", "other")
+BROWSER_CPU_SAMPLE_SEC = 0.5
+# The first production samples still classified every Chromium child as
+# "browser" even at 16 KiB. Read the full bounded line (64 KiB) and derive the
+# type from the raw NUL-separated bytes at an argv boundary.
+BROWSER_CMDLINE_BYTES = 65536
+_BROWSER_EXECUTABLES = frozenset({
+    "chrome",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "headless_shell",
+    "chrome-headless-shell",
+})
+_BROWSER_SKIPPED_EXECUTABLES = frozenset({"chrome_crashpad_handler"})
+
+
+def _browser_read_cmdline(proc_root, pid, limit=BROWSER_CMDLINE_BYTES):
+    """Read argv only to classify; the raw argv never leaves this module."""
+    try:
+        with open(proc_root / str(pid) / "cmdline", "rb") as fh:
+            raw = fh.read(limit)
+    except OSError:
+        return None
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _browser_read_stat(proc_root, pid):
+    try:
+        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    rpar = text.rfind(")")
+    if rpar < 0:
+        return None
+    fields = text[rpar + 2:].split()
+    try:
+        return {
+            "ppid": int(fields[1]),
+            "ticks": int(fields[11]) + int(fields[12]),
+            "starttime": int(fields[19]),
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def _browser_read_rss_kb(proc_root, pid):
+    try:
+        text = (proc_root / str(pid) / "status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        if line.startswith("VmRSS:"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1])
+    return 0
+
+
+def _browser_owner_label(argv):
+    """Map a process/ancestor argv to a fixed owner label; no raw text escapes."""
+    if not argv:
+        return None
+    joined = "\0".join(argv)
+    exe = os.path.basename(argv[0])
+    normalized = joined.lower().replace("-", "_")
+    if ("shared_overlay.mjs" in joined
+            or "start_shared_overlay_service.sh" in joined
+            or "soren-shared-overlay" in joined
+            or "shared_overlay" in normalized
+            or "soren_shared_overlay" in normalized):
+        return "soren-shared-overlay"
+    if ("soviet_local" in joined
+            or "soviet_local" in normalized
+            or "soren_game" in normalized
+            or "soren-game" in joined
+            or "soren game" in joined.lower()):
+        return "soren-game"
+    if "twica" in normalized:
+        return "twica"
+    if ("nethack_tiles" in normalized
+            or "nethack-tiles" in joined
+            or "nethack tiles" in joined.lower()):
+        return "nethack-tiles"
+    if (exe in {"obs", "obs-studio", "obs-browser-page", "obs64"}
+            or "obs_browser" in normalized
+            or "obs-browser" in joined
+            or "obs browser" in joined.lower()):
+        return "obs"
+    if ("docich_webui" in normalized
+            or "docich-webui" in joined
+            or "webui" in normalized):
+        return "webui"
+    return None
+
+
+def _browser_read_type(proc_root, pid, limit=BROWSER_CMDLINE_BYTES):
+    """Return (type, type_arg_offset, cmdline_bytes) from the raw cmdline.
+
+    The argv split is not enough: production classified every Chromium child
+    as "browser" even at 16 KiB, so the type is derived from the raw
+    NUL-separated bytes at an argv boundary. Only the fixed label, offset and
+    length leave this function; the bytes themselves never do.
+    """
+    try:
+        with open(proc_root / str(pid) / "cmdline", "rb") as fh:
+            raw = fh.read(limit)
+    except OSError:
+        return "browser", None, 0
+    match = re.search(rb"(?:^|\x00)--type=([a-z-]+)", raw)
+    if match is None:
+        return "browser", None, len(raw)
+    value = match.group(1).decode("ascii", "ignore")
+    offset = match.start()
+    if value == "gpu-process":
+        return "gpu", offset, len(raw)
+    if "renderer" in value:
+        return "renderer", offset, len(raw)
+    if "utility" in value:
+        return "utility", offset, len(raw)
+    return "other", offset, len(raw)
+
+
+def _browser_owner_for_pid(proc_root, pid, stat, cmdlines):
+    # Ancestors win over the Chromium process' own argv: a URL in the page
+    # arguments must not re-label a browser launched by a known subsystem.
+    current = stat["ppid"]
+    for _ in range(10):
+        if current <= 1:
+            break
+        argv = cmdlines.get(current)
+        if argv is None:
+            argv = _browser_read_cmdline(proc_root, current)
+            cmdlines[current] = argv
+        owner = _browser_owner_label(argv)
+        if owner is not None:
+            return owner
+        parent_stat = _browser_read_stat(proc_root, current)
+        parent = parent_stat["ppid"] if parent_stat else 1
+        if parent == current:
+            break
+        current = parent
+    # Only an orphaned Chromium (or one launched directly by an unclassified
+    # parent) falls back to its own argv.
+    return _browser_owner_label(cmdlines.get(pid)) or "other"
+
+
+def _collect_browser_processes(proc_root=Path("/proc"), *,
+                               sample_sec=BROWSER_CPU_SAMPLE_SEC,
+                               sleep=time.sleep, clock=time.monotonic,
+                               clk_tck=None):
+    """Read-only Chromium inventory by fixed owner/type labels (#970 follow-up).
+
+    Answers "which browser/view is eating CPU" without exposing any cmdline,
+    URL, path or PID. Only fixed owner/type labels, counts, CPU percentages,
+    RSS and age are emitted. A short two-sample CPU delta separates an idle
+    helper from a busy renderer; an unavailable /proc fails open to
+    ``unknown`` instead of failing the whole diagnostics operation.
+    """
+    if clk_tck is None:
+        try:
+            clk_tck = int(os.sysconf("SC_CLK_TCK"))
+        except (AttributeError, ValueError, OSError):
+            clk_tck = 100
+    if clk_tck <= 0:
+        clk_tck = 100
+    try:
+        pids = [int(name) for name in os.listdir(proc_root) if name.isdigit()]
+    except OSError:
+        return {"schema_version": 1, "status": "unknown", "scan_complete": 0}
+
+    cmdlines = {}
+    rows = []
+    for pid in pids:
+        argv = _browser_read_cmdline(proc_root, pid)
+        cmdlines[pid] = argv
+        if not argv:
+            continue
+        exe = os.path.basename(argv[0])
+        if exe in _BROWSER_SKIPPED_EXECUTABLES:
+            continue
+        if exe not in _BROWSER_EXECUTABLES and "chrom" not in exe.lower():
+            continue
+        stat = _browser_read_stat(proc_root, pid)
+        if stat is None:
+            continue
+        btype, type_offset, cmdline_bytes = _browser_read_type(proc_root, pid)
+        rows.append({
+            "pid": pid,
+            "type": btype,
+            "type_offset": type_offset,
+            "cmdline_bytes": cmdline_bytes,
+            "owner": _browser_owner_for_pid(proc_root, pid, stat, cmdlines),
+            "ticks": stat["ticks"],
+            "starttime": stat["starttime"],
+            "rss_kb": _browser_read_rss_kb(proc_root, pid),
+        })
+
+    if not rows:
+        return {
+            "schema_version": 1,
+            "status": "empty",
+            "scan_complete": 1,
+            "total": 0,
+            "cpu_pct_total": 0.0,
+            "rss_mb_total": 0.0,
+            "by_type": {},
+            "by_owner": {},
+            "type_sources": {"type_arg": 0, "no_type_arg": 0},
+        }
+
+    start_clock = clock()
+    if sample_sec > 0:
+        sleep(sample_sec)
+    end_clock = clock()
+    elapsed = end_clock - start_clock
+    if elapsed <= 0:
+        elapsed = 0.001
+    cpu_cap = 100.0 * max(1, os.cpu_count() or 1)
+    for row in rows:
+        after = _browser_read_stat(proc_root, row["pid"])
+        delta = after["ticks"] - row["ticks"] if after else 0
+        row["cpu_pct"] = round(
+            min(max(delta, 0) / (elapsed * clk_tck) * 100.0, cpu_cap), 1)
+
+    uptime = None
+    try:
+        uptime = float((proc_root / "uptime").read_text(encoding="ascii").split()[0])
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        pass
+
+    by_type = {}
+    by_owner = {}
+    type_sources = {"type_arg": 0, "no_type_arg": 0}
+    for row in rows:
+        if row["type_offset"] is None:
+            type_sources["no_type_arg"] += 1
+        else:
+            type_sources["type_arg"] += 1
+        by_type[row["type"]] = by_type.get(row["type"], 0) + 1
+        owner = by_owner.setdefault(
+            row["owner"],
+            {"count": 0, "cpu_pct": 0.0, "rss_mb": 0.0, "renderer_rss_mb": 0.0},
+        )
+        owner["count"] += 1
+        owner["cpu_pct"] += row["cpu_pct"]
+        owner["rss_mb"] += row["rss_kb"] / 1024.0
+        if row["type"] == "gpu":
+            owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
+        elif row["type"] == "renderer":
+            owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+            owner["renderer_rss_mb"] += row["rss_kb"] / 1024.0
+
+    for owner in by_owner.values():
+        owner["cpu_pct"] = round(owner["cpu_pct"], 1)
+        for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
+            if key in owner:
+                owner[key] = round(owner[key], 1)
+        for key in ("rss_mb", "renderer_rss_mb"):
+            owner[key] = round(owner[key], 1)
+
+    result = {
+        "schema_version": 1,
+        "status": "ok",
+        "scan_complete": 1,
+        "total": len(rows),
+        "cpu_pct_total": round(sum(row["cpu_pct"] for row in rows), 1),
+        "rss_mb_total": round(sum(row["rss_kb"] for row in rows) / 1024.0, 1),
+        "by_type": by_type,
+        "by_owner": by_owner,
+        "type_sources": type_sources,
+    }
+    if uptime is not None and rows:
+        ages = [max(0.0, uptime - row["starttime"] / clk_tck) for row in rows]
+        result["oldest_age_sec"] = int(max(ages))
+    if rows:
+        result["cmdline_bytes_max"] = max(row["cmdline_bytes"] for row in rows)
+        offsets = [row["type_offset"] for row in rows if row["type_offset"] is not None]
+        if offsets:
+            result["max_type_arg_offset"] = max(offsets)
+    return result
 
 
 def _empty_opencode_attribution_bucket():
@@ -957,7 +3187,24 @@ def _collect_opencode_session_attribution(
 
 VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
-    re.compile(r"(?i)\b(api[_-]?key|token|secret|password|stream[_-]?key)\s*[:=]\s*\S+"),
+    # A key/value pair whose name ends in a secret word, with any prefix
+    # (SLACK_BOT_TOKEN=, api_key:) and in JSON form ("api_key": "…").
+    re.compile(r"(?i)[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|token|secret|password|passwd"
+               r"|stream[_-]?key|credential)[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+"),
+    # CLI flag form: --bot-token <v> / --secret=<v>.
+    re.compile(r"(?i)--?[A-Za-z0-9-]{0,32}(?:token|secret|password|key)[= ]+[^\s\"']+"),
+    # Well-known token shapes, used bare in logs.
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    # Credentials embedded in a URL: scheme://user:pass@host
+    re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@"),
+)
+
+_VALUE_REDACT_HINT = re.compile(
+    r"[:=]|bearer|xox[baprs]-|github_pat_|gh[pousr]_|AKIA|sk-|://", re.IGNORECASE
 )
 
 # Fixed lifecycle records that can prove ownership of a supervisor pause
@@ -970,6 +3217,8 @@ LIFECYCLE_PAUSE_RECORDS = {
     "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
 }
 LIFECYCLE_DEADLINE_STATUSES = frozenset({
+    "accepted",
+    "waiting",
     "boundary",
     "stop_requested",
     "stopping",
@@ -1008,6 +3257,17 @@ LIFECYCLE_WAITING_FOR = (
     "lifecycle_handover",
     "fresh_launch",
     "operator_action",
+    # An accepted/waiting handover whose request deadline has already passed
+    # while its lifecycle pause markers survive (docich #2061).  The broker
+    # only rewrites such an ack to ``timeout`` when something polls
+    # ``boundary``, so a wedged cleanup keeps reporting ``waiting``; this enum
+    # identifies the expired cleanup instead of reading as a live handover.
+    "expired_waiting",
+    # A pause marker whose ownership record proves a lifecycle request created
+    # it, while that request is gone from the broker (consumed).  The #2061 fix
+    # deliberately preserves this proof, so the residue the fixed operator
+    # releases must not read as an unprovable "unknown" pause.
+    "orphaned_lifecycle_pause",
     "unknown",
 )
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
@@ -1017,8 +3277,12 @@ UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 def _redact_text(text, limit=MAX_ERROR_PREVIEW_LEN):
     if not isinstance(text, str):
         text = str(text)
-    for rx in VALUE_REDACT_RES:
-        text = rx.sub("[REDACTED]", text)
+    # Fast reject: the value rules are comparatively expensive and only a
+    # line that carries a separator or a known token prefix can hold a
+    # secret. Skipping them keeps huge telemetry bounded.
+    if _VALUE_REDACT_HINT.search(text):
+        for rx in VALUE_REDACT_RES:
+            text = rx.sub("[REDACTED]", text)
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
@@ -1249,6 +3513,37 @@ def _lifecycle_request_active(state_dir, request_id, now):
     return math.isfinite(deadline) and deadline > float(now)
 
 
+def _pause_record_owner(state_dir, name):
+    """The request a pause marker names, when its record proves creation.
+
+    Deliberately independent of whether that request is still live.  This is
+    the durable proof the #2061 fix preserves, so an orphaned lifecycle pause
+    can be told apart from an operator pause or an unprovable residue.
+    Never returns anything but the request id to internal callers; no caller
+    emits it.
+    """
+    marker = state_dir / f"{name}.paused"
+    raw = _read_text_capped(marker, 512)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value.startswith("lifecycle:"):
+        return None
+    request_id = value[len("lifecycle:"):].strip()
+    spec = LIFECYCLE_PAUSE_RECORDS.get(name)
+    if not request_id or spec is None:
+        return None
+    record_name, owner_field = spec
+    record = _read_json(state_dir / "game_lifecycle" / record_name)
+    if (
+        isinstance(record, dict)
+        and record.get("request_id") == request_id
+        and record.get(owner_field) is True
+    ):
+        return request_id
+    return None
+
+
 def _pause_owner(state_dir, name, now):
     """Classify one existing pause marker without exposing marker contents."""
     marker = state_dir / f"{name}.paused"
@@ -1257,18 +3552,8 @@ def _pause_owner(state_dir, name, now):
         return "unknown"
     value = raw.strip()
     if value.startswith("lifecycle:"):
-        request_id = value[len("lifecycle:"):].strip()
-        spec = LIFECYCLE_PAUSE_RECORDS.get(name)
-        if not request_id or spec is None:
-            return "unknown"
-        record_name, owner_field = spec
-        record = _read_json(state_dir / "game_lifecycle" / record_name)
-        if (
-            isinstance(record, dict)
-            and record.get("request_id") == request_id
-            and record.get(owner_field) is True
-            and _lifecycle_request_active(state_dir, request_id, now)
-        ):
+        request_id = _pause_record_owner(state_dir, name)
+        if request_id and _lifecycle_request_active(state_dir, request_id, now):
             return "lifecycle_owned"
         return "unknown"
     try:
@@ -1336,6 +3621,7 @@ def _collect_lifecycle_pause(soren, now, workers=None):
     if isinstance(workers, dict):
         details = workers.get("details") or {}
     owned = []
+    orphaned = []
     operator_paused = False
     any_paused = False
     for name in LIFECYCLE_PAUSE_RECORDS:
@@ -1352,8 +3638,14 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             operator_paused = True
         if is_paused and owner == "lifecycle_owned":
             owned.append(name)
+        elif is_paused and _pause_record_owner(state_dir, name):
+            # The record proves a lifecycle request created this marker, but
+            # that request is not live: the residue #2061's fix preserves.
+            orphaned.append(name)
     owned = sorted(owned)
+    orphaned = sorted(orphaned)
     active = False
+    expired_waiting = False
     if request_status == "present" and ack_status in LIFECYCLE_ACTIVE_STATUSES:
         if ack_status == "stopped":
             # Terminal park: the bridge intentionally waits for a fresh
@@ -1364,18 +3656,33 @@ def _collect_lifecycle_pause(soren, now, workers=None):
             deadline_raw = request.get("deadline_epoch") if isinstance(request, dict) else None
             if isinstance(deadline_raw, (int, float)) and math.isfinite(deadline_raw):
                 active = bool(float(deadline_raw) > float(now))
+                expired_waiting = bool(
+                    not active and ack_status in {"accepted", "waiting"}
+                )
             else:
                 active = False
         else:
-            # accepted/waiting/boundary: handover accepted but the broker has
-            # not parked a deadline-bound phase yet; still governed.
-            active = True
+            # Any remaining live status is deadline-bound too; fail closed
+            # rather than report an unproven handover as active.
+            active = False
     if active and ack_status == "stopped" and owned:
         waiting_for = "fresh_launch"
     elif active and (owned or ack_status in LIFECYCLE_ACTIVE_STATUSES):
         waiting_for = "lifecycle_handover"
     elif operator_paused:
         waiting_for = "operator_action"
+    elif expired_waiting and any_paused:
+        # docich #2061: an accepted/waiting handover past its deadline left
+        # lifecycle pause markers behind.  Reporting this as
+        # "lifecycle_handover" hid the exact cleanup the operator has to
+        # cancel, so it gets its own enum (see LIFECYCLE_WAITING_FOR).
+        waiting_for = "expired_waiting"
+    elif request_status == "absent" and orphaned:
+        # The broker has no request at all, yet a pause record still proves a
+        # lifecycle request created its marker: the residue a consumed switch
+        # left behind, which the fixed operator releases (docich #2061).  It
+        # must not read as an unprovable "unknown" pause.
+        waiting_for = "orphaned_lifecycle_pause"
     elif any_paused:
         # Paused markers exist but none prove an active lifecycle handover
         # nor an operator webui pause: stale, expired or mismatched.
@@ -1531,22 +3838,37 @@ def _collect_workers(soren, now):
         "required_down": sorted(n for n in stopped if n in required),
         "required_stale": sorted(n for n in stale_pid_files if n in required),
         "details": details,
+        # Deliberately outside ``details``: the size budget clears that whole
+        # block (see _diagnostics_budget), but the registered chat worker's
+        # identity is exactly what an owner switching the classifier's provider
+        # (#2301) must be able to compare before and after the replacement. A
+        # PID and liveness are not secrets and are already published elsewhere
+        # in this projection (e.g. webui.main_pid).
+        "chat_worker": {
+            "pid": (details.get("chat_worker") or {}).get("pid"),
+            "alive": bool((details.get("chat_worker") or {}).get("alive")),
+            "stale_pid_file": bool((details.get("chat_worker") or {}).get("stale_pid_file")),
+        },
     }
 
 
 # Fixed name allowlist (#882): only these exact variable NAMES are ever read
-# from a live worker's environ. Values for the two credential names never
-# leave _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
-# converts them to presence-only before this module ever formats output.
+# from a live worker's environ. Values for the credential names never leave
+# _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
+# converts them to presence/shape-only before this module ever formats output.
 # These are exactly the names docich.comment_classifier reads:
 # COMMENT_CLASSIFIER_BACKEND (plain enum gate, never a credential, so its
 # value is also reported as-is below) and DOCICH_JEV_ROUTE plus that route's
-# own credential. The retired DOCICH_SEMANTIC_BACKEND is no longer read by
-# anything, so it is deliberately not read here either.
+# own credential -- including Clef's account/token pair (#2301), without which
+# a selected clef route cannot reach Workers AI at all. The retired
+# DOCICH_SEMANTIC_BACKEND is no longer read by anything, so it is deliberately
+# not read here either.
 SEMANTIC_DECISION_ENV_ALLOWLIST = (
     "DOCICH_JEV_ROUTE",
     "TYPESAFE_API_KEY",
     "DOCICH_JEV_VERCEL_API_KEY",
+    "DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID",
+    "DOCICH_JEV_CLOUDFLARE_API_TOKEN",
     "COMMENT_CLASSIFIER_BACKEND",
 )
 COMMENT_CLASSIFIER_BACKEND_STR_MAX = 64
@@ -1960,6 +4282,116 @@ def _parse_epoch(value):
     return number if number > 0 else None
 
 
+# Fixed enums mirrored from soviet_now strategy/persist.sh. A new upstream
+# value is projected as "unknown", never as raw text.
+PERSIST_RESULTS = ("ok", "no-change", "no-op", "fail", "unknown")
+PERSIST_REASONS = frozenset({
+    "none", "clone_missing", "invalid_message", "invalid_branch", "gh_missing",
+    "identity_setup_failed", "fetch_failed", "remote_head_failed",
+    "checkout_failed", "reset_failed", "copy_failed", "add_failed",
+    "commit_failed", "tree_failed", "push_failed", "pr_failed", "unknown",
+})
+PERSIST_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,79}")
+PERSIST_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+PERSIST_LABEL = re.compile(r"[A-Za-z0-9_-]{1,32}")
+# A status file older than this while the improve loop runs means persist is
+# no longer being called; the 2026-09-17 stalled-clone incident looked exactly
+# like this before the file existed at all.
+PERSIST_STALE_SEC = 7 * 24 * 60 * 60
+
+
+def _collect_strategy_persist(soren, now):
+    """Project the runtime strategy persist attempt (docich#2489).
+
+    soviet_now's ``strategy/persist.sh`` writes a fixed-schema status document
+    after every adoption attempt. Only fixed enums are emitted: the raw status
+    message/error can name hosts or paths and never leaves the VM, and no file
+    content is executed or evaluated here. A missing clone is the normal
+    projection/no-op deployment and is not a failure.
+    """
+    soren = Path(soren)
+    status_path = soren.parent / "soren-persist" / ".git" / "persist-status.json"
+    clone_git = soren.parent / "soren-persist" / ".git"
+    failure_path = soren / "tmp" / "state" / "strategy_persist_last_failure.json"
+    data = _read_json(status_path)
+    present = False
+    try:
+        present = status_path.is_file()
+    except OSError:
+        present = False
+    clone_present = False
+    try:
+        clone_present = clone_git.is_dir()
+    except OSError:
+        clone_present = False
+    entry = {
+        "present": present,
+        "clone_present": clone_present,
+        "readable": data is not None,
+        "result": "unknown",
+        "reason": None,
+        "rc": None,
+        "origin_main": None,
+        "last_success_at": None,
+        "last_success_age_sec": -1,
+        "age_sec": -1,
+        "stale": False,
+        "branch": None,
+        "commit": None,
+        "last_failure": None,
+    }
+    if present:
+        try:
+            entry["age_sec"] = int(now - status_path.stat().st_mtime)
+        except OSError:
+            entry["age_sec"] = -1
+        entry["stale"] = entry["age_sec"] > PERSIST_STALE_SEC
+    if data:
+        result = data.get("result")
+        entry["result"] = result if result in PERSIST_RESULTS else "unknown"
+        reason = data.get("reason")
+        if isinstance(reason, str) and reason in PERSIST_REASONS:
+            entry["reason"] = reason
+        elif entry["result"] == "fail":
+            # Older status documents predate the reason field. Keep the
+            # failure visible without inventing a cause.
+            entry["reason"] = "unknown"
+        rc = data.get("rc")
+        if type(rc) is int and 0 <= rc <= 255:
+            entry["rc"] = rc
+        branch = data.get("branch")
+        if isinstance(branch, str) and PERSIST_BRANCH.fullmatch(branch):
+            entry["branch"] = branch
+        commit = data.get("commit")
+        if isinstance(commit, str) and PERSIST_COMMIT.fullmatch(commit):
+            entry["commit"] = commit
+        origin_main = data.get("origin_main")
+        if isinstance(origin_main, str) and PERSIST_COMMIT.fullmatch(origin_main):
+            entry["origin_main"] = origin_main
+        last_success = _parse_epoch(data.get("last_success_at"))
+        if last_success is not None:
+            entry["last_success_at"] = last_success
+            entry["last_success_age_sec"] = (
+                int(now - last_success) if last_success <= now else -1
+            )
+
+    failure = _read_json(failure_path)
+    if failure and failure.get("failure_code") == "strategy_persist_failed":
+        reason = failure.get("reason")
+        rc = failure.get("rc")
+        label = failure.get("label")
+        failed_at = _parse_epoch(failure.get("failed_at"))
+        entry["last_failure"] = {
+            "failure_code": "strategy_persist_failed",
+            "reason": reason if isinstance(reason, str) and reason in PERSIST_REASONS else "unknown",
+            "rc": rc if type(rc) is int and 0 <= rc <= 255 else None,
+            "label": label if isinstance(label, str) and PERSIST_LABEL.fullmatch(label) else "unknown",
+            "failed_at": failed_at,
+            "age_sec": int(now - failed_at) if failed_at is not None and failed_at <= now else -1,
+        }
+    return entry
+
+
 def _collect_improvement(soren, now):
     state_dir = soren / "tmp" / "state"
     state = _read_json(state_dir / "improve_state.json") or {}
@@ -2029,6 +4461,7 @@ def _collect_improvement(soren, now):
         "retry_age_sec": retry_age,
         "retry_bytes": retry_bytes,
         "blocked_by": blocked_by,
+        "persist": _collect_strategy_persist(soren, now),
         "monitor": {
             "checked_at": _parse_epoch(monitor.get("checked_at")),
             "status": _redact_text(str(monitor.get("status") or ""), 32),
@@ -2527,6 +4960,313 @@ def _collect_stream_title_sync(soren, now, expected_soren_sha, expected_code=Non
     return result
 
 
+STREAM_TITLE_LOG_MAX_BYTES = 32 * 1024
+STREAM_TITLE_LOG_MAX_LINES = 256
+STREAM_TITLE_LOG_MAX_LINE_BYTES = 4096
+STREAM_TITLE_LOG_SOURCES = {
+    "game": ("soren", ("tmp", "logs", "stream_game.log"), "stream_game"),
+    "dispatch": ("state", ("logs", "stream-game.log"), "stream_game"),
+    "day": ("soren", ("tmp", "logs", "stream_title_day.log"), "stream_title"),
+}
+
+
+STREAM_TITLE_READ_REJECTIONS = frozenset({
+    "root_invalid", "root_owner_mismatch", "root_writable",
+    "directory_owner_mismatch", "directory_writable", "not_regular",
+    "file_owner_mismatch", "multiple_links", "file_writable",
+})
+
+
+class _StreamTitleUnsafe(ValueError):
+    """Carry a fixed metadata-only refusal without paths, IDs or raw errors."""
+
+    def __init__(self, reason):
+        super().__init__("unsafe title source")
+        self.reason = reason if reason in STREAM_TITLE_READ_REJECTIONS else "unknown"
+
+
+def _stream_title_open_fixed(root, parts):
+    """Open fixed sources through owned, non-writable-by-others directories.
+
+    Keep the parent descriptor for a post-read identity check. No environment
+    override, glob, symlink, device, FIFO or multiply linked file is accepted.
+    """
+    root = Path(root)
+    if not root.is_absolute() or ".." in root.parts:
+        raise _StreamTitleUnsafe("root_invalid")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(root.anchor, directory_flags)
+    fd = None
+    try:
+        # O_NOFOLLOW on a multi-component root protects only its final part.
+        # Traverse every component, including ancestors of the configured root.
+        for part in root.parts[1:]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        for part in (None, *parts[:-1]):
+            if part is not None:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+                os.close(directory)
+                directory = child
+            info = os.fstat(directory)
+            stage = "root" if part is None else "directory"
+            if info.st_uid != os.getuid():
+                raise _StreamTitleUnsafe(stage + "_owner_mismatch")
+            if info.st_mode & 0o022:
+                raise _StreamTitleUnsafe(stage + "_writable")
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise _StreamTitleUnsafe("not_regular")
+        if info.st_uid != os.getuid():
+            raise _StreamTitleUnsafe("file_owner_mismatch")
+        if info.st_nlink != 1:
+            raise _StreamTitleUnsafe("multiple_links")
+        if info.st_mode & 0o022:
+            raise _StreamTitleUnsafe("file_writable")
+        return fd, directory, info
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        os.close(directory)
+        raise
+
+
+def _stream_title_file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_uid, info.st_mode, info.st_nlink)
+
+
+def _stream_title_log_observation(root, parts, prefix, now, sync):
+    """Report the newest complete log observation, not a current root cause.
+
+    The public producers have neither run IDs nor UTC offsets in these logs.
+    Host-local time is only an estimate; even a nearby journal timestamp is
+    explicitly time-window-only evidence. Retain stale observations, labelled
+    as such, but never search backwards for an old failure after a newer
+    success, unknown line, partial write or log rotation.
+    """
+    result = {"record_status": "unreadable", "observed_outcome": "unknown",
+              "observed_reason": "unknown", "age_sec": -1,
+              "time_basis": "host_local_unverified",
+              "journal_relation": "unknown", "tail_truncated": False,
+              "read_rejection": "unknown"}
+    fd = directory = None
+    try:
+        fd, directory, before = _stream_title_open_fixed(root, parts)
+        offset = max(0, before.st_size - STREAM_TITLE_LOG_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = bytearray()
+        while len(raw) < STREAM_TITLE_LOG_MAX_BYTES + 1:
+            chunk = os.read(fd, min(4096, STREAM_TITLE_LOG_MAX_BYTES + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(fd)
+        path_info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        # Also reopen the fixed traversal: replacing any ancestor during the
+        # read must not turn a historical inode into the current source.
+        check_fd, check_dir, reopened = _stream_title_open_fixed(root, parts)
+        os.close(check_fd)
+        os.close(check_dir)
+        identity = _stream_title_file_identity(before)
+        if any(_stream_title_file_identity(item) != identity
+               for item in (after, path_info, reopened)):
+            result["record_status"] = "changed"
+            return result
+        result["tail_truncated"] = offset > 0
+        if len(raw) > STREAM_TITLE_LOG_MAX_BYTES:
+            result["record_status"] = "changed"
+            return result
+        result["read_rejection"] = "none"
+    except FileNotFoundError:
+        result["record_status"] = "absent"
+        return result
+    except _StreamTitleUnsafe as error:
+        result.update(record_status="unsafe", read_rejection=error.reason)
+        return result
+    except ValueError:
+        result["record_status"] = "unsafe"
+        return result
+    except OSError:
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    if not raw:
+        result["record_status"] = "empty"
+        return result
+    if not raw.endswith(b"\n"):
+        result["record_status"] = "incomplete"
+        return result
+    if offset:
+        cut = raw.find(b"\n")
+        raw = raw[cut + 1:] if cut >= 0 else b""
+    lines = raw.splitlines()
+    if len(lines) > STREAM_TITLE_LOG_MAX_LINES:
+        lines = lines[-STREAM_TITLE_LOG_MAX_LINES:]
+        result["tail_truncated"] = True
+    if not lines or len(lines[-1]) > STREAM_TITLE_LOG_MAX_LINE_BYTES:
+        result["record_status"] = "unrecognized"
+        return result
+    # Copied/rotated logs may append an older failure after a newer success.
+    # A timestamp regression in this bounded source makes ordering ambiguous;
+    # do not mistake the last physical line for the most recent execution.
+    previous_stamp = None
+    for item in lines:
+        header = re.match(rb"\[" + prefix.encode("ascii") + rb" (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ", item)
+        if header:
+            try:
+                value = dt.datetime.strptime(header[1].decode("ascii"), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if previous_stamp is not None and value < previous_stamp:
+                result["record_status"] = "ambiguous_order"
+                return result
+            previous_stamp = value
+    try:
+        line = lines[-1].decode("utf-8", "strict")
+        match = re.fullmatch(r"\[" + prefix + r" (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] ([^\r\n\x00]*)", line)
+        if not match:
+            raise ValueError("unknown producer line")
+        stamp = dt.datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S").timestamp()
+    except (UnicodeError, ValueError, OverflowError, OSError):
+        result["record_status"] = "unrecognized"
+        return result
+    age = int(now - stamp)
+    result["age_sec"] = age
+    if age < -STREAM_TITLE_SYNC_FUTURE_TOLERANCE_SEC:
+        result["record_status"] = "future"
+        return result
+    message = match[2]
+    reason = "unknown"
+    exact_failures = {
+        "ERROR: no token (set TWITCH_GAME_TOKEN, TWITCH_TITLE_TOKEN, TWITCH_BOT_TOKEN or TWITCH_PREDICTIONS_TOKEN)": "credential_missing",
+        "ERROR: TWITCH_BROADCASTER_ID not set": "broadcaster_missing",
+        "ERROR: no valid broadcaster credential with channel:manage:broadcast": "credential_candidates_rejected",
+        "ERROR: failed to choose public title body": "body_selection_failed",
+        "ERROR: failed to compose public title": "composition_failed",
+    }
+    starts = {
+        "ERROR: no client id (token invalid? resp: ": "credential_validation_failed",
+        "ERROR: public title helper not found: ": "helper_missing",
+        "ERROR: failed to fetch current channel (resp: ": "channel_read_failed",
+        "ERROR: failed to fetch current title (resp: ": "channel_read_failed",
+        "ERROR: PATCH failed (HTTP ": "channel_update_failed",
+        "ERROR: game toml not found: ": "game_config_missing",
+        "ERROR: [twitch].category_id が解決できません ": "category_unresolved",
+        "ERROR: failed to compute day N ": "day_computation_failed",
+    }
+    if message in exact_failures:
+        reason = exact_failures[message]
+    elif re.fullmatch(r"ERROR: token\(login=[^)\r\n]{1,128}\) lacks 'channel:manage:broadcast' scope\. TWITCH_GAME_TOKEN \(broadcaster の broadcast 付きトークン\) を設定してください。", message):
+        reason = "broadcast_scope_missing"
+    else:
+        reason = next((value for start, value in starts.items() if message.startswith(start)), "unknown")
+    outcome = "failure" if reason != "unknown" else "unknown"
+    if (message == "already up to date; no change needed"
+            or (prefix == "stream_title" and re.fullmatch(r"title already current for day [1-9][0-9]{0,8}; no change needed", message))):
+        outcome, reason = "unchanged", "none"
+    elif (message.startswith("OK: updated title=")
+          or (prefix == "stream_title" and message.startswith("OK: title updated -> "))):
+        outcome, reason = "twitch_updated", "none"
+    elif message.startswith("current: ") or (prefix == "stream_title" and message.startswith("current title: ")):
+        outcome, reason = "channel_read", "none"
+    elif message.startswith("desired title: "):
+        outcome, reason = "composed", "none"
+    elif re.fullmatch(r"using credential: TWITCH_(?:TITLE|PREDICTIONS|BOT)_TOKEN", message):
+        outcome, reason = "credential_selected", "none"
+    result.update(observed_outcome=outcome, observed_reason=reason)
+    result["record_status"] = (
+        "unrecognized" if outcome == "unknown"
+        else "stale" if age > STREAM_TITLE_SYNC_MAX_AGE_SEC else "fresh"
+    )
+    try:
+        journal_stamp = dt.datetime.strptime(sync["occurred_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+        if sync.get("event") == "invoked":
+            result["journal_relation"] = (
+                "time_window_only" if 0 <= stamp - journal_stamp <= 120
+                else "not_correlated"
+            )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return result
+
+
+def _stream_title_day_script(soren):
+    result = {"record_status": "unreadable", "mode": None, "executable": None,
+              "read_rejection": "unknown"}
+    fd = directory = None
+    try:
+        fd, directory, info = _stream_title_open_fixed(soren, ("update_stream_title_day.sh",))
+        result.update(record_status="observed", mode=f"{stat.S_IMODE(info.st_mode):04o}",
+                      executable=bool(info.st_mode & stat.S_IXUSR), read_rejection="none")
+    except FileNotFoundError:
+        result["record_status"] = "absent"
+    except _StreamTitleUnsafe as error:
+        result["read_rejection"] = error.reason
+    except (OSError, ValueError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if directory is not None:
+            os.close(directory)
+    return result
+
+
+def _stream_title_day_unit(scope, kind):
+    # Result/exit_status are the manager's LAST execution, whose freshness and
+    # relationship to a title log are unproven, not evidence of today's tick.
+    result = {"load_state": "unknown", "active_state": "unknown",
+              "enabled_state": "unknown", "result": "unknown",
+              "exit_status": None, "result_freshness": "unknown"}
+    properties = ("LoadState", "ActiveState", "UnitFileState", "Result",
+                  "ExecMainCode", "ExecMainStatus")
+    answer = _systemctl_scope(scope, ["show", f"soren-title-day.{kind}",
+                                    "--property=" + ",".join(properties), "--no-pager"], timeout=1)
+    if answer is None or len(answer[1]) > 4096:
+        return result
+    values = {}
+    for line in answer[1].splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key not in properties or key in values:
+            return result
+        values[key] = value
+    allowed = {
+        "load_state": ("LoadState", {"loaded", "not-found", "error", "masked", "bad-setting", "merged", "stub"}),
+        "active_state": ("ActiveState", {"active", "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "refreshing"}),
+        "enabled_state": ("UnitFileState", {"enabled", "enabled-runtime", "disabled", "static", "masked", "masked-runtime", "linked", "linked-runtime", "alias", "indirect", "generated", "transient", "not-found", "bad"}),
+        "result": ("Result", {"success", "exit-code", "signal", "core-dump", "timeout", "watchdog", "start-limit-hit", "resources", "protocol", "exec-condition", "oom-kill"}),
+    }
+    for field, (key, choices) in allowed.items():
+        if values.get(key) in choices:
+            result[field] = values[key]
+    exit_status = values.get("ExecMainStatus", "")
+    if values.get("ExecMainCode") == "1" and re.fullmatch(r"[0-9]{1,3}", exit_status) and int(exit_status) <= 255:
+        result["exit_status"] = int(exit_status)
+    return result
+
+
+def _collect_stream_title_attempts(soren, state_dir, now, sync=None):
+    roots = {"soren": soren, "state": state_dir}
+    return {
+        "schema_version": 1,
+        "current_failure": "unknown",
+        "logs": {name: _stream_title_log_observation(roots[root], parts, prefix, now, sync)
+                 for name, (root, parts, prefix) in STREAM_TITLE_LOG_SOURCES.items()},
+        "day_script": _stream_title_day_script(soren),
+        "day_units": {scope: {kind: _stream_title_day_unit(scope, kind)
+                              for kind in ("service", "timer")}
+                      for scope in ("system", "user")},
+    }
+
+
 def _supervisor_directory(path, dir_fd=None):
     flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
              | getattr(os, "O_CLOEXEC", 0))
@@ -2892,6 +5632,131 @@ def _collect_tracked_drift(root):
     return classify_tracked_drift(scan_complete, parent_dirty, submodule_drift)
 
 
+# The direct broadcast template (next-corner card, rails) is served either from
+# the docich production checkout or from the Soren runtime copy, depending on
+# SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE. A deploy that changes the docich
+# file can therefore leave the live rails on the old template (#4284/#4289).
+# This read-only probe reports, per fixed candidate, the bounded identity and
+# the next-corner font sizes so the served file is observable without exposing
+# file contents, paths or the override value.
+BROADCAST_TEMPLATE_REL = "overlays/direct_broadcast_overlay.html"
+BROADCAST_TEMPLATE_MAX_BYTES = 8 * 1024 * 1024
+BROADCAST_TEMPLATE_ENV_KEYS = (
+    "SOREN_STREAM_BACKEND",
+    "SOREN_DIRECT_STAGE_LAYOUT",
+    "SOREN_DIRECT_OVERLAY_ENABLED",
+    "SOREN_DIRECT_BROADCAST_OVERLAY_ENABLED",
+    "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE",
+)
+
+
+def _env_file_value(path, key):
+    """Read one ``KEY=value`` from an env file without sourcing it."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line.startswith(key + "="):
+            continue
+        value = line.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value
+    return None
+
+
+def _broadcast_template_probe(path, now):
+    result = {"present": False}
+    try:
+        info = path.stat()
+    except OSError:
+        return result
+    # stat() may succeed while the follow-up metadata checks still fail on a
+    # protected production checkout; keep diagnostics best-effort (PR #4307
+    # found the same residual path after the v883 collector guard).
+    try:
+        if path.is_symlink() or not path.is_file():
+            return result
+    except OSError:
+        return result
+    result["present"] = True
+    result["size"] = info.st_size
+    result["mtime_age_sec"] = max(0, int(now - info.st_mtime))
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(BROADCAST_TEMPLATE_MAX_BYTES)
+    except OSError:
+        result["readable"] = False
+        return result
+    result["readable"] = True
+    result["sha256_16"] = hashlib.sha256(data).hexdigest()[:16]
+    result["has_next_corner_card"] = b'id="next-corner"' in data
+    for label in ("label", "when"):
+        match = re.search(
+            rb"\.next-corner-" + label.encode() + rb"\s*\{[^}]*font-size:\s*([0-9.]+)px",
+            data,
+        )
+        result[f"next_corner_{label}_font_px"] = (
+            float(match.group(1)) if match else None
+        )
+    return result
+
+
+def _safe_is_file(path):
+    """is_file() that treats an unreadable parent as absent.
+
+    The diagnostics collector always probes the production docich path; on a
+    runner where /home/ubuntu exists but is not readable, Path.is_file()
+    raises PermissionError and crashed every collector test (security-
+    regressions on PRs, 2026-11-15).
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _collect_broadcast_template(soren, docich_root=None, now=None):
+    """Fixed-category view of the resolved broadcast template identity."""
+    soren = Path(soren)
+    docich_root = Path(docich_root) if docich_root is not None else Path("/home/ubuntu/docich")
+    now = time.time() if now is None else now
+    env = {}
+    for key in BROADCAST_TEMPLATE_ENV_KEYS:
+        value = _env_file_value(soren / ".env", key)
+        # Only the template path is classified below; never emit its value.
+        env[key] = value if key != "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE" else None
+    override = _env_file_value(soren / ".env", "SOREN_DIRECT_BROADCAST_OVERLAY_HTML_FILE") or ""
+    override = override.strip()
+    docich_template = docich_root / BROADCAST_TEMPLATE_REL
+    soren_template = soren / BROADCAST_TEMPLATE_REL
+    if override:
+        if override == BROADCAST_TEMPLATE_REL:
+            resolved = "override-soren-relative"
+        elif Path(override).is_absolute() and Path(override) == docich_template:
+            resolved = "override-docich-absolute"
+        else:
+            resolved = "override-other"
+    elif _safe_is_file(docich_template):
+        resolved = "docich"
+    else:
+        resolved = "soren-fallback"
+    return {
+        "backend": env.get("SOREN_STREAM_BACKEND"),
+        "layout": env.get("SOREN_DIRECT_STAGE_LAYOUT"),
+        "overlay_enabled": env.get("SOREN_DIRECT_OVERLAY_ENABLED"),
+        "broadcast_enabled": env.get("SOREN_DIRECT_BROADCAST_OVERLAY_ENABLED"),
+        "override_present": bool(override),
+        "resolved_source": resolved,
+        "docich_template": _broadcast_template_probe(docich_template, now),
+        "soren_template": _broadcast_template_probe(soren_template, now),
+    }
+
+
 # Corner/program state filenames under the docich production state_dir. These
 # are the only files read by _collect_programs; announcement/script bodies are
 # deliberately never surfaced (statuses, timestamps and counters only).
@@ -2901,12 +5766,20 @@ CORNER_STATE_FILES = {
     "weather_corner": "weather_corner.json",
     "tsuitate_corner": "tsuitate_corner.json",
     "yoso_corner": "yoso_corner.json",
+    "doushi_corner": "doushi_corner.json",
+    "mystery_corner": "mystery_corner.json",
+    "lawsim_corner": "lawsim_corner.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
     "nethack_corner": "nethack_corner.json",
     "nethack_corner_manual": "nethack_corner_manual.json",
+    "soren91_corner": "soren91_corner.json",
+    "chart": "chart_corner_659_runtime.json",
 }
+
+# Fixed enum of the switch result a corner recorded in its own state file.
+SWITCH_STATUSES = frozenset({"queued", "succeeded", "failed", "rolled_back"})
 
 # These are the remaining sources consulted by rotation's live and retired
 # adapters. Do not derive filenames from state, catalog rows or request IDs.
@@ -2919,6 +5792,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
+    "doushi_corner", "mystery_corner", "lawsim_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -2979,6 +5853,17 @@ ROTATION_ERROR_KINDS = frozenset({
     "unexpected",
 })
 ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+# Fixed exclusion vocabulary of `CornerRotationManager._eligible()`. An enabled
+# manual-only corner is `manual-only`; a disabled or paused one is
+# `disabled-or-paused`, so the map distinguishes "enabled for manual reservation"
+# from "not enabled at all" without needing a reservation.
+ROTATION_EXCLUDED_REASONS = frozenset({
+    "disabled-or-paused", "manual-only", "adapter-unavailable",
+    # A released owner on this corner's shared state file could not be retired
+    # yet, so only that state file waits for the retry (#2354 review).
+    "released-owner-unretired",
+})
+ROTATION_EXCLUDED_LIMIT = 32
 # Fixed resolutions of the `failed_corners` ledger rows (#2187). `released`
 # means the scheduler settled the failed corner and kept rotating; the other
 # value means the shared slot could not be proven free, so the fail-closed
@@ -2991,12 +5876,66 @@ ROTATION_FAILED_CORNER_REASONS = frozenset({
     "execution-or-state-unverified",
     "base-game-unrestored",
     "restore-recovery-exhausted",
+    "terminal-owner-absent",
+    # Written by the fixed owner-only stale-owner release operation (#3682):
+    # the release evidence had left every durable record and the operator
+    # re-created it after re-proving the shared slot.
+    "stale-owner-admin-released",
 })
 ROTATION_AUTO_RESTORE_STATUSES = frozenset({
     "succeeded", "queued", "failed", "noop", "interrupted", "completed", "unknown", "none",
 })
+# Fixed detail codes the bounded restore replay can leave in its durable
+# record (#2479). Keep in sync with docich.corner_rotation.AUTO_RESTORE_DETAILS.
+ROTATION_AUTO_RESTORE_DETAILS = frozenset({
+    "not-a-restore-failure",
+    "restore-failure-unproven",
+    "restore-recovery-record-unproven",
+    "restore-prepared-source-unproven",
+    "restore-recovery-landing-unproven",
+    "restore-replay-source-unproven",
+    "restore-recovery-unproven",
+    "already released by rotation",
+    "bounded restore replay already terminal failed",
+    "terminal restore already failed; not replayed",
+    "terminal restore landing is not confirmed",
+    "terminal restore proof refused",
+    "terminal Hanjuku release was not confirmed",
+    "canonical stateの照合待ちです",
+    "canonicalと切替cleanupの完了を待っています",
+    "restoreのlockまたは証跡照合待ちです",
+    "同じrestore requestの受付待ちです",
+    "同じrestore requestの完了を待っています",
+    "restore再実行のreceiptとcleanupの照合待ちです",
+    "restore再実行のlockまたは証跡照合待ちです",
+    "restore終端とcleanupを確認してinterruptedとして確定しました",
+    "期限切れ後もgame switchが処理中のため終端を待ちます",
+})
+# Fixed per-corner outcomes of the released-owner settle (#2479). Keep in
+# sync with docich.corner_rotation.RELEASED_SETTLE_OUTCOMES.
+ROTATION_RELEASED_SETTLE_OUTCOMES = frozenset({
+    "retired", "deferred", "unretirable",
+})
 ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT = 3
+# Bounded terminal-phase plane recovery replayed by the rotation timer
+# (#4349).  Keep in sync with docich.corner_rotation.
+ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT = 3
+ROTATION_AUTO_PLANE_RECOVERY_STATUSES = ROTATION_AUTO_RESTORE_STATUSES | frozenset({
+    "busy", "rolled_back",
+})
 ROTATION_FAILED_CORNER_MAX = 8
+# A corner whose own state file is already terminal while game-switch still
+# holds its game as the canonical active owner is an operator action item,
+# not an overlay rendering bug: the shared card correctly reports the corner
+# as unavailable, and only diagnostics can say why the game stayed (#4226).
+# The reason comes only from the fixed failed_corners vocabulary; an
+# unexplained retention falls back to the fixed generic token.
+CORNER_RETAINED_TERMINAL_STATUSES = frozenset({
+    "idle", "completed", "interrupted", "expired", "failed",
+})
+CORNER_RETAINED_REASONS = ROTATION_FAILED_CORNER_REASONS | frozenset({
+    "corner-terminal-game-retained",
+})
 
 WEATHER_CORNER_STATUSES = frozenset({
     "idle", "starting", "active", "restoring", "completed", "interrupted", "failed",
@@ -3329,6 +6268,55 @@ def _rotation_evidence_file(state_dir, relative):
         return True, False, None
 
 
+def _chart_corner_projection(state_dir, state):
+    """Read chart corner runtime state and project only status/time/end_reason/runtime ownership.
+
+    Projects exactly: status, started_at, completed_at, end_reason, runtime_identity (game only).
+    Never emits: generated manuscript, secrets, payload bodies, or arbitrary runtime fields.
+    """
+    if not isinstance(state, dict):
+        return {
+            "status": "unknown",
+            "started_at": None,
+            "completed_at": None,
+            "end_reason": None,
+            "runtime_identity": None,
+        }
+
+    # Status - bounded status string
+    status = state.get("status")
+    if status not in frozenset({"idle", "ready", "starting", "active", "restoring",
+                                 "preparing", "recovery_required", "failed",
+                                 "completed", "interrupted", "expired", "running",
+                                 "promoted", "kept", "improved", "dry-run", "skipped",
+                                 "ab-staged"}):
+        status = "unknown"
+
+    # Runtime identity - only game field, never secrets or manuscript
+    identity = state.get("chart_runtime_identity") if isinstance(state.get("chart_runtime_identity"), dict) else None
+    runtime_game = identity.get("game") if identity and isinstance(identity.get("game"), str) and identity["game"] else None
+
+    # Time fields - use _rotation_time for consistent formatting
+    started_at = _rotation_time(state.get("started_at"))
+    completed_at = _rotation_time(state.get("completed_at"))
+
+    # End reason - only allow known values, unknown otherwise
+    end_reason = state.get("end_reason")
+    if end_reason not in frozenset({"duration", "manual", "switch-terminal-before-corner-active",
+                                      "released-failure-before-retry", "operator-moved-after-start",
+                                      "operator-moved-during-chart", "operator-moved-before-restore",
+                                      "operator-stopped-before-start", "unknown", None}):
+        end_reason = "unknown"
+
+    return {
+        "status": status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "end_reason": end_reason,
+        "runtime_identity": runtime_game,
+    }
+
+
 def _rotation_enum(value, allowed):
     return value if isinstance(value, str) and value in allowed else "unknown"
 
@@ -3538,7 +6526,10 @@ def _bounded_time(value):
 def _finite_number(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value if math.isfinite(value) else None
+    try:
+        return value if math.isfinite(value) else None
+    except (OverflowError, ValueError, TypeError):
+        return None
 
 
 def _file_age_sec(path, now):
@@ -3548,12 +6539,173 @@ def _file_age_sec(path, now):
         return -1
 
 
+AUDIO_QUEUE_DEFAULT = "tmp/.comment_queue"
+AUDIO_ITEM_PREFIX = "comment_"
+AUDIO_QUEUED_SUFFIX = ".txt"
+AUDIO_PLAYING_SUFFIX = ".playing"
+
+
+def _comment_queue_dir(soren):
+    """The queue the audio worker consumes, as far as diagnostics may resolve it.
+
+    ``COMMENT_QUEUE_DIR`` from the collector's own environment wins; otherwise
+    the shell default ``tmp/.comment_queue`` below the Soren root. The Soren
+    ``.env`` is deliberately not read here: it holds secrets, and production
+    uses the default.
+    """
+    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
+    path = Path(raw) if raw else Path(AUDIO_QUEUE_DEFAULT)
+    return path if path.is_absolute() else soren / path
+
+
+def _collect_audio_queue(soren, now):
+    """Backlog of the shared comment/audio queue the corners gate on.
+
+    Only counts, fixed enums and ages are surfaced; item names, texts, the
+    queue's own logs and the Soren ``.env`` are never read. A missing or
+    unreadable queue is "quiet" because the corner boundary does not block on
+    it.
+    """
+    directory = _comment_queue_dir(Path(soren))
+    queued = playing = 0
+    readable = True
+    oldest_age = -1
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.startswith(AUDIO_ITEM_PREFIX):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                if name.endswith(AUDIO_QUEUED_SUFFIX):
+                    queued += 1
+                elif name.endswith(AUDIO_PLAYING_SUFFIX):
+                    playing += 1
+                else:
+                    continue
+                age = _file_age_sec(Path(entry.path), now)
+                if age >= 0 and (oldest_age < 0 or age > oldest_age):
+                    oldest_age = age
+    except FileNotFoundError:
+        pass  # No queue yet: nothing is queued, and that is not an error.
+    except OSError:
+        readable = False
+    if not readable:
+        reason = "unreadable"
+    elif queued and playing:
+        reason = "queued+playing"
+    elif queued:
+        reason = "queued"
+    elif playing:
+        reason = "playing"
+    else:
+        reason = "quiet"
+    return {
+        "present": directory.is_dir(),
+        "readable": readable,
+        "queued": queued,
+        "playing": playing,
+        "oldest_age_sec": oldest_age,
+        "quiet": reason in ("quiet", "unreadable"),
+        "reason": reason,
+    }
+
+
+def _collect_prediction_round(root, now, boundary_completed):
+    """Progress of the Soren prediction round that holds the corner boundary.
+
+    A contested prediction runs for the advertised 48 games, which can take
+    hours, while the boundary file only carries ``completed_at``. Without the
+    round's own counters an operator cannot tell "still counting" from
+    "completed but the settlement never reached the boundary", and a corner
+    that waits at the boundary looks stuck. Only fixed counters, enums and
+    ages are emitted; the prediction id and outcome ids stay private.
+    """
+    path = root / "current_prediction.json"
+    present, readable, data = _load_state_file(path)
+    if not present:
+        # No prediction round is running: emit no subsection at all so the
+        # envelope is byte-identical to the pre-#4719 shape and cannot push
+        # another section over the diagnostics budget.
+        return None
+    retry_present, retry_readable, retry = _load_state_file(
+        root / "prediction_retry" / "resolve.json"
+    )
+    retry_next = _finite_number(retry.get("next_retry_at")) if retry_readable else None
+    http_code = retry.get("http_code") if retry_readable else None
+    fence = root / "regression_check_in_progress"
+    entry = {
+        "present": present,
+        "readable": readable,
+        "round_version": None,
+        "games_completed": None,
+        "max_games": None,
+        "remaining_games": None,
+        "target_first_game": None,
+        "last_game_num": None,
+        "created_age_sec": -1,
+        "progress_age_sec": _file_age_sec(path, now),
+        "fence_present": fence.is_file(),
+        "fence_age_sec": _file_age_sec(fence, now),
+        "retry": {
+            "present": retry_present,
+            "readable": retry_readable,
+            "attempt": _bounded_int(retry.get("attempt")) if retry_readable else None,
+            "next_retry_at": int(retry_next) if retry_next is not None else None,
+            "retry_active": (retry_next is not None and retry_next > now),
+            "http_code": (str(http_code)[:16] if http_code is not None else None),
+        },
+        "complete": None,
+        "settlement_pending": None,
+        "settlement_pending_sec": None,
+    }
+    if not readable:
+        return entry
+
+    def _counter(key, limit=1_000_000):
+        value = _bounded_int(data.get(key))
+        return value if value is not None and 0 <= value <= limit else None
+
+    version = _counter("round_version", 99)
+    completed = _counter("games_completed")
+    maximum = _counter("max_games")
+    entry.update(
+        round_version=version,
+        games_completed=completed,
+        max_games=maximum,
+        remaining_games=(max(0, maximum - completed)
+                         if completed is not None and maximum is not None else None),
+        target_first_game=_counter("target_first_game"),
+        last_game_num=_counter("last_game_num"),
+        created_age_sec=_bounded_age(data.get("created_at"), now),
+    )
+    if completed is not None and maximum is not None and maximum > 0 and completed >= maximum:
+        entry["complete"] = True
+        try:
+            wrote_at = path.stat().st_mtime
+        except OSError:
+            wrote_at = None
+        if wrote_at is not None:
+            pending = boundary_completed is None or boundary_completed < wrote_at
+            entry["settlement_pending"] = bool(pending)
+            if pending:
+                entry["settlement_pending_sec"] = max(0, int(now - wrote_at))
+    elif completed is not None and maximum is not None:
+        entry["complete"] = False
+    return entry
+
+
 def _collect_boundary(root, now):
     """Freshness of the confirmed cycle boundaries the corners gate on.
 
     The boundary is published in the Soren state dir (see
-    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). Only the
-    completion timestamp and its age are surfaced.
+    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). The
+    completion timestamp and its age are surfaced, plus the prediction round's
+    own progress so a long contest can be told apart from a stalled settlement.
     """
     result = {}
     for kind in ("improvement", "prediction"):
@@ -3565,6 +6717,13 @@ def _collect_boundary(root, now):
             "completed_at": completed,
             "age_sec": int(now - completed) if completed is not None else -1,
         }
+    round_state = _collect_prediction_round(
+        root, now, result["prediction"]["completed_at"]
+    )
+    if round_state is not None:
+        result["prediction"]["round"] = round_state
+    # root is <soren>/tmp/state, so the Soren root is two levels up.
+    result["audio"] = _collect_audio_queue(root.parent.parent, now)
     return result
 
 
@@ -3612,6 +6771,128 @@ def _collect_ab(soren, now):
     entry["games_tainted"] = tainted
     entry["last_arm"] = _bounded_str(last_arm, 8)
     return entry
+
+
+# Fixed game set whose match-end records back the broadcast score-stats panel.
+# Paths are always derived from this tuple, never from state input (#2392).
+RETRO_SCORELOG_GAMES = (
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
+)
+RETRO_SCORELOG_TAIL_BYTES = 64 * 1024
+# Safety cap for pathological (very short) lines; the byte bound is the real
+# window.  A real match record is ~70-90 bytes, so production logs stay well
+# inside both and are scanned in full (`truncated=false`).
+RETRO_SCORELOG_MAX_LINES = 2000
+RETRO_SCORELOG_LAST = 5
+# Producers today: the CLI wrappers, the resolver brain and the corner-recorded
+# live scores. Anything else is counted as "other" instead of echoed.
+RETRO_SCORELOG_SOURCES = ("agent", "live", "wrapper")
+RETRO_SCORELOG_MAX_SCORE = 10**9
+
+
+def _collect_retro_scores(state_dir, now):
+    """Bounded, sanitized tail of each game's match-end scorelog (#2392).
+
+    A CLI wrapper appends one record per finished match.  The regression this
+    evidence exists for is a wrapper that keeps treating a lingering game-over
+    pane as "in play" and therefore appends the same confirmed score every
+    poll, so the projection has to answer "how many records, and how long is
+    the longest run of one repeated score" without exposing the raw log.
+
+    Only the fixed game names are read, only the file tail is scanned, and
+    only bounded integers, the enumerated producers and the duplicate-run
+    length are emitted.  Other record fields (clip ids, hashes, paths, free
+    text) are never projected.
+
+    ``records`` and ``max_same_score_run`` are window-scoped.  While
+    ``truncated=false`` the whole log was scanned, so the ``records`` delta
+    across a corner run is the exact number of appended records; with
+    ``truncated=true`` the count only lower-bounds the log, and acceptance
+    reads ``last`` and ``max_same_score_run`` (the repeated-poll signature)
+    instead.  ``last`` is oldest-first.
+    """
+    scores_dir = Path(state_dir) / "scores"
+    result = {
+        "present": False,
+        "game_count": len(RETRO_SCORELOG_GAMES),
+        "games": {},
+    }
+    for game in RETRO_SCORELOG_GAMES:
+        entry = {
+            "present": False,
+            "readable": False,
+            "records": 0,
+            "invalid": 0,
+            "truncated": False,
+            "sources": {name: 0 for name in (*RETRO_SCORELOG_SOURCES, "other")},
+            "max_same_score_run": 0,
+            "last": [],
+            "age_sec": -1,
+        }
+        path = scores_dir / f"{game}.jsonl"
+        try:
+            if path.is_symlink() or not path.is_file():
+                result["games"][game] = entry
+                continue
+            st = path.stat()
+        except OSError:
+            result["games"][game] = entry
+            continue
+        entry["present"] = True
+        result["present"] = True
+        entry["age_sec"] = _file_age_sec(path, now)
+        tail = st.st_size > RETRO_SCORELOG_TAIL_BYTES
+        try:
+            with open(path, "rb") as handle:
+                if tail:
+                    handle.seek(st.st_size - RETRO_SCORELOG_TAIL_BYTES)
+                raw = handle.read(RETRO_SCORELOG_TAIL_BYTES)
+        except OSError:
+            result["games"][game] = entry
+            continue
+        entry["readable"] = True
+        entry["truncated"] = tail
+        lines = raw.split(b"\n")
+        if tail:
+            lines = lines[1:]  # drop the partial line the seek landed inside
+        lines = [line for line in lines if line.strip()]
+        if len(lines) > RETRO_SCORELOG_MAX_LINES:
+            lines = lines[-RETRO_SCORELOG_MAX_LINES:]
+            entry["truncated"] = True
+        scores = []
+        last = []
+        for line in lines:
+            try:
+                row = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                row = None
+            if not isinstance(row, dict):
+                entry["invalid"] += 1
+                continue
+            score = row.get("score")
+            if type(score) is not int or not 0 <= score <= RETRO_SCORELOG_MAX_SCORE:
+                entry["invalid"] += 1
+                continue
+            producer = row.get("source")
+            name = producer if producer in RETRO_SCORELOG_SOURCES else "other"
+            entry["sources"][name] += 1
+            entry["records"] += 1
+            scores.append(score)
+            last.append({
+                "ts": _bounded_time(row.get("ts")),
+                "score": score,
+                "source": name,
+            })
+        run = 0
+        previous = None
+        for score in scores:
+            run = run + 1 if score == previous else 1
+            previous = score
+            if run > entry["max_same_score_run"]:
+                entry["max_same_score_run"] = run
+        entry["last"] = last[-RETRO_SCORELOG_LAST:]
+        result["games"][game] = entry
+    return result
 
 
 _HOTLOAD_STATES = frozenset({"consistent", "mixed", "partial", "unestablished"})
@@ -3681,8 +6962,15 @@ def _project_corner_state(data):
         data.get("status") == "failed"
         and (error_code == "recovery_required" or legacy_recovery_error)
     )
+    finish_reason = data.get("finish_reason")
+    unchanged_seconds = _finite_number(data.get("screen_unchanged_seconds"))
+    screen_readable = data.get("screen_readable")
     return {
         "status": _bounded_str(data.get("status"), 32),
+        # Persisted producer reasons only; never infer a boundary from timing.
+        "finish_reason": (finish_reason if isinstance(finish_reason, str)
+                          and finish_reason in {"terminal", "stalled", "recover", "force_recover"}
+                          else None),
         "date": _bounded_str(data.get("date"), 16),
         "game": _bounded_str(data.get("game"), 64),
         "previous_game": _bounded_str(data.get("previous_game"), 64),
@@ -3704,14 +6992,35 @@ def _project_corner_state(data):
         "end_reason": (data.get("end_reason") if data.get("end_reason")
                        in {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                            "manual_forced_stop",
-                           "switch-terminal-before-corner-active", "game-completed",
+                           "switch-terminal-before-corner-active", "game-completed", "game_clear",
                            "queue-timeout", "beta-stopped", "manual", "match-timeout",
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
+                           "operator-moved-during-doushi",
+                           "operator-moved-during-mystery",
+                           "operator-moved-during-lawsim",
+                           "case-completed", "case-error",
                            "duration",
+                           "audio-complete",
                            "operator-moved-after-start",
                            "operator-moved-before-restore",
-                           "operator-stopped-before-start"} else None),
+                           "operator-stopped-before-start",
+                           # #3174: the admission gate expires a hanjuku start
+                           # whose remaining budget cannot cover drain+probe;
+                           # without this entry the refusal would project as
+                           # null and be indistinguishable from an
+                           # unregistered reason.
+                           "start-budget-insufficient",
+                           # #3174 follow-up: the queued-start expiry writes
+                           # this reason when the slot deadline itself has
+                           # elapsed; it predates the admission gate but was
+                           # never allowlisted and would project as null.
+                           "start-deadline-expired",
+                           # #2479: a released owner that finished its run
+                           # before the restore switch failed is retired
+                           # with this reason; without it the settled state
+                           # would project as null like an unknown reason.
+                           "released-failure-after-corner-finished"} else None),
         "game_result": _project_game_result(data.get("beta_result")),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
@@ -3719,9 +7028,1187 @@ def _project_corner_state(data):
         "bot_actions_sent": _bounded_int(data.get("bot_actions_sent")),
         "battles_started": _bounded_int(data.get("battles_started")),
         "battles_finished": _bounded_int(data.get("battles_finished")),
-        "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
+        "screen_unchanged_seconds": (unchanged_seconds if unchanged_seconds is not None
+                                     and unchanged_seconds >= 0 else None),
+        "screen_readable": screen_readable if type(screen_readable) is bool else None,
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
             "hanjuku-script-v1", "hanjuku-chart-v2",
+            "hanjuku-chart-v224-overwhelming-melee-egg-save",
+            "hanjuku-chart-v225-merchant-bargains",
+            "hanjuku-chart-v226-general-egg-recheck",
+            "hanjuku-chart-v227-healthy-egg-margin",
+            "hanjuku-chart-v228-bijin-request-decline",
+            "hanjuku-chart-v229-bijin-hold-release",
+            "hanjuku-chart-v232-low-army-refill-first",
+            "hanjuku-chart-v233-boss-card-proven-absent",
+            "hanjuku-chart-v234-refill-outcome",
+            "hanjuku-chart-v235-boss-card-rebuy",
+            "hanjuku-chart-v236-readable-prose-boundary",
+            "hanjuku-chart-v237-clash-gauge-dropper-carry",
+            "hanjuku-chart-v238-native-map-registration",
+            "hanjuku-chart-v239-map-bootstrap-source-guard",
+            "hanjuku-chart-v240-map-identity-hold",
+            "hanjuku-chart-v241-deploy-endpoint-guard",
+            "hanjuku-chart-v238-queen-command-window",
+            "hanjuku-chart-v239-concert-picker-escape",
+            "hanjuku-chart-v241-sortie-confirm-cancel",
+            "hanjuku-chart-v244-payroll-roster-weakest",
+            "hanjuku-chart-v245-hero-repair-reservation",
+            "hanjuku-chart-v247-house-cancel-diagnostics",
+            "hanjuku-chart-v248-bijin-house-policy",
+            "hanjuku-chart-v249-shared-egg-plan",
+            "hanjuku-chart-v250-low-hp-melee-advantage",
+            "hanjuku-chart-v251-shared-egg-plan",
+            "hanjuku-chart-v252-current-roster-recruit",
+            "hanjuku-chart-v253-bijin-monthly-owner",
+            "hanjuku-chart-v254-bijin-stall-bound",
+            "hanjuku-chart-v255-native-map-registration",
+            "hanjuku-chart-v256-approx-source-map",
+            "hanjuku-chart-v257-approx-fallback",
+            "hanjuku-chart-v258-approx-default",
+            "hanjuku-chart-v259-known-reanchor",
+            "hanjuku-chart-v260-reanchor-restart",
+            "hanjuku-chart-v261-single-roof-reanchor",
+            "hanjuku-chart-v262-status-label-edges",
+            "hanjuku-chart-v263-probe-release-text",
+            "hanjuku-chart-v264-house-needs-chapter",
+            "hanjuku-chart-v265-resume-inherit-chapter",
+            "hanjuku-chart-v266-interim-before-search",
+            "hanjuku-chart-v267-chapter3-measured",
+            "hanjuku-chart-v268-all-chapter-castles",
+            "hanjuku-chart-v269-field-text-by-text",
+            "hanjuku-chart-v270-battle-menu-open-wait",
+            "hanjuku-chart-v271-y-jump-unreadable-bounded",
+            "hanjuku-chart-v272-y-jump-stationary-bounded",
+            "hanjuku-chart-v273-defense-break-execution",
+            "hanjuku-chart-v275-battle-opening-dialogue",
+            "hanjuku-chart-v276-chapter-three-relays",
+            "hanjuku-chart-v277-nav-motion-continuity",
+            "hanjuku-chart-v278-chapter-three-boss-cell",
+            "hanjuku-chart-v279-jump-foreground-retry",
+            "hanjuku-chart-v280-approx-fallback-source-chapters",
+            "hanjuku-chart-v281-probe-empty-relay",
+            "hanjuku-chart-v282-world-map-sea-cursor",
+            "hanjuku-chart-v283-ring-edge-align-half",
+            "hanjuku-chart-v284-long-march-bind",
+            "hanjuku-chart-v285-egg-drop-substitute",
+            "hanjuku-chart-v286-recall-yields-month-scene",
+            "hanjuku-chart-v287-retry-owned-target",
+            "hanjuku-chart-v288-boss-jump-fresh-attempt",
+            "hanjuku-chart-v289-monster-skill-no-progress",
+            "hanjuku-chart-v290-monster-stall-faster",
+            "hanjuku-chart-v291-defense-handoff-win",
+            "hanjuku-chart-v293-boss-cell-not-cave",
+            "hanjuku-chart-v295-boss-marker-on-building",
+            "hanjuku-chart-v297-camp-menu-reopen",
+            "hanjuku-chart-v298-okunote-effect-label",
+            "hanjuku-chart-v300-recall-picker-stationary",
+            "hanjuku-chart-v302-defense-loss-flag",
+            "hanjuku-chart-v303-boss-flag-not-read",
+            "hanjuku-chart-v304-boss-sortie-overdue",
+            "hanjuku-chart-v305-hero-castle-guard",
+            "hanjuku-chart-v306-dome-camp",
+            "hanjuku-chart-v307-card-egg-reach",
+            "hanjuku-chart-v308-snow-field",
+            "hanjuku-chart-v309-card-stock-skip",
+            "hanjuku-chart-v310-monster-menu-drawing",
+            "hanjuku-chart-v311-overtaken-confirm",
+            "hanjuku-chart-v312-monster-unchosen-turn",
+            "hanjuku-chart-v313-monster-overtaken-turn",
+            "hanjuku-chart-v314-summon-box-pace",
+            "hanjuku-chart-v315-summon-entrance-pace",
+            "hanjuku-chart-v316-summon-dialogue-wait",
+            "hanjuku-chart-v317-partial-box-fold",
+            "hanjuku-chart-v318-nav-recover-bound",
+            "hanjuku-chart-v319-attack-defender-successor",
+            "hanjuku-chart-v320-dispatch-not-empty",
+            "hanjuku-chart-v321-camp-unobserved-skip",
+            "hanjuku-chart-v322-defense-win-unread-list",
+            "hanjuku-chart-v323-okunote-open-menu",
+            "hanjuku-chart-v324-hold-gate-reload",
+            "hanjuku-chart-v325-lost-chart-general",
+            "hanjuku-chart-v326-target-jump-settle",
+            "hanjuku-chart-v327-season-king-sites",
+            "hanjuku-chart-v328-site-card-kit",
+            "hanjuku-chart-v329-hopeless-attack-retreat",
+            "hanjuku-chart-v330-site-strongest-egg",
+            "hanjuku-chart-v331-site-entry-repeat",
+            "hanjuku-chart-v333-site-keep-defender",
+            "hanjuku-chart-v335-y-jump-interrupted",
+            "hanjuku-chart-v337-site-egg-stays",
+            "hanjuku-chart-v338-season-king-panel",
+            "hanjuku-chart-v339-okunote-redraw",
+            "hanjuku-chart-v340-site-overdue-planned",
+            "hanjuku-chart-v341-chikyu-harmagedon-general",
+            "hanjuku-chart-v343-defender-okunote-melee-behind",
+            "hanjuku-chart-v344-sortie-list-walk",
+            "hanjuku-chart-v345-roster-unplaced",
+            "hanjuku-chart-v346-thin-flag-camp",
+            "hanjuku-chart-v347-late-boss-entry",
+            "hanjuku-chart-v348-goals-ledger",
+            "hanjuku-chart-v349-boss-attrition-pool",
+            "hanjuku-chart-v350-boss-stale-retry",
+            "hanjuku-chart-v351-boss-stall-recovery",
+            "hanjuku-chart-v352-fort-camp-recall",
+            "hanjuku-chart-v353-sortie-over-repair-retry",
+            "hanjuku-chart-v354-bargains-after-low-army",
+            "hanjuku-chart-v355-camp-read-recalls-now",
+            "hanjuku-chart-v356-status-reads-only-changes",
+            "hanjuku-chart-v357-cards-wear-down",
+            "hanjuku-chart-v358-mechanical-conquest",
+            "hanjuku-chart-v359-okunote-spent-egg-summon",
+            "hanjuku-chart-v360-batch-recruit-no-rescan",
+            "hanjuku-chart-v361-jump-foreground-retry",
+            "hanjuku-chart-v362-summon-okunote-scroll",
+            "hanjuku-chart-v363-summon-unconfirmed-scroll",
+            "hanjuku-chart-v365-okunote-committed-menu",
+            "hanjuku-chart-v366-okunote-parent-resend",
+            "hanjuku-chart-v367-okunote-committed-select",
+            "hanjuku-chart-v368-merchant-exit-log",
+            "hanjuku-chart-v369-house-entry-retry",
+            "hanjuku-chart-v370-move-overdue-settle",
+            "hanjuku-chart-v371-probe-moved-into-castle",
+            "hanjuku-chart-v372-plan-step-identity",
+            "hanjuku-chart-v373-launch-marker-probe",
+            "hanjuku-chart-v374-cheap-vendor-pass",
+            "hanjuku-chart-v375-closing-text-advance",
+            "hanjuku-chart-v376-plan-spare-reservation",
+            "hanjuku-chart-v377-plan-exhausted-interim",
+            "hanjuku-chart-v378-fort-menu-handover",
+            "hanjuku-chart-v379-garrison-rotation",
+            "hanjuku-chart-v380-fort-nearest-castle",
+            "hanjuku-chart-v381-strong-card-first",
+            "hanjuku-chart-v382-boss-wave-double",
+            "hanjuku-chart-v383-boss-step-rearm",
+            "hanjuku-chart-v384-boss-damage-cards",
+            "hanjuku-chart-v385-boss-wave-past-stalled-retake",
+            "hanjuku-chart-v386-ch6-world-map-grey-sea",
+            "hanjuku-chart-v387-cards-open-proactively",
+            "hanjuku-chart-v388-ch6-slate-enemy-castle",
+            "hanjuku-chart-v389-recall-picker-fallback-egg-margin",
+            "hanjuku-chart-v390-launch-roster-evidence",
+            "hanjuku-chart-v391-country-status-after-recruit",
+            "hanjuku-chart-v392-ch6-march-arrival",
+            "hanjuku-chart-v393-recall-picker-axis-alternate",
+            "hanjuku-chart-v394-merchant-recruit-reserve",
+            "hanjuku-chart-v395-ch6-boss-cell",
+            "hanjuku-chart-v396-recall-picker-cycle",
+            "hanjuku-chart-v397-picker-visit-budget",
+            "hanjuku-chart-v398-decision-record-dedupe",
+            "hanjuku-chart-v399-house-idle-escape",
+            "hanjuku-chart-v400-dedupe-json-signature",
+            "hanjuku-chart-v401-boss-march-window",
+            "hanjuku-chart-v402-boss-cell-evidence",
+            "hanjuku-chart-v403-boss-cell-probe",
+            "hanjuku-chart-v404-boss-probe-rotation",
+            "hanjuku-chart-v405-plan-purpose",
+            "hanjuku-chart-v406-plan-stale",
+            "hanjuku-chart-v407-boss-wave-solo",
+            "hanjuku-chart-v408-order-start-backoff",
+            "hanjuku-chart-v409-stale-plan-once",
+            "hanjuku-chart-v410-boss-marker-confirm",
+            "hanjuku-chart-v411-stale-record-once",
+            "hanjuku-chart-v412-stale-tally",
+            "hanjuku-chart-v413-plan-readopt",
+            "hanjuku-chart-v414-stale-active",
+            "hanjuku-chart-v415-retry-suppress",
+            "hanjuku-chart-v416-source-content-key",
+            "hanjuku-chart-v417-source-mismatch",
+            "hanjuku-chart-v418-giveup-fallback",
+            "hanjuku-chart-v419-giveup-probe",
+            "hanjuku-chart-v420-code-probe",
+            "hanjuku-chart-v421-fallback-tally",
+            "hanjuku-chart-v422-miss-reset",
+            "hanjuku-chart-v423-giveup-gate",
+            "hanjuku-chart-v424-stale-yjump",
+            "hanjuku-chart-v425-yjump-active-only",
+            "hanjuku-chart-v426-yjump-budget",
+            "hanjuku-chart-v427-yjump-budget-hard",
+            "hanjuku-chart-v428-unknown-hold",
+            "hanjuku-chart-v429-select-centered",
+            "hanjuku-chart-v430-cursor-still",
+            "hanjuku-chart-v431-cursor-still-6",
+            "hanjuku-chart-v432-nav-continuity",
+            "hanjuku-chart-v433-map-no-cursor",
+            "hanjuku-chart-v434-y-jump-block-lapses",
+            "hanjuku-chart-v435-nav-last-seed",
+            "hanjuku-chart-v436-stationary-budget-retry",
+            "hanjuku-chart-v438-brain-exit-location",
+            "hanjuku-chart-v439-drive-after-recenter",
+            "hanjuku-chart-v440-mixed-key-state",
+            "hanjuku-chart-v441-recall-skip-per-camp",
+            "hanjuku-chart-v442-friendly-entry-after-long-march",
+            "hanjuku-chart-v443-card-select-hand-left-edge",
+            "hanjuku-chart-v444-boss-probe-rotation-key",
+            "hanjuku-chart-v445-boss-march-plan-window",
+            "hanjuku-chart-v446-boss-launch-kept",
+            "hanjuku-chart-v447-surplus-card-buy",
+            "hanjuku-chart-v448-boss-priority-moves",
+            "hanjuku-chart-v449-boss-probe-shift",
+            "hanjuku-chart-v450-boss-approx-cells",
+            "hanjuku-chart-v451-boss-wave-volume",
+            "hanjuku-chart-v452-lampkin-boss-forms",
+            "hanjuku-chart-v453-boss-probe-source",
+            "hanjuku-chart-v454-spent-sortie-expiry",
+            "hanjuku-chart-v455-forget-defeated-unknown",
+            "hanjuku-chart-v456-sortie-outcome",
+            "hanjuku-chart-v457-boss-first-waves",
+            "hanjuku-chart-v458-zombie-sortie-expiry",
+            "hanjuku-chart-v459-post-month-status",
+            "hanjuku-chart-v460-release-clears-sortie",
+            "hanjuku-chart-v461-zombie-hard-expiry",
+            "hanjuku-chart-v462-castle-jump",
+            "hanjuku-chart-v463-post-month-marker",
+            "hanjuku-chart-v464-locate-status-panel",
+            "hanjuku-chart-v465-dialogue-yield",
+            "hanjuku-chart-v466-castle-select-occluded-roof",
+            "hanjuku-chart-v467-observed-march-end",
+            "hanjuku-chart-v468-live-march-refresh",
+            "hanjuku-chart-v469-boss-wave-nearest",
+            "hanjuku-chart-v470-boss-wave-egg-rank",
+            "hanjuku-chart-v471-boss-entry-no-return",
+            "hanjuku-chart-v472-boss-hp-note",
+            "hanjuku-chart-v473-house-entry-own-cell",
+            "hanjuku-chart-v474-concert-text-advance",
+            "hanjuku-chart-v475-event-text-advance",
+            "hanjuku-chart-v476-house-entry-verified",
+            "hanjuku-chart-v477-recall-interruption",
+            "hanjuku-chart-v478-recruit-wage-headroom",
+            "hanjuku-chart-v479-summon-monster-hp-9999",
+            "hanjuku-chart-v480-recruit-partial-roster",
+            "hanjuku-chart-v481-recruit-partial-gate",
+            "hanjuku-chart-v482-recruit-partial-cash",
+            "hanjuku-chart-v483-no-empty-castle",
+            "hanjuku-chart-v484-recruit-month-count-carry",
+            "hanjuku-chart-v485-recruit-garrison-lower-bound",
+            "hanjuku-chart-v486-reanchor-resume",
+            "hanjuku-chart-v487-shop-holding-limit",
+            "hanjuku-chart-v488-card-hold-cap",
+            "hanjuku-chart-v489-post-month-stray-menu",
+            "hanjuku-chart-v490-reanchor-owner-resume",
+            "hanjuku-chart-v491-post-month-battle-resume",
+            "hanjuku-chart-v492-align-stall",
+            "hanjuku-chart-v493-concert-trade-guard",
+            "hanjuku-chart-v494-move-honors-plan-general",
+            "hanjuku-chart-v495-sortie-stops-at-named-general",
+            "hanjuku-chart-v496-align-limit-2",
+            "hanjuku-chart-v497-castle-jump-hand-blink",
+            "hanjuku-chart-v498-month-locate-ownership",
+            "hanjuku-chart-v499-semantic-hold-key",
+            "hanjuku-chart-v500-boss-roster-probe",
+            "hanjuku-chart-v505-post-month-blocked-release",
+            "hanjuku-chart-v506-roster-end-stall",
+            "hanjuku-chart-v507-trade-result-release",
+            "hanjuku-chart-v508-unknown-location-recheck",
+            "hanjuku-chart-v509-month-status-counts-and-recruit-priority",
+            "hanjuku-chart-v510-broken-boss-camp-recall",
+            "hanjuku-chart-v511-month-status-single-read-and-counts",
+            "hanjuku-chart-v512-month-status-page1-marker",
+            "hanjuku-chart-v513-chapter-end-save-party",
+            "hanjuku-chart-v514-plan-failed-step-rearm",
+            "hanjuku-chart-v515-plan-identity-compare",
+            "hanjuku-chart-v516-singleton-roster-probe",
+            "hanjuku-chart-v517-summon-attack-data",
+            "hanjuku-chart-v518-input-tempo",
+            "hanjuku-chart-v519-carry-manifest",
+            "hanjuku-chart-v520-recall-task-retry",
+            "hanjuku-chart-v521-powerless-return",
+            "hanjuku-chart-v522-hero-not-planned",
+            "hanjuku-chart-v523-manifest-json-state",
+            "hanjuku-chart-v524-menu-cursor-feedback",
+            "hanjuku-chart-v525-card-scroll-catalogue",
+            "hanjuku-chart-v526-completed-season-sites",
+            "hanjuku-chart-v527-season-site-markers",
+            "hanjuku-chart-v528-season-site-terrain",
+            "hanjuku-chart-v529-site-step-rearm",
+            "hanjuku-chart-v530-chapter-scope-clear",
+            "hanjuku-chart-v531-endgame-boss-probes",
+            "hanjuku-chart-v532-hero-guard-preflight",
+            "hanjuku-chart-v534-probe-preflight-exemption",
+            "hanjuku-chart-v535-adjust-part-salvage",
+            "hanjuku-chart-v536-moving-boss-y-view",
+            "hanjuku-chart-v537-launch-marker-size",
+            "hanjuku-chart-v538-y-view-boss-cell",
+            "hanjuku-chart-v539-boss-cell-diagnostics",
+            "hanjuku-chart-v540-strongest-attacker",
+            "hanjuku-chart-v541-chapter-scope-hygiene",
+            "hanjuku-chart-v542-empty-garrison-read",
+            "hanjuku-chart-v543-capped-card-skip",
+            "hanjuku-chart-v544-boss-probe-fine-ring",
+            "hanjuku-chart-v545-boss-probe-diagnostics",
+            "hanjuku-chart-v546-boss-probe-diagonal",
+            "hanjuku-chart-v547-static-roster-marker",
+            "hanjuku-chart-v548-house-read-reuse",
+            "hanjuku-chart-v549-march-rate",
+            "hanjuku-chart-v550-post-month-diagnostics",
+            "hanjuku-chart-v551-card-scroll-hold",
+            "hanjuku-chart-v552-card-scroll-taps",
+            "hanjuku-chart-v554-post-month-result-fix",
+            "hanjuku-chart-v555-boss-phantom-step",
+            "hanjuku-chart-v556-ch6-boss-cell-up",
+            "hanjuku-chart-v557-battle-unknown-advance",
+            "hanjuku-chart-v558-boss-wave-egg-first",
+            "hanjuku-chart-v559-boss-panel-entry-bind",
+            "hanjuku-chart-v562-boss-egg-unusable",
+            "hanjuku-chart-v563-boss-egg-row-log",
+            "hanjuku-chart-v564-ch6-boss-cell-revert",
+            "hanjuku-chart-v565-boss-probe-scope",
+            "hanjuku-chart-v566-live-status-region",
+            "hanjuku-chart-v567-current-hp-sortie",
+            "hanjuku-chart-v568-ch9-corridor",
+            "hanjuku-chart-v569-general-label",
+            "hanjuku-chart-v570-minimap-port",
+            "hanjuku-chart-v571-march-blocked-settle",
+            "hanjuku-chart-v572-gap-region-read",
+            "hanjuku-chart-v573-ch9-hero-retreat-only",
+            "hanjuku-chart-v576-defense-loss-record",
+            "hanjuku-chart-v577-post-month-clean-reuse",
+            "hanjuku-chart-v578-post-month-clean-reuse",
+            "hanjuku-chart-v579-month-elapsed",
+            "hanjuku-chart-v580-roster-end-assumed",
+            "hanjuku-chart-v581-launch-probe-window",
+            "hanjuku-chart-v582-loss-garrison-known",
+            "hanjuku-chart-v583-unread-garrison-reinforce",
+            "hanjuku-chart-v574-castle-cursor-feedback",
+            "hanjuku-chart-v577-status-open-feedback",
+            "hanjuku-chart-v584-map-cursor-alignment",
+            "hanjuku-chart-v585-boss-hp-history",
+            "hanjuku-chart-v586-probe-actor-token",
+            "hanjuku-chart-v587-boss-hurtless-wave",
+            "hanjuku-chart-v588-monster-all-attack",
+            "hanjuku-chart-v589-monster-menu-identity",
+            "hanjuku-chart-v590-marker-hint",
+            "hanjuku-chart-v591-slot-egg-stop",
+            "hanjuku-chart-v592-garrison-deficit-first",
+            "hanjuku-chart-v593-empty-castle-staffing",
+            "hanjuku-chart-v594-plan-superseded",
+            "hanjuku-chart-v595-probe-dash",
+            "hanjuku-chart-v596-marker-reason",
+            "hanjuku-chart-v597-march-rate-default",
+            "hanjuku-chart-v598-marker-fallback-cause",
+            "hanjuku-chart-v599-marker-window",
+            "hanjuku-chart-v600-marker-tolerance-hint",
+            "hanjuku-chart-v601-rare-scan-jump",
+            "hanjuku-chart-v602-actor-name-guard",
+            "hanjuku-chart-v603-actor-ocr-slip",
+            "hanjuku-chart-v604-unreadable-name-slip",
+            "hanjuku-chart-v605-actor-slip-crash",
+            "hanjuku-chart-v606-short-name-slip",
+            "hanjuku-chart-v608-card-skip-departure",
+            "hanjuku-chart-v609-substitute-nonboss",
+            "hanjuku-chart-v610-confirm-blind-approve",
+            "hanjuku-chart-v611-confirm-double-a",
+            "hanjuku-chart-v612-hold-text-yield",
+            "hanjuku-chart-v613-card-name-table",
+            "hanjuku-chart-v614-rare-rewind-batch",
+            "hanjuku-chart-v615-jump-across-replan",
+            "hanjuku-chart-v616-jump-any-actor",
+            "hanjuku-chart-v617-jump-survives-replan",
+            "hanjuku-chart-v618-jump-orphan-hold",
+            "hanjuku-chart-v619-jump-unresolved-hold",
+            "hanjuku-chart-v620-wave-nearest-source",
+            "hanjuku-chart-v621-card-note-tolerant",
+            "hanjuku-chart-v622-kit-hold-shape",
+            "hanjuku-chart-v623-periodic-savestate",
+            "hanjuku-chart-v624-card-list-escape",
+            "hanjuku-chart-v625-ordinary-card-escape",
+            "hanjuku-chart-v626-confirm-unreadable-short",
+            "hanjuku-chart-v627-wave-strongest",
+            "hanjuku-chart-v628-wave-six",
+            "hanjuku-chart-v629-native-pixels",
+            "hanjuku-chart-v630-aspect-restored",
+            "hanjuku-chart-v632-clear-terminal-cli",
+            "hanjuku-chart-v633-okunote-exhausted-latch",
+            "hanjuku-chart-v634-okunote-exhausted-confirm",
+            "hanjuku-chart-v635-blind-confirm-top-row",
+            "hanjuku-chart-v636-empty-egg-card-fallback",
+            "hanjuku-chart-v637-rescue-exhausted-fallthrough",
+            "hanjuku-chart-v638-brain-autosave",
+            "hanjuku-chart-v639-autosave-on-observe",
+            "hanjuku-chart-v640-autosave-port",
+            "hanjuku-chart-v642-game-over-grace",
+            "hanjuku-chart-v643-cleared-stamp-kept",
+            "hanjuku-chart-v644-chapter-running-memory",
+            "hanjuku-chart-v645-dual-decode",
+            "hanjuku-chart-v646-chapterless-status-probe",
+            "hanjuku-chart-v647-card-batch-feedback",
+            "hanjuku-chart-v648-hero-castle-select-jump",
+            "hanjuku-chart-v649-road-defeat-settles",
+            "hanjuku-chart-v651-roster-marker-over-scroll-arrow",
+            "hanjuku-chart-v652-visible-castle-batch",
+            "hanjuku-chart-v654-sortie-retry-budget",
+            "hanjuku-chart-v655-repair-panel-sprite",
+            "hanjuku-chart-v656-target-close-settle",
+            "hanjuku-chart-v657-ch9-y-cursor",
+            "hanjuku-chart-v658-post-month-target-picker",
+            "hanjuku-chart-v659-manifest-wait-release",
+            "hanjuku-chart-v660-ch9-road-waves",
+            "hanjuku-chart-v661-ch9-front-staging",
+            "hanjuku-chart-v662-sortie-retry-deferral",
+            "hanjuku-chart-v663-ch9-all-forward",
+            "hanjuku-chart-v664-camp-recall-first",
+            "hanjuku-chart-v665-ch9-cursor-order-sortie",
+            "hanjuku-chart-v666-ch9-retake-waves",
+            "hanjuku-chart-v667-castle-status-not-list",
+            "hanjuku-chart-v668-ch9-mechanical-march",
+            "hanjuku-chart-v669-ch9-listed-is-present",
+            "hanjuku-chart-v670-status-check-on-list-kind",
+            "hanjuku-chart-v671-ch9-squads",
+            "hanjuku-chart-v672-okunote-candidate-close",
+            "hanjuku-chart-v673-hold-and-chapter",
+            "hanjuku-chart-v674-ch9-squad-not-reserved",
+            "hanjuku-chart-v675-state-budget",
+            "hanjuku-chart-v676-state-budget-bytes",
+            "hanjuku-chart-v677-drained-on-arrival",
+            "hanjuku-chart-v678-status-labels-not-generals",
+            "hanjuku-chart-v679-garrison-sanitized",
+            "hanjuku-chart-v680-location-unknown-ttl",
+            "hanjuku-chart-v681-month-sub-abandon",
+            "hanjuku-chart-v682-expire-on-observe",
+            "hanjuku-chart-v683-drained-recheck-inflight",
+            "hanjuku-chart-v684-hero-post-behind-front",
+            "hanjuku-chart-v685-drained-probe",
+            "hanjuku-chart-v686-present-generals-kinds",
+            "hanjuku-chart-v687-attack-company",
+            "hanjuku-chart-v688-settled-marches-pruned",
+            "hanjuku-chart-v689-stale-orders-retired",
+            "hanjuku-chart-v690-trade-song-tildes",
+            "hanjuku-chart-v691-tolerable-display-reads",
+            "hanjuku-chart-v693-recall-resume-after-scene",
+            "hanjuku-chart-v694-battle-menu-hold-escape",
+            "hanjuku-chart-v695-menu-hold-escape-kinds",
+            "hanjuku-chart-v696-menu-hold-blink",
+            "hanjuku-chart-v697-drained-across-months",
+            "hanjuku-chart-v698-drained-probe-rotates",
+            "hanjuku-chart-v699-yjump-unreachable-goal",
+            "hanjuku-chart-v700-owner-change-values",
+            "hanjuku-chart-v701-corridor-kit-approve",
+            "hanjuku-chart-v702-flip-prone-company",
+            "hanjuku-chart-v703-partial-page-residents",
+            "hanjuku-chart-v704-drained-min-hold",
+            "hanjuku-chart-v705-partial-page-candidates",
+            "hanjuku-chart-v705-owner-confirm-twice",
+            "hanjuku-chart-v706-company-deadline",
+            "hanjuku-chart-v707-partial-page-candidates",
+            "hanjuku-chart-v707-probe-budget",
+            "hanjuku-chart-v708-hero-move-refused",
+            "hanjuku-chart-v709-partial-page-candidates",
+            "hanjuku-chart-v710-idle-probe",
+            "hanjuku-chart-v711-march-no-refill",
+            "hanjuku-chart-v712-partial-launch-settle",
+            "hanjuku-chart-v713-idle-probe-spacing",
+            "hanjuku-chart-v714-stale-attempt-ttl",
+            "hanjuku-chart-v715-idle-tour-kept",
+            "hanjuku-chart-v716-wait-for-company",
+            "hanjuku-chart-v717-attack-defeat-cooldown",
+            "hanjuku-chart-v718-road-defeat-ledger",
+            "hanjuku-chart-v719-strongest-attacker",
+            "hanjuku-chart-v720-attack-hero-row",
+            "hanjuku-chart-v721-march-skips-chikujou",
+            "hanjuku-chart-v722-wounded-attacker",
+            "hanjuku-chart-v723-status-close-tempo",
+            "hanjuku-chart-v724-front-guard",
+            "hanjuku-chart-v725-attack-underpowered",
+            "hanjuku-chart-v726-egg-retry",
+            "hanjuku-chart-v727-wave-attacks",
+            "hanjuku-chart-v728-overdue-retention",
+            "hanjuku-chart-v729-capture-guard",
+            "hanjuku-chart-v730-wave-keeps-probe-away",
+            "hanjuku-chart-v731-idle-probe-reuse",
+            "hanjuku-chart-v732-wave-first",
+            "hanjuku-chart-v733-thin-front-refill",
+            "hanjuku-chart-v734-front-guard",
+            "hanjuku-chart-v735-front-guard-timeout",
+            "hanjuku-chart-v736-idle-step-stale",
+            "hanjuku-chart-v737-hero-mark-yield",
+            "hanjuku-chart-v738-plain-text-hold",
+            "hanjuku-chart-v739-repeat-hold-shorter",
+            "hanjuku-chart-v740-idle-tour-back",
+            "hanjuku-chart-v741-jump-verifies-source",
+            "hanjuku-chart-v742-flip-keep-two",
+            "hanjuku-chart-v743-capture-keep-two",
+            "hanjuku-chart-v744-wounded-front",
+            "hanjuku-chart-v745-healthy-mover",
+            "hanjuku-chart-v746-fresh-recruit-forward",
+            "hanjuku-chart-v747-whole-general-leads",
+            "hanjuku-chart-v748-finish-the-defender",
+            "hanjuku-chart-v749-front-two-can-attack",
+            "hanjuku-chart-v750-defender-hp",
+            "hanjuku-chart-v751-panel-finish",
+            "hanjuku-chart-v752-retake-not-held",
+            "hanjuku-chart-v753-battle-menu-soldiers",
+            "hanjuku-chart-v754-okunote-only-box",
+            "hanjuku-chart-v755-plan-step-map-budget",
+            "hanjuku-chart-v756-ch9-empty-front-probe-reuse",
+            "hanjuku-chart-v757-front-mass-wait",
+            "hanjuku-chart-v758-probe-rearm-names",
+            "hanjuku-chart-v759-retake-pair-wait",
+            "hanjuku-chart-v760-destination-roster-probe",
+            "hanjuku-chart-v761-due-probe-budget",
+            "hanjuku-chart-v762-strongest-full-hp-leader",
+            "hanjuku-chart-v763-owner-veto-order",
+            "hanjuku-chart-v764-owned-target-settle",
+            "hanjuku-chart-v765-defended-front-keep",
+            "hanjuku-chart-v766-partial-tick-order",
+            "hanjuku-chart-v767-finish-20",
+            "hanjuku-chart-v768-own-target-marker",
+            "hanjuku-chart-v769-guard-expiry-sticky",
+            "hanjuku-chart-v770-flag-owner-confirm",
+            "hanjuku-chart-v771-keep-defender",
+            "hanjuku-chart-v772-recall-roster-due",
+            "hanjuku-chart-v773-roster-due-ttl",
+            "hanjuku-chart-v774-recall-read-delay",
+            "hanjuku-chart-v775-capture-roster-read",
+            "hanjuku-chart-v776-mass-hold-reset",
+            "hanjuku-chart-v777-partial-on-move",
+            "hanjuku-chart-v778-mass-retract-active",
+            "hanjuku-chart-v779-front-hold-reinforcements",
+            "hanjuku-chart-v780-receipt-during-wave",
+            "hanjuku-chart-v781-defended-last-resident",
+            "hanjuku-chart-v782-last-resort-stall",
+            "hanjuku-chart-v783-front-marks-clean",
+            "hanjuku-chart-v784-partial-move-update",
+            "hanjuku-chart-v785-empty-front-reset",
+            "hanjuku-chart-v786-hold-consistency",
+            "hanjuku-chart-v787-panel-finish-precedence",
+            "hanjuku-chart-v788-battle-start-defense-seen",
+            "hanjuku-chart-v789-step-id-collision",
+            "hanjuku-chart-v790-defense-seen-clean",
+            "hanjuku-chart-v791-finish-pending-shopping",
+            "hanjuku-chart-v792-lost-castle-page",
+            "hanjuku-chart-v793-recruit-roster-due",
+            "hanjuku-chart-v794-nonowned-page-clean",
+            "hanjuku-chart-v795-camp-world-anchor",
+            "hanjuku-chart-v796-camp-loss-record",
+            "hanjuku-chart-v797-recruit-at-cap",
+            "hanjuku-chart-v798-camp-occluded-tolerance",
+            "hanjuku-chart-v799-camp-enter-record",
+            "hanjuku-chart-v800-scene-abandon-record",
+            "hanjuku-chart-v801-interrupt-record",
+            "hanjuku-chart-v802-month-defer-recall",
+            "hanjuku-chart-v803-month-default-estimate",
+            "hanjuku-chart-v804-month-margin",
+            "hanjuku-chart-v805-camp-timing-record",
+            "hanjuku-chart-v806-recall-month-priority",
+            "hanjuku-chart-v807-recall-roof-goal",
+            "hanjuku-chart-v808-camp-origin-record",
+            "hanjuku-chart-v809-interrupt-month-estimate",
+            "hanjuku-chart-v810-camp-hunt-log",
+            "hanjuku-chart-v811-hunt-timing",
+            "hanjuku-chart-v812-jump-camps",
+            "hanjuku-chart-v813-jump-camp-priority",
+            "hanjuku-chart-v814-jump-camp-skip",
+            "hanjuku-chart-v815-recall-battle-log",
+            "hanjuku-chart-v816-hunt-origin",
+            "hanjuku-chart-v817-camp-cursor-cell",
+            "hanjuku-chart-v818-hunt-roof-detail",
+            "hanjuku-chart-v819-picker-progress",
+            "hanjuku-chart-v820-roof-support",
+            "hanjuku-chart-v821-hunt-chart-cells",
+            "hanjuku-chart-v822-picker-own",
+            "hanjuku-chart-v823-hunt-chart-all",
+            "hanjuku-chart-v824-picker-fallback-nearby",
+            "hanjuku-chart-v825-picker-hero",
+            "hanjuku-chart-v826-hero-status-goal",
+            "hanjuku-chart-v827-picker-hero-status",
+            "hanjuku-chart-v828-picker-hero-read",
+            "hanjuku-chart-v829-picker-fallback-home",
+            "hanjuku-chart-v830-picker-month-timing",
+            "hanjuku-chart-v831-picker-no-goal-confirm",
+            "hanjuku-chart-v832-retired-step-context",
+            "hanjuku-chart-v833-picker-cpu-rollback",
+            "hanjuku-chart-v834-picker-restored",
+            "hanjuku-chart-v835-map-unsteerable-nudge",
+            "hanjuku-chart-v836-camp-dest-yjump",
+            "hanjuku-chart-v837-run-bot-version-live",
+            "hanjuku-chart-v838-boss-camp-remarch",
+            "hanjuku-chart-v839-recall-hp-priority",
+            "hanjuku-chart-v840-roster-count-mismatch",
+            "hanjuku-chart-v841-map-blind-advance",
+            "hanjuku-chart-v842-visible-general-batch",
+            "hanjuku-chart-v843-soldier-quantity-feedback",
+            "hanjuku-chart-v844-hero-post-advance",
+            "hanjuku-chart-v845-map-roof-feedback",
+            "hanjuku-chart-v846-ch9-direct-resupply",
+            "hanjuku-chart-v847-world-survey-reuse",
+            "hanjuku-chart-v848-month-event-release",
+            "hanjuku-chart-v849-map-terrain-phases",
+            "hanjuku-chart-v850-discharge-border-row",
+            "hanjuku-chart-v851-world-map-quantized",
+            "hanjuku-chart-v853-camp-colour-quantized",
+            "hanjuku-chart-v854-duel-hp-decline",
+            "hanjuku-chart-v855-camp-cliff-goal",
+            "hanjuku-chart-v856-omedetori-menu-latch",
+            "hanjuku-chart-v857-duel-always-accept",
+            "hanjuku-chart-v858-ch9-carried-cards",
+            "hanjuku-chart-v859-plain-battle-menu",
+            "hanjuku-chart-v860-plain-battle-fade",
+            "hanjuku-chart-v861-version-transient-migrate",
+            "hanjuku-chart-v863-load-screen",
+            "hanjuku-chart-v864-camp-body-retry",
+            "hanjuku-chart-v865-ch9-chikujou",
+            "hanjuku-chart-v866-hero-post-priority",
+            "hanjuku-chart-v867-clipped-dome",
+            "hanjuku-chart-v868-picker-recover",
+            "hanjuku-chart-v869-carried-cards-actor",
+            "hanjuku-chart-v870-capture-guard-two",
+            "hanjuku-chart-v871-battle-panel-tint",
+            "hanjuku-chart-v872-battle-menu-hold",
+            "hanjuku-chart-v873-orphan-command",
+            "hanjuku-chart-v877-fight-to-the-end",
+            "hanjuku-chart-v878-menu-close-b",
+            "hanjuku-chart-v879-camp-recall-picker",
+            "hanjuku-chart-v880-ch9-red-eye-boss",
+            "hanjuku-chart-v881-camp-approach",
+            "hanjuku-chart-v882-camp-menu-jump-retry",
+            "hanjuku-chart-v883-castle-list-chapter",
+            "hanjuku-chart-v884-boss-field-recall",
+            "hanjuku-chart-v885-boss-home-recall-guard",
+            "hanjuku-chart-v886-occluded-camp-probe",
+            "hanjuku-chart-v887-occluded-camp-any",
+            "hanjuku-chart-v888-camp-edge-scroll",
+            "hanjuku-chart-v889-occluded-fort-pass",
+            "hanjuku-chart-v890-camp-revisit",
+            "hanjuku-chart-v891-chikujou-staff",
+            "hanjuku-chart-v892-camp-gather",
+            "hanjuku-chart-v895-shop-reenter-closed",
+            "hanjuku-chart-v893-castle-check-current",
+            "hanjuku-chart-v896-gather-marker-concert",
+            "hanjuku-chart-v898-capture-reset",
+            "hanjuku-chart-v899-recall-corridor",
+            "hanjuku-chart-v900-cliff-detour",
+            "hanjuku-chart-v901-battle-fact-winner",
+            "hanjuku-chart-v902-tmux-persistent-session",
+            "hanjuku-chart-v905-retiring-dead-dismiss",
+            "hanjuku-chart-v903-boss-gather-moves",
+            "hanjuku-chart-v904-boss-gather-no-cell",
+            "hanjuku-chart-v906-gather-nearest-first",
+            "hanjuku-chart-v907-camp-home-return",
+            "hanjuku-chart-v908-blocked-reads",
+            "hanjuku-chart-v909-field-recall-off",
+            "hanjuku-chart-v910-boss-source-last",
+            "hanjuku-chart-v911-boss-two-generals",
+            "hanjuku-chart-v912-boss-no-unplaced",
+            "hanjuku-chart-v914-corridor-boss-two",
+            "hanjuku-chart-v915-yjump-digest",
+            "hanjuku-chart-v916-gather-last-hop",
+            "hanjuku-chart-v917-neighbour-no-yjump",
+            "hanjuku-chart-v918-boss-home-detour",
+            "hanjuku-chart-v919-boss-ide-north-house",
+            "hanjuku-chart-v920-castle-scroll-wait",
+            "hanjuku-chart-v921-waypoint-cell",
+            "hanjuku-chart-v922-title-continue",
+            "hanjuku-chart-v923-chapter-from-yview",
+            "hanjuku-chart-v924-month-blind-nav",
+            "hanjuku-chart-v925-month-hint-guard",
+            "hanjuku-chart-v926-yview-anchor",
+            "hanjuku-chart-v927-month-blind-wide",
+            "hanjuku-chart-v928-month-blind-target",
+            "hanjuku-chart-v929-month-blind-wait",
+            "hanjuku-chart-v930-month-amount-back",
+            "hanjuku-chart-v931-amount-quantity",
+            "hanjuku-chart-v932-target-cell-accept",
+            "hanjuku-chart-v933-cell-accept-action",
+            "hanjuku-chart-v934-concert-b-total-cap",
+            "hanjuku-chart-v935-concert-phase-budget",
+            "hanjuku-chart-v936-cliff-detour-rearm",
+            "hanjuku-chart-v937-fraction-clamp",
+            "hanjuku-chart-v938-cliff-escape-move",
+            "hanjuku-chart-v939-front-roster-stale",
+            "hanjuku-chart-v940-portrait-march-kept",
+            "hanjuku-chart-v941-cliff-escape-fort-565",
+            "hanjuku-chart-v942-target-cell-evidence",
+            "hanjuku-chart-v943-battle-menu-fallback-b",
+            "hanjuku-chart-v944-ch9-retreat-menu-loop",
+            "hanjuku-chart-v910-egg-drop-dedupe",
+            "hanjuku-chart-v908-switch-rollback",
+            "hanjuku-chart-v907-castle-jump-scroll",
+            "hanjuku-chart-v909-castle-jump-scroll",
+            "hanjuku-chart-v945-ch9-merge-main",
+            "hanjuku-chart-v946-ch9-merge-fixes",
+            "hanjuku-chart-v947-cliff-detour-sticky",
+            "hanjuku-chart-v948-clipped-roof-confirm",
+            "hanjuku-chart-v949-yjump-rough-then-tune",
+            "hanjuku-chart-v950-corridor-one-hop",
+            "hanjuku-chart-v951-yjump-goldg-only",
+            "hanjuku-chart-v952-ch9-merge",
+            "hanjuku-chart-v953-cliff-detour-cap",
+            "hanjuku-chart-v954-reprobe-cooldown",
+            "hanjuku-chart-v954-castle-shapes",
+            "hanjuku-chart-v955-stale-attempt-claim",
+            "hanjuku-chart-v957-boss-waypoint",
+            "hanjuku-chart-v958-boss-waypoint-north",
+            "hanjuku-chart-v959-boss-pocket-entry",
+            "hanjuku-chart-v960-boss-waypoint-yjump",
+            "hanjuku-chart-v961-boss-redirect-leg",
+            "hanjuku-chart-v962-roster-walk-cap",
+            "hanjuku-chart-v963-interim-retire",
+            "hanjuku-chart-v964-waypoint-west",
+            "hanjuku-chart-v965-waypoint-right-heart",
+            "hanjuku-chart-v966-waypoint-grass-row",
+            "hanjuku-chart-v967-waypoint-east",
+            "hanjuku-chart-v968-waypoint-ne-field",
+            "hanjuku-chart-v969-boss-pursuit",
+            "hanjuku-chart-v970-second-leg",
+            "hanjuku-chart-v971-second-leg-wave",
+            "hanjuku-chart-v972-pursuit-gate",
+            "hanjuku-chart-v973-month-nav",
+            "hanjuku-chart-v974-pursuit-month-gate",
+            "hanjuku-chart-v975-merchant-confirm",
+            "hanjuku-chart-v976-merchant-blind",
+            "hanjuku-chart-v977-cards-released",
+            "hanjuku-chart-v978-cursor-corner",
+            "hanjuku-chart-v979-merchant-skip",
+            "hanjuku-chart-v980-blindexit",
+            "hanjuku-chart-v981-cursor-allwin",
+            "hanjuku-chart-v986-pursuit-yjump",
+            "hanjuku-chart-v987-pursuit-fort",
+            "hanjuku-chart-v988-wave-camped",
+            "hanjuku-chart-v989-first-leg-forced",
+            "hanjuku-chart-v990-pursuit-north-gate",
+            "hanjuku-chart-v991-pursuit-own-skull",
+            "hanjuku-chart-v992-pursuit-redirect-log",
+            "hanjuku-chart-v993-boss-wave-eggless",
+            "hanjuku-chart-v994-review-fixes",
+            "hanjuku-chart-v995-egg-count-kept",
+            "hanjuku-chart-v996-house-bookkeeping-reverted",
+            "hanjuku-chart-v997-hero-alone-guard",
+            "hanjuku-chart-v998-egg-observation-memory",
+            "hanjuku-chart-v999-castle-label-width",
+            "hanjuku-chart-v1000-title-continue-guided",
+            "hanjuku-chart-v1002-recall-interrupt-budget",
+            "hanjuku-chart-v1003-roster-resident",
+            "hanjuku-chart-v1004-ch11-gateway",
+            "hanjuku-chart-v1005-hub-gather",
+            "hanjuku-chart-v1006-hub-gather-rate",
+            "hanjuku-chart-v1007-picker-goal-bind",
+            "hanjuku-chart-v1008-recall-yields-sortie",
+            "hanjuku-chart-v1009-attack-min-hp",
+            "hanjuku-chart-v1010-recall-same-side",
+            "hanjuku-chart-v1011-recall-side-flags",
+            "hanjuku-chart-v1012-camp-row-stale",
+            "hanjuku-chart-v1013-recall-goal-retry",
+            "hanjuku-chart-v1014-goal-retry-flags",
+            "hanjuku-chart-v1015-recall-to-hub",
+            "hanjuku-chart-v1016-hub-retake-order",
+            "hanjuku-chart-v1017-revert-hub-recall",
+            "hanjuku-chart-v1018-recall-side-source",
+            "hanjuku-chart-v1019-target-cursor-tempo",
+            "hanjuku-chart-v1020-recall-picker-cycle",
+            "hanjuku-chart-v1021-recall-picker-feedback",
+            "hanjuku-chart-v1022-plan-invalid-source",
+            "hanjuku-chart-v1023-hub-guard",
+            "hanjuku-chart-v1024-staging-first",
+            "hanjuku-chart-v1025-stage-rate",
+            "hanjuku-chart-v1026-recall-from-target",
+            "hanjuku-chart-v1027-launch-evidence",
+            "hanjuku-chart-v1028-move-dedup",
+            "hanjuku-chart-v1029-phantom-camp",
+            "hanjuku-chart-v1030-revert-phantom-camp",
+            "hanjuku-chart-v1031-hub-recall-default",
+            "hanjuku-chart-v1032-gather-all-hub",
+            "hanjuku-chart-v1033-hero-to-hub",
+            "hanjuku-chart-v1034-fine-yjump",
+            "hanjuku-chart-v1035-blue-g-cursor",
+            "hanjuku-chart-v1036-hero-flag",
+            "hanjuku-chart-v1037-hero-alone",
+            "hanjuku-chart-v1039-picker-hold",
+            "hanjuku-chart-v1040-plan-drop-foreign",
+            "hanjuku-chart-v1044-recall-picker-tempo",
+            "hanjuku-chart-v1046-back-half-relay",
+            "hanjuku-chart-v1101-level-visit-count",
+            "hanjuku-chart-v1102-level-visit-count",
+            "hanjuku-chart-v1103-relay-from-picker",
+            "hanjuku-chart-v1104-relay-menu-grace",
+            "hanjuku-chart-v1105-relay-picker-hold",
+            "hanjuku-chart-v1106-relay-vs-recheck",
+            "hanjuku-chart-v1107-quote-decline",
+            "hanjuku-chart-v1108-phase-a-escape",
+            "hanjuku-chart-v1109-recheck-backoff",
+            "hanjuku-chart-v1110-relay-road",
+            "hanjuku-chart-v1111-concert-b",
+            "hanjuku-chart-v1112-hub-roof",
+            "hanjuku-chart-v1113-recruit-shortage",
+            "hanjuku-chart-v1114-army-recheck",
+            "hanjuku-chart-v1115-boss-moved-reaim",
+            "hanjuku-chart-v1116-boss-relaunch-free",
+            "hanjuku-chart-v1117-hero-hub-move",
+            "hanjuku-chart-v1118-boss-chase-camp",
+            "hanjuku-chart-v1119-password-entry",
+            "hanjuku-chart-v1120-boss-near-gate",
+            "hanjuku-chart-v1121-summer-bonus-choice",
+            "hanjuku-chart-v1122-boss-measure-gated",
+            "hanjuku-chart-v1123-boss-gate-revert",
+            "hanjuku-chart-v1124-quantity-confirm",
+            "hanjuku-chart-v1130-road-defeat-settle",
+            "hanjuku-chart-v1140-plan-starve-rearm",
+            "hanjuku-chart-v1141-chikujou-prompt",
+            "hanjuku-chart-v1142-chikujou-prompt",
+            "hanjuku-chart-v1143-mainmenu-roster",
+            "hanjuku-chart-v1131-dead-general-order",
+            "hanjuku-chart-v1132-dead-general-order",
+            "hanjuku-chart-v1133-plan-starve-rearm",
+            "hanjuku-chart-v1125-camp-boss-wave",
+            "hanjuku-chart-v1131-camp-open-field",
+            "hanjuku-chart-v1133-camp-revisit-aimed",
+            "hanjuku-chart-v1141-corridor-revisit",
+            "hanjuku-chart-v1144-general-jump",
+            "hanjuku-chart-v1145-general-self-jump",
+            "hanjuku-chart-v1146-general-jump-map",
+            "hanjuku-chart-v1147-battle-menu-empty-hold",
+            "hanjuku-chart-v1148-reanchor-backoff",
+            "hanjuku-chart-v1149-house-scan-month",
+            "hanjuku-chart-v1150-yview-anchor",
+            "hanjuku-chart-v1155-launch-probe-world",
+            "hanjuku-chart-v1151-goal-expiry",
+            "hanjuku-chart-v1152-order-hold-tally",
+            "hanjuku-chart-v1153-unverified-launch",
+            "hanjuku-chart-v1154-launch-probe-world",
+            "hanjuku-chart-v1156-password-sweep",
+            "hanjuku-chart-v1157-discharge-removal-skip",
+            "hanjuku-chart-v1158-sortie-month-floor",
+            "hanjuku-chart-v1159-dead-plan-rearm",
+            "hanjuku-chart-v1159-battle-retreat",
+            "hanjuku-chart-v1160-frontier-multi-fill",
+            "hanjuku-chart-v1161-frontier-multi-fill",
+            "hanjuku-chart-v1162-unstartable-plan-rearm",
+            "hanjuku-chart-v1163-resolved-source-gate",
+            "hanjuku-chart-v1164-integration",
+            "hanjuku-chart-v1165-yesno-accept-settle",
+            "hanjuku-chart-v1166-shop-exit-unowned",
+            "hanjuku-chart-v1165-battle-card-selection",
+            "hanjuku-chart-v1167-battle-card-selection",
+            "hanjuku-chart-v1168-open-menu-retry",
+            "hanjuku-chart-v1169-menu-blind-nav",
+            "hanjuku-chart-v1170-menu-ownership",
+            "hanjuku-chart-v1171-jump-menu-wait",
+            "hanjuku-chart-v1172-jump-field-unstable",
+            "hanjuku-chart-v1173-jump-hud-gate",
+            "hanjuku-chart-v1174-revert-hud-gate",
+            "hanjuku-chart-v1175-menu-fail-y-route",
+            "hanjuku-chart-v1176-scan-menu-walk",
+            "hanjuku-chart-v1177-scan-menu-priority",
+            "hanjuku-chart-v1178-scan-menu-override",
+            "hanjuku-chart-v1179-attack-hp-floor",
+            "hanjuku-chart-v1180-scan-retry-visits",
+            "hanjuku-chart-v1181-scan-open-giveup",
+            "hanjuku-chart-v1169-hub-reinforce-near",
+            "hanjuku-chart-v1182-hub-reinforce",
+            "hanjuku-chart-v1183-card-row-walk",
+            "hanjuku-chart-v1184-stuck-recall",
+            "hanjuku-chart-v1185-scan-open-backoff",
+            "hanjuku-chart-v1186-orphan-active",
+            "hanjuku-chart-v1187-scan-giveup-early",
+            "hanjuku-chart-v1188-army-floor",
+            "hanjuku-chart-v1189-roster-label",
+            "hanjuku-chart-v1190-scan-skip-five",
+            "hanjuku-chart-v1191-stock-cards",
+            "hanjuku-chart-v1192-hand-row-offset",
+            "hanjuku-chart-v1193-recruit-stuck",
+            "hanjuku-chart-v1194-home-probe",
+            "hanjuku-chart-v1195-probe-ready",
+            "hanjuku-chart-v1196-probe-first",
+            "hanjuku-chart-v1197-panel-owner",
+            "hanjuku-chart-v1199-recall-y-fallback",
+            "hanjuku-chart-v1200-picker-progress",
+            "hanjuku-chart-v1202-unknown-hold-4",
+            "hanjuku-chart-v1203-card-hp-evidence",
+            "hanjuku-chart-v1203-relay-menu-guard",
+            "hanjuku-chart-v1204-frontier-probe",
+            "hanjuku-chart-v1205-boss-reinforce",
+            "hanjuku-chart-v1205-relay-menu-guard",
+            "hanjuku-chart-v1206-card-delayed-confirm",
+            "hanjuku-chart-v1207-relay-menu-guard",
+            "hanjuku-chart-v1208-enroute-call",
+            "hanjuku-chart-v1209-own-castle-x-only",
+            "hanjuku-chart-v1209-relay-menu-guard",
+            "hanjuku-chart-v1210-y-anchor-cap",
+            "hanjuku-chart-v1211-general-reselect",
+            "hanjuku-chart-v1212-stale-plan-rebuild",
+            "hanjuku-chart-v1212-relay-menu-guard",
+            "hanjuku-chart-v1213-bounded-deploy-hold",
+            "hanjuku-chart-v1214-camp-recall-y",
+            "hanjuku-chart-v1214-relay-menu-guard",
+            "hanjuku-chart-v1215-monster-no-damage",
+            "hanjuku-chart-v1215-relay-menu-guard",
+            "hanjuku-chart-v1216-castle-jump-abandon",
+            "hanjuku-chart-v1217-castle-jump-center",
+            "hanjuku-chart-v1218-soldier-topup",
+            "hanjuku-chart-v1220-stable-interim-step",
+            "hanjuku-chart-v1220",
+            "hanjuku-chart-v1221-interim-step-rid",
+            "hanjuku-chart-v1222-y-anchor-24",
+            "hanjuku-chart-v1223-recall-y-all",
+            "hanjuku-chart-v1223",
+            "hanjuku-chart-v1224",
+            "hanjuku-chart-v1225",
+            "hanjuku-chart-v1226-stall-return",
+            "hanjuku-chart-v1198-stuck-roster-probe",
+            "hanjuku-chart-v1227-roster-probe",
+            "hanjuku-chart-v1228-month-menu-release",
+            "hanjuku-chart-v1229-house-roof-match",
+            "hanjuku-chart-v1230-marker-diag",
+            "hanjuku-chart-v1231-house-entry-door",
+            "hanjuku-chart-v1232-xmenu-close-guard",
+            "hanjuku-chart-v1233-ch9-skull-hold",
+            "hanjuku-chart-v1234-gjump-diag-text",
+            "hanjuku-chart-v1235-recall-goal-campworld",
+            "hanjuku-chart-v1236-fort-list-row",
+            "hanjuku-chart-v1237-month-audit",
+            "hanjuku-chart-v1238-recall-goal-float",
+            "hanjuku-chart-v1239-gjump-global-roster",
+            "hanjuku-chart-v1240-map-idle-bound",
+            "hanjuku-chart-v1241-gjump-missing-diag",
+            "hanjuku-chart-v1242-gjump-roster-fallback",
+            "hanjuku-chart-v1243-gjump-text-grace",
+            "hanjuku-chart-v1244-gjump-scroll-limit",
+            "hanjuku-chart-v1245-gjump-seen-names",
+            "hanjuku-chart-v1246-recall-goal-diag",
+            "hanjuku-chart-v1247-recall-unconfirmed",
+            "hanjuku-chart-v1248-unowned-scene-settle",
+            "hanjuku-chart-v1249-text-menu-settle",
+            "hanjuku-chart-v1250-month-audit-world",
+            "hanjuku-chart-v1251-pursuit-start-gap",
+            "hanjuku-chart-v1252-boss-phase-audit",
+            "hanjuku-chart-v1253-recall-idou",
+            "hanjuku-chart-v1254-pursuit-own-yjump",
+            "hanjuku-chart-v1255-unowned-recenter-periodic",
+            "hanjuku-chart-v1256-event-hold-release",
+            "hanjuku-chart-v1258-boss-wave-stale",
+            "hanjuku-chart-v1259-stale-wave-defer",
+            "hanjuku-chart-v1260-pursuit-skip-stale",
+            "hanjuku-chart-v1257-issue-on-seal",
+            "hanjuku-chart-v1260-marker-est-tol",
+            "hanjuku-chart-v1261-pursuit-skip-stale",
+            "hanjuku-chart-v1262-recruit-own-screen",
+            "hanjuku-chart-v1263-scroll-arrow",
+            "hanjuku-chart-v1264-pursuit-pick-escape",
+            "hanjuku-chart-v1265-resume-unknown",
+            "hanjuku-chart-v1266-pursuit-suspend",
+            "hanjuku-chart-v1267-pursuit-stale-cell",
+            "hanjuku-chart-v1268-pursuit-lead",
+            "hanjuku-chart-v1269-password-sweep",
+            "hanjuku-chart-v1270-house-scroll-arrow",
+            "hanjuku-chart-v1271-boss-ambush-track",
+            "hanjuku-chart-v1272-house-marker-hint",
+            "hanjuku-chart-v1273-ambush-contact",
+            "hanjuku-chart-v1274-boss-jump-moves",
+            "hanjuku-chart-v1275-ambush-wait",
+            "hanjuku-chart-v1276-interim-failed-skip",
+            "hanjuku-chart-v1277-unit-world",
+            "hanjuku-chart-v1278-audit-unconfirmed",
+            "hanjuku-chart-v1279-dense-boss-track",
+            "hanjuku-chart-v1280-pursuit-origin-cell",
+            "hanjuku-chart-v1281-unconfirmed-rearm",
+            "hanjuku-chart-v1282-no-ambush-wait",
+            "hanjuku-chart-v1283-boss-jump-64",
+            "hanjuku-chart-v1284-pursuit-6h",
+            "hanjuku-chart-v1285-boss-panel-kit",
+            "hanjuku-chart-v1286-contact-pos",
+            "hanjuku-chart-v1287-friendly-fire",
+            "hanjuku-chart-v1288-revert-friendly-fire-guard",
+            "hanjuku-chart-v1290-frozen-boss-aim",
+            "hanjuku-chart-v1290-boss-unit-contact",
+            "hanjuku-chart-v1291-gjump-absent",
+            "hanjuku-chart-v1293-chikujou-refusal-cache",
+            "hanjuku-chart-v1294-gjump-skip-map",
+            "hanjuku-chart-v1295-chikujou-orch-refused",
+            "hanjuku-chart-v1296-boss-panel-hp",
+            "hanjuku-chart-v1297-clear-stale-general-override",
+            "hanjuku-chart-v1298-arrival-probe-incoming",
+            "hanjuku-chart-v1299-yjump-overshoot-damping",
+            "hanjuku-chart-v1300-boss-seimeitai-balmung",
+            "hanjuku-chart-v1301-gjump-pursuit-isolation",
+            "hanjuku-chart-v1303-pursuit-cliff-detour",
+            "hanjuku-chart-v1304-recall-picker-yroute",
+            "hanjuku-chart-v1305-recovery-dead-proof",
+            "hanjuku-chart-v1306-world-cursor-blue-g-priority",
+            "hanjuku-chart-v1307-event-duel-no-menu",
+            "hanjuku-chart-v1308-boss-wave-arrival-probe",
+            "hanjuku-chart-v1309-cliff-detour-yview-origin",
+            "hanjuku-chart-v1310-card-zero-live-stock",
+            "hanjuku-chart-v1311-cattlemyu-stock-reuse",
+            "hanjuku-chart-v1312-defense-no-stale-cards",
+            "hanjuku-chart-v1313-camp-recheck-idou-dest",
+            "hanjuku-chart-v1326-picker-from-menu",
+            "hanjuku-chart-v1320-camp-body-retry-keep",
+            "hanjuku-chart-v1319-castle-verify-paged",
+            "hanjuku-chart-v1318-strong-stock-opener",
+            "hanjuku-chart-v1317-post-month-task-yield",
+            "hanjuku-chart-v1316-card-scroll-speed",
+            "hanjuku-chart-v1158-progress-regress",
+            "hanjuku-chart-v1161-refill-collapse",
+            "hanjuku-chart-v1160-chapter-probe-field",
+            "hanjuku-chart-v1020-recall-giveup",
+            "hanjuku-chart-v1021-plan-invalid-source",
+            "hanjuku-chart-v1041-egg-receipt-presence",
+            "hanjuku-chart-v1043-recall-picker-evidence",
+            "hanjuku-chart-v1045-battle-menu-cursor-nudge",
+            "hanjuku-chart-v1100-defense-egg-menu-kit",
+            "hanjuku-chart-v1101-relay-over-visible",
+            "hanjuku-chart-v1327-no-move-reaim",
+            "hanjuku-chart-v1328-recall-jump-skip",
+            "hanjuku-chart-v1329-hold-limit-bisect",
+            "hanjuku-chart-v1330-blind-nav-release",
+            "hanjuku-chart-v1331-egg-repair-disabled",
+            "hanjuku-chart-v1332-camp-issue",
+            "hanjuku-chart-v1333-sortie-issue",
+            "hanjuku-chart-v1334-recall-roofs-yjump",
+            "hanjuku-chart-v1335-battle-resource-issue",
+            "hanjuku-chart-v1337-road-stalemate",
+            "hanjuku-chart-v1338-camp-abandon",
+            "hanjuku-chart-v1340-whitehouse-south-gate",
+            "hanjuku-chart-v1339-boss-first",
+            "hanjuku-chart-v1341-boss-no-onehit",
+            "hanjuku-chart-v1342-fort-picker-from-menu",
+            "hanjuku-chart-v1343-ch10-wh-wall-detour",
+            "hanjuku-chart-v1342-onehit-soldiers",
+            "hanjuku-chart-v1344-ch9-recall-cliff-fort",
+            "hanjuku-chart-v1345-unconfirmed-overdue-relaunch",
+            "hanjuku-chart-v1343-planned-busy-partial",
+            "hanjuku-chart-v1347-chikujou-issue",
+            "hanjuku-chart-v1354-card-announce-evidence",
+            "hanjuku-chart-v1348-summon-scroll-batch",
+            "hanjuku-chart-v1349-card-panel-scroll-arrows",
+            "hanjuku-chart-v1350-recall-dispatched",
+                "hanjuku-chart-v1351-duel-dim-mash",
+                "hanjuku-chart-v1352-password-measured-order",
+            "hanjuku-chart-v1355-math-corner",
+            "hanjuku-chart-v1356-scan-floor-idle-cap",
+            "hanjuku-chart-v1352-card-ledger-diff",
+            "hanjuku-chart-v1357-card-ledger-census",
+            "hanjuku-chart-v1358-boss-month-issue",
+            "hanjuku-chart-v1365-chikujou-list-limit",
+            "hanjuku-chart-v1366-summon-scroll-rearm",
+            "hanjuku-chart-v1369-egg-quote-owned",
+            "hanjuku-chart-v1371-launch-interrupted-battle",
+            "hanjuku-chart-v1360-spend-resources-before-retreat",
+            "hanjuku-chart-v1362-camp-recall-ch2",
+            "hanjuku-chart-v1363-chikujou-at-month-end",
+            "hanjuku-chart-v1367-camp-arrival-timeout",
+            "hanjuku-chart-v1370-chikujou-tried-ledger",
+            "hanjuku-chart-v1372-card-census-owner-title",
+            "hanjuku-chart-v1373-egg-receipt-settle",
+            "hanjuku-chart-v1374-rich-merchant-entry",
+            "hanjuku-chart-v1375-boss-dispatch-guarantee",
+            "hanjuku-chart-v1376-unconfirmed-sortie-forget",
+            "hanjuku-chart-v1377-recall-kikan-issue",
+            "hanjuku-chart-v1378-corner-stall-issue",
+            "hanjuku-chart-v1379-battle-menu-issue",
+            "hanjuku-chart-v1380-sortie-cancel-retry",
+            "hanjuku-chart-v1381-sortie-cards-issue",
+            "hanjuku-chart-v1382-merchant-defer-buy-record",
+            "hanjuku-chart-v1383-ch4-boss-stale-roster",
+            "hanjuku-chart-v1384-empty-card-list-nanimomottenai",
+            "hanjuku-chart-v1385-spend-card-before-retreat",
+            "hanjuku-chart-v1386-missing-card-not-remaining",
+            "hanjuku-chart-v1387-recall-arrival-confirm",
+            "hanjuku-chart-v1388-crying-egg-battle-menu",
+            "hanjuku-chart-v1389-idou-y-route-recall-hold",
+            "hanjuku-chart-v1392-dispatch-starve-measure",
+            "hanjuku-chart-v1393-roster-due-consume",
+            "hanjuku-chart-v1397-recall-map-hold",
+            "hanjuku-chart-v1398-egg-retry-on-hp-loss",
+            "hanjuku-chart-v1399-recall-map-hold",
+            "hanjuku-chart-v1445-early-resource-rescue",
+            "hanjuku-chart-v1446-password-measured-order",
+            "hanjuku-chart-v1446-boss-companion-wait-bound",
+            "hanjuku-chart-v1447-password-measured-order",
+            "hanjuku-chart-v1448-auto-carry-safe-card",
+            "hanjuku-chart-v1449-chikujou-hold-note",
+            "hanjuku-chart-v1450-password-dispatch",
+            "hanjuku-chart-v1451-defense-wait-probe",
+            "hanjuku-chart-v1452-password-hold",
+            "hanjuku-chart-v1453-okunote-unclassified",
+            "hanjuku-chart-v1454-sortie-card-type",
+            "hanjuku-chart-v1455-password-in-game-retry",
+            "hanjuku-chart-v1456-password-phrase-ocr",
+            "hanjuku-chart-v1457-empty-kit-cancel",
+            "hanjuku-chart-v1458-merchant-mickey-priority",
+            "hanjuku-chart-v1459-merchant-listed-unknown",
+            "hanjuku-chart-v1460-password-entered-field",
+            "hanjuku-chart-v1461-melee-only-ugokazaru",
+            "hanjuku-chart-v1462-status-panel-owner-guard",
+            "hanjuku-chart-v1463-battle-menu-scrolled-bottom",
+            "hanjuku-chart-v1464-status-panel-owner-followups",
+            "hanjuku-chart-v1465-unowned-screen-review-guards",
+            "hanjuku-chart-v1466-status-panel-owner-name",
+            "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
+            "hanjuku-chart-v1468-battle-menu-bounded-episode",
+            "hanjuku-chart-v1469-recall-yjump-goal",
+            "hanjuku-chart-v1470-ch4-site-bounded-wait",
+            "hanjuku-chart-v1471-roster-due-probe",
+            "hanjuku-chart-v1473-hidden-season-site-priority",
+            "hanjuku-chart-v1474-departure-request-ownership",
+            "hanjuku-chart-v1476-site-cursor-shape",
+            "hanjuku-chart-v1480-ch4-boss-dispatch",
+            "hanjuku-chart-v1478-site-nearest-source",
+            "hanjuku-chart-v1472-status-panel-owner-unreadable-skip",
+            "hanjuku-chart-v1477-boss-camp-recall",
+            "hanjuku-chart-v1483-ch12-boss-staging",
+            "hanjuku-chart-v1484-clear-ending-corner-end",
+            "hanjuku-chart-v1485-locked-boss-activation",
+            "hanjuku-chart-v1485-camp-watch-hint-identity",
+            "hanjuku-chart-v1486-locked-boss-activation",
+            "hanjuku-chart-v1486-ch4-southern-kings",
+            "hanjuku-chart-v1484-sortie-kit-evidence-confidence",
+            "hanjuku-chart-v1486-ch4-southern-kings",
+            "hanjuku-chart-v1487-ch4-southern-kings",
+            "hanjuku-chart-v1488-discharge-last-general",
+            "hanjuku-chart-v1488-summon-card-without-egg",
+            "hanjuku-chart-v1489-discharge-last-general",
+            "hanjuku-chart-v1490-fort-recall-picker-owner-bounded",
+            "hanjuku-chart-v1491-card-abandon-retreat-ban",
+            "hanjuku-chart-v1478-departure-request-ownership",
+            "hanjuku-chart-v1481-boss-camp-recall-followup",
+
+            "hanjuku-chart-v1482-departure-request-ownership",
+            "hanjuku-chart-v1402-sortie-audit-confidence",
+            "hanjuku-chart-v1403-boss-phase-scan-defer",
+            "hanjuku-chart-v1404-defense-egg-rescue",
+            "hanjuku-chart-v1405-boss-partial-garrison",
+            "hanjuku-chart-v1408-boss-companion-partial-roster",
+            "hanjuku-chart-v1409-audit-hp-floor-numeric",
+            "hanjuku-chart-v1410-battle-loss-cooldown",
+            "hanjuku-chart-v1415-merchant-strong-first",
+            "hanjuku-chart-v1416-card-miss-after-use",
+            "hanjuku-chart-v1417-stall-refresh",
+            "hanjuku-chart-v1418-spend-next-card",
+            "hanjuku-chart-v1419-hero-move-backoff",
+            "hanjuku-chart-v1420-chikujou-reserve-check",
+            "hanjuku-chart-v1421-critical-card-spend",
+            "hanjuku-chart-v1422-ch9-oshiroga-aim",
+            "hanjuku-chart-v1423-ch9-hero-front",
+            "hanjuku-chart-v1424-ch9-oshiroga-up",
+            "hanjuku-chart-v1424-sortie-measured-kit",
+            "hanjuku-chart-v1425-zombie-melee",
+            "hanjuku-chart-v1426-ch9-oshiroga-up",
+            "hanjuku-chart-v1427-sortie-cell-placement",
+            "hanjuku-chart-v1428-defense-summon-okunote-retry",
+            "hanjuku-chart-v1429-final-jelly-shout",
+            "hanjuku-chart-v1430-sortie-measured-kit",
+            "hanjuku-chart-v1431-boss-companion-timeout",
+            "hanjuku-chart-v1431-sortie-yjump-after-battle",
+            "hanjuku-chart-v1432-boss-companion-timeout",
+            "hanjuku-chart-v1433-fort-recall-evidence",
+            "hanjuku-chart-v1434-camp-dispatch-evidence",
+            "hanjuku-chart-v1435-recall-dispatch-unattributed",
+            "hanjuku-chart-v1438-chikujou-castle-width-fold",
+            "hanjuku-chart-v1443-boss-companion-stage-timeout",
+            "hanjuku-chart-v1444-chikujou-skip-note",
+            "hanjuku-chart-v1407-boss-wave-march-blocker",
+            "hanjuku-chart-v985-roster-lost",
+            "hanjuku-chart-v982-gbox",
+            "hanjuku-chart-v984-roster-map-anchor",
+            "hanjuku-chart-v864-shop-list-batch",
+            "hanjuku-chart-v862-camp-field-move",
+            "hanjuku-chart-v852-visible-menu-batches",
+            "hanjuku-chart-v560-castle-list-scroll",
+            "hanjuku-chart-v561-post-month-repair-status",
+            "hanjuku-chart-v501-idle-reanchor",
+            "hanjuku-chart-v502-idle-and-roster-joins",
+            "hanjuku-chart-v503-month-start-counts",
+            "hanjuku-chart-v504-namaste-dialogue",
             "hanjuku-chart-v129-battle-card-progress",
             "hanjuku-chart-v130-summer-cursor-evidence",
             "hanjuku-chart-v131-defense-month-economy",
@@ -3750,14 +8237,226 @@ def _project_corner_state(data):
                 "hanjuku-chart-v168-general-repair-budget",
                 "hanjuku-chart-v169-repair-interruption",
                 "hanjuku-chart-v170-chapter-two-boss",
-                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety", "hanjuku-chart-v215-roster-known-members", "hanjuku-chart-v216-roster-selected-name", "hanjuku-chart-v218-egg-before-retreat", "hanjuku-chart-v219-boss-and-army-refill", "hanjuku-chart-v220-finishing-resources", "hanjuku-chart-v221-recall-status-proof"} else None),
+                "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety", "hanjuku-chart-v215-roster-known-members", "hanjuku-chart-v216-roster-selected-name", "hanjuku-chart-v218-egg-before-retreat", "hanjuku-chart-v219-boss-and-army-refill", "hanjuku-chart-v220-finishing-resources",
+            "hanjuku-chart-v221-recall-status-proof",
+            "hanjuku-chart-v1485-camp-watch-identity-subset"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
         "overlay_announcements": _project_counts(data.get("overlay_announcements"),
                                                  ("sent", "failed", "skipped")),
+        "review": _project_review(data.get("review")),
         "game_audio": _project_game_audio(data.get("game_audio")),
         "hotload": _project_hotload(data.get("hotload")),
+    }
+
+
+_PRESENTATION_FAILURE_STATUSES = frozenset({"viewer_timeout", "viewer_exited"})
+
+
+def _read_presentation_failure(path):
+    """Read and validate a presentation_failure.json file (read-only)."""
+    try:
+        if path is None or not path.is_file() or path.is_symlink():
+            return None
+        if path.stat().st_size > 4096:
+            return None
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _project_soren91_corner(data, state_dir=None, presentation_failure=None):
+    """Meriken/soren91 corner lifecycle plus why its last switch ended.
+
+    The corner keeps the propagated switch error in its own state file. That
+    is the only durable evidence for a ``readiness_timeout``: the presenter
+    pane dies with its tmux window, so without this the operator sees only
+    "failed" and has to reproduce the failure to learn the cause (docich#1221).
+    ``switch_status`` stays a fixed enum; the recorded switch error code is a
+    bounded token and the detail is redacted and length-capped.
+
+    When the corner is in the interrupted-before-active path (docich#2658) the
+    corner state carries no switch error, so the last switch failure is also
+    projected from ``presentation_failure.json`` (runtime dir) and/or an
+    embedded ``presentation_failure`` dict. Only fixed keys are emitted; unknown
+    values become null. Free text, paths and request ids are never exposed.
+    """
+    entry = _project_corner_state(data)
+    status = data.get("switch_status") if isinstance(data, dict) else None
+    entry["switch_status"] = (
+        status if isinstance(status, str) and status in SWITCH_STATUSES else None
+    )
+    entry["switch_error_code"] = _bounded_str(
+        data.get("last_error_code") if isinstance(data, dict) else None, 64
+    )
+
+    # Resolve presentation_failure data from (in order): explicit arg, embedded
+    # in data, or the runtime/state directory on disk.
+    pf = presentation_failure
+    if pf is None and isinstance(data, dict):
+        pf = data.get("presentation_failure")
+    if pf is None and state_dir is not None:
+        state_dir = Path(state_dir)
+        # Real writer layout: <state_dir>/runtimes/<runtime_id>/presentation_failure.json
+        # (naming.runtime_directory). Enumerate the runtime entries and refuse
+        # a symlinked runtime directory *before* descending into it: a glob
+        # would follow the directory link and reach outside the runtimes tree.
+        # Symlinked files are refused too, and the candidate count is capped.
+        candidates = []
+        runtimes_dir = state_dir / "runtimes"
+        if runtimes_dir.is_dir() and not runtimes_dir.is_symlink():
+            for runtime_entry in runtimes_dir.iterdir():
+                if runtime_entry.is_symlink() or not runtime_entry.is_dir():
+                    continue
+                candidates.append(runtime_entry / "presentation_failure.json")
+        candidates.sort(key=lambda p: p.stat().st_mtime if p.is_file() else 0.0, reverse=True)
+        for candidate in candidates[:32]:
+            if candidate.is_symlink():
+                continue
+            pf = _read_presentation_failure(candidate)
+            if pf is not None:
+                break
+
+    if not isinstance(pf, dict):
+        pf = {}
+
+    pf_status = pf.get("status")
+    entry["presentation_failure"] = {
+        "status": (
+            pf_status if isinstance(pf_status, str)
+            and pf_status in _PRESENTATION_FAILURE_STATUSES else None
+        ),
+        "reason": (
+            _bounded_str(pf.get("reason"), 200)
+            if isinstance(pf.get("reason"), str) else None
+        ),
+        "viewer_wait_sec": (
+            pf.get("viewer_wait_sec")
+            if (isinstance(pf.get("viewer_wait_sec"), int)
+                and not isinstance(pf.get("viewer_wait_sec"), bool)
+                and pf.get("viewer_wait_sec") > 0) else None
+        ),
+        "elapsed_s": _finite_number(pf.get("elapsed_s")),
+        "viewer_exit_code": (
+            pf.get("viewer_exit_code")
+            if (isinstance(pf.get("viewer_exit_code"), int)
+                and not isinstance(pf.get("viewer_exit_code"), bool)) else None
+        ),
+    }
+    # Flat aliases for callers that expect top-level keys.
+    entry["presentation_failure_status"] = entry["presentation_failure"]["status"]
+    entry["presentation_failure_reason"] = entry["presentation_failure"]["reason"]
+    entry["presentation_failure_viewer_wait_sec"] = entry["presentation_failure"]["viewer_wait_sec"]
+    entry["presentation_failure_elapsed_s"] = entry["presentation_failure"]["elapsed_s"]
+    entry["presentation_failure_viewer_exit_code"] = entry["presentation_failure"]["viewer_exit_code"]
+    return entry
+
+
+_TSUITATE_SWITCH_ERROR_CODES = frozenset({
+    # Fixed GameSwitch ERROR_* values plus Tsuitate's local fallback and the
+    # ControlError codes it persists. Never echo a bounded-but-unknown token:
+    # arbitrary messages, identifiers or credentials can fit within 64 bytes.
+    "busy", "queued", "request_conflict", "invalid_game", "already_active",
+    "no_active_game", "invalid_rotation", "prepare_failed", "quiesce_failed",
+    "round_boundary_unsupported", "start_failed", "readiness_timeout",
+    "agent_start_failed", "rollback_failed", "state_corrupt",
+    "recovery_required", "probe_failed", "timeout", "internal",
+    "source_fence_lost", "switch_failed", "control_unavailable",
+    "control_not_configured", "invalid_beta_operation",
+    "token_not_configured", "run_locked", "run_mismatch",
+    "control_authentication_failed", "control_timeout", "terminal_unconfirmed",
+    "recovery_not_available", "recovery_checkpoint_invalid",
+    "terminal_result_unavailable", "terminal_storage_failure",
+})
+
+
+_TSUITATE_SETTLE_REFUSALS = frozenset({
+    # Fixed vocabulary of the reason the released-owner settle refused once
+    # (docich#1992). Only these are published; an unknown string is null.
+    "not-failed", "other-owner", "became-active", "canonical-unstable",
+    "canonical-busy", "canonical-owns-view", "receipt-open",
+})
+
+_RETRO_RESTORING_SETTLE_CODES = frozenset({
+    # Fixed vocabulary of why the timer-safe restoring settle could not finish
+    # (#4155/#4158/#4159). The restoring-finish-* suffixes are the fixed
+    # CornerResult statuses. Only these are published; an unknown string is
+    # null.
+    "restoring-owner-unverified", "restoring-request-unverified",
+    "restoring-finish-unverified", "restoring-finish-pending",
+    "restoring-finish-unknown",
+    "restoring-finish-queued", "restoring-finish-waiting",
+    "restoring-finish-busy", "restoring-finish-accepted",
+    "restoring-finish-in_progress", "restoring-finish-stopping",
+    "restoring-finish-switching",
+})
+
+
+def _project_tsuitate_corner(data):
+    """Expose the persisted failure category, not a new recovery decision.
+
+    The generic last_error_code field intentionally classifies only
+    recovery_required. Preserve that contract while making known Tsuitate
+    producer codes observable under a separate field (docich#1992). The
+    existing last_error preview remains redacted and length-capped; unknown
+    codes are null rather than raw state content.
+
+    ``settle_refused_reason`` is the corner's own fixed reason for refusing to
+    retire a released failed owner. It exists so a settle that does not fire is
+    diagnosable from diagnostics alone instead of needing another guess cycle.
+    """
+    entry = _project_corner_state(data)
+    code = data.get("last_error_code")
+    entry["switch_error_code"] = (
+        code if isinstance(code, str) and code in _TSUITATE_SWITCH_ERROR_CODES else None
+    )
+    refusal = data.get("settle_refused_reason")
+    # Only a still-failed owner has a meaningful refusal: after the settle (or
+    # any other terminal path) retires it, the persisted reason is stale and
+    # must not sit next to `interrupted` as if it still applied.
+    entry["settle_refused_reason"] = (
+        refusal if (entry.get("status") == "failed"
+                    and isinstance(refusal, str)
+                    and refusal in _TSUITATE_SETTLE_REFUSALS)
+        else None
+    )
+    return entry
+
+
+def _project_review(value):
+    """Bounded 衝立将棋 感想戦 counters: where the facts came from and the kind.
+
+    The narration text, the opponent's name, the move list and the board are
+    never projected; only the fixed vocabulary and the move count.
+    """
+    if not isinstance(value, dict):
+        return None
+    source = value.get("source")
+    kind = value.get("kind")
+    failure = value.get("failure")
+    boundary = value.get("boundary")
+    model_failure = value.get("model_failure")
+    moves = value.get("moves")
+    return {
+        "source": source if source in {"replay", "result-only"} else None,
+        "kind": kind if kind in {"ai", "fallback"} else None,
+        # Why the public replay was unusable: a fixed code, never a message.
+        "failure": failure if failure in {"ok", "read-failed", "verify-failed",
+                                          "invalid-color", "invalid-game-id",
+                                          "unavailable"} else None,
+        # Whether the 感想戦 waited for the shared audio queue's boundary.
+        "boundary": boundary if boundary in {"quiet", "timeout", "unavailable",
+                                             "skipped"} else None,
+        # Why the model prose was not used, when it was not.
+        "model_failure": model_failure if model_failure in {
+            "none", "unsafe", "gate", "timeout", "rate_limit", "provider",
+            "exception"} else None,
+        "moves": moves if type(moves) is int and 0 <= moves <= 100000 else None,
     }
 
 
@@ -3765,6 +8464,21 @@ def _project_counts(value, keys):
     if not isinstance(value, dict):
         return None
     return {key: _bounded_int(value.get(key)) for key in keys}
+
+
+def _project_lawsim_counters(data):
+    """法案シミュレーター run counters, integers only (#3054).
+
+    ``narration.frames`` is the per-frame scheduling index; the other fields are
+    enqueue / delivery / skip / overlay outcome counts. No narration text, bill
+    names or other lawsim state leave the state file through this projection.
+    """
+    return {
+        "narration": _project_counts(data.get("narration"),
+                                     ("enqueued", "delivery_failed", "skipped", "frames")),
+        "overlay_announcements": _project_counts(data.get("overlay_announcements"),
+                                                 ("sent", "failed", "skipped")),
+    }
 
 
 _GAME_OUTCOMES = frozenset({"win", "loss", "draw", "unknown"})
@@ -3846,7 +8560,12 @@ def _project_bot_chart(value):
 
 
 FIFO_OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
-FIFO_MAX_RECEIPTS = 512
+# The store prunes terminal receipts to 1000, so a full scan of the receipt
+# directory stays small; the old 512-file window hid a non-terminal receipt
+# that sorted past it (g1163 2026-11-14: the wedge blocked the corner restore
+# while the projection reported no pending row). 4096 is the bound that keeps a
+# pathological directory from unbounded reads.
+FIFO_MAX_RECEIPTS = 4096
 
 
 def _receipt_age_sec(value, now):
@@ -3859,6 +8578,52 @@ def _receipt_age_sec(value, now):
         return max(0, int(now - parsed.timestamp()))
     except (TypeError, ValueError, OverflowError, OSError):
         return -1
+
+
+def _receipt_deadline_expired(value, now):
+    """Tri-state check for a receipt's optional ISO hard deadline.
+
+    ``hard_deadline_at`` is only present on hard-capped requests; None keeps
+    the field distinguishable from a live (False) or elapsed (True) cap.
+    """
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    try:
+        return parsed.timestamp() <= now
+    except (OverflowError, OSError):
+        return None
+
+
+# Fixed stages a previous-runtime restore can refuse at (mirrors
+# game_switch.RESTORE_STAGES). Never free text.
+GAME_SWITCH_RESTORE_STAGES = frozenset({
+    "unquiesced-runtime", "adapter-unavailable", "singleton-restart-refused",
+    "alive-probe-failed", "readiness-failed", "singleton-recheck-failed",
+    "agent-restart-failed", "continuation-unproven", "rollback-adapter-failed",
+    "rollback-start-failed", "rollback-materialize-failed",
+    "rollback-readiness-failed", "rollback-agent-start-failed",
+})
+
+
+def _collect_game_switch_restore(state_dir, now):
+    """Fixed-token evidence of the last refused previous-runtime restore."""
+
+    path = Path(state_dir) / "game-switch" / "restore_stage.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "stage": None, "age_sec": None}
+    if not readable or not isinstance(data, dict):
+        return entry
+    stage = data.get("stage")
+    entry["stage"] = stage if isinstance(stage, str) and stage in GAME_SWITCH_RESTORE_STAGES else None
+    entry["age_sec"] = _receipt_age_sec(data.get("updated_at"), now)
+    return entry
 
 
 def _collect_game_switch_fifo(state_dir, now):
@@ -3874,6 +8639,8 @@ def _collect_game_switch_fifo(state_dir, now):
         "terminal_count": 0,
         "malformed_count": 0,
         "head": None,
+        "pending_count": 0,
+        "pending": [],
     }
     try:
         if not directory.is_dir():
@@ -3889,6 +8656,7 @@ def _collect_game_switch_fifo(state_dir, now):
         paths = paths[:FIFO_MAX_RECEIPTS]
 
     queued = []
+    pending = []
     for path in paths:
         present, readable, data = _load_state_file(path)
         if not present or not readable or not isinstance(data, dict):
@@ -3901,6 +8669,12 @@ def _collect_game_switch_fifo(state_dir, now):
             result["queued_count"] += 1
         elif status in {"succeeded", "failed", "rolled_back"}:
             result["terminal_count"] += 1
+        elif status in {"accepted", "allocating"}:
+            # A receipt that never landed makes every later switch refuse with
+            # busy (g1163 2026-11-10: an accepted receipt wedged the retro
+            # corner restore for days). Project the pending rows so the wedge
+            # is visible without the private ledger.
+            pending.append(data)
 
     queued.sort(
         key=lambda item: (
@@ -3908,6 +8682,26 @@ def _collect_game_switch_fifo(state_dir, now):
             int(item.get("generation", 0)) if isinstance(item.get("generation"), int) else 0,
         )
     )
+    pending.sort(key=lambda item: str(item.get("updated_at", "")))
+    if pending:
+        result["pending_count"] = len(pending)
+        result["pending"] = [
+            {
+                "status": row.get("status") if row.get("status") in {"accepted", "allocating"} else None,
+                "operation": row.get("operation") if row.get("operation") in FIFO_OPERATIONS else None,
+                "target": _bounded_str(row.get("target"), 64),
+                "generation": row.get("generation")
+                if isinstance(row.get("generation"), int) else None,
+                "age_sec": _receipt_age_sec(row.get("updated_at"), now),
+                # #4356: an accepted receipt left past its hard cap is the
+                # wedge the watchdog must terminalize; surface the flag so a
+                # stuck one is visible without the private ledger.
+                "hard_deadline_expired": _receipt_deadline_expired(
+                    row.get("hard_deadline_at"), now
+                ),
+            }
+            for row in pending[:5]
+        ]
     if queued:
         head = queued[0]
         operation = head.get("operation")
@@ -3916,6 +8710,9 @@ def _collect_game_switch_fifo(state_dir, now):
             "operation": operation if operation in FIFO_OPERATIONS else None,
             "target": _bounded_str(head.get("target"), 64),
             "age_sec": _receipt_age_sec(head.get("created_at"), now),
+            "hard_deadline_expired": _receipt_deadline_expired(
+                head.get("hard_deadline_at"), now
+            ),
         }
     return result
 
@@ -4036,6 +8833,120 @@ def _collect_paper_experiment(state_dir, now):
     return entry
 
 
+PAPER_SLOT_SYMBOL_RE = re.compile(r"[A-Z0-9]{1,16}/[A-Z0-9]{1,16}")
+PAPER_SLOT_DIR_RE = re.compile(r"[A-Z0-9]{1,16}_[A-Z0-9]{1,16}")
+PAPER_SLOT_MAX_DIRS = 256
+# The production envelope sits ~4.7 KiB under HARD_JSON_BYTES (headroom monitor,
+# 2026-11-16); keep this section well under 1 KiB.
+PAPER_SLOT_LISTED = 3
+PAPER_SLOT_ROTATION_CLOSED_SELLS = 10
+PAPER_SLOT_ROTATION_AGE_S = 7 * 86400
+PAPER_SLOT_IMPROVE_STATUSES = frozenset({"running", "improved", "skipped", "failed", "dry-run"})
+PAPER_SLOT_IMPROVE_REASON_CODES = frozenset({
+    "disabled", "daily-limit", "already-running", "ledger-unavailable",
+    "slot-layout-invalid", "facts-error", "no-targets", "no-agents",
+    "lane-busy", "no-candidate-staged", "slots-error",
+}) | PAPER_IMPROVE_REASON_CODES
+
+
+def _collect_paper_slot(directory, now):
+    """One dedicated slot: fixed enums and counts only, never rule text."""
+    present, readable, data = _load_state_file(directory / "paper_experiment_control.json")
+    entry = {"status": "unknown", "entries_allowed": False, "closed_sells": None, "age_sec": None,
+             "reason_code": None, "evaluation_status": None, "open_position_count": None,
+             "control_readable": readable}
+    if not readable:
+        return entry
+    activated_at = _paper_observed_number(data.get("activated_at"), nonnegative=True)
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_EXPERIMENT_STATUSES),
+        reason_code=_rotation_enum(data.get("reason_code"), PAPER_EXPERIMENT_REASON_CODES),
+        entries_allowed=data.get("entries_allowed") is True,
+        evaluation_status=_rotation_enum(data.get("evaluation_status"), PAPER_EVALUATION_STATUSES),
+        open_position_count=_paper_observed_count(data.get("open_position_count")),
+        age_sec=None if activated_at is None else max(0, int(now - activated_at)),
+    )
+    evaluation = _collect_paper_experiment_evaluation(directory, data, now)
+    if evaluation.get("matches_active") is True:
+        entry["closed_sells"] = evaluation.get("closed_sells")
+    return entry
+
+
+def _collect_paper_slots_improve(trading_dir, now):
+    path = trading_dir / "paper_improve_slots_status.json"
+    present, readable, data = _load_state_file(path)
+    entry = {"present": present, "readable": readable, "age_sec": _file_age_sec(path, now)}
+    if not readable:
+        return entry
+    entry.update(
+        status=_rotation_enum(data.get("status"), PAPER_SLOT_IMPROVE_STATUSES),
+        reason_code=(None if data.get("reason_code") is None
+                     else _rotation_enum(data.get("reason_code"), PAPER_SLOT_IMPROVE_REASON_CODES)),
+        started_at=_bounded_time(data.get("started_at")),
+        completed_at=_bounded_time(data.get("completed_at")),
+    )
+    for key in ("targets", "calls", "queued", "activated", "rejected", "deferred"):
+        entry[key] = _paper_observed_count(data.get(key))
+    return entry
+
+
+def _collect_paper_slots(state_dir, now):
+    """Aggregate dedicated per-symbol slots (Issue #3623 §2.9).
+
+    Counts by status plus the few slots nearest rotation; 40+ full entries
+    would not fit the diagnostics budget and are not needed to triage.
+    """
+    trading_dir = Path(state_dir) / "trading"
+    root = trading_dir / "slots"
+    entry = {"present": root.is_dir(), "slot_count": 0, "invalid_count": 0,
+             "status_counts": {}, "entries_allowed_count": 0, "closed_sells_total": 0,
+             "nearest_rotation": [],
+             "improve": _collect_paper_slots_improve(trading_dir, now)}
+    if not entry["present"]:
+        return entry
+    try:
+        children = sorted(root.iterdir())[:PAPER_SLOT_MAX_DIRS]
+    except OSError:
+        entry["invalid_count"] = None
+        return entry
+    slots = []
+    for child in children:
+        if child.is_symlink() or not child.is_dir() or not PAPER_SLOT_DIR_RE.fullmatch(child.name):
+            entry["invalid_count"] += 1
+            continue
+        _, meta_readable, meta = _load_state_file(child / "slot.json")
+        symbol = meta.get("symbol") if meta_readable else None
+        if (not isinstance(symbol, str) or not PAPER_SLOT_SYMBOL_RE.fullmatch(symbol)
+                or symbol.replace("/", "_") != child.name):
+            entry["invalid_count"] += 1
+            continue
+        slot = _collect_paper_slot(child, now)
+        slot["symbol"] = symbol
+        slots.append(slot)
+    counts = {}
+    for slot in slots:
+        counts[slot["status"]] = counts.get(slot["status"], 0) + 1
+    entry["slot_count"] = len(slots)
+    entry["status_counts"] = dict(sorted(counts.items()))
+    entry["entries_allowed_count"] = sum(1 for slot in slots if slot["entries_allowed"])
+    entry["closed_sells_total"] = sum(slot["closed_sells"] or 0 for slot in slots)
+
+    def progress(slot):
+        sells = (slot["closed_sells"] or 0) / PAPER_SLOT_ROTATION_CLOSED_SELLS
+        age = (slot["age_sec"] or 0) / PAPER_SLOT_ROTATION_AGE_S
+        return max(sells, age)
+
+    # Slots that are not trading normally come first, then the nearest rotation.
+    ranked = sorted(slots, key=lambda slot: (slot["status"] == "active" and slot["entries_allowed"],
+                                             -progress(slot), slot["symbol"]))
+    entry["nearest_rotation"] = [
+        {key: slot[key] for key in ("symbol", "status", "reason_code", "entries_allowed",
+                                    "closed_sells", "age_sec")}
+        for slot in ranked[:PAPER_SLOT_LISTED]
+    ]
+    return entry
+
+
 def _rotation_policy():
     """Fixed projection of the configured dispatch policy (no secrets).
 
@@ -4069,6 +8980,28 @@ def _rotation_error_kind(value):
     if isinstance(value, str) and value in ROTATION_ERROR_KINDS:
         return value
     return "unknown"
+
+
+def _rotation_excluded_projection(value):
+    """Bounded corner-id -> fixed exclusion reason map from the last rotation tick.
+
+    ``CornerRotationManager._eligible()`` persists why each catalog corner was left
+    out of the automatic rotation (``disabled-or-paused`` / ``manual-only`` /
+    ``adapter-unavailable``). Projecting it makes catalog changes observable without
+    a reservation: an enabled manual-only corner reads ``manual-only``, while a
+    disabled one reads ``disabled-or-paused``. Only catalog ids, fixed reasons and
+    a bounded count are emitted; unknown values collapse to ``unknown``.
+    """
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for corner, reason in sorted(value.items()):
+        if len(out) >= ROTATION_EXCLUDED_LIMIT:
+            break
+        if not isinstance(corner, str) or not corner or len(corner) > 64:
+            continue
+        out[corner] = reason if isinstance(reason, str) and reason in ROTATION_EXCLUDED_REASONS else "unknown"
+    return out or None
 
 
 def _rotation_failed_corners_projection(data):
@@ -4112,7 +9045,8 @@ def _rotation_auto_restore_projection(data):
     record = data.get("auto_restore")
     out = {"auto_restore_corner": None, "auto_restore_attempts": None,
            "auto_restore_attempt_limit": ROTATION_AUTO_RESTORE_ATTEMPT_LIMIT,
-           "auto_restore_next_at": None, "auto_restore_status": None}
+           "auto_restore_next_at": None, "auto_restore_status": None,
+           "auto_restore_detail": None}
     if not isinstance(record, dict):
         return out
     out["auto_restore_corner"] = _bounded_str(record.get("corner"), 64)
@@ -4122,7 +9056,89 @@ def _rotation_auto_restore_projection(data):
     status = record.get("last_status")
     out["auto_restore_status"] = (status if status in ROTATION_AUTO_RESTORE_STATUSES
                                   else ("unknown" if status is not None else None))
+    detail = record.get("last_detail")
+    out["auto_restore_detail"] = (detail if detail in ROTATION_AUTO_RESTORE_DETAILS
+                                  else ("unknown" if detail is not None else None))
     return out
+
+
+def _rotation_released_settles_projection(data):
+    """Last released-owner settle answer per corner (#2479).
+
+    ``released-owner-unretired`` alone cannot tell a deferred retirement
+    (retried every tick) from an owner no hook can ever retire. Only the
+    fixed outcome vocabulary is published; request ids stay in the ledger.
+    """
+
+    rows = data.get("released_settle_outcomes")
+    if not isinstance(rows, dict):
+        return {"released_settles": None}
+    out = {}
+    for corner, row in rows.items():
+        if len(out) >= ROTATION_EXCLUDED_LIMIT:
+            break
+        if not isinstance(corner, str) or not corner or len(corner) > 64:
+            continue
+        outcome = row.get("outcome") if isinstance(row, dict) else None
+        out[corner] = (outcome if outcome in ROTATION_RELEASED_SETTLE_OUTCOMES
+                       else "unknown")
+    return {"released_settles": out or None}
+
+
+def _rotation_auto_plane_recovery_projection(data):
+    """Bounded view of the timer's terminal-phase plane recovery (#4349).
+
+    A failed switch can park the shared game-switch plane in ``failed`` /
+    ``recovery_required``; the timer then replays the reviewed coordinator
+    recovery a few times.  The 2026-11-16 hanjuku incident recovered through
+    this path, but the durable record was invisible in diagnostics.
+    """
+
+    record = data.get("auto_plane_recovery")
+    out = {"auto_plane_recovery_corner": None, "auto_plane_recovery_attempts": None,
+           "auto_plane_recovery_attempt_limit": ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT,
+           "auto_plane_recovery_next_at": None, "auto_plane_recovery_status": None}
+    if not isinstance(record, dict):
+        return out
+    out["auto_plane_recovery_corner"] = _bounded_str(record.get("corner"), 64)
+    attempts = record.get("attempts")
+    out["auto_plane_recovery_attempts"] = (
+        attempts if type(attempts) is int and 0 <= attempts <= 100 else None
+    )
+    out["auto_plane_recovery_next_at"] = _bounded_time(record.get("next_attempt_at"))
+    status = record.get("last_status")
+    out["auto_plane_recovery_status"] = (
+        status if status in ROTATION_AUTO_PLANE_RECOVERY_STATUSES
+        else ("unknown" if status is not None else None)
+    )
+    return out
+
+
+def _retained_corner_reason(rotation_data, game):
+    """Newest fixed failed-corner reason recorded for this corner's game (#4226).
+
+    The corner state file names its game, not the catalog id, so the ledger's
+    ``known_corners`` map is what links a ``failed_corners`` row back to the
+    state file being projected. Only the fixed reason vocabulary is returned;
+    anything else stays None and the caller uses the generic retained token.
+    """
+    if not isinstance(rotation_data, dict) or not isinstance(game, str):
+        return None
+    rows = rotation_data.get("failed_corners")
+    known = rotation_data.get("known_corners")
+    if not isinstance(rows, list) or not isinstance(known, dict):
+        return None
+    reason = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        corner_id = row.get("corner")
+        if not isinstance(corner_id, str):
+            continue
+        record = known.get(corner_id)
+        if isinstance(record, dict) and record.get("game") == game:
+            reason = row.get("reason_code")
+    return reason if reason in CORNER_RETAINED_REASONS else None
 
 
 def _rotation_pending_projection(state_dir, data, now):
@@ -4385,9 +9401,22 @@ def _collect_corner_files(state_dir, payload, now):
                 isinstance(data.get("pending"), dict)
                 or isinstance(data.get("manual_pending"), dict)):
             scheduled_blocked_reason = "waiting_slot"
+        try:
+            from docich.corner_rotation import overdue_wait
+            overdue = overdue_wait(data, now)
+        except Exception:
+            # An older deployed docich may not carry the probe yet; absence of
+            # the helper must never break the diagnostics collection itself.
+            overdue = None
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
             reason=_bounded_str(data.get("reason"), 64),
+            reason_since=_bounded_time(data.get("reason_since")),
+            # ``waiting_overdue`` is the #4333 wedge signal: next_due_at long
+            # past while one unchanged reason keeps holding the wait.
+            waiting_overdue=overdue is not None,
+            overdue_sec=overdue.get("overdue_sec") if overdue else None,
+            reason_age_sec=overdue.get("reason_age_sec") if overdue else None,
             next_due_at=_bounded_time(data.get("next_due_at")),
             last_seen_at=_bounded_time(data.get("last_seen_at")),
             last_slot_at=_bounded_time(data.get("last_slot_at")),
@@ -4409,18 +9438,27 @@ def _collect_corner_files(state_dir, payload, now):
             ),
             scheduled_manual_blocked_reason=scheduled_blocked_reason,
             error_kind=_rotation_error_kind(data.get("error_kind")),
+            excluded=_rotation_excluded_projection(data.get("excluded")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
         rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
         rotation.update(_rotation_failed_corners_projection(data))
         rotation.update(_rotation_auto_restore_projection(data))
+        rotation.update(_rotation_released_settles_projection(data))
+        rotation.update(_rotation_auto_plane_recovery_projection(data))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
+    active_game = None
+    switch_settled = False
     if readable:
         active = data.get("active") if isinstance(data.get("active"), dict) else {}
+        active_game = active.get("game")
+        # Only a settled switch can *retain* a corner game; mid-flight phases
+        # still legitimately name it.
+        switch_settled = data.get("phase") in {"idle", "ready"}
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
         deadline_at = data.get("deadline_at")
         deadline_expired = None
@@ -4448,11 +9486,30 @@ def _collect_corner_files(state_dir, payload, now):
             }
         )
     payload["game_switch"] = entry
+
+    # Chart corner runtime projection (docich#4640)
+    chart_present, chart_readable, chart_data = _load_state_file(
+        state_dir / CORNER_STATE_FILES["chart"]
+    )
+    chart_projection = _chart_corner_projection(state_dir, chart_data) if chart_readable else {
+        "status": "unknown",
+        "started_at": None,
+        "completed_at": None,
+        "end_reason": None,
+        "runtime_identity": None,
+    }
+    payload["chart_corner"] = {
+        "present": chart_present,
+        "readable": chart_readable,
+        **chart_projection,
+    }
+
     payload["weather_corner"] = _weather_corner_projection(
         state_dir, rotation_data, rotation_data is not None
     )
     payload["external_video"] = _collect_external_video(state_dir, now)
     payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
+    payload["game_switch_restore"] = _collect_game_switch_restore(state_dir, now)
     payload["game_switch_watchdog"] = _collect_game_switch_watchdog()
     payload["corner_rotation_timer_alias"] = _collect_corner_rotation_timer_alias()
 
@@ -4464,13 +9521,44 @@ def _collect_corner_files(state_dir, payload, now):
         "nethack_corner_manual",
         "tsuitate_corner",
         "yoso_corner",
+        "doushi_corner",
+        "mystery_corner",
+        "lawsim_corner",
+        "soren91_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
         if readable:
-            entry.update(_project_corner_state(data))
+            if name == "soren91_corner":
+                entry.update(_project_soren91_corner(data, state_dir=state_dir))
+            elif name == "tsuitate_corner":
+                entry.update(_project_tsuitate_corner(data))
+            else:
+                entry.update(_project_corner_state(data))
+            if name == "lawsim_corner":
+                entry["counters"] = _project_lawsim_counters(data)
             if name == "retro_corner":
                 entry["saved_checkpoint"] = _collect_hanjuku_checkpoint(state_dir, data)
+                settle_code = data.get("last_error_code")
+                entry["restoring_settle_code"] = (
+                    settle_code if isinstance(settle_code, str)
+                    and settle_code in _RETRO_RESTORING_SETTLE_CODES else None)
+                entry["lock_state"] = _probe_retro_lock(state_dir)
+            # Game-switch retaining a corner's game while the corner itself is
+            # already terminal is an operator action item (#4226): the shared
+            # overlay card can only report the corner as unavailable, so the
+            # fixed reason lives here instead.
+            retained = (
+                switch_settled
+                and isinstance(data.get("game"), str)
+                and data["game"] == active_game
+                and data.get("status") in CORNER_RETAINED_TERMINAL_STATUSES
+            )
+            entry["retained_active"] = retained
+            entry["retained_reason"] = (
+                (_retained_corner_reason(rotation_data, data["game"])
+                 or "corner-terminal-game-retained") if retained else None
+            )
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
@@ -4485,6 +9573,7 @@ def _collect_corner_files(state_dir, payload, now):
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
     payload["paper_experiment"] = _collect_paper_experiment(state_dir, now)
+    payload["paper_slots"] = _collect_paper_slots(state_dir, now)
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
@@ -4509,7 +9598,7 @@ def _collect_external_video(state_dir, now):
     """Fixed enums/health only: no IP, request, PID, file body or argv output."""
     entry = {"receiver_present": False, "receiver_readable": False,
              "receiver_status": "absent", "receiver_alive": None,
-             "frame_fresh": None, "audio_present": None,
+             "frame_fresh": None, "frame_age_sec": None, "audio_present": None,
              "corner_status": "absent", "recovery_required": None}
     present, readable, corner = _load_state_file(Path(state_dir) / _REG.EXTERNAL_VIDEO["corner_file"])
     if present:
@@ -4540,11 +9629,134 @@ def _collect_external_video(state_dir, now):
         age = None
     fresh = (alive and receiver.get("status") == "receiving" and now < expiry
              and age is not None and 0 <= age <= _REG.EXTERNAL_VIDEO["frame_max_age_sec"])
+    if age is not None and math.isfinite(age) and age >= 0:
+        entry["frame_age_sec"] = min(int(age), _REG.EXTERNAL_VIDEO["frame_age_max_sec"])
     entry.update(receiver_readable=True, receiver_alive=alive,
                  frame_fresh=fresh, audio_present=receiver.get("audio_present") is True)
     if receiver.get("status") in {"launching", "waiting", "receiving", "stopped", "failed"}:
         entry["receiver_status"] = receiver["status"]
     return entry
+
+
+# Encoder heartbeat projection (#AV projection). Only fixed numeric/enum keys
+# are copied: the source records also carry stream configuration and the
+# reconnect channel name, which must never cross this boundary.
+_ENCODER_STATES = frozenset({"running", "stopped", "failed"})
+_ENCODER_MAX_FRAMES = 2 ** 53 - 1
+
+
+def _encoder_count(value):
+    if type(value) is not int or not 0 <= value <= _ENCODER_MAX_FRAMES:
+        return None
+    return value
+
+
+def _normalize_encoder(kind, data):
+    """Return the fixed projection of one heartbeat record, or None."""
+    normalized = {
+        "state": "unknown",
+        "ready": None,
+        "frames_sent": None,
+        "fps": None,
+        "out_time_sec": None,
+    }
+    if kind == "twica":
+        if (type(data.get("schema")) is not int
+                or data["schema"] != _REG.ENCODER["schema_version"]):
+            return None
+        ready = data.get("ready")
+        normalized["ready"] = ready if isinstance(ready, bool) else None
+        normalized["frames_sent"] = _encoder_count(data.get("frames_sent"))
+        fps = data.get("fps")
+        if type(fps) in (int, float) and math.isfinite(fps) and 0 <= fps <= 240:
+            normalized["fps"] = round(float(fps), 2)
+        if normalized["ready"] is True:
+            normalized["state"] = "running"
+        elif data.get("frame_state") == "closed":
+            normalized["state"] = "stopped"
+        return normalized
+    # Soren direct_stream writes the parsed ffmpeg progress record.
+    state = data.get("state")
+    if isinstance(state, str) and state in _ENCODER_STATES:
+        normalized["state"] = state
+    elif data.get("running") is True:
+        normalized["state"] = "running"
+    elif data.get("running") is False:
+        normalized["state"] = "stopped"
+    normalized["ready"] = data.get("running") if isinstance(data.get("running"), bool) else None
+    normalized["frames_sent"] = _encoder_count(data.get("frame"))
+    fps = data.get("fps")
+    if type(fps) in (int, float) and math.isfinite(fps) and 0 <= fps <= 240:
+        normalized["fps"] = round(float(fps), 2)
+    out_time_us = data.get("out_time_us")
+    if type(out_time_us) is int and 0 <= out_time_us <= 10 ** 15:
+        normalized["out_time_sec"] = out_time_us // 1_000_000
+    return normalized
+
+
+def _collect_encoder(state_dir, soren, now):
+    """Read-only encoder heartbeat from the two existing producer paths.
+
+    TwiCa's common adapter owns ``run/twica-common/pipeline.json`` only while
+    it holds the output; Soren's ``direct_stream`` owns its own progress record.
+    Whichever is fresh wins, and a stale record is reported as ``stale`` rather
+    than as a healthy encoder.
+    """
+    result = {
+        "schema_version": _REG.ENCODER["schema_version"],
+        "present": False,
+        "readable": False,
+        "source": "none",
+        "state": "unknown",
+        "ready": None,
+        "frames_sent": None,
+        "fps": None,
+        "progress_age_sec": None,
+        "out_time_sec": None,
+        "reason": "absent",
+    }
+    candidates = (
+        ("twica_common", Path(state_dir) / _REG.ENCODER["twica_subpath"],
+         _REG.ENCODER["twica_stale_sec"], "twica"),
+        ("direct_stream", Path(soren) / _REG.ENCODER["direct_stream_subpath"],
+         _REG.ENCODER["direct_stream_stale_sec"], "direct"),
+    )
+    stale = None
+    invalid = None
+    for source, path, stale_sec, kind in candidates:
+        present, readable, data = _load_state_file(path)
+        if not present:
+            continue
+        if not readable or not isinstance(data, dict):
+            invalid = invalid or (source, "unreadable")
+            continue
+        normalized = _normalize_encoder(kind, data)
+        if normalized is None:
+            invalid = invalid or (source, "invalid_schema")
+            continue
+        try:
+            raw_age = now - path.stat().st_mtime
+            # A clock jump must not make an old record look fresh; an mtime far
+            # in the future is treated as stale rather than as age 0.
+            age = None if raw_age < -300 else max(0, int(raw_age))
+        except OSError:
+            age = None
+        if age is None or age > stale_sec:
+            stale = stale or (source, normalized, age)
+            continue
+        result.update(normalized)
+        result.update(source=source, present=True, readable=True,
+                      progress_age_sec=age, reason="ok")
+        return result
+    if stale is not None:
+        source, normalized, age = stale
+        result.update(normalized)
+        result.update(source=source, present=True, readable=True,
+                      progress_age_sec=age, reason="stale")
+        return result
+    if invalid is not None:
+        result.update(source=invalid[0], present=True, readable=False, reason=invalid[1])
+    return result
 
 
 _HANJUKU_PREDICTION_RECORD_LIMIT = 16384
@@ -4559,17 +9771,29 @@ _HANJUKU_PREDICTION_BLOCKERS = (
 
 
 def _bounded_prediction_record(path):
-    """(value, present, readable) for one bounded regular JSON record."""
+    """(value, present, readable) for one bounded no-follow JSON record."""
+    directory_fd = None
     try:
-        if path.is_symlink():
-            return None, True, False
-        if not path.is_file():
-            return None, False, False
-        if path.stat().st_size > _HANJUKU_PREDICTION_RECORD_LIMIT:
-            return None, True, False
-        value = json.loads(path.read_text(encoding="utf-8"))
+        # Open every parent component without following links. The directory
+        # descriptor anchors the record even if a pathname is replaced later.
+        path = Path(path)
+        parent = path.parent
+        directory_fd = _supervisor_directory(parent.anchor or ".")
+        components = parent.parts[1:] if parent.anchor else parent.parts
+        for component in components:
+            previous_fd = directory_fd
+            directory_fd = _supervisor_directory(component, dir_fd=previous_fd)
+            os.close(previous_fd)
+        raw = _supervisor_read(path.name, _HANJUKU_PREDICTION_RECORD_LIMIT,
+                               dir_fd=directory_fd)
+        value = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return None, False, False
     except (OSError, ValueError, RecursionError):
         return None, True, False
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
     if not isinstance(value, dict):
         return None, True, False
     return value, True, True
@@ -4606,7 +9830,8 @@ def _collect_hanjuku_prediction_ownership(state_dir, data, row):
         return out
     runtime = Path(state_dir) / "runtimes" / runtime_id
     try:
-        present = runtime.is_dir() and not runtime.is_symlink()
+        present = (not any(parent.is_symlink() for parent in (runtime, *runtime.parents))
+                   and runtime.is_dir())
     except OSError:
         present = None
     out["runtime_present"] = present
@@ -4664,6 +9889,27 @@ def _collect_hanjuku_prediction_ownership(state_dir, data, row):
     return out
 
 
+def _collect_hanjuku_prediction_health(state_dir, errors):
+    """Bounded consecutive-error projection; never expose a record body.
+
+    The counter lives in its own record so it survives the case the durable
+    ledger is rejected by ``_load`` and cannot be rewritten (#2216).
+    """
+    record, present, readable = _bounded_prediction_record(
+        Path(state_dir) / "hanjuku_predictions_health.json")
+    if not present:
+        return None
+    record = record if readable and isinstance(record, dict) else {}
+    streak = record.get("consecutive_errors")
+    last_error = record.get("last_error")
+    last_error = last_error if isinstance(last_error, str) and last_error in errors else None
+    return {"present": present, "readable": readable,
+            "consecutive_errors": (streak if type(streak) is int
+                                   and 0 <= streak <= 1_000_000 else None),
+            "last_error": last_error,
+            "last_ok_at": _finite_number(record.get("last_ok_at"))}
+
+
 def _collect_hanjuku_predictions(state_dir):
     """Read-only bounded projection; never expose OAuth config or API payloads."""
     present, readable, data = _load_state_file(Path(state_dir) / "hanjuku_predictions.json")
@@ -4689,8 +9935,14 @@ def _collect_hanjuku_predictions(state_dir):
                                 and 1 <= row["window"] <= 1800 else None),
              "status": choice(row.get("status"), {
                  "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
-             "cleared": chapter(result.get("cleared")),
+             # A goal settled at achievement carries no terminal result; its
+             # verified count is `achieved` (2026-11-09). Counts only, no prose.
+             "cleared": chapter(result.get("cleared") if result.get("cleared") is not None
+                                else row.get("achieved")),
              "next_poll_at": _finite_number(data.get("next_poll_at"))}
+    health = _collect_hanjuku_prediction_health(state_dir, errors)
+    if health is not None:
+        entry["health"] = health
     if present and readable and row:
         try:
             ownership = _collect_hanjuku_prediction_ownership(state_dir, data, row)
@@ -4737,10 +9989,73 @@ def _collect_retro_program_queues(soren):
     return queues
 
 
-def _collect_prediction_leaderboard(state_dir):
-    """Counts only; the 予想王 ledger never exposes viewer names or titles."""
+def _parse_iso_utc(value):
+    """Epoch seconds for an ISO-8601 UTC stamp, else None (#2805, #2925).
+
+    Accepts second, microsecond and nanosecond (or any sub-microsecond)
+    precision.  Fractional seconds with more than six digits are rounded to
+    microseconds (with carry into the seconds field) so stamps such as
+    ``2026-10-23T20:37:12.961559839Z`` parse instead of being dropped.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z",
+        value,
+    )
+    if match is None:
+        return None
+    base, frac = match.group(1), match.group(2)
+    microsecond = 0
+    carry_seconds = 0
+    if frac:
+        if len(frac) <= 6:
+            microsecond = int(frac.ljust(6, "0"))
+        else:
+            denom = 10 ** (len(frac) - 6)
+            microsecond = (int(frac) + denom // 2) // denom
+            if microsecond >= 1000000:
+                microsecond -= 1000000
+                carry_seconds = 1
+    try:
+        parsed = dt.datetime.strptime(base, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    parsed = parsed.replace(microsecond=microsecond, tzinfo=dt.timezone.utc)
+    if carry_seconds:
+        parsed = parsed + dt.timedelta(seconds=carry_seconds)
+    try:
+        return parsed.timestamp()
+    except (OverflowError, ValueError):
+        return None
+
+
+def _collect_prediction_leaderboard(state_dir, now=None):
+    """Counts only; the 予想王 ledger never exposes viewer names or titles.
+
+    The counts are chosen so one envelope can tell the three empty-ranking
+    states apart without reading the ledger again (#2805):
+
+    * ``rounds`` > 0 with ``graded_rounds`` 0 makes the hit-rate, won-points and
+      lost-points boards empty by contract.
+    * ``rounds`` > 0 with ``predictor_rows`` 0 means no participant row was
+      recorded at all, so every board is empty for a different reason.
+    * ``last_round_ended_at`` and ``last_round_age_sec`` say whether the ledger
+      advanced since the measured snapshot, which separates "empty when the
+      report was written" from "empty now".
+
+    ``viewers_*`` are per-viewer aggregate counts, never identities. The
+    thresholds are the production values recorded in ``min_rounds`` /
+    ``min_participations``.
+    """
     path = Path(state_dir) / "prediction_leaderboard.json"
-    entry = {"present": False, "readable": False, "rounds": 0, "viewers": 0}
+    entry = {"present": False, "readable": False, "schema": None, "rounds": 0,
+             "graded_rounds": 0, "viewers": 0, "predictor_rows": 0, "canceled": 0,
+             "soren_canceled": 0, "viewers_won_gt0": 0,
+             "viewers_used_gt0": 0, "viewers_hit_rate_eligible": 0,
+             "last_round_ended_at": None, "last_round_age_sec": -1,
+             "min_rounds": _PREDICTION_MIN_ROUNDS,
+             "min_participations": _PREDICTION_MIN_PARTICIPATIONS}
     try:
         if path.is_symlink() or not path.is_file():
             return entry
@@ -4752,19 +10067,72 @@ def _collect_prediction_leaderboard(state_dir):
         data = json.loads(raw) if raw is not None else None
     except ValueError:
         data = None
-    if (not isinstance(data, dict) or data.get("schema") != 1
+    if (not isinstance(data, dict) or data.get("schema") not in (1, 2)
             or not isinstance(data.get("rounds"), dict)):
         return entry
+    schema = data.get("schema")
     viewers = set()
+    totals = {}
+    ended = []
+    canceled = soren_canceled = graded = predictor_rows = 0
     for round_ in data["rounds"].values():
-        predictors = round_.get("predictors") if isinstance(round_, dict) else None
+        if not isinstance(round_, dict):
+            continue
+        status = round_.get("status")
+        if status is None and schema == 1:
+            # A schema-1 ledger stored graded rounds only (``_upgrade_legacy``).
+            status = "RESOLVED"
+        if status == "CANCELED":
+            # 不成立キャンセルの参加実績（#933 §2.1）。理由・視聴者名は出さない。
+            canceled += 1
+            if round_.get("corner") == "soren":
+                soren_canceled += 1
+        elif status == "RESOLVED":
+            graded += 1
+        round_ended = round_.get("ended_at")
+        if isinstance(round_ended, str) and round_ended:
+            # ISO-8601 UTC sorts lexicographically, so the max string is the
+            # newest round end; only the newest one leaves this projection.
+            ended.append(round_ended[:40])
+        predictors = round_.get("predictors")
         if not isinstance(predictors, list):
             continue
         for item in predictors:
-            if isinstance(item, dict) and isinstance(item.get("user_id"), str):
-                viewers.add(item["user_id"])
-    entry.update(readable=True, rounds=min(len(data["rounds"]), 2000),
-                 viewers=min(len(viewers), 100000))
+            if not isinstance(item, dict) or not isinstance(item.get("user_id"), str):
+                continue
+            viewers.add(item["user_id"])
+            predictor_rows += 1
+            row = totals.setdefault(item["user_id"],
+                                    {"rounds": 0, "used": 0, "won": 0})
+            if status == "RESOLVED":
+                row["rounds"] += 1
+            used = item.get("used")
+            if type(used) is int and used > 0:
+                row["used"] += used
+            won = item.get("won")
+            if type(won) is int and won > 0:
+                row["won"] += won
+    last_round_ended_at = max(ended) if ended else None
+    last_round_age_sec = -1
+    if last_round_ended_at is not None and now is not None:
+        parsed = _parse_iso_utc(last_round_ended_at)
+        if parsed is not None:
+            last_round_age_sec = _bounded_age(parsed, now)
+    entry.update(readable=True, schema=schema,
+                 rounds=min(len(data["rounds"]), 2000),
+                 graded_rounds=min(graded, 2000),
+                 viewers=min(len(viewers), 100000),
+                 predictor_rows=min(predictor_rows, 100000),
+                 canceled=min(canceled, 2000), soren_canceled=min(soren_canceled, 2000),
+                 viewers_won_gt0=min(sum(1 for row in totals.values()
+                                        if row["won"] > 0), 100000),
+                 viewers_used_gt0=min(sum(1 for row in totals.values()
+                                         if row["used"] > 0), 100000),
+                 viewers_hit_rate_eligible=min(
+                     sum(1 for row in totals.values()
+                         if row["rounds"] >= _PREDICTION_MIN_ROUNDS), 100000),
+                 last_round_ended_at=last_round_ended_at,
+                 last_round_age_sec=last_round_age_sec)
     return entry
 
 
@@ -4798,6 +10166,210 @@ def _collect_soren_predictions(soren, state_dir):
     return entry
 
 
+def _bounded_age(value, now):
+    """Seconds since ``value`` for a plausible timestamp, else -1 (#2805)."""
+    if type(value) not in (int, float) or value <= 0:
+        return -1
+    age = int(now - value)
+    return age if 0 <= age <= 10 ** 9 else -1
+
+
+def _prediction_round_copy(value):
+    """Bounded copy of ``corners.boundary.prediction.round`` for the exempt section.
+
+    ``_collect_prediction_round`` already bounds its fields; this keeps the
+    fixed key shape for the top-level duplicate and never passes an unexpected
+    value through when an older collector shape is read.
+    """
+    value = value if isinstance(value, dict) else {}
+    if not value:
+        return None
+    retry = value.get("retry")
+    retry = retry if isinstance(retry, dict) else {}
+
+    def _int(raw, low, high):
+        return (raw if isinstance(raw, int) and not isinstance(raw, bool)
+                and low <= raw <= high else None)
+
+    def _bool(raw):
+        return raw if isinstance(raw, bool) else None
+
+    http_code = retry.get("http_code")
+    return {
+        "present": value.get("present") is True,
+        "readable": value.get("readable") is True,
+        "round_version": _int(value.get("round_version"), 0, 99),
+        "games_completed": _int(value.get("games_completed"), 0, 1_000_000),
+        "max_games": _int(value.get("max_games"), 0, 1_000_000),
+        "remaining_games": _int(value.get("remaining_games"), 0, 1_000_000),
+        "target_first_game": _int(value.get("target_first_game"), 0, 10 ** 12),
+        "last_game_num": _int(value.get("last_game_num"), 0, 10 ** 12),
+        "created_age_sec": _int(value.get("created_age_sec"), -1, 10 ** 9),
+        "progress_age_sec": _int(value.get("progress_age_sec"), -1, 10 ** 9),
+        "fence_present": _bool(value.get("fence_present")),
+        "fence_age_sec": _int(value.get("fence_age_sec"), -1, 10 ** 9),
+        "retry": {
+            "present": retry.get("present") is True,
+            "readable": retry.get("readable") is True,
+            "attempt": _int(retry.get("attempt"), 0, 1000),
+            "next_retry_at": _int(retry.get("next_retry_at"), 0, 10 ** 12),
+            "retry_active": _bool(retry.get("retry_active")),
+            "http_code": (http_code[:16] if isinstance(http_code, str) else None),
+        },
+        "complete": _bool(value.get("complete")),
+        "settlement_pending": _bool(value.get("settlement_pending")),
+        "settlement_pending_sec": _int(value.get("settlement_pending_sec"), 0, 10 ** 9),
+    }
+
+
+def _prediction_projection(corners, now):
+    """The 予想王 evidence as a top-level section the ceiling drops keep (#2805).
+
+    ``corners`` is dropped whole against the hard ceiling, and the ledger, the
+    Soren handoff, the HanJuku round state, the yoso corner run and the
+    prediction boundary all live inside it. When the production envelope grew
+    past the ceiling, every 予想王 report could only be answered from a run that
+    still fitted, so this re-projects the same already-bounded dicts under a key
+    that survives.
+
+    This is a *duplicate* projection, not a move: the ``corners.*`` keys keep
+    their existing shape and meaning so already documented consumers and the
+    regression tests stay honest, while ``prediction`` is the exempt copy. Both
+    read the same dict objects, so no file is read twice and the two cannot
+    disagree within one envelope. ``state_dir_found`` is repeated here for the
+    same reason: it is the only signal that separates "the 予想王 state dir was
+    never found" from "the ledger is empty", and it used to disappear with
+    ``corners``. No viewer name, login or title is added; the values are counts,
+    fixed enums, bounded timestamps and ages only.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+
+    def _section(name):
+        value = corners.get(name)
+        return value if isinstance(value, dict) else {}
+
+    leaderboard = _section("prediction_leaderboard")
+    handoff = _section("soren_predictions")
+    hanjuku = _section("hanjuku_predictions")
+    corner = _section("yoso_corner")
+    boundary = _section("boundary")
+    prediction = boundary.get("prediction")
+    prediction = prediction if isinstance(prediction, dict) else {}
+    health = hanjuku.get("health")
+    health = health if isinstance(health, dict) else {}
+    health_ok = None
+    if health:
+        health_ok = (health.get("present") is True
+                     and health.get("readable") is True
+                     and health.get("consecutive_errors") == 0
+                     and health.get("last_error") is None)
+
+    def _text(value):
+        return value if isinstance(value, str) else None
+
+    result = {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "leaderboard": dict(leaderboard),
+        "soren_handoff": dict(handoff),
+        "hanjuku": {
+            "present": hanjuku.get("present") is True,
+            "readable": hanjuku.get("readable") is True,
+            "status": _text(hanjuku.get("status")),
+            "mode": _text(hanjuku.get("mode")),
+            "health_ok": health_ok,
+            "last_ok_age_sec": _bounded_age(health.get("last_ok_at"), now),
+        },
+        "corner": {
+            "present": corner.get("present") is True,
+            "readable": corner.get("readable") is True,
+            "status": _text(corner.get("status")),
+            "game": _text(corner.get("game")),
+            "end_reason": _text(corner.get("end_reason")),
+            "recovery_required": (corner.get("recovery_required")
+                                  if isinstance(corner.get("recovery_required"), bool)
+                                  else None),
+            "completed_at": (corner.get("completed_at")
+                             if type(corner.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(corner.get("completed_at"), now),
+        },
+        "boundary": {
+            "present": prediction.get("present") is True,
+            "readable": prediction.get("readable") is True,
+            "completed_at": (prediction.get("completed_at")
+                             if type(prediction.get("completed_at")) in (int, float)
+                             else None),
+            "age_sec": _bounded_age(prediction.get("completed_at"), now),
+        },
+    }
+    round_state = _prediction_round_copy(prediction.get("round"))
+    if round_state is not None:
+        result["boundary"]["round"] = round_state
+    return result
+
+
+# Fixed lawsim_corner.json status enum (lawsim_corner.py); anything else is None.
+_LAWSIM_STATUSES = frozenset({
+    "idle", "starting", "active", "restoring", "completed", "failed", "interrupted"})
+
+
+def _lawsim_projection(corners, now):
+    """The 法案シミュレーター corner's run state and counters as a top-level section (#3054).
+
+    Same reason as ``_prediction_projection`` (#2805): ``corners`` is dropped whole
+    against the hard ceiling, which made the narration and overlay counters
+    unobservable in every production run. This duplicates the already-bounded
+    ``corners.lawsim_corner`` fields under a key the ceiling never takes away.
+    Only enums, counts, timestamps as ages and the fixed game id are emitted.
+    """
+    corners = corners if isinstance(corners, dict) else {}
+    corner = corners.get("lawsim_corner")
+    corner = corner if isinstance(corner, dict) else {}
+    counters = corner.get("counters")
+    counters = counters if isinstance(counters, dict) else {}
+    status = corner.get("status")
+    game = corner.get("game")
+    return {
+        "state_dir_found": corners.get("state_dir_found") is True,
+        "present": corner.get("present") is True,
+        "readable": corner.get("readable") is True,
+        "status": status if status in _LAWSIM_STATUSES else None,
+        "game": game if game == "lawsim-view" else None,
+        "end_reason": corner.get("end_reason"),
+        "age_sec": _bounded_age(corner.get("completed_at"), now),
+        "narration": counters.get("narration"),
+        "overlay_announcements": counters.get("overlay_announcements"),
+    }
+
+
+def _probe_retro_lock(state_dir):
+    """Whether the retro corner's exclusive lock is free, without writing.
+
+    The timer-safe restore driver (``RetroCornerManager.recover_failed_restore``)
+    runs under ``locks/retro-corner.lock``; a stuck ``restoring`` row with no
+    ``last_error_code`` means the driver's exception (typically a busy lock) is
+    swallowed by the rotation. A shared, non-blocking probe distinguishes a
+    held lock from a missing one and never creates the file or waits.
+    """
+    path = Path(state_dir) / "locks" / "retro-corner.lock"
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unreadable"
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "held"
+        except OSError:
+            return "unreadable"
+        return "free"
+    finally:
+        os.close(fd)
+
+
 def _collect_programs(state_dir, soren, now):
     """Sanitized corner/program lifecycle plus boundary and A/B wait state.
 
@@ -4820,6 +10392,10 @@ def _collect_programs(state_dir, soren, now):
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
         "yoso_corner": {"present": False, "readable": False},
+        "doushi_corner": {"present": False, "readable": False},
+        "mystery_corner": {"present": False, "readable": False},
+        "lawsim_corner": {"present": False, "readable": False},
+        "soren91_corner": {"present": False, "readable": False},
         "prediction_leaderboard": {"present": False, "readable": False, "rounds": 0, "viewers": 0},
         "soren_predictions": {"handoff_present": False, "handoff_bytes": 0, "handoff_rows": 0,
                               "handoff_oversized": False, "cursor_present": False},
@@ -4842,11 +10418,12 @@ def _collect_programs(state_dir, soren, now):
             "present": False, "readable": False, "age_sec": -1,
             "evaluation": {"present": False, "readable": False, "age_sec": -1},
         },
+        "paper_slots": {"present": False, "slot_count": 0},
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
-    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir)
+    payload["prediction_leaderboard"] = _collect_prediction_leaderboard(state_dir, now)
     payload["soren_predictions"] = _collect_soren_predictions(soren, state_dir)
     retro = payload.get("retro_corner")
     game_switch = payload.get("game_switch")
@@ -4862,7 +10439,9 @@ def _collect_programs(state_dir, soren, now):
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["retro_program_queues"] = _collect_retro_program_queues(soren)
     payload["ab"] = _collect_ab(soren, now)
+    payload["retro_scores"] = _collect_retro_scores(state_dir, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
+    payload["soren_gameover"] = _collect_soren_gameover(soren, now)
     return payload
 
 
@@ -5280,8 +10859,9 @@ HANJUKU_DECISION_SCREEN_KINDS = frozenset({
     "attack_started", "barrier_removed", "battle", "battle_menu",
     "battle_menu_pending", "boss_attack_started", "field_encounter_started", "card_select", "castle_info",
     "castle_menu", "defense_started", "discharge_menu", "egg_battle_menu",
-    "egg_choice_menu", "general_list", "gift_request", "main_menu", "map",
-    "map_target", "monster_menu", "month_menu", "name_entry", "okunote_menu",
+    "egg_choice_menu", "field_card_list", "general_list", "gift_request", "main_menu", "map",
+    "map_target", "monster_menu", "monster_menu_pending", "month_menu", "name_entry", "okunote_menu", "password_entry",
+    "password_entry",
     "sealed_castle", "shop_exit_confirm", "shop_list", "shop_quantity",
     "shop_quantity_prompt", "sortie_confirm", "summer_bonus",
     "summer_bonus_message", "text", "unknown", "world_map", "yes_no",
@@ -5490,6 +11070,7 @@ def _collect_soren_game(soren, now):
     runner = _read_json(soren / "tmp/state/main_strategy_runner_active.json")
     result = {"present": path.is_file(), "readable": isinstance(state, dict),
               "state": "unknown", "age_sec": -1, "founding_seen": None,
+              "founding_marker_current": None, "founding_marker_stale": None,
               "make_soren_count": None, "game_count": None, "score": None,
               "pieces_count": None,
               "runner_pid": None, "runner_alive": None}
@@ -5507,6 +11088,13 @@ def _collect_soren_game(soren, now):
         except OSError:
             pass
     result["founding_seen"] = (soren / "tmp/markers/.soviet_created").exists()
+    # #2345: the raw marker only says that *some* match founded. Operators need
+    # to know whether it still belongs to this board; a stale marker used to
+    # read as founding evidence and hid a real GAME OVER for ~15h40m.
+    if _FOUNDING_MARKER_IS_CURRENT is not None:
+        result["founding_marker_current"] = _FOUNDING_MARKER_IS_CURRENT(soren, path)
+        result["founding_marker_stale"] = bool(
+            result["founding_seen"] and not result["founding_marker_current"])
     try:
         count = int((soren / "game_count.txt").read_text(encoding="utf-8").strip())
         result["game_count"] = count if 0 <= count <= 100000000 else None
@@ -5521,6 +11109,147 @@ def _collect_soren_game(soren, now):
                 result["runner_alive"] = True
             except (ProcessLookupError, PermissionError, OSError):
                 result["runner_alive"] = False
+    return result
+
+
+# Per-match Soren game-over projection.  Each finished match leaves one
+# ``game_history/<end_ts>_score<N>.jsonl`` turn log; the last record carries
+# the final board in ``state_snapshot.pieces``.  Reviewing every match-end
+# board (top-type histogram, unmerged high pairs, end reason) is the input
+# the strategy-improvement loop needs to find recurring bottlenecks, so the
+# owner-only diagnostics exposes a bounded summary instead of the raw log.
+# Only numeric fields, booleans, the fixed strategy-hash token and a
+# charset-filtered end reason are ever projected.
+SOREN_GAMEOVER_MAX_GAMES = 3
+SOREN_GAMEOVER_TAIL_BYTES = 96 * 1024
+SOREN_GAMEOVER_MAX_REASON_LEN = 80
+SOREN_GAMEOVER_MAX_PIECES = 100000
+SOREN_GAMEOVER_REASON_RE = re.compile(r"[^A-Za-z0-9_|:+\-.]")
+SOREN_GAMEOVER_NAME_RE = re.compile(
+    r"^(?:wildcard_parallel_\d+_game\d+_|\d{8}_\d{6}_)score\d{1,9}\.jsonl$")
+
+
+def _soren_gameover_reason(record):
+    reason = record.get("decision_reason")
+    if not isinstance(reason, str) or not reason:
+        return None
+    cleaned = SOREN_GAMEOVER_REASON_RE.sub("", reason)[:SOREN_GAMEOVER_MAX_REASON_LEN]
+    return cleaned or None
+
+
+def _soren_gameover_piece(entry):
+    """Project one board piece to (bounded type, bounded x)."""
+    if not isinstance(entry, dict):
+        return None
+    piece_type = entry.get("type")
+    piece_x = entry.get("x")
+    if type(piece_type) is not int or not 1 <= piece_type <= 64:
+        return None
+    if type(piece_x) not in (int, float) or not -64.0 <= piece_x <= 64.0:
+        return None
+    return piece_type, round(float(piece_x), 3)
+
+
+def _soren_gameover_pair_gap(pieces):
+    """Min horizontal separation of the highest type that still exists in
+    duplicate on the end board — the 'two Russias never merged' bottleneck."""
+    by_type = {}
+    for piece_type, piece_x in pieces:
+        if piece_type >= 10:
+            by_type.setdefault(piece_type, []).append(piece_x)
+    for piece_type in sorted(by_type, reverse=True):
+        xs = sorted(by_type[piece_type])
+        if len(xs) < 2:
+            continue
+        gap = round(min(b - a for a, b in zip(xs, xs[1:])), 3)
+        return {"type": piece_type, "count": len(xs), "min_dx": gap}
+    return None
+
+
+def _collect_soren_gameover_one(path, now):
+    entry = {"present": True, "readable": False, "age_sec": _file_age_sec(path, now),
+             "turns": None, "score": None, "strategy_hash": None,
+             "russia_created": None, "type_hist": {}, "top_pair": None,
+             "end_reason": None, "deadline_crossed": None,
+             "danger_pieces": None, "truncated": False}
+    try:
+        size = path.stat().st_size
+    except OSError:
+        entry["present"] = False
+        return entry
+    try:
+        with open(path, "rb") as handle:
+            if size > SOREN_GAMEOVER_TAIL_BYTES:
+                handle.seek(size - SOREN_GAMEOVER_TAIL_BYTES)
+                entry["truncated"] = True
+            raw = handle.read(SOREN_GAMEOVER_TAIL_BYTES)
+    except OSError:
+        return entry
+    lines = raw.split(b"\n")
+    if entry["truncated"]:
+        lines = lines[1:]
+    lines = [line for line in lines if line.strip()]
+    entry["readable"] = True
+    if not lines:
+        return entry
+    try:
+        record = json.loads(lines[-1].decode("utf-8", "replace"))
+    except ValueError:
+        return entry
+    if not isinstance(record, dict):
+        return entry
+    turn = record.get("turn")
+    if type(turn) is int and 0 <= turn <= 1000000:
+        entry["turns"] = turn
+    score = record.get("score")
+    if type(score) is int and 0 <= score <= 10**9:
+        entry["score"] = score
+    strategy_hash = record.get("strategy_hash")
+    if isinstance(strategy_hash, str) and re.fullmatch(r"[0-9a-f]{6,16}", strategy_hash):
+        entry["strategy_hash"] = strategy_hash
+    russia = record.get("russia_created")
+    if isinstance(russia, bool):
+        entry["russia_created"] = russia
+    if isinstance(record.get("deadline_crossed"), bool):
+        entry["deadline_crossed"] = record["deadline_crossed"]
+    danger = record.get("danger_piece_count")
+    if type(danger) is int and 0 <= danger <= 100000:
+        entry["danger_pieces"] = danger
+    entry["end_reason"] = _soren_gameover_reason(record)
+    snapshot = record.get("state_snapshot")
+    pieces_raw = snapshot.get("pieces") if isinstance(snapshot, dict) else None
+    if isinstance(pieces_raw, list) and len(pieces_raw) <= SOREN_GAMEOVER_MAX_PIECES:
+        pieces = [p for p in (_soren_gameover_piece(e) for e in pieces_raw) if p]
+        hist = {}
+        for piece_type, _x in pieces:
+            if piece_type >= 10:
+                key = str(piece_type)
+                hist[key] = hist.get(key, 0) + 1
+        entry["type_hist"] = hist
+        entry["top_pair"] = _soren_gameover_pair_gap(pieces)
+    return entry
+
+
+def _collect_soren_gameover(soren, now):
+    """Bounded tail of the newest finished Soren match logs (#gameover-review)."""
+    result = {"present": False, "games": []}
+    history_dir = Path(soren) / "game_history"
+    try:
+        candidates = []
+        for child in history_dir.iterdir():
+            try:
+                if (not child.is_file() or child.is_symlink()
+                        or not SOREN_GAMEOVER_NAME_RE.fullmatch(child.name)):
+                    continue
+                candidates.append(child)
+            except OSError:
+                continue
+    except OSError:
+        return result
+    candidates.sort(key=lambda p: (p.name, p.stat().st_mtime), reverse=True)
+    for child in candidates[:SOREN_GAMEOVER_MAX_GAMES]:
+        result["games"].append(_collect_soren_gameover_one(child, now))
+        result["present"] = True
     return result
 
 
@@ -5690,6 +11419,58 @@ def _collect_resolver_daemon():
             'scopes': scopes,
         }
     return {'schema_version': 2, 'units': units}
+
+
+CC_ADAPTER_DEFAULT_PORT = 4100
+
+
+def _probe_cc_adapter(port, timeout=1.0):
+    """Read-only loopback GET of the CC adapter ``/healthz`` (docich#2894).
+
+    Self-contained on purpose: the gateway copies only a fixed file set into
+    its collector checkout, so this must not import ``docich.cc_translation_adapter``.
+    Returns ``{"state": "ok", "upstream": ...}`` or a state in
+    {"unreachable", "invalid"}; the body is reduced to the upstream name.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/healthz", timeout=timeout) as response:
+            body = json.loads(response.read(4096).decode("utf-8"))
+    except Exception:
+        return {"state": "unreachable"}
+    if not isinstance(body, dict) or body.get("status") != "ok" or not isinstance(
+        body.get("upstream"), str
+    ):
+        return {"state": "invalid"}
+    health = {"state": "ok", "upstream": body["upstream"]}
+    failures = body.get("consecutive_failures")
+    if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+        health["consecutive_failures"] = failures
+    kind = body.get("last_failure_kind")
+    if isinstance(kind, str) and kind:
+        health["last_failure_kind"] = kind
+    return health
+
+
+def _collect_cc_translation_adapter():
+    """Read-only healthz of the CC translation adapter (docich#2894).
+
+    Reports the probe state, the upstream name the adapter advertises, and its
+    failure counters only; no prompt, key, or response body is read into the
+    envelope.
+    """
+    port = CC_ADAPTER_DEFAULT_PORT
+    raw_port = os.environ.get("DOCICH_CC_ADAPTER_PORT", "")
+    if raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
+        port = int(raw_port)
+    health = _probe_cc_adapter(port)
+    return {
+        "port": port,
+        "state": health["state"],
+        "upstream": health.get("upstream"),
+        "consecutive_failures": health.get("consecutive_failures"),
+        "last_failure_kind": health.get("last_failure_kind"),
+    }
 
 
 GAME_SWITCH_WATCHDOG_UNIT = "docich-game-switch-fifo.timer"
@@ -6127,30 +11908,175 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement, corners=None):
-    if workers["required_down"] or workers["required_stale"]:
+def _worker_down_severity(workers, lifecycle_pause=None):
+    """Return the severity contributed by required-worker down/stale state.
+
+    Returns "critical" when a required worker is stale or down without evidence
+    of an active lifecycle handover, "warn" when a required worker is down but
+    an active lifecycle handover is proven to be holding it, or None when no
+    required worker is down or stale.
+    """
+    required_down = workers.get("required_down") if isinstance(workers, dict) else None
+    required_down = required_down or []
+    required_stale = workers.get("required_stale") if isinstance(workers, dict) else None
+    required_stale = required_stale or []
+    # Fail-safe: a required worker that is down only becomes a WARN (instead of
+    # CRITICAL) when the lifecycle broker proves an active handover is holding
+    # it.  Without that evidence the original CRITICAL verdict stands, so an
+    # ordinary crash is never hidden behind a lifecycle excuse.
+    lifecycle_handover_active = (
+        isinstance(lifecycle_pause, dict)
+        and lifecycle_pause.get("active") is True
+        and lifecycle_pause.get("waiting_for") == "lifecycle_handover"
+    )
+    if required_stale:
         return "critical"
+    if not required_down:
+        return None
+    if not lifecycle_handover_active:
+        return "critical"
+    return "warn"
+
+
+# Fixed names for every condition that can raise ``status`` above ``ok``
+# (#3658). The map is emitted under ``severity_triggers`` so the public runtime
+# summary can name the branch that fired instead of showing ``warn`` next to
+# all-zero actionable counters. It is computed at severity time -- before
+# ``_diagnostics_budget`` may stub the evidence sections -- and the key is in
+# ``_HARD_KEEP`` so the trigger names survive even when the section that
+# caused them does not.
+SEVERITY_TRIGGERS = (
+    "hanjuku_resume_detached_claim",
+    "retro_corner_recovery_required",
+    "corner_rotation_recovery_required",
+    "corner_rotation_overdue",
+    "required_worker_stale",
+    "required_worker_down",
+    "paused_workers_actionable",
+    "unregistered_workers_actionable",
+    "worker_duplicates",
+    "worker_zombies",
+    "stale_locks",
+    "ai_all_failed",
+    "ai_queue_giveups",
+    "improvement_stale",
+    "improvement_retry_pending",
+    "improvement_persist_fail",
+    "improvement_persist_stale",
+    "improvement_persist_unreadable",
+    "improvement_persist_failure",
+    "improvement_persist_clone_disappeared",
+)
+
+
+def _positive_count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _nonnegative_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    """Evaluate every severity condition and name the branches that fired.
+
+    Returns ``{"status": ..., "triggers": {name: bool}}``. Unlike the former
+    early-return ladder, every warn condition is evaluated so the payload can
+    carry all contributing triggers; ``status`` keeps the exact same value as
+    before.
+    """
+    triggers = {name: False for name in SEVERITY_TRIGGERS}
+    worker_down_sev = _worker_down_severity(workers, lifecycle_pause)
+    workers = workers if isinstance(workers, dict) else {}
+    queues = queues if isinstance(queues, dict) else {}
+    ai = ai if isinstance(ai, dict) else {}
+    improvement = improvement if isinstance(improvement, dict) else {}
+    triggers["required_worker_stale"] = bool(workers.get("required_stale"))
+    triggers["required_worker_down"] = bool(workers.get("required_down"))
+    # A detached resume claim is an actionable operational condition: raise it
+    # through the runtime health alert so the owner is notified within hours
+    # (#2870). Normal claimed/queued/verified transitions must not trigger.
+    triggers["hanjuku_resume_detached_claim"] = (
+        isinstance(hanjuku_resume, dict)
+        and hanjuku_resume.get("status") == "detached_claim"
+    )
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
-    if isinstance(retro, dict) and retro.get("recovery_required") is True:
-        return "warn"
+    triggers["retro_corner_recovery_required"] = (
+        isinstance(retro, dict) and retro.get("recovery_required") is True
+    )
     # A latched common rotation stops every automatic corner while the shared
     # plane stays healthy, so it must reach the runtime health alert (#986).
     rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
-    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
-        return "warn"
-    if (
-        _paused_workers_actionable(workers)
-        or _unregistered_workers_actionable(workers)
-        or workers["duplicates"]
-        or workers["zombies"]
-        or queues["stale_locks"] > 0
-        or ai["all_failed"] > 0
-        or ai["queue_giveups"] > 0
-        or improvement["stale"]
-        or improvement["retry_pending"]
-    ):
-        return "warn"
-    return "ok"
+    triggers["corner_rotation_recovery_required"] = (
+        isinstance(rotation, dict) and rotation.get("status") == "recovery_required"
+    )
+    # A wait held on one unchanged reason well past next_due_at is the wedge
+    # symptom from #4333: the slot wants to fire but cannot. The ledger
+    # reason itself is ambiguous, so the projection pre-ages it.
+    triggers["corner_rotation_overdue"] = (
+        isinstance(rotation, dict) and rotation.get("waiting_overdue") is True
+    )
+    triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
+    triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)
+    triggers["worker_duplicates"] = bool(workers.get("duplicates"))
+    triggers["worker_zombies"] = bool(workers.get("zombies"))
+    triggers["stale_locks"] = _positive_count(queues.get("stale_locks"))
+    # radio_prepass is an optional pre-pass: its all_failed / budget_exhausted
+    # iterations are structural (8-candidate chain vs 60s/30s cap, docich#3657)
+    # and only cost a skipped corner generation, so they must not raise WARN.
+    # budget_exhausted never feeds this gate anyway; only the all_failed count
+    # needs the prepass contribution subtracted. queue_giveups and every other
+    # component's all_failed still signal real provider outages (docich#3661).
+    all_failed_components = ai.get("all_failed_components")
+    all_failed_components = all_failed_components if isinstance(all_failed_components, dict) else {}
+    raw_all_failed = ai.get("all_failed")
+    prepass_all_failed = all_failed_components.get("radio_prepass", 0)
+    actionable_all_failed = (
+        raw_all_failed - prepass_all_failed
+        if _nonnegative_int(raw_all_failed) and _nonnegative_int(prepass_all_failed)
+        else 0
+    )
+    triggers["ai_all_failed"] = actionable_all_failed > 0
+    triggers["ai_queue_giveups"] = _positive_count(ai.get("queue_giveups"))
+    triggers["improvement_stale"] = bool(improvement.get("stale"))
+    triggers["improvement_retry_pending"] = bool(improvement.get("retry_pending"))
+    # An adopted strategy that never reached the reviewed lineage (docich#657,
+    # #2489) is an actionable regression even while the loop itself keeps
+    # running. A later successful/no-change persist overwrites the status and
+    # clears the durable failure record.
+    persist = improvement.get("persist")
+    persist = persist if isinstance(persist, dict) else {}
+    triggers["improvement_persist_fail"] = persist.get("result") == "fail"
+    triggers["improvement_persist_stale"] = bool(persist.get("stale"))
+    triggers["improvement_persist_unreadable"] = (
+        bool(persist.get("present")) and not persist.get("readable")
+    )
+    # clone_missing is only actionable while the improve loop is running; a
+    # projection deployment without soren-persist is normal when it is idle.
+    failure = persist.get("last_failure")
+    triggers["improvement_persist_failure"] = (
+        isinstance(failure, dict)
+        and (failure.get("reason") != "clone_missing" or bool(improvement.get("running")))
+    )
+    triggers["improvement_persist_clone_disappeared"] = (
+        persist.get("clone_present") is False
+        and (
+            bool(improvement.get("running"))
+            or persist.get("last_success_at") is not None
+        )
+    )
+    status = (
+        "critical" if worker_down_sev == "critical"
+        else "warn" if any(triggers.values())
+        else "ok"
+    )
+    return {"status": status, "triggers": triggers}
+
+
+def _severity(workers, queues, ai, improvement, corners=None, hanjuku_resume=None, lifecycle_pause=None):
+    return _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )["status"]
 
 
 # Fixed v1 Soren91 sent-to-sent metrics, never game acceptance or raw records.
@@ -6552,7 +12478,265 @@ def _collect_nethack_agent_log(state_dir, now):
     return entry
 
 
+NETHACK_MANUAL_LOG_DIR = "logs"
+NETHACK_MANUAL_LOG_ENTRIES = 256
+NETHACK_MANUAL_LOG_TAIL_BYTES = 8192
+NETHACK_MANUAL_LOG_LINES = 8
+NETHACK_MANUAL_LOG_LINE_LIMIT = 300
+NETHACK_MANUAL_LOG_MAX_BYTES = 8 * 1024 * 1024
+# ``nethack_corner_operator.launch`` names its private log
+# ``nethack-manual-<epoch>-<uuid4 hex8>.log``. Only that exact shape is read;
+# any other file in ``logs/`` is ignored.
+_NETHACK_MANUAL_LOG_RE = re.compile(r"^nethack-manual-[0-9]{1,12}-[0-9a-f]{8}\.log$")
+
+
+def _collect_nethack_manual_log(state_dir, now):
+    """Bounded, redacted tail of the newest bounded-manual runner log (#2666).
+
+    ``nethack-corner-operator --start`` spawns ``docich-nethack-corner-manual``
+    detached and treats an exit inside the one-second startup grace as a
+    generic failure (operator exit code 2). The runner's own stderr is the only
+    evidence for that failure, and the gateway withholds production stdout, so
+    this projection is the read-only way to see why a manual run never started.
+
+    Only the newest file matching the fixed name shape directly under
+    ``logs/`` is read: symlinks and non-regular files are refused with
+    ``O_NOFOLLOW`` + ``fstat``, and only the tail bytes are decoded.
+    """
+    entry = {
+        "schema_version": 1,
+        "collected_at": now,
+        "present": False,
+        "readable": False,
+        "mtime": None,
+        "bytes": None,
+        "lines": [],
+        "tail_truncated": None,
+    }
+    directory = Path(state_dir) / NETHACK_MANUAL_LOG_DIR
+    best = None
+    scanned = 0
+    try:
+        with os.scandir(directory) as entries:
+            for item in entries:
+                if scanned >= NETHACK_MANUAL_LOG_ENTRIES:
+                    break
+                scanned += 1
+                if _NETHACK_MANUAL_LOG_RE.fullmatch(item.name) is None:
+                    continue
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > NETHACK_MANUAL_LOG_MAX_BYTES:
+                    continue
+                if best is None or info.st_mtime > best[0]:
+                    best = (info.st_mtime, item.name, info.st_size)
+    except OSError:
+        return entry
+    if best is None:
+        return entry
+    entry["present"] = True
+    entry["mtime"] = int(best[0])
+    entry["bytes"] = int(best[2])
+    path = directory / best[1]
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return entry
+            size = int(info.st_size)
+            truncated = size > NETHACK_MANUAL_LOG_TAIL_BYTES
+            if truncated:
+                handle.seek(size - NETHACK_MANUAL_LOG_TAIL_BYTES)
+            raw = handle.read(NETHACK_MANUAL_LOG_TAIL_BYTES)
+    except OSError:
+        return entry
+    entry["readable"] = True
+    entry["tail_truncated"] = truncated
+    lines = [line for line in raw.decode("utf-8", errors="replace").splitlines() if line.strip()]
+    entry["lines"] = [
+        _redact_text(line, NETHACK_MANUAL_LOG_LINE_LIMIT)
+        for line in lines[-NETHACK_MANUAL_LOG_LINES:]
+    ]
+    return entry
+
+
+SOREN_BRIDGE_LOG_DIR = "tmp"
+SOREN_BRIDGE_LOG_NAME = "soviet_local.log"
+SOREN_BRIDGE_LOG_ENTRIES = 256
+SOREN_BRIDGE_LOG_TAIL_BYTES = 8192
+SOREN_BRIDGE_LOG_LINES = 24
+SOREN_BRIDGE_LOG_LINE_LIMIT = 240
+SOREN_BRIDGE_LOG_MAX_BYTES = 32 * 1024 * 1024
+SOREN_BRIDGE_STUCK_AGE_S = 7200
+# The stuck-live recovery path renames the hung bridge log to
+# ``soviet_local.log.hung-<stamp>`` before relaunch (#3154). Only that exact
+# name shape is read; anything else under ``tmp/`` is ignored.
+_SOREN_BRIDGE_LOG_HUNG_RE = re.compile(
+    r"^soviet_local\.log\.hung-[0-9A-Za-z._-]{1,64}$")
+
+
+def _soren_bridge_pid_alive(soren):
+    """Whether the persisted bridge capability pid still names a live
+    process. ``None`` means no usable pid was persisted at all."""
+    capability = _read_json(
+        Path(soren) / "tmp/state/game_lifecycle/player_capabilities.json")
+    pid = capability.get("pid") if isinstance(capability, dict) else None
+    if type(pid) is not int or not 0 < pid <= 4194304:
+        return None
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
+def _soren_bridge_stuck_anomaly(soren, now):
+    """The #3154 stuck-live anomaly signature, or None when healthy.
+
+    Mirrors the persisted evidence the recovery gate
+    (``recover-diagnose=player_policy_jev_bridge_stuck_live``, code 97) keys
+    on, without importing docich or running the operator: the bridge pid is
+    still alive while its board evidence stopped advancing -- either a
+    ``game_state.json`` MOVE board frozen for at least
+    ``SOREN_BRIDGE_STUCK_AGE_S`` seconds, or a JEV ``player_state.json``
+    whose board is absent entirely (the gate treats a missing board as
+    frozen-equivalent). Healthy runs return None so no log body leaves.
+    """
+    if _soren_bridge_pid_alive(soren) is not True:
+        return None
+    board_path = Path(soren) / "game_state.json"
+    board = _read_json(board_path)
+    if isinstance(board, dict) and board.get("state") == "MOVE":
+        try:
+            if now - board_path.stat().st_mtime >= SOREN_BRIDGE_STUCK_AGE_S:
+                return "move_frozen_bridge_alive"
+        except OSError:
+            return None
+    player = _read_json(
+        Path(soren) / "tmp/state/game_lifecycle/player_state.json")
+    if (not board_path.is_file() and isinstance(player, dict)
+            and player.get("policy") == "jev"):
+        return "jev_board_absent_bridge_alive"
+    return None
+
+
+def _read_soren_bridge_tail(path, size):
+    """Bounded tail read of one bridge log: O_NOFOLLOW + fstat, regular
+    files only, capped size. Returns (lines, tail_truncated) or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            truncated = size > SOREN_BRIDGE_LOG_TAIL_BYTES
+            if truncated:
+                handle.seek(size - SOREN_BRIDGE_LOG_TAIL_BYTES)
+            raw = handle.read(SOREN_BRIDGE_LOG_TAIL_BYTES)
+    except OSError:
+        return None
+    lines = [line for line in raw.decode("utf-8", errors="replace")
+             .splitlines() if line.strip()]
+    return lines, truncated
+
+
+def _collect_soren_bridge_log(soren, now):
+    """Bounded, redacted bridge-log tail, emitted only on the #3154 anomaly.
+
+    ``tmp/soviet_local.log`` is the bridge's own stdout: its tail is the only
+    read-only evidence that separates "bridge hung inside the page-side
+    evaluate" from a clean stop. Because it is raw log text, the collector
+    contract keeps it sealed on healthy runs and projects just the last few
+    bounded, redacted lines while the stuck-live signature holds -- the same
+    pattern as the NetHack ``agent.log`` tail. When a hung-log evacuation
+    renamed the file, the newest ``soviet_local.log.hung-<stamp>`` is read
+    instead of the fresh post-relaunch log. Symlinks and non-regular files
+    are refused; nothing else under ``tmp/`` is opened.
+    """
+    entry = {
+        "anomaly": None,
+        "projected": False,
+        "source": None,
+        "present": False,
+        "readable": False,
+        "mtime": None,
+        "bytes": None,
+        "tail_truncated": None,
+        "lines": [],
+    }
+    soren = Path(soren)
+    anomaly = _soren_bridge_stuck_anomaly(soren, now)
+    if anomaly is None:
+        return entry
+    entry["anomaly"] = anomaly
+    directory = soren / SOREN_BRIDGE_LOG_DIR
+    # Prefer the newest hung evacuation: its tail is the incident evidence;
+    # the fresh post-relaunch soviet_local.log only documents the new run.
+    name = None
+    best = None
+    scanned = 0
+    try:
+        with os.scandir(directory) as entries:
+            for item in entries:
+                if scanned >= SOREN_BRIDGE_LOG_ENTRIES:
+                    break
+                scanned += 1
+                if _SOREN_BRIDGE_LOG_HUNG_RE.fullmatch(item.name) is None:
+                    continue
+                try:
+                    info = item.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > SOREN_BRIDGE_LOG_MAX_BYTES:
+                    continue
+                if best is None or info.st_mtime > best[0]:
+                    best = (info.st_mtime, item.name)
+    except OSError:
+        pass
+    if best is not None:
+        name = best[1]
+        entry["source"] = "hung_evacuated"
+    else:
+        name = SOREN_BRIDGE_LOG_NAME
+        entry["source"] = "live_log"
+    path = directory / name
+    if not path.is_file():
+        return entry
+    entry["present"] = True
+    try:
+        info = path.stat()
+        entry["mtime"] = int(info.st_mtime)
+        entry["bytes"] = int(info.st_size)
+    except OSError:
+        return entry
+    tail = _read_soren_bridge_tail(path, info.st_size)
+    if tail is None:
+        return entry
+    lines, truncated = tail
+    entry["readable"] = True
+    entry["tail_truncated"] = truncated
+    entry["projected"] = True
+    entry["lines"] = [
+        _redact_text(line, SOREN_BRIDGE_LOG_LINE_LIMIT)
+        for line in lines[-SOREN_BRIDGE_LOG_LINES:]
+    ]
+    return entry
+
+
 NETHACK_PANE_LINES = 14
+# NetHack draws its message row -- and therefore ``--More--`` -- on the TOP
+# screen row, which the tail-only capture structurally misses (#2271). The
+# head rows are captured separately and bounded to the message row plus the
+# row the marker is pushed onto: ``more()`` moves it there once the cursor
+# reaches ``CO - 8``. Two redacted lines add under a kilobyte.
+NETHACK_PANE_HEAD_LINES = 2
 NETHACK_PANE_LINE_LIMIT = 240
 _TMUX_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
 _RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
@@ -6575,6 +12759,7 @@ _BOUNDARY_DIAG_REASONS = frozenset(
         "post_key_probe_failed",
         "post_key_capture_failed",
         "wait_timeout",
+        "runtime_processes_gone",
     }
 )
 _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
@@ -6588,6 +12773,35 @@ _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
     }
 )
 _BOUNDARY_DIAG_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
+
+
+def _capture_tmux_pane_head(target, *, head_lines=NETHACK_PANE_HEAD_LINES):
+    """Read the first visible rows of one pane read-only; never sends input.
+
+    The NetHack message/pager row is the top screen row, so a tail-only
+    capture cannot distinguish "a ``--More--`` the brain failed to answer"
+    from "a decision loop returning no action" (#2271). Return the leading
+    ``head_lines`` rows as-is: blank rows are preserved as empty strings so
+    row 0 stays row 0, which makes "no message row displayed" readable.
+    """
+    if not isinstance(target, str) or _TMUX_TARGET_RE.fullmatch(target) is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [
+        _redact_text(line, NETHACK_PANE_LINE_LIMIT)
+        for line in proc.stdout.splitlines()[:head_lines]
+    ]
 
 
 def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
@@ -6695,7 +12909,9 @@ PULSE_SINK_INPUTS_TIMEOUT = 5
 # Bounded so the projection cannot crowd the 36 KiB diagnostics envelope; the
 # production session has far fewer streams than this, and the omitted remainder
 # is reported rather than silently dropped.
-PULSE_SINK_INPUTS_MAX = 32
+# Bounded detail list; the attribution summary carries the ownership signal
+# when this cap (or the output budget) drops the per-stream rows.
+PULSE_SINK_INPUTS_MAX = 8
 PULSE_SINK_INPUTS_OUTPUT_MAX = 256 * 1024
 # ``application.name`` is an externally supplied free-form string, so it is
 # never emitted verbatim. These fixed categories still separate the bridge's
@@ -6795,6 +13011,34 @@ def _project_pulse_stream(item, names, roles):
     }
 
 
+PULSE_PLAYER_CATEGORY_KEYS = tuple(
+    dict.fromkeys(category for _needle, category in PULSE_PLAYER_CATEGORIES)
+) + ("other", "unknown")
+
+
+def _pulse_attribution(items, roles):
+    """Fixed-axis attribution that survives the output budget.
+
+    ``media.role`` is rarely set by the players, so ``by_player`` is the useful
+    axis: it separates the BGM bridge (``bridge-ffplay``), game audio
+    (``retroarch``), overlay audio (``browser``) and the encoder's monitor
+    capture (``stream-capture``). ``by_role`` keeps only the roles that are
+    actually present plus an explicit ``unattributed`` count, so the projection
+    stays small and never looks like a role was assumed.
+    """
+    by_player = {key: 0 for key in PULSE_PLAYER_CATEGORY_KEYS}
+    by_role = {"unattributed": 0}
+    for item in items:
+        category = _pulse_player_category(item.get("application")) or "unknown"
+        by_player[category] = by_player.get(category, 0) + 1
+        role = item.get("role")
+        if isinstance(role, str) and role in roles:
+            by_role[role] = by_role.get(role, 0) + 1
+        else:
+            by_role["unattributed"] += 1
+    return {"by_player": by_player, "by_role": by_role}
+
+
 def _collect_pulse_sink_inputs():
     """Read-only PulseAudio sink-input projection (#968).
 
@@ -6814,7 +13058,7 @@ def _collect_pulse_sink_inputs():
     listing, failure = _pulse_listing('list', 'sink-inputs')
     if failure is not None:
         return {'schema_version': 1, 'readable': False, 'reason': failure,
-                'total': None, 'muted': None, 'streams': []}
+                'total': None, 'muted': None, 'streams': [], 'attribution': None}
     # ``list sink-inputs`` reports the sink by index; the name is what makes a
     # muted shared stream recognizable, so the fixed short listing is read too.
     # A missing name mapping is not a failure: mute is still readable.
@@ -6829,7 +13073,7 @@ def _collect_pulse_sink_inputs():
         names = sink_names(short or '')
     except (TypeError, ValueError):
         return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
-                'total': None, 'muted': None, 'streams': []}
+                'total': None, 'muted': None, 'streams': [], 'attribution': None}
     streams = [_project_pulse_stream(item, names, MEDIA_ROLES)
                for item in items[:PULSE_SINK_INPUTS_MAX]]
     return {
@@ -6843,7 +13087,167 @@ def _collect_pulse_sink_inputs():
         # never mistaken for a complete one.
         'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
         'streams': streams,
+        # Kept even when the budget drops ``streams`` (#AV projection).
+        'attribution': _pulse_attribution(items, MEDIA_ROLES),
     }
+
+
+def _collect_pulse_source_outputs():
+    """Read-only PulseAudio source-output (capture/recording) projection (#1964).
+
+    Playback can be audible while the stream capture (encoder input) is
+    missing: the encoder's source output may be absent, corked, or pointing at
+    the wrong source. This projection makes the capture side independently
+    observable, mirroring ``_collect_pulse_sink_inputs`` but for source
+    outputs (recording streams). An unreachable daemon is reported as
+    unreadable rather than as "no capture streams".
+    """
+    from docich.pulse_volume import MEDIA_ROLES, parse_source_outputs, sink_names
+
+    listing, failure = _pulse_listing('list', 'source-outputs')
+    if failure is not None:
+        return {'schema_version': 1, 'readable': False, 'reason': failure,
+                'total': None, 'streams': [], 'attribution': None}
+    # ``list source-outputs`` reports the source by index; resolve names via
+    # the short source listing. A missing name mapping is not a failure.
+    short, _short_failure = _pulse_listing('list', 'short', 'sources')
+    try:
+        items = parse_source_outputs(listing)
+        if listing.strip() and not items:
+            raise ValueError('unrecognized source-output listing')
+        names = sink_names(short or '')
+    except (TypeError, ValueError):
+        return {'schema_version': 1, 'readable': False, 'reason': 'unparsable',
+                'total': None, 'streams': [], 'attribution': None}
+
+    def _project(item):
+        source = item.get('source')
+        percents = item.get('volume_percent')
+        if not isinstance(percents, list):
+            percents = None
+        else:
+            percents = [p for p in percents if type(p) is int and 0 <= p <= 200] or None
+        role = item.get('role')
+        return {
+            'index': item.get('index') if type(item.get('index')) is int else None,
+            'source': names.get(source) if isinstance(source, str) else None,
+            'role': role if role in MEDIA_ROLES else None,
+            'mute': item.get('mute') if isinstance(item.get('mute'), bool) else None,
+            'corked': item.get('corked') if isinstance(item.get('corked'), bool) else None,
+            'volume_percent': percents,
+            'player': _pulse_player_category(item.get('application')),
+        }
+
+    streams = [_project(item) for item in items[:PULSE_SINK_INPUTS_MAX]]
+    return {
+        'schema_version': 1,
+        'readable': True,
+        'reason': None,
+        'total': len(items),
+        'truncated': len(items) > PULSE_SINK_INPUTS_MAX,
+        'streams': streams,
+        'attribution': _pulse_attribution(items, MEDIA_ROLES),
+    }
+
+
+# Aliases for alternate naming used by callers/tests.
+_collect_pulse_capture = _collect_pulse_source_outputs
+_collect_pulse_source_output = _collect_pulse_source_outputs
+_collect_capture = _collect_pulse_source_outputs
+_collect_stream_capture = _collect_pulse_source_outputs
+
+
+BGM_REASONS = frozenset({
+    'eligible', 'audio_missing', 'canonical_unreadable', 'request_unreadable',
+    'ack_unreadable', 'pause_unreadable', 'invalid_state', 'switch_not_ready',
+    'invalid_game', 'excluded_game', 'native_stop_unconfirmed', 'invalid_request',
+    'invalid_generation', 'invalid_deadline', 'ack_mismatch', 'handover_changed',
+    'policy_unavailable', 'worker_stopped',
+})
+
+
+def _bgm_owned_player(pid, worker_pid, proc_root=Path('/proc')):
+    """Require the tagged ffplay to be the systemd worker's direct child."""
+    if type(pid) is not int or pid <= 0 or not worker_pid:
+        return False
+    try:
+        root = proc_root / str(pid)
+        args = _supervisor_read(root / 'cmdline', 8192).split(b'\0')
+        fields = _supervisor_read(root / 'stat', 4096).rsplit(b')', 1)[1].split()
+        return (fields[0] != b'Z' and int(fields[1]) == worker_pid
+                and _supervisor_read(root / 'comm', 64).strip() == b'ffplay'
+                and any(args[i:i + 2] == [b'-window_title', b'soren-bgm-loop']
+                        for i in range(len(args) - 1)))
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def _collect_corner_bgm(soren, now):
+    """Small independent BGM summary, retained when generic Pulse rows drop.
+
+    Live ownership and the worker heartbeat are distinct from audibility.
+    No environment, arbitrary command line, player stderr or audio is emitted.
+    """
+    result = dict(service='unknown', worker_present=None, telemetry='missing',
+                  state='unknown', reason='unknown', age_sec=None,
+                  player_present=None, player_exits=None, last_exit=None,
+                  pulse_readable=False, identified_streams=None,
+                  owned_streams=None, streams=[])
+    unit = _systemctl_system(['show', _REG.CORNER_BGM['unit'],
+                             '--property=ActiveState,MainPID'])
+    worker_pid = None
+    if unit and unit[0] == 0:
+        props = dict(line.split('=', 1) for line in unit[1].splitlines() if '=' in line)
+        if props.get('ActiveState') in {'active', 'inactive', 'failed', 'activating', 'deactivating'}:
+            result['service'] = props['ActiveState']
+        value = props.get('MainPID', '')
+        if value.isdigit() and len(value) <= 10:
+            worker_pid = int(value)
+            result['worker_present'] = worker_pid > 0
+    try:
+        data = json.loads(_supervisor_read(Path(soren) / _REG.CORNER_BGM['state_file'], 4096))
+        if not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1:
+            raise ValueError('invalid snapshot')
+        observed = data.get('observed_at')
+        if type(observed) not in (int, float) or not math.isfinite(observed) or observed > now:
+            raise ValueError('invalid timestamp')
+        result['age_sec'] = min(int(now - observed), 2**31 - 1)
+        fresh = result['age_sec'] <= _REG.CORNER_BGM['heartbeat_max_age_sec']
+        matches = type(data.get('worker_pid')) is int and data['worker_pid'] == worker_pid and bool(worker_pid)
+        result['telemetry'] = 'current' if fresh and matches else 'stale'
+        # Never present a previous worker's decision as the live worker's state.
+        if result['telemetry'] == 'current':
+            if data.get('state') in {'blocked', 'starting', 'running', 'restarting', 'stopped'}:
+                result['state'] = data['state']
+            if isinstance(data.get('reason'), str) and data['reason'] in BGM_REASONS:
+                result['reason'] = data['reason']
+            result['player_present'] = _bgm_owned_player(data.get('player_pid'), worker_pid)
+            for key, upper in (('player_exits', 2**31 - 1), ('last_exit', 255)):
+                value = data.get(key)
+                if type(value) is int and 0 <= value <= upper:
+                    result[key] = value
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError):
+        result['telemetry'] = 'unreadable'
+    from docich.pulse_volume import MEDIA_ROLES, parse_sink_inputs, sink_names
+    listing, failure = _pulse_listing('list', 'sink-inputs')
+    if failure is not None:
+        return result
+    items = parse_sink_inputs(listing)
+    if listing.strip() and not items:
+        return result
+    identified = [s for s in items if s.get('corner_bgm_id') and s.get('corner_bgm_restore')]
+    owned = [s for s in identified if _bgm_owned_player(s.get('pid'), worker_pid)]
+    result.update(pulse_readable=True, identified_streams=len(identified), owned_streams=len(owned))
+    short, _ = _pulse_listing('list', 'short', 'sinks')
+    names = sink_names(short or '')
+    # Only the fixed target name crosses this additional boundary.
+    for item in owned[:2]:
+        projected = _project_pulse_stream(item, names, MEDIA_ROLES)
+        result['streams'].append({key: projected[key] for key in ('mute', 'corked', 'volume_percent')} |
+                                 {'on_target_sink': projected['sink'] == 'soren_null' if projected['sink'] else None})
+    return result
 
 
 def _read_hanjuku_record(path):
@@ -6985,6 +13389,45 @@ def _collect_hanjuku_projection_recovery(state_dir):
         return {**result, 'status': 'unverified'}
 
 
+def _hanjuku_runtime_terminal(root, runtime_id):
+    """Fixed-enemy projection of a rolled-back/failed Hanjuku runtime dir:
+    which reviewed terminal markers are present. Enums and booleans only;
+    no bytes, paths beyond the fixed layout, or private state escape."""
+    result = {
+        'runtime_present': False, 'presentation_status': None,
+        'receipt_status': None, 'gameplay_files': None,
+        'states_files': None,
+    }
+    try:
+        runtime = root / 'runtimes' / runtime_id
+        if not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', runtime_id) or not runtime.is_dir():
+            return result
+        result['runtime_present'] = True
+        presentation, _ = _read_hanjuku_record(runtime / 'presentation.json')
+        status = presentation.get('status')
+        if status in {'prepared', 'ready', 'stopped', 'presentation_failed',
+                      'cleanup_failed', 'failed'}:
+            result['presentation_status'] = status
+        elif status is not None:
+            result['presentation_status'] = 'other'
+        receipt, _ = _read_hanjuku_record(runtime / 'hanjuku_resume.json')
+        rstatus = receipt.get('status')
+        if rstatus in {'prepared', 'claimed', 'queued'}:
+            result['receipt_status'] = rstatus
+        elif rstatus is not None:
+            result['receipt_status'] = 'other'
+        result['gameplay_files'] = sorted(
+            name for name in ('hanjuku_bot.json', 'hanjuku_run.json',
+                              'hanjuku_events.jsonl')
+            if (runtime / name).exists())
+        states = runtime / 'states'
+        if states.is_dir():
+            result['states_files'] = sorted(entry.name for entry in states.iterdir())
+    except (OSError, ValueError, TypeError):
+        pass
+    return result
+
+
 def _collect_hanjuku_resume(state_dir):
     """Fixed metadata projection; does not read checkpoint/ROM bytes."""
     unavailable = {'status': 'unavailable', 'basis': 'resume_receipt'}
@@ -7012,6 +13455,34 @@ def _collect_hanjuku_resume(state_dir):
             return {**unavailable, 'status': 'prepared' if status == 'prepared' else 'unverified'}
         owner = canonical.get('candidate') if status == 'claimed' else canonical.get('active')
         keys = ('game', 'runtime_id', 'generation', 'lease_id', 'request_id')
+        active = canonical.get('active')
+        if active is not None and not isinstance(active, dict):
+            return unavailable
+        if (status == 'claimed' and request.get('game') == 'hanjuku-hero'
+                and request.get('corner') == 'hanjuku-hero'
+                and isinstance(request.get('runtime_id'), str)
+                and re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', request['runtime_id'])
+                and canonical.get('phase') in {'ready', 'idle'}
+                and not any(canonical.get(k) for k in ('candidate', 'previous', 'retiring',
+                                                       'operation', 'request_id'))
+                and (active or {}).get('game') != 'hanjuku-hero'):
+            receipt, _ = _read_hanjuku_record(
+                root / 'runtimes' / request['runtime_id'] / 'hanjuku_resume.json')
+            request_again, _ = _read_hanjuku_record(root / 'hanjuku-resume/hanjuku_resume.json')
+            again, _ = _read_hanjuku_record(root / 'game_switch.json')
+            if again != canonical or request_again != request:
+                return {**unavailable, 'status': 'identity_changed'}
+            if receipt != request:
+                return {**unavailable, 'status': 'unverified'}
+            # Metadata only: this is NOT proof that recovery is safe. The
+            # operator rechecks rollback, gameplay, resources and sealed bytes
+            # under writer locks before accepting this reservation fingerprint.
+            digest = hashlib.sha256(json.dumps(request, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+            return {**unavailable, 'status': 'detached_claim',
+                    'reservation_fingerprint': digest,
+                    'runtime_terminal': _hanjuku_runtime_terminal(
+                        root, request['runtime_id'])}
         if (not isinstance(owner, dict) or owner.get('game') != 'hanjuku-hero'
                 or not isinstance(owner.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', owner['runtime_id'])
@@ -7034,11 +13505,695 @@ def _collect_hanjuku_resume(state_dir):
         return unavailable
 
 
+_HANJUKU_REFILL_ENUMS = {
+    'scope': frozenset({'current', 'unknown'}),
+    'count': frozenset({'zero', 'low', 'below_target', 'enough', 'unknown'}),
+    'basis': frozenset({'screen_total', 'observed_plus_paid_refill', 'unread_total',
+                        'unverified_refill', 'unknown'}),
+    'check': frozenset({'none', 'opening', 'requested', 'quantity_requested',
+                        'closing', 'measured', 'unverified', 'unknown'}),
+    'check_result': frozenset({'none', 'measured', 'unverified', 'unknown'}),
+    'outcome': frozenset({'none', 'cancelled', 'insufficient_funds', 'unverified',
+                          'attempt_limit', 'not_attempted', 'unknown'}),
+    'receipt': frozenset({'none', 'pending', 'paid', 'unverified', 'unknown'}),
+    'repair': frozenset({'none', 'hero', 'general', 'both', 'unknown'}),
+    'planned': frozenset({'zero', 'positive', 'unknown'}),
+    # Release condition of the hero repair reserve (#2601); wounded/moving are the only writer codes.
+    'hero_deferred': frozenset({'none', 'wounded', 'moving', 'unknown'}),
+    'roster': frozenset({'unavailable', 'partial', 'complete_no_pending',
+                          'complete_all_seen', 'complete_missing', 'unknown'}),
+    'recruit': frozenset({'none', 'pending', 'check', 'opened', 'done', 'unverified',
+                         'deferred_army', 'deferred_egg', 'deferred_cash', 'deferred_roster',
+                         'deferred_economy', 'not_affordable', 'not_needed', 'unknown'}),
+}
+_HANJUKU_REFILL_BOOLS = ('payroll_pending', 'low_priority', 'done', 'egg_hold', 'recruit_hold')
+# Bounded gold amounts of the repair reserves (#2601); bools are excluded.
+_HANJUKU_REFILL_INTS = ('hero_reserve', 'general_reserve')
+
+
+def _compact_hanjuku_refill(value):
+    """Only fixed enums/bools/bounded ints survive: never a writer's reason or names."""
+    if not isinstance(value, dict) or value.get('scope') != 'current':
+        return {'scope': 'unknown'}
+    out = {key: value[key] if isinstance(value.get(key), str) and value[key] in allowed
+           else 'unknown' for key, allowed in _HANJUKU_REFILL_ENUMS.items()}
+    out.update({key: value.get(key) if type(value.get(key)) is bool else None
+                for key in _HANJUKU_REFILL_BOOLS})
+    out.update({key: value.get(key) if type(value.get(key)) is int and 0 <= value[key] <= 1_000_000
+                else None for key in _HANJUKU_REFILL_INTS})
+    return out
+
+
+def _hanjuku_refill_roster(mem, same_identity, chapter, month):
+    """Validate stored roster receipts without importing unverified bot code.
+
+    Mirrors roster.fresh's raw/completed-survey choice, with exact scope types.
+    Contract tests compare both paths with the strategy's read-only reader.
+    """
+    now = mem.get('tick')
+    if type(now) is not int:
+        return None
+
+    def valid(receipt, *, surveyed=False):
+        if not isinstance(receipt, dict):
+            return False
+        names, tick = receipt.get('names'), receipt.get('tick')
+        return (same_identity(receipt.get('identity'))
+                and type(receipt.get('chapter')) is int and receipt['chapter'] == chapter
+                and type(receipt.get('month')) is str and receipt['month'] == month
+                and type(tick) is int
+                and (0 <= tick <= now if surveyed else 0 <= now - tick < 400)
+                and isinstance(names, list) and 1 <= len(names) <= 32
+                and all(isinstance(n, str) and n and
+                        (not surveyed or len(n) <= 32 and '\ufffd' not in n) for n in names)
+                and len(set(names)) == len(names))
+
+    house = mem.get('house')
+    if house is not None and not isinstance(house, dict):
+        return None
+    survey, house = mem.get('roster_survey'), house or {}
+    if isinstance(house, dict) and 'roster_started' not in house and isinstance(survey, dict):
+        receipt, scope = survey.get('receipt'), survey.get('scope')
+        statuses, dirty = survey.get('statuses'), survey.get('dirty')
+        if (type(survey.get('schema')) is int and survey['schema'] == 1
+                and same_identity(survey.get('identity'))
+                and isinstance(scope, list) and len(scope) == 2
+                and type(scope[0]) is int and scope[0] == chapter
+                and type(scope[1]) is str and scope[1] == month
+                and valid(receipt, surveyed=True) and receipt.get('complete') is True
+                and isinstance(statuses, dict) and set(statuses) == set(receipt['names'])
+                and isinstance(dirty, dict) and set(dirty) <= set(receipt['names'])
+                and all(isinstance(fields, list) and all(isinstance(f, str) for f in fields)
+                        and set(fields) <= {'hp', 'location', 'egg'} for fields in dirty.values())
+                and all(isinstance(row, dict) and row.get('general') == name
+                        and row.get('month') == month
+                        and type(row.get('observed_chapter')) is int and row['observed_chapter'] == chapter
+                        and type(row.get('observed_tick')) is int
+                        and receipt['tick'] <= row['observed_tick'] <= now
+                        and type(row.get('broken')) is bool for name, row in statuses.items())
+                and all(isinstance(survey.get(key, {}), dict)
+                        and set(survey.get(key, {})) <= set(receipt['names'])
+                        and all(type(v) is int and 0 <= v <= 10**6
+                                for v in survey.get(key, {}).values())
+                        for key in ('dirty_revisions', 'read_revisions'))):
+            return receipt
+    receipt = mem.get('recruit_roster')
+    return receipt if valid(receipt) else None
+
+
+def _project_hanjuku_refill(mem, active):
+    """Current-month recorded gates only, not a newly computed spend decision.
+
+    Caller already pins bot/run identity and a <=30s bot mtime. No extra file
+    or log is read. The writer's unverified receipt/ended attempt stays so.
+    """
+    identity = {key: active[key] for key in HANJUKU_TACTICAL_KEYS}
+    def same_identity(value):
+        return (isinstance(value, dict) and value.keys() == identity.keys()
+                and all(type(value[key]) is type(expected) and value[key] == expected
+                        for key, expected in identity.items()))
+    chapter, month, shop = mem.get('chapter'), mem.get('month'), mem.get('shop')
+    if (not same_identity(mem.get('_run_identity')) or type(chapter) is not int
+            or not 1 <= chapter <= 12 or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or not isinstance(shop, dict) or shop.get('key') != month):
+        return {'scope': 'unknown'}
+    def same_scope(value):
+        return (isinstance(value, list) and len(value) == 3 and same_identity(value[0])
+                and type(value[1]) is int and value[1] == chapter
+                and type(value[2]) is str and value[2] == month)
+    count = mem.get('soldiers_seen')
+    current = (same_scope(mem.get('soldiers_seen_scope')) and mem.get('soldiers_seen_key') == month
+               and type(count) is int and 0 <= count <= 1_000_000)
+    check, receipt = mem.get('army_count_check'), shop.get('soldier_receipt')
+    check_current = isinstance(check, dict) and same_scope(check.get('scope'))
+    low, pending = shop.get('low_army_refill'), mem.get('recruit_payroll_pending')
+    hero, general = shop.get('hero_repair_reserve', 0), shop.get('general_repair_reserve', 0)
+    repair_valid = all(type(n) is int and 0 <= n <= 1_000_000 for n in (hero, general))
+    planned = shop.get('soldiers')
+    outcome = shop.get('refill_outcome')
+    # Use the same read-only freshness contract as recruitment. Only the
+    # relationship is public; names and historical membership stay private.
+    roster_gate = 'unknown'
+    try:
+        seen = _hanjuku_refill_roster(mem, same_identity, chapter, month)
+        valid_pending = (pending is None or isinstance(pending, list)
+                         and len(pending) <= 32
+                         and all(isinstance(n, str) and n for n in pending))
+        if (seen is None or not same_identity(seen.get('identity'))
+                or type(seen.get('chapter')) is not int or seen['chapter'] != chapter
+                or type(seen.get('month')) is not str or seen['month'] != month):
+            roster_gate = 'unavailable'
+        elif seen.get('complete') is not True:
+            roster_gate = 'partial'
+        elif valid_pending:
+            roster_gate = ('complete_no_pending' if not pending else
+                           'complete_all_seen' if set(pending) <= set(seen['names'])
+                           else 'complete_missing')
+    except (ImportError, ValueError, TypeError, KeyError, RecursionError):
+        pass
+    out = {'scope': 'current', 'roster': roster_gate,
+           'count': ('unknown' if not current else 'zero' if count == 0 else
+                     'low' if count <= 20 else 'below_target' if count < 50 else 'enough'),
+           'basis': mem.get('soldiers_seen_basis') if current else 'unknown',
+           'check': ('none' if check is None else check.get('stage') if isinstance(check, dict)
+                     and check_current else 'unknown'),
+           'check_result': ('none' if check is None else
+                            check.get('result', 'none') if check_current else 'unknown'),
+           'outcome': 'none' if outcome is None else outcome,
+           'receipt': ('none' if receipt is None or receipt is False else receipt.get('status')
+                       if isinstance(receipt, dict) and receipt.get('key') == month else 'unknown'),
+           'repair': ('unknown' if not repair_valid else 'both' if hero and general else
+                      'hero' if hero else 'general' if general else 'none'),
+           'hero_reserve': hero if repair_valid else None,
+           'general_reserve': general if repair_valid else None,
+           'hero_deferred': 'none' if shop.get('hero_repair_deferred') is None else shop['hero_repair_deferred'],
+           'planned': ('unknown' if type(planned) is not int or not 0 <= planned <= 99 else
+                       'positive' if planned else 'zero'),
+           'recruit': 'none' if shop.get('recruit') is None else shop['recruit'],
+           'payroll_pending': (False if pending is None else bool(pending) if isinstance(pending, list)
+                               and len(pending) <= 32 and all(isinstance(x, str) for x in pending) else None),
+           'low_priority': (False if low is None else low.get('active') if isinstance(low, dict)
+                            and type(low.get('version')) is int and low['version'] == 1
+                            and same_scope(low.get('scope')) else None),
+           'done': shop.get('soldiers_done')}
+    for field, key in (('egg_hold', 'reserve'), ('recruit_hold', 'recruit_reserve')):
+        value = shop.get(key, 0)
+        out[field] = bool(value) if type(value) is int and 0 <= value <= 1_000_000 else None
+    return _compact_hanjuku_refill(out)
+
+
+def _project_hanjuku_house_deferral(mem, active):
+    """Recent recorded cancellation, not proof of the physical reason or outcome."""
+    record = mem.get('last_house_deferral')
+    if not isinstance(record, dict):
+        return None
+    for identity in (mem.get('_run_identity'), record.get('identity')):
+        if (not isinstance(identity, dict) or any(
+                type(identity.get(k)) is not type(active.get(k)) or identity.get(k) != active.get(k)
+                for k in HANJUKU_TACTICAL_KEYS)):
+            return None
+    tick, observed = mem.get('tick'), record.get('tick')
+    if (type(tick) is not int or type(observed) is not int or observed < 0
+            or not 0 <= tick - observed <= 400
+            or type(record.get('chapter')) is not int or record['chapter'] != mem.get('chapter')
+            or not isinstance(mem.get('month'), str)
+            or not re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', mem['month'])
+            or record.get('month') != mem['month']):
+        return None
+    return _compact_hanjuku_house_deferral({
+        'age_ticks': tick - observed, 'code': record.get('code'), 'phase': record.get('phase')})
+
+
+def _compact_hanjuku_house_deferral(value):
+    if not isinstance(value, dict) or type(value.get('age_ticks')) is not int or not 0 <= value['age_ticks'] <= 400:
+        return None
+    code = value.get('code')
+    phase = value.get('phase')
+    return {'age_ticks': value['age_ticks'],
+            'code': code if isinstance(code, str) and code in (
+                'position_unread', 'alignment_limit', 'route_unverified', 'other') else 'unknown',
+            'phase': phase if isinstance(phase, str) and phase in (
+                'castle_confirm', 'house_view', 'house_confirm') else 'other'}
+
+
+def _hanjuku_decision_rows(runtime, active, clock):
+    """Parsed decision/event rows from the active runtime's own log tail.
+
+    Only allowlisted tokens, fixed screen kinds and ages leave this reader.
+    Reasons, chart steps, general/castle names, frame hashes and identities
+    remain private; a malformed or unattributed line is skipped.
+    """
+    out = []
+    try:
+        fd = _open_hanjuku_scene_source(Path(runtime) / "hanjuku_decisions.jsonl")
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return out
+            offset = max(0, info.st_size - 64 * 1024)
+            os.lseek(fd, offset, os.SEEK_SET)
+            raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+            if offset:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1:] if newline >= 0 else b""
+            lines = raw.decode("utf-8", errors="replace").splitlines()[-256:]
+        finally:
+            os.close(fd)
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not _hanjuku_scene_matches(row, active):
+                    continue
+                event = row.get("event")
+                decision = row.get("decision")
+                if not isinstance(event, str) or not re.fullmatch(r"[a-z_]{1,48}", event):
+                    continue
+                if decision is not None and (
+                        not isinstance(decision, str)
+                        or not re.fullmatch(r"[a-z_]{1,64}", decision)):
+                    continue
+                age = _hanjuku_scene_age(row.get("at"), clock)
+                if age is None:
+                    continue
+                kind = row.get("screen_kind")
+                kind = kind if kind in HANJUKU_DECISION_SCREEN_KINDS else "other"
+                variant = row.get("strategy_variant")
+                out.append({"event": event, "decision": decision,
+                            "screen_kind": kind, "age_sec": age,
+                            "strategy_variant": (
+                                variant if isinstance(variant, str)
+                                and re.fullmatch(r"[a-z_]{1,40}", variant) else None)})
+            except (ValueError, TypeError, OverflowError, RecursionError):
+                continue
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        return []
+    return out
+
+
+def _recent_hanjuku_decisions(runtime, active, clock, *, limit=8):
+    """Last fixed decision/event names from the active runtime's own log."""
+    return _hanjuku_decision_rows(runtime, active, clock)[-limit:]
+
+
+def _hanjuku_sortie_launch(rows):
+    """Bounded launch-vs-repick signal from the decision tail itself.
+
+    A picked order fires ``order_start``; a sortie that actually leaves fires
+    ``order_launched``. Repeated picks with no launch in the same tail window
+    is the observed select-then-cancel loop (order_start → castle_menu → map),
+    which carried no signal until now and read as a healthy map walk.
+    """
+    counts = {}
+    for row in rows:
+        decision = row.get('decision')
+        if isinstance(decision, str):
+            counts[decision] = counts.get(decision, 0) + 1
+    starts = counts.get('order_start', 0)
+    launched = counts.get('order_launched', 0)
+    return {'order_start': starts,
+            'order_launched': launched,
+            'stalled': starts >= 3 and launched == 0}
+
+
+HANJUKU_CAMP_DECISIONS = frozenset({
+    'camp_found', 'camp_enter', 'camp_menu_not_opened', 'camp_menu_unread',
+    'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
+    'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
+    'camp_recall_picker_not_open', 'camp_recall_scene_abandoned',
+    'camp_recall_battle_reset',
+    'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',
+    'retreat_recheck_invalidated', 'camp_fort_sortie', 'camp_hp_observation',
+})
+
+
+def _hanjuku_camp_tail(rows):
+    """Bounded camp events in the same decision tail as ``sortie_launch``.
+
+    The last-eight window is dominated by ``action_plan`` rows, so a camp that
+    keeps being found, entered and given up on was invisible: "the bot ignores
+    the tent" and "the bot is inside a bounded retry window" read the same.
+    """
+    counts = {}
+    for row in rows:
+        decision = row.get('decision')
+        if isinstance(decision, str) and decision in HANJUKU_CAMP_DECISIONS:
+            counts[decision] = counts.get(decision, 0) + 1
+    return {'counts': counts}
+
+
+HANJUKU_RECALL_STAGES = frozenset({
+    'to_camp', 'hero_focus', 'hero_open', 'menu', 'dest', 'await_dispatch',
+    'recheck_roster_open', 'recheck_roster_read', 'recheck_status', 'recheck_read',
+    'recheck_close', 'fort_menu', 'fort_list', 'fort_status', 'fort_status_read',
+})
+
+
+def _compact_hanjuku_recall(mem):
+    """Bounded camp-recall state: why a visible camp is or is not recalled.
+
+    Only fixed stage tokens, bounded counts and the cursor-cell target leave
+    this reader; generals, castles and reasons stay in the private log. The
+    retry window is the reason a still-visible tent can sit for hundreds of
+    observations, so its age and length are projected beside the state.
+    """
+    flow = mem.get('flow') if isinstance(mem.get('flow'), dict) else {}
+    out = {'state': 'idle'}
+    state = flow.get('recall')
+    if isinstance(state, dict):
+        stage = state.get('stage')
+        target = state.get('target')
+        steps = state.get('steps')
+        out = {'state': 'recalling',
+               'stage': stage if stage in HANJUKU_RECALL_STAGES else 'other',
+               'steps': steps if type(steps) is int and 0 <= steps <= 1000 else None,
+               'named': state.get('retreat_recheck') is True,
+               'hero': state.get('hero') is True,
+               'target': (list(target) if isinstance(target, (list, tuple)) and len(target) == 2
+                          and all(type(axis) is int for axis in target) else None)}
+    skip = flow.get('recall_skip')
+    if isinstance(skip, dict):
+        tick, armed = mem.get('tick'), skip.get('tick')
+        window = flow.get('recall_skip_ticks')
+        window = window if type(window) is int and 0 < window <= 100000 else 400
+        age = tick - armed if type(tick) is int and type(armed) is int else None
+        retry = flow.get('recall_retry')
+        count = retry.get('count') if isinstance(retry, dict) else None
+        out['skip'] = {'age': age if age is not None and 0 <= age <= 100000 else None,
+                       'window': window,
+                       'retry': count if type(count) is int and 0 <= count <= 100 else None}
+    queue = flow.get('retreat_rechecks')
+    if isinstance(queue, dict):
+        out['queue'] = len(queue) if len(queue) <= 64 else None
+    budget = flow.get('retreat_anonymous_budget')
+    if isinstance(budget, dict):
+        reads = budget.get('reads')
+        out['anonymous_reads'] = reads if type(reads) is int and 0 <= reads <= 1000 else None
+    return out
+
+
+# Mirror of strategy/orders.BOSS_RELAUNCH_LIMIT: the bot re-sends a boss
+# sortie this many times before parking it. The collector runs as a standalone
+# file on the VM, so a test pins the two values together instead of importing
+# game code at runtime.
+HANJUKU_MARCH_RELAUNCH_LIMIT = 2
+# Fixed chapter-4 site names. A victory record's free-form site label must not
+# become a channel for arbitrary text; only these reviewed labels are emitted.
+HANJUKU_SEASON_SITES = frozenset({
+    '四季王城(北西)', '四季王城(北東)', '四季王城(南西)', '四季王城(南東)'})
+
+
+def _compact_post_month(last):
+    """The month's status-walk outcome: fixed tokens and counts only.
+
+    The walk records ``complete``, ``failed`` and the hero-castle manifest
+    result; there is no free-text result token (v550 projected one that the
+    policy never writes, so it always read null).
+    """
+    if not isinstance(last, dict):
+        return None
+    carry = last.get('carry')
+    manifest = last.get('manifest') if isinstance(last.get('manifest'), dict) else {}
+    return {'complete': last.get('complete') is True,
+            'failed': last.get('failed') if isinstance(last.get('failed'), str) else None,
+            'manifest_done': manifest.get('done') is True,
+            'manifest_arrived': (len(manifest['arrived'])
+                                 if isinstance(manifest.get('arrived'), (list, tuple)) else None),
+            'carry': len(carry) if isinstance(carry, (list, tuple)) else None}
+
+
+def _compact_boss_probes(probes):
+    """Which boss-cell candidates the adopted plan rotates (v544): counts only."""
+    if not isinstance(probes, dict) or not probes:
+        return None
+    indices = sorted({v for v in probes.values() if type(v) is int and v >= 0})
+    return {'steps': len(probes), 'indices': indices[:12]}
+
+
+def _compact_boss_cell(reading, now):
+    """The Y-view measured boss cell (v538): fixed chapter/cell/counts only."""
+    if not isinstance(reading, dict):
+        return None
+    chapter = reading.get('chapter')
+    cell = reading.get('cell')
+    tick = reading.get('tick')
+    readings = reading.get('readings')
+    point = None
+    if isinstance(cell, (list, tuple)) and len(cell) == 2 and all(type(v) is int for v in cell):
+        point = [cell[0], cell[1]]
+    age = tick if type(tick) is int and type(now) is int else None
+    return {'chapter': chapter if type(chapter) is int else None,
+            'cell': point,
+            'readings': readings if type(readings) is int and readings > 0 else None,
+            'age_ticks': (max(0, now - age) if age is not None else None)}
+
+
+def _compact_hanjuku_policy(mem, state=None):
+    """Small map/route summary that survives the tactical detail drop.
+
+    The full tactical section is dropped when the diagnostics envelope is
+    large, which hid chapter/active/orders exactly when a sortie had stopped.
+    Keep only fixed names, bounded counts and status tokens; no free text,
+    identities, frame hashes or decision reasons.
+    """
+    if not isinstance(mem, dict):
+        return None
+    def text(value, limit=64):
+        return value if isinstance(value, str) and len(value) <= limit else None
+    def names(value, limit=12):
+        return ([item for item in value if isinstance(item, str)][:limit]
+                if isinstance(value, list) else None)
+    def count(value, maximum=1_000_000):
+        return value if type(value) is int and 0 <= value <= maximum else None
+    orders = _plan_region(mem).get('orders') if isinstance(_plan_region(mem).get('orders'), dict) else {}
+    world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+    garrison = mem.get('garrison') if isinstance(mem.get('garrison'), dict) else world.get('garrison', {})
+    sorties = mem.get('sorties') if isinstance(mem.get('sorties'), dict) else world.get('sorties', {})
+    relaunches = mem.get('boss_relaunch') if isinstance(mem.get('boss_relaunch'), dict) else {}
+    victories = mem.get('boss_victories') if isinstance(mem.get('boss_victories'), dict) else {}
+    retries = mem.get('retries') if isinstance(mem.get('retries'), dict) else {}
+    lost = mem.get('lost') if isinstance(mem.get('lost'), list) else None
+    unknown = mem.get('general_location_unknown')
+    unknown = unknown if isinstance(unknown, list) else None
+    discovery = mem.get('map_discovery') if isinstance(mem.get('map_discovery'), dict) else {}
+    registration = mem.get('map_registration') if isinstance(mem.get('map_registration'), dict) else {}
+    chart_adjust = mem.get('chart_adjust') if isinstance(mem.get('chart_adjust'), dict) else {}
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    monster = mem.get('monster_panel') if isinstance(mem.get('monster_panel'), dict) else {}
+    cursor = mem.get('cursor')
+    tick = mem.get('tick')
+    state = state if isinstance(state, dict) else {}
+    def sortie_row(step, value):
+        # A stalled march is an age, not only a status: the same overdue row
+        # may be waiting for its bounded retry or parked after exhaustion.
+        started = value.get('tick')
+        age = (tick - started if type(tick) is int and type(started) is int
+               and 0 <= tick - started <= 10_000_000 else None)
+        return {'status': text(value.get('status'), 32),
+                'target': text(value.get('target'), 32),
+                'age_ticks': age,
+                'relaunch': count(relaunches.get(step), 1000)}
+    rows = [(text(step, 32) or '?', sortie_row(step, value))
+            for step, value in sorties.items() if isinstance(value, dict)]
+    # Keep overdue marches in the bounded view even when many sorties exist.
+    rows.sort(key=lambda row: (row[1]['status'] != 'overdue', row[0]))
+    overdue = [step for step, row in rows if row['status'] == 'overdue']
+    exhausted = [step for step, row in rows
+                 if row['status'] == 'overdue'
+                 and (row['relaunch'] or 0) >= HANJUKU_MARCH_RELAUNCH_LIMIT]
+    active = text(_plan_region(mem).get('active'), 32)
+    if active:
+        march_state = 'active'
+    elif not rows and not orders:
+        march_state = 'idle'
+    elif [step for step in overdue if orders.get(step) == 'launched']:
+        # Launched with nothing measurable arriving: distinguish a retry
+        # still inside its budget from one parked at the relaunch limit.
+        march_state = 'parked' if exhausted else 'overdue'
+    else:
+        march_state = 'idle'
+    won_sites = sorted({value.get('site') for value in victories.values()
+                        if isinstance(value, dict)
+                        and value.get('site') in HANJUKU_SEASON_SITES})
+    return {
+        'chapter': mem.get('chapter') if type(mem.get('chapter')) is int else None,
+        'bot_version': text(state.get('bot_version') or mem.get('bot_version'), 64),
+        'screen_kind': text(state.get('screen_kind'), 32),
+        'phase': text(state.get('phase'), 32),
+        'step': state.get('step') if type(state.get('step')) is int else None,
+        'no_input_streak': (state.get('no_input_streak')
+                            if type(state.get('no_input_streak')) is int else None),
+        'variant': text(mem.get('variant'), 32),
+        'active': text(_plan_region(mem).get('active'), 32),
+        'tick': tick if type(tick) is int and tick >= 0 else None,
+        'month': text(mem.get('month'), 16),
+        'orders': {text(step, 32) or '?': text(status, 32) or '?'
+                   for step, status in list(orders.items())[:20]
+                   if isinstance(step, str) and isinstance(status, str)},
+        'captured_count': (len(mem['captured']) if isinstance(mem.get('captured'), list)
+                           and len(mem['captured']) <= 64 else None),
+        'castle_loss_count': (len(lost) if isinstance(lost, list) and len(lost) <= 64 else None),
+        'home_taken': mem.get('home_lost') is True,
+        'boss_defeated': count(mem.get('boss_defeated'), 12),
+        'retries': {text(step, 32) or '?': count(value, 1000)
+                    for step, value in list(retries.items())[:20] if isinstance(step, str)},
+        'garrison': {text(castle, 32) or '?': len(present) if isinstance(present, list) else None
+                     for castle, present in list(garrison.items())[:12] if isinstance(castle, str)},
+        'unknown_generals': (len(unknown) if unknown is not None and len(unknown) <= 64 else None),
+        'sorties': dict(rows[:12]),
+        # Direct march-stall evidence: whether a launched sortie is overdue,
+        # how long it has gone unmeasured and whether its bounded relaunch
+        # budget is exhausted. Only fixed status tokens, castle labels and
+        # counts leave this reader.
+        'march': {'state': march_state,
+                  'overdue': overdue[:12],
+                  'exhausted': exhausted[:12],
+                  'oldest_age_ticks': max((row['age_ticks'] for _, row in rows
+                                            if row['status'] == 'overdue'
+                                            and row['age_ticks'] is not None), default=None)},
+        'boss_victories': {'count': len(victories), 'sites': won_sites[:8]},
+        'boss_cell': _compact_boss_cell(mem.get('boss_cell'), mem.get('tick')),
+        'boss_probes': _compact_boss_probes(mem.get('boss_step_probe')),
+        'post_month': _compact_post_month(mem.get('post_month_status_last')),
+        'cursor': ([item for item in cursor[:2] if type(item) is int]
+                   if isinstance(cursor, (list, tuple)) and len(cursor) == 2 else None),
+        'uncertain': mem.get('uncertain') is True,
+        'nav_search': mem.get('nav_search') is True,
+        'y_jump': ({'mode': text((mem.get('y_jump') or {}).get('mode'), 16),
+                    'goal': text((mem.get('y_jump') or {}).get('goal'), 32)}
+                   if isinstance(mem.get('y_jump'), dict) else None),
+        'approx_map': mem.get('approx_map') is True,
+        'approx_fallback': mem.get('approx_fallback') is True,
+        'approx_localize_miss': (mem.get('approx_localize_miss')
+                                 if type(mem.get('approx_localize_miss')) is int else None),
+        'map_discovery': ({'candidate': text(discovery.get('candidate'), 32),
+                           'attempts': discovery.get('attempts')
+                           if type(discovery.get('attempts')) is int else None}
+                          if discovery else None),
+        'map_registration_castles': (len(registration.get('castles'))
+                                     if isinstance(registration.get('castles'), dict) else None),
+        'chart_adjust': ({'interim_wanted': chart_adjust.get('interim_wanted') is True,
+                          'has_plan': isinstance(_plan_region(mem).get('chart_plan'), dict)}
+                         if chart_adjust else None),
+        # A visible tent nobody acts on had no projection at all. Project the
+        # flow's own bounded recall state beside it so the reason (no
+        # detection, an armed retry window, a queue budget or a stuck recall)
+        # is readable without the private decision log.
+        'recall': _compact_hanjuku_recall(mem),
+        # A long battle looks like a frozen month/capture count. Project the
+        # bounded HP evidence so diagnostics can say whether it is progressing.
+        'battle': ({'enemy': text(battle.get('enemy'), 32),
+                    'ally': text(battle.get('ally'), 32),
+                    'start_enemy_hp': (battle.get('start_enemy_hp')
+                                       if type(battle.get('start_enemy_hp')) is int else None),
+                    'start_ally_hp': (battle.get('start_ally_hp')
+                                      if type(battle.get('start_ally_hp')) is int else None),
+                    'egg_battle': battle.get('egg_battle') is True}
+                   if battle else None),
+        'monster_panel': ({'ally': text(monster.get('ally'), 32),
+                           'ally_hp': (monster.get('ally_hp')
+                                       if type(monster.get('ally_hp')) is int else None),
+                           'enemy': text(monster.get('enemy'), 32),
+                           'enemy_hp': (monster.get('enemy_hp')
+                                        if type(monster.get('enemy_hp')) is int else None)}
+                          if monster else None),
+    }
+
+
+HANJUKU_CHART_WORKER_STATUSES = frozenset(
+    {'saved', 'invalid_output', 'generate_failed', 'worker_error', 'superseded'})
+# Same allowlist as the worker's own _DETAIL contract: fixed classifications
+# only (validator constant strings, ``rc-N:kind`` dispatcher kinds), never
+# provider or model text.
+_HANJUKU_WORKER_DETAIL = re.compile(r'[A-Za-z0-9 _/:.\-]{1,80}\Z')
+HANJUKU_CHART_HISTORY_EVENTS = frozenset(
+    {'adjust_worker', 'adjust_requested', 'adjusted_chart_saved',
+     'adjusted_orders_dropped'})
+
+
+def _project_hanjuku_chart_worker(runtime, now):
+    """Bounded view of the LLM chart-adjust worker for the active runtime.
+
+    g1075 recorded ``invalid_output`` 13 times in a row with no readable
+    reason and re-claimed a rate-limited request in 5 ms (#2936): the
+    runtime files held all of it but diagnostics projected none. Keep only
+    the claim counters, the last fixed status/detail classification, and a
+    few recent history rows (event/status/detail/age) -- request ids,
+    digests, prompts and payloads never leave the runtime.
+    """
+    out = {'present': False, 'readable': False}
+    runtime = Path(runtime)
+    try:
+        data, _modified = _read_hanjuku_record(runtime / 'hanjuku_chart_worker.json')
+    except FileNotFoundError:
+        return out
+    except (OSError, ValueError):
+        out['present'] = True
+        return out
+    out['present'] = True
+    out['readable'] = True
+
+    def _enum(value):
+        return value if value in HANJUKU_CHART_WORKER_STATUSES else None
+
+    def _detail(value):
+        return (value if isinstance(value, str)
+                and _HANJUKU_WORKER_DETAIL.fullmatch(value) else None)
+
+    def _count(value):
+        return value if type(value) is int and 0 <= value <= 100000 else None
+
+    def _age(value):
+        return (int(now - value) if type(value) in (int, float)
+                and math.isfinite(value) and 0 <= now - value <= 30 * 86400
+                else None)
+
+    cooldown_until = data.get('cooldown_until')
+    out.update(
+        attempts=_count(data.get('attempts')),
+        rate_limited=_count(data.get('rate_limited')),
+        last_status=_enum(data.get('last_status')),
+        last_detail=_detail(data.get('last_detail')),
+        last_age_sec=_age(data.get('last_at')),
+        claim_age_sec=_age(data.get('at')),
+        cooldown_remaining_sec=(
+            int(cooldown_until - now)
+            if type(cooldown_until) in (int, float)
+            and math.isfinite(cooldown_until)
+            and 0 < cooldown_until - now <= 86400 else None),
+        recent=[],
+    )
+
+    try:
+        fd = _open_hanjuku_scene_source(runtime / 'hanjuku_chart_history.jsonl')
+    except OSError:
+        return out
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return out
+        offset = max(0, info.st_size - 64 * 1024)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, 64 * 1024 + 1)[:64 * 1024]
+        if offset:
+            newline = raw.find(b"\n")
+            raw = raw[newline + 1:] if newline >= 0 else b""
+        lines = raw.decode("utf-8", errors="replace").splitlines()[-128:]
+    finally:
+        os.close(fd)
+    recent = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if (not isinstance(row, dict)
+                or row.get('event') not in HANJUKU_CHART_HISTORY_EVENTS):
+            continue
+        age = _age(row.get('at'))
+        if age is None:
+            continue
+        entry = {'event': row['event'], 'age_sec': age,
+                 'status': _enum(row.get('status')),
+                 'detail': _detail(row.get('detail'))}
+        for key in ('elapsed_s', 'cooldown_s'):
+            value = row.get(key)
+            if (type(value) in (int, float) and math.isfinite(value)
+                    and 0 <= value <= 86400):
+                entry[key] = round(value, 3)
+        recent.append(entry)
+    out['recent'] = recent[-4:]
+    return out
+
+
 def _collect_hanjuku_tactical(state_dir, now):
-    """Chapter-1 fixed castle labels and last card prediction from a fresh run.
+    """Fresh fixed castle, card-prediction and monthly-refill records.
 
     These are the bot's recorded beliefs, not independently verified ownership
-    or roster. An absent garrison record remains unknown rather than empty.
+    or roster/payment. Castle labels remain chapter-1 only; refill gates do not
+    imply an input was received. An absent garrison remains unknown, not empty.
     """
     out = {'status': 'unavailable', 'basis': 'bot_record', 'age_sec': None}
     try:
@@ -7053,34 +14208,60 @@ def _collect_hanjuku_tactical(state_dir, now):
                 or not isinstance(active.get('lease_id'), str) or not active['lease_id']
                 or not isinstance(active.get('runtime_id'), str)
                 or not re.fullmatch(r'g[0-9]+-[a-f0-9]{8}', active['runtime_id'])):
-            return out
+            return {**out, 'reason': 'record_not_ready'}
         runtime = root / 'runtimes' / active['runtime_id']
+        out['chart_worker'] = _project_hanjuku_chart_worker(runtime, now)
         bot, modified = _read_hanjuku_record(runtime / 'hanjuku_bot.json')
         run, _ = _read_hanjuku_record(runtime / 'hanjuku_run.json')
         trace = bot.get('decision_trace')
-        if (not isinstance(trace, dict)
-                or any(trace.get(k) != active.get(k) or run.get(k) != active.get(k) for k in HANJUKU_TACTICAL_KEYS)
-                or run.get('terminal_reason') or run.get('terminal_candidate')):
-            return out
+        if not isinstance(trace, dict):
+            return {**out, 'reason': 'record_unbound'}
+        if any(trace.get(k) != active.get(k) or run.get(k) != active.get(k)
+               for k in HANJUKU_TACTICAL_KEYS):
+            return {**out, 'reason': 'identity_mismatch'}
+        if run.get('terminal_reason') or run.get('terminal_candidate'):
+            return {**out, 'reason': 'terminal'}
         age = now - modified
         if not 0 <= age <= 30:
-            return {**out, 'status': 'stale'}
+            # Keep a bounded age: live status must tell "the bot stopped
+            # writing" from "the record is unreadable" without the detail.
+            # The last written chapter/month/phase stay available, explicitly
+            # under ``status: stale``: during a stalled game (g1163
+            # 2026-11-14, bot silent >1 h) the operator needs the last known
+            # position to decide the recovery, and the live status prints the
+            # stale label beside it.
+            stale = {**out, 'status': 'stale', 'reason': 'record_stale',
+                     'age_sec': min(int(age), 3600)}
+            last = bot.get('policy')
+            if (isinstance(last, dict) and type(last.get('chapter')) is int
+                    and 1 <= last['chapter'] <= 12):
+                stale['chapter'] = last['chapter']
+                stale['policy'] = _compact_hanjuku_policy(last, bot)
+            return stale
         mem = bot.get('policy')
         if (not isinstance(mem, dict) or type(mem.get('chapter')) is not int
                 or not 1 <= mem['chapter'] <= 12):
-            return {**out, 'status': 'unsupported_chapter'}
+            return {**out, 'status': 'unsupported_chapter', 'reason': 'unsupported_policy'}
         assessment = _project_hanjuku_card_assessment(mem.get('last_card_assessment'), mem.get('tick'))
+        refill = _project_hanjuku_refill(mem, active)
+        house_deferral = _project_hanjuku_house_deferral(mem, active)
         if mem['chapter'] != 1:
             again, _ = _read_hanjuku_record(root / 'game_switch.json')
             if again.get('phase') != 'ready' or again.get('active') != active:
                 return {**out, 'status': 'identity_changed'}
+            rows = _hanjuku_decision_rows(runtime, active, now)
             return {**out, 'status': 'unsupported_chapter', 'chapter': mem['chapter'],
-                    'age_sec': int(age), 'last_card_assessment': assessment}
+                    'age_sec': int(age), 'policy': {**_compact_hanjuku_policy(mem, bot),
+                               'recent_decisions': rows[-8:],
+                               'sortie_launch': _hanjuku_sortie_launch(rows),
+                               'camp': _hanjuku_camp_tail(rows)},
+                    'last_card_assessment': assessment, 'refill': refill, 'last_house_deferral': house_deferral}
         captured = mem.get('captured', [])
-        garrison = mem.get('garrison', {})
-        sorties = mem.get('sorties', {})
+        world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
+        garrison = mem.get('garrison', world.get('garrison', {}))
+        sorties = mem.get('sorties', world.get('sorties', {}))
         tick = mem.get('tick')
-        unknown = mem.get('general_location_unknown', [])
+        unknown = mem.get('general_location_unknown', world.get('general_location_unknown', []))
         if (not isinstance(captured, list) or not isinstance(garrison, dict)
                 or not isinstance(sorties, dict) or not isinstance(unknown, list)
                 or type(tick) is not int or tick < 0):
@@ -7107,10 +14288,15 @@ def _collect_hanjuku_tactical(state_dir, now):
         again, _ = _read_hanjuku_record(root / 'game_switch.json')
         if again.get('phase') != 'ready' or again.get('active') != active:
             return {**out, 'status': 'identity_changed'}
+        dec_rows = _hanjuku_decision_rows(runtime, active, now)
         out.update(status='ok', age_sec=int(age), chapter=1,
+                   policy={**_compact_hanjuku_policy(mem, bot),
+                           'recent_decisions': dec_rows[-8:],
+                           'sortie_launch': _hanjuku_sortie_launch(dec_rows),
+                           'camp': _hanjuku_camp_tail(dec_rows)},
                    remaining_castles=[c for c in HANJUKU_TACTICAL_CASTLES[1:-1] if c not in captured],
                    castles=rows, home_lost_record=mem.get('home_lost') is True,
-                   last_card_assessment=assessment)
+                   last_card_assessment=assessment, refill=refill, last_house_deferral=house_deferral)
         return out
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return out
@@ -7219,6 +14405,347 @@ class _NethackEvidenceReader:
             if name is None:
                 raise _NethackEvidenceError('invalid_identity')
             self.restored_runtime(int(name.split('-')[0][1:]))
+
+
+# Admission observations are deliberately separate from recovery authority.
+# Keep this mapping fixed: never turn a state-provided corner/path into a read.
+PROGRAM_ADMISSION_OWNERS = {
+    **{name: 'retro_corner' for name in (
+        'ninvaders', 'nsnake', 'bastet', 'moon-buggy', 'pacman4console', 'hanjuku-hero')},
+    'nethack': 'nethack_corner', 'paper': 'paper_corner', 'meriken': 'soren91_corner',
+    'tsuitate': 'tsuitate_corner', 'weather': 'weather_corner',
+    'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
+    'mystery': 'mystery_corner',
+    'communist-law-simulator': 'lawsim_corner',
+}
+PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
+    'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',
+    'expired', 'cancelled',
+})
+
+
+PROGRAM_ADMISSION_FAILURE_STAGES = frozenset({
+    'none', 'pending', 'owner', 'queue', 'lock', 'registry', 'fifo',
+    'prediction', 'audio', 'recheck_owners', 'recheck_runtime', 'recheck_audio',
+})
+PROGRAM_ADMISSION_FAILURE_CODES = frozenset({
+    'none', 'missing', 'unsafe_path', 'non_regular', 'oversize', 'json_invalid',
+    'schema_invalid', 'queue_mismatch', 'scan_limit', 'evidence_changed', 'read_error',
+})
+
+
+class _ProgramAdmissionFailure(ValueError):
+    """Only a reviewed fixed code, never exception text, reaches diagnostics."""
+    def __init__(self, code):
+        self.code = code if code in PROGRAM_ADMISSION_FAILURE_CODES else 'schema_invalid'
+        super().__init__(self.code)
+
+
+def _program_admission_failure_code(exc):
+    if isinstance(exc, _ProgramAdmissionFailure):
+        return exc.code
+    if isinstance(exc, OSError):
+        return ('unsafe_path' if exc.errno in {errno.ELOOP, errno.ENOTDIR}
+                else 'missing' if exc.errno == errno.ENOENT
+                else 'non_regular' if exc.errno == errno.EISDIR else 'read_error')
+    if isinstance(exc, _NethackEvidenceError):
+        # This shared reader/UUID validator uses only fixed internal codes.
+        return 'unsafe_path' if exc.args == ('unsafe_path',) else 'schema_invalid'
+    return 'schema_invalid'
+
+
+class _ProgramAdmissionReader(_NethackEvidenceReader):
+    """Bounded no-follow reads, including same-byte replacement detection.
+
+    Rechecking is an optimistic observation window, not an atomic snapshot or
+    a lease. Missing files and directory listings are rechecked as well.
+    """
+    SCAN_LIMIT = 128
+
+    def __init__(self, root, *, audio_only=False):
+        super().__init__(root)
+        self.samples = {}
+        self.audio_only = audio_only is True
+
+    @staticmethod
+    def fingerprint(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    def sample(self, parts, mode='json'):
+        parts = tuple(parts)
+        try:
+            directory = self.directory(parts[:-1])
+            try:
+                if mode == 'presence':
+                    info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode):
+                        raise _ProgramAdmissionFailure(
+                            'unsafe_path' if stat.S_ISLNK(info.st_mode) else 'non_regular')
+                    signature, value = self.fingerprint(info), True
+                else:
+                    fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 dir_fd=directory)
+                    with os.fdopen(fd, 'rb') as stream:
+                        before = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(before.st_mode):
+                            raise _ProgramAdmissionFailure('non_regular')
+                        if before.st_size > self.FILE_BYTES:
+                            raise _ProgramAdmissionFailure('oversize')
+                        raw = stream.read(self.FILE_BYTES + 1)
+                        after = os.fstat(stream.fileno())
+                    if self.fingerprint(before) != self.fingerprint(after):
+                        raise _ProgramAdmissionFailure('evidence_changed')
+                    if len(raw) > self.FILE_BYTES:
+                        raise _ProgramAdmissionFailure('oversize')
+                    signature = (self.fingerprint(after), raw)
+                    value = raw
+                    if mode == 'json':
+                        try:
+                            value = json.loads(raw, object_pairs_hook=self.unique_object,
+                                               parse_constant=lambda _: (_ for _ in ()).throw(
+                                                   _ProgramAdmissionFailure('json_invalid')))
+                        except (ValueError, RecursionError) as exc:
+                            raise _ProgramAdmissionFailure('json_invalid') from exc
+                        if not isinstance(value, dict):
+                            raise _ProgramAdmissionFailure('schema_invalid')
+            finally:
+                os.close(directory)
+        except FileNotFoundError:
+            signature, value = None, None
+        key = (parts, mode)
+        if key in self.samples and self.samples[key] != signature:
+            raise _ProgramAdmissionFailure('evidence_changed')
+        self.samples[key] = signature
+        return value
+
+    def listing(self, parts):
+        parts = tuple(parts)
+        try:
+            directory = self.directory(parts)
+            try:
+                before = self.fingerprint(os.fstat(directory))
+                rows = []
+                with os.scandir(directory) as entries:
+                    for index, entry in enumerate(entries):
+                        if index >= self.SCAN_LIMIT:
+                            raise _ProgramAdmissionFailure('scan_limit')
+                        name = entry.name
+                        if self.audio_only and not (
+                                name.startswith(AUDIO_ITEM_PREFIX) and
+                                name.endswith((AUDIO_QUEUED_SUFFIX, AUDIO_PLAYING_SUFFIX))):
+                            # Keep every name in the bounded/rechecked listing,
+                            # but never stat, follow or descend into non-audio.
+                            rows.append((name, None))
+                            continue
+                        info = entry.stat(follow_symlinks=False)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise _ProgramAdmissionFailure(
+                                'unsafe_path' if stat.S_ISLNK(info.st_mode) else 'non_regular')
+                        rows.append((entry.name, self.fingerprint(info)))
+                after = self.fingerprint(os.fstat(directory))
+                if before != after:
+                    raise _ProgramAdmissionFailure('evidence_changed')
+                value = tuple(sorted(rows))
+                signature = (after, value)
+            finally:
+                os.close(directory)
+        except FileNotFoundError:
+            signature, value = None, None
+        key = (parts, 'listing')
+        if key in self.samples and self.samples[key] != signature:
+            raise _ProgramAdmissionFailure('evidence_changed')
+        self.samples[key] = signature
+        return value
+
+    def recheck(self):
+        for parts, mode in tuple(self.samples):
+            if mode == 'listing':
+                self.listing(parts)
+            else:
+                self.sample(parts, mode)
+
+
+def _program_admission_empty(reason='unavailable', *, stage='none', code='none'):
+    return {
+        'status': 'unknown', 'reason': reason, 'recovery_authority': False,
+        # Method vocabulary alone is not proof that recheck was reached.
+        'observation': 'rechecked_non_atomic', 'recheck_completed': False,
+        'failure_stage': stage if stage in PROGRAM_ADMISSION_FAILURE_STAGES else 'none',
+        'failure_code': code if code in PROGRAM_ADMISSION_FAILURE_CODES else 'schema_invalid',
+        'queue_identity_basis': 'fixed_owner_and_selected_at_only',
+        'pending_queue_matches': None,
+        'owner_created_for_request': None, 'queue_status': 'unknown',
+        'program_lock': {'state': 'unknown', 'present': None},
+        'registry_owner_free': None, 'fifo_scan_complete': None,
+        'earlier_waiter': None,
+        'prediction': {'worker_running': None, 'local_active': None,
+                       'boundary_after_request': None, 'waiting': None},
+        'audio': {'readable': None, 'queued': None, 'playing': None,
+                  'quiet': None, 'runtime_source_verified': False,
+                  'source_basis': 'collector_env_or_default'},
+    }
+
+
+def _program_admission_owner_free(runtime, owners, expected):
+    registry = runtime.sample(('docich_program_active.json',))
+    if registry is None:
+        return True
+    previous = registry.get('owner_state')
+    if previous == str(owners.root / (expected + '.json')):
+        return True
+    allowed = {str(owners.root / (name + '.json')): name
+               for name in ROTATION_PENDING_OWNER_FILES}
+    if not isinstance(previous, str) or previous not in allowed:
+        return None
+    name = allowed[previous]
+    state = owners.sample((name + '.json',))
+    if state is None:
+        return True
+    status = state.get('status')
+    if not isinstance(status, str) or status not in ROTATION_STATUSES:
+        return None
+    # These views have a canonical restoration exception. Do not reproduce it
+    # incompletely or call them occupied/free without its additional evidence.
+    # lawsim は例外集合に入れない: 実行側（rotation/admission）は failed の
+    # lawsim を「占有中（要回収）」と判定するため、診断だけ unknown にすると
+    # 不一致になる（PR #2502 の独立検証で再現）。mystery と同じ扱い。
+    if status == 'failed' and name in {'paper_corner', 'paper_corner_manual', 'doushi_corner'}:
+        return None
+    return status not in {'starting', 'active', 'restoring', 'recovery_required', 'failed'}
+
+
+def _program_admission_worker(runtime):
+    if runtime.sample(('prediction_worker.paused',), 'presence'):
+        return False
+    raw = runtime.sample(('prediction_worker.pid',), 'raw')
+    if raw is None or len(raw) > 256:
+        return None
+    try:
+        pid = next((int(word) for word in raw.decode('utf-8').split()
+                    if word.isdigit()), None)
+        if pid is None or pid <= 0:
+            return None
+        os.kill(pid, 0)  # Existence probe only, exactly as corner_boundary.
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, OverflowError, UnicodeError):
+        return None
+
+
+def _collect_program_admission_evidence(state_dir, soren, now):
+    """Observe pre-owner admission gates; never grant recovery or acquire locks.
+
+    A queue has no request UUID, so a match means only fixed-owner/time
+    correspondence. No deadline is inferred from selected_at. Manual sibling
+    reservations and unfamiliar schemas stay unknown. Runtime fail-open paths
+    remain unknown here when their inputs cannot be safely observed.
+    """
+    result = _program_admission_empty()
+    stage = 'pending'
+    try:
+        owners = _ProgramAdmissionReader(Path(state_dir))
+        runtime = _ProgramAdmissionReader(Path(soren) / 'tmp' / 'state')
+        ledger = owners.sample(('corner_rotation.json',))
+        if not isinstance(ledger, dict) or ledger.get('manual_pending'):
+            return _program_admission_empty('pending_unavailable', stage=stage,
+                                            code='missing' if ledger is None else 'schema_invalid')
+        pending = ledger.get('pending')
+        if (not isinstance(pending, dict) or pending.get('phase') != 'dispatched'
+                or not isinstance(pending.get('corner'), str)
+                or pending['corner'] not in PROGRAM_ADMISSION_OWNERS):
+            return _program_admission_empty('pending_unavailable', stage=stage, code='schema_invalid')
+        requested = _finite_number(pending.get('selected_at'))
+        request = _nethack_evidence_uuid(pending.get('request_id'))
+        if requested is None or not 0 <= requested <= now:
+            return _program_admission_empty('pending_unavailable', stage=stage, code='schema_invalid')
+        expected = PROGRAM_ADMISSION_OWNERS[pending['corner']]
+        stage = 'owner'
+        owner = owners.sample((expected + '.json',))
+        owner_request = owner.get('rotation_request_id') if owner is not None else None
+        result['owner_created_for_request'] = (False if owner is None else
+            owner_request == request if isinstance(owner_request, str) and re.fullmatch(
+                r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                owner_request) else None)
+        stage = 'queue'
+        queue = runtime.sample(('docich_program_queue', expected + '.json'))
+        if (queue is None or _finite_number(queue.get('requested_at')) != requested
+                or queue.get('status') not in PROGRAM_ADMISSION_QUEUE_STATUSES):
+            return _program_admission_empty('pending_queue_unverified', stage=stage,
+                                            code='missing' if queue is None else 'queue_mismatch')
+        result['pending_queue_matches'] = True
+        result['queue_status'] = queue['status']
+        stage = 'lock'
+        result['program_lock']['present'] = bool(runtime.sample(('docich_program.lock',), 'presence'))
+        stage = 'registry'
+        result['registry_owner_free'] = _program_admission_owner_free(runtime, owners, expected)
+        stage = 'fifo'
+        rows = runtime.listing(('docich_program_queue',))
+        if rows is None:
+            raise _ProgramAdmissionFailure('missing')
+        earlier = False
+        for name, _ in rows:
+            if not name.endswith('.json') or name == expected + '.json':
+                continue
+            entry = runtime.sample(('docich_program_queue', name))
+            if entry is None or entry.get('status') not in PROGRAM_ADMISSION_QUEUE_STATUSES:
+                raise _ProgramAdmissionFailure('schema_invalid')
+            if entry['status'] in {'waiting', 'waiting_turn'}:
+                stamp = _finite_number(entry.get('requested_at'))
+                if stamp is None or stamp < 0 or stamp > now:
+                    raise _ProgramAdmissionFailure('schema_invalid')
+                earlier |= stamp < requested  # No age cutoff or lexical tie-break.
+        result['fifo_scan_complete'], result['earlier_waiter'] = True, earlier
+        stage = 'prediction'
+        prediction = runtime.sample(('current_prediction.json',))
+        local_status = prediction.get('status') if prediction is not None else None
+        local_active = (local_status in {'ACTIVE', 'LOCKED'} if local_status in {
+            'ACTIVE', 'LOCKED', 'RESOLVED', 'CANCELED', 'CANCELLED', 'CLOSED', 'NONE', 'IDLE'} else None)
+        boundary = runtime.sample(('corner_boundary_prediction.json',))
+        stamp = _finite_number(boundary.get('completed_at')) if boundary is not None else None
+        fresh = requested <= stamp <= now if stamp is not None else None
+        worker = _program_admission_worker(runtime)
+        waiting = (False if worker is False or local_active is False else
+                   not fresh if worker is True and local_active is True and fresh is not None else None)
+        result['prediction'].update(worker_running=worker, local_active=local_active,
+                                    boundary_after_request=fresh, waiting=waiting)
+        # Reuse the existing resolver, suffixes and count/quiet semantics.
+        # Do not invoke the legacy unbounded scan a second time: every scan
+        # in this projection is bounded and no-follow. No bodies or .env reads.
+        stage = 'audio'
+        audio_path = _comment_queue_dir(Path(soren))
+        audio_reader = _ProgramAdmissionReader(audio_path, audio_only=True)
+        audio_rows = audio_reader.listing(())
+        counts = [0, 0]
+        for name, _ in audio_rows or ():
+            if name.startswith(AUDIO_ITEM_PREFIX):
+                counts[0] += name.endswith(AUDIO_QUEUED_SUFFIX)
+                counts[1] += name.endswith(AUDIO_PLAYING_SUFFIX)
+        # Neither the collector environment nor current .env existence proves
+        # the running worker's inherited environment. Do not read either the
+        # worker environment or .env; runtime source verification stays false.
+        result['audio'].update(readable=True, queued=counts[0], playing=counts[1],
+                               quiet=not any(counts))
+        stage = 'prediction'
+        worker_again = _program_admission_worker(runtime)
+        if worker_again != worker:
+            raise _ProgramAdmissionFailure('evidence_changed')
+        for stage, reader in (('recheck_owners', owners), ('recheck_runtime', runtime),
+                              ('recheck_audio', audio_reader)):
+            reader.recheck()
+        result['recheck_completed'] = True
+        result.update(status='observed', reason=(
+            'pre_owner' if result['owner_created_for_request'] is False else
+            'owner_already_created' if result['owner_created_for_request'] is True else
+            'owner_identity_unverified'))
+        return result
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError,
+            _NethackEvidenceError) as exc:
+        return _program_admission_empty('evidence_unverified', stage=stage,
+                                        code=_program_admission_failure_code(exc))
 
 
 def _nethack_evidence_uuid(value):
@@ -7636,6 +15163,7 @@ def _collect_nethack_boundary(state_dir, now):
         "process_alive": None,
         "save_signature_changed": None,
         "boundary_outcome": None,
+        "orphan_processes_present": None,
         "generation": None,
         "age_sec": None,
     }
@@ -7678,6 +15206,9 @@ def _collect_nethack_boundary(state_dir, now):
         value = diag.get(key)
         if isinstance(value, bool):
             result[key] = value
+    orphan_count = diag.get("orphan_processes_present")
+    if type(orphan_count) is int and orphan_count >= 0:
+        result["orphan_processes_present"] = orphan_count
     recorded = diag.get("recorded_at")
     if isinstance(recorded, str):
         try:
@@ -7697,6 +15228,113 @@ def _collect_nethack_boundary(state_dir, now):
     return result
 
 
+_PRESENTATION_STATUSES = ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped")
+
+
+def _presentation_record_nofollow(path):
+    """Bounded JSON object and mtime from one pinned regular record."""
+    directory_fd = record_fd = None
+    try:
+        path = Path(path)
+        parent = path.parent
+        directory_fd = _supervisor_directory(parent.anchor or ".")
+        components = parent.parts[1:] if parent.anchor else parent.parts
+        for component in components:
+            previous_fd = directory_fd
+            directory_fd = _supervisor_directory(component, dir_fd=previous_fd)
+            os.close(previous_fd)
+        flags = (os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+                 | getattr(os, "O_CLOEXEC", 0))
+        record_fd = os.open(path.name, flags, dir_fd=directory_fd)
+        info = os.fstat(record_fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("unsafe presentation record")
+        with os.fdopen(record_fd, "rb", closefd=False) as stream:
+            raw = stream.read(65536 + 1)
+        if len(raw) > 65536:
+            raise ValueError("oversized presentation record")
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("invalid presentation record")
+        return True, True, value, info.st_mtime
+    except FileNotFoundError:
+        return False, False, None, None
+    except (OSError, ValueError, RecursionError):
+        return True, False, None, None
+    finally:
+        if record_fd is not None:
+            os.close(record_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _collect_runtime_presentation(state_dir, now):
+    """Bounded view of the *active* runtime's projector state (#2097).
+
+    Reads only ``<state_dir>/runtimes/<runtime_id>/presentation.json`` for the
+    runtime that currently owns the slot, and projects fixed enums plus the
+    projection geometry and the record's mtime. A shared display restart must be
+    observable (``presentation_failed`` -> ``ready``) without ever exposing
+    pids, argv, paths or pane text.
+    """
+    result = {
+        "present": False,
+        "readable": False,
+        "reason": None,
+        "active_runtime": False,
+        "status": None,
+        "display": None,
+        "window": None,
+        "width": None,
+        "height": None,
+        "age_sec": None,
+    }
+    _, readable, data, _ = _presentation_record_nofollow(
+        Path(state_dir) / "game_switch.json"
+    )
+    if not readable:
+        result["reason"] = "active_unreadable"
+        return result
+    active = data.get("active")
+    if not isinstance(active, dict):
+        result["reason"] = "no_active_runtime"
+        return result
+    runtime_id = active.get("runtime_id")
+    if (not isinstance(runtime_id, str) or runtime_id in (".", "..")
+            or not _RUNTIME_ID_RE.fullmatch(runtime_id)):
+        result["reason"] = "runtime_id_invalid"
+        return result
+    result["active_runtime"] = True
+    path = Path(state_dir) / "runtimes" / runtime_id / "presentation.json"
+    present, readable, state, modified = _presentation_record_nofollow(path)
+    result["present"] = present
+    result["readable"] = readable
+    if not present:
+        result["reason"] = "record_absent"
+        return result
+    if not readable or not isinstance(state, dict):
+        result["reason"] = "record_unreadable"
+        return result
+    status = state.get("status")
+    result["reason"] = "status_unknown"
+    if isinstance(status, str) and status in _PRESENTATION_STATUSES:
+        result["status"] = status
+        result["reason"] = "ok"
+    display = state.get("display")
+    if isinstance(display, str) and re.fullmatch(r":[0-9]{1,3}", display):
+        result["display"] = display
+    window = state.get("window")
+    if isinstance(window, str) and window.isdigit() and len(window) <= 12:
+        result["window"] = window
+    for key in ("width", "height"):
+        value = state.get(key)
+        if type(value) is int and 0 < value <= 4096:
+            result[key] = value
+    if 0 <= modified <= now + 86400:
+        result["age_sec"] = max(0, int(now - modified))
+    return result
+
+
 def _collect_nethack_panes(state_dir, now):
     """Bounded read-only view of the committed NetHack runtime's tmux windows.
 
@@ -7704,6 +15342,11 @@ def _collect_nethack_panes(state_dir, now):
     this channel. The NetHack TTY lives in the runtime's birth/process window,
     not the presentation xterm window, so capture every window by name plus the
     resolved process and agent panes. Never sends tmux input.
+
+    ``game_head`` carries the leading rows of the same game pane so the
+    message/pager row -- structurally outside the 14-line tail -- is visible
+    enough to tell an unanswered ``--More--`` from a zero-action decision loop
+    (#2271).
     """
     result = {
         "present": False,
@@ -7711,6 +15354,7 @@ def _collect_nethack_panes(state_dir, now):
         "active_game": None,
         "windows": [],
         "game": [],
+        "game_head": [],
         "agent": [],
     }
     try:
@@ -7746,6 +15390,7 @@ def _collect_nethack_panes(state_dir, now):
     candidates = [name for name in names if name not in {game_window, agent_window}]
     if len(candidates) == 1:
         result["game"] = _capture_tmux_pane(f"{session}:{candidates[0]}")
+        result["game_head"] = _capture_tmux_pane_head(f"{session}:{candidates[0]}")
     result["agent"] = _capture_tmux_pane(f"{session}:{agent_window}")
     return result
 
@@ -7754,6 +15399,16 @@ def _collect_nethack_panes(state_dir, now):
 NETHACK_HISTORY_SCAN_LIMIT = 128
 NETHACK_HISTORY_FILE_BYTES = 65536
 NETHACK_TERMINAL = frozenset({'dead', 'ascended', 'ended', 'ended_unknown'})
+# Compact per-run depth/turn digest that survives the record budget (#2666).
+# ``records`` is the first part of this projection the 36KiB envelope drops, so
+# "did the run ever leave Dlvl 1?" was unanswerable from diagnostics exactly
+# when the envelope was full. Five rows stay well under 1 KiB.
+NETHACK_RECENT_RUN_LIMIT = 5
+# Fixed producer codes from ``docich.nethack_run`` ``_terminal_records_since``;
+# duplicated here (see test_nethack_boundary_diag.py precedent) so the
+# diagnostics projection can aggregate them without importing game modules.
+NETHACK_ANALYSIS_ERRORS = frozenset({
+    'xlogfile-missing', 'xlogfile-truncated', 'no-new-player-xlog-record'})
 NETHACK_LESSONS = frozenset({'repeated_death', 'survival_signal', 'food_survival',
                             'proposal_drift', 'evidence_gap', 'terminal_evidence',
                             'progress_stall'})
@@ -7851,16 +15506,60 @@ def _nethack_record(raw, daily):
                   'progress': _nethack_progress(retrospective.get('progress_evidence'))}
         for key in ('score', 'turns', 'max_depth'):
             result[key] = _nethack_number(raw.get(key))
+        # ``terminal.analysis_error`` is the run store's own fixed reason code
+        # for "game ended but xlog evidence was missing" (#753). Reviewed codes
+        # are projected verbatim; any other producer value collapses to the
+        # fixed token ``other`` so it is still countable without being exposed.
+        # The type guard also keeps unhashable producer values (list/dict)
+        # away from the frozenset membership test (#2515 review).
+        terminal = raw.get('terminal')
+        error = terminal.get('analysis_error') if isinstance(terminal, dict) else None
+        if isinstance(error, str) and error in NETHACK_ANALYSIS_ERRORS:
+            result['analysis_error'] = error
+        else:
+            result['analysis_error'] = 'other' if error else None
     if timestamp is None:
         return None
     result['generated_at' if daily else 'ended_at'] = timestamp
     return result
 
 
+def _nethack_run_digest(record):
+    """Fixed-shape per-run depth/turn row for the budget-proof summary.
+
+    ``_nethack_history_budget`` trims ``records`` first, so on a full envelope
+    the only surviving depth evidence is this digest inside ``summary``
+    (#2666). Values are the same nullable projections ``records`` already
+    carries: no run id, death reason, path or free text is added.
+    """
+    progress = record.get('progress')
+    progress = progress if isinstance(progress, dict) else {}
+    return {
+        'ended_at': record.get('ended_at'),
+        'terminal_status': record.get('terminal_status'),
+        'max_depth': record.get('max_depth'),
+        'turns': record.get('turns'),
+        'progress_max_depth': progress.get('max_depth'),
+        'progress_last_turn': progress.get('last_turn'),
+    }
+
+
 def _nethack_history(state_dir, daily):
     """Open each directory relative to a pinned fd: no symlink traversal/races."""
     result = {'status': 'unavailable', 'scan_complete': False, 'scanned_entries': 0,
               'invalid_records': 0, 'excluded_active': 0, 'omitted_records': 0, 'records': []}
+    # Summary counters cover every valid terminal record seen during the scan,
+    # not just the bounded ``records`` projection, so they survive the output
+    # budget reductions that trim old records away (#753).
+    summary = (None if daily else {
+        'terminal_status_counts': {status: 0 for status in sorted(NETHACK_TERMINAL)},
+        'score_present_count': 0,
+        'analysis_error_counts': {code: 0 for code in sorted(NETHACK_ANALYSIS_ERRORS)}
+        | {'other': 0},
+        # Survives the record trimming below, so depth progress stays readable
+        # from a full envelope (#2666).
+        'recent_runs': [],
+    })
     directory = Path(state_dir) / 'nethack' / ('daily-improvements' if daily else 'runs')
     fd = None
     try:
@@ -7900,7 +15599,19 @@ def _nethack_history(state_dir, daily):
                         raise ValueError('invalid evidence')
                     record['file_mtime'] = info.st_mtime
                     records.append(record)
-                except (OSError, ValueError, UnicodeError, RecursionError):
+                    if summary is not None:
+                        status = record.get('terminal_status')
+                        if status in summary['terminal_status_counts']:
+                            summary['terminal_status_counts'][status] += 1
+                        if type(record.get('score')) is int:
+                            summary['score_present_count'] += 1
+                        error = record.get('analysis_error')
+                        if error is not None:
+                            summary['analysis_error_counts'][error] += 1
+                        summary['recent_runs'].append(_nethack_run_digest(record))
+                except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+                    # A hostile run file must cost one invalid_records entry,
+                    # never the whole read-only diagnostics scan (#2515 review).
                     result['invalid_records'] += 1
             else:
                 result['scan_complete'] = True
@@ -7910,6 +15621,10 @@ def _nethack_history(state_dir, daily):
         result['records'] = records[:limit]
         result['omitted_records'] = max(0, len(records) - limit)
         result['status'] = 'partial' if not result['scan_complete'] or result['invalid_records'] else ('ok' if records else 'empty')
+        if summary is not None:
+            summary['recent_runs'].sort(key=lambda item: item['ended_at'], reverse=True)
+            summary['recent_runs'] = summary['recent_runs'][:NETHACK_RECENT_RUN_LIMIT]
+            result['summary'] = summary
     except FileNotFoundError:
         result['status'] = 'missing'
     except OSError:
@@ -7929,20 +15644,651 @@ def _collect_nethack_history(state_dir, now):
 def _nethack_history_budget(payload, *, keep_latest=False):
     """Trim oldest history first, keeping the latest of each source if possible."""
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    history = payload.get("nethack_history")
+    if not isinstance(history, dict):
+        # A section the hard ceiling already dropped has nothing to trim. Return
+        # the envelope unchanged so the drop order stays total instead of
+        # raising on the next pass (#2533).
+        return text
     while len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        sources = [payload["nethack_history"][name]
-                   for name in ("daily", "completed_runs")
-                   if len(payload["nethack_history"][name]["records"]) > int(keep_latest)]
+        sources = [history[name] for name in ("daily", "completed_runs")
+                   if isinstance(history.get(name), dict)
+                   and len(history[name].get("records") or []) > int(keep_latest)]
         if not sources:
             break  # Existing diagnostics retain their original budget handling.
         # Each source is newest-first. Exhaust older records before removing
         # either source's latest record; never mark an empty/missing source.
-        history = max(sources, key=lambda item: len(item["records"]))
-        history["records"].pop()
-        history["omitted_records"] += 1
-        history["output_omitted"] = True
+        heaviest = max(sources, key=lambda item: len(item["records"]))
+        heaviest["records"].pop()
+        heaviest["omitted_records"] = heaviest.get("omitted_records", 0) + 1
+        heaviest["output_omitted"] = True
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return text
+
+
+# ---------------------------------------------------------------------------
+# NetHack xlogfile writer diagnostics (#753, read-only).
+#
+# ``src/docich/nethack_run.py`` treats the machine-readable xlogfile as the
+# canonical source of terminal facts. NetHack 3.6.x on Linux appends a record
+# at game end only when ``link(xlogfile, xlogfile_lock)`` succeeds: the file
+# must already exist (ENOENT silently skips the write and never creates it)
+# and a leftover lock hard link (EEXIST) silently skips every later write
+# after 10 retries. Both failures are invisible to the run store, so this
+# projection stats the fixed contract files and derived counters only. It
+# never follows symlinks, never writes, never outputs xlog content, player
+# names, or death text, and resolves paths only from the reviewed production
+# game config.
+# ---------------------------------------------------------------------------
+
+NETHACK_XLOG_TAIL_BYTES = 65536
+NETHACK_XLOG_DIR_SCAN_LIMIT = 128
+NETHACK_XLOG_PROCESS_LIMIT = 4
+NETHACK_XLOG_SYSCONF_BYTES = 65536
+NETHACK_XLOG_SYSCONF_KEYS = frozenset({'xlogfile', 'logfile', 'dumplogfile'})
+NETHACK_XLOG_SYSCONF_PATH = Path('/etc/nethack/sysconf')
+NETHACK_XLOG_PACKAGES = frozenset({'nethack-common', 'nethack-console'})
+# Fixed launcher / alternate-path candidates from the #753 investigation
+# checklist; never discovered from the environment at runtime.
+NETHACK_XLOG_LAUNCHERS = (Path('/usr/games/nethack'), Path('/usr/local/bin/nethack'))
+NETHACK_XLOG_ALTERNATES = (Path('/var/lib/nethack/xlogfile'),
+                           Path('/usr/games/lib/nethackdir/xlogfile'))
+NETHACK_XLOG_LAUNCHER_BYTES = 4096
+NETHACK_XLOG_LAUNCHER_KEYS = frozenset({'hackdir', 'nethackplayground',
+                                        'playground', 'xlogfile'})
+NETHACK_XLOG_BINARY_BYTES = 8 * 1024 * 1024
+NETHACK_XLOG_SIBLING_LIMIT = 8
+
+
+def _nethack_xlog_stat(path):
+    """Bounded lstat projection of one fixed path; symlinks are never followed.
+
+    Missing paths stay minimal: absence is reported as ``{"exists": false}``
+    rather than a full dict of nulls, so the fixed envelope is spent on real
+    evidence.
+    """
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return {"exists": False}
+    except OSError:
+        return {"exists": None}
+    result = {
+        "exists": True,
+        "symlink": stat.S_ISLNK(info.st_mode),
+        "regular": stat.S_ISREG(info.st_mode),
+        "dir": stat.S_ISDIR(info.st_mode),
+        "size": int(info.st_size),
+        "mtime": info.st_mtime,
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": int(info.st_uid),
+        "gid": int(info.st_gid),
+        "nlink": int(info.st_nlink),
+    }
+    return result
+
+
+def _nethack_xlog_same_inode(path_a, path_b):
+    """True/False only when both fixed paths stat; otherwise None (unknown)."""
+    try:
+        info_a = os.stat(path_a, follow_symlinks=False)
+        info_b = os.stat(path_b, follow_symlinks=False)
+    except OSError:
+        return None
+    return (info_a.st_dev, info_a.st_ino) == (info_b.st_dev, info_b.st_ino)
+
+
+def _nethack_xlog_game_paths():
+    """Resolve the reviewed production game paths; never arbitrary input."""
+    resolved = {
+        "player": "docich",
+        "save_dir": Path("/var/games/nethack/save"),
+        "xlogfile": Path("/var/games/nethack/xlogfile"),
+        "dump_dir": Path("/var/games/nethack/dumps"),
+    }
+    try:
+        import tomllib
+        raw = _read_text_capped(
+            PROD_ROOT / "config" / "games" / "nethack.toml", 16384)
+        table = tomllib.loads(raw or "").get("nethack")
+    except (OSError, ValueError, TypeError, ImportError):
+        table = None
+    source = "defaults"
+    if isinstance(table, dict):
+        player = table.get("player_name")
+        if isinstance(player, str) and re.fullmatch(r"[A-Za-z0-9_]{1,31}", player):
+            resolved["player"] = player
+            source = "production-config"
+        for key in ("save_dir", "xlogfile", "dump_dir"):
+            value = table.get(key)
+            if (isinstance(value, str) and value.startswith("/")
+                    and 0 < len(value) <= 4096 and "\x00" not in value
+                    and ".." not in Path(value).parts):
+                resolved[key] = Path(value)
+                source = "production-config"
+    resolved["source"] = source
+    return resolved
+
+
+def _nethack_xlog_save_files(save_dir, player):
+    """Count the player's save files through a pinned dirfd; names stay local."""
+    result = {"present": False, "scan_complete": False, "scanned_entries": 0,
+              "player_saves": 0, "newest_player_save_mtime": None}
+    pattern = re.compile(
+        rf"\d+{re.escape(player)}(?:\.[A-Za-z0-9]+)?\Z", re.IGNORECASE)
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in Path(save_dir).absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        result["present"] = True
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if result["scanned_entries"] >= NETHACK_XLOG_DIR_SCAN_LIMIT:
+                    break
+                result["scanned_entries"] += 1
+                if pattern.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                result["player_saves"] += 1
+                newest = result["newest_player_save_mtime"]
+                if newest is None or info.st_mtime > newest:
+                    result["newest_player_save_mtime"] = info.st_mtime
+        result["scan_complete"] = result["scanned_entries"] < NETHACK_XLOG_DIR_SCAN_LIMIT
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _nethack_xlog_processes():
+    """Effective uid/gid of live nethack processes; no argv is ever read."""
+    result = {"count": 0, "entries": []}
+    try:
+        candidates = [name for name in os.listdir('/proc') if name.isdigit()]
+    except OSError:
+        return result
+    for name in candidates[:256]:
+        if len(result["entries"]) >= NETHACK_XLOG_PROCESS_LIMIT:
+            break
+        base = Path('/proc') / name
+        try:
+            if base.joinpath('comm').read_text(
+                    encoding='utf-8', errors='replace').strip() != 'nethack':
+                continue
+            entry = {"pid": int(name), "euid": None, "egid": None, "start_ticks": None}
+            for line in base.joinpath('status').read_text(
+                    encoding='utf-8', errors='replace').splitlines():
+                if not (line.startswith('Uid:') or line.startswith('Gid:')):
+                    continue
+                fields = line.split()
+                if len(fields) >= 3 and fields[1].isdigit() and fields[2].isdigit():
+                    entry['euid' if line.startswith('Uid:') else 'egid'] = int(fields[2])
+            stat_text = base.joinpath('stat').read_text(
+                encoding='utf-8', errors='replace')
+            tail = stat_text[stat_text.rindex(')') + 2:].split()
+            if len(tail) > 19 and tail[19].isdigit():
+                entry["start_ticks"] = int(tail[19])
+            result["entries"].append(entry)
+            result["count"] += 1
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+def _nethack_xlog_packages():
+    """dpkg metadata for the two fixed Debian package names; nothing else."""
+    result = {"available": False, "entries": []}
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Status}\n",
+             *sorted(NETHACK_XLOG_PACKAGES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    for line in (proc.stdout or "").splitlines():
+        fields = (line.split("\t") + ["", "", ""])[:3]
+        package, version, status = fields
+        if package not in NETHACK_XLOG_PACKAGES:
+            continue
+        result["available"] = True
+        result["entries"].append({
+            "package": package,
+            "version": version[:64] if version else None,
+            "installed": status == "install ok installed",
+        })
+    return result
+
+
+def _nethack_xlog_sysconf():
+    """Project only the three allowlisted xlog-related sysconf keys."""
+    result = {"present": False, "readable": False, "configured": [], "values": {}}
+    try:
+        fd = os.open(NETHACK_XLOG_SYSCONF_PATH,
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["present"] = True
+        return result
+    result["present"] = True
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > NETHACK_XLOG_SYSCONF_BYTES:
+                return result
+            raw = stream.read(NETHACK_XLOG_SYSCONF_BYTES + 1)
+        if len(raw) > NETHACK_XLOG_SYSCONF_BYTES:
+            return result
+    except OSError:
+        return result
+    result["readable"] = True
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        text = line.strip()
+        if not text or text.startswith('#'):
+            continue
+        for separator in ('=', ':'):
+            if separator in text:
+                key, _, value = text.partition(separator)
+                break
+        else:
+            continue
+        name = key.strip().casefold()
+        if name not in NETHACK_XLOG_SYSCONF_KEYS or name in result["values"]:
+            continue
+        result["configured"].append(name)
+        cleaned = value.strip().strip('"').strip()
+        if re.fullmatch(r"[A-Za-z0-9._/%{}-]{1,200}", cleaned or ""):
+            result["values"][name] = cleaned
+        else:
+            result["values"][name] = None
+    return result
+
+
+def _nethack_xlog_parse_line(line):
+    """Minimal copy of ``docich.nethack_run.parse_xlog_line`` (import-light)."""
+    record = {}
+    for fragment in line.rstrip("\r\n").split("\t"):
+        if "=" not in fragment:
+            continue
+        key, _, value = fragment.partition("=")
+        if key:
+            record[key] = value
+    return record
+
+
+def _nethack_xlog_int(record, key, base=10):
+    raw = record.get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw, base)
+    except ValueError:
+        return None
+
+
+def _nethack_xlog_record_fields(record, player):
+    """Allowlisted numeric projection of one parsed xlog record; no text."""
+    return {
+        "name_matches_player": (record.get("name") == player) if player else None,
+        "starttime": _nethack_xlog_int(record, "starttime"),
+        "endtime": _nethack_xlog_int(record, "endtime"),
+        "points": _nethack_xlog_int(record, "points"),
+        "turns": _nethack_xlog_int(record, "turns"),
+        "maxlvl": _nethack_xlog_int(record, "maxlvl"),
+        "achieve": _nethack_xlog_int(record, "achieve", base=0),
+    }
+
+
+def _nethack_xlog_tail(xlogfile, player):
+    """Derived counters from the bounded xlog tail; content never leaves.
+
+    ``record_span`` (oldest record's birth time, newest record's end time,
+    complete-line count) is the #753 timeline evidence and stays small enough
+    to survive the soft budget reductions. An unreadable xlogfile reports
+    only ``{"readable": false}`` so absence never spends envelope bytes.
+    """
+    result = {"readable": False}
+    try:
+        fd = os.open(xlogfile, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, OSError):
+        return result
+    head_trimmed = False
+    try:
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return result
+            size = int(info.st_size)
+            start = max(0, size - NETHACK_XLOG_TAIL_BYTES)
+            if start:
+                # Peek one byte back: when the window happens to start on a
+                # line boundary the first line is complete and must survive
+                # (#753 review). Only a real mid-line cut is trimmed below.
+                stream.seek(start - 1)
+                raw = stream.read(NETHACK_XLOG_TAIL_BYTES + 1)
+                head_trimmed = raw[:1] != b'\n'
+                raw = raw[1:]
+            else:
+                raw = stream.read(NETHACK_XLOG_TAIL_BYTES)
+    except OSError:
+        return result
+    result["size"] = size
+    result["tail_complete_lines"] = 0
+    result["tail_head_truncated"] = bool(start)
+    result["record_span"] = None
+    result["first_record"] = None
+    result["last_record"] = None
+    result["readable"] = True
+    if head_trimmed:
+        # The window may begin mid-line; only bytes after the first newline
+        # are complete records (#2515 review). With no newline in the window
+        # there is no complete line at all.
+        newline = raw.find(b'\n')
+        raw = raw[newline + 1:] if newline != -1 else b''
+    raw = raw[:raw.rfind(b'\n') + 1]
+    lines = [line for line in raw.split(b'\n') if line]
+    result["tail_complete_lines"] = len(lines)
+    if not lines:
+        return result
+    first = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[0].decode('utf-8', errors='replace')), player)
+    last = _nethack_xlog_record_fields(
+        _nethack_xlog_parse_line(lines[-1].decode('utf-8', errors='replace')), player)
+    result["first_record"] = first
+    result["last_record"] = last
+    result["record_span"] = {
+        "first_starttime": first["starttime"],
+        "last_endtime": last["endtime"],
+        "complete_lines": len(lines),
+    }
+    return result
+
+
+def _nethack_xlog_safe_value(text, cap=200):
+    """Project a config-derived value only when it is plain path-like text."""
+    if not isinstance(text, str) or not text:
+        return None
+    cleaned = text.strip().strip('"').strip()
+    pattern = r"[A-Za-z0-9._/{}%+-]{1," + str(int(cap)) + "}"
+    if re.fullmatch(pattern, cleaned or ""):
+        return cleaned
+    return None
+
+
+def _nethack_xlog_launcher(path):
+    """Stat one fixed launcher and project only allowlisted playground vars."""
+    entry = {"stat": _nethack_xlog_stat(path), "target": None, "vars": {}}
+    if not entry["stat"]["exists"]:
+        return entry
+    if entry["stat"]["symlink"]:
+        try:
+            entry["target"] = _nethack_xlog_safe_value(os.readlink(path))
+        except OSError:
+            entry["target"] = None
+        return entry
+    if not entry["stat"]["regular"] or entry["stat"]["size"] > 16384:
+        return entry
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            raw = stream.read(NETHACK_XLOG_LAUNCHER_BYTES)
+    except OSError:
+        return entry
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        text = line.strip()
+        if text.startswith('export '):
+            text = text[len('export '):].strip()
+        for separator in ('=', ':'):
+            if separator in text:
+                key, _, value = text.partition(separator)
+                break
+        else:
+            continue
+        name = key.strip().casefold()
+        if name not in NETHACK_XLOG_LAUNCHER_KEYS or name in entry["vars"]:
+            continue
+        entry["vars"][name] = _nethack_xlog_safe_value(value)
+    return entry
+
+
+def _nethack_xlog_siblings(playground):
+    """Names/size/mtime of bounded xlogfile* siblings; no other entries."""
+    result = {"present": False, "scan_complete": False, "scanned_entries": 0,
+              "entries": []}
+    fd = None
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+        for component in Path(playground).absolute().parts[1:]:
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        result["present"] = True
+        with os.scandir(fd) as entries:
+            matched = []
+            for entry in entries:
+                if result["scanned_entries"] >= NETHACK_XLOG_DIR_SCAN_LIMIT:
+                    break
+                result["scanned_entries"] += 1
+                name = entry.name
+                if not name.startswith('xlogfile'):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                matched.append({
+                    "name": _nethack_xlog_safe_value(name, cap=64) or 'xlogfile',
+                    "size": int(info.st_size), "mtime": info.st_mtime,
+                })
+        matched.sort(key=lambda item: item["name"])
+        result["entries"] = matched[:NETHACK_XLOG_SIBLING_LIMIT]
+        result["scan_complete"] = result["scanned_entries"] < NETHACK_XLOG_DIR_SCAN_LIMIT
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def _nethack_xlog_binary_has_xlog_string(path):
+    """Scan a fixed binary for the compiled-in ``xlogfile`` name (read-only).
+
+    Reads at most ``NETHACK_XLOG_BINARY_BYTES`` bytes and reports whether the
+    scan was complete, so a capped probe is never mistaken for a full
+    negative (#2515 review). The needle is also matched across read-chunk
+    boundaries by carrying an overlap of ``len(needle) - 1`` bytes.
+    """
+    needle = b'xlogfile'
+    overlap = b''
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        total = int(info.st_size)
+        planned = min(total, NETHACK_XLOG_BINARY_BYTES)
+        consumed = 0
+        while consumed < planned:
+            chunk = os.read(fd, min(256 * 1024, planned - consumed))
+            if not chunk:
+                # The file shrank under the plan; the scan did not complete.
+                break
+            consumed += len(chunk)
+            data = overlap + chunk
+            if needle in data:
+                return {"present": True, "complete_scan": True}
+            overlap = data[1 - len(needle):]
+        # ``complete_scan`` is true only when the whole file was examined;
+        # a capped or short probe is never a full negative (#2515 review).
+        return {"present": False, "complete_scan": consumed == planned == total}
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _nethack_xlog_binaries(launcher_targets):
+    """Locate the real nethack binaries via dpkg -L and fixed launcher targets."""
+    result = {"available": False, "complete_scan": True, "entries": []}
+    candidates = []
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-L", *sorted(NETHACK_XLOG_PACKAGES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    if proc is not None:
+        for line in (proc.stdout or "").splitlines():
+            path = line.strip()
+            if path.startswith('/') and path.rpartition('/')[2] == 'nethack':
+                candidates.append(("dpkg", path))
+    for launcher, target in launcher_targets:
+        if target and target.startswith('/'):
+            candidates.append((launcher, target))
+    seen = set()
+    for origin, path in candidates:
+        if len(result["entries"]) >= 2:
+            result["complete_scan"] = False
+            break
+        if path in seen:
+            continue
+        seen.add(path)
+        probe = _nethack_xlog_binary_has_xlog_string(path)
+        if probe is None:
+            continue
+        result["available"] = True
+        result["entries"].append({
+            "origin": origin,
+            "xlog_string_present": probe["present"],
+            "binary_scan_complete": probe["complete_scan"],
+        })
+    return result
+
+
+def _collect_nethack_xlog(now):
+    settings = _nethack_xlog_game_paths()
+    xlogfile = settings["xlogfile"]
+    playground = settings["save_dir"].parent
+    xlog_lock = xlogfile.parent / (xlogfile.name + "_lock")
+    logfile = playground / "logfile"
+    logfile_lock = playground / (logfile.name + "_lock")
+    record = playground / "record"
+    launchers = {str(path): _nethack_xlog_launcher(path)
+                 for path in NETHACK_XLOG_LAUNCHERS}
+    launcher_targets = [(origin, entry["target"]) for origin, entry in launchers.items()
+                        if entry["target"]]
+    paths = {
+        "xlogfile": _nethack_xlog_stat(xlogfile),
+        "xlogfile_lock": _nethack_xlog_stat(xlog_lock),
+        "logfile": _nethack_xlog_stat(logfile),
+        "logfile_lock": _nethack_xlog_stat(logfile_lock),
+        "record": _nethack_xlog_stat(record),
+    }
+    paths["xlogfile_lock"]["same_inode_as_xlogfile"] = _nethack_xlog_same_inode(
+        xlogfile, xlog_lock)
+    paths["logfile_lock"]["same_inode_as_logfile"] = _nethack_xlog_same_inode(
+        logfile, logfile_lock)
+    nlink = paths["xlogfile"].get("nlink")
+    return {
+        "schema_version": 1,
+        "collected_at": now,
+        "config": {"source": settings["source"], "player": settings["player"]},
+        "paths": paths,
+        "dirs": {
+            "playground": _nethack_xlog_stat(playground),
+            "save_dir": _nethack_xlog_stat(settings["save_dir"]),
+            "dump_dir": _nethack_xlog_stat(settings["dump_dir"]),
+        },
+        "launchers": launchers,
+        "alternates": {str(path): _nethack_xlog_stat(path)
+                       for path in NETHACK_XLOG_ALTERNATES},
+        "xlog_siblings": _nethack_xlog_siblings(playground),
+        "binaries": _nethack_xlog_binaries(launcher_targets),
+        "save_dir_entries": _nethack_xlog_save_files(
+            settings["save_dir"], settings["player"]),
+        "processes": _nethack_xlog_processes(),
+        "packages": _nethack_xlog_packages(),
+        "sysconf": _nethack_xlog_sysconf(),
+        "xlog": _nethack_xlog_tail(xlogfile, settings["player"]),
+        "findings": {
+            "xlog_lock_present": paths["xlogfile_lock"]["exists"] is True,
+            "xlog_lock_shares_inode": paths["xlogfile_lock"]["same_inode_as_xlogfile"],
+            "xlog_file_shared_hardlink": (nlink > 1) if nlink is not None else None,
+        },
+    }
+
+
+def _nethack_xlog_budget(payload):
+    """Yield the xlog projection's optional detail under envelope pressure.
+
+    The stat-level lock/permission evidence and the ``record_span`` timeline
+    (oldest birth time / newest end time / line count) are the incident's
+    first-order proof, so they go last. Optional detail (first/last record
+    field detail, binaries, sibling list, process entries, sysconf values) is
+    dropped first, and each drop is visible through an ``*_omitted`` marker.
+    """
+    section = payload.get("nethack_xlog")
+    if not isinstance(section, dict):
+        return payload
+    xlog = section.get("xlog")
+    if isinstance(xlog, dict):
+        for key in ("first_record", "last_record"):
+            if xlog.get(key) is not None:
+                xlog[key] = None
+                xlog[key + "_omitted"] = True
+    for key in ("binaries", "processes", "xlog_siblings", "sysconf"):
+        part = section.get(key)
+        detail_key = "values" if key == "sysconf" else "entries"
+        if isinstance(part, dict) and part.get(detail_key):
+            part["values_omitted" if key == "sysconf" else "entries_omitted"] = True
+            part[detail_key] = {} if key == "sysconf" else []
+    return payload
+
+
+def _nethack_xlog_drop(payload):
+    """Collapse the xlog projection to its first-order evidence as the last resort.
+
+    Preserve the stat-level lock/permission evidence (``paths``/``dirs``), the
+    ``findings`` summary and the ``xlog.record_span`` timeline even at the hard
+    ceiling, so #753 recurrence monitoring stays visible. Everything else is
+    dropped and marked ``output_omitted``.
+    """
+    section = payload.get("nethack_xlog")
+    if not isinstance(section, dict):
+        return payload
+    xlog = section.get("xlog")
+    record_span = xlog.get("record_span") if isinstance(xlog, dict) else None
+    dropped = {
+        "schema_version": section.get("schema_version"),
+        "collected_at": section.get("collected_at"),
+        "status": "output_omitted",
+    }
+    for key in ("paths", "dirs", "findings"):
+        value = section.get(key)
+        if value is not None:
+            dropped[key] = value
+    if record_span is not None:
+        dropped["xlog"] = {"record_span": record_span,
+                           "record_span_omitted": False}
+    payload["nethack_xlog"] = dropped
+    return payload
 
 
 def _cpu_profile_budget(payload):
@@ -7964,6 +16310,278 @@ def _cpu_profile_budget(payload):
             profile[f"{key}_omitted"] = len(rows) - limit
             profile[key] = rows[:limit]
     return payload
+
+
+def _cpu_profile_detail_budget(payload):
+    """Trim per-component rows to a small floor under pressure.
+
+    Host totals are always retained; the busiest few rows survive too, so the
+    sanitized projection can still name the top CPU consumers and spawn paths
+    (azumag/docich#970) instead of degrading to host totals only. The producer
+    already orders both lists busiest-first, and the dropped-row counts stay
+    visible in ``*_omitted``.
+    """
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key, floor in (("components", CPU_PROFILE_FLOOR_COMPONENTS),
+                       ("spawns", CPU_PROFILE_FLOOR_SPAWNS)):
+        rows = profile.get(key)
+        if not isinstance(rows, list) or not rows:
+            continue
+        kept = rows[:floor]
+        dropped = len(rows) - len(kept)
+        profile[key] = kept
+        if not dropped:
+            continue
+        omitted_key = f"{key}_omitted"
+        previous = profile.get(omitted_key, 0)
+        if type(previous) is not int or previous < 0:
+            previous = 0
+        profile[omitted_key] = previous + dropped
+    return payload
+
+
+def _cpu_profile_detail_drop(payload):
+    """Drop the remaining per-component rows as the last optional detail.
+
+    The floor kept by ``_cpu_profile_detail_budget`` is still optional detail:
+    it must go before the latest NetHack result, which the reviewed priority
+    order ranks above CPU/audio detail. Host totals survive, and the dropped
+    rows move into ``*_omitted`` so an omitted row is never reported as absent.
+    """
+    profile = payload.get("cpu_profile")
+    if not isinstance(profile, dict):
+        return payload
+    for key in ("components", "spawns"):
+        rows = profile.get(key)
+        if not isinstance(rows, list) or not rows:
+            continue
+        omitted_key = f"{key}_omitted"
+        previous = profile.get(omitted_key, 0)
+        if type(previous) is not int or previous < 0:
+            previous = 0
+        profile[omitted_key] = previous + len(rows)
+        profile[key] = []
+    return payload
+
+
+def _host_metrics_hard_trim(payload, text):
+    """Shed the oldest ring samples before any whole section is dropped.
+
+    The ring is the only read-only evidence of the hour before a guest-OS hang
+    (#2278) and cannot be recreated after the reboot, but it must not evict an
+    existing section either: ``corners`` alone is ~23 KB, so a few hundred bytes
+    of overflow would otherwise trade the whole game evidence block for the last
+    minutes of host metrics. Trimming only under the hard ceiling -- never under
+    the softer ``MAX_JSON_BYTES`` target, which the production envelope already
+    exceeds on its own (#2533 measured 50,280 B) -- keeps both: drop the oldest
+    projected points one at a time, down to the floor of the newest point plus
+    the retained boot-boundary points (at most ``HOST_METRICS_BOUNDARY_BOOTS``
+    of them). The floor itself is never crossed: when even the floor cannot
+    fit, a whole section is dropped by the cascade regardless, so burning the
+    pre-hang boundary for a trim that cannot help would only destroy evidence
+    (#2578 review N1/N2). ``samples_omitted`` stays accurate either way.
+    """
+    section = payload.get("host_metrics")
+    if (not isinstance(section, dict)
+            or not isinstance(section.get("samples"), list)):
+        return text
+    samples = section["samples"]
+    floor = _host_metrics_trim_samples(samples, 1)
+    if len(samples) <= len(floor):
+        return text
+    original_samples = samples
+    section["samples"] = floor
+    floor_text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    section["samples"] = original_samples
+    if len(floor_text.encode("utf-8")) > HARD_JSON_BYTES:
+        # The floor does not fit: some section is dropped below whatever this
+        # one sheds, so keep the full evidence instead of burning the boundary.
+        return text
+    while len(text.encode("utf-8")) > HARD_JSON_BYTES and len(samples) > len(floor):
+        # The floor members (the newest point plus each retained previous-boot
+        # boundary) are exactly the samples ``_host_metrics_trim_samples``
+        # keeps, so they are protected as a set and re-resolved every
+        # iteration: an older boundary must not be mistaken for droppable.
+        protected = {id(item) for item in _host_metrics_trim_samples(samples, 1)}
+        candidates = [
+            index for index, sample in enumerate(samples)
+            if id(sample) not in protected
+        ]
+        if not candidates:
+            break
+        samples.pop(candidates[0])
+        omitted = section.get("samples_omitted")
+        section["samples_omitted"] = (
+            (omitted if type(omitted) is int and omitted > 0 else 0) + 1)
+        section["points"] = len(samples)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
+# Lifecycle fields kept when one corners entry is stubbed at the hard
+# ceiling: enough to read each corner's state without the bounded-but-heavy
+# evidence bodies that pushed the envelope over (#2884).
+_CORNER_STUB_KEYS = (
+    "present", "readable", "status", "game", "previous_game",
+    "end_reason", "finish_reason", "last_error_code", "completed_at",
+    "updated_at", "phase", "active_game",
+    # Retro-corner wedges are diagnosed from these two evidence fields alone
+    # (g1163 2026-11-14: the whole entry was stubbed at the hard ceiling and
+    # both the settle code and the lock probe disappeared).
+    "restoring_settle_code", "lock_state",
+)
+# Corners entries that never stub individually: ``game_switch`` is the
+# identity of what is actually on screen and ``corner_rotation`` is the
+# ledger an operator opens diagnostics to check when the rotation wedges.
+# Both are bounded and small, so the whole-section drop keeps them inside
+# the omission marker too (#3149): a fat envelope that still cannot fit
+# must not blank the switch identity and the failed-corner ledger at the
+# same time.
+_CORNER_HARD_KEEP = ("game_switch", "corner_rotation")
+
+
+def _section_omission_stub(key, value):
+    """Marker that replaces a whole dropped section at the hard ceiling.
+
+    ``corners`` is the heaviest section and drops first, but its
+    ``game_switch`` (what is on screen) and ``corner_rotation`` (the ledger
+    an operator opens diagnostics to read when the rotation wedges,
+    including ``failed_corners``) are already bounded, fixed-shape
+    projections. Keeping them inside the omission marker costs a few KiB
+    while the other sections are still being dropped, so a fat envelope
+    can never blank both at once (#3149). Only when the remaining sections
+    still cannot fit does the pathological fallback take this skeleton too.
+    """
+    stub = {"status": "output_omitted", "reason": "hard_ceiling"}
+    if key == "corners" and isinstance(value, dict):
+        for keep in _CORNER_HARD_KEEP:
+            entry = value.get(keep)
+            if isinstance(entry, dict):
+                stub[keep] = entry
+    elif key == "hanjuku_tactical" and isinstance(value, dict):
+        # #4152: keep the same small projections the soft budget keeps, so a
+        # fat envelope cannot blank the chapter/month/phase evidence an
+        # operator reads to tell whether the game is still moving.
+        stub["basis"] = "bot_record"
+        for keep in ("policy", "chart_worker"):
+            entry = value.get(keep)
+            if isinstance(entry, dict):
+                stub[keep] = entry
+        for keep in ("chapter", "age_sec"):
+            entry = value.get(keep)
+            if type(entry) is int:
+                stub[keep] = entry
+    return stub
+
+
+def _corner_stub(entry):
+    """Minimal lifecycle skeleton of one corners entry (#2884)."""
+    stub = {key: entry[key] for key in _CORNER_STUB_KEYS if key in entry}
+    stub["output_omitted"] = "hard_ceiling"
+    return stub
+
+
+def _corners_hard_trim(payload, text):
+    """Stub the largest corners entries before the whole section is dropped.
+
+    ``corners`` sits first in ``_HARD_DROP_ORDER`` because it is the
+    heaviest section, but its entries are independent state files: one fat
+    entry (a retro run's evidence body, a FIFO scan, a long failed_corners
+    ledger) used to take every other corner's lifecycle summary down with
+    it, which is how #2884 lost the whole section over a few KiB and why
+    prediction/lawsim needed top-level copies. Stub the largest entries
+    first -- keeping each corner's present/readable/status skeleton and
+    recording the omitted size -- so the small corners stay observable
+    until the section truly cannot fit. The whole-section drop in the
+    cascade remains the last resort.
+    """
+    corners = payload.get("corners")
+    if not isinstance(corners, dict):
+        return text
+    stubbed = {}
+    for key, value in corners.items():
+        if (key in _CORNER_HARD_KEEP or not isinstance(value, dict)
+                or value.get("output_omitted") == "hard_ceiling"):
+            stubbed[key] = value
+            continue
+        stub = _corner_stub(value)
+        stub["omitted_bytes"] = len(
+            json.dumps(value, sort_keys=True, ensure_ascii=False))
+        stubbed[key] = stub
+    trial = dict(payload)
+    trial["corners"] = stubbed
+    if len(json.dumps(trial, sort_keys=True, ensure_ascii=False)
+           .encode("utf-8")) > HARD_JSON_BYTES:
+        # Even every entry skeletoned cannot fit: a whole section is dropped
+        # regardless, so do not trade full corner detail for skeletons first
+        # (same rule as the host-metrics floor in _host_metrics_hard_trim).
+        return text
+    while len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        candidates = [
+            (len(json.dumps(value, sort_keys=True, ensure_ascii=False)), key)
+            for key, value in corners.items()
+            if key not in _CORNER_HARD_KEEP
+            and isinstance(value, dict)
+            and value.get("output_omitted") != "hard_ceiling"
+        ]
+        if not candidates:
+            break
+        size, key = max(candidates)
+        stub = _corner_stub(corners[key])
+        stub["omitted_bytes"] = size
+        corners[key] = stub
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return text
+
+
+# Per-section byte accounting (#3341, Phase 0 measurement only). The map is
+# reported under ``meta`` after ``_diagnostics_budget`` has already reduced the
+# payload, so it is excluded from the soft budget target by construction. Its
+# own footprint is bounded: the ``top`` map holds at most
+# ``_SECTION_BYTES_TOP_N`` key names with integer byte counts, plus the two
+# integer totals, and serializes to a few hundred bytes. The public boundary
+# carries key names and byte counts only -- never section contents, paths or
+# values -- matching the monitor's existing aggregate-only contract.
+_SECTION_BYTES_TOP_N = 5
+
+
+def _compute_section_bytes(payload):
+    """Measure the serialized UTF-8 byte share of each top-level section.
+
+    Every top-level key -- ``meta`` included, since ``section_bytes`` is not
+    yet present when this runs -- is serialized with the same settings as the
+    final envelope (``sort_keys=True, ensure_ascii=False,
+    separators=(",", ":")``) and measured including the quoted key name and
+    the ``:`` separator, so ``total`` tracks the real envelope size (differing
+    only by the outer braces, commas and the ``section_bytes`` entry itself,
+    which is injected after measurement). ``total`` is a collector-side
+    measurement: the headroom monitor publishes the gateway's re-serialized
+    output, which differs by the sanitizer's truncation and the sections the
+    gateway appends, so these two numbers are not expected to match. Returns
+    ``{"top": {name: bytes,
+    ...}, "others": n, "total": n}`` where ``top`` holds the largest
+    ``_SECTION_BYTES_TOP_N`` sections and ``others`` sums the rest.
+    Serialization failure cannot occur in practice -- the caller runs this on
+    a payload ``_diagnostics_budget`` already serialized -- but such a
+    section is counted at 0 bytes so it folds into ``others`` instead of
+    crashing the collector.
+    """
+    byte_sizes = {}
+    for key, value in payload.items():
+        try:
+            entry = json.dumps(key) + ":" + json.dumps(
+                value, sort_keys=True, ensure_ascii=False,
+                separators=(",", ":"))
+        except (TypeError, ValueError):
+            byte_sizes[key] = 0
+            continue
+        byte_sizes[key] = len(entry.encode("utf-8"))
+    ranked = sorted(byte_sizes.items(), key=lambda item: item[1], reverse=True)
+    top = {key: size for key, size in ranked[:_SECTION_BYTES_TOP_N]}
+    total = sum(byte_sizes.values())
+    return {"top": top, "others": total - sum(top.values()), "total": total}
 
 
 def _diagnostics_budget(payload):
@@ -8003,16 +16621,82 @@ def _diagnostics_budget(payload):
         text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     # Keep current game evidence through the older detail reductions first.
     if len(text.encode("utf-8")) > MAX_JSON_BYTES and "hanjuku_tactical" in payload:
+        refill = payload['hanjuku_tactical'].get('refill') if isinstance(payload['hanjuku_tactical'], dict) else None
+        house_deferral = (payload['hanjuku_tactical'].get('last_house_deferral')
+                          if isinstance(payload['hanjuku_tactical'], dict) else None)
+        summary = payload['hanjuku_tactical']
+        policy = summary.get('policy') if isinstance(summary, dict) else None
+        chapter = summary.get('chapter') if isinstance(summary, dict) else None
+        age_sec = summary.get('age_sec') if isinstance(summary, dict) else None
+        detail_status = summary.get('status') if isinstance(summary, dict) else None
+        detail_reason = summary.get('reason') if isinstance(summary, dict) else None
         payload["hanjuku_tactical"] = {"status": "output_omitted", "basis": "bot_record"}
-    # The pulse stream list is the last detail to go: an omitted list must
-    # still report its own mute count, so a muted BGM never disappears behind
-    # the size budget (#968).
-    text = _nethack_history_budget(payload)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES and "pulse_sink_inputs" in payload:
-        pulse = payload["pulse_sink_inputs"]
+        # The omission says "detail reduced", not "game state unknown". Keep
+        # the collector's fixed cause tokens so live status can still name it.
+        if detail_status in _HANJUKU_DETAIL_STATUSES:
+            payload['hanjuku_tactical']['detail_status'] = detail_status
+        if detail_reason in _HANJUKU_DETAIL_REASONS:
+            payload['hanjuku_tactical']['detail_reason'] = detail_reason
+        if isinstance(policy, dict):
+            payload['hanjuku_tactical']['policy'] = policy
+        worker = summary.get('chart_worker') if isinstance(summary, dict) else None
+        if isinstance(worker, dict):
+            payload['hanjuku_tactical']['chart_worker'] = worker
+        if type(chapter) is int:
+            payload['hanjuku_tactical']['chapter'] = chapter
+        if type(age_sec) is int:
+            payload['hanjuku_tactical']['age_sec'] = age_sec
+        if house_deferral is not None:
+            payload['hanjuku_tactical']['last_house_deferral'] = _compact_hanjuku_house_deferral(house_deferral)
+        if refill is not None:
+            payload['hanjuku_tactical']['refill'] = _compact_hanjuku_refill(refill)
+    # Keep the bounded CPU overview (meta/host) and PulseAudio counts ahead of
+    # their per-component/per-stream details and the latest NetHack result.
+    # ``encoder`` and ``pulse_sink_inputs.attribution`` are never reduced here
+    # (#AV projection): they are the only read-only evidence for "is the encoder
+    # still sending" and "which player owns this stream", and each is bounded
+    # well under 1 KiB. Only ``streams`` yields below.
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    pulse = payload.get("pulse_sink_inputs")
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse, dict)
+            and isinstance(pulse.get("streams"), list) and pulse["streams"]):
         payload["pulse_sink_inputs"] = {
             key: value for key, value in pulse.items() if key != 'streams'
         } | {'streams': [], 'truncated': True, 'output_omitted': True}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    pulse2 = payload.get("pulse_source_outputs")
+    if (len(text.encode("utf-8")) > MAX_JSON_BYTES and isinstance(pulse2, dict)
+            and isinstance(pulse2.get("streams"), list) and pulse2["streams"]):
+        payload["pulse_source_outputs"] = {
+            key: value for key, value in pulse2.items() if key != 'streams'
+        } | {'streams': [], 'truncated': True, 'output_omitted': True}
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_detail_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The #753 xlog projection is small and is the incident's first-order
+    # evidence, but its optional detail still yields with the other optional
+    # details before any history record goes.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _nethack_xlog_budget(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # Old history is still the first part of the NetHack projection to go. The
+    # latest result is allowed to go only after optional CPU/audio detail.
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        text = _nethack_history_budget(payload, keep_latest=True)
+    # The CPU floor is still optional detail: drop it entirely before the latest
+    # NetHack result, preserving the reviewed priority order (review of #2406).
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        payload = _cpu_profile_detail_drop(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        text = _nethack_history_budget(payload)
+    # The audio keeper summary and the audio-gap projection (docich#1811)
+    # deliberately survive the soft budget: the production envelope routinely
+    # sits above MAX_JSON_BYTES, so a soft-level stub here would blank them
+    # from every run and break the audio_gap_measure operation's read-back.
+    # Both sections are compact (a few hundred bytes) and yield only at the
+    # hard ceiling below, where the largest-first fallback drops them last.
     # The repeated-operation projection deliberately survives the soft budget.
     # It is bounded well under 1 KiB and is the only evidence that separates
     # "corner alive and looping" from "corner progressing" -- the chart
@@ -8023,7 +16707,70 @@ def _diagnostics_budget(payload):
     if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(retro, dict)
             and "decision_plans" in retro):
         retro["decision_plans"] = {"status": "output_omitted"}
-    return _nethack_history_budget(payload)
+        # Re-measure: the omission above may already bring the envelope back
+        # under the hard ceiling, and the retro_scores branch below must not
+        # decide on a stale size.
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    # The scorelog tail is the only read-only evidence for "one score record per
+    # match" (#2392). It stays under a few KiB, so it yields only against the
+    # gateway's hard ceiling rather than the softer budget, and only if the
+    # envelope is still over that ceiling after the reductions above.
+    if (len(text.encode("utf-8")) > HARD_JSON_BYTES and isinstance(corners, dict)
+            and "retro_scores" in corners):
+        corners["retro_scores"] = {"status": "output_omitted"}
+    # The xlog stat evidence is the last NetHack projection to go, and only
+    # against the hard ceiling: collapsing it hides the lock/permission facts
+    # that #753 needs, so it must survive every softer reduction.
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        payload = _nethack_xlog_drop(payload)
+    text = _nethack_history_budget(payload)
+    # #2578: the ring samples are the only evidence of the hour before a
+    # guest-OS hang and cannot be recreated after the reboot. Trim only against
+    # the hard ceiling (and only the oldest samples) before any whole section is
+    # dropped, so this section can never evict `corners` for a small overflow.
+    text = _host_metrics_hard_trim(payload, text)
+    # #2884: ``corners`` is still the first whole section the drop order takes,
+    # so a single fat entry must not be allowed to cost every other corner its
+    # lifecycle summary once the ring trim above could not make room. Stub the
+    # largest entries to their present/readable/status skeletons before the
+    # whole-section drop below can fire.
+    text = _corners_hard_trim(payload, text)
+    # Hard ceiling guarantee (#2533). Every reduction above is reviewed and
+    # preserves the evidence its own incident review depends on, but none of them
+    # is unconditional: a payload that was still over the ceiling after them was
+    # returned as-is, and the gateway rejected the whole diagnostics operation
+    # closed ("diagnostics output too large") -- which is exactly how #2533 took
+    # the read-only diagnostics path down. Drop whole sections heaviest-first
+    # until the envelope fits, so the collector never hands the gateway a
+    # document it must reject. Each dropped section is marked, so the omission is
+    # visible in the envelope instead of looking like absent data.
+    for key in _HARD_DROP_ORDER:
+        if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
+            break
+        if not isinstance(payload.get(key), dict):
+            continue
+        payload[key] = _section_omission_stub(key, payload[key])
+        text = _nethack_history_budget(payload)
+    # Pathological fallback: a payload whose surviving sections are individually
+    # small but numerous. Drop the remaining top-level sections largest-first,
+    # keeping ``meta`` (the deployed SHA and collection status) so the envelope
+    # still identifies what it came from, and ``prediction`` so the 予想王 counts
+    # stay observable (#2805).
+    if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+        for key, value in sorted(
+                payload.items(),
+                key=lambda item: -len(json.dumps(item[1], sort_keys=True))):
+            if key in _HARD_KEEP or not isinstance(value, dict):
+                continue
+            payload[key] = _section_omission_stub(key, value)
+            text = _nethack_history_budget(payload)
+            if len(text.encode("utf-8")) <= HARD_JSON_BYTES:
+                break
+    # JSON whitespace is not evidence. Keep the new bounded summary without
+    # pushing previously fitting envelopes over their byte budget; all values
+    # and the existing conservative detail-reduction order stay unchanged.
+    return json.dumps(json.loads(text), sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"))
 
 
 def _collect_nethack_tiles(state_dir, now):
@@ -8115,6 +16862,342 @@ def _collect_nethack_tiles(state_dir, now):
     return result
 
 
+SHARED_RUNTIME_ROLES = ("shared_stream", "encoder", "audio")
+SHARED_RUNTIME_ROLE_LABELS = {
+    "shared_stream": "shared stream / distribution",
+    "encoder": "stream encoder",
+    "audio": "audio worker",
+}
+SHARED_RUNTIME_MAX_PIDS = 64
+
+
+def _shared_runtime_boot_id(proc_root):
+    """Read only the fixed kernel boot UUID, with no symlink traversal."""
+    fd = None
+    try:
+        root = Path(proc_root).absolute()
+        fd = _supervisor_directory(root.anchor)
+        for part in (*root.parts[1:], 'sys', 'kernel', 'random'):
+            child = _supervisor_directory(part, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        value = _supervisor_read('boot_id', 64, dir_fd=fd).decode('ascii').strip()
+        if re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value):
+            return value
+    except (OSError, ValueError, UnicodeError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return None
+
+
+class _SharedRuntimeSourceError(ValueError):
+    """Fixed producer and refusal enums; never publish raw errors or paths."""
+    def __init__(self, source, reason):
+        super().__init__('runtime source unavailable')
+        self.source = source if source in {'stream', 'audio', 'identities'} else 'unknown'
+        allowed = STREAM_TITLE_READ_REJECTIONS | {
+            'missing', 'permission_denied', 'io_error', 'changed', 'oversized',
+            'invalid_json', 'not_running', 'invalid_pid', 'unknown'}
+        self.reason = reason if reason in allowed else 'unknown'
+
+
+def _shared_runtime_sources(soren):
+    values = []
+    for source, parts in (('stream', ('tmp', 'state', 'direct_stream', 'status.json')),
+                          ('audio', ('tmp', 'state', 'audio_worker.pid'))):
+        fd = directory = None
+        try:
+            fd, directory, before = _stream_title_open_fixed(soren, parts)
+            raw = os.read(fd, 262145)
+            after = os.fstat(fd)
+            linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+            if len(raw) > 262144:
+                raise _SharedRuntimeSourceError(source, 'oversized')
+            if (_stream_title_file_identity(before) != _stream_title_file_identity(after)
+                    or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
+                raise _SharedRuntimeSourceError(source, 'changed')
+            values.append(raw)
+        except _StreamTitleUnsafe as exc:
+            raise _SharedRuntimeSourceError(source, exc.reason) from None
+        except FileNotFoundError:
+            raise _SharedRuntimeSourceError(source, 'missing') from None
+        except PermissionError:
+            raise _SharedRuntimeSourceError(source, 'permission_denied') from None
+        except OSError:
+            raise _SharedRuntimeSourceError(source, 'io_error') from None
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if directory is not None:
+                os.close(directory)
+    try:
+        stream = json.loads(values[0])
+    except (ValueError, UnicodeError):
+        raise _SharedRuntimeSourceError('stream', 'invalid_json') from None
+    if not isinstance(stream, dict) or stream.get('running') is not True:
+        raise _SharedRuntimeSourceError('stream', 'not_running')
+    audio = values[1].strip()
+    if not re.fullmatch(rb'[1-9][0-9]{0,9}', audio):
+        raise _SharedRuntimeSourceError('audio', 'invalid_pid')
+    pids = {'shared_stream': stream.get('pid'), 'encoder': stream.get('ffmpeg_pid'),
+            'audio': int(audio)}
+    if (any(type(pid) is not int or not 1 < pid <= 2**31-1 for pid in pids.values())
+            or len(set(pids.values())) != len(pids)):
+        raise _SharedRuntimeSourceError('identities', 'invalid_pid')
+    return pids
+
+
+def _shared_runtime_process(soren, proc_root, role, pid):
+    root = Path(proc_root).absolute()
+    directory = _supervisor_directory(root.anchor)
+    process = None
+    try:
+        for part in root.parts[1:]:
+            child = _supervisor_directory(part, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        process = _supervisor_directory(str(pid), dir_fd=directory)
+        info = os.fstat(process)
+        ticks = _supervisor_process_start(proc_root, pid, process)
+        if not 0 < ticks <= 2**63-1:
+            raise ValueError('invalid process start')
+        raw = _supervisor_read('cmdline', 4096, dir_fd=process)
+        if not raw.endswith(b'\0'):
+            raise ValueError('incomplete command')
+        argv = raw[:-1].split(b'\0')
+        exe = os.readlink('exe', dir_fd=process)
+        executable = Path(exe).name
+        cwd = os.readlink('cwd', dir_fd=process)
+        fields = _supervisor_read('stat', 4096, dir_fd=process).rsplit(b')', 1)[1].split()
+        parent = int(fields[1])
+        process_kind = role
+        python = re.fullmatch(r'python3(?:\.[0-9]+)?', executable) is not None
+        if role in ('encoder', 'guardian'):
+            if cwd != str(soren):
+                raise ValueError('unexpected encoder cwd')
+            module = b'docich.twica_encoder' if role == 'guardian' else b'docich.twica_ffmpeg'
+            if python and len(argv) >= 3 and argv[1:3] == [b'-m', module]:
+                process_kind = 'guardian' if role == 'guardian' else 'adapter'
+            elif (role == 'encoder' and executable == 'ffmpeg' and argv
+                  and Path(os.fsdecode(argv[0])).name == 'ffmpeg'
+                  and b'x11grab' in argv and b'-progress' in argv):
+                process_kind = 'native'
+            else:
+                raise ValueError('unexpected encoder')
+        elif role == 'shared_stream' and _is_docich_stream_runner([os.fsdecode(arg) for arg in argv], soren):
+            # ADR 0007: docich-stream.service owns the encoder. Exact argv shape only
+            # (`python3 -m docich.stream_supervisor [--root <soren>] run`), same user,
+            # same working directory as the legacy runner.
+            if not python:
+                raise ValueError('unexpected interpreter')
+            if cwd != str(soren):
+                raise ValueError('unexpected working directory')
+        else:
+            expected = 'lib/direct_stream.py' if role == 'shared_stream' else 'workers/audio_worker.sh'
+            if (role == 'shared_stream' and not re.fullmatch(r'python3(?:\.[0-9]+)?', executable)
+                    or role == 'audio' and executable != 'bash' or len(argv) < 2):
+                raise ValueError('unexpected interpreter')
+            script = Path(os.fsdecode(argv[1]))
+            cwd = os.readlink('cwd', dir_fd=process)
+            if not script.is_absolute():
+                if cwd != str(soren):
+                    raise ValueError('unexpected working directory')
+                script = Path(soren) / script
+            if script != Path(soren) / expected:
+                raise ValueError('unexpected script')
+        again = os.stat(str(pid), dir_fd=directory, follow_symlinks=False)
+        if ((info.st_dev, info.st_ino, info.st_uid) != (again.st_dev, again.st_ino, again.st_uid)
+                or ticks != _supervisor_process_start(proc_root, pid, process)
+                or raw != _supervisor_read('cmdline', 4096, dir_fd=process)
+                or exe != os.readlink('exe', dir_fd=process)
+                or cwd != os.readlink('cwd', dir_fd=process)
+                or parent != int(_supervisor_read('stat', 4096, dir_fd=process).rsplit(b')', 1)[1].split()[1])):
+            raise ValueError('changed process identity')
+        return {'pid': pid, 'start_ticks': ticks, 'parent': parent, 'kind': process_kind}
+    finally:
+        if process is not None:
+            os.close(process)
+        os.close(directory)
+
+
+def _shared_runtime_pipeline(docich_root, adapter, boot_id):
+    parts = ('twica-common', 'pipeline.json')
+    fd, directory, before = _stream_title_open_fixed(Path(docich_root) / 'run', parts)
+    try:
+        raw = os.read(fd, 4097)
+        after = os.fstat(fd)
+        linked = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        if (len(raw) > 4096 or _stream_title_file_identity(before) != _stream_title_file_identity(after)
+                or _stream_title_file_identity(after) != _stream_title_file_identity(linked)):
+            raise ValueError('changed pipeline')
+        data = json.loads(raw)
+        now_ns = time.monotonic_ns()  # Sample after the atomic heartbeat read.
+        if (not isinstance(data, dict) or type(data.get('schema')) is not int or data['schema'] != 1
+                or type(data.get('pid')) is not int or data['pid'] != adapter['pid']
+                or data.get('identity') != f"{boot_id}:{adapter['start_ticks']}"
+                or type(data.get('monotonic_ns')) is not int
+                or not 0 <= now_ns - data['monotonic_ns'] < 3_000_000_000
+                or data.get('ready') is not True
+                or type(data.get('encoder_pid')) is not int or not 1 < data['encoder_pid'] <= 2**31-1):
+            raise ValueError('unverified pipeline')
+        # Health counters may advance between reads; identity may not.
+        return data['encoder_pid']
+    finally:
+        os.close(fd)
+        os.close(directory)
+
+
+def _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id, probe=None):
+    # Only collector-owned literal stage names may reach the public receipt.
+    probe = {} if probe is None else probe
+    probe['failure_stage'] = 'stream_process'
+    runner = _shared_runtime_process(soren, proc_root, 'shared_stream', pids['shared_stream'])
+    probe['failure_stage'] = 'audio_process'
+    audio = _shared_runtime_process(soren, proc_root, 'audio', pids['audio'])
+    probe['failure_stage'] = 'encoder_process'
+    child = _shared_runtime_process(soren, proc_root, 'encoder', pids['encoder'])
+    probe['failure_stage'] = 'encoder_parent'
+    if child['parent'] != runner['pid']:
+        raise ValueError('unrelated encoder')
+    shared = [runner]
+    if child['kind'] == 'adapter':
+        probe['failure_stage'] = 'pipeline_receipt'
+        native_pid = _shared_runtime_pipeline(docich_root, child, boot_id)
+        probe['failure_stage'] = 'native_encoder_process'
+        native = _shared_runtime_process(soren, proc_root, 'encoder', native_pid)
+        if native['kind'] != 'native':
+            raise ValueError('native encoder missing')
+        probe['failure_stage'] = 'guardian_process'
+        guardian = _shared_runtime_process(soren, proc_root, 'guardian', native['parent'])
+        probe['failure_stage'] = 'guardian_parent'
+        if guardian['parent'] != child['pid']:
+            raise ValueError('unrelated guardian')
+        shared.extend([child, guardian])
+    else:
+        native = child
+    records = {'shared_stream': shared, 'encoder': [native], 'audio': [audio]}
+    all_pids = [row['pid'] for rows in records.values() for row in rows]
+    probe['failure_stage'] = 'distinct_processes'
+    if len(set(all_pids)) != len(all_pids):
+        raise ValueError('overlapping runtime identities')
+    return records
+
+
+def _collect_shared_runtime_pids(soren=Path('/home/ubuntu/soren'), proc_root=Path('/proc'),
+                                 docich_root=PROD_ROOT):
+    """Fixed producer chain only; never enumerate processes or emit argv."""
+    roles = {role: {'count': 0, 'pids': [], 'entries': []} for role in SHARED_RUNTIME_ROLES}
+    boot_id = _shared_runtime_boot_id(proc_root)
+    section = {'schema_version': 2, 'scan_complete': False, 'boot_id': boot_id, 'roles': roles,
+               'failure_stage': 'boot_identity'}
+    try:
+        if boot_id is None:
+            return section
+        soren = Path(soren).absolute()
+        section['failure_stage'] = 'producer_sources'
+        pids = _shared_runtime_sources(soren)
+        entries = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id, section)
+        section['failure_stage'] = 'source_recheck'
+        if pids != _shared_runtime_sources(soren):
+            return section
+        section['failure_stage'] = 'identity_recheck'
+        again = _shared_runtime_chain(soren, proc_root, docich_root, pids, boot_id)
+        if entries != again or boot_id != _shared_runtime_boot_id(proc_root):
+            return section
+        for role, rows in entries.items():
+            clean = [{'pid': row['pid'], 'start_ticks': row['start_ticks']}
+                     for row in sorted(rows, key=lambda row: row['pid'])]
+            roles[role] = {'count': len(clean), 'pids': [row['pid'] for row in clean], 'entries': clean}
+        section['scan_complete'] = True
+        section.pop('failure_stage')
+    except _SharedRuntimeSourceError as exc:
+        section['failure_source'] = exc.source
+        section['failure_reason'] = exc.reason
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError, IndexError):
+        pass
+    return section
+
+
+def _shared_runtime_pid_set(section):
+    """Validate the whole v2 receipt before comparing nonempty required roles."""
+    if (not isinstance(section, dict)
+            or set(section) != {'schema_version', 'boot_id', 'scan_complete', 'roles'}
+            or type(section.get('schema_version')) is not int or section['schema_version'] != 2
+            or section.get('scan_complete') is not True):
+        return None
+    boot = section.get('boot_id')
+    if not isinstance(boot, str) or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot):
+        return None
+    roles = section.get('roles')
+    if not isinstance(roles, dict) or set(roles) != set(SHARED_RUNTIME_ROLES):
+        return None
+    result, seen = {}, set()
+    for role in SHARED_RUNTIME_ROLES:
+        data = roles[role]
+        if not isinstance(data, dict) or set(data) != {'count', 'pids', 'entries'}:
+            return None
+        count, pids, entries = data['count'], data['pids'], data['entries']
+        if (type(count) is not int or not 1 <= count <= SHARED_RUNTIME_MAX_PIDS
+                or not isinstance(pids, list) or not isinstance(entries, list)
+                or len(pids) != count or len(entries) != count):
+            return None
+        values, projected = set(), []
+        for item in entries:
+            if not isinstance(item, dict) or set(item) not in (
+                    {'pid', 'start_ticks'}, {'pid', 'start_ticks', 'started_at'}):
+                return None
+            pid, ticks = item['pid'], item['start_ticks']
+            if (type(pid) is not int or not 1 < pid <= 2**31-1 or pid in seen
+                    or type(ticks) is not int or not 0 < ticks <= 2**63-1):
+                return None
+            started = item.get('started_at')
+            if 'started_at' in item and (type(started) is not int or not 0 < started <= 2**63-1):
+                return None
+            seen.add(pid)
+            projected.append(pid)
+            values.add((boot, pid, ticks, started))
+        if (any(type(pid) is not int for pid in pids)
+                or len(set(pids)) != count or set(pids) != set(projected)):
+            return None
+        result[role] = values
+    return result
+
+
+def compare_shared_runtime_pids(before, after):
+    """Fail-closed before/after comparison of shared runtime PID sets.
+
+    Accepts either full diagnostics dicts (with a ``shared_runtime_pids`` key)
+    or the section itself. Returns a dict with ``match`` (bool), the list of
+    mismatched roles, and a short ``reason``. Unknown/partial/missing sides
+    never count as a match.
+    """
+    if isinstance(before, dict) and "shared_runtime_pids" in before:
+        before = before["shared_runtime_pids"]
+    if isinstance(after, dict) and "shared_runtime_pids" in after:
+        after = after["shared_runtime_pids"]
+    before_set = _shared_runtime_pid_set(before)
+    after_set = _shared_runtime_pid_set(after)
+    if before_set is None or after_set is None:
+        return {
+            "match": False,
+            "mismatched_roles": list(SHARED_RUNTIME_ROLES),
+            "reason": "unavailable_or_partial",
+        }
+    mismatched = []
+    for role in SHARED_RUNTIME_ROLES:
+        if before_set[role] != after_set[role]:
+            mismatched.append(role)
+    if mismatched:
+        return {
+            "match": False,
+            "mismatched_roles": mismatched,
+            "reason": "pid_set_changed",
+        }
+    return {"match": True, "mismatched_roles": [], "reason": "ok"}
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -8141,15 +17224,32 @@ def main(argv):
     ai = _collect_ai(soren, now)
     improvement = _collect_improvement(soren, now)
     corners = _collect_programs(_program_state_dir(), soren, now)
+    hanjuku_resume = _collect_hanjuku_resume(_program_state_dir())
+    lifecycle_pause = _collect_lifecycle_pause(soren, now, workers)
+    severity_report = _severity_report(
+        workers, queues, ai, improvement, corners, hanjuku_resume, lifecycle_pause
+    )
+    title_sync = _collect_stream_title_sync(
+        soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
+    )
     payload = {
-        "status": _severity(workers, queues, ai, improvement, corners),
+        "status": severity_report["status"],
+        "severity_triggers": severity_report["triggers"],
         "meta": meta,
-        "stream_title_sync": _collect_stream_title_sync(
-            soren, now, meta.get("soren_gitlink_sha"), meta.get("soren_code")
+        "stream_title_sync": title_sync,
+        "twitch_oauth": _collect_twitch_oauth(now),
+        "kick_oauth": _collect_kick_oauth(now),
+        "stream_title_attempts": _collect_stream_title_attempts(
+            soren, _program_state_dir(), now, title_sync
         ),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
+        "broadcast_template": _collect_broadcast_template(soren),
+        # The ring lives in the runtime user's home. Resolve it with the same
+        # rule the sampler uses (the passwd entry), not the checkout location
+        # and not a config/state_dir value (#2578: reboot-persistent evidence).
+        "host_metrics": _collect_host_metrics(_host_metrics_home(), now),
         "workers": workers,
-        "lifecycle_pause": _collect_lifecycle_pause(soren, now, workers),
+        "lifecycle_pause": lifecycle_pause,
         "supervisor_identity": _collect_supervisor_identity(soren, meta.get("soren_gitlink_sha")),
         "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
@@ -8164,15 +17264,26 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": corners,
-        "hanjuku_resume": _collect_hanjuku_resume(_program_state_dir()),
+        "prediction": _prediction_projection(corners, now),
+        "lawsim": _lawsim_projection(corners, now),
+        "hanjuku_resume": hanjuku_resume,
         "hanjuku_tactical": _collect_hanjuku_tactical(_program_state_dir(), time.time()),
         "hanjuku_projection_recovery": _collect_hanjuku_projection_recovery(_program_state_dir()),
         "tmux_servers": _collect_tmux_servers(),
         "pulse_sink_inputs": _collect_pulse_sink_inputs(),
+        "pulse_source_outputs": _collect_pulse_source_outputs(),
+        "encoder": _collect_encoder(_program_state_dir(), soren, now),
+        "corner_bgm": _collect_corner_bgm(soren, time.time()),
         "resolver_daemon": _collect_resolver_daemon(),
         "nethack_history": _collect_nethack_history(_program_state_dir(), now),
+        "nethack_xlog": _collect_nethack_xlog(now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "soren_bridge_log": _collect_soren_bridge_log(soren, now),
+        "nethack_manual_log": _collect_nethack_manual_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
+        "runtime_presentation": _collect_runtime_presentation(_program_state_dir(), now),
+        "program_admission_evidence": _collect_program_admission_evidence(
+            _program_state_dir(), soren, now),
         "nethack_rotation_evidence": _collect_nethack_rotation_evidence(
             _program_state_dir(), now, player=_nethack_evidence_player()),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
@@ -8180,14 +17291,20 @@ def main(argv):
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "cpu_profile": _collect_cpu_profile(now),
+        "browser_processes": _collect_browser_processes(),
+        "audio_priority": _collect_audio_priority(),
+        "audio_gaps": _collect_audio_gaps(now),
+        "shared_runtime_pids": _collect_shared_runtime_pids(soren),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "opencode_session_attribution": _collect_opencode_session_attribution(
             Path(soren).parent / ".local" / "share" / "opencode" / "opencode.db",
             now,
         ),
         "opencode_retention": _collect_opencode_retention(soren, now),
+        "opencode_session_file": _collect_opencode_session_file(soren, now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
+        "cc_translation_adapter": _collect_cc_translation_adapter(),
     }
     retention = payload["opencode_retention"]
     attempt = retention["attempt"]
@@ -8198,6 +17315,26 @@ def main(argv):
     ):
         payload["status"] = "warn"
     text = _diagnostics_budget(payload)
+    # Per-section byte accounting (#3341): measured on the post-budget payload
+    # and injected under ``meta`` (a _HARD_KEEP section), so it is excluded
+    # from the budget target by construction rather than competing with
+    # evidence for bytes. Re-serialize with the same compact separators the
+    # budget path emits. Only the gateway's hard ceiling is re-checked: the
+    # production envelope legitimately sits above the softer MAX_JSON_BYTES,
+    # and dropping the accounting there would blank the measurement the Phase
+    # 0 issue exists to collect. If the injection itself pushes the envelope
+    # past the hard ceiling -- only possible within a few hundred bytes of it
+    # -- the accounting is dropped instead of failing the whole operation.
+    # ``meta`` is built as a dict in this collector. If that contract ever
+    # changes, skip optional accounting rather than breaking diagnostics output.
+    if isinstance(payload.get("meta"), dict):
+        payload["meta"]["section_bytes"] = _compute_section_bytes(payload)
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"))
+        if len(text.encode("utf-8")) > HARD_JSON_BYTES:
+            del payload["meta"]["section_bytes"]
+            text = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                              separators=(",", ":"))
     sys.stdout.write(text + "\n")
     return 0
 

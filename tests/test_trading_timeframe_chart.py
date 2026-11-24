@@ -12,6 +12,8 @@ from docich.trading.timeframe_chart import (  # noqa: E402
     BB_PERIOD,
     TIMEFRAME_BARS,
     TIMEFRAMES,
+    CHART_CACHE_RETENTION_S,
+    TimeframeChartCache,
     TimeframeChartReader,
     TimeframeChartSampler,
     TimeframeDataError,
@@ -27,7 +29,7 @@ from docich.trading.timeframe_chart import (  # noqa: E402
 )
 
 NOW = 1_800_000_000.0  # 2027-01-15 08:00 UTC (mid-day, no date-boundary edge)
-STEP_MS = {"1m": 60_000, "15m": 900_000, "1h": 3_600_000, "1d": 86_400_000}
+STEP_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "1d": 86_400_000}
 
 
 def _rows(timeframe: str, *, count: int, start_ms: int, base: float = 100.0):
@@ -65,7 +67,8 @@ def test_build_view_is_allowlisted_and_capped():
     assert view["bar_count"] == TIMEFRAME_BARS["1m"]
     assert len(view["bars"]) == TIMEFRAME_BARS["1m"]
     bar = view["bars"][-1]
-    assert set(bar) == {"t", "o", "h", "l", "c", "v"}
+    assert set(bar) == {"t", "o", "h", "l", "c", "v", "closed", "gap_before"}
+    assert view["fetched_at"] == NOW
     assert view["bb_upper"] > view["bb_mid"] > view["bb_lower"]
     assert view["bb_phrase"]
     assert view["trend"] in {"上昇", "下降", "横ばい"}
@@ -81,6 +84,16 @@ def test_build_view_rejects_short_future_and_bad_rows():
     view = build_timeframe_view("BTC/JPY", "15m", mixed, now=NOW)
     # Only the malformed row is dropped; one valid bar is still too short.
     assert view["available"] is False
+    impossible = [
+        [day_ms, 100, 101, 99, 100.5, 1],
+        [day_ms + 300_000, 100.5, 100.4, 99, 100.2, 1],  # high below open
+        [day_ms + 600_000, 100.2, 102, 100.3, 101, 1],  # low above open
+        [day_ms + 900_000, 101, 103, 99, 102, 1],
+    ]
+    valid = build_timeframe_view("BTC/JPY", "5m", impossible, now=NOW)
+    assert valid["available"] is True
+    assert valid["bar_count"] == 2
+    assert [bar["c"] for bar in valid["bars"]] == [100.5, 102]
     with pytest.raises(TimeframeDataError):
         build_timeframe_view("BTC/JPY", "2m", mixed, now=NOW)
 
@@ -156,6 +169,37 @@ def test_reader_merges_multiple_utc_days():
     assert timestamps == sorted(timestamps)
 
 
+def test_reader_fetches_real_five_minute_ohlc_for_about_two_hours():
+    exchange = FakeExchange()
+    reader = TimeframeChartReader(exchange=exchange)
+    view = reader.fetch("BTC/JPY", "5m", now=NOW, days=2)
+    assert view["available"] is True
+    assert view["label"] == "5分足（公開OHLC）"
+    assert view["bar_count"] == 24
+    assert len(exchange.calls) == 2
+    assert all(call[1] == "5m" for call in exchange.calls)
+    assert all({"o", "h", "l", "c", "v"} <= set(bar) for bar in view["bars"])
+    assert view["bars"][-1]["closed"] is False
+    assert view["fetched_at"] == NOW
+    assert view["as_of"] == NOW
+    assert view["window_label"] == "約2時間"
+    assert view["window_seconds"] == 7200
+
+
+def test_five_minute_view_distinguishes_closed_forming_and_missing_bars():
+    bucket_ms = int(NOW // 300) * 300_000
+    rows = _rows("5m", count=3, start_ms=bucket_ms - 600_000)
+    view = build_timeframe_view("BTC/JPY", "5m", [rows[0], rows[2]], now=NOW)
+    assert view["available"] is True
+    assert view["bars"][0]["closed"] is True
+    assert view["bars"][1]["closed"] is False
+    assert view["bars"][1]["gap_before"] is True
+    assert view["window_seconds"] == 900
+    assert view["window_label"] == "約15分"
+    assert view["as_of"] == NOW
+    assert view["fetched_at"] == NOW
+
+
 def _trading_dir(tmp_path: Path) -> Path:
     trading_dir = tmp_path / "trading"
     trading_dir.mkdir(parents=True)
@@ -193,7 +237,7 @@ def test_sampler_caches_per_timeframe_ttl(tmp_path):
     sampler = TimeframeChartSampler(
         trading_dir,
         reader_factory=lambda: reader,
-        ttl_overrides={"1m": 5.0, "15m": 5.0, "1h": 5.0, "1d": 5.0},
+        ttl_overrides={"1m": 5.0, "5m": 5.0, "15m": 5.0, "1h": 5.0, "1d": 5.0},
     )
     first = sampler.snapshot(now=NOW)
     assert first["available"] is True and first["symbol"] == "BTC/JPY"
@@ -204,6 +248,85 @@ def test_sampler_caches_per_timeframe_ttl(tmp_path):
     assert second["timeframes"][0]["stale"] is False
     sampler.snapshot(now=NOW + 6)
     assert len(reader.exchange.calls) > calls_after_first
+
+
+def test_sampler_persists_public_views_across_instances(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    first_reader = CountingReader()
+    first = TimeframeChartSampler(
+        trading_dir, reader_factory=lambda: first_reader,
+        ttl_overrides={key: 5.0 for key in TIMEFRAMES},
+    )
+    first_snapshot = first.snapshot(now=NOW)
+    assert first_snapshot["available"] is True
+    assert first_reader.exchange.calls
+
+    second_reader = CountingReader()
+    second = TimeframeChartSampler(
+        trading_dir, reader_factory=lambda: second_reader,
+        ttl_overrides={key: 5.0 for key in TIMEFRAMES},
+    )
+    second_snapshot = second.snapshot(now=NOW + 1)
+    assert second_snapshot["available"] is True
+    assert [view["bars"] for view in second_snapshot["timeframes"]] == [
+        view["bars"] for view in first_snapshot["timeframes"]
+    ]
+    # A new sampler (as after a dashboard restart) reuses the durable TTL cache.
+    assert second_reader.exchange.calls == []
+
+
+def test_sampler_does_not_reuse_persistent_cache_past_retention(tmp_path, monkeypatch):
+    from docich.trading import timeframe_chart as tc
+
+    monkeypatch.setattr(tc, "_FETCH_RETRY_DELAY_S", 0.0)
+    trading_dir = _trading_dir(tmp_path)
+    first = TimeframeChartSampler(trading_dir, reader_factory=CountingReader)
+    assert first.snapshot(now=NOW)["available"] is True
+    cache_dir = trading_dir / "timeframe_chart_cache"
+    assert list(cache_dir.glob("*.json"))
+
+    failing_reader = CountingReader(fail_timeframes=TIMEFRAMES)
+    second = TimeframeChartSampler(trading_dir, reader_factory=lambda: failing_reader)
+    expired_at = NOW + CHART_CACHE_RETENTION_S + 1
+    snapshot = second.snapshot(now=expired_at)
+    assert snapshot["available"] is False
+    assert all(view["available"] is False for view in snapshot["timeframes"])
+    assert not list(cache_dir.glob("*.json"))
+
+
+def test_chart_cache_rejects_impossible_ohlc_before_persisting(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    cache = TimeframeChartCache(trading_dir)
+    rows = _rows("1m", count=3, start_ms=int(NOW * 1000) - 3 * STEP_MS["1m"])
+    record = build_timeframe_view("BTC/JPY", "1m", rows, now=NOW)
+    invalid = dict(record)
+    invalid["bars"] = [dict(bar) for bar in record["bars"]]
+    invalid["bars"][0]["h"] = invalid["bars"][0]["o"] - 1
+    assert cache.save("BTC/JPY", "1m", invalid, now=NOW) is False
+    assert not (trading_dir / "timeframe_chart_cache").exists()
+
+
+def test_chart_cache_evicts_oldest_entries_to_respect_byte_cap(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    cache = TimeframeChartCache(trading_dir, max_bytes=10_000_000)
+    rows = _rows("1m", count=60, start_ms=int(NOW * 1000) - 60 * STEP_MS["1m"])
+    record = build_timeframe_view("BTC/JPY", "1m", rows, now=NOW)
+    symbols = ("BTC/JPY", "ETH/JPY", "XRP/JPY")
+    for index, symbol in enumerate(symbols):
+        item = dict(record)
+        item["symbol"] = symbol
+        assert cache.save(symbol, "1m", item, now=NOW + index)
+
+    files = list((trading_dir / "timeframe_chart_cache").glob("*.json"))
+    total = sum(path.stat().st_size for path in files)
+    assert len(files) == 3 and total > 0
+    cache.max_bytes = total - 1
+    cache.prune(now=NOW + 3)
+
+    remaining = list((trading_dir / "timeframe_chart_cache").glob("*.json"))
+    assert sum(path.stat().st_size for path in remaining) <= cache.max_bytes
+    assert cache.load("BTC/JPY", "1m", now=NOW + 3) is None
+    assert cache.load("XRP/JPY", "1m", now=NOW + 3) is not None
 
 
 def test_sampler_reports_unavailable_without_inventing(tmp_path):
@@ -230,15 +353,15 @@ def test_sampler_fetches_intraday_before_daily(tmp_path):
     sampler = TimeframeChartSampler(trading_dir, reader_factory=lambda: reader)
     sampler.snapshot(now=NOW)
     order = [call[1] for call in reader.exchange.calls]
-    # 1m (2 days) and 15m (2 days) are fetched first; the daily chart is
-    # requested last (as hourly bars across 22 days).
+    # Short intraday frames are fetched first; daily history stays last.
     assert order[:2] == ["1m", "1m"]
-    assert order[2:4] == ["15m", "15m"]
-    assert order[4:7] == ["1h", "1h", "1h"]
+    assert order[2:4] == ["5m", "5m"]
+    assert order[4:6] == ["15m", "15m"]
+    assert order[6:9] == ["1h", "1h", "1h"]
     # The oldest (daily-history) request only appears after the intraday
     # batches, so an intraday failure cannot be caused by the long daily batch.
     since_values = [call[2] for call in reader.exchange.calls]
-    assert since_values.index(min(since_values)) >= 7
+    assert since_values.index(min(since_values)) >= 9
     # The caller still receives the display order (daily first).
     snapshot = sampler.snapshot(now=NOW)
     assert [view["timeframe"] for view in snapshot["timeframes"]] == list(TIMEFRAMES)
@@ -300,8 +423,12 @@ def test_strategy_view_uses_cached_five_minute_closes(tmp_path):
     assert "thresholds" in view
 
 
-def test_snapshot_includes_strategy_view(tmp_path):
+def test_snapshot_includes_public_ohlc_and_separate_strategy_view(tmp_path):
     trading_dir = _trading_dir(tmp_path)
     sampler = TimeframeChartSampler(trading_dir, reader_factory=CountingReader)
     snapshot = sampler.snapshot(now=NOW)
+    public_five_minute = next(view for view in snapshot["timeframes"] if view["timeframe"] == "5m")
+    assert public_five_minute["label"] == "5分足（公開OHLC）"
+    assert public_five_minute["bars"][-1]["closed"] is False
     assert snapshot["strategy"]["label"] == "5分足(戦略)"
+    assert snapshot["strategy"]["bars"][-1] == {"c": 101.0}

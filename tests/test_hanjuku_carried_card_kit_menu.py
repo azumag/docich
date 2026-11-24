@@ -1,0 +1,89 @@
+"""#4431: 出撃確定の携行札と確定使用の差分で、使える切り札が無いと分かる時は
+携行確認のためだけの実メニュー開放を省く。確定できない出撃は従来通り開く。"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tests'))
+
+import pytest
+
+from docich import hanjuku_policy as p
+from docich.hanjuku.state.regions import flow as _flow, world as _world, plan as _plan_region
+from docich.hanjuku.strategy.execution import confirm_departure_order
+from test_hanjuku_survival import menu
+
+
+def bound_execution(cards, step='I:x:1', general='ココット'):
+    """A confirmed departure binding: the measured carried kit is the authority."""
+    mem = {'chapter': 1, 'tick': 20,
+           '_run_identity': {'game': 'hanjuku-hero', 'runtime_id': 'test-runtime',
+                             'generation': 741, 'lease_id': 'test-lease'},
+           'active': step, 'orders': {step: 'pending'}, 'order_context': {},
+           'garrison': {'カストーラ': [general, 'ヴィーナス']}}
+    order = {'step': step, 'general': general, 'source': 'カストーラ',
+             'target': 'ゴーメン', 'cards': list(cards), 'after': None}
+    frozen = confirm_departure_order(order, mem, general, 'カストーラ', list(cards))
+    assert frozen is not None
+    _plan_region(mem)['order_context'][step] = {'actual_general': general,
+                                  'departure_order': frozen,
+                                  'observed_metric': {'general': general,
+                                                      'cards': list(cards)}}
+    _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True,
+                                    'confirmation_tick': 20}
+    return mem, step
+
+
+def survival_battle(mem, step, ally='ココット', enemy='ガルバンゾー',
+                    ally_hp=14, enemy_hp=85, egg_attempted=True):
+    cur = mem['battle'] = {'ally': ally, 'enemy': enemy, 'ally_hp': ally_hp,
+                           'enemy_hp': enemy_hp, 'start_ally_hp': 24,
+                           'start_enemy_hp': enemy_hp, 'side': 'attack',
+                           'step': step, 'castle': 'ゴーメン',
+                           'cards_used': [], 'cards_selected': [],
+                           'cards_unclassified': [], 'planned_cards': []}
+    p._survival_state(mem, cur)
+    cur['survival']['egg_attempted'] = egg_attempted   # きりふだへ進める
+    return cur
+
+
+def decisions(mem, name):
+    return [r for r in (mem.get('_records') or []) if r.get('decision') == name]
+
+
+def test_confirmed_empty_kit_skips_the_card_menu():
+    """確定携行が全て確定使用済み (残り0) なら、きりふだメニューを開かない。"""
+    mem, step = bound_execution(['イッテツーン'])
+    mem['kit_spent'] = {step: ['イッテツーン']}   # 唯一の携行札を確定使用
+    cur = survival_battle(mem, step)
+    p.battle_menu_step(menu(), mem)
+    assert 'きりふだ' not in (cur.get('card_flow') or {}).get('card', '') or cur.get('card_flow') is None
+    assert cur.get('card_flow') is None            # メニューを開いていない
+    assert cur['survival']['cards_exhausted'] is True
+    assert decisions(mem, 'battle_card_menu_skipped_confirmed_kit')
+
+
+def test_confirmed_kit_without_bound_opens_the_menu():
+    """出撃が未確定 (bound 無し) なら携行が読めないので従来通りメニューを開く。"""
+    step = 'I:y:2'
+    mem = {'chapter': 1, 'tick': 20, '_records': [],
+           'orders': {step: 'launched'},
+           '_run_identity': {'game': 'hanjuku-hero', 'runtime_id': 'r',
+                             'generation': 1, 'lease_id': 'l'}}
+    _world(mem)['launched_orders'] = {step: {
+        'step': step, 'general': 'ココット', 'source': 'カストーラ',
+        'target': 'ゴーメン', 'cards': ['イッテツーン'], 'after': None}}
+    cur = survival_battle(mem, step)
+    p.battle_menu_step(menu(selected=1), mem)   # カーソルは既に きりふだ 上
+    assert (cur.get('card_flow') or {}).get('stage') == 'list'   # 開いて一覧を確認する
+    assert cur['survival']['cards_checked'] == 1
+    assert not decisions(mem, 'battle_card_menu_skipped_confirmed_kit')
+
+
+def test_confirmed_kit_with_a_usable_card_still_opens_the_menu():
+    """確定携行に使える札が残っていれば、その使用のためメニューを開く。"""
+    mem, step = bound_execution(['エンジェリン'])
+    cur = survival_battle(mem, step, ally_hp=14)   # サバイバルが開くHP
+    p.battle_menu_step(menu(selected=1), mem)
+    assert (cur.get('card_flow') or {}).get('stage') == 'list'
+    assert not decisions(mem, 'battle_card_menu_skipped_confirmed_kit')

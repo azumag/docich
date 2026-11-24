@@ -1,0 +1,99 @@
+"""An aborted month sub-action must end, not press B forever.
+
+g1163 2026-11-11 23:08-23:26: たまごのかいふく opened, the cursor would not reach
+the row (menu_nav_stuck), the flow aborted, and then the month menu and the shop
+list flipped every 1.5 s for 18 minutes — the abort path had no exit, so nothing
+ever cleared ``month_sub`` and the repetition detector latched screen_stalled.
+"""
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from docich import hanjuku_policy as policy
+from docich.hanjuku_screen import parse
+from docich.hanjuku.strategy.economy import MONTH_SUB_ABANDON_BACKS
+from test_hanjuku_chart_bot import Canvas
+
+
+def text_frame(gold=None, lines=('「おめにかかれて こうえいです。',)):
+    c = Canvas()
+    if gold is not None:
+        c.text(72, 15, f'1ねん 10のつき {gold}G')
+    for i, line in enumerate(lines):
+        c.text(24, 151 + 16 * i, line)
+    return parse(c.frame())
+
+
+def memory(**sub):
+    return {'month': '22-8', 'chapter': 9,
+            'shop': {'key': '22-8', 'egg': 'opened', 'items': [], 'soldiers': 0},
+            'month_sub': {'kind': 'egg', 'gold_before': 200, 'presses': 40, 'key': '22-8',
+                          'left_menu': True, 'aborted': True, **sub}}
+
+
+def test_after_the_abandon_bound_the_sub_action_is_dropped():
+    mem = memory()
+    screen = text_frame(200)
+    buttons = [policy.month_sub_step(screen, mem)[0]['buttons'][0]
+               for _ in range(MONTH_SUB_ABANDON_BACKS)]
+    # Plain text past the B limit may take bounded A presses (g662); the point
+    # is that the sub-action is dropped instead of being retried forever.
+    assert buttons[-1] == 'b'
+    assert buttons.count('b') > buttons.count('a')
+    assert 'month_sub' not in mem
+    assert mem['shop']['egg'] == 'skipped'
+    assert any(r['decision'] == 'month_sub_abandoned' for r in mem['_records'])
+
+
+def test_before_the_bound_the_sub_action_stays_tracked():
+    mem = memory()
+    screen = text_frame(200)
+    for _ in range(MONTH_SUB_ABANDON_BACKS - 2):
+        policy.month_sub_step(screen, mem)
+    assert mem.get('month_sub', {}).get('kind') == 'egg'
+    assert mem['shop']['egg'] == 'opened'
+
+
+def test_a_paid_recovery_abandoned_mid_ritual_stays_unverified():
+    """docich#5046: 'skipped' claims no recovery happened and lets the same
+    month reopen and repay it. An accepted quote means the payment may have
+    gone through, so the entry stays 'unverified' (never retried)."""
+    mem = memory(stage='recovering', quoted_cost=150)
+    screen = text_frame(200)
+    for _ in range(MONTH_SUB_ABANDON_BACKS):
+        policy.month_sub_step(screen, mem)
+    assert 'month_sub' not in mem
+    assert mem['shop']['egg'] == 'unverified'
+    rec = next(r for r in mem['_records'] if r['decision'] == 'month_sub_abandoned')
+    assert rec['observed_metric']['shop_status'] == 'unverified'
+    # docich#5045: the mark keeps its payment expectation so a later readable
+    # balance can still settle it (unpaid -> skipped, matching debit -> done).
+    assert mem['shop']['egg_receipt'] == {'before': 200, 'cost': 150, 'bought': 0,
+                                        'refill_status': None, 'upgrades': 0,
+                                        'recruit': None}
+
+
+def test_a_never_left_menu_recovery_keeps_no_receipt():
+    """docich#5045: a sub that never left the month menu cannot have paid.
+    Its balance delta is a stale background, not a receipt, so no receipt
+    is kept (the full flow is covered by
+    test_payment_delta_on_a_stale_background_is_not_a_recovery_completion_receipt)."""
+    from docich.hanjuku.flows.month import _keep_egg_receipt
+    shop = {'key': '22-8', 'egg': 'unverified'}
+    sub = {'kind': 'egg', 'gold_before': 200, 'quoted_cost': 150, 'key': '22-8',
+           'left_menu': False, 'stage': 'recovering'}
+    _keep_egg_receipt(shop, sub)
+    assert 'egg_receipt' not in shop
+    sub['left_menu'] = True
+    _keep_egg_receipt(shop, sub)
+    assert shop['egg_receipt']['before'] == 200
+    assert shop['egg_receipt']['cost'] == 150
+
+
+def test_an_unconfirmed_recovery_still_abandons_as_skipped():
+    mem = memory(stage='choosing', full_quote_short=True)
+    screen = text_frame(200)
+    for _ in range(MONTH_SUB_ABANDON_BACKS):
+        policy.month_sub_step(screen, mem)
+    assert 'month_sub' not in mem
+    assert mem['shop']['egg'] == 'skipped'

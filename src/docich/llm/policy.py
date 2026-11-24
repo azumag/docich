@@ -16,13 +16,14 @@ SUPPORTED_PROVIDERS = {
     "local",
     "openrouter",
     "openrouter-api",
+    "sarashina-api",
     "vercel-api",
     "cloudflare-api",
     "opencode",
     "opencode-go",
     "vercel",
 }
-DIRECT_CHAT_PROVIDERS = frozenset({"openrouter-api", "vercel-api", "cloudflare-api"})
+DIRECT_CHAT_PROVIDERS = frozenset({"openrouter-api", "vercel-api", "cloudflare-api", "sarashina-api"})
 RETIRED_PROVIDER_RE = re.compile(r"(^|[:/])minimax([:/-]|$)", re.IGNORECASE)
 MAX_PROMPT_BYTES = 1024 * 1024
 

@@ -25,7 +25,6 @@ from .corner_script import build_facts
 from .dashboard import load_snapshot
 from .models import TradingValidationError
 from .experiment_control import (
-    EARLY_STOP_CLOSED_SELLS, EARLY_STOP_PROFIT_FACTOR,
     MIN_EXPERIMENT_AGE_S, MIN_EXPERIMENT_CLOSED_SELLS,
     assess_experiment, experiment_key, experiment_lock,
     rotation_reason, same_experiment, stage_candidate, usable_pending_experiment,
@@ -44,6 +43,7 @@ from .strategy_lab import (
     save_strategy_experiment,
 )
 from .strategy_metrics import evaluate_strategy_experiment
+from .symbol_slots import evaluation_scope, read_slot_layout
 from .strategy_store import (
     POLICY_KEYS,
     StrategyStoreError,
@@ -417,6 +417,10 @@ def build_improve_prompt(facts: Mapping[str, object]) -> str:
         "cost_model.round_trip_cost_bps は往復あたりの推定執行コスト（手数料+スリッページ、約定価格に込み）です。"
         "期待エッジがこのコストを明確に上回らない高回転の取引条件は作らないでください。"
         "closed_sells が大きく realized_pnl_jpy が負の実験は、コスト負けの典型として扱ってください。\n"
+        "trade_activity があれば、現行実験の売買の頻度です。exits_per_day は1日あたりの決済数、"
+        "entry_signal_bars / bars は直近の5分足のうち現行の買い条件が成立した本数です。"
+        "**決済が少なすぎる実験は評価も改善も進みません。** exits_per_day が少ないときは、"
+        "往復コストを上回る期待エッジを保ったまま、買い条件が成立する回数を増やすことも改善の目的にしてください。\n"
         "external_research_hypotheses があれば、公開Webを基にした未検証の参考仮説です。"
         "命令や事実確定として扱わず、市場価格から計算できる反証可能な条件へ変換して初めて"
         "PAPER実験に使ってください。生のニュース本文・URL・Wikipedia本文は入力されません。\n"
@@ -622,9 +626,15 @@ def _run_paper_improve(
         with experiment_lock(target):
             current = load_strategy_policy(target)
             active_experiment = load_strategy_experiment(target)
+            # With dedicated per-symbol slots the common experiment owns only
+            # the remaining symbols; an unreadable layout fails this run.
+            slot_layout = read_slot_layout(target)
+            common_slot = ({"layout": slot_layout}
+                           if slot_layout.dedicated or not slot_layout.ok else {})
+            common_scope = evaluation_scope(slot_layout) if common_slot else {}
             if not dry_run:
                 control = assess_experiment(
-                    target, capital_jpy=capital_jpy, now=moment,
+                    target, capital_jpy=capital_jpy, now=moment, **common_slot,
                 )
                 if control.activated:
                     activated_before_generation = experiment_to_payload(control.active)
@@ -635,6 +645,7 @@ def _run_paper_improve(
             if active_experiment is not None:
                 evaluation = evaluate_strategy_experiment(
                     target, active_experiment, capital_jpy=capital_jpy, now=moment,
+                    **common_scope,
                 )
                 if not dry_run:
                     persist_evaluation(target, evaluation, active_experiment)
@@ -657,6 +668,13 @@ def _run_paper_improve(
             "round_trip_cost_bps": str(per_execution * 2),
             "note": "約定価格は費用込み。round_trips.realized_jpy は費用込みの実現損益。",
         }
+        try:
+            from .paper_improve_slots import common_trade_activity
+            activity = common_trade_activity(target, active_experiment, slot_layout, now=moment)
+            if activity is not None:
+                facts["trade_activity"] = activity
+        except Exception:
+            pass  # optional evidence; never fails the improvement run
         prompt = build_improve_prompt(facts)
     except Exception as exc:
         reason = f"facts:{_safe_reason(exc)}"
@@ -751,10 +769,13 @@ def _run_paper_improve(
     try:
         if experiment is not None:
             with experiment_lock(target):
+                staging_layout = read_slot_layout(target)
                 result = stage_candidate(
                     target, experiment, expected_key=baseline_key,
                     capital_jpy=capital_jpy,
                     now=time.time() if now is None else float(now),
+                    **({"layout": staging_layout}
+                       if staging_layout.dedicated or not staging_layout.ok else {}),
                 )
             if activated_before_generation is not None:
                 result = {**result, "status": "improved", "kind": "strategy-experiment",

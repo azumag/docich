@@ -61,17 +61,17 @@ def test_hero_only_selection_refuses_a_multi_egg_quote():
     assert policy.month_sub_step(quote(200, '2こで100Gになりまんな'), mem) == [policy.pad('b')]
 
 
-def test_hero_only_keeps_the_blind_wage_floor_without_a_payroll_reading():
-    mem = g604_memory(79, roster=False)   # 50G + 30G floor = 80G
-    assert policy.month_sub_step(recovery_list(65), mem) == [policy.pad('up')]
-    assert not mem['month_sub'].get('hero_selected')
+def test_hero_only_uses_the_open_screen_without_a_wage_floor():
+    mem = g604_memory(79, roster=False)   # the old 80G floor is gone
+    assert policy.month_sub_step(recovery_list(65), mem) == [policy.pad('a')]
+    assert mem['month_sub'].get('hero_selected') is True
     assert policy._hero_egg_wage_floor(g604_memory(80, roster=False)) == 30
 
 
-def test_measured_payroll_lowers_only_the_hero_floor():
+def test_measured_payroll_is_observed_but_does_not_gate_the_hero():
     assert policy._hero_egg_wage_floor(g604_memory(68)) == 16
-    mem = g604_memory(65)   # 65 - 50 = 15 < 16G payroll
-    assert policy.month_sub_step(recovery_list(65), mem) == [policy.pad('up')]
+    mem = g604_memory(65)   # 65G covers the 50G recovery, payroll is not held
+    assert policy.month_sub_step(recovery_list(65), mem) == [policy.pad('a')]
     mem = g604_memory(68)
     mem['recruit_roster']['wages'].pop('アルテミス')   # one unread wage -> blind floor
     assert policy._hero_egg_wage_floor(mem) == 30

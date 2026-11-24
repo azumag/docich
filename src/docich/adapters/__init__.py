@@ -80,12 +80,33 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game == "weather-view":
         from .weather_program import make_weather_view_adapter
         return make_weather_view_adapter(g, spec)
+    if spec.game == "chart-659":
+        from .chart_659_program import make_chart_view_adapter
+        return make_chart_view_adapter(g, spec)
     if spec.game == "tsuitate-view":
         from .tsuitate_program import make_tsuitate_view_adapter
         return make_tsuitate_view_adapter(g, spec)
     if spec.game == "yosou-view":
         from .yoso_program import make_yoso_view_adapter
         return make_yoso_view_adapter(g, spec)
+    if spec.game == "doushi-view":
+        from .doushi_program import make_doushi_view_adapter
+        return make_doushi_view_adapter(g, spec)
+    if spec.game == "othello-view":
+        from .othello_program import make_othello_view_adapter
+        return make_othello_view_adapter(g, spec)
+    if spec.game == "puyo-view":
+        from .puyo_program import make_puyo_view_adapter
+        return make_puyo_view_adapter(g, spec)
+    if spec.game == "mystery-view":
+        from .mystery_program import make_mystery_view_adapter
+        return make_mystery_view_adapter(g, spec)
+    if spec.game == "trpg-view":
+        from .trpg_program import make_trpg_view_adapter
+        return make_trpg_view_adapter(g, spec)
+    if spec.game == "lawsim-view":
+        from .lawsim_program import make_lawsim_view_adapter
+        return make_lawsim_view_adapter(g, spec)
     game = load_game(g, spec.game)
     # NetHack remains a normal CLI game for legacy obs/send and for existing
     # installations.  The save-safe coordinator lifecycle is an explicit

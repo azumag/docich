@@ -1,6 +1,7 @@
 """Display evidence expires independently of policy decisions and estimates."""
 from types import SimpleNamespace
 from docich import hanjuku_policy as policy
+from docich.hanjuku.state.regions import world as _world
 
 
 def test_reobserving_the_same_garrison_refreshes_only_display_evidence(monkeypatch):
@@ -9,12 +10,12 @@ def test_reobserving_the_same_garrison_refreshes_only_display_evidence(monkeypat
     monkeypatch.setattr(policy, '_source', lambda order, mem: 'アルマムーン')
     mem={'garrison':{'アルマムーン':['ゼウス']}, 'garrison_observed_at':{'アルマムーン':990.0}}
     policy._observe_garrison(SimpleNamespace(), mem, {})
-    assert mem['garrison_observed_at']['アルマムーン']==1000.0
-    assert mem['garrison']['アルマムーン']==['ゼウス']
+    assert _world(mem)['garrison_observed_at']['アルマムーン']==1000.0
+    assert _world(mem)['garrison']['アルマムーン']==['ゼウス']
     policy._garrison_move(mem,'ゼウス',source='アルマムーン',target='カストーラ')
-    assert 'アルマムーン' not in mem['garrison_observed_at']
-    assert 'カストーラ' not in mem['garrison_observed_at']
-    assert mem['garrison']['カストーラ']==['ゼウス']
+    assert 'アルマムーン' not in _world(mem)['garrison_observed_at']
+    assert 'カストーラ' not in _world(mem)['garrison_observed_at']
+    assert _world(mem)['garrison']['カストーラ']==['ゼウス']
 
 
 def test_partial_hp_panel_does_not_make_old_hp_fresh(monkeypatch):

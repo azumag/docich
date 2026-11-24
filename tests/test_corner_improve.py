@@ -628,3 +628,119 @@ def test_default_llm_forwards_the_split_timeout_budget(monkeypatch):
     assert corner_improve._default_llm(None, agents='a', prompt_text='p') == 'ok'
     assert captured['timeout'] == 600
     assert captured['timeout_sec'] == 660.0
+
+
+# --- persisted-status contract (#4333) ---------------------------------------
+#
+# ``_run_corner_improve_locked`` is the only writer of the durable
+# ``corner_improve_<game>.json`` record, and
+# ``corner_adapters.resources_released`` releases the next corner only for
+# ``TERMINAL_IMPROVEMENT_STATUSES``. The 2026-11-15 incident persisted
+# ``rejected`` without it being terminal, which wedged interval-mode
+# rotation. These tests pin the contract in both directions: every status
+# literal the job can produce is declared, and every declared status is
+# terminal for the release gate.
+
+_STATUS_SOURCE_FILES = tuple(
+    Path(__file__).resolve().parents[1] / 'src' / 'docich' / relative
+    for relative in (
+        'corner_improve.py',
+        # ``_ninvaders_policy_improve`` returns this module's result verbatim.
+        'ninvaders/improve.py',
+    )
+)
+
+
+def _persisted_status_literals(path):
+    """Every ``"status": "<literal>"`` a module can persist or return.
+
+    Return dicts feed ``_run_corner_improve_locked``'s durable record and
+    ``atomic_write_json(path, {...})`` writes it directly, so both literal
+    sites are scanned. ``.update(status=...)`` keywords and the trial /
+    experiment files use different vocabularies and are deliberately ignored.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    found = set()
+    for node in ast.walk(tree):
+        mappings = []
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            mappings.append(node.value)
+        elif (isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Name)
+              and node.func.id == 'atomic_write_json'):
+            mappings.extend(arg for arg in node.args if isinstance(arg, ast.Dict))
+        for mapping in mappings:
+            for key, value in zip(mapping.keys, mapping.values):
+                if (isinstance(key, ast.Constant) and key.value == 'status'
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)):
+                    found.add(value.value)
+    return found
+
+
+def test_every_status_literal_is_declared():
+    literals = set()
+    for path in _STATUS_SOURCE_FILES:
+        literals |= _persisted_status_literals(path)
+    declared = corner_improve.CORNER_IMPROVE_PERSISTED_STATUSES
+    # ``failed`` is only written by the exception path, never declared.
+    assert 'failed' not in declared
+    assert literals <= declared | {'failed'}, (
+        f'undeclared persisted statuses: {sorted(literals - declared - {"failed"})}'
+    )
+    # The declared set must stay honest: nothing declared that no path returns.
+    assert declared <= literals
+
+
+def test_declared_statuses_are_terminal_for_the_release_gate():
+    from docich.corner_adapters import TERMINAL_IMPROVEMENT_STATUSES
+    from docich import moon_buggy_ab
+
+    declared = corner_improve.CORNER_IMPROVE_PERSISTED_STATUSES
+    # A persisted status outside the terminal set reads as still-running
+    # forever and wedges rotation (#4333). This fails when a new status is
+    # declared without being made terminal.
+    assert declared <= TERMINAL_IMPROVEMENT_STATUSES
+    # moon-buggy AB summaries pass the experiment status through unchanged;
+    # its terminal vocabulary must stay inside the declared set.
+    assert moon_buggy_ab.TERMINAL_STATUSES <= declared
+
+
+def test_undeclared_result_status_fails_closed(tmp_path, monkeypatch):
+    """An undeclared status must never reach the durable record (#4333)."""
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    status_path = state_dir / 'corner_improve_gnurobots.json'
+
+    monkeypatch.setattr(
+        corner_improve, '_run_corner_improve',
+        lambda _g, **_kwargs: {'status': 'deferred'},
+    )
+    with pytest.raises(CornerImproveError) as excinfo:
+        corner_improve._run_corner_improve_locked(
+            _G(state_dir), status_path=status_path, started=100.0,
+            game='gnurobots', date_str='2026-09-10', agents='a', matches=2,
+            margin_pct=10.0, dry_run=False, llm=None, evaluator=None,
+        )
+    assert excinfo.value.code == 'unexpected'
+    record = json.loads(status_path.read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'unexpected'
+    assert 'deferred' not in json.dumps(record)
+
+
+def test_missing_result_status_fails_closed(tmp_path, monkeypatch):
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    status_path = state_dir / 'corner_improve_gnurobots.json'
+
+    monkeypatch.setattr(
+        corner_improve, '_run_corner_improve', lambda _g, **_kwargs: {},
+    )
+    with pytest.raises(CornerImproveError):
+        corner_improve._run_corner_improve_locked(
+            _G(state_dir), status_path=status_path, started=100.0,
+            game='gnurobots', date_str='2026-09-10', agents='a', matches=2,
+            margin_pct=10.0, dry_run=False, llm=None, evaluator=None,
+        )
+    assert json.loads(status_path.read_text())['status'] == 'failed'

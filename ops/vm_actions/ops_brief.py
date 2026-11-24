@@ -28,9 +28,12 @@ CAPABILITY_TRACKED_SOURCE = "parent_ops_brief_tracked_source_v1"
 SOURCE_LEGACY = "handoff.md"
 SOURCE_TRACKED = "ops/runtime_context/ops_brief_source.md"
 ALLOWED_SOURCES = (SOURCE_LEGACY, SOURCE_TRACKED)
-DEFAULT_SOURCE = SOURCE_LEGACY
+DEFAULT_SOURCE = SOURCE_TRACKED
 MAX_SOURCE = 4 * 1024 * 1024
 MAX_ARTIFACT = 4096
+# Schema 1 hashes include this exact historical header. Preserve its bytes even
+# with a tracked source so the already-installed compatibility gateway can read
+# both the previous baseline and the candidate in one deployment transaction.
 HEADER = "# 直近の裏側の改修 (docich handoff.md から自動生成。手で編集しない)\n"
 HANDOFF_ENV = "DOCICH_HANDOFF_PATH"
 

@@ -4,9 +4,12 @@
 同じ `update_stream_game.sh` 呼出しで更新する。Soren91の既存の直接同期経路も
 同じ `viewer_title_args` を使う。
 
-タイトルは `[dayN] ソ連ゲーム AIプレイ配信` のような視聴者向けの固定文面。
-半熟英雄、NetHackなどは現在ゲームの公開名を使い、paper-viewは
-`[dayN] ペーパートレード AIの検証配信` とする。投資成果や攻略成功を約束しない。
+タイトルは現在ゲームの公開名と、進行・記録・挑戦内容を組み合わせる。
+例: `[dayN] 半熟英雄 AIが城を攻略！ 将軍とエッグモンスターで物語の先へ`。
+半熟英雄では現在のready runtimeとgame/runtime_id/generation/lease_idが一致し、
+60秒以内のplaying観測がある場合だけ、その冒険の突破済み話数を使う。
+停止・終局候補・曖昧な観測では現在進行とせず、検証済み過去記録、ゲーム固有の
+挑戦文面の順にfallbackする。突破済みと次の目標を混同しない。
 日数・日付の計算と140文字上限は既存Soren updaterが所有する。
 
 `--activity` と `--strategy` は両方とも非空で明示し、運用見出し、PR番号、
@@ -20,7 +23,7 @@
 配布済みファイルと常駐プロセスへのロード、Twitch公開表示の反映は別々に確認する。
 反映のためにゲームを強制切替しない。次の自然な切替でタイトルとカテゴリを照合する。
 手動タイトルや日次タイトル更新を恒久的に禁止する変更ではなく、次のゲーム切替で
-上記の固定タイトルに更新される。
+上記の進行・挑戦タイトルに更新される。
 
 ## Record-aware title context
 
@@ -29,8 +32,41 @@ or Hanjuku's recorded cleared-chapter count. A cleared chapter and the next
 chapter goal are explicitly different. Current score, chapter-in-progress,
 unadopted strategy proposals, private handoff text and generated prose are not
 read as title claims. Missing, malformed, oversized or symlink evidence retains
-the neutral fallback. An identity-matched ready generation selects one of three
+the game-specific challenge fallback. An identity-matched ready generation selects one of three
 reviewed wordings, stable for retries within that generation. Other game state
 cannot select that wording. This is record-based variety, not proof of strategy
 adoption or improved game performance. Strategy-feature metadata is still a
 separate extension.
+
+更新契機は既存のゲーム切替・コーナー復帰に加え、半熟英雄の**目標達成時**です。
+半熟英雄だけは、ready runtimeの検証済み突破話数が増えたときに配信タイトルを
+次の目標へ更新します（2026-11-09 オーナー判断）。カテゴリは変更せず
+`--title-only` でタイトルだけを更新し、同じ突破話数では再送しません。
+毎tickの常時更新ではなく、話数をまたいだときだけの有界な更新です。
+
+## commit を伴わない復帰の再整合（#2673）
+
+タイトルとカテゴリはゲーム切替の **commit 後の hook** だけが更新する。そのため、
+commit を作らない経路では前のコーナーのメタデータが配信に残る。
+
+- 復帰失敗（`rollback_failed`）後の手動 `failed -> idle` 遷移
+- plane の外で再起動した背景 sorengame
+- コーナー終了で復帰先が無く `idle` へ戻る stop（`previous_game` なし）
+
+これを補うため、`corner_rotation.tick()` の先頭で
+`stream_category.reconcile_stream_metadata()` を best-effort で呼ぶ。
+
+- 意図するランタイム: `phase=ready` は commit 済みの `active.game`、`phase=idle` は
+  状態ファイルを更新し続けている背景 sorengame（`game_state.json` が 120 秒以内）。
+  それ以外の phase は遷移中なので何もしない。
+- 直近の announce 記録（`run-soren-live/stream_metadata_last.json`）と同じ
+  ランタイムなら再送しない。commit 経由の announce も同じ記録を更新する。
+- 記録は game/status に加えて、半熟英雄だけ `generation:cleared` の
+  突破話数マーカーを持つ。同じゲームでもマーカーが変わったときだけ
+  `--title-only` で再送し、マーカーが読めない観測では再送しない。
+- 送信失敗は記録して 300 秒 backoff。失敗が rotation の tick を止めない。
+- 記録・判定は状態 enum・ゲーム名・検証済みの突破話数だけで、
+  トークン・本文・応答bodyを残さない。
+
+これは「配信中の常時更新」ではない。画面とメタデータが食い違ったままになる経路を
+有界に自己修復するだけで、資格情報・エンコーダ・ゲーム入力・既存 lock の契約は変えない。

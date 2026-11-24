@@ -87,6 +87,28 @@
       "mode": "100755",
       "sha256": "9c3a8f4cb5fcb71e0782499da6435ab64d287348f0fd69a95581f4fac0e7cd9a",
       "reason": "docich#225: production live /home/ubuntu/soren/test_classifier.sh (3991 bytes, mode 100755, mtime 2026-09-17 01:54 JST, git blob 1fd281e4bdaf4312972a4e13594c03f72951288d) matches neither old_sub (blob d9e58f3e09dd18514112cba713e5d2b6a59da011) nor new_sub (the path was removed by soviet_now #495 / docich #990 when classification moved to docich), and no commit reachable from soviet_now --all carries these bytes for this path: it is an unreviewed direct edit or partial application left on production. The push-triggered reconcile therefore fails closed with 'unknown projection content' (VM op log be2e102468904c209581bf701c66b8c4, canonical run 35769119675) and blocks canonical deploy for the f2c20234->fa39e06d pair. This entry authorizes discarding exactly these bytes+mode: only when the live file still matches this exact sha256 and mode does reconcile converge the path to the old baseline, after which the canonical deploy projects new_sub (file removal). Any other bytes, path, mode or gitlink pair stays refused, changed live content stays fail-closed, and the final live state is the reviewed new_sub state (absent), never the attested bytes."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "2c31d0de6e0ecbb2c3e21013d66c97fdf3a4e204",
+      "new_sub": "ab0d7404e8c0726b3b43db0f075029d69c2a6e05",
+      "path": "tests/test_docich_corner_stats.py",
+      "mode": "100644",
+      "sha256": "e3a87a458b0aaa4d2163584b737f6e375d0cb6d56c4bd2595944f7a9c68918a7",
+      "source_commit": "5a5653434ca38a36a0aa5dd6665944cdc85676b6",
+      "source_pr": 3360,
+      "reason": "Live /home/ubuntu/soren/tests/test_docich_corner_stats.py (71779 bytes, mode 100644) is the exact blob of soviet_now 5a5653434 (#771), projected by docich #3360. It is a reviewed main commit, but it lies outside old_sub..new_sub, so the lineage check cannot see it; an earlier deploy reported success without applying the 2c31d0de projection (docich#3377), leaving this path stale. The #3455 deploy then failed with reconcile_refused and every later main is blocked. This entry authorizes discarding exactly these bytes+mode: reconcile converges the path to the old baseline and the canonical deploy applies the reviewed new_sub content. Any other bytes, path, mode or gitlink pair stays refused."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "2c31d0de6e0ecbb2c3e21013d66c97fdf3a4e204",
+      "new_sub": "ab0d7404e8c0726b3b43db0f075029d69c2a6e05",
+      "path": "tests/test_hanjuku_gap_browser.mjs",
+      "mode": "100644",
+      "sha256": "574a9a4319c53b6dfc5e7f108bea693effecb3a7487e0ac564ad461696adc41d",
+      "source_commit": "6cbb81a89dc8e83166ecd77f8c3a7c9d34f9b66c",
+      "source_pr": 3315,
+      "reason": "Live /home/ubuntu/soren/tests/test_hanjuku_gap_browser.mjs (7020 bytes, mode 100644) is the exact blob of soviet_now 6cbb81a89 (#764), projected by docich #3315, and is outside old_sub..new_sub for the same stale-projection reason as tests/test_docich_corner_stats.py above. This entry authorizes discarding exactly these bytes+mode; reconcile converges the path to the old baseline and the canonical deploy applies the reviewed new_sub content. Any other bytes, path, mode or gitlink pair stays refused."
     }
   ]
 }

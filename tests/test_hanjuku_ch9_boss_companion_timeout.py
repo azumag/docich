@@ -1,0 +1,38 @@
+"""Issue #5275: ch9 boss sorties stalled at zero while waiting for a companion.
+
+Owner 2026-11-24: bound the hero-alone hold; after BOSS_COMPANION_WAIT_TICKS
+the hero sorties alone instead of waiting the whole month.
+"""
+from docich.hanjuku.flows import map as M
+
+
+def _mem(tick):
+    return {'chapter': 9, 'tick': tick, 'plan': {'orders': {'A:x:M1': 'pending'}},
+            '_records': []}
+
+
+def _order():
+    return {'step': 'A:x:M1', 'target': 'ボス', 'purpose': 'attack'}
+
+
+def test_the_companion_wait_expires_and_records():
+    mem = _mem(1000)
+    order = _order()
+    assert M._boss_companion_wait_expired(mem, order) is False
+    mem['tick'] = 1000 + M.BOSS_COMPANION_WAIT_TICKS - 1
+    assert M._boss_companion_wait_expired(mem, order) is False
+    mem['tick'] = 1000 + M.BOSS_COMPANION_WAIT_TICKS
+    assert M._boss_companion_wait_expired(mem, order) is True
+    assert mem['_records'][-1]['decision'] == 'boss_companion_timeout'
+    assert M._boss_companion_wait_expired(mem, order) is True
+    assert [row['decision'] for row in mem['_records']].count('boss_companion_timeout') == 1
+
+
+def test_a_new_step_starts_its_own_wait():
+    mem = _mem(1000)
+    order = _order()
+    assert M._boss_companion_wait_expired(mem, order) is False
+    other = dict(order, step='A:x:M2')
+    mem['tick'] = 1500
+    assert M._boss_companion_wait_expired(mem, other) is False
+    assert M._boss_companion_wait_expired(mem, order) is True

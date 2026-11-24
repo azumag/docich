@@ -1,4 +1,4 @@
-"""One owner-requested Hanjuku checkpoint transfer; no automatic rewind.
+"""Boundary-directed Hanjuku starts with request-bound checkpoint transfer.
 
 Save bytes stay private. A UDP LOAD_STATE acknowledgement only queues a task;
 paused core serialization must equal the selected checkpoint before AI starts.
@@ -17,12 +17,215 @@ import zlib
 
 from .adapters.base import AdapterError
 from .game_switch import atomic_write_json
-from .naming import validate_runtime_id
-from .retroarch_boundary import checkpoint_digest, identity, matches, read_record
+from .naming import runtime_id_generation
+from .hanjuku.strategy import card_census as _card_census
+from .retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,
+                                identity, matches, read_record)
 
 REQUEST_FILE = 'hanjuku_resume.json'
 RECEIPT_FILE = 'hanjuku_resume.json'
 MAX_BYTES = 64 * 1024 * 1024
+START_POLICY = 'terminal-boundary-v1'
+ROLLED_BACK_UNCONSUMED = 'rolled-back-unconsumed'
+
+
+def _start_mode(record):
+    if record.get('new_game') is True and (
+            record.get('start_policy') != START_POLICY or record.get('start_mode') != 'fresh'
+            or record.get('source_boundary') is not None
+            or record.get('dispatch_source') != 'manual' or record.get('explicit_resume') is not False):
+        raise AdapterError('explicit new game decision conflicts with its reservation')
+    if record.get('start_policy') != START_POLICY:
+        return 'resume'  # legacy claimed transfers retain their sealed snapshot
+    mode, source = record.get('start_mode'), record.get('source_boundary')
+    if mode == 'fresh':
+        if ((source is not None and (not isinstance(source, dict)
+                                    or source.get('outcome') not in {'game_over', 'suspended', 'manual_forced_stop'}
+                                    or (record.get('explicit_resume') is True and source.get('outcome') != 'game_over')))
+                or any(k in record for k in ('sha256', 'selected_source', 'core_state_sha256'))):
+            raise AdapterError('Hanjuku fresh decision conflicts with saved progress')
+    elif mode == 'resume':
+        if (not isinstance(source, dict)
+                or source.get('outcome') not in {'screen_stalled', 'input_stalled', 'suspended'}
+                or source.get('sha256') != record.get('sha256')
+                or source.get('checkpoint_bytes') != record.get('bytes')):
+            raise AdapterError('Hanjuku resume decision conflicts with its boundary')
+    else:
+        raise AdapterError('unknown Hanjuku start decision')
+    rewind = record.get('rewind_from_boundary')
+    if rewind is not None and (
+            record.get('explicit_resume') is not True or record.get('dispatch_source') != 'manual'
+            or not isinstance(rewind, dict) or rewind.get('outcome') != 'manual_forced_stop'
+            or rewind.get('status') != 'reached' or rewind.get('save_error') != 'save_timeout'
+            or type(rewind.get('generation')) is not int or not isinstance(source, dict)
+            or type(source.get('generation')) is not int or rewind['generation'] <= source['generation']):
+        raise AdapterError('Hanjuku rewind decision lacks an explicit unsaved-stop request')
+    return mode
+
+
+def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
+                     _only_runtime_id=None):
+    """Order runs by generation, then prove the latest run's reached boundary.
+
+    Unknown or incomplete newer progress never authorizes a rewind or a new
+    game. Only explicit resume after an authorized unsaved manual stop may
+    inspect an earlier generation, with the same boundary/save verification.
+
+    ``_only_runtime_id`` narrows the candidate set to one named runtime — the
+    operator's explicit resume target — while keeping the same boundary,
+    identity and checkpoint verification. A named runtime that fails those
+    checks still fails closed; it is never skipped for the next-oldest.
+    """
+    from . import hanjuku_run
+    from .adapters.retroarch import resolve_rom
+    from .game_switch import RequestReceiptStore
+    runtimes = Path(g.state_dir) / 'runtimes'
+    if runtimes.is_symlink():
+        raise AdapterError('runtime storage may not be a symlink')
+    stems = {'hanjuku-hero', resolve_rom(g, game).stem}
+    # A committed newer run still counts when its runtime evidence was lost.
+    # Otherwise deleting a game-over run's files could resurrect an old stall.
+    # Leases are compared between run/boundary below; rollback may re-lease a
+    # runtime after its original start receipt was committed.
+    choices = {}
+    for receipt in RequestReceiptStore(Path(g.state_dir)).receipts():
+        result = receipt.get('result') or {}
+        if (receipt.get('status') == 'succeeded'
+                and (receipt.get('target') == 'hanjuku-hero'
+                     or result.get('to_game') == 'hanjuku-hero')):
+            # The queued start/switch catch-up path succeeds without starting
+            # its reserved runtime. Recognize that exact result, not all old
+            # successes lacking an active_runtime proof (which stay barriers).
+            if (receipt.get('operation') in {'start', 'switch'}
+                    and result.get('operation') == receipt['operation']
+                    and result.get('request_id') == receipt['request_id']
+                    and result.get('status') == 'succeeded'
+                    and type(result.get('generation')) is int
+                    and result['generation'] == receipt['generation']
+                    and result.get('from_game') == result.get('to_game') == receipt.get('target')
+                    and result.get('detail') == '既に起動中です'
+                    and 'active_runtime' not in result and 'source_runtime' not in result):
+                continue
+            choices[runtimes / receipt['runtime_id']] = receipt['generation']
+    for runtime in runtimes.glob('g*'):
+        # RUN_FILE is Hanjuku-specific. Saved states alone also constitute
+        # progress, but cannot prove a safe start without the run/boundary.
+        relevant = (any((runtime / name).exists() or (runtime / name).is_symlink()
+                        for name in (hanjuku_run.RUN_FILE, MANUAL_SAVE_FILE, RECEIPT_FILE))
+                    or any(any((runtime / 'states').glob(stem + '.state*')) for stem in stems))
+        if not relevant:
+            boundary = read_record(runtime / BOUNDARY_FILE)
+            relevant = boundary.get('game') == 'hanjuku-hero'
+        if not relevant:
+            continue
+        if runtime.is_symlink() or not runtime.is_dir():
+            raise AdapterError('Hanjuku runtime may not be a symlink')
+        try:
+            generation = runtime_id_generation(runtime.name)
+        except ValueError as exc:
+            raise AdapterError('invalid Hanjuku runtime identity') from exc
+        choices[runtime] = generation
+    if _before_generation is not None:
+        choices = {runtime: generation for runtime, generation in choices.items()
+                   if generation < _before_generation}
+    if _only_runtime_id is not None:
+        choices = {runtime: generation for runtime, generation in choices.items()
+                   if runtime.name == _only_runtime_id}
+    if not choices:
+        return None
+    latest = max(choices.values())
+    newest = [runtime for runtime, generation in choices.items() if generation == latest]
+    if len(newest) != 1:
+        raise AdapterError('ambiguous latest Hanjuku generation')
+    runtime = newest[0]
+    record = read_record(runtime / BOUNDARY_FILE)
+    run = read_record(runtime / hanjuku_run.RUN_FILE)
+    expected = dict(game='hanjuku-hero', runtime_id=runtime.name, generation=latest,
+                    lease_id=record.get('lease_id'))
+    try:
+        uuid.UUID(record['request_id'])
+        uuid.UUID(expected['lease_id'])
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise AdapterError('Hanjuku boundary identity is unconfirmed') from exc
+    if (type(record.get('schema')) is not int or record['schema'] != 1
+            or record.get('status') != 'reached'
+            or any(type(record.get(k)) is not type(v) or record.get(k) != v
+                   for k, v in expected.items())):
+        raise AdapterError('Hanjuku reached boundary identity mismatch')
+    outcome = record.get('outcome')
+    if outcome in hanjuku_run.TERMINAL_REASONS:
+        terminal = hanjuku_run.terminal(runtime, expected)
+        if (not terminal or terminal['terminal_reason'] != outcome
+                or record.get('frame_sha256') != terminal['frame_sha256']
+                or type(run.get('generation')) is not int):
+            raise AdapterError('Hanjuku terminal boundary evidence mismatch')
+    elif outcome in {'suspended', 'manual_forced_stop'}:
+        manual = read_record(runtime / MANUAL_SAVE_FILE)
+        if (any(type(manual.get(k)) is not type(v) or manual.get(k) != v
+                for k, v in {**expected, 'schema': 1, 'request_id': record['request_id']}.items())
+                or (run and any(type(run.get(k)) is not type(v) or run.get(k) != v
+                                for k, v in expected.items()))):
+            raise AdapterError('Hanjuku manual boundary evidence mismatch')
+        # A manual marker cannot override an already detected game over/stall.
+        if run.get('terminal_reason') is not None:
+            raise AdapterError('Hanjuku manual boundary conflicts with terminal evidence')
+        if outcome == 'manual_forced_stop':
+            if manual.get('allow_unsaved_stop') is not True or record.get('save_error') != 'save_timeout':
+                raise AdapterError('Hanjuku unsaved stop authorization mismatch')
+            if explicit_resume:
+                # Owner-approved exception: an explicit resume may rewind past
+                # this confirmed unsaved stop, but not past unknown progress or
+                # a game-over boundary. A bad older save still fails closed.
+                selection = _latest_boundary(g, game, explicit_resume=True, _before_generation=latest)
+                if selection is None:
+                    raise AdapterError('no earlier verified Hanjuku checkpoint to resume')
+                return dict(selection, rewind_from_boundary=record)
+            # A confirmed owner-authorized unsaved stop preserves the old
+            # ordinary-start meaning. It never authorizes an older save.
+            return dict(mode='fresh', source_boundary=record)
+    else:
+        raise AdapterError('Hanjuku last outcome requires explicit recovery')
+    if outcome == 'game_over':
+        return dict(mode='fresh', source_boundary=record)
+    name = resolve_rom(g, game).stem + '.state'
+    if record.get('checkpoint') != name or (runtime / 'states').is_symlink():
+        raise AdapterError('Hanjuku boundary checkpoint basename mismatch')
+    selected = runtime / 'states' / name
+    digest = checkpoint_digest(selected)
+    if (digest != record.get('sha256') or type(record.get('checkpoint_bytes')) is not int
+            or selected.stat().st_size != record['checkpoint_bytes']):
+        raise AdapterError('Hanjuku boundary checkpoint changed')
+    if outcome == 'suspended' and not explicit_resume:
+        # Only the requested stalled outcomes gain automatic restoration.
+        # Still reject a corrupt saved suspension rather than hiding it with
+        # an implicit reset; an ordinary valid suspension keeps fresh semantics.
+        core_digest(selected)
+        return dict(mode='fresh', source_boundary=record)
+    return dict(mode='resume', source_boundary=record, selected=selected)
+
+
+def prepare_start(g, queued):
+    """Common natural/manual dispatch, after the previous program slot ended."""
+    from .config import load_game
+    if queued.get('corner') != 'hanjuku-hero':
+        return
+    if queued.get('resume_request_id') is not None:
+        if queued.get('new_game') is True:
+            raise AdapterError('new game cannot recover a checkpoint transfer')
+        # The reviewed failed-before-AI recovery keeps the logical request and
+        # sealed bytes; its derived attempt must never prepare a new decision.
+        with _lock(g) as root:
+            prior = read_record(root / REQUEST_FILE)
+            recovery = prior.get('startup_recovery')
+            if (not isinstance(recovery, dict)
+                    or prior.get('request_id') != queued['resume_request_id']
+                    or recovery.get('attempt_id') != queued.get('request_id')
+                    or prior.get('corner') != queued['corner']
+                    or prior.get('status') not in {'queued', 'claimed', 'verified'}):
+                raise AdapterError('checkpoint startup recovery identity mismatch')
+        return
+    prepare(g, load_game(g, 'hanjuku-hero'), queued)
+    publish(g, queued)
 
 
 def core_digest(path: Path) -> str:
@@ -120,43 +323,59 @@ def _persist_copy(source, destination):
 
 
 def prepare(g, game, queued):
-    """Called inside the durable manual inbox lock before publishing its request."""
+    """Seal one start decision before publishing its durable request."""
     from .adapters.retroarch import resolve_rom, resolve_core
+    new_game = queued.get('new_game', False)
+    if type(new_game) is not bool or (new_game and (
+            queued.get('corner') != 'hanjuku-hero' or queued.get('source') != 'manual'
+            or queued.get('resume_latest') is True or queued.get('resume_request_id') is not None)):
+        raise AdapterError('invalid explicit new game reservation')
     uuid.UUID(queued['request_id'])
     with _lock(g) as root:
         prior = read_record(root / REQUEST_FILE)
+        if prior.get('request_id') == queued['request_id'] and (
+                (prior.get('new_game') is True) != new_game):
+            raise AdapterError('start intent changed for the same reservation')
         if prior and prior.get('status') in {'prepared', 'queued', 'claimed'}:
             if prior.get('request_id') == queued['request_id']:
+                if (prior.get('status') != 'claimed'
+                        and prior.get('start_policy') != START_POLICY):
+                    raise AdapterError('legacy unclaimed checkpoint needs explicit recovery')
                 return
             raise AdapterError('another checkpoint request is pending')
-        runtimes = Path(g.state_dir) / 'runtimes'
-        if runtimes.is_symlink():
-            raise AdapterError('runtime storage may not be a symlink')
-        choices = []
-        for runtime in runtimes.glob('g*'):
-            if runtime.is_symlink() or not runtime.is_dir():
-                continue
-            try:
-                validate_runtime_id(runtime.name)
-            except ValueError:
-                continue
-            states = runtime / 'states'
-            if states.is_symlink():
-                continue
-            for path in states.glob('hanjuku-hero.state*'):
-                # Slot 0 and numbered slots only: ignore thumbnails/backups.
-                suffix = path.name.removeprefix('hanjuku-hero.state')
-                if suffix and not suffix.isdecimal():
-                    continue
-                if path.is_file() and not path.is_symlink() and 0 < path.stat().st_size:
-                    choices.append(path)
-        if not choices:
+        if prior.get('request_id') == queued['request_id']:
+            return  # a verified retry must not select from its own new run
+        # Explicit new games boot in the new generation's isolated save dirs.
+        # Do not read, copy, delete or overwrite any previous run's save bytes.
+        resume_from = queued.get('resume_from')
+        explicit = queued.get('resume_latest') is True or resume_from is not None
+        selection = (dict(mode='fresh', source_boundary=None) if new_game else
+                     _latest_boundary(g, game, explicit_resume=explicit,
+                                      _only_runtime_id=resume_from))
+        if selection is None and (queued.get('resume_latest') is True
+                                  or resume_from is not None):
             raise AdapterError('no remaining checkpoint')
-        selected = max(choices, key=lambda p: (p.stat().st_mtime_ns, str(p)))
+        selection = selection or dict(mode='fresh', source_boundary=None)
+        request = dict(schema=1, status='prepared', start_policy=START_POLICY,
+            start_mode=selection['mode'], source_boundary=selection['source_boundary'],
+            dispatch_source=queued.get('source', 'manual' if explicit else 'automatic'),
+            explicit_resume=explicit,
+            request_id=queued['request_id'], corner=queued['corner'],
+            selected_at=queued['selected_at'])
+        if new_game:
+            request['new_game'] = True
+        if 'rewind_from_boundary' in selection:
+            request['rewind_from_boundary'] = selection['rewind_from_boundary']
+        if selection['mode'] == 'fresh':
+            atomic_write_json(root / REQUEST_FILE, request)
+            return
+        selected = selection['selected']
         before = selected.stat()
         if before.st_size > MAX_BYTES:
             raise AdapterError('latest checkpoint exceeds read bound')
         digest = checkpoint_digest(selected)
+        if digest != selection['source_boundary']['sha256']:
+            raise AdapterError('selected checkpoint no longer matches its boundary')
         mem_digest = core_digest(selected)
         sealed = root / (queued['request_id'] + '.state')
         _persist_copy(selected, sealed)
@@ -164,14 +383,39 @@ def prepare(g, game, queued):
         if ((before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
                 or checkpoint_digest(sealed) != digest or checkpoint_digest(selected) != digest):
             raise AdapterError('selected checkpoint changed during preservation')
-        atomic_write_json(root / REQUEST_FILE, dict(schema=1, status='prepared',
-            request_id=queued['request_id'], corner=queued['corner'],
-            selected_at=queued['selected_at'],
+        # Reprove the same receipt after sealing; a concurrent stop must not
+        # silently change which end-of-run this transfer represents.
+        if read_record(selected.parent.parent / BOUNDARY_FILE) != selection['source_boundary']:
+            raise AdapterError('selected checkpoint boundary changed during preservation')
+        atomic_write_json(root / REQUEST_FILE, dict(request,
             selected_source=str(selected.relative_to(Path(g.state_dir))),
             selected_mtime_ns=before.st_mtime_ns, bytes=before.st_size,
             sha256=digest, core_state_sha256=mem_digest,
             rom_sha256=checkpoint_digest(resolve_rom(g, game)),
             core_sha256=checkpoint_digest(Path(resolve_core(game)))))
+
+
+def discard_unclaimed(g, request_id):
+    """Drop one never-dispatched checkpoint request owned by a queued reservation.
+
+    Only 'prepared'/'queued' receipts may be removed; a claimed or verified
+    receipt means dispatch already consumed it and the recovery paths own the
+    record. Returns 'removed' or 'absent'.
+    """
+    request_id = str(uuid.UUID(request_id))
+    with _lock(g) as root:
+        prior = read_record(root / REQUEST_FILE)
+        if not prior:
+            return 'absent'
+        if prior.get('request_id') != request_id:
+            raise AdapterError('checkpoint request belongs to another reservation')
+        if prior.get('status') not in {'prepared', 'queued'}:
+            raise AdapterError('checkpoint request is not discardable')
+        (root / REQUEST_FILE).unlink()
+        sealed = root / (request_id + '.state')
+        if sealed.exists() or sealed.is_symlink():
+            sealed.unlink()
+        return 'removed'
 
 
 def recover_prepared(g, corner):
@@ -182,12 +426,13 @@ def recover_prepared(g, corner):
         if prior.get('status') != 'prepared':
             return None
         if (prior.get('schema') != 1 or prior.get('corner') != corner
+                or prior.get('explicit_resume', True) is not True
                 or any(k in prior for k in ('runtime_id', 'generation', 'lease_id'))):
             raise AdapterError('invalid prepared checkpoint request')
         request_id = str(uuid.UUID(prior['request_id']))
         selected_at = timestamp(prior['selected_at'])
         sealed = root / (request_id + '.state')
-        if (checkpoint_digest(sealed) != prior.get('sha256')
+        if _start_mode(prior) != 'fresh' and (checkpoint_digest(sealed) != prior.get('sha256')
                 or core_digest(sealed) != prior.get('core_state_sha256')):
             raise AdapterError('prepared checkpoint changed')
         return dict(corner=corner, selected_at=selected_at,
@@ -200,7 +445,8 @@ def publish(g, queued):
         prior = read_record(root / REQUEST_FILE)
         if (prior.get('request_id') != queued.get('request_id')
                 or prior.get('corner') != queued.get('corner')
-                or queued.get('resume_latest') is not True):
+                or (queued.get('new_game') is True) != (prior.get('new_game') is True)
+                or (queued.get('resume_latest') is True) != prior.get('explicit_resume', True)):
             raise AdapterError('checkpoint publication identity mismatch')
         if prior.get('status') == 'prepared':
             atomic_write_json(root / REQUEST_FILE, dict(prior, status='queued'))
@@ -213,7 +459,9 @@ def claim(adapter, deadline, cancel):
     g, spec = adapter.g, adapter.spec
     if spec.game != 'hanjuku-hero':
         return
-    adapter._check_active(deadline, cancel)
+    from .hanjuku_run import enabled
+    strict = enabled(adapter.game)
+    adapter._check_active(deadline, cancel, "claim")
     prior = read_record(spec.runtime_dir / RECEIPT_FILE)
     if prior:
         if not matches(prior, spec, prior.get('request_id')) or prior.get('status') != 'verified':
@@ -228,22 +476,42 @@ def claim(adapter, deadline, cancel):
         if request.get('status') not in {'prepared', 'queued'}:
             if request.get('runtime_id') == spec.runtime_id and request.get('status') == 'claimed':
                 raise AdapterError('checkpoint candidate needs explicit recovery')
+            if strict:
+                raise AdapterError('Hanjuku start has no prepared boundary decision')
             return
         ledger = read_record(Path(g.state_dir) / 'corner_rotation.json', limit=1024 * 1024)
-        pending = ledger.get('pending') or {}
         recovery = request.get('startup_recovery')
+        if (request.get('start_policy') != START_POLICY
+                and not (isinstance(recovery, dict)
+                         and isinstance(recovery.get('original'), dict)
+                         and recovery['original'].get('status') == 'claimed')):
+            raise AdapterError('legacy unclaimed checkpoint needs explicit recovery')
         attempt_id = (recovery.get('attempt_id') if isinstance(recovery, dict)
                       else request.get('request_id'))
+        pending = next((row for key in ('pending', 'manual_pending')
+                        if isinstance(row := ledger.get(key), dict)
+                        and row.get('request_id') == attempt_id), {})
         if (pending.get('request_id') != attempt_id
                 or (recovery is not None and pending.get('resume_request_id') != request.get('request_id'))
                 or pending.get('corner') != request.get('corner')
-                or pending.get('source') != 'manual' or pending.get('resume_latest') is not True):
+                or pending.get('source', 'automatic') != request.get('dispatch_source', 'manual')
+                or (pending.get('new_game') is True) != (request.get('new_game') is True)
+                or (pending.get('resume_latest') is True) != request.get('explicit_resume', True)):
+            if strict:
+                raise AdapterError('Hanjuku start reservation identity mismatch')
             return  # another legitimate corner start cannot steal the request
         from .agent.fence import read_canonical
         candidate = read_canonical(g.state_dir).get('candidate') or {}
-        if any(candidate.get(k) != getattr(spec, k) for k in ('game', 'runtime_id', 'generation', 'lease_id')):
+        if any(type(candidate.get(k)) is not type(getattr(spec, k))
+               or candidate.get(k) != getattr(spec, k)
+               for k in ('game', 'runtime_id', 'generation', 'lease_id')):
             raise AdapterError('checkpoint candidate identity mismatch')
         request_id = str(uuid.UUID(request['request_id']))
+        if _start_mode(request) == 'fresh':
+            local = dict(request, **identity(spec, request_id), status='verified')
+            atomic_write_json(root / REQUEST_FILE, local)
+            atomic_write_json(spec.runtime_dir / RECEIPT_FILE, local)
+            return
         sealed = root / (request_id + '.state')
         from .adapters.retroarch import resolve_rom, resolve_core
         if (checkpoint_digest(sealed, deadline, cancel) != request.get('sha256')
@@ -254,14 +522,89 @@ def claim(adapter, deadline, cancel):
         atomic_write_json(root / REQUEST_FILE, local)  # consume even if staging fails
         atomic_write_json(spec.runtime_dir / RECEIPT_FILE, local)
         _persist_copy(sealed, spec.runtime_dir / 'states/hanjuku-hero.state')
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "claim")
+
+
+def start_claimable(adapter, request_id: str) -> bool:
+    """Whether claim() can still bind a prepared decision to this exact request.
+
+    Read-only mirror of claim()'s fail-closed gates, used by the game-switch
+    replay path before it stages a candidate: a queued/replayed switch runs
+    below the corner's prepare_start(), so once its durable decision is gone
+    or reserved to another request, materialize_runtime can only die at
+    claim() and leave a doomed candidate plus a retiring runtime on every
+    retry (g1211/g1215, docich#4356).  Everything claim() would accept still
+    returns True; anything claim() would refuse returns False.
+    """
+    g, spec = adapter.g, adapter.spec
+    if spec.game != 'hanjuku-hero':
+        return True
+    from .hanjuku_run import enabled
+    strict = enabled(adapter.game)
+    root = Path(g.state_dir) / 'hanjuku-resume'
+    if root.is_symlink():
+        raise AdapterError('checkpoint storage may not be a symlink')
+    request = read_record(root / REQUEST_FILE)
+    if request.get('status') not in {'prepared', 'queued'}:
+        if request.get('runtime_id') == spec.runtime_id and request.get('status') == 'claimed':
+            return False
+        return not strict
+    recovery = request.get('startup_recovery')
+    if (request.get('start_policy') != START_POLICY
+            and not (isinstance(recovery, dict)
+                     and isinstance(recovery.get('original'), dict)
+                     and recovery['original'].get('status') == 'claimed')):
+        return False
+    if not strict:
+        return True
+    # claim() binds whatever decision the ledger names; a replay is only
+    # safe when the decision was prepared for this exact request, otherwise
+    # it would silently consume another corner's sealed checkpoint.
+    attempt_id = (recovery.get('attempt_id') if isinstance(recovery, dict)
+                  else request.get('request_id'))
+    if attempt_id != request_id:
+        return False
+    ledger = read_record(Path(g.state_dir) / 'corner_rotation.json', limit=1024 * 1024)
+    pending = next((row for key in ('pending', 'manual_pending')
+                    if isinstance(row := ledger.get(key), dict)
+                    and row.get('request_id') == attempt_id), {})
+    return not (pending.get('request_id') != attempt_id
+                or (recovery is not None
+                    and pending.get('resume_request_id') != request.get('request_id'))
+                or pending.get('corner') != request.get('corner')
+                or pending.get('source', 'automatic') != request.get('dispatch_source', 'manual')
+                or (pending.get('new_game') is True) != (request.get('new_game') is True)
+                or (pending.get('resume_latest') is True) != request.get('explicit_resume', True))
+
+
+def transition_rollback_claim(g, *, runtime_stopped: bool = False) -> str | None:
+    """ロールバック後の claim 状態を遷移させる。
+
+    restore() が成功せず（REQUEST_FILE の status が 'claimed' のまま）、
+    かつ runtime 停止が確認できた場合のみ rolled-back-unconsumed に遷移し、
+    prepare() で pending 扱いしない（後続の prepare() が "another checkpoint
+    request is pending" で拒否されなくなる）。
+
+    runtime 停止が未確認の場合は現状どおり claimed のまま（recovery-required）
+    に留め、証拠のない解放は行わない（released-unverified と同じ原則）。
+    restore() 成功済み（status == 'verified'）の場合も遷移せず、claim を残す。
+    """
+    with _lock(g) as root:
+        prior = read_record(root / REQUEST_FILE)
+        if not prior or prior.get('status') != 'claimed':
+            return prior.get('status') if prior else None
+        if not runtime_stopped:
+            return 'claimed'
+        updated = dict(prior, status=ROLLED_BACK_UNCONSUMED)
+        atomic_write_json(root / REQUEST_FILE, updated)
+        return ROLLED_BACK_UNCONSUMED
 
 
 def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
     from .adapters.retroarch import send_ra_cmd
     verified = False
     while not verified:
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "_fresh_roundtrip")
         adapter._require_paused(deadline, cancel)
         before = saved.stat() if saved.exists() else None
         fingerprint = ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) if before else None)
@@ -269,7 +612,7 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
         send_ra_cmd('SAVE_STATE', port=adapter._network_port())
         save_end = min(deadline, time.monotonic() + 2)
         while time.monotonic() < save_end:
-            adapter._check_active(deadline, cancel)
+            adapter._check_active(deadline, cancel, "_fresh_roundtrip")
             time.sleep(.05)
             if not saved.exists():
                 continue
@@ -295,16 +638,92 @@ def _fresh_roundtrip(adapter, saved, expected, deadline, cancel):
                 break
 
 
+SOURCE_KEYS = ('game', 'generation', 'lease_id', 'runtime_id')
+
+
+STALLED_OUTCOMES = frozenset({'input_stalled', 'screen_stalled'})
+
+
+def source_chapter(state_dir, receipt):
+    """Chapter the stalled source run held at the exact checkpoint frame.
+
+    Owner rule (2026-10-28): keep the chapter across a stall and restore it.
+    The source bot's last decision must be on the boundary frame and carry
+    the boundary's run identity; anything else stays chapterless.
+    """
+    from .naming import runtime_directory
+    boundary = receipt.get('source_boundary') if isinstance(receipt, dict) else None
+    if not isinstance(boundary, dict) or not isinstance(boundary.get('frame_sha256'), str):
+        return None
+    try:
+        source = runtime_directory(Path(state_dir), boundary.get('runtime_id'))
+        record = read_record(source / 'hanjuku_bot.json', limit=256 * 1024)
+    except (AdapterError, ValueError, TypeError):
+        return None
+    trace = record.get('decision_trace') if isinstance(record.get('decision_trace'), dict) else {}
+    policy = record.get('policy') if isinstance(record.get('policy'), dict) else {}
+    owner = policy.get('_run_identity') if isinstance(policy.get('_run_identity'), dict) else {}
+    if any(trace.get(k) != boundary.get(k) or owner.get(k) != boundary.get(k)
+           for k in SOURCE_KEYS):
+        return None
+    if (trace.get('frame_sha256') != boundary['frame_sha256']
+            and boundary.get('outcome') not in STALLED_OUTCOMES):
+        # g1067 11:23: animated water gave the stall boundary a newer digest
+        # than the bot's last decision. A stalled run sent no input after it,
+        # so its chapter cannot have changed; other outcomes need the frame.
+        return None
+    chapter = policy.get('chapter')
+    return chapter if type(chapter) is int and 1 <= chapter <= 12 else None
+
+
+def inherit_running_chapter(runtime, state):
+    """Seed a verified chapterless restore with its source chapter (hot-loaded)."""
+    policy = state.get('policy') if isinstance(state, dict) else None
+    if (not isinstance(policy, dict) or policy.get('resume_chapter_pending') is not True
+            or policy.get('chapter') is not None):
+        return None
+    receipt = read_record(Path(runtime) / RECEIPT_FILE)
+    if (receipt.get('status') != 'verified' or receipt.get('runtime_id') != Path(runtime).name
+            or receipt.get('chapter') is not None):
+        return None
+    chapter = source_chapter(Path(runtime).parent.parent, receipt)
+    if chapter is None:
+        return None
+    from .hanjuku.strategy.campaign import _enter_chapter
+    policy.pop('resume_chapter_pending', None)
+    _enter_chapter(policy, chapter, evidence='resume_source_boundary',
+                   reason='停滞時の最終フレームで確定していた章を再開後に引き継ぐ')
+    return chapter
+
+
+def _castle_dialogue(screen):
+    """A castle-hall dialogue: text plus the native year/month header.
+
+    g1059 stalled on a seasonal 「メリ〜 クリスマ〜ス!」 event, which shows
+    neither a chapter nor a known panel; the restore waited for one until
+    its deadline on every retry (g1063, g1065).
+    """
+    header = screen.header or {}
+    return (screen.kind == 'text' and header.get('chapter') is None
+            and type(header.get('year')) is int and type(header.get('month')) is int)
+
+
 def restore(adapter, deadline, cancel):
     """Pause, load, then reserialize and compare before staging any agent."""
     from .adapters.retroarch import send_ra_cmd
     spec = adapter.spec
-    deadline = min(deadline, time.monotonic() + 10)
+    # A cold runtime (fresh RetroArch boot + ROM load + first network-command
+    # replies + the chapter-detection frame loop) cannot finish the restore in
+    # 10s: g1091/g1093 both rolled back inside this cap after reaching the
+    # parse loop. Keep a bounded budget but size it for a cold restore.
+    deadline = min(deadline, time.monotonic() + 60)
     receipt_path = spec.runtime_dir / RECEIPT_FILE
     request = read_record(receipt_path)
     if not request:
         return
     if matches(request, spec, request.get('request_id')) and request.get('status') == 'verified':
+        if _start_mode(request) == 'fresh':
+            return
         adapter._verify_manual_content(deadline, cancel)
         return  # readiness/agent repair never reloads an already verified run
     if not matches(request, spec, request.get('request_id')) or request.get('status') != 'claimed':
@@ -334,7 +753,8 @@ def restore(adapter, deadline, cancel):
     from .xkit import XKit
     from .hanjuku_pixels import read_png
     from .hanjuku_screen import (fake_hero_announcement_chapter, parse, resume_sortie_panel,
-                                resume_egg_ritual_panel, resume_battle_menu_panel)
+                                resume_egg_ritual_panel, resume_battle_menu_panel,
+                                resume_bijin_gift_panel)
     native = read_record(spec.runtime_dir / 'presentation.json')
     capture = spec.runtime_dir / 'screenshots/resume.png'
     capture.parent.mkdir(exist_ok=True)
@@ -343,12 +763,29 @@ def restore(adapter, deadline, cancel):
     sortie_without_chapter = False
     ritual_without_chapter = False
     battle_menu_without_chapter = False
+    gift_without_chapter = False
+    dialogue_without_chapter = False
+    message_without_chapter = False
+    menu_without_chapter = False
+    unknown_without_chapter = False
+    unknown_screen_polls = 0
+    # Polls that return no paused frame or an unparseable screen keep waiting:
+    # a loading transition can still become a chapter-bearing frame. Only
+    # consecutive parses of a stable, unrecognized foreground give up and fall
+    # back to the source-run chapter (g1102/g1104 livelock: an unrecognized
+    # screen burned the whole restore budget on every retry).
+    _UNKNOWN_SCREEN_POLL_LIMIT = 120
+    inherited = source_chapter(adapter.g.state_dir, request)
     while (chapter is None and not starter_without_chapter and not sortie_without_chapter
-           and not ritual_without_chapter and not battle_menu_without_chapter):
-        adapter._check_active(deadline, cancel)
+           and not ritual_without_chapter and not battle_menu_without_chapter
+           and not gift_without_chapter and not dialogue_without_chapter
+           and not message_without_chapter and not menu_without_chapter
+           and not unknown_without_chapter):
+        adapter._check_active(deadline, cancel, "restore")
         time.sleep(.05)
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
         if not reply or not reply.startswith('GET_STATUS PAUSED '):
+            unknown_screen_polls = 0
             continue
         adapter._require_paused(deadline, cancel)
         XKit(native['display']).screenshot(capture, native['width'], native['height'],
@@ -371,9 +808,34 @@ def restore(adapter, deadline, cancel):
             sortie_without_chapter = True
         elif observed is None and resume_battle_menu_panel(screen):
             battle_menu_without_chapter = True
+        elif observed is None and resume_bijin_gift_panel(screen):
+            gift_without_chapter = True
+        elif _castle_dialogue(screen):
+            dialogue_without_chapter = True
+        elif observed is None and screen.kind in {'map', 'map_target', 'castle_menu', 'general_list'}:
+            # g1091/g1093: a stall checkpoint restores to an open order or map
+            # menu (e.g. しゅつげき/ステータス general_list with no header
+            # chapter). These kinds are already proven in-game foregrounds by
+            # the parser, so waiting for a chapter-bearing frame can only
+            # expire the restore deadline on an already-loaded state.
+            menu_without_chapter = True
+        elif observed is None and inherited is not None and screen.kind == 'text' and screen.text:
+            # g1071 11:30: the stall checkpoint showed a headerless field
+            # notice (「かんじゅくプリンスじょうは…」) and the wait ran out the
+            # deadline. The source run still proves the chapter.
+            message_without_chapter = True
+        else:
+            unknown_screen_polls += 1
+            if unknown_screen_polls >= _UNKNOWN_SCREEN_POLL_LIMIT:
+                unknown_without_chapter = True
+    if chapter is None:
+        chapter = source_chapter(adapter.g.state_dir, request)
     # These verified chapterless panels seed only their measured foreground
-    # owner; chapter, route and any old transaction need fresh evidence.
+    # owner; route and any old transaction need fresh evidence.
     policy = {'name': {'done': True}}
+    # S3: a restored save state may hold a field inventory the old policy
+    # never saw. The ledger starts unknown here, so book the full read.
+    _card_census.book(policy, 'checkpoint_restore')
     if chapter is not None:
         policy['chapter'] = chapter
     else:
@@ -384,12 +846,19 @@ def restore(adapter, deadline, cancel):
             policy['resume_sortie_cancel'] = {'readings': 0}
         if battle_menu_without_chapter:
             policy['resume_battle_menu'] = {'readings': 0}
+        if unknown_without_chapter:
+            # #4423: an unreadable restored foreground (e.g. a mid-battle
+            # scene that never parsed) must not sit inputless forever. The
+            # bounded battle-menu owner already accepts 'unknown' screens
+            # and releases its allowance, so it doubles as the generic
+            # pending-advance owner here.
+            policy['resume_battle_menu'] = {'readings': 0}
     atomic_write_json(spec.runtime_dir / 'hanjuku_bot.json', {'policy': policy})
-    adapter._check_active(deadline, cancel)
+    adapter._check_active(deadline, cancel, "restore")
     send_ra_cmd('PAUSE_TOGGLE', port=adapter._network_port())
     from .adapters.retroarch import resolve_rom
     while True:
-        adapter._check_active(deadline, cancel)
+        adapter._check_active(deadline, cancel, "restore")
         reply = send_ra_cmd('GET_STATUS', port=adapter._network_port(), wait_reply_s=.1)
         prefix = 'GET_STATUS PLAYING '
         fields = reply[len(prefix):].strip().split(',') if reply and reply.startswith(prefix) else []
@@ -412,3 +881,108 @@ def require_verified(spec):
     if receipt and (not matches(receipt, spec, receipt.get('request_id'))
                     or receipt.get('status') != 'verified'):
         raise AdapterError('AI cannot start before checkpoint verification')
+    if receipt:
+        _start_mode(receipt)
+
+
+def seal_dead_manual_save(g, runtime_id: str, *, adapter=None, now=None):
+    """Seal a dead runtime's completed manual save into its boundary record.
+
+    A tmux-session loss kills Hanjuku before the boundary acknowledgement is
+    written, even when the manual save it requested had already finished.  The
+    runtime then holds the newest progress with a ``cancelled`` boundary, and
+    every later start refuses it ("Hanjuku reached boundary identity mismatch"),
+    so the corner can never resume that run at all.
+
+    This operator-only seal accepts *only* that exact shape: the runtime is
+    provably gone (no game/agent window, no RetroArch command port), a manual
+    save request bound to the same identity exists, the checkpoint is newer
+    than that request, and the state file parses as a complete RASTATE.  It
+    records the checkpoint as ``suspended`` — the same outcome a completed
+    manual save writes — never as a stall or a game over.
+    """
+    from . import hanjuku_run
+    from .adapters.retroarch import resolve_rom
+    from .config import load_game
+
+    state_dir = Path(g.state_dir)
+    runtimes = state_dir / 'runtimes'
+    if runtimes.is_symlink():
+        raise AdapterError('runtime storage may not be a symlink')
+    runtime = runtimes / runtime_id
+    if runtime.is_symlink() or not runtime.is_dir():
+        raise AdapterError('runtime is missing')
+    generation = runtime_id_generation(runtime_id)
+    run = read_record(runtime / hanjuku_run.RUN_FILE)
+    if not isinstance(run, dict) or not run:
+        raise AdapterError('runtime has no run record')
+    expected = {key: run.get(key) for key in ('game', 'runtime_id', 'generation', 'lease_id')}
+    if expected['game'] != 'hanjuku-hero' or expected['runtime_id'] != runtime_id:
+        raise AdapterError('runtime identity mismatch')
+    if type(expected['generation']) is not int or expected['generation'] != generation:
+        raise AdapterError('runtime generation mismatch')
+    try:
+        uuid.UUID(str(expected['lease_id']))
+    except (TypeError, ValueError) as exc:
+        raise AdapterError('runtime lease is invalid') from exc
+    if run.get('terminal_reason') is not None:
+        raise AdapterError('runtime already has terminal evidence')
+    record = read_record(runtime / BOUNDARY_FILE)
+    if record and not (record.get('status') == 'cancelled'
+                       and all(record.get(key) == value for key, value in expected.items())):
+        raise AdapterError('runtime boundary is not an interrupted one')
+    manual_path = runtime / MANUAL_SAVE_FILE
+    manual = read_record(manual_path)
+    if (not manual or manual.get('allow_unsaved_stop') is True
+            or any(type(manual.get(key)) is not type(value) or manual.get(key) != value
+                   for key, value in {**expected, 'schema': 1}.items())
+            or not isinstance(manual.get('request_id'), str) or not manual['request_id']):
+        raise AdapterError('runtime has no completed manual save request')
+    try:
+        uuid.UUID(manual['request_id'])
+    except ValueError as exc:
+        raise AdapterError('manual save request is invalid') from exc
+    # The runtime must be provably gone; a live game still owes its own
+    # boundary and must never be sealed from the outside.
+    if adapter is None:
+        raise AdapterError('runtime liveness probe is required')
+    deadline = time.monotonic() + 5.0
+    if getattr(adapter, 'runtime_provably_dead', None) is None:
+        raise AdapterError('adapter cannot prove the runtime is gone')
+    if adapter.runtime_provably_dead(deadline, None) is not True:
+        raise AdapterError('runtime is not provably gone')
+    name = resolve_rom(g, load_game(g, 'hanjuku-hero')).stem + '.state'
+    saved = runtime / 'states' / name
+    if saved.is_symlink() or not saved.is_file():
+        raise AdapterError('runtime has no saved checkpoint')
+    before = saved.stat()
+    if before.st_size > MAX_BYTES:
+        raise AdapterError('saved checkpoint exceeds read bound')
+    try:
+        if before.st_mtime_ns < manual_path.stat().st_mtime_ns:
+            raise AdapterError('saved checkpoint predates the manual save request')
+        digest = checkpoint_digest(saved)
+        core_digest(saved)
+    except AdapterError:
+        raise
+    after = saved.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise AdapterError('saved checkpoint changed during sealing')
+    stamp = (now or time.time())
+    sealed = dict(_spec_identity(expected), schema=1, status='reached',
+                  outcome='suspended', request_id=manual['request_id'],
+                  checkpoint=name, sha256=digest, checkpoint_bytes=before.st_size,
+                  frame_sha256=run.get('frame_sha256'),
+                  sealed_at=stamp, sealed_from='dead-runtime-manual-save-v1')
+    if read_record(runtime / BOUNDARY_FILE) != record or saved.stat().st_size != before.st_size:
+        raise AdapterError('runtime state changed during sealing')
+    atomic_write_json(runtime / BOUNDARY_FILE, sealed)
+    return {'runtime_id': runtime_id, 'generation': generation,
+            'checkpoint': name, 'bytes': before.st_size,
+            'outcome': 'suspended', 'request_id': manual['request_id']}
+
+
+def _spec_identity(expected):
+    from .game_switch import RuntimeSpec
+    keys = ('game', 'runtime_id', 'generation', 'lease_id')
+    return {key: expected[key] for key in keys}

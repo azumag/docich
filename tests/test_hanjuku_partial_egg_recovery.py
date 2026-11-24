@@ -4,6 +4,8 @@ from copy import deepcopy
 import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state import egg_memory
+from docich.hanjuku.strategy import orders, replan
 from test_hanjuku_chart_bot import Canvas, MONTH_GRID
 from test_hanjuku_recovery_payroll import memory as payroll_memory
 
@@ -71,7 +73,7 @@ def test_quote_needs_exact_one_egg_price_current_owner_and_reserved_payroll(chan
     mem = selected_memory(); screen = quote()
     if change == 'multi': screen = quote(quantity=2, cost=100)
     elif change == 'wrong_price': screen = quote(cost=49)
-    elif change == 'short': screen = quote(gold=57)  # actual full payroll8 -> needs58
+    elif change == 'short': screen = quote(gold=49)  # one recovery costs 50, no payroll hold
     elif change == 'month': screen = quote(month=5)
     elif change == 'run': mem['_run_identity']['lease_id'] = 'other'
     elif change == 'chapter': mem['chapter'] = 2
@@ -90,8 +92,8 @@ def test_paid_individual_keeps_other_counts_and_reserved_unpaid_eggs():
     assert mem['shop']['egg_paid_actors'] == ['ココット']
     assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
     assert mem['shop']['soldiers'] == 0
-    assert p._own_egg_empty(mem, {'ally': 'ココット'})
-    mem['egg_uses']['ココット'] = 4  # only the later actual named reading releases zero
+    assert not p._own_egg_empty(mem, {'ally': 'ココット'})  # the paid recovery releases the zero
+    mem['egg_uses']['ココット'] = 4
     assert not p._own_egg_empty(mem, {'ally': 'ココット'})
 
 
@@ -138,7 +140,34 @@ def test_unknown_or_full_rows_are_never_paid_as_partial_recovery(change):
     assert not p._individual_egg_candidate(screen, mem, mem['month_sub'])
 
 
-@pytest.mark.parametrize('gold,opens', [(57, False), (58, True), (80, True)])
+def one_shot_list():
+    c = Canvas()
+    c.text(32, 47, 'ぜんかいふく')
+    c.text(32, 95, 'ココット'); c.text(104, 95, '1')
+    c.hand(10, 89)
+    return parse(c.frame())
+
+
+def test_one_shot_kind_reads_the_dated_record_not_a_stale_flat_mirror():
+    # #4439: a quantity-1 row of a one-shot egg is never paid as a partial
+    # recovery, but the kind must come from the newest observation. A stale
+    # flat いっぱつエッグ must not exclude a general whose newer record says
+    # the egg is gone, and a dated one-shot record excludes the row even
+    # without the flat mirror.
+    mem = memory()
+    mem['month_sub']['gold_before'] = 80  # full recovery (2 debts) is short
+    mem.setdefault('egg_types', {})['ココット'] = 'いっぱつエッグ'
+    egg_memory.observe(mem, 'ココット', egg=None, uses=None, present=False,
+                       source=egg_memory.STATUS)
+    assert egg_memory.egg_type(mem, 'ココット') is None
+    assert p._individual_egg_candidate(one_shot_list(), mem, mem['month_sub']) == 'ココット'
+    mem.get('egg_types', {}).pop('ココット', None)
+    egg_memory.observe(mem, 'ココット', egg='いっぱつエッグ', uses=1, present=True,
+                       source=egg_memory.CAMP)
+    assert p._individual_egg_candidate(one_shot_list(), mem, mem['month_sub']) is None
+
+
+@pytest.mark.parametrize('gold,opens', [(49, False), (50, True), (80, True)])
 def test_entry_can_afford_one_recovery_with_complete_actual_payroll(gold, opens):
     mem = memory(gold); mem.pop('month_sub'); mem['shop']['egg'] = 'check'
     actions = p._month_extra(ready_menu(gold), mem, mem['shop'], egg_only=True)
@@ -183,7 +212,31 @@ def test_actual_zero_list_overrules_stale_positive_and_survives_payment():
     assert mem['egg_uses']['ココット'] == 0 and p._own_egg_empty(mem, {'ally': 'ココット'})
     p._egg_recovery_step(quote(), mem, mem['month_sub'])
     p._finish_month_sub(ready_menu(), mem, mem['shop'])
-    assert p._own_egg_empty(mem, {'ally': 'ココット'})
+    assert not p._own_egg_empty(mem, {'ally': 'ココット'})
+
+
+def test_paid_individual_keeps_the_newer_presence_over_an_old_no_egg_row():
+    # #4439: ココット's tick-900 status row read eggless and the recovery list
+    # then showed the spent egg (tick 1500). Until the payment the spent egg
+    # is correctly eggless for damage, but paying for him invalidates only
+    # the count: the record keeps type/presence/tick, so the stale 「卵なし」
+    # row must not re-adopt him out of the boss wave after the payment.
+    # Dropping the whole record used to.
+    mem = memory()
+    mem['general_statuses'] = {'statuses': {
+        'ココット': {'hp': 60, 'egg': None, 'uses': None, 'broken': False, 'tick': 900}}}
+    assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
+    assert mem['month_sub']['individual_actor'] == 'ココット'
+    assert replan._boss_eggless(mem, 'ココット') is True   # the list shows a spent egg
+    assert p._egg_recovery_step(quote(), mem, mem['month_sub']) == [p.pad('a')]
+    assert p._finish_month_sub(ready_menu(), mem, mem['shop'])
+    assert replan._boss_eggless(mem, 'ココット') is False
+    assert orders._holds_egg(mem, 'ココット') is True
+    rec = egg_memory.record(mem, 'ココット')
+    assert rec == {'egg': None, 'uses': None, 'present': True, 'broken': False,
+                   'observed_tick': 1500, 'source': egg_memory.RECOVERY}
+    # Another general's untouched count is not invalidated by this payment.
+    assert egg_memory.record(mem, 'ゼウス')['uses'] == 1
 
 
 def test_duplicate_named_quantities_cannot_bind_an_individual_selection():
@@ -215,14 +268,14 @@ def test_hero_payment_keeps_other_zero_and_leaves_budget_for_next_actor():
     assert mem['shop']['egg_paid_actors'] == ['どうし']
     assert mem['egg_uses'] == {'ゼウス': 1, 'ヴィーナス': 4, 'ココット': 0}
     assert mem['shop']['egg'] == 'check' and mem['shop']['reserve'] == 100
-    assert mem['shop']['soldiers'] == 0 and p._own_egg_empty(mem, {'ally': 'どうし'})
+    assert mem['shop']['soldiers'] == 0 and not p._own_egg_empty(mem, {'ally': 'どうし'})
     mem['month_sub'] = {'kind': 'egg', 'gold_before': 80, 'presses': 0, 'key': '1-6', 'left_menu': True}
     assert p._egg_recovery_step(recovery_list(), mem, mem['month_sub']) == [p.pad('a')]
     assert mem['month_sub']['individual_actor'] == 'ココット'
 
 
-@pytest.mark.parametrize('gold,allowed', [(94, False), (95, True)])
-def test_hero_single_quote_reserves_the_entire_known_payroll(gold, allowed):
+@pytest.mark.parametrize('gold,allowed', [(49, False), (50, True), (94, True)])
+def test_hero_single_quote_ignores_the_known_payroll(gold, allowed):
     mem = hero_memory(gold)
     mem['recruit_roster']['wages'] = {n: 0 if n == p.NAME else 15 for n in mem['recruit_roster']['names']}
     assert p._hero_egg_wage_floor(mem) == 45
@@ -232,7 +285,7 @@ def test_hero_single_quote_reserves_the_entire_known_payroll(gold, allowed):
 
 
 def test_large_known_payroll_keeps_hero_priority_when_full_quote_is_short():
-    mem = hero_memory(180)  # full150 + actual45 >180, but50 +45 fits
+    mem = hero_memory(149)  # full150 is short, but one 50G recovery fits
     mem['recruit_roster']['wages'] = {n: 0 if n == p.NAME else 15 for n in mem['recruit_roster']['names']}
     assert p._egg_recovery_step(hero_list(), mem, mem['month_sub']) == [p.pad('a')]
     assert mem['month_sub']['hero_selected'] is True
@@ -284,13 +337,13 @@ def test_partial_payment_keeps_all_62g_payroll_before_a_soldier_confirmation():
     screen.lines = [TextLine(l.y, tuple((x, '4' if x == 104 else ch) for x, ch in l.cells))
                     if l.y == 71 else l for l in screen.lines]
     mem['month_sub']['full_selected'] = True
-    assert p._egg_recovery_step(quote(112, 2, 100), mem, mem['month_sub']) == [p.pad('b')]
+    assert p._egg_recovery_step(quote(112, 3, 150), mem, mem['month_sub']) == [p.pad('b')]
     assert p._egg_recovery_step(screen, mem, mem['month_sub']) == [p.pad('a')]
     assert p._egg_recovery_step(quote(112), mem, mem['month_sub']) == [p.pad('a')]
     assert p._finish_month_sub(ready_menu(62), mem, mem['shop'])
-    assert mem['shop']['egg'] == 'done' and mem['shop']['soldiers'] == 0
+    assert mem['shop']['egg'] == 'done' and mem['shop']['soldiers'] == 50
     q = quantity(62); q.header['month'] = 6
-    p.quantity_step(q, mem, soldiers=True)
+    assert p.quantity_step(q, mem, soldiers=True) == []
     assert not mem['shop'].get('soldier_receipt')
 
 
@@ -305,5 +358,19 @@ def test_hotloaded_old_soldier_plan_is_recapped_to_the_shortfall_floor():
     p.quantity_step(q, mem, soldiers=True)
     # Owner (2026-10-14): the known 62G payroll is not reserved in full, but
     # the documented shortfall floor is, and the receipt is still required.
-    assert mem['shop']['soldiers'] == 62 - economy.WAGE_RESERVE
+    assert mem['shop']['soldiers'] == 50
     assert not mem['shop'].get('soldier_receipt')
+
+def test_a_white_egg_row_overrides_a_stale_zero():
+    # Owner 2026-11-22: after a paid recovery the state kept 卵0; the white
+    # 「たまごをつかう」 command row is live availability evidence.
+    from docich.hanjuku.flows import battle_menus as B
+    from docich.hanjuku_screen import Screen
+    mem = {'battle': {'ally': 'アルファルファ'},
+           'egg_zero_owners': ['アルファルファ'],
+           'egg_uses': {},
+           '_records': []}
+    screen = Screen([], None, 'たまごをつかう', kind='battle_menu')
+    B.battle_menu_step(screen, mem)
+    assert mem['egg_zero_owners'] == []
+    assert not p._own_egg_empty(mem, mem['battle'])

@@ -1,0 +1,68 @@
+"""A month menu owns its frame; a stale general jump must not hold it (#4700)."""
+from docich import hanjuku_chart as chart
+from docich.hanjuku.flows import map as map_flow
+from docich.hanjuku_screen import Screen
+
+
+def screen(kind):
+    return Screen([], None, '', kind=kind)
+
+
+def memory():
+    return {
+        'chapter': 9,
+        'tick': 100,
+        'cursor': [300, 300],
+        '_records': [],
+        'world': {
+            'sorties': {
+                'A:9:1': {
+                    'general': 'しょうぐん',
+                    'target': chart.boss_castle(9),
+                    'status': 'overdue',
+                },
+            },
+        },
+    }
+
+
+def test_a_map_frame_arms_the_overdue_boss_jump():
+    # Guard the guard: the same state that must stay inert on a month menu
+    # still arms the roster jump on the field.
+    mem = memory()
+    map_flow.general_jump_step(screen('map'), mem, None)
+    assert isinstance(mem.get('general_jump'), dict)
+    assert any(r.get('decision') == 'general_jump_open' for r in mem['_records'])
+
+
+def test_a_month_menu_frame_never_arms_the_overdue_boss_jump():
+    # g1270 2026-11-18 22:08 stalled on month_menu for 300 s: the arm ran on
+    # a menu frame, failed with why=unexpected_menu, and repeated every
+    # observation until screen_stalled. The X-menu roster jump only opens
+    # from the field, so a month frame must not start one.
+    mem = memory()
+    assert map_flow.general_jump_step(screen('month_menu'), mem, None) is None
+    assert 'general_jump' not in mem
+    assert not [r for r in mem['_records'] if r.get('decision') == 'general_jump_open']
+
+
+def test_a_confirm_jump_releases_a_month_menu_instead_of_waiting_out_the_budget():
+    # A jump that reached confirm before the month menu drew is dead: the
+    # SELECT cannot land here. Ending it immediately hands the frame to the
+    # month flow instead of idling until GENERAL_JUMP_LIMIT.
+    mem = memory()
+    mem['general_jump'] = {'general': 'しょうぐん', 'phase': 'confirm',
+                           'age': 10, 'total': 10, 'scrolls': 0}
+    assert map_flow.general_jump_step(screen('month_menu'), mem, None) == []
+    assert 'general_jump' not in mem
+    failed = [r for r in mem['_records'] if r.get('decision') == 'general_jump_failed']
+    assert failed and failed[-1]['observed_metric']['why'] == 'month_menu'
+
+
+def test_a_confirm_jump_still_finishes_normally_on_the_field():
+    mem = memory()
+    mem['general_jump'] = {'general': 'しょうぐん', 'phase': 'confirm',
+                           'age': 10, 'total': 10, 'scrolls': 0}
+    assert map_flow.general_jump_step(screen('map'), mem, None) is None
+    assert 'general_jump' not in mem
+    assert any(r.get('decision') == 'general_jump_confirm' for r in mem['_records'])

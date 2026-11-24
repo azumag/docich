@@ -39,6 +39,7 @@ decision_log   判断記録（全層から利用可）
 |---|---|---|
 | OS層 | `hanjuku/os_layer/pixels.py` / `glyphs.py` / `font.py` | PNG読込、8×8字形の照合による文字読取 |
 | OS層 | `hanjuku/os_layer/screen.py` | 1フレームの構造化（文字・手カーソル・マップカーソル・城の屋根・戦闘パネル）と画面種別 |
+| OS層 | `hanjuku/os_layer/menu_feedback.py` | 操作欄と現在カーソルを根拠にしたメニューの観測周期情報（入力・確定は行わない） |
 | OS層 | `hanjuku/os_layer/starter_view.py` | 先発隊画面の名前欄と確認画面の読取 |
 | OS層 | `hanjuku/os_layer/phase.py` | フレーム全体の分類（タイトル・戦闘・メニュー・フィールド等） |
 | OS層 | `hanjuku/os_layer/readers.py` | 解析済み画面からの読取（メニュー項目と手カーソル、ワールドマップの旗・カーソル、出撃携行札、月次会話、定型語彙） |
@@ -55,6 +56,7 @@ decision_log   判断記録（全層から利用可）
 | 判断層 | `hanjuku/judgment/events.py` | 交換将軍の受諾判断、モンスター技の判定 |
 | 手順層 | `hanjuku/flows/name.py` | 名前入力 |
 | 手順層 | `hanjuku/flows/map.py` | フィールドマップ・出撃先選択・ワールドマップ |
+| 手順層 | `hanjuku/flows/map_registration.py` | 未校正時の有界カーソル探索、城名確認とラン内地図登録 |
 | 手順層 | `hanjuku/flows/recall.py` | 野営からの帰還指示 |
 | 手順層 | `hanjuku/flows/deploy.py` | 城メニュー・将軍一覧・切り札選択・出撃確認 |
 | 手順層 | `hanjuku/flows/battle.py` | 戦闘パネルの読取と戦闘ループ、戦闘終了の記録 |
@@ -68,6 +70,11 @@ decision_log   判断記録（全層から利用可）
 | 手順層 | `hanjuku/flows/starter.py` | 章開始時の先発隊の選択 |
 | 調停 | `hanjuku/orchestrator.py` | `decide`：前景の所有者の優先順位と画面種別による振り分け、入力0件ゲート |
 | 共通 | `hanjuku/decision_log.py` / `reporting.py` / `version.py` | 判断記録、状態パネル用の集計、`BOT_VERSION` |
+
+`hanjuku_chart` の地図参照は純粋な登録記録の検証を持ち、画面読取や手順層を
+importしない。ランID検証は共通の `hanjuku/identity.py` に置く。
+`hanjuku_map_sources` は公開資料のデータだけを持つ。
+層契約はdataモジュール内の遅延importにも適用する。
 
 ## 改善するときにどこを触るか
 
@@ -167,7 +174,7 @@ import しない（層契約テストで禁止）。
 | #2040 卵なし城防衛の召喚前救済がHP期限だけでは間に合わない | 救済を始める時期の判断 | 判断層 `judgment/battle.py`（`_defender_egg_window` / `_defender_last_resort`）。召喚選択中の識別はOS層 `readers` |
 | #2076 クイーン戦の将軍コマンドで下入力が効かない | メニュー所有者と入力受付区間、効かない入力の検出 | 手順層 `flows/battle_menus.py` とOS層 `commands`（`_battle_menu_to`）。#1353 の「入力意図・送信・効果の分離」を適用する候補 |
 | #1996 コンサート画面でB連打ループ | 画面分類と既定入力 | OS層 `os_layer/phase.py`（`classify` の concert 判定）と調停 `orchestrator.legacy_actions` |
-| #1553 青ゲージの画素検出と卵落札携行 | 画素の読取と携行札の計画 | OS層 `readers` と戦略層 `strategy/kit.py` |
+| #1553 青ゲージの画素検出と卵落札携行 | 画素の読取と携行札の計画 | OS層 `screen`（`ClashGauge`・`hanjuku_clash_gauge` 校正ツール）と戦略層 `strategy/kit.py`（`_sortie_defender`・`_with_extra_card`）。守備将軍の記録は手順層 `flows/battle.py`（`castle_defenders`） |
 | #1608 夏イベントの応答文が未読の場合の復旧 | 未読の応答と復旧手順 | 手順層 `flows/prompts.py`（`summer_bonus_*`）とOS層 `readers` |
 
 ### 並行中のPRとの関係

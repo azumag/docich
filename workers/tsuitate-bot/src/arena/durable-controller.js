@@ -10,12 +10,22 @@ export const QUEUE_WAIT_MS = 60000;
 export const ALARM_INTERVAL_MS = 20000;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const ACTIVE = new Set(["queued", "playing", "draining"]);
+// Owner-only history listing is bounded: receipts are small, but a Worker
+// request must never fan out over an unbounded number of stored runs.
+const RECORD_SCAN_LIMIT = 200;
+const RECORD_LIST_LIMIT = 50;
 const LOG_EVENTS = new Set(["connected", "queued", "matched", "disconnected", "connection_retry",
   "sync_unconfirmed", "invalid_observation", "conflicting_observation", "move_ack_unknown",
   "invalid_move_ack", "resigning_no_candidate", "draining_current_game", "game_finished", "paused", "invalid_match_shape", "terminal_reconciled"]);
 
 function initial() { return { version: 1, state: "stopped", runId: null, generation: 0,
   gameId: null, completedGames: 0, reservedGames: 0, stopRequested: false, errorCode: null, settled: true }; }
+
+/** Sort key only: run ids embed a UTC timestamp; unknown ids sort last. */
+function runOrder(runId) {
+  const match = /^(?:hourly-(\d{10})|background-(\d{20}))$/.exec(runId);
+  return match ? Number(match[1] ?? match[2]) : 0;
+}
 
 function playerViewProjection(meta, checkpoint) {
   if (!validBetaGameId(meta?.gameId) || checkpoint?.active?.gameId !== meta.gameId) return null;
@@ -98,6 +108,71 @@ export class DurableArenaController {
       return { ...this.snapshot(meta), playerView: playerViewProjection(meta, checkpoint),
         terminalResult: terminalResultProjection(meta, record) };
     });
+  }
+
+  async runStatus(options) {
+    if (!options || typeof options !== "object" || Array.isArray(options)
+        || typeof options.runId !== "string" || !RUN_ID.test(options.runId)
+        || Object.keys(options).some((key) => key !== "runId")) {
+      throw new Error("run_mismatch");
+    }
+    return this.storage.transaction(async (tx) => {
+      const current = await tx.get(META_KEY) ?? initial();
+      let receipt;
+      let record;
+      if (current.runId === options.runId) {
+        receipt = this.snapshot(current);
+        record = await tx.get(recordKey(options.runId)) ?? await tx.get(RECORD_KEY);
+      } else {
+        receipt = await tx.get(runKey(options.runId));
+        if (!receipt) throw new Error("run_mismatch");
+        record = await tx.get(recordKey(options.runId));
+      }
+      const terminal = receipt.state === "finished" && receipt.completedGames === 1;
+      if (!terminal) return { ...receipt, terminalResult: null };
+      const normalized = normalizeGameRecord(record);
+      const owner = validBetaGameId(receipt.gameId)
+        ? await tx.get(`beta:game:${receipt.gameId}`) : null;
+      if (!normalized?.completed || normalized.gameId !== receipt.gameId || owner !== options.runId) {
+        throw new Error("recovery_checkpoint_invalid");
+      }
+      const terminalResult = terminalResultProjection(receipt, normalized);
+      if (!terminalResult) throw new Error("recovery_checkpoint_invalid");
+      return { ...receipt, terminalResult };
+    });
+  }
+
+  /**
+   * Owner-only, read-only list of verified terminal runs. Only the public
+   * identity of a finished game (game id, brain version, opaque run id) is
+   * returned: no outcome, observation, decision, move or PlayerView, and no
+   * live or unconfirmed run. Each entry is cross-checked against the
+   * ``beta:game:<gameId>`` ownership key so a stale receipt cannot claim a
+   * game that belongs to another run.
+   */
+  async records() {
+    const listed = await this.storage.list({ prefix: "beta:run:", limit: RECORD_SCAN_LIMIT });
+    const rows = [];
+    for (const [key, receipt] of listed) {
+      if (!key.startsWith("beta:run:")) continue;
+      const runId = key.slice("beta:run:".length);
+      if (!RUN_ID.test(runId)) continue;
+      if (!receipt || receipt.state !== "finished" || receipt.completedGames !== 1) continue;
+      if (!validBetaGameId(receipt.gameId)) continue;
+      const owner = await this.storage.get(`beta:game:${receipt.gameId}`);
+      if (owner !== runId) continue;
+      const brainVersion = typeof receipt.brainVersion === "string"
+        && receipt.brainVersion.length <= 128 && /^[A-Za-z0-9_.:+/-]+$/.test(receipt.brainVersion)
+        ? receipt.brainVersion : BRAIN_VERSION;
+      rows.push({ runId, gameId: receipt.gameId, brainVersion });
+    }
+    rows.sort((a, b) => runOrder(b.runId) - runOrder(a.runId)
+      || (a.runId < b.runId ? 1 : a.runId > b.runId ? -1 : 0));
+    return {
+      schema: 1,
+      records: rows.slice(0, RECORD_LIST_LIMIT),
+      truncated: rows.length > RECORD_LIST_LIMIT || listed.size >= RECORD_SCAN_LIMIT,
+    };
   }
 
   reconcile(options) {

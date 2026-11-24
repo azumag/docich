@@ -215,6 +215,12 @@ AI観測は同じprivate window全体、入力は同じprivate display/windowへ
 
 `presentation.json` は `starting → ready → stopped`（異常時 `presentation_failed` / `cleanup_failed`）を記録する。
 投影のffplayだけが終了した場合、native game/Xvfbと入力経路は保持する。TERM/HUPは通常どおり応答する。
+**配信側displayの再起動（`start_all.sh --supervisor`）で投影ffplayだけが死んだ場合**は、
+presenterが**自分が起動したplayerだけ**を、同じprivate window・同じgeometryで再作成する
+（`--reproject-on-player-loss`、既定60秒窓・2秒間隔・上限付き。他プロセスのadoptやwindow再探索はしない）。
+再作成に成功すると `presentation_failed` から `ready` へ戻る。窓内に復帰できなければ
+`presentation_failed` のまま据え置き、既存のoperator復旧経路（`recover_hanjuku_projection.py` 等）に委ねる。
+投影ffplayが10秒以上生き延びた後の次の喪失には、新しい再作成budgetを与える。
 停止時はwrapperが所有するXvfb・dbus/RetroArch・ffplayのプロセスグループだけを終了し、
 leaderをwaitした上でグループ消滅を確認する。tmux pane消滅・deadだけでは終了成功にしない。
 終了記録が欠ける/子が残る場合は次ゲームを起動せず復旧待ちにする。
@@ -233,7 +239,8 @@ OSからの強制終了や別sessionへ離脱する子まで救済する仕組�
 - deployは未実施。今回の設定・コード変更はこのworktreeだけで、共有mainとVMにはまだ反映していない。
   ローカルテスト合格だけでVMの自動抽選/無人プレイやROM実プレイを証明しない。
 
-契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`。
+契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`、
+`tests/test_presentation_reproject.py`（display再起動後の有界な再投影）。
 ROM取得、実機起動、課金brain、VM操作、push/PR/merge/deployは本タスクでは実施しない。
 
 
@@ -246,6 +253,10 @@ owner-only `corner-rotation-operator.yml` の `resume-hanjuku-latest` は、今�
 新候補はAI開始前に内容・core一致を確認し、pause→`LOAD_STATE_SLOT 0`→別slot 1への新規書込みを確認した`SAVE_STATE`→RASTATEのcore MEM SHA一致→slot 0へ戻して再度保存・一致を確認します。非同期loadが読み終わるまでslot 0を上書きしません。LOADのUDP返信は非同期task受付だけなので、復元成功の根拠にはしません。その後1frameを描画してnative画面の章番号を読み、観測した章だけを新方策へ初期設定し、PLAYING確認後にagentを許可します。章番号が表示されない先発隊画面は、実際の上下の名簿を読めた場合に限って `resume_chapter_pending` と名前入力済みだけを初期設定します。先発隊を3人選択後、実城名が一つの章だけに属するか、第2話の導入会話のクイーン撃破・主人公の偽物の両方を新しい実画面から確認して章を確定します。年/月や旧botの章からは推測しません。内部検証済み・予約済み・実配信での再開は区別します。
 
 対応形式はbounded RZIP v1/RASTATE1です。nativeの章表示も先発隊も確認できない保存、内容/core差分、未更新state、ロード失敗、timeoutではcandidateを成功扱いせず、元保存を保持します。一度claimした候補を新規開始へfallbackしたり、次の自然発火で自動巻戻ししたりしません。ゲームオーバー後は改善だけ行って自然発火を待つ運用を維持します。保存データ・ROM・private snapshotはGit/Actions出力へ含めません。
+
+### 章末セーブ確認と先発隊による次章の確定
+
+実プレイ中の章送りは、章末の「セーブをしゅうりょうして よろしいですかな?」（実測 g1059 2026-10-28 05:21:42、g1153 2026-11-07 22:48:34）の直後に始まる先発隊の選択（同 05:21:45 / 22:48:37）を次章の開始として扱います。章の結果メニューやHUDの「2わ」より先に来るため、これが無いと次章の地図を旧章の座標のまま扱います（g1153はHUDまで8分、うち約3分は新章の地図で無入力）。確定は両方の実画面と、その章のボスが戦闘メモリにある・撃破済み・ボス城確保済みのいずれかを条件とし、章末セーブだけ、先発隊だけ、ボス未確認では章を進めません。詳細は `docs/operations/hanjuku-chapter-end-save-party-20261107.md`。
 
 実装根拠: [RetroArch v1.18 task_save.c](https://github.com/libretro/RetroArch/blob/v1.18.0/tasks/task_save.c) のRASTATE/core deserialize、[command.c](https://github.com/libretro/RetroArch/blob/v1.18.0/command.c) の非同期LOAD_STATE_SLOT、[rzip_stream.c](https://github.com/libretro/RetroArch/blob/v1.18.0/libretro-common/streams/rzip_stream.c) のbounded形式を使用します。
 

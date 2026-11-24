@@ -9,7 +9,7 @@ from __future__ import annotations
 
 
 def _record(mem, kind, **fields):
-    rec = {'decision': kind, 'chart_step': fields.pop('chart_step', mem.get('active')),
+    rec = {'decision': kind, 'chart_step': fields.pop('chart_step', mem.get('plan', {}).get('active')),
            'strategy_variant': fields.pop('strategy_variant', mem.get('variant', 'chart')),
            'chapter': mem.get('chapter'), 'deviation_reason': None,
            'expected_metric': None, 'observed_metric': None,

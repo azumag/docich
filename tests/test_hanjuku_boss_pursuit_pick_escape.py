@@ -1,0 +1,45 @@
+"""A world map that appears mid-roster must be closed, not waited on.
+
+Live g1288 2026-11-20 16:11: the pursuit of エストラゴン was interrupted by a
+battle and the month menus; the field came back as a whole-island view while the
+probe still waited in `pick`. `house.roster` returned None, the probe answered
+[] and spent its 90-read budget without a single input, ending read_limit.
+"""
+from types import SimpleNamespace
+
+from docich.hanjuku.flows import boss_pursuit as bp
+
+
+def screen(kind):
+    return SimpleNamespace(kind=kind, marker=None, cursor=None, text='',
+                           hand=None, selected=None)
+
+
+def memory(**extra):
+    mem = {
+        'chapter': 9,
+        'tick': 10000,
+        'world': {'sorties': {}, 'garrison': {}},
+        bp.LIST_KEY: {'エストラゴン': {'step': 'A', 'launched': 9500}},
+        'boss_cell': {'chapter': 9, 'cell': [810, 645], 'tick': 9990, 'readings': 2},
+        'plan': {'active': None},
+        'boss_pursuit': {'general': 'エストラゴン', 'step': 'A', 'phase': 'pick',
+                         'reads': 40, 'seeks': 1, 'x_retries': 0},
+    }
+    mem.update(extra)
+    return mem
+
+
+def test_a_world_map_during_the_pick_is_closed_with_y(monkeypatch):
+    monkeypatch.setattr(bp.house, 'roster', lambda screen: None)
+    mem = memory()
+    assert bp.step(screen('world_map'), mem, None) == [bp.pad('y')]
+    assert mem['boss_pursuit']['phase'] == 'close'
+    assert mem['boss_pursuit']['outcome'] == 'world_map_returned'
+
+
+def test_an_unrelated_menu_still_waits_without_input(monkeypatch):
+    monkeypatch.setattr(bp.house, 'roster', lambda screen: None)
+    mem = memory()
+    assert bp.step(screen('castle_menu'), mem, None) == []
+    assert mem['boss_pursuit']['phase'] == 'pick'

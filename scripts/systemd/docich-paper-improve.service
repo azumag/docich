@@ -1,0 +1,12 @@
+[Unit]
+Description=docich crypto PAPER scheduled strategy improvement (once daily, gated, independent of the broadcast corner)
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DOCICH_ALLOW_REAL_AI=1
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=/usr/bin/bash __DOCICH_ROOT__/ops/vm_actions/run_paper_improve_with_ai_env.sh -- __DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml trading paper-improve-scheduled
+UMask=0077
+TimeoutStartSec=3600

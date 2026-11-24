@@ -57,6 +57,7 @@ class StreamConfig:
     maxrate: str = "5000k"
     bufsize: str = "9000k"
     preset: str = "veryfast"
+    threads: int = 2  # libx264 のエンコードスレッド数 (#970: 過剰な並列を抑制)
     audio_bitrate: str = "160k"
     gop_seconds: int = 2
     # --- C3 overlay: drawtext フック (空なら無効) ---
@@ -258,8 +259,16 @@ class GameLifecycleConfig:
     # while every other step keeps the request deadline.  None = no
     # extension.
     boundary_timeout_s: float | None = None
+    # Opt-in periodic emulator savestate (seconds). A run that never saves
+    # loses everything since launch when the corner restarts (g1163 recovered
+    # only the 23:14 state after nine hours of play, 2026-11-10).
+    periodic_savestate_s: int | None = None
 
     def __post_init__(self):
+        if self.periodic_savestate_s is not None:
+            value = self.periodic_savestate_s
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigError("lifecycle.periodic_savestate_s は正の整数(秒)が必要です")
         if self.boundary_timeout_s is None:
             return
         value = self.boundary_timeout_s

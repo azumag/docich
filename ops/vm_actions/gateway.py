@@ -10,27 +10,39 @@ _brief_spec.loader.exec_module(ops_brief)
 _projection_spec=importlib.util.spec_from_file_location('vmops_projection_io',Path(__file__).with_name('projection_io.py'))
 projection_io=importlib.util.module_from_spec(_projection_spec)
 _projection_spec.loader.exec_module(projection_io)
+_ab_gate_spec=importlib.util.spec_from_file_location('vmops_ab_gate',Path(__file__).with_name('ab_gate_preflight.py'))
+ab_gate=importlib.util.module_from_spec(_ab_gate_spec)
+_ab_gate_spec.loader.exec_module(ab_gate)
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
 OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
-     'configure_jev_route_vercel','disable_jev_route','diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
+     'configure_jev_route_vercel','configure_jev_route_clef','configure_jev_route_clef_reuse','disable_jev_route',
+     'diagnostics','github_auth_diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
-DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
-                   'src/docich/pulse_volume.py','src/docich/corner_rotation.py',
+DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/recover_soren_game.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
+                   'src/docich/pulse_volume.py','src/docich/corner_rotation.py','src/docich/stream_identity.py',
                    'src/docich/game_switch.py','src/docich/hanjuku_manual_cancel.py',
                    'src/docich/hanjuku_manual_evidence.py',
                    'src/docich/naming.py','src/docich/tmux.py','src/docich/procs.py',
                    'src/docich/hanjuku_screen.py','src/docich/hanjuku_policy.py',
-                   'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py')
+                    'src/docich/hanjuku/state/regions.py',
+                   'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py',
+                   'ops/audio_priority/priority.py')
 DIAGNOSTICS_TIMEOUT=60
 DIAGNOSTICS_STDOUT_MAX=65536
-DIAGNOSTICS_JSON_MAX=49152
+DIAGNOSTICS_JSON_MAX=65536
 DIAGNOSTICS_STR_MAX=500
 DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
 DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
 CONFIGURE_ERROR_RE=re.compile(rb'configuration failed: ([a-z][a-z0-9_]{0,80})')
+# The one-time Clef provisioning pair (#2301) and the fixed shape its account
+# ID must have. Only configure_jev_route's clef route accepts two stdin values.
+CLEF_ACCOUNT_ENV='DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID'
+CLEF_TOKEN_ENV='DOCICH_JEV_CLOUDFLARE_API_TOKEN'
+CLEF_ACCOUNT_RE=re.compile(r'[0-9a-f]{32}\Z')
+CLEF_CREDENTIAL_MAX=8192
 PROJECTION_REVIEW_PATH_MAX=25
 BUNDLE_DIAGNOSTICS_MAX_ENTRIES=4096
 BUNDLE_AGE_7D_SEC=7*24*60*60
@@ -86,6 +98,8 @@ REASON_CODES={
  'requested object is not commit':'bundle_object_invalid',
  'managed projection drift':'managed_projection_drift',
  'managed projection missing':'managed_projection_missing',
+ 'projection not converged':'projection_not_converged',
+ 'requested commit must descend from projection baseline':'baseline_regression_refused',
  'ops brief projection drift':'ops_brief_projection_drift',
  'ops brief artifact removal refused':'ops_brief_artifact_removal_refused',
  'ops brief repair conflict':'ops_brief_repair_conflict',
@@ -116,18 +130,24 @@ REASON_CODES={
  'production checkout is not the requested commit':'configure_jev_stale_checkout',
  'configure_jev_route_direct is production-only':'configure_jev_route_production_only',
  'configure_jev_route_vercel is production-only':'configure_jev_route_production_only',
+ 'configure_jev_route_clef is production-only':'configure_jev_route_production_only',
+ 'configure_jev_route_clef_reuse is production-only':'configure_jev_route_production_only',
  'disable_jev_route is production-only':'disable_jev_route_production_only',
  'github auth diagnostics preflight timeout':'github_auth_preflight_timeout',
  'github auth diagnostics checkout unavailable':'github_auth_checkout_unavailable',
  'github auth diagnostics SHA mismatch':'github_auth_sha_mismatch',
  'configured Jev route script missing':'configure_jev_route_script_missing',
  'invalid Jev route key payload':'configure_jev_route_key_invalid',
+ 'invalid Clef credential payload':'configure_jev_route_clef_credential_invalid',
  'reconcile production only':'reconcile_production_only',
+ 'diagnostics output too large':'diagnostics_output_too_large',
+ 'diagnostics collector failed':'diagnostics_collector_failed',
  'invalid reconcile payload':'reconcile_invalid_request',
  'reviewed reconcile helper missing':'reconcile_helper_missing',
  'reviewed candidate object missing':'reconcile_object_missing',
  'presynced reconcile fetch failed':'reconcile_fetch_failed',
  'presynced reconcile refused':'reconcile_refused',
+ 'ab gate refused':'ab_gate_refused',
 }
 
 def reason_code(exc):
@@ -260,6 +280,42 @@ def write_json(path,obj): atomic_write(path,(json.dumps(obj,sort_keys=True)+'\n'
 def read_json(path): return json.loads(path.read_text()) if path.exists() else None
 
 
+def last_reject_file(cfg): return state_root(cfg)/'last_deploy_reject.json'
+
+def _record_deploy_reject(cfg, sha, code):
+    # docich#3666: the workflow's reconcile step can only observe a failed
+    # deploy through the status op, and the catch-all below collapses every
+    # unknown exception to `operation_rejected` -- the upstream reject cause
+    # was invisible. Persist the fixed reason code under the state root so
+    # `status` can report it; recording is best-effort and must never turn a
+    # rejection report into a new failure mode.
+    try:
+        write_json(last_reject_file(cfg),{'reason':code,'sha':sha,'recorded_at':int(time.time())})
+    except Exception:
+        pass
+
+def _clear_deploy_reject(cfg):
+    # A successful deploy supersedes any earlier rejection: the blocker is
+    # gone and a stale reason must not be reported by `status` forever.
+    try: last_reject_file(cfg).unlink(missing_ok=True)
+    except OSError: pass
+
+def _last_deploy_reject(cfg, sha):
+    # Only the allowlisted fixed-code shape is surfaced; a corrupt or
+    # unexpected record reads as absent rather than leaking raw content.
+    # The record is bound to the rejected sha: a status query for a different
+    # sha must not inherit an older rejection's reason (PR #3667 review) --
+    # otherwise a stale code would be misread as the current push's cause.
+    try:
+        rec=read_json(last_reject_file(cfg)) or {}
+        if rec.get('sha') != sha:
+            return None
+        reason=rec.get('reason')
+        return reason if isinstance(reason,str) and re.fullmatch(r'[a-z0-9_]+',reason) else None
+    except Exception:
+        return None
+
+
 def _filesystem_status(path:Path):
     info=os.statvfs(path)
     block_size=info.f_frsize or info.f_bsize
@@ -268,7 +324,72 @@ def _filesystem_status(path:Path):
     available=info.f_bavail*block_size
     denominator=used+available
     used_percent=0 if denominator<=0 else (used*100+denominator-1)//denominator
-    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent}
+    # Inode counts answer whether an ENOSPC-like failure is really inode exhaustion (#2666).
+    # Some filesystems report f_files=0; that is unknown, not zero inodes.
+    files_total=info.f_files or None
+    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent,
+            'files_total':files_total,'files_available':(info.f_favail if files_total else None)}
+
+PROJECTION_GUARD_EVENT_MAX_BYTES=4096
+PROJECTION_GUARD_EVENTS=('would_refuse','refused','gate_degraded')
+PROJECTION_GUARD_POLICIES=('dry_run','enforce_reviewed','off')
+
+def _projection_guard_event(soren_root):
+    """Whitelisted last live-apply gate event for the observation gate (#2487).
+
+    Reads only ``tmp/state/projection_guard_last_event.json`` under the soren
+    checkout. Symlinks and non-regular files are refused (O_NOFOLLOW + fstat).
+    ``reason`` and ``quarantine_dir`` are withheld: they can carry paths.
+    The ``policy`` field is the policy the worker actually applied, so it is an
+    observed value rather than the file default.
+    """
+    entry={'present':False,'readable':False,'event':None,'policy':None,'recorded_at':None}
+    if not isinstance(soren_root,str) or not soren_root: return entry
+    path=Path(soren_root)/'tmp'/'state'/'projection_guard_last_event.json'
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except FileNotFoundError: return entry
+    except OSError:
+        entry['present']=True
+        return entry
+    entry['present']=True
+    with os.fdopen(fd,'rb') as handle:
+        info=os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size>PROJECTION_GUARD_EVENT_MAX_BYTES: return entry
+        try: data=json.loads(handle.read(PROJECTION_GUARD_EVENT_MAX_BYTES+1).decode('utf-8'))
+        except (ValueError,UnicodeDecodeError): return entry
+    if not isinstance(data,dict) or data.get('schema_version')!=1: return entry
+    event=data.get('event'); policy=data.get('policy'); recorded=data.get('recorded_at')
+    entry.update(readable=True,
+                 event=event if event in PROJECTION_GUARD_EVENTS else None,
+                 policy=policy if policy in PROJECTION_GUARD_POLICIES else None,
+                 recorded_at=recorded if type(recorded) is int else None)
+    return entry
+
+
+# #4412: the deploy/reconcile plane must not overwrite live soviet_now bytes
+# while an A/B experiment is running. The gate lives in the runtime projection,
+# not in docich state, so it sees the same signals the runtime does.
+AB_GATE_PROJECTION = 'games/soviet_now'
+AB_GATE_MARKER_DIR = 'ab-gate'
+AB_GATE_HELPER_RC = 66  # REASON_AB_GATE_REFUSED in reconcile_presynced_submodule.py
+
+
+def _ab_gate_projection_root(cfg, repo):
+    value = cfg['repos'][repo].get('projections', {}).get(AB_GATE_PROJECTION)
+    return Path(value) if isinstance(value, str) and value else None
+
+
+def _enforce_ab_gate(cfg, repo, operation, log=None):
+    """Fail-closed A/B check before the first live projection byte write."""
+    root = _ab_gate_projection_root(cfg, repo)
+    if root is None:
+        return 'skipped'
+    marker = state_root(cfg)/AB_GATE_MARKER_DIR/f'{operation}.json'
+    try:
+        return ab_gate.check(root, marker=marker, log=log, operation=operation)
+    except ab_gate.GateRefused as exc:
+        raise ValueError('ab gate refused') from exc
 
 
 def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
@@ -389,7 +510,12 @@ def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_
     return result
 
 
-def _prune_preview_releases(cfg,repo,protected_sha,keep=2):
+# Preview checkouts retained per repo, including the protected sha. Changing
+# this to 1 is owner-gated (docs/operations/gateway-state-retention-design.md):
+# it removes the one-generation rollback target that preview exec relies on.
+PREVIEW_RELEASE_KEEP=2
+
+def _prune_preview_releases(cfg,repo,protected_sha,keep=PREVIEW_RELEASE_KEEP):
     if not SHA_RE.fullmatch(protected_sha) or keep < 1:
         raise ValueError('invalid preview retention request')
     root=state_root(cfg)/'releases'/repo
@@ -610,7 +736,37 @@ def _verify_managed_projections(cfg,repo,state):
             if (projection,rel) in pending: continue
             if _live_meta(_safe_projection_path(Path(mappings[projection]),rel))!=meta:
                 raise ValueError('managed projection drift')
-    _verify_ops_brief(cfg,repo,state['sha'])
+    # Managed metadata and the generated ops brief belong to the baseline from
+    # which live projections were last converged. After a rebaseline, state['sha']
+    # may already be the newer checkout while projection_base preserves the live
+    # baseline needed for verification and retry planning.
+    _verify_ops_brief(cfg,repo,state.get('projection_base') or state['sha'])
+
+
+def _verify_projection_convergence(cfg,repo,root:Path,old_parent:str,new_parent:str):
+    """Require every gitlink-advanced projection path to match its postimage.
+
+    The apply plan alone is not the deploy postcondition: if a checkout was
+    already advanced before planning, an empty plan could otherwise be mistaken
+    for a converged live projection. For every changed path, the live file must
+    match the requested blob exactly, or be absent for a source-side deletion.
+    _tree_entry/_live_meta keep symlinks and non-regular files fail-closed.
+    """
+    for sub_path,destination in cfg['repos'][repo].get('projections',{}).items():
+        old_sub=submodule_gitlink_at(root,old_parent,sub_path)
+        new_sub=submodule_gitlink_at(root,new_parent,sub_path)
+        if old_sub==new_sub: continue
+        if old_sub is None or new_sub is None: raise ValueError('projected submodule must exist in both parent commits')
+        subrepo=root/sub_path
+        if git(subrepo,'rev-parse','HEAD')!=new_sub: raise ValueError('projected submodule is not at new gitlink')
+        for rel in _changed_paths(subrepo,old_sub,new_sub):
+            if sub_path==ops_brief.PROJECTION and rel==ops_brief.DESTINATION:
+                # The ops brief is rendered from the parent-owned artifact, not
+                # projected byte-for-byte from the submodule blob.
+                continue
+            expected=_expected_meta(subrepo,_tree_entry(subrepo,new_sub,rel))
+            if _live_meta(_safe_projection_path(Path(destination),rel))!=expected:
+                raise ValueError('projection not converged')
 
 
 def _ops_brief_at(root, commit):
@@ -773,7 +929,7 @@ def deploy_preview(cfg,repo,sha):
     if dest.exists():
         if git(dest,'rev-parse','HEAD')!=sha or not git_clean(dest):
             raise ValueError('preview drift detected')
-        removed=_prune_preview_releases(cfg,repo,sha)
+        removed=_prune_preview_releases(cfg,repo,sha,keep=PREVIEW_RELEASE_KEEP)
         return {'status':'staged','sha':sha,'pruned_releases':removed}
     dest.parent.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix='.incoming-preview-',dir=dest.parent))
@@ -791,7 +947,7 @@ def deploy_preview(cfg,repo,sha):
         os.rename(checkout,dest)
     finally:
         if temp.exists(): shutil.rmtree(temp,ignore_errors=True)
-    removed=_prune_preview_releases(cfg,repo,sha)
+    removed=_prune_preview_releases(cfg,repo,sha,keep=PREVIEW_RELEASE_KEEP)
     return {'status':'staged','sha':sha,'pruned_releases':removed}
 
 def deploy_git(cfg,repo,sha):
@@ -801,38 +957,95 @@ def deploy_git(cfg,repo,sha):
     if state.get('deployment_intent'): raise ValueError('deployment recovery required')
     _verify_managed_projections(cfg,repo,state)
     old=state.get('sha')
-    if not SHA_RE.fullmatch(old or '') or git(root,'rev-parse','HEAD')!=old or not git_clean(root):
+    projection_base=state.get('projection_base') or old
+    # #2681: a checkout that is not tracked-clean is unknown drift and stays
+    # fail-closed. A clean checkout whose HEAD moved away from the recorded
+    # baseline is resolved inside the transaction below: the deploy
+    # auto-rebaselines when that HEAD is an ancestor of the requested reviewed
+    # commit (rebaseline_git's reviewed conditions) and refuses otherwise.
+    if (not SHA_RE.fullmatch(old or '') or
+            not SHA_RE.fullmatch(projection_base or '') or
+            not git_clean(root)):
         raise ValueError('tracked VM drift detected')
+    head=git(root,'rev-parse','HEAD')
+    if not SHA_RE.fullmatch(head): raise ValueError('tracked VM drift detected')
     if not bundle.is_file(): raise ValueError('bundle missing')
+    # #4412: check the A/B gate against the currently live projection before
+    # starting the transaction that will write /home/ubuntu/soren. A refusal
+    # here leaves no deployment_intent and touches no live bytes.
+    _enforce_ab_gate(cfg, repo, 'deploy-'+sha[:12])
     projection_plans=[]
     applied=[]
     intent_written=False
+    rebaselined_from=None
     try:
-        # The parent fetch must succeed and must not recurse. git's default
-        # on-demand recursion resolves every gitlink reachable in the incoming
-        # history against the submodule remote; one gitlink whose commit was
-        # garbage collected upstream (a merged-and-deleted PR branch) makes the
-        # remote answer "upload-pack: not our ref" and fails the whole fetch,
-        # aborting every deploy before the baseline can move (2026-09-10 outage).
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
-        # Best effort: pre-populate submodule objects that the bundle can supply, so
-        # sync_owned_submodules() does not have to reach the network. Unreachable
-        # gitlinks must not fail the deploy here; the owned submodule checkout is
-        # verified for real by sync_owned_submodules()/owned_submodules_match().
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
+        # #3344 Phase 4: the bundle verify gate moved into
+        # _stage_bundle_objects (staging-side verify doubles as the gate and
+        # the (alpha) fallback trigger); the upload-time verify in
+        # upload_bundle still stands. A direct bundle fetch would re-store
+        # the whole ~26MB non-thin pack on every deploy, so only the delta
+        # objects are imported via a disposable staging repo.
+        bundle_mode=_stage_bundle_objects(cfg,root,bundle,sha,head)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
-        write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha}})
+        if projection_base!=sha:
+            # Policy: production deploys move the recorded projection baseline
+            # forward only. A request older than, or unrelated to, that baseline
+            # is rejected rather than silently rolling live projections back.
+            descendant=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',projection_base,sha],
+                                      stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if descendant.returncode!=0: raise ValueError('requested commit must descend from projection baseline')
+        if head!=old:
+            # Safe auto-rebaseline (#2681): the baseline advanced out-of-band
+            # (#377 class) but the checkout is tracked-clean and its HEAD is an
+            # ancestor of the requested reviewed commit, i.e. exactly the
+            # conditions of the reviewed manual rebaseline_git recovery. An
+            # out-of-band commit that never reached main (the 2026-10-23
+            # docich#2681 incident) is not an ancestor and still fails closed.
+            # #3709: auto-rebaseline is forward-only. A branch switch or reset
+            # racing this deploy can transiently leave the production checkout
+            # on an *older* main commit that is still an ancestor of the
+            # requested sha; adopting it would rewind the recorded baseline
+            # (2026-11-07 docich#3709 incident: a mid-deploy checkout to an
+            # older main was recorded as state['sha'] and the deploy ended
+            # rollback_incomplete). Require head to descend from the recorded
+            # baseline, i.e. old < head <= sha, before adopting anything.
+            forward=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',old,head],
+                                   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if forward.returncode!=0: raise ValueError('tracked VM drift detected')
+            _verify_ops_brief(cfg,repo,head)
+            ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
+                                    stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if ancestor.returncode!=0: raise ValueError('tracked VM drift detected')
+            history=(state.get('rebaseline_history') or [])[-9:]
+            history.append({'from':old,'to':head,'target':sha,'auto':True})
+            # Keep the existing #2681 contract: state['sha'] adopts the clean
+            # ancestor checkout even if this deploy later fails. projection_base
+            # is separate and remains the last baseline whose live projections
+            # are expected to be converged, so retries cannot plan head->sha.
+            state={**state,'sha':head,'previous_head':old,'projection_base':projection_base,
+                   'rebaseline_history':history}
+            write_json(state_path,state)
+            rebaselined_from=old
+            old=head
+        write_json(state_path,{**state,'deployment_intent':{
+            'from':projection_base,'to':sha,'predeploy_head':head}})
         intent_written=True
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         sync_owned_submodules(root)
-        projection_plans,remaining=_plan_projections(cfg,repo,root,old,sha,state.get("pending_repairs", []))
+        projection_plans,remaining=_plan_projections(
+            cfg,repo,root,projection_base,sha,state.get("pending_repairs", []))
+        # #4412: re-check right before the first live byte write. An A/B may
+        # have started while the bundle import/checkout/plan was in progress.
+        _enforce_ab_gate(cfg, repo, 'deploy-'+sha[:12]+'-apply')
         for changes in projection_plans:
             applied.append(changes)
             _apply_projection(changes)
         if git(root,'rev-parse','HEAD')!=sha or not git_clean(root): raise ValueError('git deployment verification failed')
+        # Preserve the existing pending-repair reason before the broader
+        # convergence check sees the same intentionally preserved drift.
+        _verify_pending_live(cfg,repo,state.get('pending_repairs',[]))
+        _verify_projection_convergence(cfg,repo,root,projection_base,sha)
         _verify_pending_health(cfg,state.get('pending_repairs',[]))
         for changes in applied: _assert_projection_current(changes,'new')
         _verify_pending_live(cfg,repo,state.get('pending_repairs',[]))
@@ -853,7 +1066,9 @@ def deploy_git(cfg,repo,sha):
                 if repair['projection']==projection:
                     entries.update({rel:meta['after'] for rel,meta in repair['files'].items()
                                     if (projection,rel) not in remaining_paths})
-        final_state={**state,'mode':'git','sha':sha,'previous_head':old,'pending_repairs':remaining,'managed_projection_files':managed}
+        final_state={k:v for k,v in state.items() if k!='projection_base'}
+        final_state.update({'mode':'git','sha':sha,'previous_head':old,
+                            'pending_repairs':remaining,'managed_projection_files':managed})
         brief=_ops_brief_at(root,sha)
         if brief is not None:
             entries=managed.setdefault(ops_brief.PROJECTION,{})
@@ -869,19 +1084,35 @@ def deploy_git(cfg,repo,sha):
             try: _rollback_projection(changes)
             except Exception as error: rollback_errors.append(error)
         try:
-            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
+            # #2681: roll back to the pre-deploy production HEAD, not the
+            # recorded baseline. When the deploy refused an out-of-band HEAD,
+            # ``old`` may differ from ``head`` and resetting to ``old`` would
+            # overwrite unknown drift instead of preserving it for diagnosis.
+            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',head],
                            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
             sync_owned_submodules(root)
         except Exception as error: rollback_errors.append(error)
         if rollback_errors:
             # A finalized state may already exist if post-commit verification failed.
-            write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha,'recovery_required':True}})
+            write_json(state_path,{**state,'deployment_intent':{
+                'from':projection_base,'to':sha,'predeploy_head':head,
+                'recovery_required':True}})
             raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
         if intent_written: write_json(state_path,state)
         raise
     finally:
         _close_projection_plans(projection_plans)
-    return {'status':'deployed','sha':sha}
+    result={'status':'deployed','sha':sha}
+    if rebaselined_from is not None: result['rebaselined_from']=rebaselined_from
+    # #3344 Phase 4: which payload shape was imported (thin/full, or the
+    # (alpha) full_fallback when the bundle failed verification).
+    result['bundle_mode']=bundle_mode['bundle_mode']
+    if 'fallback_reason' in bundle_mode: result['bundle_fallback_reason']=bundle_mode['fallback_reason']
+    # #3344: bound pack growth after the successful transaction. post_deploy
+    # is the only --prune=now call site; every object still needed is now
+    # reachable from the verified HEAD. Best-effort, never raises.
+    result['git_gc']=_post_op_git_gc(cfg,repo,root,sha,'post_deploy')
+    return result
 
 def deploy_prod(cfg,repo,sha):
     return deploy_git(cfg,repo,sha)
@@ -905,17 +1136,31 @@ def rebaseline_git(cfg,repo,sha):
     _verify_ops_brief(cfg,repo,head)
     bundle=bundle_file(cfg,repo,sha)
     if not bundle.is_file(): raise ValueError('bundle missing')
-    subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
-                   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+    # #3344 Phase 4: same delta-only import as deploy_git (verify gate moved
+    # into _stage_bundle_objects; upload-time verify in upload_bundle stands).
+    bundle_mode=_stage_bundle_objects(cfg,root,bundle,sha,head)
     if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
     ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
                             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     if ancestor.returncode!=0: raise ValueError('rebaseline requires an ancestor of the requested commit')
     old=state.get('sha')
+    projection_base=state.get('projection_base') or old
     history=(state.get('rebaseline_history') or [])[-9:]
     history.append({'from':old,'to':head,'target':sha})
-    write_json(state_path,{**state,'sha':head,'previous_head':old,'rebaseline_history':history})
-    return {'status':'rebased','sha':head,'from':old}
+    # Manual rebaseline adopts the checkout as the next deploy baseline while
+    # retaining the older live-projection baseline for the following deploy.
+    # Without this split, rebaseline + deploy could skip a gitlink-advanced
+    # projection exactly like the #3377 auto-rebaseline path.
+    write_json(state_path,{**state,'sha':head,'previous_head':old,
+                           'projection_base':projection_base,
+                           'rebaseline_history':history})
+    result={'status':'rebased','sha':head,'from':old}
+    # #3344 Phase 4: same bundle_mode recording as deploy_git.
+    result['bundle_mode']=bundle_mode['bundle_mode']
+    if 'fallback_reason' in bundle_mode: result['bundle_fallback_reason']=bundle_mode['fallback_reason']
+    # #3344: grace prune only; --prune=now stays exclusive to post-deploy.
+    result['git_gc']=_post_op_git_gc(cfg,repo,root,sha,'grace')
+    return result
 
 def rebaseline(cfg,repo,sha):
     return rebaseline_git(cfg,repo,sha)
@@ -1036,6 +1281,156 @@ def _run_reviewed_helper(script: bytes, argv: list[str], log) -> int:
         raise ValueError('presynced reconcile refused')
     return p.returncode
 
+GIT_GC_HELPER = 'ops/vm_actions/production_git_gc.py'
+GIT_GC_INTERVAL_SECONDS = 24*60*60
+GIT_GC_WARN_SIZE_KIB = 3*1024*1024
+GIT_GC_MAX_OUTPUT = 8192
+
+def git_gc_state_file(cfg,repo): return state_root(cfg)/'git-gc'/f'{repo}.json'
+
+def _post_op_git_gc(cfg, repo, root: Path, sha: str, prune_mode: str, log=None):
+    """Best-effort post-fetch gc through the reviewed helper (#3344).
+
+    The helper is read from the exact reviewed ``sha`` like the reconcile
+    helpers, so a candidate that predates it simply reports ``unavailable``.
+    gc is throttled to once per GIT_GC_INTERVAL_SECONDS inside the helper and
+    its verdict (including the .git size monitor) is merged into the
+    operation result.  ``prune_mode`` is the helper's knob: 'grace' for the
+    2-week default everywhere, 'post_deploy' (--prune=now) only on the
+    verified post-deploy call site.  Never raises: maintenance must not wedge
+    the deploy/rebaseline/reconcile that triggered it.
+    """
+    try:
+        script = _reviewed_helper(root, sha, GIT_GC_HELPER)
+    except ValueError:
+        return {'status': 'unavailable'}
+    try:
+        state_file = git_gc_state_file(cfg, repo)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [sys.executable, '-', str(root), str(state_file),
+             str(GIT_GC_INTERVAL_SECONDS), str(GIT_GC_WARN_SIZE_KIB), prune_mode],
+            input=script, stdout=subprocess.PIPE,
+            stderr=log if log is not None else subprocess.DEVNULL,
+            env=RECONCILE_ENV, timeout=RECONCILE_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return {'status': 'error', 'reason': 'helper_failed'}
+    lines = (proc.stdout or b'')[-GIT_GC_MAX_OUTPUT:].decode('utf-8', 'replace').splitlines()
+    try:
+        verdict = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        verdict = None
+    if not isinstance(verdict, dict) or 'gc' not in verdict:
+        return {'status': 'error', 'reason': 'bad_verdict'}
+    return verdict
+
+def _bundle_verify(root: Path, bundle: Path) -> tuple[bool, list[str]]:
+    """Verify a bundle against the production repo (#3344 Phase 4).
+
+    Returns (ok, prerequisites): ``ok`` is the verify exit status and
+    ``prerequisites`` are the 40-hex SHAs from "The bundle requires this
+    ref:" lines. A thin bundle's prerequisites must already be present in
+    the production repo; ``git bundle verify`` fails otherwise, which is
+    the (alpha) fallback trigger. A full bundle reports no prerequisites.
+    """
+    proc = subprocess.run(
+        ['git', '-C', str(root), '-c', 'core.hooksPath=/dev/null',
+         'bundle', 'verify', str(bundle)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, timeout=120)
+    # git words one boundary commit as "requires this ref:" and several as
+    # "requires these N refs:" (any range over a merge commit), each sha on its
+    # own following line. Matching only the singular form read a multi-commit
+    # thin bundle as having no prerequisites, so staging was never seeded and
+    # the fetch failed (2026-11-07 deploy outage, issue #3700).
+    prerequisites = []
+    for block in re.findall(
+            r'The bundle requires (?:this ref|these [0-9]+ refs):\s*((?:[0-9a-f]{40}[^\n]*\n?)+)',
+            proc.stdout or ''):
+        prerequisites.extend(re.findall(r'[0-9a-f]{40}', block))
+    return proc.returncode == 0, prerequisites
+
+
+def _stage_bundle_objects(cfg, root: Path, bundle: Path, sha: str, base_sha=None) -> dict:
+    """Import bundle objects through a disposable staging repo (#3344 Phase 4).
+
+    Fetching a bundle writes its entire non-thin pack into the receiving repo
+    regardless of refspec (WP2 dry-run), so the full-history payload is first
+    unbundled into a scratch bare repo under the state root, then the
+    production repo fetches the candidate sha from it.  The second fetch uses
+    normal want/have negotiation and imports only the delta objects, which
+    keeps .git pack growth bounded per deploy.  The staging repo is deleted
+    in ``finally`` -- periodic recreation is its bounding mechanism, so no
+    retention state can accumulate.
+
+    The bundle is verified inside staging, not by the caller: a failed
+    verify falls back to a negotiated fetch of the reviewed sha from the
+    canonical remote ((alpha), same URL as RECONCILE_FETCH_URL) and the
+    deploy continues as ``full_fallback``.  A failed fallback fetch still
+    raises, so the deploy fails closed exactly as before.  ``base_sha`` is
+    the production HEAD at deploy start; when the bundle has prerequisites
+    it is seeded into staging by ref (``+HEAD:refs/vmops/base`` -- a raw
+    sha want is refused over the file transport), so the thin unbundle has
+    its prerequisite locally.  Returns the ``bundle_mode`` verdict
+    (``thin``/``full``/``full_fallback``) for the operation result.
+    """
+    # Recover scratch repos left by hard kills (finally cannot run on SIGKILL).
+    # Never touch recent directories: another operation may still be using one.
+    staging_root = state_root(cfg)
+    stale_before = time.time() - 24 * 60 * 60
+    for candidate in staging_root.glob('staging-*'):
+        try:
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            if candidate.stat().st_mtime < stale_before:
+                shutil.rmtree(candidate, ignore_errors=True)
+        except OSError:
+            # Scratch cleanup is best-effort and must not block deployment.
+            continue
+    staging = Path(tempfile.mkdtemp(prefix='staging-', dir=staging_root))
+    try:
+        subprocess.run(['git','init','--bare','--quiet',str(staging)],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
+        verify_ok, prerequisites = _bundle_verify(root, bundle)
+        if not verify_ok:
+            # (alpha) fallback: negotiated fetch of the reviewed sha from the
+            # canonical remote (same URL as RECONCILE_FETCH_URL).
+            subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',RECONCILE_FETCH_URL,sha],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=RECONCILE_TIMEOUT)
+            subprocess.run(['git','-C',str(staging),'update-ref','refs/vmops/incoming','FETCH_HEAD'],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
+            mode = {'bundle_mode': 'full_fallback',
+                    'fallback_reason': 'bundle_verify_failed'}
+        else:
+            if prerequisites and base_sha:
+                # Seed production HEAD into staging (ref, not raw sha) so the
+                # thin bundle's prerequisites exist locally.
+                subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(root),'+HEAD:refs/vmops/base'],
+                               stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+            # The staging fetch must not recurse: a bare repo has no worktree
+            # to recurse into, but keep the flag explicit so the unbundle is
+            # strict and identical to the pre-#3344 authoritative fetch.
+            # git's default on-demand recursion resolves every gitlink
+            # reachable in the incoming history against the submodule remote;
+            # one gitlink whose commit was garbage collected upstream (a
+            # merged-and-deleted PR branch) makes the remote answer
+            # "upload-pack: not our ref" and fails the whole fetch, aborting
+            # every deploy before the baseline can move (2026-09-10 outage).
+            # The second historical fetch (--recurse-submodules=on-demand)
+            # was a measured no-op (WP2 dry-run: a bundle never carries
+            # submodule objects) and is removed; submodule objects still
+            # arrive through sync_owned_submodules() in the caller.
+            subprocess.run(['git','-C',str(staging),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'+HEAD:refs/vmops/incoming'],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=300)
+            mode = {'bundle_mode': 'thin' if prerequisites else 'full'}
+        # Negotiated local fetch: only objects the production repo lacks are
+        # sent. FETCH_HEAD destination matches the previous fetch semantics.
+        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(staging),'refs/vmops/incoming'],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+        return mode
+    finally:
+        shutil.rmtree(staging,ignore_errors=True)
+
 def reconcile_presynced(cfg, repo, target, sha):
     """Converge a reviewed pre-synced checkout without the exec channel (#225).
 
@@ -1053,7 +1448,14 @@ def reconcile_presynced(cfg, repo, target, sha):
     logs = state_root(cfg)/'logs'; logs.mkdir(parents=True, exist_ok=True)
     opid = uuid.uuid4().hex; log = logs/f'{opid}.log'
     fd = os.open(log, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)
+    # Initialize so the function-level return can never reference an unbound
+    # name; the real verdict overwrites it on the success path (DSH #3344).
+    gc_verdict = {'status': 'unavailable'}
     with os.fdopen(fd, 'wb') as out:
+        # #4412: gate the live projection before the reviewed helpers can
+        # write its bytes. The helper repeats the check just before its first
+        # write (defense in depth); the durable marker is owned here.
+        _enforce_ab_gate(cfg, repo, f'reconcile-{opid}', log=out)
         # Candidate objects already uploaded with the deploy bundle are
         # authoritative once hash-verified; the protected-main refresh is
         # best-effort so a transient fetch failure cannot wedge recovery.
@@ -1081,9 +1483,20 @@ def reconcile_presynced(cfg, repo, target, sha):
             [str(root), old_root, old_sub, new_sub, RECONCILE_SUBMODULE, *attest],
             out,
         )
+        if rc == AB_GATE_HELPER_RC:
+            # The helper re-checks the gate immediately before its first live
+            # write. Record an A/B that started after our pre-check as a
+            # durable refusal too; the operation log already has its verdict.
+            try:
+                _enforce_ab_gate(cfg, repo, f'reconcile-{opid}-helper', log=out)
+            except ValueError:
+                pass
         if rc != 0:
             raise ValueError('presynced reconcile refused')
-    return {'status':'reconciled','sha':sha,'output':'withheld','operation_id':opid}
+        # #3344: the protected-main fetch above also grows production .git;
+        # same bounded gc hook, grace mode, diagnostics to the op log.
+        gc_verdict = _post_op_git_gc(cfg,repo,root,sha,'grace',out)
+    return {'status':'reconciled','sha':sha,'output':'withheld','operation_id':opid,'git_gc':gc_verdict}
 
 
 def configure_jev(cfg,repo,target,sha,*,disable=False):
@@ -1150,27 +1563,68 @@ def configure_jev(cfg,repo,target,sha,*,disable=False):
         result['error_code']=match.group(1).decode('ascii') if match else 'unexpected_failure'
     return result
 
-def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
+def _clef_credential_payload(raw):
+    """Split the one-time Clef account/token pair, logging neither half.
+
+    The account ID is fixed-shape (32 lowercase hex), so the first newline is
+    the only separator a correct pair can have; a malformed or partial pair is
+    rejected here rather than combined with the live worker's other half.
+    """
+    if len(raw)>CLEF_CREDENTIAL_MAX or b'\0' in raw or b'\r' in raw:
+        raise ValueError('invalid Clef credential payload')
+    try:
+        account,separator,token=raw.decode('ascii').partition('\n')
+    except UnicodeDecodeError as exc:
+        raise ValueError('invalid Clef credential payload') from exc
+    if not separator or not CLEF_ACCOUNT_RE.fullmatch(account):
+        raise ValueError('invalid Clef credential payload')
+    if not 1<=len(token)<=4096 or any(not 33<=ord(char)<127 for char in token):
+        raise ValueError('invalid Clef credential payload')
+    return account,token
+
+def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False,reuse_existing=False):
     """Run the fixed docich semantic-decision route configurator (#882), owner-only.
 
     Mirrors configure_jev's own contract exactly, for the disjoint
-    DOCICH_SEMANTIC_BACKEND/DOCICH_JEV_ROUTE/DOCICH_JEV_VERCEL_API_KEY keys
+    DOCICH_JEV_ROUTE/DOCICH_JEV_VERCEL_API_KEY/DOCICH_JEV_CLOUDFLARE_* keys
     instead of configure_jev's COMMENT_CLASSIFIER_*/TYPESAFE_API_KEY keys.
     Never executes caller-supplied shell. Stdin carries the Vercel API key
-    only when route='vercel'; every other case (route='direct', disable)
-    requires empty stdin, since neither writes a new secret -- route='direct'
-    only requires TYPESAFE_API_KEY (#678's own key) to already be live on the
-    running worker, which the script itself verifies, not this gateway.
+    only when route='vercel', and the Clef account/token pair only when
+    route='clef' is explicitly provisioning it for the first time; route='clef'
+    with empty stdin is the normal reversible switch that reuses the running
+    worker's retained pair, and route='direct'/disable require empty stdin,
+    since neither writes a new secret -- route='direct' only requires
+    TYPESAFE_API_KEY (#678's own key) to already be live on the running worker,
+    which the script itself verifies, not this gateway.
+
+    ``reuse_existing`` selects the first-time provisioning variant that takes
+    the pair from the VM's own reviewed Cloudflare pair: it also requires empty
+    stdin, because no secret is accepted, transferred or logged on that path.
     """
-    label='disable_jev_route' if disable else f'configure_jev_route_{route}'
+    if reuse_existing and (disable or route != 'clef'):
+        raise ValueError('invalid forced command')
+    label=('configure_jev_route_clef_reuse' if reuse_existing
+           else 'disable_jev_route' if disable else f'configure_jev_route_{route}')
     if target != 'production':
         raise ValueError(f'{label} is production-only')
     root=Path(cfg['repos'][repo]['production'])
     if git(root,'rev-parse','HEAD') != sha or not git_clean(root):
         raise ValueError('production checkout is not the requested commit')
-    raw=sys.stdin.buffer.read(4097)
+    raw=sys.stdin.buffer.read(CLEF_CREDENTIAL_MAX+1 if route=='clef' and not reuse_existing else 4097)
     key=''
-    if disable or route=='direct':
+    clef_account=''; clef_token=''
+    if reuse_existing:
+        # The reuse path never carries a secret: empty stdin is not optional.
+        if raw:
+            raise ValueError('invalid Jev route key payload')
+    elif route=='clef':
+        # Empty stdin means "switch with the pair the chat worker already
+        # retains" (the rollback contract: no re-entry, no code change). A
+        # non-empty payload is the one-time provisioning pair and must be
+        # complete; a new token is never mixed with the worker's old account.
+        if raw:
+            clef_account,clef_token=_clef_credential_payload(raw)
+    elif disable or route=='direct':
         if raw:
             raise ValueError('invalid Jev route key payload')
     else:
@@ -1202,8 +1656,15 @@ def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
          'SOREN_ROOT':soren_root}
     if route=='vercel':
         env['DOCICH_JEV_VERCEL_API_KEY']=key
+    elif route=='clef' and clef_token:
+        # Pass exactly the selected provider's pair. Leaving both out is what
+        # makes the ordinary switch reuse the worker's retained credentials.
+        env[CLEF_ACCOUNT_ENV]=clef_account
+        env[CLEF_TOKEN_ENV]=clef_token
     argv=[sys.executable,'-','--soren-root',soren_root]
     argv += ['--disable'] if disable else ['--route',route]
+    if reuse_existing:
+        argv.append('--reuse-existing-cloudflare-credentials')
     with os.fdopen(fd,'wb') as out:
         p=subprocess.run(
             argv,
@@ -1597,13 +2058,21 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
+    soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
     return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':_brief_capabilities(),
+            # docich#3666: the fixed reason code of the deploy rejection
+            # recorded for THIS requested sha (or null), so the workflow's
+            # reconcile step can tell a terminal-state reject apart from the
+            # gitlink-drift mode it exists to heal without misattributing an
+            # older push's reason.
+            'last_deploy_reject':_last_deploy_reject(cfg,sha),
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
+            'projection_guard_last_event':_projection_guard_event(soren_root),
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():
     if len(sys.argv)!=2: die()
-    cfg = None
+    cfg = None; op = None; sha = None
     try:
         cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
         lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
@@ -1620,13 +2089,18 @@ def main():
             elif op=='disable_jev': result=configure_jev(cfg,repo,target,sha,disable=True)
             elif op=='configure_jev_route_direct': result=configure_jev_route(cfg,repo,target,sha,route='direct')
             elif op=='configure_jev_route_vercel': result=configure_jev_route(cfg,repo,target,sha,route='vercel')
+            elif op=='configure_jev_route_clef': result=configure_jev_route(cfg,repo,target,sha,route='clef')
+            elif op=='configure_jev_route_clef_reuse':
+                result=configure_jev_route(cfg,repo,target,sha,route='clef',reuse_existing=True)
             elif op=='disable_jev_route': result=configure_jev_route(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
             elif op=='github_auth_diagnostics': result=github_auth_diagnostics(cfg,repo,target,sha)
             else: result=status_result(cfg,repo,target,sha)
     except ValueError as exc:
+        if op=='deploy': _record_deploy_reject(cfg,sha,reason_code(exc))
         die('VM operation rejected: %s' % reason_code(exc))
     except Exception:
+        if op=='deploy': _record_deploy_reject(cfg,sha,'operation_rejected')
         # Issue #410: deploy経路の non-ValueError (CalledProcessError /
         # TimeoutExpired / OSError 等) が bare raise で素通しし、traceback
         # 越しに command argv や filesystem path を Actions へ出す経路を塞ぐ。
@@ -1636,6 +2110,7 @@ def main():
         _log_unexpected_traceback(cfg)
         die('VM operation rejected: operation_rejected')
     print(json.dumps(result,separators=(',',':')))
+    if op=='deploy' and not result.get('exit_code',0): _clear_deploy_reject(cfg)
     if result.get('exit_code',0): raise SystemExit(result['exit_code'])
 
 if __name__=='__main__':

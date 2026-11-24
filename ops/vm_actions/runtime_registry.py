@@ -59,6 +59,16 @@ LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d", ".pending")
 # Never reported as unregistered; liveness is still recorded in details.
 KNOWN_INFRA_PIDFILES = ("tmp/state/start_all.pid",)
 
+# Separately supervised common-corner music; it is not a start_all worker and
+# shares no AI queue. Missing playback is normal outside eligible corners.
+CORNER_BGM = {
+    "unit": "soren-bgm.service",
+    "state_file": "tmp/state/bgm_worker.json",
+    "diagnostics_key": "corner_bgm",
+    "heartbeat_max_age_sec": 90,
+    "queue_lane": None,
+}
+
 # Explicit bounded operator operation; absence is normal, no AI queue or
 # automatic scheduling. The presenter uses the ordinary generation tmux tags.
 EXTERNAL_VIDEO = {
@@ -68,6 +78,22 @@ EXTERNAL_VIDEO = {
     "diagnostics_key": "corners.external_video",
     "queue_lane": None,
     "frame_max_age_sec": 10,
+    # Upper bound for the projected frame age; keeps the value a small int even
+    # when the receiver has been stopped for days.
+    "frame_age_max_sec": 604800,
+}
+
+# Encoder heartbeat sources. TwiCa's common adapter writes ``pipeline.json``
+# only while it owns the output; Soren's direct_stream writes its own ffmpeg
+# progress record. Both are optional and absence is normal on the other path.
+# The collector copies fixed numeric/enum keys only -- the source records also
+# carry stream configuration and the reconnect channel name.
+ENCODER = {
+    "twica_subpath": "twica-common/pipeline.json",
+    "twica_stale_sec": 5,
+    "direct_stream_subpath": "tmp/state/direct_stream/status.json",
+    "direct_stream_stale_sec": 15,
+    "schema_version": 1,
 }
 
 # Diagnostics window for AI telemetry aggregation (seconds).
@@ -83,7 +109,7 @@ DUPLICATES_FRESH_SEC = 600
 
 # Output bounds. The collector needs enough room for one 24 KiB manual
 # Soren91 evidence chunk after base64/JSON expansion; the gateway still applies
-# the stricter outer 48 KiB sanitized-JSON cap after adding its own metadata.
+# the stricter outer 64 KiB sanitized-JSON cap after adding its own metadata.
 MAX_RECENT_EVENTS = 20
 MAX_ERROR_PREVIEW_LEN = 200
 MAX_COMPONENTS = 10

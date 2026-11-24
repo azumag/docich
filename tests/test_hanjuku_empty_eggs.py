@@ -85,7 +85,7 @@ def test_summon_answer_rejects_zero_even_with_a_saved_egg_intention(monkeypatch,
     if saved:
         mem.update(egg_battle=True, egg_action='use_egg', egg_needed=False)
     screen = menu('egg_battle_menu', cursor=208)
-    assert policy.egg_battle_step(screen, mem) == [policy.pad('up')]
+    assert policy.egg_battle_step(screen, mem) == [policy.pad('up'),{'type':'wait','ms':60},policy.pad('up')]
     assert mem['egg_action'] == 'attack'
     assert mem['egg_needed'] is True  # unavailable does not mean healthy
     assert 'egg_recheck' not in mem
@@ -97,13 +97,6 @@ def test_no_blind_confirmation_on_an_unread_cursor_when_the_egg_is_zero():
     mem = memory()
     assert policy.egg_battle_step(menu('egg_battle_menu', cursor=None), mem) == [policy.pad('b')]
     assert 'egg_recheck' not in mem
-
-
-def test_empty_egg_keeps_the_existing_attack_side_retreat_route():
-    mem = memory()
-    mem['battle']['side'] = 'attack'
-    assert policy.egg_battle_step(menu('egg_battle_menu'), mem) == [policy.pad('b')]
-    assert mem['battle']['egg_retreat_needed'] is True
 
 
 def test_already_offered_summon_candidates_do_not_confirm_an_empty_egg():

@@ -16,6 +16,11 @@ from docich.cli import main  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
 from docich.trading.arbitrage import TopOfBook  # noqa: E402
+from docich.trading.strategy_lab import (  # noqa: E402
+    experiment_from_mapping,
+    save_strategy_experiment,
+)
+from docich.trading.strategy_runtime import get_active_experiment, set_active_experiment  # noqa: E402
 
 
 NOW = 1_800_000_000.0
@@ -52,6 +57,9 @@ class FakeGateway:
 
 
 class TestTradingStrategyCli(unittest.TestCase):
+    def tearDown(self):
+        set_active_experiment(None)
+
     def run_cli(self, argv):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
@@ -102,6 +110,66 @@ class TestTradingStrategyCli(unittest.TestCase):
             self.assertEqual(payload["signal_summary"]["candidate_count"], 1)
             self.assertEqual(payload["signal_summary"]["selected_count"], 1)
             self.assertEqual(payload["recent_fills"][0]["strategy_id"], "momentum-v1")
+
+    def test_strategy_cycle_reloads_experiment_for_each_state_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "strategy.json"
+            snapshot.write_text(json.dumps(self.strategy_snapshot()), encoding="utf-8")
+            active_dir = root / "lab"
+            experiment = experiment_from_mapping({
+                "experiment_id": "cli-lab",
+                "name": "CLI isolation regression",
+                "thesis": "Confirm a saved experiment belongs only to its own state directory.",
+                "entry_rules": [{
+                    "rule_id": "entry-1",
+                    "combine": "all",
+                    "max_notional_fraction": "0.10",
+                    "conditions": [{
+                        "feature": "return_bps", "lookback": 3,
+                        "op": ">=", "threshold": 100,
+                    }],
+                }],
+                "exit_rules": [{
+                    "rule_id": "exit-1",
+                    "combine": "any",
+                    "conditions": [{
+                        "feature": "hold_minutes", "op": ">=", "threshold": 90,
+                    }],
+                }],
+                "max_pair_correlation": "0.70",
+            })
+            save_strategy_experiment(active_dir, experiment, activated_at=NOW - 60)
+
+            def cycle(state_dir):
+                rc, out, err = self.run_cli([
+                    "trading", "--state-dir", str(state_dir),
+                    "strategy-cycle", "--snapshot", str(snapshot),
+                ])
+                self.assertEqual(rc, 0, err)
+                return json.loads(out)
+
+            lab = cycle(active_dir)
+            self.assertEqual(lab["signal_summary"]["strategy_ids"], ["lab:cli-lab:entry-1"])
+            self.assertEqual(lab["recent_fills"][0]["strategy_id"], "lab:cli-lab:entry-1")
+
+            # A separate state directory has no experiment, even in the same
+            # Python process: it must use the default momentum policy.
+            legacy = cycle(root / "legacy")
+            self.assertEqual(legacy["signal_summary"]["strategy_ids"], ["momentum-v1"])
+            self.assertEqual(legacy["recent_fills"][0]["strategy_id"], "momentum-v1")
+            self.assertIsNone(get_active_experiment())
+
+            # Returning to the experiment directory must reload it from disk.
+            again = cycle(active_dir)
+            self.assertEqual(again["signal_summary"]["strategy_ids"], ["lab:cli-lab:entry-1"])
+            self.assertEqual(get_active_experiment().experiment_id, "cli-lab")
+
+            # Removing the persisted experiment must also clear stale state.
+            (active_dir / "paper_strategy_experiment.json").unlink()
+            removed = cycle(active_dir)
+            self.assertEqual(removed["signal_summary"]["strategy_ids"], ["momentum-v1"])
+            self.assertIsNone(get_active_experiment())
 
     def test_strategy_cycle_replay_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -41,8 +41,10 @@ def _unique_object(pairs):
     return result
 
 
-def public_result(raw, mode, sha, gateway_rc):
+def public_result(raw, mode, sha, gateway_rc, corner="hanjuku-hero"):
     """Accept only a matching execution envelope, including transport status."""
+    if corner not in {"hanjuku-hero", "mystery"}:
+        corner = "hanjuku-hero"
     reason = "gateway_result_unverified"
     try:
         result = json.loads(raw, object_pairs_hook=_unique_object)
@@ -55,24 +57,27 @@ def public_result(raw, mode, sha, gateway_rc):
             raise ValueError("unverified envelope")
         if code == 0:
             return {"status": "admin-eligible" if mode == "check" else "admin-released",
-                    "corner": "hanjuku-hero", "cancellation_authority": False}, 0
+                    "corner": corner, "cancellation_authority": False}, 0
         reason = {value: key for key, value in REFUSAL_CODES.items()}.get(code, {
             25: "helper_preflight_failed", 64: "helper_arguments_invalid",
         }.get(code, "helper_failed"))
     except (ValueError, TypeError, AttributeError, RecursionError):
         pass
     return {"status": "refused", "reason": reason,
-            "corner": "hanjuku-hero", "cancellation_authority": False}, 1
+            "corner": corner, "cancellation_authority": False}, 1
 
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     try:
-        raw, mode, sha, status = args
+        if len(args) not in (4, 5):
+            raise ValueError("invalid argument count")
+        raw, mode, sha, status = args[:4]
+        corner = args[4] if len(args) == 5 else "hanjuku-hero"
         gateway_rc = int(status)
     except (ValueError, TypeError):
-        raw, mode, sha, gateway_rc = "", "", "", -1
-    result, rc = public_result(raw, mode, sha, gateway_rc)
+        raw, mode, sha, gateway_rc, corner = "", "", "", -1, "hanjuku-hero"
+    result, rc = public_result(raw, mode, sha, gateway_rc, corner)
     print(json.dumps(result, separators=(",", ":")))
     return rc
 

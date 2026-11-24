@@ -60,7 +60,7 @@ def test_preservation_requires_all_current_safe_conditions(change):
         labels.clear()
     else:
         mem['battle']['card_soldiers_current'] = False
-    assert p._hold_melee_egg(mem, mem['battle'], labels) is False
+    assert p._hold_melee_egg(mem, mem['battle'], labels) is (change == 'no_card')
 
 
 @pytest.mark.parametrize('stale', ['none', 'exhausted', 'menu_limit'])

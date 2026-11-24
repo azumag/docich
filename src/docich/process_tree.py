@@ -317,6 +317,70 @@ def process_environ(pid: int) -> dict[str, str]:
     return env
 
 
+def pidfd_process_running(pid: int) -> bool | None:
+    """Tri-state "still running" verdict under a pidfd identity pin.
+
+    ``True`` when the pidfd reports the process alive (a recycled PID whose
+    slot is occupied by *any* process still counts as alive -- the conservative
+    direction for a death proof); ``False`` when it has already exited;
+    ``None`` when the platform cannot verify (no pidfd support or an fd
+    failure) and must never be counted as either alive or dead.
+    """
+
+    if type(pid) is not int or pid <= 1:
+        return False
+    opener = getattr(os, "pidfd_open", None)
+    if not callable(opener):
+        return None
+    try:
+        fd = opener(pid)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return None
+    try:
+        return _pidfd_is_running(fd)
+    except (OSError, ProcessIdentityError):
+        return None
+    finally:
+        os.close(fd)
+
+
+def pidfd_tagged_process_running(pid: int, tags: Mapping[str, str]) -> bool | None:
+    """Tri-state "still running and still carrying ``tags``" under a pidfd.
+
+    The candidate PID is opened first, then its environment is re-read while
+    the retained handle pins the process identity, so a PID recycled between
+    discovery and this check cannot impersonate an owned process (docich#4693).
+    ``False`` covers "already exited" and "running but not attributed";
+    ``None`` means the platform could not verify (no pidfd support, fd or env
+    read failure) and must never be counted as either alive or dead.
+    """
+
+    if type(pid) is not int or pid <= 1:
+        return False
+    opener = getattr(os, "pidfd_open", None)
+    if not callable(opener):
+        return None
+    try:
+        fd = opener(pid)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return None
+    try:
+        if not _pidfd_is_running(fd):
+            return False
+        env = process_environ(pid)
+        if not env:
+            return None
+        return all(env.get(str(key)) == str(value) for key, value in dict(tags or {}).items())
+    except (OSError, ProcessIdentityError):
+        return None
+    finally:
+        os.close(fd)
+
+
 def process_ids() -> list[int]:
     """Every visible PID, from ``/proc`` when available, else ``ps``."""
 

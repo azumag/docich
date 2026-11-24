@@ -196,18 +196,6 @@ def test_a_later_bad_reading_escalates_to_the_egg_but_never_back():
     assert mem['egg_action'] == 'use_egg'
 
 
-def test_g460_retreat_gate_still_fires_when_the_egg_is_required():
-    # 卵が要る局面で札も卵も無い (たまご行が読めない) なら、まず通常の
-    # 退却メニューへ戻る。
-    mem = egg_memory(30, 29, None)
-    mem['battle']['egg_retreat_attempts'] = 0
-    assert p.egg_battle_step(wounded_egg_screen(30), mem) == [p.pad('b')]
-    assert mem['battle']['egg_retreat_attempts'] == 1
-    # 防衛戦では退却しない。
-    mem['battle'].update(side='defense', egg_retreat_tried=False)
-    assert p.egg_battle_step(wounded_egg_screen(30), mem) == [p.pad('down')]
-
-
 def test_strong_general_and_unknown_battle_always_take_the_egg():
     needed, evidence = p._own_egg_needed({}, 'not a battle')
     assert needed is True and evidence['rule'] == 'unknown_battle'

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,7 @@ from docich.jev_corner import (
     _stale_precommit_recovery_category,
     diagnose,
     load_jev_corner_config,
+    preflight,
     recover_bridge,
     refresh_bridge,
 )
@@ -106,6 +109,56 @@ max_requests_per_run = 500
             self.assertEqual(calls[0][:3], ["tmux", "kill-session", "-t"])
             self.assertEqual(calls[1][:4], ["tmux", "new-session", "-d", "-s"])
             self.assertIn("soviet_local.mjs", calls[1][-1])
+
+    def test_preflight_is_offline_and_reports_the_static_contract(self):
+        summary = preflight(self.g)
+        self.assertEqual(summary["network"], "none")
+        self.assertFalse(summary["enabled"])
+        self.assertEqual(summary["model"], "jev-1.13.0")
+        self.assertEqual(summary["candidate_version"], "uniform25-v1")
+
+    def test_preflight_reports_key_presence_as_boolean_without_value(self):
+        secret = "synthetic-test-value-not-real"
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        with patch.dict(jev_mod.os.environ, {"TYPESAFE_API_KEY": secret}):
+            summary = preflight(self.g)
+        self.assertTrue(summary["api_key_present"])
+        self.assertEqual(summary["category"], "ready")
+        self.assertNotIn(secret, json.dumps(summary))
+        with patch.dict(jev_mod.os.environ, {}, clear=True):
+            summary = preflight(self.g)
+        self.assertFalse(summary["api_key_present"])
+        self.assertEqual(summary["category"], "api_key_missing")
+
+    def test_preflight_checks_the_worker_env_file_without_reading_the_value(self):
+        secret = "synthetic-env-value-not-real"
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        soren = self.root / "soren-env"
+        soren.mkdir()
+        with patch.object(jev_mod, "_soren_root", return_value=soren), patch.dict(jev_mod.os.environ, {}, clear=True):
+            (soren / ".env").write_text(f"OTHER=1\nTYPESAFE_API_KEY={secret}\n", encoding="utf-8")
+            summary = preflight(self.g)
+            self.assertTrue(summary["api_key_present"])
+            self.assertEqual(summary["category"], "ready")
+            self.assertNotIn(secret, json.dumps(summary))
+
+            (soren / ".env").write_text("# TYPESAFE_API_KEY=commented-out\nTYPESAFE_API_KEY=\n", encoding="utf-8")
+            self.assertFalse(preflight(self.g)["api_key_present"])
+
+            (soren / ".env").unlink()
+            self.assertEqual(preflight(self.g)["category"], "api_key_missing")
+
+    def test_preflight_storage_categories_are_fixed(self):
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        absent = dataclasses.replace(self.g, state_dir=self.root / "absent")
+        with patch.dict(jev_mod.os.environ, {"TYPESAFE_API_KEY": "synthetic"}):
+            self.assertEqual(preflight(absent)["category"], "storage_missing")
+            with patch.object(jev_mod.os, "access", return_value=False):
+                self.assertEqual(preflight(self.g)["category"], "storage_unwritable")
+        self.assertEqual(
+            jev_mod.PREFLIGHT_CODES,
+            {"ready": 0, "api_key_missing": 47, "storage_missing": 48, "storage_unwritable": 49},
+        )
 
     def test_config_is_disabled_by_default_but_manual_start_is_explicit(self):
         loaded = load_jev_corner_config(self.g)
@@ -306,6 +359,220 @@ max_requests_per_run = 500
 
     def test_program_free_leaves_recovery_path_intact(self):
         self.assertIsNone(jev_mod._program_busy_reason(self.g))
+
+
+
+
+class JevStuckLiveGateTests(unittest.TestCase):
+    """docich#3154: gated recover-bridge for a hung-but-live JEV bridge."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        (self.root / "config/games").mkdir(parents=True)
+        (self.root / "config/docich.toml").write_text(
+            "[paths]\nstate_dir = 'run'\ngames_dir = 'config/games'\n",
+            encoding="utf-8",
+        )
+        self.soren_root = self.root / "soren"
+        (self.root / "config/games/sorengame.toml").write_text(
+            f"""
+[game]
+name = "sorengame"
+title = "Soren"
+adapter = "soren"
+
+[lifecycle]
+require_round_boundary = true
+
+[soren]
+root = "{self.soren_root}"
+
+[jev_corner]
+enabled = false
+one_game = true
+""",
+            encoding="utf-8",
+        )
+        self.g = config.load_global(self.root)
+        self.lifecycle = self.soren_root / "tmp/state/game_lifecycle"
+        self.lifecycle.mkdir(parents=True)
+        self.run_id = "123e4567-e89b-12d3-a456-426614174000"
+        (self.lifecycle / "player_state.json").write_text(json.dumps({
+            "schema": 1, "game": "sorengame", "policy": "jev",
+            "player_generation": 4, "game_generation": 1,
+            "run_id": self.run_id,
+        }), encoding="utf-8")
+        (self.lifecycle / "player_capabilities.json").write_text(json.dumps({
+            "schema": 1, "game": "sorengame", "pid": os.getpid(),
+            "capabilities": ["player_policy_v1"],
+        }), encoding="utf-8")
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        self.request_id = "9f3f5a7e-1c2b-4d8e-9a0b-1c2d3e4f5a6b"
+        (self.g.state_dir / "jev_corner.json").write_text(json.dumps({
+            "schema_version": 1, "status": "recovery_required",
+            "game": "sorengame", "policy": "jev",
+            "request_id": self.request_id, "run_id": self.run_id,
+            "player_generation": 4,
+            "last_error": "boundary deadline expired",
+        }), encoding="utf-8")
+        self.board = self.soren_root / "game_state.json"
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _freeze_board(self, age=8000.0):
+        self.board.write_text(json.dumps({
+            "state": "MOVE", "score": 1117, "pieces": [{"type": 5}],
+        }), encoding="utf-8")
+        import os as _os, time as _time
+        _os.utime(self.board, (_time.time() - age, _time.time() - age))
+
+    def _fake_manager(self):
+        adapter = _StuckAdapter(self.soren_root)
+        manager = type("Mgr", (), {"adapter": adapter})()
+        return manager, adapter
+
+    def test_diagnose_reports_stuck_live_gate(self):
+        self._freeze_board()
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev_bridge_stuck_live")
+
+    def test_diagnose_refuses_jev_when_board_not_stuck(self):
+        self.board.write_text(json.dumps({
+            "state": "MOVE", "score": 1117, "pieces": [{"type": 5}],
+        }), encoding="utf-8")
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev")
+
+    def test_diagnose_refuses_without_finish_failure_record(self):
+        self._freeze_board()
+        (self.g.state_dir / "jev_corner.json").write_text(json.dumps({
+            "schema_version": 1, "status": "active",
+            "game": "sorengame", "policy": "jev",
+            "request_id": self.request_id, "run_id": self.run_id,
+            "player_generation": 4, "last_error": None,
+        }), encoding="utf-8")
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev")
+
+    def test_diagnose_refuses_with_pending_lifecycle_request(self):
+        self._freeze_board()
+        (self.lifecycle / "request.json").write_text("{}", encoding="utf-8")
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev")
+
+    def test_diagnose_refuses_on_generation_mismatch(self):
+        self._freeze_board()
+        corner = json.loads((self.g.state_dir / "jev_corner.json").read_text())
+        corner["player_generation"] = 9
+        (self.g.state_dir / "jev_corner.json").write_text(json.dumps(corner), encoding="utf-8")
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev")
+
+    def _write_corner(self, **overrides):
+        corner = {
+            "schema_version": 1, "status": "recovery_required",
+            "game": "sorengame", "policy": "jev",
+            "request_id": self.request_id, "run_id": self.run_id,
+            "player_generation": 4,
+            "last_error": "boundary deadline expired",
+        }
+        corner.update(overrides)
+        (self.g.state_dir / "jev_corner.json").write_text(
+            json.dumps(corner), encoding="utf-8")
+
+    def _assert_stuck_live_refused(self):
+        manager, _adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            self.assertEqual(jev_mod.recover_bridge_diagnose(self.g),
+                             "player_policy_jev")
+
+    def test_diagnose_refuses_when_corner_request_id_missing(self):
+        self._freeze_board()
+        self._write_corner(request_id=None)
+        self._assert_stuck_live_refused()
+
+    def test_diagnose_refuses_when_corner_request_id_malformed(self):
+        self._freeze_board()
+        self._write_corner(request_id="not-a-uuid")
+        self._assert_stuck_live_refused()
+
+    def test_diagnose_refuses_when_corner_run_id_missing(self):
+        self._freeze_board()
+        self._write_corner(run_id=None)
+        self._assert_stuck_live_refused()
+
+    def test_diagnose_refuses_when_corner_run_id_mismatch(self):
+        self._freeze_board()
+        self._write_corner(run_id="00000000-0000-4000-8000-000000000001")
+        self._assert_stuck_live_refused()
+
+    def test_recover_bridge_refuses_when_corner_run_id_mismatch(self):
+        self._freeze_board()
+        self._write_corner(run_id="00000000-0000-4000-8000-000000000001")
+        manager, adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            with patch.object(jev_mod, "_run_bridge_relaunch") as relaunch:
+                with self.assertRaises(JevCornerError):
+                    jev_mod.recover_bridge(self.g)
+                relaunch.assert_not_called()
+        self.assertEqual(adapter.calls, [])
+
+    def test_recover_bridge_relaunches_only_when_gate_opens(self):
+        self._freeze_board()
+        manager, adapter = self._fake_manager()
+        relaunched = []
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            with patch.object(jev_mod, "_run_bridge_relaunch",
+                              side_effect=lambda root: relaunched.append(root)):
+                jev_mod.recover_bridge(self.g)
+        self.assertEqual(relaunched, [self.soren_root.resolve()])
+        self.assertEqual(adapter.calls, ["materialize", "readiness"])
+
+    def test_recover_bridge_refuses_when_board_not_stuck(self):
+        self.board.write_text(json.dumps({
+            "state": "MOVE", "score": 1, "pieces": [],
+        }), encoding="utf-8")
+        manager, adapter = self._fake_manager()
+        with patch.object(jev_mod, "JevCornerManager", return_value=manager):
+            with patch.object(jev_mod, "_run_bridge_relaunch") as relaunch:
+                with self.assertRaises(JevCornerError):
+                    jev_mod.recover_bridge(self.g)
+                relaunch.assert_not_called()
+        self.assertEqual(adapter.calls, [])
+
+
+class _StuckAdapter:
+    def __init__(self, root):
+        self.root = root
+        self.calls = []
+
+    def _status(self, deadline, cancel):
+        return {"request": None, "ack": None, "resource": None}
+
+    @staticmethod
+    def _ack(payload):
+        return {}
+
+    def preflight(self, deadline, cancel):
+        pass
+
+    def materialize_runtime(self, deadline, cancel):
+        self.calls.append("materialize")
+
+    def readiness(self, deadline, cancel):
+        self.calls.append("readiness")
 
 
 if __name__ == "__main__":

@@ -312,6 +312,7 @@ cancel が拒否された時・save境界が期限切れになった時も、同
 `prompt_class`（`save_prompt_pending` / `save_confirmation` / `character_creation` /
 `capture_failed` / `unknown`）、`process_target_present` / `process_alive` /
 `save_signature_changed` の boolean（不明なら `null`、決して `false` にしない）、
+`orphan_processes_present` の runtime 所有 live process 検出数（未測定なら `null`、#4693）、
 `generation` / `runtime_id` / `recorded_at` のみで、**pane本文・path・キー・argv は書かない**。
 owner-only `diagnostics` は active runtime のそれだけを読み、世代が違うものは
 `stale_runtime` として区別する。記録に失敗しても cancel の fail-closed 判定は変えない。
@@ -329,6 +330,12 @@ adapter が acknowledge しない限り canonical の `draining` を `ready` に
 
 それ以外（プロンプトなし・プロセス消失・capture 失敗・所有権不一致）は一切キーを送らず拒否する
 （fail closed）。かつては無条件に拒否していたため、driver が確認前に死ぬと `draining` が恒久的に残った。
+ただし #4693 以降、prompt なし・post-key でのプロセス消失の各拒否では死亡証明を先に試す:
+pane leader・その子孫・ownership tag を持つ orphan の **全て** が pidfd で再検証しても生存していない
+（= runtime に帰属する process が1つも残っていない）ことが証明できた場合だけ、terminal boundary
+（`ended` / `suspended`）を記録して acknowledge し、coordinator は active を再公開せず retiring 経由で
+回収する。live process や証明不能（`orphan_processes_present` に検出数または `null` が残る）では
+従来どおり拒否して `draining` を維持する。stalled-but-live では発動しない。kill はしない。
 
 ---
 

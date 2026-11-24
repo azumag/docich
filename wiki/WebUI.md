@@ -125,6 +125,36 @@ read_only = false         # true で閲覧専用
 - `.env` 更新は原子書き込み: バックアップ (`.env.bak.<ns>`) → 一時ファイル →
   `os.replace` → `chmod 600`。同時編集は mtime 比較で 409 (conflict) を返す。
 
+## LIVE タブ
+
+WebUI と同じホスト・同じ `state_dir` で動く LIVE bot の状態を見て、オン/オフと
+shadow/trade を切り替えるタブ。worker の `live_status.json`、owner の制御ファイル、
+LIVE 台帳を **読み取り専用** で突き合わせ、10秒ごと（タブを表示している間だけ）更新する。
+
+- 表示: ON/OFF・mode (shadow/trade)・worker の稼働/停止・最終更新・残高警告数・
+  安全停止の理由・active policy。約定による純収支 (JPY 合計と symbol 別)・ラウンドトリップ数・
+  勝率・オープンポジション・直近20件の fill・自動記録した期首残高。
+  注文ID・APIキー・制御ファイルの中身・監視外資産の残高は返さない。
+- 純収支は記録済み fill の (売却代金 - 購入代金 - 既知の手数料) で、未決済の買いも含む。
+  売るまで合計を押し下げるため、確定損益や含み損益の評価ではない。勝率の分母になる
+  ラウンドトリップは、買いと売りが両方成立して完了したポジションだけを数える。
+- worker の鮮度は status の `interval_ms` (30,000〜3,600,000 の整数) から 3×interval を基本とし、
+  running で連続失敗があるときは `next_wait` の再試行待ち (interval 以上、interval が300秒
+  以下なら300秒で頭打ち) を加える。`interval_ms` の無い旧 status は従来どおり 60秒 / 180秒で
+  判定する。
+  lease を失ったワーカーは status を書かない。
+- **OFF**: 買いも売りも止める。解除に安全クリアや手動の状態編集は不要で、そのまま
+  ON に戻せる。OFF に確認入力は要らない。
+- **ON (shadow)**: 監視だけ。注文は送らない。確認入力は要らない。
+- **ON (trade)**: 実際に注文を送る。切替の確認としてボタン横の欄に `TRADE` と入力する
+  （ブラウザの alert/confirm は使わない）。サーバ側でも `confirm="TRADE"` が無ければ
+  400 で拒否する。
+- **viewer / read-only**: GET は読めるが、`POST /api/live/control` は mutation guard が
+  403 `read_only` で拒否する。`--read-only` で起動した WebUI も同じ。
+
+台帳がない・worker の status が無い・制御ファイルが不正な場合は、それぞれ
+「台帳なし」「未接続」「unknown」と表示し、画面は止まらない。
+
 ## API エンドポイント
 
 | メソッド | パス | 説明 |
@@ -137,6 +167,8 @@ read_only = false         # true で閲覧専用
 | DELETE | `/api/backoffs/<sanitized>` | 特定エージェントの backoff をクリア |
 | POST | `/api/backoffs/clear` | 全 backoff をクリア |
 | GET | `/api/stats?days=N` | 直近 N 日 (1..30) の AI 統計 |
+| GET | `/api/live` | LIVE の制御状態・worker status・台帳 overview (read-only) |
+| POST | `/api/live/control` | LIVE の ON/OFF と mode 切替 (`{"state","mode","confirm"}`) |
 | POST | `/api/reload` | radio/chat worker へ SIGUSR1 送信 |
 
 `read_only` モードでは書き込み系 (PUT / DELETE / POST) が 403 になる。

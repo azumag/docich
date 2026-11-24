@@ -19,7 +19,7 @@ import time
 import tomllib
 
 from .game_switch import GameSwitchLock, atomic_write_json
-from .presentation import contain_filter, measured_contain_size
+from .presentation import PROJECTION_INPUT_LOW_LATENCY, contain_filter, measured_contain_size
 from .tmux import SESSION, Tmux, TmuxOwnership, ownership_environment
 
 ROOT = Path('/home/ubuntu/docich')
@@ -92,6 +92,7 @@ def projection_argv(claim):
     vx, vy, vw, vh = projection['viewport']
     cx, _, cw, _ = projection['content']
     return ['ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
+            *PROJECTION_INPUT_LOW_LATENCY,
             '-f', 'x11grab', '-framerate', '15', '-draw_mouse', '0',
             '-window_id', state['window'], '-video_size', f"{state['width']}x{state['height']}",
             '-i', state['display'], '-vf', projection_filter(claim), '-noborder',
@@ -118,7 +119,7 @@ class LinuxEffects:
             return dict(pid=pid, start=fields[19], parent=int(fields[1]),
                         group=int(fields[2]), uid=uid,
                         executable=(base/'exe').resolve().name)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return None
 
     def group_members(self, group):
@@ -128,7 +129,7 @@ class LinuxEffects:
                 continue
             try:
                 raw = (entry/'stat').read_text()
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue
             fields = raw[raw.rfind(')')+2:].split()
             if fields[0] != 'Z' and int(fields[2]) == group:

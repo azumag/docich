@@ -246,6 +246,7 @@ def _critical_tags(obs: NethackObservation, decision: PolicyDecision) -> tuple[s
         "assess_contact",
         "survival_emergency",
         "status_emergency",
+        "status_recovery",
         "food_emergency",
     }:
         tags.append(f"intent:{decision.intent}")

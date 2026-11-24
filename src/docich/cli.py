@@ -21,6 +21,7 @@ from . import (
     procs,
     speech,
     tts,
+    vrchat_osc,
 )
 
 from .comment import pipeline as comment_pipeline  # noqa: E402
@@ -47,6 +48,7 @@ from .netcmd import send_ra_cmd
 from .trading import cli as trading_cli
 from .trading import paper_ai_canary
 from .state import State
+from .cc_translation_adapter import describe_health, probe_health
 from .stream import (
     CaptionSocketDirectoryError,
     StreamRuntime,
@@ -57,6 +59,7 @@ from .stream import (
     ensure_caption_socket_parent,
     redact_stream_command,
     resolve_runtime,
+    wait_for_caption_socket,
 )
 from .supervise import run_callable_loop, run_loop
 from .tmux import Tmux, TmuxError
@@ -85,6 +88,7 @@ USER_ERRORS = (
     trading_cli.TradingCliError,
     paper_ai_canary.PaperAiCanaryError,
     tts.TtsError,
+    vrchat_osc.VrOscError,
 )
 
 
@@ -195,6 +199,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_maintain_fifo.add_argument(
         "--timeout", type=float, metavar="SEC", help="復旧・再開処理のdeadline (秒)"
+    )
+
+    p_clear = sub.add_parser(
+        "hanjuku-clear-terminal",
+        help="半熟英雄: 復旧済みランタイムの終了判定を、オーナー操作で解除する",
+    )
+    p_clear.add_argument(
+        "--runtime", metavar="RUNTIME_ID",
+        help="対象 runtime (省略時は active runtime)",
     )
 
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
@@ -352,6 +365,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trading_cli.configure_parser(p_trading)
 
+    p_vr = sub.add_parser(
+        "vr-osc", help="VRChat アバターと OSC で双方向連携する (VR同志)"
+    )
+    vrchat_osc.configure_parser(p_vr)
+
     p_webui = sub.add_parser("webui", help="モデルチェーン / バックオフ管理 Web UI を起動する (Tailscale経由)")
     p_webui.add_argument("--bind", metavar="ADDR", help="バインドアドレス (既定 127.0.0.1)")
     p_webui.add_argument("--port", type=int, metavar="PORT", help="ポート (既定 8787)")
@@ -422,6 +440,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_obs(g, args.game)
     if command == "send":
         return cmd_send(g, args.game, args.json)
+    if command == "hanjuku-clear-terminal":
+        return cmd_hanjuku_clear_terminal(g, runtime=args.runtime)
     if command == "ra-cmd":
         return cmd_ra_cmd(g, args.cmd)
     if command == "ra-boundary":
@@ -448,6 +468,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return model_output_guard.main()
     if command == "trading":
         return trading_cli.run_args(args, repo_root=_repo_root(), global_config=g)
+    if command == "vr-osc":
+        return vrchat_osc.run_args(args, repo_root=g.repo_root, state_dir=g.state_dir)
     if command == "webui":
         from .webui import run_webui
 
@@ -1055,6 +1077,7 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
                 detail = f"{detail}; {socket_detail}"
             print(f"  captions.active: {'はい' if active else 'いいえ'}")
             print(f"  captions.detail: {detail}")
+            print(f"  captions.adapter: {describe_health(probe_health())}")
             print(f"  ffmpeg: {shlex.join(runtime.command)}")
         except StreamKeyError as exc:
             print(f"  ffmpeg: 構築できません ({exc})")
@@ -1337,6 +1360,58 @@ def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
     os.environ.pop(RUNTIME_GAME_SESSION_ENV, None)
 
 
+def cmd_hanjuku_clear_terminal(g: GlobalConfig, *, runtime: str | None = None) -> int:
+    """Clear a terminal verdict on an already-restored Hanjuku runtime.
+
+    A restart after an emulator crash leaves ``terminal_reason='game_over'`` in
+    ``hanjuku_run.json``; every input is then refused with "Hanjuku terminal
+    evidence holds input" even though the game is playing again (g1163
+    2026-11-10 17:4x-18:0x, ~2 hours). Releasing that verdict is an owner
+    decision — a finished match must not resume on its own — so this command
+    keeps a byte copy, clears only the terminal fields and records the act.
+    """
+    import shutil
+    import time
+
+    from .game_switch import atomic_write_json
+    from .hanjuku_run import RUN_FILE
+    from .retroarch_boundary import read_record
+
+    runtime_id = runtime
+    if runtime_id is None:
+        raw = read_record(Path(g.state_dir) / "game_switch.json")
+        active = (raw or {}).get("active") or {}
+        runtime_id = active.get("runtime_id")
+    if not isinstance(runtime_id, str) or not runtime_id:
+        raise CliError("active runtime が見つかりません。--runtime で指定してください")
+    runtime_dir = Path(g.state_dir) / "runtimes" / runtime_id
+    run_path = runtime_dir / RUN_FILE
+    run = read_record(run_path)
+    if not run:
+        raise CliError(f"run 状態がありません: {run_path}")
+    reason = run.get("terminal_reason")
+    if not reason and not run.get("terminal_candidate"):
+        print(f"docich: 終了判定はありません ({runtime_id})")
+        return 0
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+    backup = run_path.with_suffix(f".json.bak-{stamp}")
+    shutil.copy2(run_path, backup)
+    atomic_write_json(run_path, {**run, "terminal_reason": None,
+                                 "terminal_candidate": None,
+                                 "terminal_evidence": None,
+                                 "terminal_at": None,
+                                 "terminal_cleared_at": time.time(),
+                                 "terminal_cleared_reason": reason})
+    events = runtime_dir / "hanjuku_events.jsonl"
+    with events.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"event": "terminal_cleared_by_operator",
+                                 "at": time.time(), "runtime_id": runtime_id,
+                                 "previous_reason": reason,
+                                 "backup": str(backup)}, ensure_ascii=False) + "\n")
+    print(f"docich: 終了判定を解除しました ({runtime_id}: {reason}) バックアップ: {backup.name}")
+    return 0
+
+
 def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
     cmd_text = " ".join(cmd_parts)
     return shared_section(g.state_dir, lambda: _send_ra_guarded(g, cmd_text))
@@ -1555,6 +1630,7 @@ def _run_audio_spawn(g: GlobalConfig) -> int:
 
 def _run_stream(g: GlobalConfig) -> int:
     xkit = XKit(g.display.name)
+    caption_state = {"active": False}
 
     def pre():
         xkit.wait_display()
@@ -1577,17 +1653,37 @@ def _run_stream(g: GlobalConfig) -> int:
                 )
         if g.captions.enabled and not runtime.captions_active:
             print(f"docich: 警告: 字幕を無効化して配信を継続します ({runtime.caption_detail})")
+        caption_state["active"] = runtime.captions_active
         cmd = runtime.command
         env_extra = {}
         if g.audio.enabled:
             env_extra["PULSE_SINK"] = g.audio.sink_name
         return cmd, env_extra
 
+    def post_start(proc):
+        # #2792: the filter can refuse to create the socket (unsupported frame
+        # rate before the fix, bad path, foreign/live socket). Requested CC is
+        # not active CC, so say so at launch instead of failing open silently.
+        if not caption_state["active"]:
+            return
+        ready, detail = wait_for_caption_socket(
+            g.captions.socket_path, is_running=lambda: proc.poll() is None
+        )
+        if ready:
+            print(f"docich: 字幕socket ready ({detail})")
+            return
+        print(
+            "docich: 警告: 字幕を要求しましたがFFmpegが字幕socketを作成しませんでした "
+            f"({detail})。字幕なしで配信を継続します。"
+            "FFmpegログの 'docichcc disabled:' 行を確認してください。"
+        )
+
     run_loop(
         "stream",
         g,
         build,
         pre=pre,
+        post_start=post_start,
         log_command=lambda command: redact_stream_command(command, g),
     )
     return 0

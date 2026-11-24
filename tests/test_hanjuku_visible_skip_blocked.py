@@ -1,0 +1,67 @@
+"""A visible castle that already refused this camp is not chosen again.
+
+Owner 2026-11-16: the cliff-side general's camp recall kept failing; the
+いどう destination was the visible アルマムーン even though the cliff learning
+had already blocked it twice. The live g1190 camp at [87,19] was retried in
+69-4/69-5/69-6 with the same castle and never moved.
+"""
+from test_hanjuku_camp_field_move import castle_frame, memory
+
+from docich.hanjuku.flows import recall as recall_flow
+from docich.hanjuku.state.regions import flow as _flow
+from docich.hanjuku.strategy.orders import _recall_goal
+
+
+def test_a_blocked_visible_castle_is_skipped_for_another_visible_one():
+    frame = castle_frame()
+    mem = {'chapter': 9, 'captured': ['サヌト', 'オシロガ'], '_records': []}
+    first = recall_flow._visible_own_castle(mem, frame)
+    assert first is not None and first['castle'] in ('サヌト', 'オシロガ')
+    _flow(mem)['camp_recall_blocked'] = {first['castle']: 2}
+    second = recall_flow._visible_own_castle(mem, frame)
+    assert second is not None and second['castle'] != first['castle']
+
+
+def test_an_unblocked_visible_castle_is_unchanged():
+    frame = castle_frame()
+    mem = {'chapter': 9, 'captured': ['サヌト', 'オシロガ'], '_records': []}
+    _flow(mem)['camp_recall_blocked'] = {'カラ': 3}
+    assert recall_flow._visible_own_castle(mem, frame) is not None
+
+
+def test_every_visible_castle_blocked_falls_back_to_the_picker():
+    frame = castle_frame()
+    mem = memory()
+    _flow(mem)['camp_recall_blocked'] = {'サヌト': 2, 'オシロガ': 2}
+    assert recall_flow._visible_own_castle(mem, frame) is None
+    state = _flow(mem)['recall']
+    recall_flow._bind_camp_origin(mem, state, recall_flow._visible_own_candidates(mem, frame))
+    state['stage'] = 'menu'
+    from test_hanjuku_chart_bot import camp_menu
+    actions = recall_flow.camp_recall_step(camp_menu(0), mem, frame)
+    assert not any(r.get('decision') == 'camp_recall_visible_move' for r in mem['_records'])
+    assert any(r.get('decision') == 'camp_recall_visible_blocked' for r in mem['_records'])
+    assert actions  # the hand still confirms いどう — the blocked castles lose the Y-route goal instead
+
+
+def test_the_camp_origin_binds_from_one_visible_roof():
+    frame = castle_frame()
+    mem = memory()
+    state = _flow(mem)['recall']
+    candidates = recall_flow._visible_own_candidates(mem, frame)
+    assert candidates
+    recall_flow._bind_camp_origin(mem, state, candidates)
+    roof = candidates[0]
+    assert state['origin_source'] == 'visible_roof'
+    assert state['origin'] == [roof['world'][0] + 80 - roof['screen'][0],
+                                roof['world'][1] + 90 - roof['screen'][1]]
+
+
+def test_the_bound_origin_avoids_the_blocked_castle():
+    frame = castle_frame()
+    mem = memory()
+    _flow(mem)['camp_recall_blocked'] = {'サヌト': 2}
+    state = _flow(mem)['recall']
+    assert _recall_goal(mem) is None            # no origin, no binding
+    recall_flow._bind_camp_origin(mem, state, recall_flow._visible_own_candidates(mem, frame))
+    assert _recall_goal(mem) == 'オシロガ'       # nearest unblocked castle

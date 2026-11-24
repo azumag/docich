@@ -18,10 +18,82 @@ fail-closed に残るのは **`.` が質問への回答になり得る局面だ�
 
 ここで「安全」は入力の種類と観測条件の契約です。可視床にも未知の罠があり、通常戦闘でも死亡します。
 旧 P3b の「creature には一切踏み込まない」を、**可視退避先がない場合の通常方向キー1個**に限って緩めます。
-強制攻撃 `F`、攻撃承認 `y`、複数キーやマクロ、推測したアイテム・祈り・階段操作は追加しません。
+強制攻撃 `F`、攻撃承認 `y`、複数キーやマクロ、推測したアイテム操作は追加しません。
+階段操作は、`>` を**同じ階の過去の観測で実際に目視した座標**に hero が立っている場合だけ `>` 1個を送る
+reviewed action として追加しました（#2666）。hero glyph が足元の地形を隠すため、現在の1 frame から
+階段を推測することはせず、exploration memory に記録済みのタイルだけを根拠にします。
+祈り `#pray` だけは、次節の観測条件を満たす場合に限り reviewed 回復actionとして追加しました（#759）。
 閉じた扉は、探索・食料探索・低HP/食料危険状態でも、隣接creatureがなく方向入力が信頼できる隣接扉なら `o` と確認済み方向を別々の観測で1回試します。HP 50%以下や `Hungry` はそれだけでは開扉を止めません。`Fainted`・移動障害状態・重篤な病状では止めます。
 ロック解除・蹴破り・別promptへの回答は行わず、開かなかった扉は同じruntimeで再試行せず探索frontierから外します。
 開いた扉は、直後の観測で同じ座標が開扉glyphへ変わった場合だけ通行可能として記憶します。
+
+## severe status の reviewed 回復（#759）
+
+severe status（`Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll`）はターン経過では回復せず、
+治療なしでは時間切れで死亡します。そこで `.` の待機だけに頼らず、観測条件を満たす場合だけ
+reviewed な祈り回復を実行します。
+
+本番 surface へ追加した回復actionは **拡張コマンド `#pray` のみ**です。実機 NetHack 5.0.0
+（canary と同じ source と nethackrc）で確認した実際のキー列:
+
+1. `#` — 拡張コマンドの getlin。最上段は `#`（`#` に続けて語を打つ）
+2. `pray` + Enter — 「Are you sure you want to pray? [yn] (n)」と確認される
+3. `y` — 「You begin praying …--More--」となり、`nomul(-3)` の3ターン凍結
+
+`p` 単独キーは `#pay`（支払い）であり祈りではないため、拡張コマンドを使います。
+NetHack 5.0.0 は `paranoid_confirmation` の既定が `pray swim trap`（`options.c`）で、
+`dopray()` は必ず確認を求めます（`pray.c`）。
+
+自動実行の観測条件（`nethack_policy.py` の `severe_status_recovery_action` と
+`PRAY_RECOVERY_STEPS` が唯一の正本。resolver の提供と `assert_production_safe` の
+最終境界が同じ述語を使います）:
+
+- 完全な gameplay frame（prompt無し・player一意・HP>0・Dlvl既知）であること
+- `Dlvl <= 20` であること。Gehennom では祈りは助けにならず神を怒らせる
+  （`pray.c` `prayer_done()` の `Inhell` 分岐）。Dlvl不明・21以上は fail-closed
+- 隣接creatureの有無では**変えない**（issue #759: severe 状態自体が時間切れで致死。
+  脅威回避は別判断）
+- **1エピソード1回**: severe が継続している間は2度目の祈りを生成しない。
+  再許可は **完全な** severe-free frame（`turn_ready`、つまり prompt 無し・player 一意・
+  HP/HP最大値/階層が読める）を観測したときだけ行う。status 2行が欠落した不完全な frame
+  （pager・部分キャプチャ）は condition が空に見えるが改善の証拠ではない。神の立場
+  （`ublesscnt`/`Luck`/`ugangr`）は TTY から観測できず、早すぎる祈りは
+  `gods_upset`/`angrygods` を引くため
+- 祈りの途中で期待した prompt が消えた/変わった場合は、打ちかけの入力を破棄して
+  fail-closed（推測でキーを足さない）。送信が ack されなかった継続キーは保持し、
+  再計画で同じキーを送り直す。map の差分（遠方1マス、却下された fresh capture）だけでは
+  継続状態も予算も失わない — 破棄は「期待した prompt が消えた」ときだけ
+
+採用しなかった回復手段: 治癒薬・ユニコーンの角・ユーカリ・cure sickness 呪文・polyself・
+`R` での首輪取り外しは、確定した inventory 観測か選択 prompt 契約が必要なため surface に
+入れません（item key の推測は issue 要件に反する）。`food_emergency`・`survival_emergency`
+への適用も既存契約どおり行いません。
+
+## canary の severe recovery 証拠と acceptance（#2650）
+
+canary の candidate arm は本番と同じ `NethackProgressResolver` 経路（observe → decide → resolve → act → sent）を通ります。
+これにより `#pray` の複数キー継続が canary でも駆動されます。baseline arm（`CanaryTacticalPolicy` の catalog）は変更しません。
+
+- worker 結果の `severe_recovery` は次の形です: `acceptance_scenario`（nullまたは scenario 名）、`severe_episodes`、
+  `recovery_started`、`recovery_resolved`、`outcome`。`severe_episodes` は severe status の立ち上がり回数です。
+  `recovery_started` は祈りの `#` を送った回数です。`recovery_resolved` は、祈り開始後に完全な severe-free frame（`turn_ready`）を
+  観測した回数です。#2526 の予算再武装と同じ基準です。
+- `outcome` の意味:
+  - `not_observed`: severe status を一度も観測していない。
+  - `observed_unattempted`: severe status を観測したが祈りを送っていない（fail-closed hold、Gehennom 等）。
+  - `recovery_unresolved`: 祈りを送ったが、終了まで完全な severe-free frame を観測していない。
+  - `resolved`: 祈り後に完全な severe-free frame を観測した。
+- 親 `nethack_canary.py` は `severe_recovery` の形と `outcome` の値を検証し、不正な場合は episode を受理しません。
+
+acceptance episode（#2650 Plan 2）は canary worker の内部だけで使う枠組みです。
+- `acceptance` を要求できるのは candidate arm だけです。scenario 名は `ACCEPTANCE_SCENARIOS` のレビュー済み固定表にある名前だけです。
+- 固定表は現時点で空です。表に scenario が無いため、すべての acceptance 要求は fail-closed で拒否されます。
+- `wizard_mode=False` / `explore_mode=False` / `production_state_must_remain_untouched=True` の要求は緩めません。
+- 本番 brain（`agent/brains.py`、`nethack_progress.py`、`nethack_policy.py`）は canary や acceptance を import しません。
+  テストでこの非接触を検証しています。
+- 通常の canary・smoke の paired 比較からの除外と、acceptance 要求の正規経路（親からの要求生成）は未実装です。
+  scenario の確定と合わせて別途決めます。
+
 
 ## 優先順位
 
@@ -30,7 +102,7 @@ fail-closed に残るのは **`.` が質問への回答になり得る局面だ�
 | 最上段に明示 `--More--`、ほかの質問・折り返し疑いを検出しない | Space 1個。同じraw frameには再送せず `progress_blocked` |
 | 最上段に完全な未回答 `Really save? [yn] (n)` / `Really attack …? [yn] (n)`（既定表示は省略可） | `n` 1個。全く同じ観測には再送しない。save拒否は下記のcanonical所有権確認が必須 |
 | 開扉pendingに一致しない方向prompt、その他の質問、選択・命名・メニュー、曖昧/回答済み/切れた確認 | 無入力 |
-| `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll` | 移動・接触・開扉は不可。完全なframeなら `.` 1ターン |
+| `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll` | 移動・接触・開扉は不可。祈り回復の観測条件を満たせば reviewed な `#pray`、満たさなければ `.` 1ターン（次節）。いずれも隣接creatureの有無では変えない |
 | `Weak/Fainting/Starved` | 移動・接触は不可。`Fainted`でなく、隣接creature/移動障害がなければ隣接扉を1回試して食料・退路を探す |
 | `Fainted` | 開扉入力は送らず、回復を待つ |
 | player・HP・HP最大値・階層を確認できない、死亡HP | 無入力 |
@@ -40,6 +112,7 @@ fail-closed に残るのは **`.` が質問への回答になり得る局面だ�
 | `Hungry`（critical HPとの同時発生も含む） | 可視探索/退避・隣接扉の1回開扉 → 通常接触。全候補拒否後は `.` 1ターン |
 | 探索・食料探索・低HP/食料危険hold中に隣接する未試行の閉扉がある | HP 50%以下や `Hungry` でも `o` を送信し、次のfresh観測が同じ扉への `In what direction?` の場合だけ方向を1キー送信。隣接creature・移動障害・`Fainted`では行わない |
 | 通常の探索 | 可視 `.` / `#` / `<` / `>` と、このruntimeで開いたことを観測確認した扉への縦横優先の1歩。縦横候補なしなら斜め |
+| 下り階段 `>` を過去の観測で同じ階・同じ座標に記憶しており、hero がその上にいて complete frame | `>` 1個（降下）。hero glyph は地形を隠すため、記憶した階段タイルだけを根拠にする。prompt のある frame では送らない |
 | 安全マスなしの探索判断 | `.` 1ターン |
 
 `n` は確認では拒否、地図上では南東です。`assert_production_safe` は intent・キー形だけでなく、

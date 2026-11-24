@@ -194,3 +194,200 @@ def test_no_lifecycle_no_pause_reports_none(tmp_path):
         "pause_owned_by_lifecycle",
         "waiting_for",
     }
+
+
+# --- docich #2061: the expired waiting cleanup must be identifiable ---------
+#
+# In the 2026-10-11 incident a failed switch left ack=waiting with a passed
+# request deadline while the switch-owned soren_loop pause marker survived.
+# Diagnostics reported active=true / waiting_for=lifecycle_handover, so the
+# wedged cleanup read as a live handover and the operator could not match the
+# request that had to be cancelled.  These tests pin the cross-check.
+
+
+def test_live_waiting_handover_is_active_and_owned(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    _write_pair(state_dir, now, "waiting", deadline_offset=600)
+    _write_owned_marker(state_dir, "soren_loop", "loop_pause.json", "loop_marker_created")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    # Within its deadline an accepted/waiting handover still governs the pause,
+    # and its ownership record proves it.
+    assert workers["details"]["soren_loop"]["pause_owner"] == "lifecycle_owned"
+    assert lifecycle["active"] is True
+    assert lifecycle["ack_status"] == "waiting"
+    assert lifecycle["pause_owned_by_lifecycle"] == ["soren_loop"]
+    assert lifecycle["waiting_for"] == "lifecycle_handover"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_expired_waiting_cleanup_is_identified(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    # The broker only rewrites a passed deadline to ack=timeout when something
+    # polls boundary, so a wedged cleanup keeps reporting waiting.
+    _write_pair(state_dir, now, "waiting", deadline_offset=-600)
+    _write_owned_marker(state_dir, "soren_loop", "loop_pause.json", "loop_marker_created")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert workers["details"]["soren_loop"]["pause_owner"] == "unknown"
+    assert lifecycle["active"] is False
+    assert lifecycle["request_status"] == "present"
+    assert lifecycle["ack_status"] == "waiting"
+    assert lifecycle["pause_owned_by_lifecycle"] == []
+    assert lifecycle["waiting_for"] == "expired_waiting"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+    # Read-only: the evidence the operator needs survives collection.
+    assert (state_dir / "soren_loop.paused").is_file()
+    assert (state_dir / "game_lifecycle" / "loop_pause.json").is_file()
+
+
+def test_expired_accepted_cleanup_is_identified(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    _write_pair(state_dir, now, "accepted", deadline_offset=-1)
+    _write_owned_marker(state_dir, "improve_daemon", "improvement_pause.json",
+                        "improvement_marker_created")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["active"] is False
+    assert lifecycle["ack_status"] == "accepted"
+    assert lifecycle["waiting_for"] == "expired_waiting"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_expired_waiting_without_pause_markers_is_not_reported_as_cleanup(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    _write_pair(state_dir, now, "waiting", deadline_offset=-600)
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    # Nothing is paused, so there is no cleanup left behind to match.
+    assert lifecycle["active"] is False
+    assert lifecycle["pause_owned_by_lifecycle"] == []
+    assert lifecycle["waiting_for"] == "none"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_waiting_without_a_deadline_fails_closed(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    _write_pair(state_dir, now, "waiting")
+    request_path = state_dir / "game_lifecycle" / "request.json"
+    ack_path = state_dir / "game_lifecycle" / "ack.json"
+    for path in (request_path, ack_path):
+        record = json.loads(path.read_text())
+        record.pop("deadline_epoch")
+        path.write_text(json.dumps(record))
+    _write_owned_marker(state_dir, "soren_loop", "loop_pause.json", "loop_marker_created")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    # The pair loses its fixed identity without the deadline, so it is never an
+    # active handover and never claims the expired-waiting cleanup shape.
+    assert lifecycle["active"] is False
+    assert lifecycle["ack_status"] == "mismatched"
+    assert lifecycle["waiting_for"] == "unknown"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_expired_waiting_enum_is_part_of_the_documented_contract(tmp_path):
+    module = load_collector()
+    assert "expired_waiting" in module.LIFECYCLE_WAITING_FOR
+    assert "waiting" in module.LIFECYCLE_DEADLINE_STATUSES
+    assert "accepted" in module.LIFECYCLE_DEADLINE_STATUSES
+
+
+# --- docich #2061: the residue the ownership fix preserves is identifiable ---
+#
+# The fix keeps loop_pause.json alive after its request is consumed.  Without a
+# dedicated enum that residue read as an unprovable "unknown" pause, so the
+# operator could not tell it apart from an operator stop or a corrupt marker.
+
+
+def test_orphaned_lifecycle_pause_is_identified(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    (state_dir / "game_lifecycle").mkdir(parents=True)
+    # No request/ack at all: the owning switch was consumed.
+    _write_owned_marker(state_dir, "soren_loop", "loop_pause.json", "loop_marker_created")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    # Per-worker ownership stays honest: no live handover proves it.
+    assert workers["details"]["soren_loop"]["pause_owner"] == "unknown"
+    assert lifecycle["active"] is False
+    assert lifecycle["request_status"] == "absent"
+    assert lifecycle["ack_status"] == "absent"
+    assert lifecycle["pause_owned_by_lifecycle"] == []
+    assert lifecycle["waiting_for"] == "orphaned_lifecycle_pause"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_a_lifecycle_marker_without_a_record_stays_unknown(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    # A lifecycle marker with no ownership record proves nothing.
+    (state_dir / "soren_loop.paused").write_text(f"lifecycle:{SECRET_REQUEST_ID}\n")
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["active"] is False
+    assert lifecycle["waiting_for"] == "unknown"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_a_record_that_does_not_claim_creation_stays_unknown(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "soren_loop.paused").write_text(f"lifecycle:{SECRET_REQUEST_ID}\n")
+    (state_dir / "game_lifecycle").mkdir(parents=True)
+    (state_dir / "game_lifecycle" / "loop_pause.json").write_text(
+        json.dumps({"request_id": SECRET_REQUEST_ID, "loop_marker_created": False})
+    )
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["waiting_for"] == "unknown"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_an_operator_pause_is_still_operator_action_not_orphaned(tmp_path):
+    module = load_collector()
+    now = int(time.time())
+    state_dir = tmp_path / "tmp" / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "soren_loop.paused").write_text(json.dumps({"paused": True, "source": "webui"}))
+
+    workers, lifecycle = _collect(module, tmp_path, now)
+
+    assert lifecycle["waiting_for"] == "operator_action"
+    _assert_no_secrets({"workers": workers, "lifecycle_pause": lifecycle})
+
+
+def test_orphaned_enum_is_part_of_the_documented_contract(tmp_path):
+    module = load_collector()
+    assert "orphaned_lifecycle_pause" in module.LIFECYCLE_WAITING_FOR
+    # The per-worker ownership contract is unchanged (monitoring counts on it).
+    assert module.PAUSE_OWNERS == ("lifecycle_owned", "operator_owned", "unknown")
+

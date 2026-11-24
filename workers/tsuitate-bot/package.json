@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.18.0"
+    "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
   },
   "scripts": {
     "play:beta": "node scripts/play-beta.mjs",
@@ -15,7 +15,9 @@
     "test:bundle": "node test/bundle-integration.mjs",
     "test:beta-workerd": "node test/beta-workerd-integration.mjs",
     "dev:cf": "cf dev --local --persist-to .wrangler/cf-local",
-    "build:cf": "cf build && npm test && npm run test:workerd && npm run test:bundle"
+    "build:cf": "cf build && npm test && npm run test:workerd && npm run test:bundle",
+    "lab": "node scripts/replay-lab.mjs",
+    "collect": "node scripts/collect-replays.mjs"
   },
   "dependencies": {
     "socket.io-client": "4.8.4"
@@ -23,7 +25,17 @@
   "devDependencies": {
     "@cloudflare/build-output-utils": "0.8.5",
     "cf": "1.0.0-beta.12",
-    "miniflare": "5.20260930.0-alpha",
-    "wrangler": "^4.136.0"
+    "miniflare": "5.20261019.1-beta",
+    "wrangler": "4.151.3"
+  },
+  "overrides": {
+    "undici": "7.30.1",
+    "zod": "4.6.6",
+    "miniflare@5.20260930.0-alpha": {
+      "sharp": "0.35.5"
+    },
+    "miniflare@5.20261001.0-alpha": {
+      "sharp": "0.35.5"
+    }
   }
 }

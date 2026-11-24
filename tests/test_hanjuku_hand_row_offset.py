@@ -1,0 +1,24 @@
+"""docich#4686: the hand box's row offset differs between menus.
+
+Live ch3 frames: the main menu's hand box starts on its text row
+(hand=(146,49,164,62) for しょうぐん), while _current assumed the box starts one
+row above its text (y0+6). The roster row was never identified there, so both
+the monthly scan and the house roster opened it 2 times in 18 tries.
+"""
+from docich.hanjuku.os_layer.readers import _current
+from docich.hanjuku.os_layer.screen import Screen, TextLine
+from docich.hanjuku.os_layer.commands import menu_to
+
+
+def main_menu():
+    cells = tuple((146 + 8 * i, ch) for i, ch in enumerate('しょうぐん'))
+    status = tuple((146 + 8 * i, ch) for i, ch in enumerate('ステータス'))
+    return Screen([TextLine(y=33, cells=status), TextLine(y=49, cells=cells)],
+                  (146, 49, 164, 62), '', kind='main_menu')
+
+
+def test_the_row_is_read_when_the_box_starts_on_the_text_row():
+    cur = _current(main_menu())
+    assert cur is not None
+    assert cur[2] == 'しょうぐん'
+    assert menu_to(main_menu(), 'しょうぐん', exact=False) == 'here'

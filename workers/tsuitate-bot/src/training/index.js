@@ -84,14 +84,36 @@ export function normalizeGameRecord(raw) {
     const features = featuresForMove(observation, decision.usi, recentAccepted);
     if (!features || !FEATURE_KEYS.every((key) => Number.isFinite(features[key]) && Math.abs(features[key]) <= 1)) return null;
     if (!Number.isFinite(decision.score) || Math.abs(decision.score) > 1000000) return null;
-    decisions.push({
+    const entry = {
       moveNumber: observation.moveNumber,
       observation,
       usi: decision.usi,
       features: Object.fromEntries(FEATURE_KEYS.map((key) => [key, features[key]])),
       score: decision.score,
       feedback: decision.feedback,
-    });
+    };
+    if (decision.clocks !== undefined && decision.clocks !== null && object(decision.clocks)) {
+      const clocks = decision.clocks;
+      const running = clocks.running;
+      if ((running === null || running === "sente" || running === "gote")
+          && Number.isFinite(clocks.senteMs) && clocks.senteMs >= 0 && clocks.senteMs <= Number.MAX_SAFE_INTEGER
+          && Number.isFinite(clocks.goteMs) && clocks.goteMs >= 0 && clocks.goteMs <= Number.MAX_SAFE_INTEGER
+          && (clocks.serverTime === null || (Number.isFinite(clocks.serverTime) && clocks.serverTime >= 0 && clocks.serverTime <= Number.MAX_SAFE_INTEGER))) {
+        entry.clocks = { senteMs: clocks.senteMs, goteMs: clocks.goteMs,
+          running, serverTime: clocks.serverTime ?? null };
+      }
+    }
+    if (typeof decision.rejectionReason === "string"
+        && ["foul", "error", "ack_error"].includes(decision.rejectionReason)) {
+      entry.rejectionReason = decision.rejectionReason;
+    }
+    if (Number.isSafeInteger(decision.decisionLatencyMs) && decision.decisionLatencyMs >= 0) {
+      entry.decisionLatencyMs = decision.decisionLatencyMs;
+    }
+    if (Number.isSafeInteger(decision.candidateCount) && decision.candidateCount >= 0) {
+      entry.candidateCount = decision.candidateCount;
+    }
+    decisions.push(entry);
     if (decision.feedback === "accepted") {
       recentAccepted.push(decision.usi);
       if (recentAccepted.length > 64) recentAccepted.shift();

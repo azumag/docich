@@ -1,0 +1,125 @@
+"""Which flow, if any, owns the general status panel on screen right now.
+
+``flows.battle_menus.orphan_battle_menu_step`` closes a general's status page
+with B.  That page is opened by the monthly roster walk, the house roster
+walk, the arrival probe, a camp re-check and the boss fort route.  Until
+2026-11-24 the orphan close ran before every one of those owners and took the
+panel away before its reader could act: post_month_status failed every month
+with ``status_unreadable`` (cached 0, count_mismatch true), and the other
+menu readers sit after the same dispatch line.
+
+This module is the single read-only predicate the orchestrator snapshots
+before any flow runs.  It sits in the flows layer (a sibling of the owners) so
+``battle_menus`` can call it without importing the orchestrator, and it calls
+the owners' existing checks (``post_month_status``, ``house``,
+``camp_recheck``) instead of re-implementing them.
+
+A readable name that names another general still returns False so the orphan
+close does the safe B.  An unreadable name, however, returns True for the
+monthly scan and the boss fort route: the screen may be the owner's page with
+a temporary OCR hole, and the measured #5403 behaviour let those flows retry
+it (bounded by STATUS_RETRIES / the fort read cap).  Making ownership depend
+on the newer name-only reader regressed the live-proven path to
+``status_unreadable``.  A false positive is still bounded by each owner's read
+cap.  The house walk keeps #5403's full-row match and adds the name-only row
+on top, so it is never stricter than the pre-#5414 check.
+"""
+from __future__ import annotations
+
+# camp_recheck.py reads the named status card in these two stages
+# (flow['recall'].stage; ``_owner_shape`` also validates the camp identity).
+CAMP_RECHECK_STATUS_STAGES = frozenset({'recheck_read', 'recheck_close'})
+# house.py opens the individual status card from the roster walk (status) and
+# from the post-purchase verification (verify_status).
+HOUSE_STATUS_PHASES = frozenset({'status', 'verify_status'})
+
+
+def status_panel_owner_active(mem, screen):
+    """True only while a flow is reading this general status page.
+
+    ``mem`` must already carry this observation's ``_run_identity`` and
+    current ``chapter``/``month`` (the orchestrator sets both before the
+    dispatch).  The checks are ordered cheapest first; the first matching
+    owner wins because the caller only needs presence.
+    """
+    if not isinstance(mem, dict) or screen is None:
+        return False
+    # Lazy imports: flows import state and os_layer, and this module is also
+    # reachable from flows.battle_menus during a battle decision.
+    from . import house, post_month_status
+
+    state = mem.get('post_month_status')
+    if isinstance(state, dict) and state.get('stage') == 'status':
+        # The same scope/identity check that makes post_month_status.step drop
+        # a stale or foreign scan.  A leftover state must not suppress the B.
+        # Only a *readable* name that differs from the general this scan
+        # opened proves the page is foreign (#5410); an unreadable name keeps
+        # the #5403 owner so the measured monthly read can retry it.  Only the
+        # 'status' stage names a person; roster/menu stages keep their existing
+        # owner rules and are not filtered by an unreadable name row.
+        if post_month_status.state_is_current(mem, state):
+            target = state.get('selected')
+            visible_general = house.general_status_name(screen, expected=target)
+            if visible_general is None:
+                return True
+            if not isinstance(target, str) or not target:
+                return False
+            return visible_general == target
+
+    house_state = mem.get('house')
+    if (isinstance(house_state, dict)
+            and house_state.get('phase') in HOUSE_STATUS_PHASES
+            and house_state.get('chapter') == mem.get('chapter')):
+        # #5403 read the full card through house.general_status.  Keep that
+        # exact rule and add the name-only row on top: a readable name that
+        # matches is enough even while the egg row is temporarily unreadable.
+        # If neither reader can identify this page, the house walk keeps its
+        # measured false (the orphan B closes it).
+        target = (house_state.get('selected')
+                  if house_state.get('phase') == 'status'
+                  else house_state.get('general'))
+        info = house.general_status(screen, expected=target)
+        if (info is not None and isinstance(target, str)
+                and info.get('general') == target):
+            return True
+        visible_general = house.general_status_name(screen, expected=target)
+        if (isinstance(visible_general, str) and isinstance(target, str)
+                and visible_general == target):
+            return True
+
+    probe = mem.get('arrival_status_probe')
+    if isinstance(probe, dict):
+        # Ask the flow itself whether step() would read this frame.  The
+        # probe's phase alone is not enough: step() defers to a foreground
+        # monthly/house/recall state (or an unsupported screen kind) before it
+        # grows its read counter, so a phase-only guard would hold the panel
+        # with no input and no limit (#5407).
+        from . import arrival_status
+        if arrival_status.reads_status_panel(mem, screen):
+            return True
+
+    from ..state.regions import flow as _flow
+    recall_state = _flow(mem).get('recall') or {}
+    if (isinstance(recall_state, dict)
+            and recall_state.get('stage') in CAMP_RECHECK_STATUS_STAGES):
+        # _owner_shape validates the camp identity/chapter/tick and the stage's
+        # fields; a malformed re-check falls back to the orphan B.
+        from . import camp_recheck
+        if camp_recheck._owner_shape(mem, recall_state):
+            return True
+
+    probe = mem.get('boss_pursuit')
+    if (isinstance(probe, dict) and mem.get('chapter') == 9
+            and probe.get('fort_stage') == 'status'):
+        # The 砦's status card: A here opens the destination picker, so the
+        # generic B must not close it.  Only a readable different name proves
+        # another general's page (#5410); an unreadable name stays owned and
+        # the flow's own 40-read cap ends it.
+        target = probe.get('general')
+        visible_general = house.general_status_name(screen, expected=target)
+        if visible_general is None:
+            return True
+        if not isinstance(target, str) or not target:
+            return False
+        return visible_general == target
+    return False

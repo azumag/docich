@@ -1,0 +1,181 @@
+name: Emergency storage reclaim
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ops/vm_actions/storage_reclaim_emergency_epoch'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-operations-v2-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reclaim:
+    if: ${{ github.actor_id == 9018513 && github.triggering_actor == 'azumag' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted control plane from current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Record filesystem state before reclaim
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          bootstrap="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          production_sha="$(python3 - "$bootstrap" <<'PY'
+          import json, re, sys
+          try:
+              data=json.loads(sys.argv[1])
+          except (TypeError, ValueError):
+              raise SystemExit(0)
+          sha=data.get('sha')
+          if isinstance(sha,str) and re.fullmatch(r'[0-9a-f]{40}',sha):
+              print(sha)
+          PY
+          )"
+          status_json="$bootstrap"
+          if [[ "$production_sha" =~ ^[0-9a-f]{40}$ && "$production_sha" != "$SHA" ]]; then
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $production_sha")"
+          fi
+          printf '%s' "$status_json" > "$RUNNER_TEMP/storage-before.json"
+          python3 - "$status_json" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1])
+          storage=data.get('storage') or {}
+          print('storage_before='+json.dumps(storage,sort_keys=True,separators=(',',':')))
+          PY
+
+      - name: Reclaim identified stale tmp worktrees
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash -n control/ops/vm_actions/storage_reclaim_critical_tmp.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=1\n'; cat control/ops/vm_actions/storage_reclaim_critical_tmp.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Run general bounded storage maintenance
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash -n control/ops/vm_actions/storage_reclaim.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=1\nVOICEVOX_ARCHIVE=0\nAIVIS_ENGINE=0\n'; cat control/ops/vm_actions/storage_reclaim.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Run staged general storage maintenance diagnostics
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash -n control/ops/vm_actions/storage_reclaim_staged.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=1\n'; cat control/ops/vm_actions/storage_reclaim_staged.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" | tee "$RUNNER_TEMP/staged.out"
+          grep -E '^stage=(journal_vacuum|apt_clean|snap_disabled|snapd_cache|docker_prune|logrotate_install|logrotate_run) result=(ok|failed) reason=(none|sudo_denied|command_failed|not_present|skipped)$' "$RUNNER_TEMP/staged.out" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Record filesystem state after reclaim
+        if: ${{ always() }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          bootstrap="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          production_sha="$(python3 - "$bootstrap" <<'PY'
+          import json, re, sys
+          try:
+              data=json.loads(sys.argv[1])
+          except (TypeError, ValueError):
+              raise SystemExit(0)
+          sha=data.get('sha')
+          if isinstance(sha,str) and re.fullmatch(r'[0-9a-f]{40}',sha):
+              print(sha)
+          PY
+          )"
+          status_json="$bootstrap"
+          if [[ "$production_sha" =~ ^[0-9a-f]{40}$ && "$production_sha" != "$SHA" ]]; then
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $production_sha")"
+          fi
+          python3 - "$status_json" "$RUNNER_TEMP/storage-before.json" <<'PY'
+          import json, pathlib, sys
+          after=json.loads(sys.argv[1]).get('storage') or {}
+          before={}
+          path=pathlib.Path(sys.argv[2])
+          if path.exists():
+              try:
+                  before=json.loads(path.read_text()).get('storage') or {}
+              except (TypeError, ValueError):
+                  pass
+          print('storage_after='+json.dumps(after,sort_keys=True,separators=(',',':')))
+          used=after.get('used_percent')
+          available=after.get('available_bytes')
+          before_used=before.get('used_percent')
+          before_available=before.get('available_bytes')
+          with open('/tmp/storage-summary','w',encoding='utf-8') as out:
+              out.write(f'before_used_percent={before_used}\n')
+              out.write(f'after_used_percent={used}\n')
+              out.write(f'before_available_bytes={before_available}\n')
+              out.write(f'after_available_bytes={available}\n')
+              if isinstance(available,int) and isinstance(before_available,int):
+                  out.write(f'available_delta_bytes={available-before_available}\n')
+          PY
+          {
+            echo '### Emergency storage reclaim'
+            echo '```'
+            cat /tmp/storage-summary
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

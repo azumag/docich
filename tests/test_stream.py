@@ -2,6 +2,8 @@ import os
 import socket
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -281,6 +283,74 @@ class TestNativeCaptions(StreamTestBase):
             self.assertTrue(ready)
             self.assertEqual(detail, "caption socket ready")
 
+    def test_wait_for_caption_socket_reports_missing_socket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+            ready, detail = stream.wait_for_caption_socket(
+                str(path), timeout_s=0.05, interval_s=0.01
+            )
+        self.assertFalse(ready)
+        self.assertIn("未準備", detail)
+
+    def test_wait_for_caption_socket_returns_when_filter_creates_socket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+
+            def create_later():
+                time.sleep(0.1)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                    listener.bind(str(path))
+                    path.chmod(0o600)
+                    time.sleep(0.5)
+
+            thread = threading.Thread(target=create_later)
+            thread.start()
+            try:
+                ready, detail = stream.wait_for_caption_socket(
+                    str(path), timeout_s=3.0, interval_s=0.01
+                )
+            finally:
+                thread.join()
+        self.assertTrue(ready)
+        self.assertEqual(detail, "caption socket ready")
+
+    def test_wait_for_caption_socket_stops_when_ffmpeg_exits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+            ready, detail = stream.wait_for_caption_socket(
+                str(path), timeout_s=3.0, interval_s=0.01, is_running=lambda: False
+            )
+        self.assertFalse(ready)
+        self.assertIn("終了しました", detail)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThreads(StreamTestBase):
+    def test_threads_flag_present_with_default(self):
+        g = self._load('[stream]\nmode = "null"\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        idx = cmd.index("-threads")
+        self.assertEqual(cmd[idx + 1], "2")
+
+    def test_threads_configurable(self):
+        g = self._load('[stream]\nmode = "null"\nthreads = 1\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        idx = cmd.index("-threads")
+        self.assertEqual(cmd[idx + 1], "1")
+
+    def test_filter_threads_flag_present(self):
+        g = self._load('[stream]\nmode = "null"\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        # filter_threads はフィルタがある場合のみ出るため、キャプション有効で確認
+        g2 = self._load(
+            '[stream]\nmode = "null"\n\n[captions]\nenabled = true\nsocket_path = "/tmp/cc.sock"\n'
+        )
+        with mock.patch("docich.stream._resolve_binary", return_value="/usr/bin/ffmpeg"), mock.patch(
+            "docich.stream.caption_capability", return_value=(True, "ok")
+        ):
+            cmd2 = stream.build_ffmpeg_cmd(g2, captions_enabled=True)
+        idx = cmd2.index("-filter_threads")
+        self.assertEqual(cmd2[idx + 1], "1")

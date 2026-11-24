@@ -14,6 +14,7 @@ from docich import hanjuku_policy as p
 from docich.hanjuku import orchestrator
 from docich.hanjuku.strategy import edition
 from test_hanjuku_chart_bot import Canvas, name_screen
+from docich.hanjuku.state.regions import world as _world
 
 
 def test_setting_and_resolve_fall_back_to_speedrun():
@@ -52,26 +53,26 @@ def _sole_defender_memory(**extra):
             'garrison': {'キカンドン': ['ゼウス'], 'アルマムーン': ['どうし', 'ココット']}, **extra}
 
 
-def test_speedrun_base_advance_may_empty_its_source():
+def test_speedrun_base_advance_keeps_the_last_defender():
     order = _base_advance()
-    assert p._source_spare_missing(order, _sole_defender_memory()) is False
+    assert p._source_spare_missing(order, _sole_defender_memory()) is True
 
 
 def test_steady_base_advance_keeps_a_defender_at_its_source():
     order = _base_advance()
     mem = _sole_defender_memory(chart_edition='steady')
     assert p._source_spare_missing(order, mem) is True
-    mem['garrison']['キカンドン'] = ['ゼウス', 'ミント']
+    _world(mem)['garrison']['キカンドン'] = ['ゼウス', 'ミント']
     assert p._source_spare_missing(order, mem) is False
 
 
-def test_steady_keeps_boss_and_move_orders_unchanged():
+def test_steady_also_keeps_a_defender_for_boss_and_move_orders():
     boss = next(o for o in chart.orders(1) if o['step'] == '1-B1')
     mem = _sole_defender_memory(chart_edition='steady',
                                 garrison={'スペンソニア': ['ゼウス']})
-    assert p._source_spare_missing(boss, mem) is False
+    assert p._source_spare_missing(boss, mem) is True
     move = dict(_base_advance(), purpose='move')
-    assert p._source_spare_missing(move, _sole_defender_memory(chart_edition='steady')) is False
+    assert p._source_spare_missing(move, _sole_defender_memory(chart_edition='steady')) is True
 
 
 def _ab_runtime_id(want):

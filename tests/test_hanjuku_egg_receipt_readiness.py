@@ -51,7 +51,7 @@ def test_native_paid_return_waits_for_cursor_then_releases_only_the_paid_reserve
     assert p._finish_month_sub(ready_menu(), mem, mem['shop']) is True
     assert 'month_sub' not in mem and mem['shop']['egg'] == 'done'
     assert mem['egg_uses'] == {} and mem['shop']['reserve'] == 0
-    assert mem['shop']['soldiers'] == 4  # retain the 30G wage reserve
+    assert mem['shop']['soldiers'] == 34  # 84 - 50 repair, no wage hold
     receipt = mem['_records'][-1]['observed_metric']
     assert receipt['payment_verified'] is True and receipt['menu_ready'] is True
 

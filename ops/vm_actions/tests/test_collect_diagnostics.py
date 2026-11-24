@@ -9,6 +9,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+try:  # run from ops/vm_actions/tests (unittest discover, pytest on the file)
+    from sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+except ModuleNotFoundError:  # imported as a package module, e.g. by tests/test_presentation_recovery.py
+    from ops.vm_actions.tests.sparse_files import jsonl_scan_window_bytes, write_sparse_tail_jsonl
+
 ROOT = Path(__file__).resolve().parents[3]
 COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
 
@@ -39,6 +44,41 @@ def test_soren_game_projection_is_bounded_and_read_only(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_soren_game_projection_separates_a_stale_founding_marker(tmp_path):
+    module = load_collector()
+    (tmp_path / "tmp/state").mkdir(parents=True)
+    (tmp_path / "tmp/markers").mkdir(parents=True)
+    (tmp_path / "game_state.json").write_text(json.dumps({
+        "state": "STOP", "makeSorenCount": 0, "score": 1976}))
+    os.utime(tmp_path / "game_state.json", (1000, 1000))
+    marker = tmp_path / "tmp/markers/.soviet_created"
+    marker.write_text("189|11111111-1111-4111-8111-111111111111\n")
+    observation = tmp_path / "tmp/state/game_observation.json"
+
+    def live_observation(game_id):
+        # Only a schema-valid, fresh observation describing this same board
+        # counts as live evidence (soviet_now#714).
+        observation.write_text(json.dumps({
+            "schema": 1, "game_id": game_id, "stop_id": None,
+            "board": {"state": "STOP", "score": 1976,
+                      "makeSorenCount": 0, "pieces": None},
+            "observed_epoch": time.time()}))
+
+    # The marker belongs to an earlier match: it is present but not evidence
+    # for this board (#2345).
+    live_observation("22222222-2222-4222-8222-222222222222")
+    output = module._collect_soren_game(tmp_path, 1100)
+    assert output["founding_seen"] is True
+    assert output["founding_marker_current"] is False
+    assert output["founding_marker_stale"] is True
+
+    # The same match is still holding its founding board: not stale.
+    live_observation("11111111-1111-4111-8111-111111111111")
+    output = module._collect_soren_game(tmp_path, 1100)
+    assert output["founding_marker_current"] is True
+    assert output["founding_marker_stale"] is False
+
+
 def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     module = load_collector()
     (tmp_path / "corner_rotation.json").write_text(json.dumps({
@@ -60,6 +100,84 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert projection["interval_seconds"] == 3600
     assert projection["cooldown_seconds"] == 86400.0
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_rotation_projection_flags_wait_overdue_on_one_reason(tmp_path):
+    """#4333: a wait held on one reason past next_due_at is projected."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+        "reason_since": 150, "eligible": ["paper"],
+    }))
+    output = {}
+    # 3500s past due and the reason held for 3550s: both over the warn bound.
+    module._collect_corner_files(tmp_path, output, 3700)
+    projection = output["corner_rotation"]
+    assert projection["waiting_overdue"] is True
+    assert projection["overdue_sec"] == 3500
+    assert projection["reason_age_sec"] == 3550
+    assert projection["reason_since"] == 150
+
+    # A fresh reason inside the warn bound is not a wedge.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200, "reason_since": 3600,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+    assert output["corner_rotation"]["overdue_sec"] is None
+
+    # A ledger written before reason_since existed cannot prove continuity.
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "other-corner-needs-finish-or-recovery",
+        "slot": 3, "last_seen_at": 100, "next_due_at": 200,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 3700)
+    assert output["corner_rotation"]["waiting_overdue"] is False
+
+
+def test_rotation_excluded_map_distinguishes_manual_only_from_disabled(tmp_path):
+    """Enabling a manual-only corner must be observable without a reservation."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "all-corners-cooling-down", "slot": 236,
+        "seed": "DO-NOT-PUBLISH-SEED", "last_seen_at": 100, "eligible": [],
+        "excluded": {"yosou-oh": "manual-only", "nethack": "disabled-or-paused",
+                     "tsuitate": "adapter-unavailable",
+                     "moon-buggy": "released-owner-unretired",
+                     "weird": "DO-NOT-PUBLISH-REASON"},
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    projection = output["corner_rotation"]
+    assert projection["excluded"] == {"nethack": "disabled-or-paused",
+                                      "tsuitate": "adapter-unavailable",
+                                      "moon-buggy": "released-owner-unretired",
+                                      "weird": "unknown", "yosou-oh": "manual-only"}
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_rotation_excluded_map_collapses_non_string_reasons():
+    module = load_collector()
+    for reason in ([], {}, [{}], {"unexpected": "DO-NOT-PUBLISH"}, None, True, 7, 3.5):
+        assert module._rotation_excluded_projection({"yosou-oh": reason}) == {"yosou-oh": "unknown"}
+
+
+def test_rotation_excluded_map_is_absent_and_bounded(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["corner_rotation"]["excluded"] is None
+
+    bounded = module._rotation_excluded_projection(
+        {f"corner-{index}": "manual-only" for index in range(100)})
+    assert bounded is not None and len(bounded) == module.ROTATION_EXCLUDED_LIMIT
+    assert module._rotation_excluded_projection({"": "manual-only"}) is None
+    assert module._rotation_excluded_projection(["manual-only"]) is None
 
 
 def test_rotation_projection_reports_scheduled_manual_without_request_identity(tmp_path):
@@ -89,6 +207,112 @@ def test_rotation_projection_reports_scheduled_manual_without_request_identity(t
     assert rotation["scheduled_manual_overdue_sec"] is None
     assert rotation["scheduled_manual_blocked_reason"] == "not_due"
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_compact_policy_projects_battle_hp_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 3,
+        'battle': {'enemy': 'ヴィーナス', 'ally': 'どうし', 'start_enemy_hp': 9999,
+                   'start_ally_hp': 90, 'egg_battle': True,
+                   'note': 'DO-NOT-PUBLISH'},
+        'monster_panel': {'ally': 'バルーンフィンチ', 'ally_hp': 120,
+                          'enemy': 'ヴィーナス', 'enemy_hp': 9999,
+                          'note': 'DO-NOT-PUBLISH'}})
+    assert policy['battle']['start_enemy_hp'] == 9999
+    assert policy['battle']['start_ally_hp'] == 90
+    assert policy['battle']['egg_battle'] is True
+    assert policy['monster_panel']['ally_hp'] == 120
+    assert policy['monster_panel']['enemy_hp'] == 9999
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+
+
+def test_compact_policy_exposes_the_observing_bot_version():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy(
+        {'chapter': 4}, {'bot_version': 'hanjuku-chart-v350-stale-retry'})
+    assert policy['bot_version'] == 'hanjuku-chart-v350-stale-retry'
+    assert module._compact_hanjuku_policy(
+        {'chapter': 4, 'bot_version': 'x' * 500})['bot_version'] is None
+
+
+def test_march_projection_relaunch_limit_matches_the_policy():
+    from docich.hanjuku.strategy import orders
+
+    module = load_collector()
+    assert module.HANJUKU_MARCH_RELAUNCH_LIMIT == orders.BOSS_RELAUNCH_LIMIT
+
+
+def test_compact_policy_projects_a_parked_march_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 10000, 'active': None,
+        'orders': {'4-B1': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(南西)',
+                             'tick': 7000, 'note': 'DO-NOT-PUBLISH'}},
+        'boss_relaunch': {'4-B1': 2},
+        'retries': {'4-B1': 1},
+        'boss_victories': {'サマカンテ': {'site': '四季王城(南西)',
+                                      'note': 'DO-NOT-PUBLISH'}},
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'], 'home_lost': True,
+        'boss_defeated': None,
+    })
+    assert policy['sorties']['4-B1'] == {
+        'status': 'overdue', 'target': '四季王城(南西)',
+        'age_ticks': 3000, 'relaunch': 2}
+    assert policy['march'] == {
+        'state': 'parked', 'overdue': ['4-B1'], 'exhausted': ['4-B1'],
+        'oldest_age_ticks': 3000}
+    assert policy['boss_victories'] == {'count': 1, 'sites': ['四季王城(南西)']}
+    assert policy['retries'] == {'4-B1': 1}
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is True
+    assert 'captured' not in policy and 'lost' not in policy
+    assert policy['boss_defeated'] is None
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_keeps_an_overdue_retry_distinct_from_a_parked_one():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 5000, 'active': '4-B2',
+        'orders': {'4-B1': 'launched', '4-B2': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': '四季王城(北東)',
+                             'tick': 4500},
+                    '4-B2': {'status': 'en_route', 'target': '四季王城(南東)',
+                             'tick': 4900}},
+        'boss_relaunch': {'4-B1': 1},
+    })
+    assert policy['march']['state'] == 'active'
+    assert policy['march']['overdue'] == ['4-B1']
+    assert policy['march']['exhausted'] == []
+    assert policy['march']['oldest_age_ticks'] == 500
+    assert policy['sorties']['4-B2']['age_ticks'] == 100
+    assert policy['boss_victories'] == {'count': 0, 'sites': []}
+
+
+def test_compact_policy_treats_malformed_march_fields_as_unknown_not_zero():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 4, 'tick': 100, 'active': None,
+        'orders': {'4-B1': 'launched'},
+        'sorties': {'4-B1': {'status': 'overdue', 'target': 'x' * 500,
+                             'tick': 'yesterday'}},
+        'boss_relaunch': {'4-B1': -1},
+        'boss_victories': {'x': {'site': 'PRIVATE'}},
+        'retries': {'4-B1': -1},
+        'captured': ['PRIVATE'], 'lost': ['PRIVATE'],
+        'boss_defeated': 'chapter_4',
+    })
+    assert policy['sorties']['4-B1'] == {
+        'status': 'overdue', 'target': None, 'age_ticks': None, 'relaunch': None}
+    assert policy['march']['state'] == 'overdue'
+    assert policy['march']['oldest_age_ticks'] is None
+    assert policy['boss_victories'] == {'count': 1, 'sites': []}
+    assert policy['retries'] == {'4-B1': None}
+    assert policy['castle_loss_count'] == 1 and policy['home_taken'] is False
+    assert policy['boss_defeated'] is None
+    assert 'PRIVATE' not in json.dumps(policy)
 
 
 def test_rotation_projection_reports_overdue_inbox_waiting_for_slot(tmp_path):
@@ -205,6 +429,213 @@ def test_auto_restore_projection_is_absent_without_a_record(tmp_path):
     assert rotation["auto_restore_status"] is None
 
 
+def test_auto_restore_detail_and_released_settles_are_fixed_enums(tmp_path):
+    # #2479: the noop detail is what separates "keep waiting" from "this path
+    # can never settle", and the per-corner settle outcome separates a deferred
+    # retirement from an unretirable owner. Only the fixed vocabulary is
+    # published; request ids stay in the ledger.
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "auto_restore": {"request_id": "DO-NOT-PUBLISH", "corner": "nethack",
+                         "attempts": 1, "next_attempt_at": 120,
+                         "last_status": "noop",
+                         "last_detail": "restore-failure-unproven"},
+        "released_settle_outcomes": {
+            "nethack": {"request_id": "DO-NOT-PUBLISH", "at": 110,
+                        "outcome": "deferred"},
+            "ninvaders": {"request_id": "DO-NOT-PUBLISH", "at": 111,
+                          "outcome": "leak outcome=SECRET-OUTCOME"},
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_restore_detail"] == "restore-failure-unproven"
+    assert rotation["released_settles"] == {
+        "nethack": "deferred", "ninvaders": "unknown"}
+    rendered = json.dumps(output, ensure_ascii=False)
+    assert "DO-NOT-PUBLISH" not in rendered and "SECRET-OUTCOME" not in rendered
+
+
+def test_released_settles_projection_is_absent_without_rows(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["corner_rotation"]["released_settles"] is None
+
+
+def test_corner_end_reason_reports_the_released_finish_vocabulary():
+    # #2479: a released owner retired after its post-finish restore failure
+    # must stay distinguishable from the prelaunch terminal reason.
+    module = load_collector()
+    output = module._project_corner_state({
+        'status': 'interrupted', 'game': 'nethack',
+        'end_reason': 'released-failure-after-corner-finished',
+        'completed_at': '2026-11-19T00:10:00+09:00'})
+    assert output['status'] == 'interrupted'
+    assert output['end_reason'] == 'released-failure-after-corner-finished'
+
+
+def test_auto_plane_recovery_projection_is_bounded(tmp_path):
+    # #4349 recovery was invisible in the 2026-11-16 hanjuku incident
+    # (#4356): the durable record must surface with bounded fields.
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "auto_plane_recovery": {
+            "corner": "hanjuku-hero", "request_id": "DO-NOT-PUBLISH",
+            "attempts": 2, "next_attempt_at": 130,
+            "last_status": "failed",
+        },
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_plane_recovery_corner"] == "hanjuku-hero"
+    assert rotation["auto_plane_recovery_attempts"] == 2
+    assert (rotation["auto_plane_recovery_attempt_limit"]
+            == module.ROTATION_AUTO_PLANE_RECOVERY_ATTEMPT_LIMIT)
+    assert rotation["auto_plane_recovery_next_at"] == 130
+    assert rotation["auto_plane_recovery_status"] == "failed"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_auto_plane_recovery_projection_defaults_without_a_record(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({"status": "waiting"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    rotation = output["corner_rotation"]
+    assert rotation["auto_plane_recovery_corner"] is None
+    assert rotation["auto_plane_recovery_attempts"] is None
+    assert rotation["auto_plane_recovery_status"] is None
+
+
+def test_fifo_projection_flags_expired_hard_deadlines(tmp_path):
+    # #4356: an accepted receipt left past its hard cap is the wedge the
+    # watchdog must terminalize; flag it without exposing request identity.
+    module = load_collector()
+    requests = tmp_path / "game-switch" / "requests"
+    requests.mkdir(parents=True)
+    now = 1794758400.0  # 2026-11-15T16:00:00Z
+    (requests / "11111111-1111-4111-8111-111111111111.json").write_text(json.dumps({
+        "status": "accepted", "operation": "switch", "target": "hanjuku-hero",
+        "generation": 3, "updated_at": "2026-11-15T15:00:00Z",
+        "hard_deadline_at": "2026-11-15T15:30:00Z",
+    }))
+    (requests / "22222222-2222-4222-8222-222222222222.json").write_text(json.dumps({
+        "status": "accepted", "operation": "switch", "target": "robots",
+        "generation": 4, "updated_at": "2026-11-15T15:00:00Z",
+    }))
+    (requests / "33333333-3333-4333-8333-333333333333.json").write_text(json.dumps({
+        "status": "queued", "operation": "switch", "target": "nethack",
+        "generation": 5, "created_at": "2026-11-15T15:40:00Z",
+        "hard_deadline_at": "2026-11-15T17:00:00Z",
+    }))
+    result = module._collect_game_switch_fifo(tmp_path, now)
+    pending = {row["target"]: row for row in result["pending"]}
+    assert pending["hanjuku-hero"]["hard_deadline_expired"] is True
+    assert pending["robots"]["hard_deadline_expired"] is None
+    assert result["head"]["hard_deadline_expired"] is False
+    assert "11111111" not in json.dumps(result)
+
+
+def _write_retained_game_switch(tmp_path, *, phase="ready", game="hanjuku-hero"):
+    (tmp_path / "game_switch.json").write_text(json.dumps({
+        "phase": phase,
+        "active": {"game": game, "runtime_id": "g1190-67435f4d",
+                   "generation": 1190, "lease_id": "synthetic-lease"},
+    }))
+
+
+def test_retained_corner_game_exposes_the_fixed_operator_reason(tmp_path):
+    """Game-switch retaining a terminal corner's game must say why (#4226).
+
+    #4226: the hanjuku rollback kept `hanjuku-hero` active while the corner
+    state was `failed`, so the overlay card could only report an unexplained
+    unavailable. The diagnostics entry must name the operator-facing reason.
+    """
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting",
+        "known_corners": {"hanjuku-hero": {"id": "hanjuku-hero",
+                                           "adapter": "game",
+                                           "game": "hanjuku-hero"}},
+        "failed_corners": [
+            {"corner": "hanjuku-hero", "request_id": "DO-NOT-PUBLISH", "at": 90,
+             "resolution": "released-unverified",
+             "reason_code": "base-game-unrestored",
+             "error_kind": "execution-unverified"},
+        ],
+    }))
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero",
+        "secret": "DO-NOT-PUBLISH-CORNER"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    corner = output["retro_corner"]
+    assert corner["retained_active"] is True
+    assert corner["retained_reason"] == "base-game-unrestored"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_retained_corner_projection_stays_quiet_for_live_or_settled_corners(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    # A live corner owning its active game is the normal case, not a retention.
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "active", "game": "hanjuku-hero"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+    # Terminal but a different game is active: also not a retention.
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    _write_retained_game_switch(tmp_path, game="sorengame")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+
+def test_retained_corner_reason_ignores_unhashable_corner_id(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "known_corners": {"hanjuku-hero": {"game": "hanjuku-hero"}},
+        "failed_corners": [{"corner": ["malformed"], "reason_code": "base-game-unrestored"}],
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is True
+    assert output["retro_corner"]["retained_reason"] == "corner-terminal-game-retained"
+
+
+def test_retained_corner_reason_falls_back_without_a_ledger_row(tmp_path):
+    module = load_collector()
+    _write_retained_game_switch(tmp_path)
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "status": "failed", "game": "hanjuku-hero"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    corner = output["retro_corner"]
+    assert corner["retained_active"] is True
+    assert corner["retained_reason"] == "corner-terminal-game-retained"
+
+    # A mid-flight switch phase is not a settled retention.
+    _write_retained_game_switch(tmp_path, phase="switching")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["retro_corner"]["retained_active"] is False
+    assert output["retro_corner"]["retained_reason"] is None
+
+
 def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
     module = load_collector()
     for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):
@@ -256,6 +687,87 @@ def test_corner_end_reason_reports_the_prelaunch_switch_terminal_vocabulary():
     assert unknown['end_reason'] is None
 
 
+def test_corner_end_reason_reports_the_admission_gate_vocabulary():
+    # #3174 follow-up: the admission gate's early-expire reason must stay
+    # visible in diagnostics; an unregistered reason would silently project
+    # as null exactly when the gate fires in production.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-budget-insufficient'})
+    assert output['status']=='interrupted'
+    assert output['end_reason']=='start-budget-insufficient'
+    output=module._project_corner_state({
+        'status':'interrupted','game':'hanjuku-hero',
+        'end_reason':'start-deadline-expired'})
+    assert output['end_reason']=='start-deadline-expired'
+
+
+def test_tsuitate_corner_reports_the_settle_refusal_reason(tmp_path):
+    # #1992: a released failed owner that the settle refused must be readable
+    # from diagnostics alone, so a settle that does not fire does not need
+    # another guess cycle. Only the fixed vocabulary is published.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed','game':'tsuitate-view','previous_game':'sorengame',
+        'last_error_code':'timeout','switch_request_id':'DO-NOT-PUBLISH',
+        'settle_refused_reason':'other-owner','completed_at':1.0}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['switch_error_code']=='timeout'
+    assert entry['settle_refused_reason']=='other-owner'
+    assert 'DO-NOT-PUBLISH' not in json.dumps(result,ensure_ascii=False)
+
+
+def test_tsuitate_settle_refusal_vocabulary_matches_the_corner():
+    # Drift guard: a reason the corner can emit but the collector does not
+    # allowlist would be silently projected as null, which is exactly the
+    # blindness this field exists to remove (#1992).
+    from docich import tsuitate_corner
+    module=load_collector()
+
+    assert set(tsuitate_corner.SETTLE_REFUSAL_REASONS) == set(module._TSUITATE_SETTLE_REFUSALS)
+
+
+def test_tsuitate_corner_hides_a_stale_refusal_after_convergence(tmp_path):
+    # The reason is only meaningful while the owner is still failed; after a
+    # settle the persisted value is stale and must not appear next to
+    # `interrupted`.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'interrupted','game':'tsuitate-view',
+        'end_reason':'released-failure-before-retry',
+        'settle_refused_reason':'other-owner'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['status']=='interrupted'
+    assert entry['settle_refused_reason'] is None
+
+
+def test_tsuitate_corner_refuses_an_unknown_settle_refusal(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'tsuitate_corner.json').write_text(json.dumps({
+        'status':'failed',
+        'settle_refused_reason':'leak token=SUPERSECRET123'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['tsuitate_corner']
+    assert entry['settle_refused_reason'] is None
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SUPERSECRET123' not in rendered
+
+
 def test_tsuitate_end_reason_and_settled_result_survive_diagnostics():
     # The corner is manual-only, so diagnostics is the only place an operator can
     # read why a match ended. Dropping the tsuitate vocabulary or the settled
@@ -304,7 +816,7 @@ def test_yosou_end_reason_survives_diagnostics():
     # only place an operator can read why a bounded run ended. An unknown value
     # still collapses to None.
     module=load_collector()
-    for reason in ('duration','manual','operator-moved-during-yosou',
+    for reason in ('duration','audio-complete','manual','operator-moved-during-yosou',
                    'operator-moved-after-start','operator-moved-before-restore',
                    'operator-stopped-before-start'):
         output=module._project_corner_state(
@@ -325,11 +837,12 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     (state_dir).mkdir(parents=True)
     (soren/'tmp'/'state').mkdir(parents=True)
     (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
-        'schema':1,
+        'schema':2,
         'rounds':{
-            'p1':{'corner':'soren','title':'SECRET-TITLE','predictors':[
+            'p1':{'corner':'soren','title':'SECRET-TITLE','status':'RESOLVED','predictors':[
                 {'user_id':'u1','user_name':'SECRET-NAME','user_login':'secret','hit':True}]},
-            'p2':{'corner':'hanjuku','predictors':[{'user_id':'u2','hit':False}]},
+            'p2':{'corner':'hanjuku','status':'CANCELED','cancel_reason':'no-contest',
+                  'predictors':[{'user_id':'u2','hit':None}]},
         }}),encoding='utf-8')
     (soren/'tmp'/'state'/'prediction_resolved.jsonl').write_text(
         json.dumps({'id':'p1','status':'RESOLVED'})+'\n\n',encoding='utf-8')
@@ -338,22 +851,218 @@ def test_yosou_ledger_and_soren_handoff_are_counted_without_names(tmp_path):
     result=module._collect_programs(state_dir,soren,int(time.time()))
 
     ledger=result['prediction_leaderboard']
-    assert ledger=={'present':True,'readable':True,'rounds':2,'viewers':2}
+    assert ledger=={'present':True,'readable':True,'schema':2,'rounds':2,
+                    'graded_rounds':1,'viewers':2,'predictor_rows':2,'canceled':1,
+                    'soren_canceled':0,'viewers_won_gt0':0,'viewers_used_gt0':0,
+                    'viewers_hit_rate_eligible':0,'last_round_ended_at':None,
+                    'last_round_age_sec':-1,'min_rounds':3,'min_participations':1}
     handoff=result['soren_predictions']
     assert handoff['handoff_present'] is True and handoff['handoff_rows']==1
     assert handoff['handoff_oversized'] is False and handoff['cursor_present'] is True
     rendered=json.dumps(result,ensure_ascii=False)
     assert 'SECRET-NAME' not in rendered and 'SECRET-TITLE' not in rendered
 
+    # A ledger written before the cancel-participation upgrade (schema 1) stays a
+    # readable projection: it holds graded rounds only.
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':1,'rounds':{'p1':{'predictors':[{'user_id':'u1','hit':True}]}}}),
+        encoding='utf-8')
+    legacy=module._collect_programs(state_dir,soren,int(time.time()))
+    assert legacy['prediction_leaderboard']=={
+        'present':True,'readable':True,'schema':1,'rounds':1,'graded_rounds':1,
+        'viewers':1,'predictor_rows':1,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
+
     # A missing or broken ledger stays a bounded, non-fatal projection.
     (state_dir/'prediction_leaderboard.json').write_text('{broken',encoding='utf-8')
     broken=module._collect_programs(state_dir,soren,int(time.time()))
     assert broken['prediction_leaderboard']=={
-        'present':True,'readable':False,'rounds':0,'viewers':0}
+        'present':True,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
     (state_dir/'prediction_leaderboard.json').unlink()
     missing=module._collect_programs(state_dir,soren,int(time.time()))
     assert missing['prediction_leaderboard']=={
-        'present':False,'readable':False,'rounds':0,'viewers':0}
+        'present':False,'readable':False,'schema':None,'rounds':0,'graded_rounds':0,
+        'viewers':0,'predictor_rows':0,'canceled':0,'soren_canceled':0,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
+
+    # Soren 側の不成立キャンセル (#933 §2.1) は corner 単位でも数えられる。
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':2,
+        'rounds':{
+            'p3':{'corner':'soren','status':'CANCELED','cancel_reason':'no-contest',
+                  'predictors':[]},
+            'p4':{'corner':'soren','status':'RESOLVED','predictors':[]},
+        }}),encoding='utf-8')
+    soren_canceled=module._collect_programs(state_dir,soren,int(time.time()))
+    assert soren_canceled['prediction_leaderboard']=={
+        'present':True,'readable':True,'schema':2,'rounds':2,'graded_rounds':1,
+        'viewers':0,'predictor_rows':0,'canceled':1,'soren_canceled':1,
+        'viewers_won_gt0':0,'viewers_used_gt0':0,'viewers_hit_rate_eligible':0,
+        'last_round_ended_at':None,'last_round_age_sec':-1,'min_rounds':3,
+        'min_participations':1}
+
+
+def test_prediction_ledger_reports_last_round_end_without_names(tmp_path):
+    # #2805: telling "empty when the report was written" from "empty now" needs
+    # the ledger's own newest round end. It is a bounded ISO stamp plus an age,
+    # never a row body: the round title, login and user name stay inside the
+    # corner projection and are not repeated here.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=1792955569  # 2026-10-25T19:12:49Z
+    (state_dir/'prediction_leaderboard.json').write_text(json.dumps({
+        'schema':2,
+        'rounds':{
+            'p1':{'corner':'soren','title':'SECRET-TITLE','status':'RESOLVED',
+                  'ended_at':'2026-10-25T18:12:49Z','predictors':[
+                      {'user_id':'u1','user_login':'secret','user_name':'SECRET-NAME',
+                       'used':100,'won':300,'hit':True}]},
+            'p2':{'corner':'hanjuku','status':'CANCELED','cancel_reason':'no-contest',
+                  'ended_at':'2026-10-25T19:02:49Z','predictors':[
+                      {'user_id':'u2','used':50,'refunded':50,'hit':None}]},
+        }}),encoding='utf-8')
+
+    entry=module._collect_prediction_leaderboard(state_dir,now)
+
+    assert entry['last_round_ended_at']=='2026-10-25T19:02:49Z'
+    assert entry['last_round_age_sec']==600
+    assert entry['graded_rounds']==1
+    assert entry['rounds']==2 and entry['canceled']==1
+    assert entry['viewers']==2 and entry['predictor_rows']==2
+    assert entry['viewers_won_gt0']==1 and entry['viewers_used_gt0']==2
+    assert entry['viewers_hit_rate_eligible']==0
+    assert entry['min_rounds']==3 and entry['min_participations']==1
+    rendered=json.dumps(entry,ensure_ascii=False)
+    assert 'SECRET' not in rendered and 'secret' not in rendered
+
+
+def test_parse_iso_utc_rounds_nanosecond_precision():
+    # #2925: a nanosecond-precision ledger stamp must not make last_round_age_sec
+    # stay -1.  The fractional part is rounded to microseconds.
+    module = load_collector()
+    nano = module._parse_iso_utc('2026-10-23T20:37:12.961559839Z')
+    micro = module._parse_iso_utc('2026-10-23T20:37:12.961560Z')
+    assert nano is not None
+    assert nano == micro
+
+
+def test_prediction_section_survives_the_hard_ceiling():
+    # #2805: ``corners`` is dropped whole against the collector ceiling and every
+    # 予想王 input (ledger, Soren handoff, HanJuku round, yoso corner run and the
+    # prediction boundary) lives inside it, so the ledger became unobservable
+    # exactly when a report needed it. The top-level ``prediction`` section keeps
+    # the same bounded counts and must never be dropped before the envelope fits.
+    # This covers the whole-section drop order; the largest-first fallback is
+    # covered separately below.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+        'soren_predictions':{'handoff_present':True,'handoff_bytes':2085,
+                             'handoff_rows':2,'handoff_oversized':False,
+                             'cursor_present':True},
+        'hanjuku_predictions':{'present':True,'readable':True,'status':'CANCELED',
+                               'mode':'canceled',
+                               'health':{'present':True,'readable':True,
+                                         'consecutive_errors':0,'last_error':None,
+                                         'last_ok_at':now-8}},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete',
+                       'recovery_required':False,'completed_at':now-2160},
+        'boundary':{'prediction':{'present':True,'readable':True,
+                                  'completed_at':now-1212324}},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    prediction=decoded['prediction']
+    assert prediction['state_dir_found'] is True
+    assert prediction['leaderboard']['rounds']==4
+    assert prediction['leaderboard']['graded_rounds']==0
+    assert prediction['leaderboard']['canceled']==4
+    assert prediction['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert prediction['leaderboard']['last_round_age_sec']==1239
+    assert prediction['leaderboard']['min_rounds']==3
+    assert prediction['leaderboard']['min_participations']==1
+    assert prediction['soren_handoff']['handoff_rows']==2
+    assert prediction['hanjuku']['status']=='CANCELED'
+    assert prediction['hanjuku']['health_ok'] is True
+    assert prediction['hanjuku']['last_ok_age_sec']==8
+    assert prediction['corner']['end_reason']=='audio-complete'
+    assert prediction['corner']['age_sec']==2160
+    assert prediction['boundary']['age_sec']==1212324
+
+
+def test_prediction_section_survives_the_pathological_fallback():
+    # The hard ceiling reduces twice: the whole-section drop order and, when the
+    # envelope is split into many medium sections, a largest-first fallback over
+    # every remaining top-level dict. ``prediction`` is exempt from both (#2805).
+    # Here the fallback is the only reduction that can help, and the prediction
+    # section is the largest remaining dict, so a fallback that ignored
+    # ``_HARD_KEEP`` would replace it first and the 予想王 counts would vanish.
+    module=load_collector()
+    now=1792955569
+    corners={
+        'state_dir_found':True,
+        'prediction_leaderboard':{
+            'present':True,'readable':True,'schema':2,'rounds':4,
+            'graded_rounds':0,'viewers':1,'predictor_rows':4,'canceled':4,
+            'soren_canceled':2,'viewers_won_gt0':0,'viewers_used_gt0':0,
+            'viewers_hit_rate_eligible':0,
+            'last_round_ended_at':'2026-10-25T18:52:10Z','last_round_age_sec':1239,
+            'min_rounds':3,'min_participations':1},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'prediction':module._prediction_projection(corners,now),
+    }
+    for index in range(320):
+        payload['slice_%03d'%index]={'pad':'x'*180}
+
+    decoded=json.loads(module._diagnostics_budget(payload))
+
+    assert decoded['corners']=={'status':'output_omitted','reason':'hard_ceiling'}
+    assert decoded['prediction']['leaderboard']['rounds']==4
+    assert decoded['prediction']['leaderboard']['canceled']==4
+    assert decoded['prediction']['leaderboard']['last_round_ended_at']=='2026-10-25T18:52:10Z'
+    assert decoded['prediction']['state_dir_found'] is True
+    omitted=sum(1 for key,value in decoded.items()
+                if key.startswith('slice_')
+                and isinstance(value,dict)
+                and value.get('status')=='output_omitted')
+    assert omitted>0
 
 
 def test_yosou_announcement_counters_are_projected_and_bounded():
@@ -371,6 +1080,329 @@ def test_yosou_announcement_counters_are_projected_and_bounded():
     assert module._project_corner_state(
         {'status':'completed','overlay_announcements':'SECRET'})['overlay_announcements'] is None
     assert module._project_corner_state({'status':'idle'})['overlay_announcements'] is None
+
+
+def test_doushi_end_reason_and_counters_survive_diagnostics():
+    # 同志カード is manual-only and default-disabled, so diagnostics is the only
+    # place an operator can read why a bounded run ended or which sink took the
+    # announcement. Unknown values still collapse to None.
+    module=load_collector()
+    for reason in ('duration','manual','operator-moved-during-doushi',
+                   'operator-moved-after-start','operator-moved-before-restore',
+                   'operator-stopped-before-start'):
+        output=module._project_corner_state(
+            {'status':'completed','game':'doushi-view','end_reason':reason})
+        assert output['end_reason']==reason
+        assert output['game']=='doushi-view'
+    assert module._project_corner_state(
+        {'status':'completed','game':'doushi-view','end_reason':'SECRET-END-REASON'})['end_reason'] is None
+
+    counters=module._project_corner_state({
+        'status':'completed','game':'doushi-view',
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0,'secret':'DO-NOT-PUBLISH'},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert counters['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    assert counters['narration']=={'enqueued':1,'delivery_failed':0,'skipped':0}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(counters)
+
+
+def test_doushi_corner_state_is_collected_without_the_ranking_or_lease(tmp_path):
+    # The transient ranking payload and the runtime identity stay out of
+    # diagnostics: only statuses, timestamps and counters may leave state_dir.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    (state_dir/'runtimes'/'g4-a1b2c3d4').mkdir(parents=True)
+    (state_dir/'doushi_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'doushi-view',
+        'end_reason':'operator-moved-during-doushi','completed_at':1.0,
+        'doushi_runtime_identity':{'game':'doushi-view','runtime_id':'g4-a1b2c3d4',
+                                   'generation':4,'lease_id':'SECRET-LEASE'},
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0}}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['doushi_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['game']=='doushi-view'
+    assert entry['end_reason']=='operator-moved-during-doushi'
+    assert entry['overlay_announcements']=={'sent':1,'failed':0,'skipped':0}
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
+
+
+def test_lawsim_corner_state_is_collected_without_the_runtime_identity(tmp_path):
+    # Same contract as doushi: the transient session payload and the runtime
+    # identity stay out of diagnostics; only statuses, timestamps and the
+    # fixed end_reason enum may leave state_dir.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    (state_dir/'runtimes'/'g4-a1b2c3d4').mkdir(parents=True)
+    (state_dir/'lawsim_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'lawsim-view',
+        'end_reason':'operator-moved-during-lawsim','completed_at':1.0,
+        'lawsim_runtime_identity':{'game':'lawsim-view','runtime_id':'g4-a1b2c3d4',
+                                   'generation':4,'lease_id':'SECRET-LEASE'},
+        'final_status':'plan_achieved'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['lawsim_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['game']=='lawsim-view'
+    assert entry['end_reason']=='operator-moved-during-lawsim'
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SECRET-LEASE' not in rendered and 'g4-a1b2c3d4' not in rendered
+
+
+def test_lawsim_counters_are_collected_and_survive_the_hard_ceiling(tmp_path):
+    # #3054 (#2917 項目4): the narration and overlay counters live in
+    # lawsim_corner.json, but ``corners`` is the first section the hard ceiling
+    # drops, so they were never observable in production. The top-level ``lawsim``
+    # section carries integer counts only and must survive the ceiling, like
+    # ``prediction`` (#2805).
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    now=int(time.time())
+    (state_dir/'lawsim_corner.json').write_text(json.dumps({
+        'schema_version':1,'status':'completed','game':'lawsim-view',
+        'end_reason':'operator-moved-during-lawsim','completed_at':now-600,
+        'narration':{'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6,
+                     'text':'DO-NOT-PUBLISH'},
+        'overlay_announcements':{'sent':5,'failed':0,'skipped':1,'title':'DO-NOT-PUBLISH'},
+        'bills':[{'name':'DO-NOT-PUBLISH'}]}),encoding='utf-8')
+    programs=module._collect_programs(state_dir,tmp_path/'soren',now)
+    corners={**programs,'state_dir_found':True}
+    lawsim=module._lawsim_projection({'lawsim_corner':programs['lawsim_corner'],
+                                      'state_dir_found':True},now)
+    assert lawsim['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
+    assert lawsim['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+    assert lawsim['status']=='completed' and lawsim['game']=='lawsim-view'
+    assert lawsim['end_reason']=='operator-moved-during-lawsim'
+    assert lawsim['present'] is True and lawsim['readable'] is True
+    assert lawsim['state_dir_found'] is True
+    assert lawsim['age_sec']==600
+    assert 'DO-NOT-PUBLISH' not in json.dumps(corners,ensure_ascii=False)
+
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'lawsim':lawsim,
+        'storage_breakdown':{'filler':'x'*(70*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    # #3149: the omission marker still means the whole section was dropped,
+    # but the bounded switch/ledger skeletons survive inside it.
+    dropped=decoded['corners']
+    assert dropped['status']=='output_omitted' and dropped['reason']=='hard_ceiling'
+    assert dropped['game_switch']['present'] is False
+    assert dropped['corner_rotation']['present'] is False
+    assert decoded['lawsim']['narration']=={'enqueued':3,'delivery_failed':1,'skipped':2,'frames':6}
+    assert decoded['lawsim']['overlay_announcements']=={'sent':5,'failed':0,'skipped':1}
+    # Unknown status/game values never leave the collector.
+    odd=module._lawsim_projection({'lawsim_corner':{'present':True,'readable':True,
+                                                    'status':'SECRET-STATUS','game':'x'}},now)
+    assert odd['status'] is None and odd['game'] is None
+    # "state absent" (not run yet) is distinguishable from "counters all zero".
+    absent=module._lawsim_projection({'lawsim_corner':{'present':False,'readable':False}},now)
+    assert absent['present'] is False and absent['narration'] is None
+    zero=module._lawsim_projection({'lawsim_corner':{'present':True,'readable':True,
+                                    'counters':{'narration':{'enqueued':0,'delivery_failed':0,
+                                                             'skipped':0,'frames':0},
+                                                'overlay_announcements':{'sent':0,'failed':0,
+                                                                         'skipped':0}}}},now)
+    assert zero['present'] is True and zero['narration']['frames']==0
+
+
+def test_corners_fat_entry_stubs_before_whole_section_drop():
+    # #2884: one heavy corners entry must not take the whole section down
+    # with it. The largest entry yields to a lifecycle skeleton first; the
+    # whole-section drop stays the last resort.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero','pad':'y'*9000},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting'},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*8000},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete'},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'z'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
+    retro=dec['retro_corner']
+    assert retro['output_omitted']=='hard_ceiling'
+    assert retro['status']=='active' and retro['game']=='hanjuku-hero'
+    assert retro['omitted_bytes']>8000
+    assert 'x'*1000 not in json.dumps(retro)
+    assert dec['yoso_corner']['end_reason']=='audio-complete'
+    assert dec['corner_rotation']['status']=='waiting'
+    assert dec['game_switch']['active_game']=='hanjuku-hero'
+    assert len(json.dumps(decoded).encode('utf-8'))<=module.HARD_JSON_BYTES
+
+
+def test_corners_hard_keep_entries_never_stub():
+    # #2884: ``game_switch`` (what is actually on screen) and
+    # ``corner_rotation`` (the ledger read when the rotation wedges) keep
+    # their full projection while other entries stub around them.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero'},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting',
+                           'pad':'c'*8000},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*6000},
+    }
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'z'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert isinstance(dec,dict) and dec.get('status')!='output_omitted'
+    assert dec['corner_rotation']['pad']=='c'*8000
+    assert dec['retro_corner']['output_omitted']=='hard_ceiling'
+
+
+def test_corners_whole_section_drop_keeps_switch_and_ledger_skeleton():
+    # #3149: the whole ``corners`` section is the first whole section the hard
+    # ceiling drops, and dropping it blanked ``game_switch`` and
+    # ``corner_rotation`` -- the switch identity and the failed-corner ledger
+    # an operator opens diagnostics to read when the rotation wedges. The
+    # omission marker now keeps those two bounded entries inside it.
+    module=load_collector()
+    corners={
+        'state_dir_found':True,
+        'game_switch':{'present':True,'readable':True,'phase':'ready',
+                       'active_game':'hanjuku-hero','active_generation':1097},
+        'corner_rotation':{'present':True,'readable':True,'status':'waiting',
+                           'failed_corners':[
+                               {'corner':'hanjuku-hero','at':1793411161,
+                                'resolution':'released-unverified',
+                                'reason_code':'failed-corner-slot-released',
+                                'error_kind':'execution-error'},
+                               {'corner':'nsnake','at':1793498215,
+                                'resolution':'released-unverified',
+                                'reason_code':'failed-corner-slot-released',
+                                'error_kind':'execution-error'}]},
+        'retro_corner':{'present':True,'readable':True,'status':'active',
+                        'game':'hanjuku-hero','evidence':'x'*8000},
+        'yoso_corner':{'present':True,'readable':True,'status':'completed',
+                       'game':'yosou-view','end_reason':'audio-complete'},
+    }
+    # Many already-stubbed entries so the skeleton-only envelope is still
+    # over the ceiling: the whole-section drop must fire for this payload.
+    for index in range(160):
+        corners['pad_%03d'%index]={'present':True,'readable':True,
+                                   'status':'failed','game':'nsnake',
+                                   'evidence':'z'*400}
+    payload={
+        'meta':{'docich_head':'0'*40},
+        'ai':{'recent_events':[],'anomalous_components':{}},
+        'workers':{'details':{}},
+        'soren91_drop_profile':{'profileStatus':'ok','groups':{},'games':[],
+                                'slowest':[],'omittedComparisonGroups':0,
+                                'omittedGameGroups':0},
+        'corners':corners,
+        'storage_breakdown':{'filler':'w'*(44*1024)},
+    }
+    decoded=json.loads(module._diagnostics_budget(payload))
+    dec=decoded['corners']
+    assert dec['status']=='output_omitted' and dec['reason']=='hard_ceiling'
+    assert 'retro_corner' not in dec and 'yoso_corner' not in dec
+    assert dec['game_switch']['phase']=='ready'
+    assert dec['game_switch']['active_game']=='hanjuku-hero'
+    rows=dec['corner_rotation']['failed_corners']
+    assert [row['corner'] for row in rows]==['hanjuku-hero','nsnake']
+    assert rows[0]['error_kind']=='execution-error'
+    assert rows[0]['reason_code']=='failed-corner-slot-released'
+    assert len(json.dumps(decoded).encode('utf-8'))<=module.HARD_JSON_BYTES
+
+
+def test_soren91_corner_reports_the_switch_error_that_ended_the_corner(tmp_path):
+    # docich#1221: the presenter pane dies with its tmux window, so the
+    # corner's own record is the only durable evidence of *why* a
+    # readiness_timeout rollback happened. Statuses stay fixed enums and the
+    # detail is bounded and redacted.
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'soren91_corner.json').write_text(json.dumps({
+        'status':'failed','game':'soren91','previous_game':'sorengame',
+        'last_error_code':'readiness_timeout',
+        'last_error':'presenter がviewer windowを提示できませんでした '
+                     '(status=viewer_timeout, viewer_wait_sec=240, elapsed_s=240.0)',
+        'switch_status':'rolled_back',
+        'switch_request_id':'70eb5f95-DO-NOT-PUBLISH',
+        'completed_at':1.0}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['soren91_corner']
+    assert entry['present'] is True and entry['readable'] is True
+    assert entry['status']=='failed'
+    assert entry['game']=='soren91'
+    assert entry['previous_game']=='sorengame'
+    assert entry['switch_status']=='rolled_back'
+    assert entry['switch_error_code']=='readiness_timeout'
+    assert 'viewer_timeout' in entry['last_error']
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'DO-NOT-PUBLISH' not in rendered and '70eb5f95' not in rendered
+
+
+def test_soren91_corner_redacts_the_error_and_refuses_unknown_enums(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    (state_dir/'soren91_corner.json').write_text(json.dumps({
+        'status':'failed',
+        'last_error':'renderer failed token=SUPERSECRET123',
+        'last_error_code':'x'*200,
+        'switch_status':'DO-NOT-PUBLISH'}),encoding='utf-8')
+
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+
+    entry=result['soren91_corner']
+    assert entry['switch_status'] is None
+    assert isinstance(entry['switch_error_code'],str)
+    assert len(entry['switch_error_code'])<=64
+    rendered=json.dumps(result,ensure_ascii=False)
+    assert 'SUPERSECRET123' not in rendered
+    assert '[REDACTED]' in rendered
+    assert 'DO-NOT-PUBLISH' not in rendered
+
+
+def test_soren91_corner_absent_is_reported_without_inventing_state(tmp_path):
+    module=load_collector()
+    state_dir=tmp_path/'run'
+    state_dir.mkdir(parents=True)
+    result=module._collect_programs(state_dir,tmp_path/'soren',int(time.time()))
+    assert result['soren91_corner']=={'present':False,'readable':False}
 
 
 PULSE_SINK_INPUTS = (
@@ -484,7 +1516,7 @@ def test_pulse_mute_count_includes_streams_omitted_from_details():
     assert output['muted'] == 1
 
 
-def test_pulse_stream_detail_is_the_last_thing_dropped_for_the_size_budget():
+def test_pulse_stream_detail_yields_to_the_size_budget_but_counts_survive():
     # A muted BGM must not disappear behind the diagnostics size budget: the
     # mute count survives even when the per-stream detail is omitted (#968).
     module = load_collector()
@@ -594,6 +1626,45 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert chart['strategy_variant']=='budget_boss_kit_first' and chart['name_entered'] is True
     output=module._project_corner_state(state)
     assert output['bot_version']=='hanjuku-chart-v2'
+    state['bot_version']='hanjuku-chart-v1433-fort-recall-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1433-fort-recall-evidence'
+    state['bot_version']='hanjuku-chart-v1434-camp-dispatch-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1434-camp-dispatch-evidence'
+    state['bot_version']='hanjuku-chart-v1435-recall-dispatch-unattributed'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1435-recall-dispatch-unattributed'
+    state['bot_version']='hanjuku-chart-v1438-chikujou-castle-width-fold'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
+    state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    for marker in (
+        'hanjuku-chart-v1460-password-entered-field',
+        'hanjuku-chart-v1461-melee-only-ugokazaru',
+        'hanjuku-chart-v1462-status-panel-owner-guard',
+        'hanjuku-chart-v1463-battle-menu-scrolled-bottom',
+        'hanjuku-chart-v1464-status-panel-owner-followups',
+        'hanjuku-chart-v1465-unowned-screen-review-guards',
+        'hanjuku-chart-v1466-status-panel-owner-name',
+        'hanjuku-chart-v1467-status-panel-owner-unreadable-egg',
+        'hanjuku-chart-v1469-recall-yjump-goal',
+        'hanjuku-chart-v1470-ch4-site-bounded-wait',
+        'hanjuku-chart-v1473-hidden-season-site-priority',
+        'hanjuku-chart-v1474-departure-request-ownership',
+        'hanjuku-chart-v1476-site-cursor-shape',
+        'hanjuku-chart-v1480-ch4-boss-dispatch',
+        'hanjuku-chart-v1478-site-nearest-source',
+        'hanjuku-chart-v1472-status-panel-owner-unreadable-skip',
+        'hanjuku-chart-v1477-boss-camp-recall',
+        'hanjuku-chart-v1483-ch12-boss-staging',
+        'hanjuku-chart-v1486-ch4-southern-kings',
+        'hanjuku-chart-v1487-ch4-southern-kings',
+        'hanjuku-chart-v1478-departure-request-ownership',
+        'hanjuku-chart-v1481-boss-camp-recall-followup',
+        'hanjuku-chart-v1482-departure-request-ownership',
+        'hanjuku-chart-v1484-sortie-kit-evidence-confidence',
+        'hanjuku-chart-v1490-fort-recall-picker-owner-bounded',
+    ):
+        state['bot_version'] = marker
+        assert module._project_corner_state(state)['bot_version'] == marker
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
@@ -603,6 +1674,15 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert chart['chart_step'] is None and chart['month'] is None and chart['strategy_variant'] is None
     assert chart['wins'] is None and chart['gold'] is None and output['bot_version'] is None
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
+
+
+def test_hanjuku_camp_tail_projects_the_battle_reset_decision():
+    module=load_collector()
+    rows=[{'decision':'camp_recall_battle_reset'},{'decision':'camp_recall_battle_reset'},
+          {'decision':'camp_recall_requested'},{'decision':'not_a_camp_decision'},
+          {'decision':None},{'other':'camp_recall_battle_reset'}]
+    tail=module._hanjuku_camp_tail(rows)
+    assert tail=={'counts':{'camp_recall_battle_reset':2,'camp_recall_requested':1}}
 
 
 def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
@@ -629,8 +1709,10 @@ def test_hanjuku_hotload_projection_is_bounded_state_and_digests():
 
 
 def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
+    from docich.hanjuku.version import BOT_VERSION
+
     module = load_collector()
-    versions = ("hanjuku-script-v1", "hanjuku-chart-v2",
+    versions = (BOT_VERSION, "hanjuku-script-v1", "hanjuku-chart-v2",
                 "hanjuku-chart-v129-battle-card-progress",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
@@ -662,6 +1744,170 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                 "hanjuku-chart-v173-resume-sortie-menu",
                 "hanjuku-chart-v174-status-reuse-hero-guard",
                 "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety")
+    versions += ("hanjuku-chart-v275-battle-opening-dialogue",
+                 "hanjuku-chart-v276-chapter-three-relays",
+                 "hanjuku-chart-v277-nav-motion-continuity",
+                 "hanjuku-chart-v278-chapter-three-boss-cell",
+                 "hanjuku-chart-v280-approx-fallback-source-chapters",
+                 "hanjuku-chart-v286-recall-yields-month-scene",
+                 "hanjuku-chart-v287-retry-owned-target",
+                 "hanjuku-chart-v288-boss-jump-fresh-attempt",
+                 "hanjuku-chart-v289-monster-skill-no-progress",
+                 "hanjuku-chart-v290-monster-stall-faster",
+                 "hanjuku-chart-v291-defense-handoff-win",
+                 "hanjuku-chart-v293-boss-cell-not-cave",
+                 "hanjuku-chart-v295-boss-marker-on-building",
+                 "hanjuku-chart-v297-camp-menu-reopen",
+                 "hanjuku-chart-v298-okunote-effect-label",
+                 "hanjuku-chart-v300-recall-picker-stationary",
+                 "hanjuku-chart-v302-defense-loss-flag",
+                 "hanjuku-chart-v303-boss-flag-not-read",
+                 "hanjuku-chart-v304-boss-sortie-overdue",
+                 "hanjuku-chart-v305-hero-castle-guard",
+                 "hanjuku-chart-v306-dome-camp",
+                 "hanjuku-chart-v307-card-egg-reach",
+                 "hanjuku-chart-v308-snow-field",
+                 "hanjuku-chart-v309-card-stock-skip",
+                 "hanjuku-chart-v310-monster-menu-drawing",
+                 "hanjuku-chart-v311-overtaken-confirm",
+                 "hanjuku-chart-v312-monster-unchosen-turn",
+                 "hanjuku-chart-v313-monster-overtaken-turn",
+                 "hanjuku-chart-v314-summon-box-pace",
+                 "hanjuku-chart-v315-summon-entrance-pace",
+                 "hanjuku-chart-v316-summon-dialogue-wait",
+                 "hanjuku-chart-v317-partial-box-fold",
+                 "hanjuku-chart-v318-nav-recover-bound",
+                 "hanjuku-chart-v319-attack-defender-successor",
+                 "hanjuku-chart-v320-dispatch-not-empty",
+                 "hanjuku-chart-v321-camp-unobserved-skip",
+                 "hanjuku-chart-v322-defense-win-unread-list",
+                 "hanjuku-chart-v323-okunote-open-menu",
+                 "hanjuku-chart-v324-hold-gate-reload",
+                 "hanjuku-chart-v325-lost-chart-general",
+                 "hanjuku-chart-v326-target-jump-settle",
+                 "hanjuku-chart-v327-season-king-sites",
+                 "hanjuku-chart-v328-site-card-kit",
+                 "hanjuku-chart-v329-hopeless-attack-retreat",
+                 "hanjuku-chart-v330-site-strongest-egg",
+                 "hanjuku-chart-v331-site-entry-repeat",
+                 "hanjuku-chart-v333-site-keep-defender",
+                 "hanjuku-chart-v335-y-jump-interrupted",
+                 "hanjuku-chart-v337-site-egg-stays",
+                 "hanjuku-chart-v338-season-king-panel",
+                 "hanjuku-chart-v339-okunote-redraw",
+                 "hanjuku-chart-v340-site-overdue-planned",
+                 "hanjuku-chart-v341-chikyu-harmagedon-general",
+                 "hanjuku-chart-v343-defender-okunote-melee-behind",
+                 "hanjuku-chart-v344-sortie-list-walk",
+                 "hanjuku-chart-v345-roster-unplaced",
+                 "hanjuku-chart-v526-completed-season-sites",
+                 "hanjuku-chart-v754-okunote-only-box",
+                 "hanjuku-chart-v755-plan-step-map-budget",
+                 "hanjuku-chart-v756-ch9-empty-front-probe-reuse",
+                 "hanjuku-chart-v757-front-mass-wait",
+                 "hanjuku-chart-v758-probe-rearm-names",
+                 "hanjuku-chart-v759-retake-pair-wait",
+                 "hanjuku-chart-v760-destination-roster-probe",
+                 "hanjuku-chart-v761-due-probe-budget",
+                 "hanjuku-chart-v762-strongest-full-hp-leader",
+                 "hanjuku-chart-v763-owner-veto-order",
+                 "hanjuku-chart-v764-owned-target-settle",
+                 "hanjuku-chart-v765-defended-front-keep",
+                 "hanjuku-chart-v766-partial-tick-order",
+                 "hanjuku-chart-v767-finish-20",
+                 "hanjuku-chart-v768-own-target-marker",
+                 "hanjuku-chart-v769-guard-expiry-sticky",
+                 "hanjuku-chart-v770-flag-owner-confirm",
+                 "hanjuku-chart-v771-keep-defender",
+                 "hanjuku-chart-v772-recall-roster-due",
+                 "hanjuku-chart-v773-roster-due-ttl",
+                 "hanjuku-chart-v774-recall-read-delay",
+                 "hanjuku-chart-v775-capture-roster-read",
+                 "hanjuku-chart-v776-mass-hold-reset",
+                 "hanjuku-chart-v777-partial-on-move",
+                 "hanjuku-chart-v778-mass-retract-active",
+                 "hanjuku-chart-v779-front-hold-reinforcements",
+                 "hanjuku-chart-v780-receipt-during-wave",
+                 "hanjuku-chart-v781-defended-last-resident",
+                 "hanjuku-chart-v782-last-resort-stall",
+                 "hanjuku-chart-v783-front-marks-clean",
+                 "hanjuku-chart-v784-partial-move-update",
+                 "hanjuku-chart-v785-empty-front-reset",
+                 "hanjuku-chart-v786-hold-consistency",
+                 "hanjuku-chart-v787-panel-finish-precedence",
+                 "hanjuku-chart-v788-battle-start-defense-seen",
+                 "hanjuku-chart-v789-step-id-collision",
+                 "hanjuku-chart-v790-defense-seen-clean",
+                 "hanjuku-chart-v791-finish-pending-shopping",
+                 "hanjuku-chart-v792-lost-castle-page",
+                 "hanjuku-chart-v793-recruit-roster-due",
+                 "hanjuku-chart-v794-nonowned-page-clean",
+                 "hanjuku-chart-v795-camp-world-anchor",
+                 "hanjuku-chart-v796-camp-loss-record",
+                 "hanjuku-chart-v797-recruit-at-cap",
+                 "hanjuku-chart-v798-camp-occluded-tolerance",
+                 "hanjuku-chart-v799-camp-enter-record",
+                 "hanjuku-chart-v800-scene-abandon-record",
+                 "hanjuku-chart-v801-interrupt-record",
+                 "hanjuku-chart-v802-month-defer-recall",
+                 "hanjuku-chart-v803-month-default-estimate",
+                 "hanjuku-chart-v804-month-margin",
+                 "hanjuku-chart-v805-camp-timing-record",
+                 "hanjuku-chart-v806-recall-month-priority",
+                 "hanjuku-chart-v807-recall-roof-goal",
+                 "hanjuku-chart-v808-camp-origin-record",
+                 "hanjuku-chart-v809-interrupt-month-estimate",
+                 "hanjuku-chart-v810-camp-hunt-log",
+                 "hanjuku-chart-v811-hunt-timing",
+                 "hanjuku-chart-v812-jump-camps",
+                 "hanjuku-chart-v813-jump-camp-priority",
+                 "hanjuku-chart-v814-jump-camp-skip",
+                 "hanjuku-chart-v815-recall-battle-log",
+                 "hanjuku-chart-v816-hunt-origin",
+                 "hanjuku-chart-v817-camp-cursor-cell",
+                 "hanjuku-chart-v818-hunt-roof-detail",
+                 "hanjuku-chart-v819-picker-progress",
+                 "hanjuku-chart-v820-roof-support",
+                 "hanjuku-chart-v821-hunt-chart-cells",
+                 "hanjuku-chart-v822-picker-own",
+                 "hanjuku-chart-v823-hunt-chart-all",
+                 "hanjuku-chart-v824-picker-fallback-nearby",
+                 "hanjuku-chart-v825-picker-hero",
+                 "hanjuku-chart-v826-hero-status-goal",
+                 "hanjuku-chart-v827-picker-hero-status",
+                 "hanjuku-chart-v828-picker-hero-read",
+                 "hanjuku-chart-v829-picker-fallback-home",
+                 "hanjuku-chart-v830-picker-month-timing",
+                 "hanjuku-chart-v1354-card-announce-evidence",
+                 "hanjuku-chart-v1355-math-corner",
+                 "hanjuku-chart-v1365-chikujou-list-limit",
+                 "hanjuku-chart-v1369-egg-quote-owned",
+                 "hanjuku-chart-v1360-spend-resources-before-retreat",
+                 "hanjuku-chart-v1362-camp-recall-ch2",
+                 "hanjuku-chart-v1363-chikujou-at-month-end",
+                 "hanjuku-chart-v1370-chikujou-tried-ledger",
+                 "hanjuku-chart-v1373-egg-receipt-settle",
+                 "hanjuku-chart-v1375-boss-dispatch-guarantee",
+                 "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1393-roster-due-consume",
+                 "hanjuku-chart-v1397-recall-map-hold",
+                 "hanjuku-chart-v1398-egg-retry-on-hp-loss",
+                 "hanjuku-chart-v1399-recall-map-hold",
+                 "hanjuku-chart-v1445-early-resource-rescue",
+                 "hanjuku-chart-v1446-password-measured-order",
+                 "hanjuku-chart-v1446-boss-companion-wait-bound",
+                 "hanjuku-chart-v1447-password-measured-order",
+                 "hanjuku-chart-v1402-sortie-audit-confidence",
+                 "hanjuku-chart-v1415-merchant-strong-first",
+                 "hanjuku-chart-v1416-card-miss-after-use",
+                 "hanjuku-chart-v1417-stall-refresh",
+                 "hanjuku-chart-v1418-spend-next-card",
+                 "hanjuku-chart-v1419-hero-move-backoff",
+                 "hanjuku-chart-v1420-chikujou-reserve-check",
+                 "hanjuku-chart-v1424-sortie-measured-kit",
+                 "hanjuku-chart-v1443-boss-companion-stage-timeout",
+                 "hanjuku-chart-v1485-camp-watch-identity-subset",
+)
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
     for version in (None, 'SECRET', 'hanjuku-chart-v130-SECRET',
@@ -719,8 +1965,10 @@ def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_v
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'vercel',
-                      'requested_model': 'typesafe-ai/jev', 'credential': 'present',
-                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
+                      'requested_model': 'typesafe-ai/jev', 'credential': 'present', 'account': 'not_applicable',
+                      'retained': {'direct': {'credential': 'absent', 'account': 'not_applicable'}, 'vercel': {'credential': 'present', 'account': 'not_applicable'}, 'clef': {'credential': 'absent', 'account': 'absent'}},
+                      'fallback_route': None, 'fallback_credential': 'not_applicable',
+                      'fallback_account': 'not_applicable'}
     assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
     assert 'SHOULD_NEVER_APPEAR' not in json.dumps(result)
     assert 'retired-and-never-read' not in json.dumps(result)
@@ -735,15 +1983,114 @@ def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend(
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'direct',
-                      'requested_model': 'jev-1.13.0', 'credential': 'absent',
-                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
+                      'requested_model': 'jev-1.13.0', 'credential': 'absent', 'account': 'not_applicable',
+                      'retained': {'direct': {'credential': 'absent', 'account': 'not_applicable'}, 'vercel': {'credential': 'absent', 'account': 'not_applicable'}, 'clef': {'credential': 'absent', 'account': 'absent'}},
+                      'fallback_route': None, 'fallback_credential': 'not_applicable',
+                      'fallback_account': 'not_applicable'}
     with mock.patch.object(module.Path, 'read_bytes',
                            return_value=_synthetic_environ({'TYPESAFE_API_KEY': 'unrelated-not-delegating'})):
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
                       'backend': 'heuristic', 'route': None,
-                      'requested_model': None, 'credential': 'not_applicable',
-                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
+                      'requested_model': None, 'credential': 'not_applicable', 'account': 'not_applicable',
+                      'retained': {},
+                      'fallback_route': None, 'fallback_credential': 'not_applicable',
+                      'fallback_account': 'not_applicable'}
+
+
+def test_semantic_decision_clef_route_is_observed_from_the_fixed_allowlist_only():
+    # #2301: the collector must be able to prove a live clef route has both
+    # halves of its credential pair without ever emitting either value.
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    environ = _synthetic_environ({
+        'COMMENT_CLASSIFIER_BACKEND': 'jev',
+        'DOCICH_JEV_ROUTE': 'clef',
+        'TYPESAFE_API_KEY': 'SYNTHETIC_TYPESAFE_SECRET',
+        'DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID': '0123456789abcdef0123456789abcdef',
+        'DOCICH_JEV_CLOUDFLARE_API_TOKEN': 'SYNTHETIC_CLEF_SECRET',
+        'UNRELATED_OTHER_SECRET': 'SHOULD_NEVER_APPEAR',
+    })
+    with mock.patch.object(module.Path, 'read_bytes', return_value=environ):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
+                      'backend': 'jev', 'route': 'clef', 'requested_model': 'clef',
+                      'credential': 'present', 'account': 'valid',
+                      'retained': {'direct': {'credential': 'present', 'account': 'not_applicable'}, 'vercel': {'credential': 'absent', 'account': 'not_applicable'}, 'clef': {'credential': 'present', 'account': 'valid'}},
+                      'fallback_route': None, 'fallback_credential': 'not_applicable',
+                      'fallback_account': 'not_applicable'}
+    rendered = json.dumps(result)
+    for secret in ('SYNTHETIC_CLEF_SECRET', 'SYNTHETIC_TYPESAFE_SECRET',
+                   '0123456789abcdef0123456789abcdef', 'SHOULD_NEVER_APPEAR'):
+        assert secret not in rendered
+    for name in ('DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID', 'DOCICH_JEV_CLOUDFLARE_API_TOKEN'):
+        assert name in module.SEMANTIC_DECISION_ENV_ALLOWLIST
+        assert name not in rendered
+    assert 'DOCICH_SEMANTIC_BACKEND' not in module.SEMANTIC_DECISION_ENV_ALLOWLIST
+
+
+def test_semantic_decision_retained_block_preflights_both_switch_directions():
+    # #2301: the live worker is normally on `direct,vercel` while the owner
+    # prepares a Clef switch (and back). Both providers' retained credentials
+    # must therefore be observable from the same fixed allowlist, by presence
+    # and shape only, before any switch is attempted.
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    environ = _synthetic_environ({
+        'COMMENT_CLASSIFIER_BACKEND': 'jev',
+        'DOCICH_JEV_ROUTE': 'direct,vercel',
+        'TYPESAFE_API_KEY': 'SYNTHETIC_TYPESAFE_SECRET',
+        'DOCICH_JEV_VERCEL_API_KEY': 'SYNTHETIC_VERCEL_SECRET',
+        'DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID': '0123456789abcdef0123456789abcdef',
+        'DOCICH_JEV_CLOUDFLARE_API_TOKEN': 'SYNTHETIC_CLEF_SECRET',
+    })
+    with mock.patch.object(module.Path, 'read_bytes', return_value=environ):
+        result = module._collect_semantic_decision(workers)
+    assert result['retained'] == {
+        'direct': {'credential': 'present', 'account': 'not_applicable'},
+        'vercel': {'credential': 'present', 'account': 'not_applicable'},
+        'clef': {'credential': 'present', 'account': 'valid'},
+    }
+    rendered = json.dumps(result)
+    for secret in ('SYNTHETIC_TYPESAFE_SECRET', 'SYNTHETIC_VERCEL_SECRET',
+                   'SYNTHETIC_CLEF_SECRET', '0123456789abcdef0123456789abcdef'):
+        assert secret not in rendered
+
+    # A worker with only the JEV rollback key still reports Clef as absent
+    # rather than guessing: `absent` is an observed value, not a default.
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': 'jev',
+                                                            'TYPESAFE_API_KEY': 'SYNTHETIC_TYPESAFE_SECRET'})):
+        result = module._collect_semantic_decision(workers)
+    assert result['retained']['clef'] == {'credential': 'absent', 'account': 'absent'}
+    assert result['retained']['direct']['credential'] == 'present'
+
+
+def test_workers_projection_publishes_the_registered_chat_worker_identity_outside_details(tmp_path):
+    # #2301: an owner switching the classifier's provider must be able to
+    # compare the chat worker before and after the replacement. ``details`` is
+    # cleared by the size budget on a full production envelope, so the
+    # registered chat worker's identity is published as its sibling.
+    module = load_collector()
+    soren = tmp_path / "soren"
+    state = soren / "tmp" / "state"
+    state.mkdir(parents=True)
+    (state / "chat_worker.pid").write_text(f"{os.getpid()}\n", encoding="ascii")
+    workers = module._collect_workers(soren, 1)
+    identity = {"pid": os.getpid(), "alive": True, "stale_pid_file": False}
+    assert workers["chat_worker"] == identity
+    assert workers["details"]["chat_worker"]["pid"] == os.getpid()
+
+    payload = {
+        "ai": {"recent_events": [{"detail": "x" * 4000} for _ in range(20)]},
+        "nethack_history": {"daily": {"records": []}, "completed_runs": {"records": []}},
+        "corners": {},
+        "workers": workers,
+    }
+    module._diagnostics_budget(payload)
+    assert payload["workers"]["details"] == {}
+    assert payload["workers"]["chat_worker"] == identity
+    assert json.dumps(payload["workers"]["chat_worker"])
 
 
 def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
@@ -1062,14 +2409,21 @@ class CollectorContractTests(CollectorFixture):
         stats = self.soren / "tmp" / "state" / "ai_stats"
         stats.mkdir(parents=True, exist_ok=True)
         day = time.strftime("%Y%m%d", time.localtime(self.now))
-        with open(stats / f"{day}.jsonl", "w", encoding="utf-8") as handle:
-            for _ in range(60000):
-                handle.write(json.dumps(self.event("fail", rc="1", error="x" * 5000)) + "\n")
+        line = json.dumps(self.event("fail", rc="1", error="x" * 5000)) + "\n"
+        # ~300 MB apparent size, but only the scanned tail is real data (sparse_files).
+        size = write_sparse_tail_jsonl(stats / f"{day}.jsonl", line, 60000)
+        self.assertGreater(size, 30 * jsonl_scan_window_bytes())
         proc = self.run_collector()
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertLessEqual(len(proc.stdout.encode()), 32768)
+        # The bound protects that this fixture's output does not grow with the
+        # ~300MB telemetry input. It is not the gateway cap itself (65,536 per
+        # #2537): the fixed attribution sections (storage breakdown version 2
+        # adds the #2583 roots) sit below it with a wide margin.
+        self.assertLessEqual(len(proc.stdout.encode()), 40960)
         data = json.loads(proc.stdout)
         self.assertLessEqual(len(data["ai"]["recent_events"]), 20)
+        # The scanned tail is real telemetry, not the sparse hole.
+        self.assertGreater(data["ai"]["failures"], 0)
 
     def test_improve_loop_states(self):
         self.write_required_alive()
@@ -1260,6 +2614,151 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertEqual(boundary["improvement"]["age_sec"], 300)
         self.assertEqual(boundary["prediction"]["present"], False)
         self.assertEqual(boundary["prediction"]["age_sec"], -1)
+        self.assertNotIn("round", boundary["prediction"])
+
+    def test_boundary_reports_prediction_round_progress(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 7200})
+        )
+        state = root / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2,
+            "games_completed": 36,
+            "max_games": 48,
+            "created_at": self.now - 5400,
+            "target_first_game": 10,
+            "last_game_num": 60,
+            "prediction_id": "PRIVATE-PREDICTION",
+            "outcome_ids": ["PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"],
+        }))
+        os.utime(state, (self.now - 120, self.now - 120))
+        retry_dir = root / "prediction_retry"
+        retry_dir.mkdir()
+        (retry_dir / "resolve.json").write_text(json.dumps({
+            "operation": "resolve", "attempt": 2,
+            "next_retry_at": self.now + 300, "http_code": "401",
+        }))
+        (root / "regression_check_in_progress").write_text("")
+
+        result = module._collect_boundary(root, self.now)
+
+        round_state = result["prediction"]["round"]
+        self.assertEqual(round_state["games_completed"], 36)
+        self.assertEqual(round_state["max_games"], 48)
+        self.assertEqual(round_state["remaining_games"], 12)
+        self.assertEqual(round_state["created_age_sec"], 5400)
+        self.assertEqual(round_state["progress_age_sec"], 120)
+        self.assertIs(round_state["complete"], False)
+        self.assertIsNone(round_state["settlement_pending"])
+        self.assertIs(round_state["fence_present"], True)
+        self.assertEqual(round_state["retry"]["attempt"], 2)
+        self.assertEqual(round_state["retry"]["http_code"], "401")
+        self.assertIs(round_state["retry"]["retry_active"], True)
+        rendered = json.dumps(result)
+        for secret in ("PRIVATE-PREDICTION", "PRIVATE-A", "PRIVATE-B",
+                       "PRIVATE-C", "PRIVATE-D"):
+            self.assertNotIn(secret, rendered)
+
+    def test_boundary_flags_a_completed_prediction_that_was_not_settled(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 3600})
+        )
+        state = root / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2, "games_completed": 48, "max_games": 48,
+            "created_at": self.now - 7200,
+        }))
+        os.utime(state, (self.now - 600, self.now - 600))
+
+        result = module._collect_boundary(root, self.now)
+        round_state = result["prediction"]["round"]
+        self.assertIs(round_state["complete"], True)
+        self.assertIs(round_state["settlement_pending"], True)
+        self.assertGreaterEqual(round_state["settlement_pending_sec"], 590)
+
+        # A boundary published after the last game count is not pending.
+        (root / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": self.now - 60})
+        )
+        result = module._collect_boundary(root, self.now)
+        round_state = result["prediction"]["round"]
+        self.assertIs(round_state["complete"], True)
+        self.assertIs(round_state["settlement_pending"], False)
+        self.assertIsNone(round_state["settlement_pending_sec"])
+
+    def test_prediction_projection_keeps_round_progress(self):
+        module = load_collector()
+        corners = {"boundary": {"prediction": {
+            "present": True, "readable": True, "completed_at": self.now - 7200,
+            "round": {
+                "present": True, "readable": True, "round_version": 2,
+                "games_completed": 48, "max_games": 48, "remaining_games": 0,
+                "created_age_sec": 7200, "progress_age_sec": 600,
+                "fence_present": False, "fence_age_sec": -1,
+                "retry": {"present": False, "readable": False, "attempt": None,
+                          "next_retry_at": None, "retry_active": None,
+                          "http_code": None},
+                "complete": True, "settlement_pending": True,
+                "settlement_pending_sec": 600,
+            }}}}
+        projection = module._prediction_projection(corners, self.now)
+        round_state = projection["boundary"]["round"]
+        self.assertEqual(round_state["games_completed"], 48)
+        self.assertIs(round_state["settlement_pending"], True)
+        self.assertEqual(round_state["settlement_pending_sec"], 600)
+
+    def test_boundary_reports_the_shared_audio_queue(self):
+        module = load_collector()
+        queue = self.soren / "tmp" / ".comment_queue"
+        queue.mkdir(parents=True)
+        queued = queue / "comment_announce_1_2_3_chat.txt"
+        queued.write_text("DO-NOT-PUBLISH-TEXT")
+        playing = queue / "comment_announce_4_5_6_yosou-intro.playing"
+        playing.write_text("DO-NOT-PUBLISH-TEXT-2")
+        os.utime(queued, (self.now - 120, self.now - 120))
+        os.utime(playing, (self.now - 30, self.now - 30))
+        (queue / "processed_batch_hashes.log").write_text("DO-NOT-PUBLISH-LOG")
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        self.assertEqual(result["boundary"]["audio"], {
+            "present": True,
+            "readable": True,
+            "queued": 1,
+            "playing": 1,
+            "oldest_age_sec": 120,
+            "quiet": False,
+            "reason": "queued+playing",
+        })
+        self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
+
+    def test_boundary_audio_queue_absent_or_unreadable_never_blocks(self):
+        module = load_collector()
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        audio = result["boundary"]["audio"]
+        self.assertEqual(audio["present"], False)
+        self.assertEqual(audio["readable"], True)
+        self.assertEqual(audio["queued"], 0)
+        self.assertEqual(audio["playing"], 0)
+        self.assertEqual(audio["oldest_age_sec"], -1)
+        self.assertEqual(audio["quiet"], True)
+        self.assertEqual(audio["reason"], "quiet")
+        # A path that cannot be listed is reported, but the corners still run.
+        (self.soren / "tmp" / ".comment_queue").write_text("not a directory")
+        with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": ""}):
+            result = module._collect_programs(
+                self.soren / "nonexistent-state", self.soren, self.now)
+        audio = result["boundary"]["audio"]
+        self.assertEqual(audio["present"], False)
+        self.assertEqual(audio["readable"], False)
+        self.assertEqual(audio["quiet"], True)
+        self.assertEqual(audio["reason"], "unreadable")
 
     def test_ab_state_is_reported_without_hashes_or_env(self):
         module = load_collector()
@@ -1418,6 +2917,93 @@ class NethackAgentLogTests(unittest.TestCase):
         self.assertEqual(len(entry["lines"]), module.NETHACK_AGENT_LOG_LINES)
         self.assertIn("line 19", entry["lines"][-1])
         self.assertNotIn("sekret", " ".join(entry["lines"]))
+
+
+class SorenBridgeLogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-bridge-log-")
+        self.soren = Path(self.tmp.name) / "soren"
+        lifecycle = self.soren / "tmp/state/game_lifecycle"
+        lifecycle.mkdir(parents=True)
+        (lifecycle / "player_capabilities.json").write_text(
+            json.dumps({"schema": 1, "game": "sorengame", "pid": os.getpid()}),
+            encoding="utf-8")
+        (lifecycle / "player_state.json").write_text(
+            json.dumps({"schema": 1, "game": "sorengame", "policy": "jev"}),
+            encoding="utf-8")
+        (self.soren / "tmp/soviet_local.log").write_text(
+            "".join(f"bridge line {i} token=sekret{i}\n" for i in range(40)),
+            encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _freeze_board(self, age=8000.0):
+        board = self.soren / "game_state.json"
+        board.write_text(json.dumps({"state": "MOVE", "score": 1117}),
+                         encoding="utf-8")
+        os.utime(board, (time.time() - age, time.time() - age))
+
+    def test_healthy_run_emits_no_log_body(self):
+        module = load_collector()
+        self._freeze_board(age=10.0)
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertFalse(entry["projected"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_dead_bridge_pid_emits_no_log_body(self):
+        module = load_collector()
+        self._freeze_board()
+        (self.soren / "tmp/state/game_lifecycle/player_capabilities.json") \
+            .write_text(json.dumps({"pid": 2**22 - 1}), encoding="utf-8")
+        with mock.patch.object(module.os, "kill",
+                               side_effect=ProcessLookupError):
+            entry = module._collect_soren_bridge_log(
+                self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_frozen_board_projects_bounded_redacted_tail(self):
+        module = load_collector()
+        self._freeze_board()
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["anomaly"], "move_frozen_bridge_alive")
+        self.assertTrue(entry["projected"])
+        self.assertTrue(entry["readable"])
+        self.assertEqual(entry["source"], "live_log")
+        self.assertEqual(len(entry["lines"]), module.SOREN_BRIDGE_LOG_LINES)
+        self.assertIn("bridge line 39", entry["lines"][-1])
+        self.assertNotIn("bridge line 0 ", " ".join(entry["lines"]))
+        self.assertNotIn("sekret", " ".join(entry["lines"]))
+        self.assertLessEqual(
+            max(len(line) for line in entry["lines"]),
+            module.SOREN_BRIDGE_LOG_LINE_LIMIT)
+
+    def test_hung_evacuation_log_is_preferred(self):
+        module = load_collector()
+        self._freeze_board()
+        hung = self.soren / "tmp/soviet_local.log.hung-20261031-1304"
+        hung.write_text("hung tail line\n", encoding="utf-8")
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["source"], "hung_evacuated")
+        self.assertEqual(entry["lines"], ["hung tail line"])
+
+    def test_absent_board_with_jev_policy_projects_tail(self):
+        module = load_collector()
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertEqual(entry["anomaly"], "jev_board_absent_bridge_alive")
+        self.assertTrue(entry["projected"])
+        self.assertEqual(len(entry["lines"]), module.SOREN_BRIDGE_LOG_LINES)
+
+    def test_absent_board_without_jev_policy_stays_sealed(self):
+        module = load_collector()
+        (self.soren / "tmp/state/game_lifecycle/player_state.json") \
+            .write_text(json.dumps({"schema": 1, "game": "sorengame",
+                                    "policy": "existing"}), encoding="utf-8")
+        entry = module._collect_soren_bridge_log(self.soren, int(time.time()))
+        self.assertIsNone(entry["anomaly"])
+        self.assertEqual(entry["lines"], [])
 
 
 class NethackPaneTests(unittest.TestCase):
@@ -2299,6 +3885,33 @@ def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
             == corner_rotation.AUTO_RESTORE_ATTEMPT_LIMIT)
 
 
+def test_audio_queue_projection_matches_the_corner_boundary_contract(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from docich import comment_queue
+
+    module = load_collector()
+    (tmp_path / "tmp" / "state").mkdir(parents=True)
+    queue = tmp_path / "tmp" / ".comment_queue"
+    queue.mkdir()
+    (queue / "comment_announce_1_2_3_chat.txt").write_text("x")
+    (queue / "comment_announce_4_5_6_chat.playing").write_text("y")
+    (queue / "processed_batch_hashes.log").write_text("z")
+    (queue / "radio_1_2_news_3.txt").write_text("w")
+    (queue / "comment_announce_7_8_9_chat.txt.speaker").write_text("speaker")
+    with mock.patch.dict(os.environ, {"COMMENT_QUEUE_DIR": str(queue)}):
+        audio = module._collect_audio_queue(tmp_path, int(time.time()))
+        counts = comment_queue.backlog_counts(queue)
+        assert comment_queue.is_quiet(queue) is False
+    assert counts == (audio["queued"], audio["playing"]) == (1, 1)
+    assert audio["quiet"] is False
+    # The collector's read-only projection and the boundary resolver must agree
+    # about which files are queue items, or diagnostics would explain the wrong
+    # reason a corner is waiting.
+    assert comment_queue.comment_queue_dir(tmp_path) == queue
+
+
 def test_pacman_ab_improvement_reason_codes_are_projected_as_fixed_enum(tmp_path):
     module = load_collector()
     (tmp_path / "corner_improve_pacman4console.json").write_text(json.dumps({
@@ -3087,6 +4700,19 @@ def _ownership(module, root, row):
     return module._collect_hanjuku_predictions(root)["ownership"]
 
 
+def test_hanjuku_prediction_achieved_count_is_projected_as_cleared(tmp_path):
+    """Goal-settled rows have no terminal result; diagnostics still show the count."""
+    module = load_collector()
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2))
+    entry = module._collect_hanjuku_predictions(tmp_path)
+    assert entry["cleared"] == 2 and entry["status"] == "RESOLVED"
+
+    # A terminal result is authoritative when it carries a count.
+    _prediction_round(tmp_path, _round_row(status="RESOLVED", achieved=2,
+                                           result={"cleared": 1}))
+    assert module._collect_hanjuku_predictions(tmp_path)["cleared"] == 1
+
+
 def test_hanjuku_prediction_ownership_reports_the_decisive_record(tmp_path):
     module = load_collector()
     run_name, result_name, progress_name = (
@@ -3154,3 +4780,938 @@ def test_hanjuku_prediction_ownership_is_absent_without_an_owned_round(tmp_path)
     assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)
     _prediction_round(tmp_path, None)
     assert "ownership" not in module._collect_hanjuku_predictions(tmp_path)
+
+
+def test_hanjuku_prediction_health_projects_only_the_bounded_streak(tmp_path):
+    module = load_collector()
+    assert "health" not in module._collect_hanjuku_predictions(tmp_path)
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 7, "last_error": "invalid_state",
+        "last_ok_at": 1000, "body": "DO-NOT-PUBLISH"}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health == {"present": True, "readable": True, "consecutive_errors": 7,
+                      "last_error": "invalid_state", "last_ok_at": 1000}
+    assert "DO-NOT-PUBLISH" not in json.dumps(health)
+
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "consecutive_errors": -3, "last_error": "owner-secret", "last_ok_at": "x"}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["consecutive_errors"] is None
+    assert health["last_error"] is None
+    assert health["last_ok_at"] is None
+
+    (tmp_path / "hanjuku_predictions_health.json").write_text("not-json")
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health == {"present": True, "readable": False, "consecutive_errors": None,
+                      "last_error": None, "last_ok_at": None}
+
+
+def test_hanjuku_prediction_health_rejects_unhashable_and_huge_values(tmp_path):
+    module = load_collector()
+    # Unhashable last_error (array/dict) must not raise TypeError and must project None.
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 3, "last_error": ["invalid_state"],
+        "last_ok_at": 1000}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["last_error"] is None
+    assert health["consecutive_errors"] == 3
+
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 3, "last_error": {"x": "invalid_state"},
+        "last_ok_at": 1000}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["last_error"] is None
+
+    # Huge integer clocks must not raise OverflowError and must project None.
+    huge = 10 ** 400
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": 1, "last_error": "invalid_state",
+        "last_ok_at": huge}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["last_ok_at"] is None
+    assert health["last_error"] == "invalid_state"
+
+    # Huge consecutive_errors must project None (bounded).
+    (tmp_path / "hanjuku_predictions_health.json").write_text(json.dumps({
+        "schema": 1, "consecutive_errors": huge, "last_error": "invalid_state",
+        "last_ok_at": 1000}))
+    health = module._collect_hanjuku_predictions(tmp_path)["health"]
+    assert health["consecutive_errors"] is None
+
+
+def _prediction_memory_module(source):
+    """Execute only the projection's AST with a memory-only filesystem."""
+    import ast
+    import io
+    import math
+    from pathlib import PurePosixPath
+    from types import SimpleNamespace
+
+    nodes = {"/": {"kind": "dir"}, "/memory": {"kind": "dir"},
+             "/memory/runtimes": {"kind": "dir"},
+             "/memory/runtimes/rt-1": {"kind": "dir"}}
+    handles, reads, opens = {}, [], []
+
+    def resolve(path):
+        path = str(path)
+        for prefix, node in sorted(nodes.items(), key=lambda item: -len(item[0])):
+            if node["kind"] == "symlink" and (path == prefix or path.startswith(prefix + "/")):
+                path = node["target"] + path[len(prefix):]
+                break
+        return nodes.get(path), path
+
+    class MemoryPath:
+        def __init__(self, path):
+            self.path = path.path if isinstance(path, MemoryPath) else PurePosixPath(path)
+
+        def __str__(self):
+            return str(self.path)
+
+        def __truediv__(self, name):
+            return MemoryPath(self.path / name)
+
+        @property
+        def parent(self):
+            return MemoryPath(self.path.parent)
+
+        @property
+        def parents(self):
+            return tuple(MemoryPath(parent) for parent in self.path.parents)
+
+        @property
+        def anchor(self):
+            return self.path.anchor
+
+        @property
+        def parts(self):
+            return self.path.parts
+
+        @property
+        def name(self):
+            return self.path.name
+
+        def is_symlink(self):
+            return nodes.get(str(self), {}).get("kind") == "symlink"
+
+        def is_dir(self):
+            node, _ = resolve(self)
+            return bool(node and node["kind"] == "dir")
+
+        def is_file(self):
+            node, _ = resolve(self)
+            return bool(node and node["kind"] == "file")
+
+        def stat(self):
+            node, _ = resolve(self)
+            if node is None:
+                raise FileNotFoundError
+            return SimpleNamespace(st_size=node.get("reported_size", len(node.get("raw", b""))))
+
+        def read_text(self, encoding):
+            node, path = resolve(self)
+            reads.append({"path": path, "limit": None, "bytes": len(node["raw"])})
+            return node["raw"].decode(encoding)
+
+    def memory_open(path, flags, *, dir_fd=None):
+        parent = handles[dir_fd][0] if dir_fd is not None else "/"
+        absolute = str(PurePosixPath(parent) / str(path))
+        node = nodes.get(absolute)
+        opens.append({"path": absolute, "flags": flags})
+        if node is None:
+            raise FileNotFoundError
+        if node["kind"] == "symlink" and flags & os.O_NOFOLLOW:
+            raise OSError("refused link")
+        if flags & os.O_DIRECTORY and node["kind"] != "dir":
+            raise NotADirectoryError
+        fd = max([100, *handles]) + 1
+        handles[fd] = (absolute, node)
+        return fd
+
+    class MemoryReader(io.BytesIO):
+        def __init__(self, fd):
+            self.path, node = handles[fd]
+            super().__init__(node.get("raw", b""))
+
+        def read(self, limit=-1):
+            data = super().read(limit)
+            reads.append({"path": self.path, "limit": limit, "bytes": len(data)})
+            return data
+
+    fake_os = SimpleNamespace(
+        O_RDONLY=os.O_RDONLY, O_DIRECTORY=os.O_DIRECTORY, O_NOFOLLOW=os.O_NOFOLLOW,
+        O_CLOEXEC=getattr(os, "O_CLOEXEC", 0), O_NONBLOCK=os.O_NONBLOCK,
+        open=memory_open, close=lambda fd: handles.pop(fd),
+        fstat=lambda fd: SimpleNamespace(st_mode={"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                                                 "fifo": stat.S_IFIFO}.get(handles[fd][1]["kind"], 0)),
+        fdopen=lambda fd, mode, closefd: MemoryReader(fd))
+    names = {"_supervisor_directory", "_supervisor_read", "_bounded_prediction_record",
+             "_collect_hanjuku_prediction_ownership", "_finite_number", "_is_digest"}
+    constants = {"_HANJUKU_PREDICTION_RECORD_LIMIT", "_HANJUKU_PREDICTION_IDENTITY_KEYS",
+                 "_HANJUKU_PREDICTION_TERMINAL_REASONS", "_HANJUKU_PREDICTION_BLOCKERS"}
+    selected = [node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name in names
+                or isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+    namespace = {"Path": MemoryPath, "json": json, "math": math, "stat": stat,
+                 "os": fake_os, "time": SimpleNamespace(time=lambda: 1000.0)}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "<memory-prediction-projection>", "exec"), namespace)
+    return SimpleNamespace(module=namespace, nodes=nodes, reads=reads, opens=opens, handles=handles,
+                           path=MemoryPath)
+
+
+def test_prediction_record_rejects_each_symlink_component_without_reading():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    record = "/memory/runtimes/rt-1/hanjuku_run.json"
+    for link in ("/memory/runtimes", "/memory/runtimes/rt-1", record):
+        memory = _prediction_memory_module(source)
+        memory.nodes[record] = {"kind": "file", "raw": b'{"safe":true}'}
+        memory.nodes[link] = {"kind": "symlink", "target": "/outside"}
+        memory.nodes["/outside"] = {"kind": "file", "raw": b'{"private":true}'}
+        memory.nodes["/outside/rt-1/hanjuku_run.json"] = memory.nodes[record]
+        memory.nodes["/outside/hanjuku_run.json"] = {"kind": "file", "raw": b'{"private":true}'}
+        value, _, readable = memory.module["_bounded_prediction_record"](memory.path(record))
+        assert value is None and readable is False
+        assert memory.reads == [] and memory.handles == {}
+
+
+def test_prediction_record_caps_the_actual_read_even_if_size_changes():
+    memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+    record = "/memory/runtimes/rt-1/hanjuku_run.json"
+    memory.nodes[record] = {"kind": "file", "reported_size": 128,
+                            "raw": b'{"safe":true}' + b" " * 18000}
+    assert memory.module["_bounded_prediction_record"](memory.path(record)) == (None, True, False)
+    assert len(memory.reads) == 1
+    assert memory.reads[0]["limit"] == 16385 and memory.reads[0]["bytes"] == 16385
+    assert memory.handles == {}
+
+
+def test_prediction_record_memory_controls_preserve_bounds_and_cleanup():
+    record = "/memory/runtimes/rt-1/hanjuku_run.json"
+    for raw, expected in ((b'{"safe":true}', ({"safe": True}, True, True)),
+                          (b"{}" + b" " * 16382, ({}, True, True)),
+                          (b"{}" + b" " * 16383, (None, True, False)),
+                          (b"not-json", (None, True, False)),
+                          (b"[]", (None, True, False)),
+                          (b"\xff", (None, True, False))):
+        memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+        memory.nodes[record] = {"kind": "file", "raw": raw}
+        assert memory.module["_bounded_prediction_record"](memory.path(record)) == expected
+        assert memory.handles == {}
+        assert all(read["limit"] == 16385 and read["bytes"] <= 16385 for read in memory.reads)
+    for kind in (None, "dir", "fifo"):
+        memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+        if kind is not None:
+            memory.nodes[record] = {"kind": kind}
+        value, _, readable = memory.module["_bounded_prediction_record"](memory.path(record))
+        assert value is None and readable is False
+        assert memory.reads == [] and memory.handles == {}
+
+
+def test_prediction_ownership_rejects_a_symlinked_runtime_parent():
+    memory = _prediction_memory_module(COLLECTOR.read_text(encoding="utf-8"))
+    memory.nodes["/memory/runtimes"] = {"kind": "symlink", "target": "/outside"}
+    memory.nodes["/outside/rt-1"] = {"kind": "dir"}
+    memory.nodes["/outside/rt-1/hanjuku_run.json"] = {
+        "kind": "file", "raw": json.dumps({**_HANJUKU_ROUND_IDENTITY,
+            "terminal_reason": "game_over", "frame_sha256": "a" * 64}).encode()}
+    result = memory.module["_collect_hanjuku_prediction_ownership"](
+        "/memory", {"next_poll_at": 1300}, dict(_HANJUKU_ROUND_IDENTITY))
+    assert result["blocker"] == "runtime-missing" and result["runtime_present"] is False
+    assert memory.reads == [] and memory.handles == {}
+
+
+def _presentation_memory_module(source):
+    """Reuse the dictionary-backed FD harness; never create state fixtures."""
+    import ast
+    import io
+    import posixpath
+    from types import SimpleNamespace
+
+    memory = _prediction_memory_module(source)
+    nodes, handles, reads = memory.nodes, memory.handles, memory.reads
+    stats = []
+
+    def resolve(path):
+        path = posixpath.normpath(str(path))
+        for prefix, node in sorted(nodes.items(), key=lambda item: len(item[0])):
+            if node["kind"] == "symlink" and (path == prefix or path.startswith(prefix + "/")):
+                path = posixpath.normpath(node["target"] + path[len(prefix):])
+                break
+        node = nodes.get(path)
+        if node is None:
+            raise FileNotFoundError
+        return path, node
+
+    class MemoryPath(memory.path):
+        def __truediv__(self, name):
+            return MemoryPath(self.path / name)
+
+        def is_file(self):
+            try:
+                return resolve(self)[1]["kind"] == "file"
+            except FileNotFoundError:
+                return False
+
+        def read_text(self, encoding="utf-8"):
+            path, node = resolve(self)
+            if node["kind"] != "file":
+                raise OSError("synthetic nonregular text source")
+            raw = node["raw"]
+            reads.append({"path": path, "limit": None, "bytes": len(raw)})
+            return raw.decode(encoding)
+
+        def stat(self):
+            path, node = resolve(self)
+            stats.append({"kind": "path_stat", "path": path})
+            return SimpleNamespace(st_mtime=node.get("path_mtime", 1))
+
+    class MemoryReader(io.StringIO):
+        """Latin-1 backing preserves every byte for a fake binary FD read."""
+        def __init__(self, path, node, binary=False):
+            self.path, self.binary = path, binary
+            raw = node.get("raw", b"")
+            super().__init__(raw.decode("latin-1" if binary else "utf-8", errors="replace"))
+            self.read_error = node.get("read_error")
+
+        def read(self, limit=-1):
+            if self.read_error:
+                raise OSError("synthetic read error")
+            value = super().read(limit)
+            if self.binary:
+                value = value.encode("latin-1")
+            reads.append({"path": self.path, "limit": limit,
+                          "bytes": len(value) if self.binary else len(value.encode())})
+            return value
+
+    def fstat(fd):
+        path, node = handles[fd]
+        stats.append({"kind": "fstat", "path": path, "fd": fd})
+        if node.get("fstat_error"):
+            raise OSError("synthetic stat error")
+        return SimpleNamespace(
+            st_mode={"file": stat.S_IFREG, "dir": stat.S_IFDIR,
+                     "fifo": stat.S_IFIFO}.get(node["kind"], 0),
+            st_size=node.get("reported_size", len(node.get("raw", b""))),
+            st_mtime=node.get("fd_mtime", 999))
+
+    def fdopen(fd, mode, closefd=False):
+        path, node = handles[fd]
+        return MemoryReader(path, node, binary=True)
+
+    def text_open(path, mode, encoding=None, errors=None):
+        path, node = resolve(path)
+        return MemoryReader(path, node)
+
+    memory.module.update(Path=MemoryPath, open=text_open, re=__import__("re"))
+    memory.module["os"].fstat = fstat
+    memory.module["os"].fdopen = fdopen
+    names = {"_presentation_record_nofollow", "_collect_runtime_presentation",
+             "_read_text_capped", "_load_state_file"}
+    constants = {"_PRESENTATION_STATUSES", "_RUNTIME_ID_RE"}
+    selected = [node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name in names
+                or isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in constants for target in node.targets)]
+    exec(compile(ast.Module(body=selected, type_ignores=[]),
+                 "<memory-presentation-projection>", "exec"), memory.module)
+    memory.stats, memory.path = stats, MemoryPath
+    return memory
+
+
+def _presentation_memory_fixture(source, runtime_id="g7-abcdef12"):
+    memory = _presentation_memory_module(source)
+    record = "/memory/runtimes/" + runtime_id + "/presentation.json"
+    memory.nodes["/memory/runtimes/" + runtime_id] = {"kind": "dir"}
+    memory.nodes["/memory/game_switch.json"] = {
+        "kind": "file", "raw": json.dumps({"active": {"runtime_id": runtime_id}}).encode()}
+    memory.nodes[record] = {"kind": "file", "raw": json.dumps({
+        "status": "ready", "display": ":99", "window": "123456789012",
+        "width": 640, "height": 480, "pid": 1234,
+        "argv": ["DO-NOT-PUBLISH"], "private": "DO-NOT-PUBLISH"}).encode(),
+        "fd_mtime": 999, "path_mtime": 1}
+    return memory, record
+
+
+def _presentation_memory_collect(memory):
+    result = memory.module["_collect_runtime_presentation"]("/memory", 1000)
+    assert memory.handles == {}
+    assert "DO-NOT-PUBLISH" not in json.dumps(result)
+    # The shared fake rejects link/nonregular nodes on other grounds too.
+    # Check flags explicitly so removing a safety flag cannot stay green.
+    for call in memory.opens:
+        assert call["flags"] & os.O_NOFOLLOW
+        if not call["flags"] & os.O_DIRECTORY:
+            assert call["flags"] & os.O_NONBLOCK
+    return result
+
+
+def test_presentation_memory_retains_status_geometry_and_same_fd_mtime():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for status in ("starting", "ready", "presentation_failed", "cleanup_failed", "stopped"):
+        memory, record = _presentation_memory_fixture(source)
+        value = json.loads(memory.nodes[record]["raw"])
+        value["status"] = status
+        memory.nodes[record]["raw"] = json.dumps(value).encode()
+        assert _presentation_memory_collect(memory) == {
+            "present": True, "readable": True, "reason": "ok",
+            "active_runtime": True,
+            "status": status, "display": ":99", "window": "123456789012",
+            "width": 640, "height": 480, "age_sec": 1}
+        assert all(call["kind"] == "fstat" for call in memory.stats)
+        assert all(call["limit"] == 65537 for call in memory.reads)
+
+
+def test_presentation_memory_rejects_dot_components_before_record_lookup():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for runtime_id, outside in ((".", "/memory/runtimes/presentation.json"),
+                                ("..", "/memory/presentation.json")):
+        memory, record = _presentation_memory_fixture(source, runtime_id)
+        memory.nodes[outside] = memory.nodes[record]
+        result = _presentation_memory_collect(memory)
+        assert result["active_runtime"] is False and result["readable"] is False
+        assert [call["path"] for call in memory.reads] == ["/memory/game_switch.json"]
+        assert all(call["path"] != outside for call in memory.opens)
+
+
+def test_presentation_memory_rejects_each_parent_and_leaf_symlink():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    record = "/memory/runtimes/g7-abcdef12/presentation.json"
+    for link in ("/memory", "/memory/game_switch.json", "/memory/runtimes",
+                 "/memory/runtimes/g7-abcdef12", record):
+        memory, _ = _presentation_memory_fixture(source)
+        memory.nodes["/outside"] = dict(memory.nodes[link])
+        for name, node in tuple(memory.nodes.items()):
+            if name.startswith(link + "/"):
+                memory.nodes["/outside" + name[len(link):]] = dict(node)
+        memory.nodes[link] = {"kind": "symlink", "target": "/outside"}
+        result = _presentation_memory_collect(memory)
+        assert result["readable"] is False and result["status"] is None
+        assert all(not call["path"].startswith("/outside") for call in memory.reads)
+        assert len(memory.reads) == (0 if link in ("/memory", "/memory/game_switch.json") else 1)
+
+
+def test_presentation_memory_caps_actual_canonical_and_record_reads():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        memory, record = _presentation_memory_fixture(source)
+        path = "/memory/game_switch.json" if target == "canonical" else record
+        node = memory.nodes[path]
+        node.update(raw=node["raw"] + b" " * (1024 * 1024), reported_size=1)
+        result = _presentation_memory_collect(memory)
+        assert result["readable"] is False
+        assert result["active_runtime"] is (target == "presentation")
+        assert memory.reads[-1] == {"path": path, "limit": 65537, "bytes": 65537}
+
+
+def test_presentation_memory_accepts_exact_byte_limit_and_rejects_one_more():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        for size in (65536, 65537):
+            memory, record = _presentation_memory_fixture(source)
+            path = "/memory/game_switch.json" if target == "canonical" else record
+            raw = memory.nodes[path]["raw"]
+            memory.nodes[path]["raw"] = raw + b" " * (size - len(raw))
+            result = _presentation_memory_collect(memory)
+            assert result["readable"] is (size == 65536)
+            assert all(call["limit"] == 65537 and call["bytes"] <= 65537 for call in memory.reads)
+
+
+def test_presentation_memory_fails_closed_for_bad_or_nonregular_records():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for target in ("canonical", "presentation"):
+        for replacement in (None, {"kind": "dir"}, {"kind": "fifo"},
+                            {"kind": "file", "raw": b"not-json"},
+                            {"kind": "file", "raw": b"[]"},
+                            {"kind": "file", "raw": b"\xff"},
+                            {"kind": "file", "raw": b"{}", "read_error": True},
+                            {"kind": "file", "raw": b"{}", "fstat_error": True},
+                            {"kind": "file", "raw": b"[" * 2000 + b"]" * 2000}):
+            memory, record = _presentation_memory_fixture(source)
+            path = "/memory/game_switch.json" if target == "canonical" else record
+            if replacement is None:
+                del memory.nodes[path]
+            else:
+                memory.nodes[path] = dict(replacement)
+            result = _presentation_memory_collect(memory)
+            assert result["readable"] is False and result["status"] is None
+            if replacement is None and target == "presentation":
+                assert result["present"] is False
+            if replacement and replacement["kind"] in ("dir", "fifo"):
+                assert all(call["path"] != path for call in memory.reads)
+
+
+def test_presentation_memory_preserves_field_bounds_and_public_shape():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for state in ({"status": [], "display": ":1234", "window": "a",
+                   "width": True, "height": 4097, "secret": "DO-NOT-PUBLISH"},
+                  {"status": "DO-NOT-PUBLISH", "display": ":-1", "window": "1" * 13,
+                   "width": 0, "height": -1}):
+        memory, record = _presentation_memory_fixture(source)
+        memory.nodes[record]["raw"] = json.dumps(state).encode()
+        result = _presentation_memory_collect(memory)
+        assert result == {"present": True, "readable": True,
+                          "reason": "status_unknown", "active_runtime": True,
+                          "status": None, "display": None, "window": None,
+                          "width": None, "height": None, "age_sec": 1}
+
+
+def test_presentation_memory_preserves_age_bounds():
+    source = COLLECTOR.read_text(encoding="utf-8")
+    for mtime, expected in ((-1, None), (0, 1000), (999, 1), (1001, 0),
+                             (1000 + 86400, 0), (1001 + 86400, None)):
+        memory, record = _presentation_memory_fixture(source)
+        memory.nodes[record]["fd_mtime"] = mtime
+        assert _presentation_memory_collect(memory)["age_sec"] == expected
+
+
+def test_tsuitate_review_projection_is_bounded():
+    # The 衝立将棋 感想戦 projects where its facts came from, whether the model
+    # spoke, and the move count. The narration text, the opponent's name, the
+    # move list and the board must never be published.
+    module=load_collector()
+    output=module._project_corner_state({
+        'status':'completed','game':'tsuitate-view',
+        'review':{'source':'replay','kind':'ai','failure':'verify-failed','boundary':'quiet',
+                  'model_failure':'gate','moves':50,'text':'DO-NOT-PUBLISH',
+                  'opponent':'someone','moves_list':['5g5h']},
+        'overlay_announcements':{'sent':1,'failed':0,'skipped':0},
+        'narration':{'enqueued':1,'delivery_failed':0,'skipped':0}})
+    assert output['review']=={'source':'replay','kind':'ai','failure':'verify-failed',
+                             'boundary':'quiet','model_failure':'gate','moves':50}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(output)
+    assert 'someone' not in json.dumps(output)
+    assert '5g5h' not in json.dumps(output)
+
+    assert module._project_corner_state({'status':'idle'})['review'] is None
+    assert module._project_corner_state(
+        {'status':'completed','review':{'source':'SECRET','kind':'x','failure':'boom',
+                                       'boundary':'later','model_failure':'boom','moves':'many'}}
+    )['review']=={'source':None,'kind':None,'failure':None,'boundary':None,
+                  'model_failure':None,'moves':None}
+
+
+def test_pulse_attribution_separates_players_and_survives_the_budget():
+    # The AV projection must answer "who owns this sink input" even when the
+    # per-stream detail is dropped by the size budget: media.role is usually
+    # unset, so by_player is the usable axis.
+    module = load_collector()
+    _fixed_pulse_listing(module)
+    pulse = module._collect_pulse_sink_inputs()
+    attribution = pulse['attribution']
+    assert attribution['by_player']['bridge-ffplay'] == 1
+    assert attribution['by_player']['speech-worker'] == 1
+    assert attribution['by_player']['unknown'] == 0
+    assert attribution['by_role']['music'] == 1
+    assert attribution['by_role']['unattributed'] == 1
+
+    payload = {
+        'pulse_sink_inputs': pulse,
+        'nethack_history': {
+            'daily': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+            'completed_runs': {'records': [], 'omitted_records': 0, 'output_omitted': False},
+        },
+        'ai': {'recent_events': ['x'], 'recent_events_omitted': False,
+               'anomalous_components': {'a': 1}},
+        'workers': {'details': {'w': 1}},
+        'soren91_drop_profile': {'profileStatus': 'unavailable', 'groups': [],
+                                 'games': [], 'slowest': []},
+    }
+    with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
+        module._diagnostics_budget(payload)
+    kept = payload['pulse_sink_inputs']
+    assert kept['streams'] == [] and kept['output_omitted'] is True
+    assert kept['attribution'] == attribution
+
+
+def test_pulse_attribution_marks_streams_without_a_player_as_unknown():
+    module = load_collector()
+    listing = 'Sink Input #9\n\tSink: 0\n\tMute: no\n'
+    _fixed_pulse_listing(module, listing=listing, short='0\tsoren_null\n')
+    output = module._collect_pulse_sink_inputs()
+    assert output['attribution']['by_player']['unknown'] == 1
+    assert output['attribution']['by_role'] == {'unattributed': 1}
+
+
+def _write_external_video(state_dir, now, *, rid, mtime=None, audio=True):
+    (state_dir / 'external-video' / rid).mkdir(parents=True)
+    (state_dir / 'external_video_receiver.json').write_text(json.dumps({
+        'schema_version': 1, 'receiver_id': rid, 'expires_at': now + 60,
+        'status': 'receiving', 'audio_present': audio, 'pid': 1234,
+        'start_ticks': 99,
+    }))
+    frame = state_dir / 'external-video' / rid / 'current.png'
+    if mtime is not None:
+        frame.write_bytes(b'\x89PNG')
+        os.utime(frame, (mtime, mtime))
+    return frame
+
+
+def test_external_video_projects_frame_age_and_bounds_it(tmp_path):
+    module = load_collector()
+    now = 100000
+    rid = '11111111-1111-1111-1111-111111111111'
+    _write_external_video(tmp_path, now, rid=rid, mtime=now - 5)
+    with mock.patch.object(module, '_external_video_process_alive', return_value=True):
+        output = module._collect_external_video(tmp_path, now)
+    assert output['frame_fresh'] is True
+    assert output['frame_age_sec'] == 5
+
+    frame = tmp_path / 'external-video' / rid / 'current.png'
+    os.utime(frame, (now - 30 * 86400, now - 30 * 86400))
+    with mock.patch.object(module, '_external_video_process_alive', return_value=True):
+        stale = module._collect_external_video(tmp_path, now)
+    # A receiver that has been stopped for a month stays a small bounded int.
+    assert stale['frame_age_sec'] == module._REG.EXTERNAL_VIDEO['frame_age_max_sec']
+    assert stale['frame_fresh'] is False
+
+
+def test_external_video_frame_age_is_null_when_the_frame_is_missing(tmp_path):
+    module = load_collector()
+    now = 100000
+    rid = '22222222-2222-2222-2222-222222222222'
+    _write_external_video(tmp_path, now, rid=rid, mtime=None)
+    with mock.patch.object(module, '_external_video_process_alive', return_value=True):
+        output = module._collect_external_video(tmp_path, now)
+    # Never 0: a missing frame is unknown, not "just captured".
+    assert output['frame_age_sec'] is None
+    assert output['frame_fresh'] is False
+
+
+def test_runtime_presentation_always_reports_a_reason(tmp_path):
+    module = load_collector()
+    state = tmp_path / 'state'
+    state.mkdir()
+
+    # No game_switch.json at all.
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'active_unreadable'
+
+    (state / 'game_switch.json').write_text(json.dumps({'active': None}))
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'no_active_runtime'
+
+    (state / 'game_switch.json').write_text(json.dumps({'active': {'runtime_id': '../x'}}))
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'runtime_id_invalid'
+
+    (state / 'game_switch.json').write_text(json.dumps({'active': {'runtime_id': 'rt-1'}}))
+    missing = module._collect_runtime_presentation(state, 100)
+    assert missing['reason'] == 'record_absent' and missing['present'] is False
+
+    (state / 'runtimes' / 'rt-1').mkdir(parents=True)
+    (state / 'runtimes' / 'rt-1' / 'presentation.json').write_text('{not json')
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'record_unreadable'
+
+    (state / 'runtimes' / 'rt-1' / 'presentation.json').write_text(json.dumps({'status': 'mystery'}))
+    assert module._collect_runtime_presentation(state, 100)['reason'] == 'status_unknown'
+
+    (state / 'runtimes' / 'rt-1' / 'presentation.json').write_text(json.dumps({'status': 'ready'}))
+    ok = module._collect_runtime_presentation(state, 100)
+    assert ok['reason'] == 'ok' and ok['readable'] is True
+
+
+def _write_encoder_sources(tmp_path, now, *, twica=None, direct=None):
+    state_dir = tmp_path / 'state'
+    soren = tmp_path / 'soren'
+    if twica is not None:
+        path = state_dir / 'twica-common' / 'pipeline.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(twica))
+        os.utime(path, (now - 1, now - 1))
+    if direct is not None:
+        path = soren / 'tmp' / 'state' / 'direct_stream' / 'status.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(direct))
+        os.utime(path, (now - 1, now - 1))
+    return state_dir, soren
+
+
+def test_encoder_prefers_a_fresh_twica_heartbeat(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        twica={'schema': 1, 'ready': True, 'fps': 29.97, 'frames_sent': 10,
+               'frame_state': 'open'},
+        direct={'state': 'running', 'running': True, 'frame': 5, 'fps': 30,
+                'out_time_us': 5_000_000},
+    )
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['source'] == 'twica_common'
+    assert output['state'] == 'running' and output['ready'] is True
+    assert output['frames_sent'] == 10 and output['fps'] == 29.97
+    assert output['progress_age_sec'] == 1 and output['reason'] == 'ok'
+
+
+def test_encoder_falls_back_to_direct_stream_when_twica_is_stale(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        twica={'schema': 1, 'ready': True, 'frames_sent': 10},
+        direct={'state': 'running', 'running': True, 'frame': 5, 'fps': 30,
+                'out_time_us': 5_000_000},
+    )
+    old = state_dir / 'twica-common' / 'pipeline.json'
+    os.utime(old, (now - 600, now - 600))
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['source'] == 'direct_stream'
+    assert output['frames_sent'] == 5 and output['out_time_sec'] == 5
+    assert output['reason'] == 'ok'
+
+
+def test_encoder_reports_stale_instead_of_a_healthy_encoder(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        direct={'state': 'running', 'running': True, 'frame': 5},
+    )
+    path = soren / 'tmp' / 'state' / 'direct_stream' / 'status.json'
+    os.utime(path, (now - 600, now - 600))
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['present'] is True and output['reason'] == 'stale'
+    assert output['progress_age_sec'] == 600
+
+
+def test_encoder_tolerates_a_malformed_state_value(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        direct={'state': ['DO-NOT-PUBLISH'], 'running': True, 'frame': 1},
+    )
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['state'] == 'running' and output['frames_sent'] == 1
+
+
+def test_encoder_rejects_a_bad_record_and_reports_absence(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now, twica={'schema': 2, 'ready': True})
+    invalid = module._collect_encoder(state_dir, soren, now)
+    assert invalid['readable'] is False and invalid['reason'] == 'invalid_schema'
+
+    empty = module._collect_encoder(tmp_path / 'none', tmp_path / 'none', now)
+    assert empty['source'] == 'none' and empty['reason'] == 'absent'
+
+
+def test_encoder_never_leaks_stream_configuration_or_channel(tmp_path):
+    module = load_collector()
+    now = 200000
+    state_dir, soren = _write_encoder_sources(
+        tmp_path, now,
+        direct={'state': 'running', 'running': True, 'frame': 5,
+                'config': {'rtmp_url': 'rtmp://DO-NOT-PUBLISH',
+                           'stream_key': 'DO-NOT-PUBLISH'},
+                'reconnect': {'twitch_channel': 'DO-NOT-PUBLISH-CHANNEL'},
+                'closed_captions': {'active': False}},
+    )
+    output = module._collect_encoder(state_dir, soren, now)
+    assert output['source'] == 'direct_stream'
+    published = json.dumps(output)
+    assert 'DO-NOT-PUBLISH' not in published
+    assert 'rtmp' not in published and 'channel' not in published
+
+
+def test_encoder_survives_the_size_budget():
+    module = load_collector()
+    payload = {'encoder': {'source': 'twica_common', 'frames_sent': 1},
+               'pulse_sink_inputs': {'streams': [{'x': 1}] * 5, 'attribution': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'soren91_drop_profile': {'profileStatus': 'unavailable'},
+               'ai': {'recent_events': ['x']}, 'workers': {'details': {}}}
+    with mock.patch.object(module, 'MAX_JSON_BYTES', 10):
+        module._diagnostics_budget(payload)
+    assert payload['encoder']['frames_sent'] == 1
+
+
+def test_hanjuku_chart_worker_projection_is_bounded(tmp_path):
+    # #2936: the worker claim record and history tail must project fixed
+    # classifications only -- request ids, digests and prompt text stay in
+    # the runtime.
+    module=load_collector()
+    runtime=tmp_path/'runtimes'/'g1075-1d5f65e9'
+    runtime.mkdir(parents=True)
+    now=int(time.time())
+    (runtime/'hanjuku_chart_worker.json').write_text(json.dumps({
+        'request_id':'SECRET-REQUEST','request_digest':'SECRET-DIGEST',
+        'attempts':2,'rate_limited':1,'at':now-120,
+        'last_status':'invalid_output','last_detail':'invalid source/target castle',
+        'last_at':now-30,'cooldown_until':now+240}),encoding='utf-8')
+    rows=[
+        {'event':'adjust_worker','at':now-400,'status':'invalid_output',
+         'detail':'invalid source/target castle','elapsed_s':171.2,
+         'request_id':'SECRET-REQUEST','prompt':'DO-NOT-PUBLISH'},
+        {'event':'adjust_worker','at':now-200,'status':'generate_failed',
+         'detail':'rc-1:rate_limit','elapsed_s':0.005,'cooldown_s':300,
+         'request_id':'SECRET-REQUEST'},
+        {'event':'adjust_requested','at':now-100,'request_id':'SECRET-REQUEST'},
+        {'event':'not_a_chart_event','at':now-50,'status':'invalid_output'},
+        {'event':'adjust_worker','at':'not-a-time','status':'invalid_output'},
+    ]
+    (runtime/'hanjuku_chart_history.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows)+'\n',encoding='utf-8')
+
+    out=module._project_hanjuku_chart_worker(runtime,now)
+    assert out['present'] is True and out['readable'] is True
+    assert out['attempts']==2 and out['rate_limited']==1
+    assert out['last_status']=='invalid_output'
+    assert out['last_detail']=='invalid source/target castle'
+    assert out['last_age_sec']==30 and out['claim_age_sec']==120
+    assert out['cooldown_remaining_sec']==240
+    assert [e['event'] for e in out['recent']]==[
+        'adjust_worker','adjust_worker','adjust_requested']
+    assert out['recent'][0]['detail']=='invalid source/target castle'
+    assert out['recent'][0]['elapsed_s']==171.2
+    assert out['recent'][1]['status']=='generate_failed'
+    assert out['recent'][1]['cooldown_s']==300
+    rendered=json.dumps(out,ensure_ascii=False)
+    assert 'SECRET-REQUEST' not in rendered and 'SECRET-DIGEST' not in rendered
+    assert 'DO-NOT-PUBLISH' not in rendered
+
+    # Unknown statuses/details and a missing file stay distinguishable.
+    (runtime/'hanjuku_chart_worker.json').write_text(json.dumps({
+        'last_status':'WEIRD','last_detail':'provider said: DO-NOT-PUBLISH ok?',
+        'attempts':'many'}),encoding='utf-8')
+    odd=module._project_hanjuku_chart_worker(runtime,now)
+    assert odd['last_status'] is None and odd['last_detail'] is None
+    assert odd['attempts'] is None
+    empty=module._project_hanjuku_chart_worker(tmp_path/'no-such',now)
+    assert empty=={'present':False,'readable':False}
+
+
+def test_compact_policy_projects_the_measured_boss_cell_without_free_text():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 7, 'cell': [488, 300], 'tick': 4700,
+                      'readings': 2, 'note': 'DO-NOT-PUBLISH'},
+        'captured': ['PRIVATE'],
+    })
+    assert policy['boss_cell'] == {'chapter': 7, 'cell': [488, 300],
+                                   'readings': 2, 'age_ticks': 300}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert 'PRIVATE' not in json.dumps(policy)
+
+
+def test_compact_policy_marks_a_malformed_boss_cell_as_unknown():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 5000, 'active': None,
+        'boss_cell': {'chapter': 'PRIVATE', 'cell': ['a', 'b'], 'tick': 'x',
+                      'readings': -1},
+    })
+    assert policy['boss_cell'] == {'chapter': None, 'cell': None,
+                                   'readings': None, 'age_ticks': None}
+    assert 'PRIVATE' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_cell'] is None
+
+
+def test_compact_policy_projects_the_boss_probe_rotation():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 7, 'tick': 100, 'active': None,
+        'boss_step_probe': {'A:x:M1': 0, 'A:x:M2': 1, 'A:x:M3': 1, 'A:x:M4': 'x'},
+    })
+    assert policy['boss_probes'] == {'steps': 4, 'indices': [0, 1]}
+    assert module._compact_hanjuku_policy({'chapter': 7})['boss_probes'] is None
+
+
+def test_compact_policy_projects_the_month_status_walk_outcome():
+    module = load_collector()
+    policy = module._compact_hanjuku_policy({
+        'chapter': 6, 'tick': 100, 'active': None,
+        'post_month_status_last': {'complete': True, 'failed': None,
+                                   'manifest': {'done': True, 'arrived': ['a', 'b']},
+                                   'carry': ['a', 'b'], 'note': 'DO-NOT-PUBLISH'},
+    })
+    assert policy['post_month'] == {'complete': True, 'failed': None, 'manifest_done': True,
+                                    'manifest_arrived': 2, 'carry': 2}
+    assert 'DO-NOT-PUBLISH' not in json.dumps(policy)
+    assert module._compact_hanjuku_policy({'chapter': 6})['post_month'] is None
+    odd = module._compact_hanjuku_policy({'chapter': 6, 'post_month_status_last': {'failed': 'PRIVATE'}})
+    assert odd['post_month'] == {'complete': False, 'failed': 'PRIVATE', 'manifest_done': False,
+                                 'manifest_arrived': None, 'carry': None}
+
+
+def test_hanjuku_tactical_keeps_its_projection_at_the_hard_ceiling():
+    # #4152: a fat envelope dropped ``hanjuku_tactical`` to a bare
+    # ``output_omitted`` skeleton, so the live-status path could not read
+    # chapter/month/phase at all. The stub now keeps the same small
+    # projections the soft budget keeps.
+    module = load_collector()
+    stub = module._section_omission_stub('hanjuku_tactical', {
+        'policy': {'chapter': 9, 'month': '9-3', 'phase': 'boss',
+                   'active': True, 'no_input_streak': 0},
+        'chart_worker': {'alive': True, 'pid': 1234},
+        'chapter': 9, 'age_sec': 42,
+        'refill': {'huge': 'z' * 1024},
+        'boss': {'order': '4-B1'}})
+    assert stub['status'] == 'output_omitted'
+    assert stub['reason'] == 'hard_ceiling'
+    assert stub['basis'] == 'bot_record'
+    assert stub['policy'] == {'chapter': 9, 'month': '9-3', 'phase': 'boss',
+                            'active': True, 'no_input_streak': 0}
+    assert stub['chart_worker'] == {'alive': True, 'pid': 1234}
+    assert stub['chapter'] == 9
+    assert stub['age_sec'] == 42
+    assert 'refill' not in stub and 'boss' not in stub
+
+
+def test_hanjuku_tactical_stub_tolerates_missing_fields():
+    module = load_collector()
+    stub = module._section_omission_stub(
+        'hanjuku_tactical', {'refill': {'huge': 'z'}})
+    assert stub == {'status': 'output_omitted', 'reason': 'hard_ceiling',
+                    'basis': 'bot_record'}
+
+
+def test_an_inaccessible_docich_root_is_treated_as_absent(tmp_path):
+    # A runner where /home/ubuntu exists but is unreadable made
+    # Path.is_file() raise PermissionError inside the collector and failed
+    # every security-regressions test (2026-11-15).
+    module = load_collector()
+    soren = tmp_path / "soren"
+    (soren / "tmp" / "state").mkdir(parents=True)
+    locked = tmp_path / "locked"
+    (locked / "overlays").mkdir(parents=True)
+    (locked / "overlays" / "direct_broadcast_overlay.html").write_text("x")
+    os.chmod(locked, 0)
+    try:
+        output = module._collect_broadcast_template(soren, docich_root=locked, now=100)
+    finally:
+        os.chmod(locked, stat.S_IRWXU)
+    assert output["resolved_source"] == "soren-fallback"
+    assert output["docich_template"]["present"] is False
+
+
+class BroadcastTemplateProbeTests(unittest.TestCase):
+    def test_an_inaccessible_docich_root_is_treated_as_absent(self):
+        module = load_collector()
+        with tempfile.TemporaryDirectory(prefix="vmops-template-") as tmp:
+            soren = Path(tmp) / "soren"
+            (soren / "tmp" / "state").mkdir(parents=True)
+            locked = Path(tmp) / "locked"
+            (locked / "overlays").mkdir(parents=True)
+            (locked / "overlays" / "direct_broadcast_overlay.html").write_text("x")
+            os.chmod(locked, 0)
+            try:
+                output = module._collect_broadcast_template(soren, docich_root=locked, now=100)
+            finally:
+                os.chmod(locked, stat.S_IRWXU)
+        self.assertEqual(output["resolved_source"], "soren-fallback")
+        self.assertFalse(output["docich_template"]["present"])
+
+
+class BroadcastTemplateProbePermissionTests(unittest.TestCase):
+    def test_probe_metadata_permission_error_is_nonfatal(self):
+        # PR #4307: stat() can succeed while is_file()/is_symlink() still
+        # raise on a protected path; the probe must stay best-effort.
+        module = load_collector()
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.html"
+            template.write_text("test", encoding="utf-8")
+            with mock.patch.object(Path, "is_file",
+                                   side_effect=PermissionError(13, "denied")):
+                result = module._broadcast_template_probe(template, 100)
+        self.assertEqual(result, {"present": False})

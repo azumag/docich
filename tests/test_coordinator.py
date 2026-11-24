@@ -128,6 +128,7 @@ class FakeAdapter:
         self.runtime.events.append("readiness")
 
     def alive(self, deadline, cancel):
+        self._maybe_hang("hang_alive", cancel)
         self._maybe_fail("alive_error")
         return self.runtime.materialized and self.runtime.alive and not self.runtime.cleaned
 
@@ -947,6 +948,63 @@ class TestRuntimeTracking(CoordinatorTestBase):
 
         self.assertIsNone(result)
         self.assertEqual(adapter.runtime.events, events_before)
+
+    def _watchdog_events(self):
+        return [
+            event
+            for event in game_switch.EventLog(self.state_dir).read_all()
+            if event.get("event") == "agent_watchdog"
+        ]
+
+    def test_agent_watchdog_dedupes_identical_probe_outcomes(self):
+        """The 30s probe must not append the same outcome every tick (#2937)."""
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", self.canonical()["active"]["generation"])
+        adapter.agent_alive = None
+
+        for _ in range(3):
+            self.assertIsNone(self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0))
+
+        events = self._watchdog_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["result"], "unknown")
+        self.assertEqual(events[0]["error_code"], "probe_failed")
+
+    def test_agent_watchdog_logs_outcome_changes_and_window_repeats(self):
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", self.canonical()["active"]["generation"])
+        adapter.agent_alive = None
+        self.assertIsNone(self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0))
+
+        adapter.agent_alive = lambda deadline, cancel: True
+        self.assertTrue(self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0))
+        self.assertTrue(self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0))
+
+        events = self._watchdog_events()
+        self.assertEqual(
+            [(e["result"], e["error_code"]) for e in events],
+            [("unknown", "probe_failed"), ("alive", None)],
+        )
+
+        with patch.object(game_switch, "WATCHDOG_PROBE_REPEAT_S", 0.01):
+            time.sleep(0.02)
+            self.assertTrue(self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0))
+
+        events = self._watchdog_events()
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[-1]["result"], "alive")
+        self.assertIn("間引き", events[-1]["detail"])
+
+    def test_agent_watchdog_suppression_state_is_bounded(self):
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", self.canonical()["active"]["generation"])
+        adapter.agent_alive = None
+        self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0)
+        self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0)
+
+        state_path = self.state_dir / game_switch.WATCHDOG_PROBE_STATE_FILE
+        record = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["suppressed"], 1)
 
     def test_candidate_agent_is_never_orphaned_on_rollback(self):
         """Crash after the candidate agent started: the retry's rollback must
@@ -1904,6 +1962,95 @@ class TestNethackPostRestoreIntegration(CoordinatorTestBase):
         self.assertEqual(
             manager.status()["source_evidence_status"], "cleanup_unverified"
         )
+
+
+class TestStaleActiveReclaim(CoordinatorTestBase):
+    """Issue #3521: a canonical ``active`` whose runtime already exited must be
+    reclaimed instead of re-failing the boundary/quiesce path on a stale entry."""
+
+    def _kill_active(self, game="nethack", generation=1):
+        adapter = self.factory.adapter(game, generation)
+        adapter.runtime.alive = False
+        return adapter
+
+    def test_switch_skips_round_boundary_when_active_already_dead(self):
+        from unittest.mock import Mock
+
+        self.coordinator.start("nethack")
+        adapter = self._kill_active()
+        # The dead runtime must never see a boundary request; without the
+        # reclaim this raise would surface as quiesce_failed and leave the
+        # stale active behind.
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.to_game, "robots")
+        adapter.request_round_boundary.assert_not_called()
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "robots")
+
+    def test_stop_skips_boundary_when_active_already_dead(self):
+        from unittest.mock import Mock
+
+        self.coordinator.start("nethack")
+        adapter = self._kill_active()
+        adapter.requires_stop_boundary = True
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        result = self.coordinator.stop()
+        self.assertEqual(result.status, "succeeded")
+        adapter.request_round_boundary.assert_not_called()
+        self.assertIsNone(self.canonical()["active"])
+
+    def test_alive_probe_error_keeps_normal_quiesce_path(self):
+        from unittest.mock import Mock
+
+        # An inconclusive probe (adapter error) is not proof of death: the
+        # boundary path must still run so no live runtime is silently retired.
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", 1)
+        adapter.behavior["alive_error"] = AdapterError("probe inconclusive")
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        # The exact failure code depends on whether the boundary cancel also
+        # fails (quiesce_failed) or succeeds (recovery_required); what the
+        # invariant requires is that the boundary path ran and the stale
+        # active was not silently reclaimed.
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            result.error_code,
+            (game_switch.ERROR_QUIESCE_FAILED, game_switch.ERROR_RECOVERY_REQUIRED),
+        )
+        adapter.request_round_boundary.assert_called_once()
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
+
+    def test_alive_probe_stall_keeps_conservative_boundary_path(self):
+        from unittest.mock import Mock
+
+        # docich#3529: pin the conservative path for a probe that never
+        # answers inside its budget.  A stalled alive() must not be read as
+        # "confirmed dead" -- the boundary path still runs and the stale
+        # active is not silently reclaimed.
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", 1)
+        adapter.behavior["hang_alive"] = threading.Event()
+        adapter.request_round_boundary = Mock(
+            side_effect=AdapterError("Hanjuku exited before terminal evidence")
+        )
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            result.error_code,
+            (game_switch.ERROR_QUIESCE_FAILED, game_switch.ERROR_RECOVERY_REQUIRED),
+        )
+        adapter.request_round_boundary.assert_called_once()
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
 
 
 if __name__ == "__main__":

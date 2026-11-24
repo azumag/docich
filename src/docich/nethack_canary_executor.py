@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .nethack_exploration import NethackExplorer
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
 from .nethack_policy import _visible_creature_contact
@@ -17,6 +18,13 @@ from .nethack_strategist import ProposalEvaluation
 from .nethack_strategy import StrategicRequest
 
 KeyKind = Literal["literal", "special"]
+
+# Severe status conditions a reviewed prayer may answer (same set as the
+# catalog's disabled recovery action).  Prayer is not a free heal: the game
+# may punish it, so the executor only allows it for a visible emergency.
+PRAYER_CONDITIONS = frozenset(
+    {"Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"}
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,7 @@ def canary_execution_plan(
     *,
     current_observation: NethackObservation,
     current_inventory: tuple[VisibleInventoryItem, ...] = (),
+    explorer: NethackExplorer | None = None,
 ) -> CanaryExecutionPlan:
     """Map an already-approved proposal to a tiny canary-only key surface.
 
@@ -147,6 +156,12 @@ def canary_execution_plan(
                 "wear visibly classified armor",
                 (_literal("W"), _literal(item.letter)),
             )
+        if item.category_hint in {"ring", "amulet"}:
+            return CanaryExecutionPlan(
+                True,
+                "put on visibly classified jewellery",
+                (_literal("P"), _literal(item.letter)),
+            )
         return CanaryExecutionPlan(
             False,
             f"equip category {item.category_hint!r} is not allowlisted",
@@ -159,6 +174,17 @@ def canary_execution_plan(
                 "apply visibly classified tool",
                 (_literal("a"), _literal(item.letter)),
             )
+        if item.category_hint == "scroll":
+            return CanaryExecutionPlan(
+                True,
+                "read visibly classified scroll",
+                (_literal("r"), _literal(item.letter)),
+            )
+        if item.category_hint == "wand":
+            return CanaryExecutionPlan(
+                False,
+                "zap needs a direction the proposal does not carry",
+            )
         # In particular, a wand commonly needs a direction which StrategicProposal
         # does not currently carry.  Do not guess one.
         return CanaryExecutionPlan(
@@ -166,13 +192,62 @@ def canary_execution_plan(
             f"use category {item.category_hint!r} needs a richer reviewed executor",
         )
 
-    # Stairs and travel need reliable knowledge of the terrain beneath '@'.
-    # The TTY public observation does not expose that hidden-under-player glyph,
-    # so P5h does not infer it.
-    if proposal.kind in {"ascend", "descend", "move_to_stairs"}:
+    if proposal.kind == "pray":
+        if current_observation.prompt != "none" or current_observation.player is None:
+            return CanaryExecutionPlan(
+                False, "pray needs a fresh non-prompt gameplay frame"
+            )
+        if not PRAYER_CONDITIONS.intersection(current_observation.conditions):
+            return CanaryExecutionPlan(
+                False, "pray has no visible severe status to answer"
+            )
+        if _visible_creature_contact(current_observation):
+            return CanaryExecutionPlan(
+                False, "pray with an adjacent creature is not a reviewed action"
+            )
+        return CanaryExecutionPlan(
+            True,
+            "pray only for a visible severe status",
+            (
+                _literal("#"),
+                _literal("p"),
+                _literal("r"),
+                _literal("a"),
+                _literal("y"),
+                _special("Enter"),
+            ),
+        )
+
+    # Stairs need reliable knowledge of the terrain beneath '@'.  The TTY
+    # public observation does not expose that hidden-under-player glyph, so the
+    # caller must pass the exploration memory that saw the staircase tile.
+    if proposal.kind in {"ascend", "descend"}:
+        if explorer is None:
+            return CanaryExecutionPlan(
+                False,
+                f"{proposal.kind} requires remembered staircase evidence",
+            )
+        standing = (
+            explorer.memory.standing_on_up_stairs(current_observation)
+            if proposal.kind == "ascend"
+            else explorer.memory.standing_on_down_stairs(current_observation)
+        )
+        if current_observation.prompt != "none" or not standing:
+            return CanaryExecutionPlan(
+                False,
+                f"fresh frame does not show the hero on a remembered "
+                f"{'up' if proposal.kind == 'ascend' else 'down'} staircase",
+            )
+        return CanaryExecutionPlan(
+            True,
+            f"{proposal.kind} from a remembered staircase tile",
+            (_literal("<" if proposal.kind == "ascend" else ">"),),
+        )
+
+    if proposal.kind == "move_to_stairs":
         return CanaryExecutionPlan(
             False,
-            f"{proposal.kind} requires terrain evidence not present in the TTY contract",
+            "move_to_stairs needs a reviewed exploration path, not a direct key",
         )
 
     return CanaryExecutionPlan(False, f"unsupported canary proposal kind {proposal.kind!r}")

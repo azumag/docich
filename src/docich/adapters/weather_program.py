@@ -18,7 +18,7 @@ from ..weather import WeatherError
 from ..weather_view import DEFAULT_PORT, read_view
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
-from .program import ProgramViewAdapter, _browser_bin
+from .program import ProgramViewAdapter, broadcast_browser_command
 
 WEATHER_VIEW_NAME = "weather-view"
 WEATHER_STATE_NAME = "weather"
@@ -64,10 +64,6 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
         ]
 
     def _viewer_command(self) -> list[str]:
-        browser = _browser_bin()
-        if not browser:
-            raise AdapterError("chromium が見つかりません (weather HTML view)")
-
         display = self.g.display
         # Weather is a broadcast-native information screen, not a game that
         # needs the shared top/right/bottom status rails.  When the full X11
@@ -84,25 +80,16 @@ class WeatherProgramViewAdapter(ProgramViewAdapter):
 
         browser_width = present_width if present_width > 0 else 960
         browser_height = present_height if present_height > 0 else 540
-        command = [
-            browser,
-            f"--app=http://127.0.0.1:{self.dashboard_port}/broadcast",
-            f"--window-size={browser_width},{browser_height}",
-            "--window-position=0,0",
-            "--lang=ja-JP",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--hide-scrollbars",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            # Chromium has used both the legacy Translate switch and the
-            # TranslateUI feature gate.  Keep both off for this fixed Japanese
-            # broadcast page so a Japanese/English translation tip cannot
-            # cover the upper-right forecast panel.
-            "--disable-translate",
-            "--disable-features=Translate,TranslateUI,BackForwardCache",
-            f"--user-data-dir={self.spec.runtime_dir / 'weather-browser-profile'}",
-        ]
+        # The shared standard keeps the legacy Translate switch and the newer
+        # TranslateUI feature gate both off, so a Japanese/English translation
+        # tip cannot cover the upper-right forecast panel.
+        command = broadcast_browser_command(
+            f"http://127.0.0.1:{self.dashboard_port}/broadcast",
+            window_size=(browser_width, browser_height),
+            window_position=(0, 0),
+            profile_dir=self.spec.runtime_dir / "weather-browser-profile",
+            label="weather HTML view",
+        )
         if present_width > 0 and present_height > 0:
             return [
                 sys.executable,

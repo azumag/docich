@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
@@ -69,13 +70,84 @@ class AgentServiceTest(unittest.TestCase):
         self.assertNotIn("UNRELATED_SECRET", env)
 
     def test_launchd_gui_restart_contract_has_no_secret(self):
-        data = agent.service_plist("/usr/bin/python3", "/service.py", "/config.json")
+        app = Path("/Users/x/Library/Application Support/docich/soren91-agent/Soren91Renderer.app")
+        data = agent.service_plist(app)
         self.assertEqual(data["LimitLoadToSessionType"], "Aqua")
         self.assertTrue(data["RunAtLoad"])
         self.assertTrue(data["KeepAlive"])
         self.assertGreaterEqual(data["ThrottleInterval"], 30)
+        # LaunchServices must own the app identity for the TCC grant.
+        self.assertEqual(data["ProgramArguments"][:2], ["/usr/bin/open", "-W"])
+        self.assertIn(str(app), data["ProgramArguments"])
         self.assertNotIn(self.secret, plistlib.dumps(data).decode())
         self.assertNotIn("EnvironmentVariables", data)
+
+    def test_app_bundle_identity_is_the_tcc_grant_target(self):
+        info = agent.app_info_plist()
+        self.assertEqual(info["CFBundleIdentifier"], "com.docich.soren91-renderer")
+        self.assertEqual(info["CFBundleExecutable"], "Soren91Renderer")
+        self.assertEqual(info["CFBundlePackageType"], "APPL")
+        self.assertTrue(info["LSBackgroundOnly"])
+        self.assertNotIn("LSUIElement", info)
+        self.assertEqual(agent.app_bundle("/root") , Path("/root/Soren91Renderer.app"))
+
+    def test_launcher_source_bakes_absolute_paths_as_c_literals(self):
+        source = agent.launcher_source("/usr/bin/python3", "/srv/agent/service.py",
+                                       "/srv/agent/config.json")
+        self.assertIn('"/usr/bin/python3"', source)
+        self.assertIn('"/srv/agent/service.py"', source)
+        self.assertIn('"/srv/agent/config.json"', source)
+        # The launcher must fork, not exec, to keep the app as responsible.
+        self.assertIn("fork()", source)
+        self.assertIn("waitpid(", source)
+        self.assertNotIn("execve(", source)
+        self.assertIn('"run"', source)
+        # bootout stops `open`; the app must stop its child on SIGTERM itself.
+        self.assertIn("sigaction(SIGTERM", source)
+        self.assertIn("kill((pid_t)child_pid, SIGTERM)", source)
+
+    def test_c_string_escapes_and_rejects_relative_paths(self):
+        self.assertEqual(agent._c_string('/a"b\\c'), '"/a\\"b\\\\c"')
+        self.assertEqual(agent._c_string("/a/ゆ"), '"/a/\\343\\202\\206"')
+        for bad in ("relative/path", "", "/a\x00b"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                agent._c_string(bad)
+
+    def test_build_app_is_darwin_only(self):
+        with patch.object(agent.sys, "platform", "linux"):
+            with self.assertRaisesRegex(ValueError, "macos-required"):
+                agent.build_app(self.root, Path("/usr/bin/python3"), Path("/s.py"),
+                                Path("/c.json"))
+
+    def test_build_app_rejects_interpreter_on_external_volume(self):
+        with patch.object(agent.sys, "platform", "darwin"), \
+             patch.object(agent, "CLANG", "/bin/sh"), \
+             patch.object(agent, "CODESIGN", "/bin/sh"):
+            with self.assertRaisesRegex(ValueError, "removable-volume"):
+                agent.build_app(self.root, Path("/Volumes/ext/python3"), Path("/s.py"),
+                                Path("/c.json"))
+
+    @unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/clang").is_file(),
+                         "macOS toolchain required")
+    def test_build_app_compiles_and_signs_the_launcher(self):
+        root = self.root / "install"
+        root.mkdir()
+        script = root / "service.py"
+        script.write_text("# fixture\n")
+        config = root / "config.json"
+        config.write_text("{}\n")
+        python = Path("/usr/bin/python3")
+        if not python.is_file():
+            self.skipTest("system python3 required")
+        app = agent.build_app(root, python, script, config)
+        binary = app / "Contents/MacOS/Soren91Renderer"
+        self.assertTrue(binary.is_file())
+        self.assertEqual(binary.stat().st_mode & 0o111, 0o111)
+        self.assertIn(binary.read_bytes()[:4], (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe"))
+        detail = subprocess.run(["/usr/bin/codesign", "-dv", "--verbose=4", str(app)],
+                                capture_output=True, text=True, check=True)
+        self.assertIn("Identifier=" + agent.APP_BUNDLE_ID, detail.stdout + detail.stderr)
+        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(app)], check=True)
 
     def test_status_is_authenticated_and_projects_only_fixed_fields(self):
         response = MagicMock()
@@ -103,8 +175,16 @@ class AgentServiceTest(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
 
     def test_install_uses_gui_domain_and_keeps_credentials_out_of_artifacts(self):
+        app = self.root / "built" / "Soren91Renderer.app"
+
+        def fake_build(root, python, script, config):
+            app.parent.mkdir(parents=True, exist_ok=True)
+            app.mkdir()
+            return app
+
         with patch.object(agent.sys, "platform", "darwin"), \
              patch.object(agent.Path, "home", return_value=self.root), \
+             patch.object(agent, "build_app", side_effect=fake_build) as build, \
              patch.object(agent.subprocess, "run", side_effect=[
                  subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1),
                  subprocess.CompletedProcess([], 0)]) as run, \
@@ -112,7 +192,12 @@ class AgentServiceTest(unittest.TestCase):
             sock.return_value.__enter__.return_value.connect_ex.return_value = 1
             agent.install(self.config)
         root, plist = agent.paths(self.root)
+        build.assert_called_once()
+        self.assertEqual(build.call_args.args[0], root)
         self.assertEqual(run.call_args.args[0][:3], ["launchctl", "bootstrap", "gui/" + str(os.getuid())])
+        data = plistlib.loads(plist.read_bytes())
+        self.assertEqual(data["ProgramArguments"][:2], ["/usr/bin/open", "-W"])
+        self.assertIn(str(app), data["ProgramArguments"])
         for p in [root / "config.json", plist]:
             self.assertNotIn(self.secret, p.read_text())
             self.assertEqual(p.stat().st_mode & 0o777, 0o600)

@@ -1,0 +1,34 @@
+[Unit]
+Description=docich loopback translation adapter for native closed captions (#2894)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+# 設定は起動時に読む。値(キー)は unit や Actions 出力に書かない（AGENTS.md §3, §9）。
+# 配置時に owner 管理の env ファイルへ向ける。パスは VM 上の実配置を read-only で確認済み（README 参照）。
+EnvironmentFile=-/home/ubuntu/soren/.env
+# 配置先の docich src を import パスに置く（-I は PYTHONPATH を無視するため使わない）。
+Environment=PYTHONPATH=/home/ubuntu/docich/src
+ExecStart=/usr/bin/python3 -m docich.cc_translation_adapter
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# loopback の待受と upstream への HTTPS 接続のみ許可する。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+# 翻訳は字幕の補助経路。他の配信プロセスの CPU を奪わないよう通常優先度・上限付き。
+CPUQuota=20%
+
+[Install]
+WantedBy=multi-user.target

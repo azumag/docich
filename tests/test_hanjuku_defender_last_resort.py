@@ -25,7 +25,10 @@ def test_g510_trevis_losing_no_resource_defense_selects_last_chance_once():
     cur = mem['battle']
     assert cur['okunote_last_resort_selected']
     assert any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
-    # A repeat/fading parent cannot enter another irreversible lottery.
+    # A repeat/fading parent cannot enter another irreversible lottery, but
+    # v366 resends an undelivered A boundedly while the row stays readable.
+    for _ in range(4):
+        assert p.okunote_step(menu(), mem) == [p.pad('a')]
     assert p.okunote_step(menu(), mem) == [p.pad('b')]
     assert sum(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records']) == 1
 
@@ -40,8 +43,8 @@ def test_gray_rows_are_scrolled_before_confirming_last_resort():
 @pytest.mark.parametrize('changes', [
     {'ally': 'どうし'}, {'ally': 'しゅじんこう'}, {'ally': 'だいじん'},
     {'ally': '不明'}, {'enemy': '不明'}, {'enemy': 'クイーン'},
-    {'side': None}, {'side': 'attack'}, {'castle': None}, {'castle': '前章の城'},
-    {'ally_hp': 34}, {'ally_hp': 0}, {'ally_hp': None}, {'ally_hp': True},
+    {'side': 'attack'}, {'castle': None}, {'castle': '前章の城'},
+    {'ally_hp': 60}, {'ally_hp': 0}, {'ally_hp': None}, {'ally_hp': True},
     {'enemy_hp': 44}, {'enemy_hp': 0}, {'start_enemy_hp': None},
     {'start_ally_hp': 999}, {'enemy_hp': 999},
     {'planned_cards': ['クースカン']}, {'card_flow': {'stage': 'menu'}}, {'egg_battle': True},
@@ -60,7 +63,8 @@ def test_no_current_menu_receipt_never_authorizes_last_chance():
 
 
 def test_exhausted_healthy_rejection_reopens_once_on_later_losing_panel():
-    mem = memory(); cur = mem['battle']; cur['ally_hp'] = 49
+    # 60x6 against 56x8 is not yet a losing melee (49 now is, #2864).
+    mem = memory(); cur = mem['battle']; cur['ally_hp'] = 60
     assert p.okunote_step(menu(), mem) == [p.pad('b')]
     cur['ally_hp'] = 22
     panel = Screen([], None, '', kind='battle', battle=Battle('シャルドネ', 56, 'トレビス', 22))
@@ -79,3 +83,49 @@ def test_a_new_live_resource_invalidates_old_gray_menu_evidence(hidden):
     screen = menu(hidden); screen.lines.append(TextLine(192, tuple((176+8*i,ch) for i,ch in enumerate('きりふだ'))))
     assert p.okunote_step(screen, mem) == [p.pad('b')]
     assert not mem['battle']['okunote_only_observed']
+
+
+def g1075_memory(**changes):
+    """g1075 10-30 11:04 フヌイヌム: デュオニソス 54 vs アンディーブ 36, soldiers 1 vs 3."""
+    cur = {'ally': 'デュオニソス', 'enemy': 'アンディーブ', 'castle': 'フヌイヌム',
+           'side': 'defense', 'start_ally_hp': 54, 'start_enemy_hp': 36,
+           'ally_hp': 28, 'enemy_hp': 36, 'cards_used': [], 'card_evidence_version': 1,
+           'planned_cards': [], 'step': None, 'card_soldiers_current': True,
+           'ally_soldiers': 1, 'enemy_soldiers': 3}
+    cur.update(changes)
+    return {'chapter': 4, 'battle': cur}
+
+
+def test_g1075_measured_losing_melee_takes_last_chance_before_hp_halves():
+    # 28*2 > 54: the old half-HP rule declined here and フヌイヌム fell.
+    mem = g1075_memory()
+    assert p.okunote_step(menu(), mem) == [p.pad('a')]
+    assert mem['battle']['okunote_last_resort_selected']
+    rec = [r for r in mem['_records'] if r['decision'] == 'battle_okunote_last_resort']
+    assert len(rec) == 1 and rec[0]['observed_metric']['ally_hp'] == 28
+    assert not any(r['decision'] == 'battle_okunote_risk_declined' for r in mem['_records'])
+
+
+def test_trevis_losing_melee_before_half_hp_takes_last_chance():
+    # 34/66 is above half HP, but 34x6 against 56x8 is a measured losing melee.
+    mem = memory(); mem['battle']['ally_hp'] = 34
+    assert p.okunote_step(menu(), mem) == [p.pad('a')]
+    assert any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('changes', [
+    {'ally_hp': 50, 'card_soldiers_current': False},   # 300 vs 288: not losing
+    {'enemy_hp': 28},                                 # enemy already lost over 20%
+    {'ally': 'しゅじんこう'}, {'side': 'attack'}, {'castle': 'ゴーメン'},
+    {'egg_battle': True}, {'planned_cards': ['クースカン']},
+])
+def test_melee_rule_keeps_existing_exclusions(changes):
+    mem = g1075_memory(**changes)
+    if changes == {'enemy_hp': 28}:
+        # The enemy is already damaged, but the low-HP losing melee opens the
+        # lottery (owner 2026-11-04); the last-resort record stays absent.
+        assert p.okunote_step(menu(), mem) in ([p.pad('a')], [p.pad('down')], [p.pad('up')])
+        assert not any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
+        return
+    assert p.okunote_step(menu(), mem) == [p.pad('b')]
+    assert not any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])

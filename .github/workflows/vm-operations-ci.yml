@@ -3,6 +3,7 @@ name: VM operations CI
 on:
   pull_request:
     paths:
+      - '.node-version'
       - 'ops/**'
       - 'deploy/**'
       - 'containers/**'
@@ -11,12 +12,21 @@ on:
       - '!compose.discord-chat*.yml'
       - 'config/**'
       - 'bin/**'
+      - 'scripts/systemd/**'
       - 'games/soviet_now'
       - 'requirements-test.txt'
       - '.github/workflows/vm-operations*.yml'
+      - '.github/workflows/gameswitch-recover.yml'
+      - '.github/workflows/vm-monitor-silence-alert.yml'
+      - '.github/workflows/vm-deploy-blocker-alert.yml'
+      - '.github/workflows/vm-corner-monitor.yml'
+      - '.github/workflows/gameswitch-adopt.yml'
+      - '.github/workflows/pr-merge-audio-report.yml'
+
   push:
     branches: [main]
     paths:
+      - '.node-version'
       - 'ops/**'
       - 'deploy/**'
       - 'containers/**'
@@ -25,9 +35,17 @@ on:
       - '!compose.discord-chat*.yml'
       - 'config/**'
       - 'bin/**'
+      - 'scripts/systemd/**'
       - 'games/soviet_now'
       - 'requirements-test.txt'
       - '.github/workflows/vm-operations*.yml'
+      - '.github/workflows/gameswitch-recover.yml'
+      - '.github/workflows/vm-monitor-silence-alert.yml'
+      - '.github/workflows/vm-deploy-blocker-alert.yml'
+      - '.github/workflows/vm-corner-monitor.yml'
+      - '.github/workflows/gameswitch-adopt.yml'
+      - '.github/workflows/pr-merge-audio-report.yml'
+
 
 permissions:
   contents: read
@@ -48,31 +66,55 @@ jobs:
       - name: Install fixed test requirements
         run: python3 -m pip install -r requirements-test.txt
       - run: python3 -m unittest discover -s ops/vm_actions/tests -v
+      - name: Read-only program admission evidence (bounded synthetic fixtures)
+        run: python3 -m pytest -q ops/vm_actions/tests/test_program_admission_diagnostics.py ops/vm_actions/tests/test_pr2537_independent_dynamic.py
+      - name: Lifecycle pause provenance (sanitized, read-only)
+        run: python3 -m pytest -q ops/vm_actions/tests/test_lifecycle_pause_diagnostics.py
       - name: Fixed supervisor identity (Linux proc and local Bash only)
         env:
           PYTHONPATH: src
         run: python3 -m pytest -ra -v ops/vm_actions/tests/test_supervisor_identity_diagnostics.py
-      - name: Validate parent-owned operations brief (private handoff stays local)
-        run: python3 ops/vm_actions/ops_brief.py check-artifact
+      - name: Common BGM diagnostics and bounded restart scope
+        run: python3 -m pytest -q ops/vm_actions/tests/test_corner_bgm_diagnostics.py ops/vm_actions/tests/test_soren_restart_scope.py
+      - name: Validate parent-owned operations brief (tracked source, no private handoff)
+        run: |
+          python3 ops/vm_actions/ops_brief.py check-artifact
+          python3 ops/vm_actions/ops_brief.py check-source
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
       - name: Broadcast audio-path priority keeper
         run: python3 -m unittest discover -s ops/audio_priority/tests -v
       - name: macOS Soren91 agent service contracts
         run: python3 -m unittest discover -s ops/local/tests -v
+      - name: NetHack read-only acceptance evidence
+        run: python3 -m pytest -q ops/local/tests/test_nethack_acceptance_evidence.py
+      - name: Use security-patched Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
       - name: External VM monitor watchdog contracts
         run: node --test ops/vm_monitor_watchdog/worker.test.mjs
       - run: >-
           python3 -m py_compile
           ops/vm_actions/authorize.py
+          ops/vm_actions/authorize_pr_merge_audio.py
+          ops/vm_actions/pr_merge_audio_report.py
+          ops/vm_actions/authorize_gameswitch_recover.py
+          ops/vm_actions/authorize_gameswitch_adopt.py
           ops/vm_actions/authorize_nethack_corner.py
           ops/vm_actions/authorize_hanjuku_admin_query.py
           ops/vm_actions/authorize_weather_start_query.py
+          ops/vm_actions/authorize_tsuitate_start_query.py
           ops/vm_actions/gateway.py
           ops/vm_actions/stage_repair.py
           ops/vm_actions/collect_diagnostics.py
           ops/vm_actions/recover_soren_game.py
+          ops/vm_actions/gameswitch_recover.py
+          ops/vm_actions/gameswitch_adopt.py
           ops/vm_actions/recover_soren_round.py
+          ops/vm_actions/release_soren_loop_pause.py
           ops/vm_actions/recover_bgm_mute.py
+          ops/vm_actions/monitor_silence.py
+          ops/vm_actions/corner_health.py
           ops/vm_actions/realign_hanjuku_presentation.py
           ops/vm_actions/runtime_registry.py
           ops/vm_actions/nethack_canary_production_smoke.py
@@ -97,12 +139,20 @@ jobs:
           ops/vm_actions/install_vm_gateway.sh
           ops/vm_actions/install_nethack_canary_smoke.sh
           ops/vm_actions/request_nethack_canary_smoke.sh
+          ops/vm_actions/report_pr_merge_audio.sh
           ops/vm_actions/restart_webui.sh
           ops/vm_actions/recover_soren_game.sh
+          ops/vm_actions/gameswitch_recover.sh
+          ops/vm_actions/gameswitch_adopt.sh
           ops/vm_actions/recover_soren_round.sh
+          ops/vm_actions/release_soren_loop_pause.sh
           ops/vm_actions/recover_bgm_mute.sh
           ops/vm_actions/realign_hanjuku_presentation.sh
           ops/vm_actions/start_weather_corner.sh
+          ops/vm_actions/start_tsuitate_corner.sh
           ops/vm_actions/storage_reclaim.sh
+          ops/vm_actions/storage_reclaim_staged.sh
+          ops/vm_actions/browser_profile_reclaim_now.sh
           ops/vm_actions/opencode_db_retention_now.sh
           ops/vm_actions/ensure_opencode_retention_timer.sh
+          ops/vm_actions/ensure_twitch_oauth_refresh_timer.sh

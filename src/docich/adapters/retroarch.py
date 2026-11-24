@@ -39,6 +39,10 @@ HANJUKU_MIRROR_FRAMERATE = 15
 NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
 RA_READY_IO_TIMEOUT_S = 0.1
+# Dead-runtime proof needs two spaced probes: one lost 0.1 s UDP round trip
+# under CPU saturation (load 25+ in docich#4144) must not release a live
+# runtime without a boundary (docich#4193, follow-up of #4190).
+DEAD_PROBE_SPACING_S = 2.0
 MANUAL_SAVE_TIMEOUT_S = 10.0
 STALLED_TERMINAL_REASONS = frozenset({'screen_stalled', 'input_stalled'})
 
@@ -213,14 +217,28 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         lines += ['video_fullscreen = "false"', 'video_scale = "3.0"',
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
+    # [retroarch] force_aspect = false asks for the core's raw pixels (Snes9x
+    # 256x224) instead of the 4:3 window (299x224). The deterministic screen
+    # signatures match 8-pixel glyph cells exactly, so a horizontally stretched
+    # 299-wide capture reads as zero text (g1163 2026-11-10 04:39: live card
+    # select parsed to ''; the 256x224 fixture parsed in full).
+    force_aspect = retroarch_raw(game).get("force_aspect")
+    if force_aspect is not None:
+        if type(force_aspect) is not bool:
+            raise AdapterError("[retroarch] force_aspect は真偽値である必要があります")
+        value = "true" if force_aspect else "false"
+        lines = [line for line in lines if not line.startswith('video_force_aspect')]
+        lines.append(f'video_force_aspect = "{value}"')
     from ..hanjuku_hotload import enabled as scripted_hanjuku
     if scripted_hanjuku(game):
         if d.viewport_width > 0:
             # Keep the core's aspect ratio at the small window scale (Snes9x:
-            # 299x224). Disabling force_aspect produces a 256x224 window with
-            # vertically compressed content, breaking exact-tile recognition.
+            # 299x224). An explicit [retroarch] force_aspect overrides this.
             lines = [line for line in lines if not line.startswith('video_scale =')]
             lines.append('video_scale = "1.0"')
+            if force_aspect is False:
+                lines = [line for line in lines if not line.startswith('video_force_aspect')]
+                lines.append('video_force_aspect = "false"')
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
                   # Paused LOAD/SAVE/slot OSD persists over native dialogue
@@ -343,6 +361,10 @@ class RetroArchAdapter(Adapter):
         scripted = hanjuku_hotload.enabled(self.ctx.game) and runtime_dir is not None
         if scripted:
             out_path = runtime_dir / 'screenshots' / 'latest.png'
+            # Honour the brain's autosave request here too: a held screen sends
+            # no action, so act() alone would never perform the save (g1163
+            # 2026-11-10 20:38: the request sat unread for minutes).
+            self._honor_autosave(runtime_dir)
         meta = {}
         # Both the agent and the corner monitor observe. Serialize capture,
         # decode and terminal evidence with actual pad input for this runtime.
@@ -395,12 +417,35 @@ class RetroArchAdapter(Adapter):
             return
         self.ctx.xkit.focus(self._window_id)
 
+    def _honor_autosave(self, runtime_dir) -> None:
+        """Perform a save the brain asked for (see hanjuku_run.request_autosave)."""
+        from ..hanjuku_run import AUTOSAVE_REQUEST
+        request = runtime_dir / AUTOSAVE_REQUEST
+        try:
+            if not request.exists():
+                return
+        except OSError:
+            return
+        try:
+            # The live adapter is the legacy adapter: it has no _network_port,
+            # so derive the port from the generation exactly like observe().
+            port = retroarch_network_port(self.ctx.fence.generation)
+            send_ra_cmd('SAVE_STATE', port=port, wait_reply_s=.2)
+        except Exception as exc:
+            print(f"docich: 警告: autosave に失敗しました: {exc}", file=sys.stderr)
+            return
+        try:
+            request.unlink()
+        except OSError:
+            pass
+
     def act(self, action: Action) -> None:
         self._check_fence()
         runtime_dir = self._runtime_dir()
         from .. import hanjuku_hotload
         with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
             if runtime_dir:
+                self._honor_autosave(runtime_dir)
                 require_input_open(runtime_dir)
                 if hanjuku_hotload.enabled(self.ctx.game):
                     run = hanjuku_hotload.load(runtime_dir, hanjuku_hotload.runtime_identity(self.ctx.fence))
@@ -486,6 +531,11 @@ class RetroArchCoordinatorAdapter:
                 '--window-pattern', '^RetroArch',
                 *(['--framerate', str(HANJUKU_MIRROR_FRAMERATE), '--nearest', '--align', 'right'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
+                # A shared display restart must not leave the broadcast game area
+                # black: the presenter re-attaches its own projection, bounded
+                # (#2097). If that budget is exhausted the state stays
+                # presentation_failed and the operator recovery path remains.
+                '--reproject-on-player-loss',
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
                 '--', *command]
@@ -497,11 +547,18 @@ class RetroArchCoordinatorAdapter:
             role=role,
         )
 
-    def _check_active(self, deadline: float, cancel) -> None:
+    def _check_active(self, deadline: float, cancel, reason: str | None = None) -> None:
         if cancel is not None and cancel.is_set():
             raise DeadlineExceededError("adapter call はcancelされました")
         if time.monotonic() >= deadline:
-            raise DeadlineExceededError("adapter call のdeadlineを超過しました")
+            detail = "adapter call のdeadlineを超過しました"
+            # #3149: the bare deadline message reaches request receipts and the
+            # switch log, where the caller cannot tell which adapter wait died.
+            # ``reason`` is a fixed literal per call site (the adapter-side
+            # operation name), never exception text or runtime state (#986).
+            if reason is not None:
+                detail = f"{detail} ({reason})"
+            raise DeadlineExceededError(detail)
 
     def _game_window_target(self) -> str:
         return f"{SESSION}:{self.spec.game_window}"
@@ -545,7 +602,7 @@ class RetroArchCoordinatorAdapter:
     # --- CoordinatorAdapter contract -------------------------------------
 
     def preflight(self, deadline: float, cancel) -> None:
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "preflight")
         if self.game.lifecycle.require_round_boundary and not self._contained():
             raise AdapterError("safe RetroArch requires a private contained presentation")
         resolve_rom(self.g, self.game)
@@ -559,10 +616,10 @@ class RetroArchCoordinatorAdapter:
                 raise AdapterError(f"コマンドが見つかりません: {binary}")
         if self.agent_enabled and not Path(_docich_bin()).is_file():
             raise AdapterError(f"docich executable が見つかりません: {_docich_bin()}")
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "preflight")
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "materialize_runtime")
         self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
         for d in ("states", "saves", "system"):
             (self.spec.runtime_dir / d).mkdir(parents=True, exist_ok=True)
@@ -571,13 +628,13 @@ class RetroArchCoordinatorAdapter:
         cfg_path = self._cfg_path()
         lines = retroarch_cfg_lines(self.g, self.game, cfg_path, self._network_port())
         cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "materialize_runtime")
 
         target = self._game_window_target()
         if self.tmux.window_target_exists(target):
             self._verify_window_ownership(target, "game")
             return
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "materialize_runtime")
         if self._contained():
             if read_record(self.spec.runtime_dir / BOUNDARY_FILE).get("status") == "reached":
                 raise AdapterError("saved RetroArch runtime needs explicit checkpoint restoration")
@@ -591,10 +648,10 @@ class RetroArchCoordinatorAdapter:
             self._ownership("game"),
             env={"DISPLAY": self.g.display.name},
         )
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "materialize_runtime")
 
     def readiness(self, deadline: float, cancel) -> None:
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "readiness")
         target = self._game_window_target()
         if not self.tmux.window_target_exists(target):
             raise ReadinessTimeoutError("game windowがありません")
@@ -608,7 +665,7 @@ class RetroArchCoordinatorAdapter:
         if self._contained():
             presenter = XKit(self.g.display.name)
             while True:
-                self._check_active(deadline, cancel)
+                self._check_active(deadline, cancel, "readiness")
                 if not self.alive(deadline, cancel):
                     raise ReadinessTimeoutError("RetroArch presenter exited")
                 state = self._require_presenter_not_terminal()
@@ -657,7 +714,7 @@ class RetroArchCoordinatorAdapter:
                 time.sleep(wait_s)
 
     def alive(self, deadline: float, cancel) -> bool:
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "alive")
         target = self._game_window_target()
         if not self.tmux.window_target_exists(target):
             if self._contained():
@@ -672,6 +729,53 @@ class RetroArchCoordinatorAdapter:
                 raise AdapterError("RetroArch child shutdown is not confirmed")
         return not any(pane.dead for pane in states)
 
+    def runtime_provably_dead(self, deadline: float, cancel) -> bool:
+        """True when nothing of this contained runtime can still be saved.
+
+        The safe-boundary contract protects a *live* game from being killed
+        without a save.  A runtime whose tmux game/agent windows are gone and
+        whose RetroArch command port no longer answers (two probes separated
+        by ``DEAD_PROBE_SPACING_S``, so one lost round trip is not proof) has
+        no state left to protect.  This probe exists so recovery can
+        distinguish "the boundary has not arrived yet" from "the runtime died
+        before it arrived" — the latter strands canonical in ``failed``
+        forever because the missing boundary can never be produced (#4187,
+        2026-11-14 tmux death; #4193 double probe).
+        """
+        if not self._contained():
+            return False
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        if self.tmux.window_target_exists(self._game_window_target()):
+            return False
+        if self.tmux.window_target_exists(self._agent_window_target()):
+            return False
+        self._check_active(deadline, cancel, "runtime_provably_dead")
+        # The command port is the last survivor when a presenter or a detached
+        # RetroArch process outlives the window; a reply proves it is alive.
+        # One unanswered 0.1 s probe is not proof of death: a saturated CPU can
+        # drop a single round trip, and releasing a live runtime without its
+        # boundary is destructive (#4193). Only two probes separated in time,
+        # both unanswered, prove the runtime is gone.
+        port = self._network_port()
+        for attempt in range(2):
+            if attempt:
+                remaining = deadline - time.monotonic()
+                if remaining <= DEAD_PROBE_SPACING_S + RA_READY_IO_TIMEOUT_S:
+                    # No budget for a properly spaced second probe: death stays
+                    # unproven, so the caller keeps the normal boundary path.
+                    return False
+                if cancel is not None:
+                    if cancel.wait(DEAD_PROBE_SPACING_S):
+                        raise DeadlineExceededError("adapter call はcancelされました")
+                else:
+                    time.sleep(DEAD_PROBE_SPACING_S)
+                self._check_active(deadline, cancel, "runtime_provably_dead")
+            reply = send_ra_cmd("GET_STATUS", port=port, wait_reply_s=.1)
+            self._check_active(deadline, cancel, "runtime_provably_dead")
+            if reply is not None:
+                return False
+        return True
+
     def _require_safe_cleanup(self, deadline: float, cancel) -> None:
         if self._contained():
             from ..agent.fence import read_canonical
@@ -679,6 +783,10 @@ class RetroArchCoordinatorAdapter:
             committed = any(isinstance(state.get(slot), dict) and
                             state[slot].get("runtime_id") == self.spec.runtime_id
                             for slot in ("active", "previous"))
+            if committed and self.runtime_provably_dead(deadline, cancel):
+                # Nothing can be saved any more, so the boundary requirement
+                # would only make the dead runtime unreleasable.
+                return
             if committed:
                 record = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
                 if not matches(record, self.spec, record.get("request_id")) or record.get("status") != "reached":
@@ -704,7 +812,7 @@ class RetroArchCoordinatorAdapter:
 
     def can_release_terminal_previous(self, deadline: float, cancel) -> bool:
         """Only an identity-bound, acknowledged Hanjuku terminal may be released."""
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "can_release_terminal_previous")
         from .. import hanjuku_run
         if not self._contained() or not hanjuku_run.enabled(self.game):
             return False
@@ -718,16 +826,29 @@ class RetroArchCoordinatorAdapter:
         self._require_safe_cleanup(deadline, cancel)
         return True
 
+    def can_release_dead_previous(self, deadline: float, cancel) -> bool:
+        """A committed Hanjuku runtime that is provably gone may be released.
+
+        Only the *absence* of every live part of the runtime (game window,
+        agent window, RetroArch command port) authorises this.  A runtime that
+        still answers is never released here: it owes a boundary first.
+        """
+        self._check_active(deadline, cancel, "can_release_dead_previous")
+        from .. import hanjuku_run
+        if not self._contained() or not hanjuku_run.enabled(self.game):
+            return False
+        return self.runtime_provably_dead(deadline, cancel)
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         self._require_safe_cleanup(deadline, cancel)
         for name, role in (
             (self.spec.agent_window, "agent"),
             (self.spec.game_window, "game"),
         ):
-            self._check_active(deadline, cancel)
+            self._check_active(deadline, cancel, "cleanup_runtime")
             target = f"{SESSION}:{name}"
             if self.tmux.window_target_exists(target):
-                self._check_active(deadline, cancel)
+                self._check_active(deadline, cancel, "cleanup_runtime")
                 self.tmux.kill_window_owned(target, self._ownership(role))
 
     def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
@@ -738,7 +859,7 @@ class RetroArchCoordinatorAdapter:
             return self._request_script_boundary(request_id, deadline, cancel)
         path = self.spec.runtime_dir / BOUNDARY_FILE
         with input_gate(self.spec.runtime_dir, deadline, cancel):
-            self._check_active(deadline, cancel)
+            self._check_active(deadline, cancel, "request_round_boundary")
             record = read_record(path)
             if record and record.get("status") != "cancelled":
                 if not matches(record, self.spec, request_id):
@@ -747,7 +868,7 @@ class RetroArchCoordinatorAdapter:
                 atomic_write_json(path, dict(identity(self.spec, request_id),
                                              status="waiting", requested_ns=time.time_ns()))
         while True:
-            self._check_active(deadline, cancel)
+            self._check_active(deadline, cancel, "request_round_boundary")
             if not self.alive(deadline, cancel):
                 raise AdapterError("RetroArch exited without a safe boundary")
             with input_gate(self.spec.runtime_dir, deadline, cancel):
@@ -772,22 +893,23 @@ class RetroArchCoordinatorAdapter:
         from .. import hanjuku_hotload
         path = self.spec.runtime_dir / BOUNDARY_FILE
         while True:
-            self._check_active(deadline, cancel)
+            self._check_active(deadline, cancel, "_request_script_boundary")
             if not self.alive(deadline, cancel):
                 raise AdapterError('Hanjuku exited before terminal evidence')
             with input_gate(self.spec.runtime_dir, deadline, cancel):
                 record = read_record(path)
                 if record and record.get('status') != 'cancelled' and not matches(record, self.spec, request_id):
                     raise AdapterError('Hanjuku boundary identity mismatch')
+                terminal = hanjuku_hotload.terminal(self.spec.runtime_dir, hanjuku_hotload.runtime_identity(self.spec))
                 manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
-                if manual and matches(manual, self.spec, request_id):
+                if not terminal and manual and matches(manual, self.spec, request_id):
                     if record.get('status') == 'reached':
                         self._verify_manual_boundary(record, deadline, cancel)
                         return
                     try:
                         self._save_manual_boundary(request_id, deadline, cancel)
                     except ManualSaveTimeout:
-                        self._check_active(deadline, cancel)
+                        self._check_active(deadline, cancel, "_request_script_boundary")
                         manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
                         if not matches(manual, self.spec, request_id) or manual.get('allow_unsaved_stop') is not True:
                             raise
@@ -795,7 +917,6 @@ class RetroArchCoordinatorAdapter:
                         atomic_write_json(path, dict(identity(self.spec, request_id),
                             status='reached', outcome='manual_forced_stop', save_error='save_timeout'))
                     return
-                terminal = hanjuku_hotload.terminal(self.spec.runtime_dir, hanjuku_hotload.runtime_identity(self.spec))
                 if terminal:
                     if terminal['terminal_reason'] in STALLED_TERMINAL_REASONS:
                         if record.get('status') == 'reached':
@@ -822,7 +943,7 @@ class RetroArchCoordinatorAdapter:
     def _verify_manual_boundary(self, record, deadline, cancel, *, allow_stopped=False):
         if record.get('outcome') != 'manual_forced_stop':
             return self._verify_manual_save(record, deadline, cancel, allow_stopped=allow_stopped)
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_verify_manual_boundary")
         manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
         if (not matches(manual, self.spec, record.get('request_id'))
                 or manual.get('allow_unsaved_stop') is not True
@@ -832,10 +953,10 @@ class RetroArchCoordinatorAdapter:
             self._verify_manual_content(deadline, cancel)
 
     def _verify_manual_content(self, deadline, cancel):
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_verify_manual_content")
         self._verify_window_ownership(self._game_window_target(), 'game')
         reply = send_ra_cmd('GET_STATUS', port=self._network_port(), wait_reply_s=.1)
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_verify_manual_content")
         fields = reply.split(' ', 2) if reply else []
         if (len(fields) != 3 or fields[0] != 'GET_STATUS' or fields[1] not in {'PLAYING', 'PAUSED'}
                 or len(fields[2].split(',')) < 2
@@ -861,7 +982,7 @@ class RetroArchCoordinatorAdapter:
         self._verify_saved_checkpoint(record, deadline, cancel, allow_stopped=allow_stopped)
 
     def _verify_saved_checkpoint(self, record, deadline, cancel, *, allow_stopped=False):
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_verify_saved_checkpoint")
         live = True
         if allow_stopped:
             target = self._game_window_target()
@@ -885,7 +1006,7 @@ class RetroArchCoordinatorAdapter:
         saved = self._checkpoint(name)
         if saved.is_symlink():
             raise AdapterError('Hanjuku checkpoint may not be a symlink')
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_save_checkpoint_boundary")
         self._verify_window_ownership(self._game_window_target(), 'game')
         reply = send_ra_cmd('GET_STATUS', port=self._network_port(), wait_reply_s=.1)
         stem = resolve_rom(self.g, self.game).stem
@@ -910,7 +1031,7 @@ class RetroArchCoordinatorAdapter:
             send_ra_cmd('SAVE_STATE', port=self._network_port(), wait_reply_s=.1)
             previous = None
             while True:
-                self._check_active(deadline, cancel)
+                self._check_active(deadline, cancel, "_save_checkpoint_boundary")
                 if time.monotonic() >= save_deadline:
                     raise ManualSaveTimeout('Hanjuku save did not complete before timeout')
                 if saved.exists():
@@ -978,13 +1099,13 @@ class RetroArchCoordinatorAdapter:
         return path
 
     def _require_paused(self, deadline: float, cancel) -> None:
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_require_paused")
         if not self._contained() or not self.alive(deadline, cancel):
             raise AdapterError("RetroArch native runtime is not alive")
         self._verify_window_ownership(self._game_window_target(), "game")
         reply = send_ra_cmd("GET_STATUS", port=self._network_port(),
                             wait_reply_s=min(0.1, max(0.001, deadline - time.monotonic())))
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "_require_paused")
         # v1.18 GET_STATUS: PAUSED <core>,<content basename>[,<crc>].
         # A menu, missing response, PLAYING or generic OK is not a boundary.
         prefix = "GET_STATUS PAUSED "
@@ -1015,7 +1136,7 @@ class RetroArchCoordinatorAdapter:
             self._require_paused(deadline, cancel)
             if checkpoint_digest(saved, deadline, cancel) != digest:
                 raise AdapterError("checkpoint is still changing")
-            self._check_active(deadline, cancel)
+            self._check_active(deadline, cancel, "confirm_safe_boundary")
             atomic_write_json(path, dict(record, status="reached", checkpoint=checkpoint,
                                          sha256=digest, outcome="suspended"))
 
@@ -1037,23 +1158,23 @@ class RetroArchCoordinatorAdapter:
     def start_agent(self, deadline: float, cancel) -> None:
         from ..hanjuku_resume import require_verified
         require_verified(self.spec)
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "start_agent")
         target = self._agent_window_target()
         if self.tmux.window_target_exists(target):
             self._verify_window_ownership(target, "agent")
             return
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "start_agent")
         self.tmux.create_window_owned(
             self.spec.agent_window,
             self._agent_command(),
             self._ownership("agent"),
         )
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "start_agent")
 
     def stop_agent(self, deadline: float, cancel) -> None:
-        self._check_active(deadline, cancel)
+        self._check_active(deadline, cancel, "stop_agent")
         self._require_safe_cleanup(deadline, cancel)
         target = self._agent_window_target()
         if self.tmux.window_target_exists(target):
-            self._check_active(deadline, cancel)
+            self._check_active(deadline, cancel, "stop_agent")
             self.tmux.kill_window_owned(target, self._ownership("agent"))

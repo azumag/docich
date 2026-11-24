@@ -37,7 +37,7 @@ def test_every_nonhero_sole_defender_repairs_immediately(general, deferred):
     assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])
 
 
-@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('ヴィーナス', [])])
+@pytest.mark.parametrize('general,owned', [('どうし', ['カストーラ']), ('どうし', []), ('ココット', [])])
 @pytest.mark.parametrize('deferred', [None, '1-6'])
 def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, owned, deferred):
     mem = memory('1-7'); mem['captured'] = owned
@@ -50,7 +50,7 @@ def test_hero_and_last_castle_remain_protected_even_after_old_deferral(general, 
 
 
 @pytest.mark.parametrize('phase', ['castle_pick', 'castle_kit', 'castle_confirm', 'house_confirm'])
-@pytest.mark.parametrize('general,last', [('どうし', False), ('ヴィーナス', True)])
+@pytest.mark.parametrize('general,last', [('どうし', False), ('どうし', True), ('ココット', True)])
 def test_hotloaded_sole_permission_cannot_bypass_final_protection(phase, general, last):
     from test_hanjuku_retake_guard import generals
     mem = memory('1-7')
@@ -78,13 +78,38 @@ def test_actual_single_general_list_can_select_repair_without_old_permission(gen
     assert mem['house']['phase'] == 'castle_kit' and mem['house']['sole_defender'] is True
 
 
-def test_losing_other_castles_after_selection_cancels_the_repair():
+@pytest.mark.parametrize('general,should_cancel', [('どうし', True), ('ココット', True), ('ヴィーナス', False)])
+def test_losing_other_castles_after_selection_cancels_the_repair(general, should_cancel):
+    from unittest.mock import patch
     from test_hanjuku_retake_guard import generals
-    mem = memory('1-7'); mem['house'].update(phase='castle_pick', source='アルマムーン')
-    assert house._repair_step(generals(['ヴィーナス']), mem, None) == [p.pad('a')]
+    from docich.hanjuku.os_layer import world
+    mem = memory('1-7')
+    mem['house'].update(phase='castle_pick', source='アルマムーン')
+    if general in ('どうし', 'ココット'):
+        # Cannot be selected as sole defender at castle_pick; simulate post-selection state
+        mem['house'].update(phase='castle_kit', general=general, sole_defender=True)
+        mem['captured'] = []
+        with patch.object(world, '_owned', return_value={'アルマムーン'}):
+            actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
+        if should_cancel:
+            assert actions == []
+            assert mem['house']['phase'] == 'close'
+        else:
+            assert mem['house']['phase'] == 'castle_kit'
+        return
+    else:
+        mem['house'].update(general=general)
+        with patch.object(world, '_owned', return_value={'アルマムーン'}):
+            assert house._repair_step(generals([general]), mem, None) == [p.pad('a')]
+            assert mem['house']['phase'] == 'castle_kit'
     mem['captured'] = []
-    assert house._repair_step(Screen([], None, '', kind='card_select'), mem, None) == []
-    assert mem['house']['phase'] == 'close'
+    with patch.object(world, '_owned', return_value={'アルマムーン'}):
+        actions = house._repair_step(Screen([], None, '', kind='card_select'), mem, None)
+        if should_cancel:
+            assert actions == []
+            assert mem['house']['phase'] == 'close'
+        else:
+            assert mem['house']['phase'] == 'castle_kit'
 
 
 def test_next_field_general_does_not_inherit_the_previous_castle_guard():
@@ -93,3 +118,17 @@ def test_next_field_general_does_not_inherit_the_previous_castle_guard():
     house._next_general(mem)
     assert mem['house']['general'] == 'ゼウス' and mem['house']['phase'] == 'find_field'
     assert mem['house']['source'] is None and not mem['house'].get('sole_defender')
+
+
+def test_broken_venus_repairs_even_as_last_castle_sole_defender():
+    from unittest.mock import patch
+    from docich.hanjuku.os_layer import world
+    mem = memory('1-7')
+    mem['captured'] = []
+    mem['house'].update(general='ヴィーナス', source='アルマムーン')
+    with patch.object(world, '_owned', return_value={'アルマムーン'}):
+        assert house._repair_step(castle_status('アルマムーン', ['ヴィーナス']), mem, None) == [p.pad('b')]
+        assert mem['house']['phase'] == 'castle_sortie'
+        assert mem['house'].get('sole_defender') is True
+        assert any(r['decision'] == 'house_repair_sole_defender' for r in mem['_records'])
+        assert not any(r['decision'] == 'house_general_deferred' for r in mem['_records'])

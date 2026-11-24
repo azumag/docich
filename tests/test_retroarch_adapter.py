@@ -426,3 +426,60 @@ class TestAct(RetroArchTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCheckActiveReasonLabel(unittest.TestCase):
+    """#3149: a bare deadline message reaches request receipts/logs, so the
+    adapter's deadline error carries a fixed per-site reason label (#986:
+    fixed literals only, never exception text or runtime state)."""
+
+    def _adapter(self):
+        return object.__new__(retroarch.RetroArchCoordinatorAdapter)
+
+    def test_deadline_message_includes_fixed_reason_label(self):
+        adapter = self._adapter()
+        with self.assertRaises(retroarch.DeadlineExceededError) as ctx:
+            adapter._check_active(0.0, None, "readiness")
+        self.assertEqual(str(ctx.exception),
+                         "adapter call のdeadlineを超過しました (readiness)")
+
+    def test_deadline_message_without_reason_stays_unchanged(self):
+        adapter = self._adapter()
+        with self.assertRaises(retroarch.DeadlineExceededError) as ctx:
+            adapter._check_active(0.0, None)
+        self.assertEqual(str(ctx.exception),
+                         "adapter call のdeadlineを超過しました")
+
+    def test_cancel_message_is_unlabeled(self):
+        import threading
+        adapter = self._adapter()
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(retroarch.DeadlineExceededError) as ctx:
+            adapter._check_active(float("inf"), cancel, "readiness")
+        self.assertEqual(str(ctx.exception), "adapter call はcancelされました")
+
+
+def test_force_aspect_override_is_honoured_for_glyph_pixels():
+    """[retroarch] force_aspect = false asks for the core's raw 256x224 pixels.
+
+    The deterministic screen signatures match 8-pixel glyph cells, so a 299-wide
+    stretched capture reads as zero text (g1163 2026-11-10 04:39).
+    """
+    from docich.adapters import retroarch
+
+    display = mock.Mock(width=960, height=540, viewport_width=0, viewport_height=0)
+    g = mock.Mock(display=display)
+    with mock.patch.object(retroarch, 'retroarch_audio', return_value=(False, None)), \
+            mock.patch.object(retroarch, 'resolved_buttons', return_value={}), \
+            mock.patch.object(retroarch, 'retroarch_audio_volume', return_value=None):
+        game = mock.Mock(raw={'retroarch': {'force_aspect': False}})
+        lines = retroarch.retroarch_cfg_lines(g, game, Path('/tmp/r.cfg'), 55435)
+        assert 'video_force_aspect = "false"' in lines
+        bad = mock.Mock(raw={'retroarch': {'force_aspect': 'no'}})
+        try:
+            retroarch.retroarch_cfg_lines(g, bad, Path('/tmp/r.cfg'), 55435)
+        except retroarch.AdapterError:
+            pass
+        else:
+            raise AssertionError('a non-bool force_aspect must be rejected')

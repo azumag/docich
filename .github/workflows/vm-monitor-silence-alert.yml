@@ -1,0 +1,46 @@
+name: VM monitor silence alert
+
+# The scheduled `VM storage monitor` is the only producer of VM storage /
+# runtime health alerts, so its own silence is invisible to that path. This
+# detector runs on an independent schedule with its own concurrency group and
+# the run-scoped GITHUB_TOKEN, so neither a jammed monitor queue nor an expired
+# external watchdog credential can silence both paths at once. It is quiet by
+# design: it only keeps one deduplicated Issue open while the monitor has had no
+# successful run for longer than the threshold, and closes it on recovery.
+
+on:
+  schedule:
+    # Offset from the monitor's :17 / :47 slots.
+    - cron: '29 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vm-monitor-silence-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  silence:
+    if: >-
+      github.ref == 'refs/heads/main' && github.ref_protected == true &&
+      (github.event_name == 'schedule' ||
+       (github.actor_id == 9018513 && github.triggering_actor == 'azumag'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the fixed detector
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Keep the monitor silence alert consistent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python3 ops/vm_actions/monitor_silence.py

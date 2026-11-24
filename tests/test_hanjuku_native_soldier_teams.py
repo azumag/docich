@@ -86,10 +86,82 @@ def translated_enemy_boundary(x, y):
 
 @pytest.mark.parametrize('x,y', [(245, 69), (250, 69), (254, 69),
                                 (-7, 69), (-11, 69), (41, 27), (41, 30), (41, 36)])
-def test_rgb_preserved_thin_enemy_edges_never_license_conservation(x, y):
+def test_rgb_preserved_thin_enemy_edges_stay_unread(x, y):
     screen = parse(translated_enemy_boundary(x, y))
     assert screen.battle == native(24397).battle
     assert screen.field_soldiers == (6, None)
     mem = memory()
     p._card_battle_reading(screen, mem['battle'], mem)
-    assert p.battle_menu_step(native(24407), mem) == [p.pad('a')]
+    # docich#4048: the command menu keeps its field visible, so the menu
+    # frame re-measures both armies ((6,4) on g713-24407). A complete fresh
+    # read legitimately licenses conservation; the thin-edge panel itself
+    # still cannot, which the (6, None) assertion above keeps covered.
+    assert p.battle_menu_step(native(24407), mem) == [p.pad('b')]
+    assert mem['battle']['ally_soldiers'] == 6
+    assert mem['battle']['enemy_soldiers'] == 4
+
+
+def test_battle_menu_frames_still_measure_the_field():
+    """docich#4048: the command menu hides the HP panel, not the armies."""
+    menu = native(24401)
+    assert menu.kind == 'battle_menu' and menu.battle is None
+    assert menu.field_soldiers == (6, 5)
+    assert native(24407).field_soldiers == (6, 4)
+
+
+def test_battle_menu_frame_refreshes_only_the_measured_sides():
+    mem = memory()
+    cur = mem['battle']
+    p._card_battle_reading(native(24397), cur, mem)
+    assert (cur['ally_soldiers'], cur['enemy_soldiers']) == (6, 6)
+    # The menu reads (6,4): a real drop since the opening, both sides measured.
+    p._card_battle_reading(native(24407), cur, mem)
+    assert (cur['ally_soldiers'], cur['enemy_soldiers']) == (6, 4)
+    assert cur['card_soldiers_current'] is True
+    # A side the menu cannot read keeps its last value rather than
+    # invalidating the earlier complete panel read.
+    cur['enemy_soldiers'] = 4
+    menu = native(24401)
+    menu.field_soldiers = (6, None)
+    p._card_battle_reading(menu, cur, mem)
+    assert (cur['ally_soldiers'], cur['enemy_soldiers']) == (6, 4)
+
+
+def test_unread_battle_menu_frame_does_not_claim_soldiers_current():
+    """docich#4048: a menu frame measuring neither side proves nothing.
+
+    Stamping card_soldiers_current on a (None, None) frame would make the
+    unread-army protections (e.g. the okunote conservation of #3358, see
+    the g482 real-frame regression) believe the counts were measured.
+    """
+    mem = memory()
+    cur = mem['battle']
+    cur['ally_soldiers'] = 3
+    cur['enemy_soldiers'] = 2
+    cur['card_soldiers_current'] = False
+    menu = native(24401)
+    menu.field_soldiers = (None, None)
+    p._card_battle_reading(menu, cur, mem)
+    assert (cur['ally_soldiers'], cur['enemy_soldiers']) == (3, 2)
+    assert cur['card_soldiers_current'] is False
+
+
+def test_egg_battle_menu_frames_carry_no_soldier_count():
+    """Summon menus show monsters, not armies: nothing may be counted."""
+    frame = read_png(ROOT / 'g747-enemy-command-1310.png')
+    screen = parse(frame)
+    assert screen.kind == 'egg_battle_menu'
+    assert screen.field_soldiers is None
+
+
+def test_battle_start_record_carries_the_measured_armies():
+    """docich#4048: battle_start must log real counts, not a silent None."""
+    mem = {'chapter': 1, 'tick': 1}
+    p.battle_step(native(24397), mem)
+    p.battle_step(native(24397), mem)
+    start = next(r for r in mem['_records'] if r['decision'] == 'battle_start')
+    assert start['ally_soldiers'] == 6 and start['enemy_soldiers'] == 6
+    assert start['observed_metric']['ally_soldiers'] == 6
+    assert start['observed_metric']['enemy_soldiers'] == 6
+    assert mem['battle']['ally_soldiers'] == 6
+    assert mem['battle']['enemy_soldiers'] == 6

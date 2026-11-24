@@ -1,5 +1,7 @@
 """Operator stop saves first and only an explicit policy permits unsaved exit."""
+import json
 import time
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -8,6 +10,7 @@ from test_retroarch_safe_boundary import adapter
 from test_hanjuku_retro_registration import manager
 from docich import game_switch
 from docich.adapters.base import AdapterError
+from docich.retro_corner import CornerResult, RetroCornerError
 from docich.tmux import PaneState
 from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, identity, read_record, require_input_open
 
@@ -214,3 +217,114 @@ def test_hanjuku_save_config_has_fixed_path_and_core_serialization_check(adapter
     assert 'core_info_savestate_bypass = "true"' in lines
     assert 'sort_savestates_enable = "false"' in lines
     assert 'sort_savestates_by_content_enable = "false"' in lines
+
+
+def _stop_marker(manager):
+    path = (Path(manager.state_path).parent / "corner-stop-requests"
+            / Path(manager.state_path).name)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(
+        json.dumps({"state_file": Path(manager.state_path).name, "requested_at": 1.0}),
+        encoding="utf-8")
+    return path
+
+
+def test_durable_stop_requests_the_same_manual_save_as_direct_stop(manager, monkeypatch):
+    expected = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef',
+                'generation': 1, 'lease_id': 'lease'}
+    state = {**manager._default_state(), 'status': 'active', 'game': 'hanjuku-hero',
+             'previous_game': 'sorengame', 'bot_identity': expected}
+    manager._write_state(state)
+    monkeypatch.setattr(manager.store.canonical, 'load',
+                        lambda: ({'phase': 'ready', 'active': expected}, False))
+    finish = Mock(return_value=CornerResult('completed', game='hanjuku-hero'))
+    monkeypatch.setattr(manager, '_finish_locked', finish)
+    marker = _stop_marker(manager)
+
+    result = manager._rotation_stop_result()
+
+    assert result.status == 'completed'
+    finish.assert_called_once()
+    stopped = finish.call_args.args[0]
+    assert stopped['manual_stop_requested'] is True
+    record = read_record(manager.g.state_dir / 'runtimes/g1-abcdef' / MANUAL_SAVE_FILE)
+    assert record['request_id'] == stopped['switch_request_id']
+    assert record['runtime_id'] == expected['runtime_id']
+    assert record['allow_unsaved_stop'] is True
+    # The completed stop consumes the request, exactly like a direct stop.
+    assert not marker.exists()
+
+
+def test_durable_stop_fails_closed_without_the_owned_runtime(manager, monkeypatch):
+    expected = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef',
+                'generation': 1, 'lease_id': 'lease'}
+    state = {**manager._default_state(), 'status': 'active', 'game': 'hanjuku-hero',
+             'previous_game': 'sorengame', 'bot_identity': expected}
+    manager._write_state(state)
+    monkeypatch.setattr(manager.store.canonical, 'load',
+                        lambda: ({'phase': 'ready', 'active': {**expected, 'generation': 2}}, False))
+    finish = Mock()
+    monkeypatch.setattr(manager, '_finish_locked', finish)
+    marker = _stop_marker(manager)
+
+    with pytest.raises(RetroCornerError, match='identity'):
+        manager._rotation_stop_result()
+
+    finish.assert_not_called()
+    assert manager._read_state()['status'] == 'active'
+    assert marker.exists()
+    assert not list(manager.g.state_dir.glob('runtimes/*/' + MANUAL_SAVE_FILE))
+
+
+def test_durable_stop_leaves_a_failed_slot_to_the_failed_slice(manager, monkeypatch):
+    expected = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef',
+                'generation': 1, 'lease_id': 'lease'}
+    state = {**manager._default_state(), 'status': 'failed', 'game': 'hanjuku-hero',
+             'previous_game': 'sorengame', 'bot_identity': expected}
+    manager._write_state(state)
+    monkeypatch.setattr(manager.store.canonical, 'load',
+                        lambda: ({'phase': 'ready', 'active': expected}, False))
+    finish = Mock()
+    monkeypatch.setattr(manager, '_finish_locked', finish)
+    marker = _stop_marker(manager)
+
+    result = manager._rotation_stop_result()
+
+    assert result.status == 'failed'
+    finish.assert_not_called()
+    assert marker.exists()
+    assert not list(manager.g.state_dir.glob('runtimes/*/' + MANUAL_SAVE_FILE))
+
+
+def test_durable_stop_completes_with_the_saved_boundary(manager, monkeypatch):
+    from types import SimpleNamespace
+    expected = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef',
+                'generation': 1, 'lease_id': 'lease'}
+    state = {**manager._default_state(), 'status': 'active', 'game': 'hanjuku-hero',
+             'previous_game': 'sorengame', 'bot_identity': expected}
+    manager._write_state(state)
+    monkeypatch.setattr(manager.store.canonical, 'load',
+                        lambda: ({'phase': 'ready', 'active': expected}, False))
+    monkeypatch.setattr(manager, '_active_game_reader', lambda: 'hanjuku-hero')
+    seen = {}
+
+    def switched(*args, **kwargs):
+        request_id = kwargs['request_id']
+        record = read_record(manager.g.state_dir / 'runtimes/g1-abcdef' / MANUAL_SAVE_FILE)
+        seen['manual_save'] = record
+        assert record['request_id'] == request_id
+        game_switch.atomic_write_json(
+            manager.g.state_dir / 'runtimes/g1-abcdef' / BOUNDARY_FILE,
+            {**expected, 'schema': 1, 'request_id': request_id, 'status': 'reached',
+             'outcome': 'suspended'})
+        return SimpleNamespace(status='succeeded')
+
+    manager.coordinator.switch.side_effect = switched
+    marker = _stop_marker(manager)
+
+    result = manager._rotation_stop_result()
+
+    assert result.status == 'completed'
+    assert seen['manual_save']['request_id'] == manager._read_state()['restore_request_id']
+    assert manager._read_state()['end_reason'] == 'manual_saved_stop'
+    assert not marker.exists()

@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from docich.broadcast_view import BROADCAST_TRANSLATE_ARGS  # noqa: E402
 from docich.nethack_spectator_live import ActiveRuntime  # noqa: E402
 from docich.nethack_tiles_supervisor import (  # noqa: E402
     NethackTilesSupervisor,
@@ -81,6 +82,9 @@ class NethackTilesSupervisorTests(unittest.TestCase):
         )
         self.assertEqual(profile.parent, supervisor.runtime_dir)
         self.assertFalse(any("remote-debugging" in arg for arg in command))
+        # Repository standard: no browser translation tip over the stream.
+        for argument in BROADCAST_TRANSLATE_ARGS:
+            self.assertIn(argument, command)
 
     def test_browser_binary_prefers_installed_google_chrome(self):
         calls = []
@@ -518,3 +522,10 @@ class NethackTilesSupervisorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_proc_identity_treats_a_process_exiting_mid_read_as_gone():
+    from docich import nethack_tiles_supervisor as supervisor
+
+    with mock.patch.object(supervisor.Path, "read_text", side_effect=ProcessLookupError(3, "gone")):
+        assert supervisor._proc_identity(4242) is None

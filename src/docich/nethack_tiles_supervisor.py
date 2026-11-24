@@ -22,6 +22,7 @@ from urllib.request import urlopen
 from uuid import uuid4
 
 if __package__:
+    from .broadcast_view import BROADCAST_TRANSLATE_ARGS
     from .game_switch import GameSwitchStore, atomic_write_json
     from .nethack_spectator_live import (
         ActiveRuntime,
@@ -32,6 +33,7 @@ if __package__:
     from .nethack_spectator_server import NethackSpectatorFrameServer
 else:  # production invokes this file as a script through presentation.py
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from docich.broadcast_view import BROADCAST_TRANSLATE_ARGS
     from docich.game_switch import GameSwitchStore, atomic_write_json
     from docich.nethack_spectator_live import (
         ActiveRuntime,
@@ -72,10 +74,16 @@ _BROWSER_NAMES = (
 _POLL_INTERVAL_S = 0.5
 MANIFEST_REFRESH_INTERVAL_S = 1.0
 MAX_PROCESS_GROUP_MEMBERS = 128
-# Give cold Chromium startup time under Xvfb. The parent presentation process
-# must outlive this wait so it can observe either the browser or TTY fallback.
-BROWSER_WINDOW_WAIT_S = 20.0
-PRESENTATION_WINDOW_WAIT_S = 30.0
+# Give cold Chromium startup time under Xvfb. CI runners under load have
+# taken longer than 20s to map the first browser window, which forced an
+# unnecessary TTY fallback and then a readiness timeout (docich#3240).
+BROWSER_WINDOW_WAIT_S = 30.0
+# The parent presentation process must outlive the supervisor's worst-case
+# startup path before it may record viewer_timeout: frame service start (<=3s)
+# + browser window wait + browser stop + TTY fallback window wait (8s) is
+# already ~50s, so a smaller value would declare failure while the fallback
+# window is still legitimately appearing (docich#3240).
+PRESENTATION_WINDOW_WAIT_S = 60.0
 _TTY_WINDOW_WAIT_S = 8.0
 _READER_GRACE_S = 12.0
 
@@ -114,7 +122,7 @@ def _proc_identity(pid: int) -> dict[str, int | str] | None:
     """Read PID, process-group, session and start-time identity from procfs."""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError:
         return {}
@@ -681,6 +689,10 @@ class NethackTilesSupervisor:
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--hide-scrollbars",
+            # Repository standard: no browser translation tip over the stream.
+            # The tiles page is the game's own UI, so no Japanese UI language
+            # is pinned here; only the translation switches apply.
+            *BROADCAST_TRANSLATE_ARGS,
         ]
 
     def _start_browser(self) -> None:

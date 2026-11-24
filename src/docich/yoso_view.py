@@ -22,9 +22,12 @@ import uuid
 
 from .prediction_leaderboard import (
     DEFAULT_LIMIT,
+    DEFAULT_MIN_PARTICIPATIONS,
     DEFAULT_MIN_ROUNDS,
     FILE as LEDGER_FILE,
     LeaderboardError,
+    METRICS,
+    boards as leaderboard_boards,
     load as load_ledger,
     ranking,
     stats,
@@ -35,9 +38,18 @@ VIEW_NAME = "yosou-view"
 MAX_NAME_CHARS = 24
 MAX_MIN_ROUNDS = 100
 MAX_LIMIT = 50
+# The corner reads each department aloud through the shared audio queue, one
+# item per department, under a `yosou:board:<metric>` source. The shared audio
+# worker renames the queued `.txt` to `.playing` before synthesis and removes it
+# only after the playback attempt finished, so a `.playing` marker is the
+# observable "this department is being read right now" signal the screen follows.
+VOICE_PREFIX = "yosou:"
+BOARD_VOICE_PREFIX = "yosou:board:"
+# A marker older than this is a leftover (crashed worker), never a live reading.
+VOICE_MAX_AGE_S = 600
 
 HTML = r'''<!doctype html>
-<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="ja" translate="no"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="google" content="notranslate">
 <title>予想王</title>
 <style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1017;color:#f2f5f8;font-family:"Noto Sans CJK JP","Yu Gothic",sans-serif}
@@ -51,7 +63,7 @@ table{width:100%;border-collapse:collapse;table-layout:fixed}
 thead th{background:#13202d;color:#8ea6b6;font-size:10px;letter-spacing:.1em;font-weight:600;text-align:left;padding:6px 10px;border-bottom:1px solid #263a4c;white-space:nowrap;overflow:hidden}
 tbody td{padding:6px 10px;border-bottom:1px solid #1b2937;font-size:17px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 tbody tr:nth-child(1) td{background:linear-gradient(90deg,#3a2f12aa,#13202d00)}
-.rank{width:58px;font-weight:800;color:#ffd67a;font-size:20px}.name{width:auto;font-weight:700}.rate{width:118px;color:#9ff0c8;font-weight:750}.rounds{width:86px;color:#c8d6e2}.won{width:132px;color:#ffd9a8}.net{width:112px}
+.rank{width:58px;font-weight:800;color:#ffd67a;font-size:20px}.name{width:auto;font-weight:700}.record{width:132px;color:#ffd9a8;font-weight:750}.rate{width:104px;color:#9ff0c8;font-weight:750}.net{width:104px}#board-tag{margin-left:10px;color:#9fd3dc;font-weight:700}
 .up{color:#9ff0c8}.down{color:#ffb1b1}.zero{color:#8fa3b3}
 #empty{padding:38px 20px;text-align:center;color:#9fb0bf;font-size:18px;line-height:1.7}
 #unavailable{position:absolute;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:#0b1017ee;color:#f0d9ad;text-align:center;font-size:20px;line-height:1.7;padding:40px}
@@ -63,9 +75,9 @@ tbody tr:nth-child(1) td{background:linear-gradient(90deg,#3a2f12aa,#13202d00)}
 <div><span class="eyebrow">PREDICTION KING</span><h1>予想王</h1><div class="sub">チャンネルポイント予想・的中率ランキング</div></div>
 <div class="tags"><span class="tag">上位予想者のみ集計</span><span class="tag" id="window-tag">最小参加数 -</span></div>
 </header>
-<div id="status-line"><span><i class="dot"></i><span id="state">台帳を確認中</span></span><span id="totals"></span></div>
+<div id="status-line"><span><i class="dot"></i><span id="state">台帳を確認中</span><span id="board-tag"></span></span><span id="totals"></span></div>
 <section id="board">
-<table><thead><tr><th class="rank">順位</th><th class="name">表示名</th><th class="rate">的中率</th><th class="rounds">参加数</th><th class="won">獲得ポイント</th><th class="net">純増</th></tr></thead><tbody id="rows"></tbody></table>
+<table><thead><tr><th class="rank">順位</th><th class="name">表示名</th><th class="record" id="record-head">記録</th><th class="rate">的中率</th><th class="net">純増</th></tr></thead><tbody id="rows"></tbody></table>
 <div id="empty" hidden>確定した予想がまだありません</div>
 </section>
 <div id="footer">出典：Twitch Helix GET /helix/predictions の top_predictors（RESOLVEDのみ）／ 半熟英雄・Sorenの予想 ／ 上位予想者だけを集計したランキングです（全参加者の的中率ではありません）</div>
@@ -79,23 +91,67 @@ function pct(v){return `${(v*100).toFixed(1)}%`;}
 function points(v){return String(v);}
 function net(v){const sign=v>0?'+':'';return `${sign}${v}`;}
 function showUnavailable(on){document.getElementById('unavailable').hidden=!on;}
-function render(data){
- document.getElementById('state').textContent='確定済みの予想を集計したランキング';
- document.getElementById('totals').textContent=`確定 ${data.rounds} 予想 ／ 集計対象 ${data.viewers} 名`;
- document.getElementById('window-tag').textContent=`最小参加数 ${data.min_rounds}`;
+// 部門は5指標それぞれ独立したランキング。1枚の表を一定秒数で切り替える（#933 (a)）。
+const BOARDS=[
+ {key:'hit_rate',label:'予想的中率',head:'参加数',record:r=>`${r.rounds}回`},
+ {key:'staked',label:'賭けたポイント数',head:'賭けたpt',record:r=>`${r.used}pt`},
+ {key:'won',label:'得たポイント数',head:'得たpt',record:r=>`${r.won}pt`},
+ {key:'lost',label:'失ったポイント数',head:'失ったpt',record:r=>`${r.lost}pt`},
+ {key:'plays',label:'賭けた回数',head:'賭けた回数',record:r=>`${r.participations}回`}
+];
+const BOARD_SECONDS=18;
+let boardIndex=0;
+let lastData=null;
+// 読み上げと画面の連動。/api/yosou の voice は共有音声キューの観測結果で、
+// speaking = いま合成・再生中の部門、active = このコーナーの読み上げが残っている間。
+// 一度でも active を観測したら以後は読み上げに従い、18秒の自動切替は止める
+// （部門の合間は直前の部門を出したままにする）。読み上げが無い（音声オフ・投入失敗）
+// ときだけ従来どおり18秒ごとに回す。
+let voiceLatched=false;
+let voiceSpeaking=false;
+function followVoice(data){
+ const voice=data.voice;
+ if(!voice||typeof voice!=='object')return;
+ if(voice.active===true&&!voiceLatched){voiceLatched=true;boardIndex=0;}
+ const at=BOARDS.findIndex(b=>b.key===voice.speaking);
+ voiceSpeaking=at>=0;
+ if(voiceSpeaking)boardIndex=at;
+}
+function rowsFor(data,cfg){
+ if(data.boards&&Array.isArray(data.boards[cfg.key]))return data.boards[cfg.key];
+ return cfg.key==='hit_rate'&&Array.isArray(data.ranking)?data.ranking:[];
+}
+function draw(){
+ if(!lastData)return;
+ const data=lastData,cfg=BOARDS[boardIndex],rows=rowsFor(data,cfg);
+ document.getElementById('record-head').textContent=cfg.head;
+ document.getElementById('board-tag').textContent=`部門 ${boardIndex+1}/${BOARDS.length} ${cfg.label}${voiceSpeaking?' ♪ 読み上げ中':''}`;
+ document.getElementById('window-tag').textContent=cfg.key==='hit_rate'
+  ?`最小参加数 ${data.min_rounds}`
+  :`最小参加数 ${data.min_participations}`;
  const body=document.getElementById('rows');body.replaceChildren();
- for(const row of data.ranking){
+ for(const row of rows){
   const tr=document.createElement('tr');
-  const cells=[[String(row.rank),'rank'],[row.user_name,'name'],[pct(row.hit_rate),'rate'],
-   [points(row.rounds),'rounds'],[points(row.won),'won'],[net(row.net),'net '+(row.net>0?'up':row.net<0?'down':'zero')]];
+  const cells=[[String(row.rank),'rank'],[row.user_name,'name'],[cfg.record(row),'record'],
+   [pct(row.hit_rate),'rate'],[net(row.net),'net '+(row.net>0?'up':row.net<0?'down':'zero')]];
   for(const [text,className] of cells){const td=document.createElement('td');td.className=className;td.textContent=text;tr.append(td);}
   body.append(tr);
  }
- document.getElementById('empty').hidden=data.ranking.length>0;
+ document.getElementById('empty').hidden=rows.length>0;
  document.getElementById('empty').textContent=data.rounds>0
-  ?`確定 ${data.rounds} 予想のうち、最小参加数（${data.min_rounds}）を満たす予想者はいません`
+  ?`この部門で条件（最小参加数）を満たす予想者はいません`
   :'確定した予想がまだありません';
+ // 休止の解除はここでは行わない。draw() は部門切替タイマーからも呼ばれ、
+ // 失敗中に古い lastData を描き直すだけで取得状態を変えてはいけない（#2435 P2）。
+}
+function render(data){
+ document.getElementById('state').textContent='確定済みの予想を集計したランキング';
+ document.getElementById('totals').textContent=`確定 ${data.rounds} 予想 ／ 集計対象 ${data.viewers} 名`;
+ lastData=data;
+ followVoice(data);
+ // 取得成功の経路だけが休止表示を解除する。
  showUnavailable(false);
+ draw();
 }
 async function poll(){
  try{
@@ -106,8 +162,63 @@ async function poll(){
   render(data);
  }catch(_){showUnavailable(true);document.getElementById('state').textContent='台帳を再確認中';}
 }
+setInterval(()=>{if(voiceLatched)return;boardIndex=(boardIndex+1)%BOARDS.length;draw();},BOARD_SECONDS*1000);
 poll();setInterval(poll,2000);
 </script></html>'''
+
+
+def board_voice_context(metric: str) -> str:
+    """Audio-queue source of one department's read-aloud item."""
+    return f"{BOARD_VOICE_PREFIX}{metric}"
+
+
+def voice_state(queue_dir, *, clock=time.time) -> dict:
+    """Read-only: which department the audio worker is reading right now.
+
+    ``active`` is true while any item of this corner is queued or playing;
+    ``speaking`` is the department whose item is being synthesized/played, or
+    ``None`` between items. An unreadable or missing queue is "not active", so
+    the screen falls back to its own timed rotation instead of freezing.
+    """
+    state = {"active": False, "speaking": None}
+    if queue_dir is None:
+        return state
+    queue = Path(queue_dir)
+    now = clock()
+
+    def claimed_at(path):
+        """ctime of a live marker, or None if it vanished or is a leftover.
+
+        One stat per marker: the worker removes a finished item at any moment,
+        and a marker that disappears between two calls must not discard the
+        whole observation. rename() bumps ctime but not mtime, so ctime is when
+        playback was claimed.
+        """
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        stamp = max(info.st_mtime, info.st_ctime)
+        return stamp if now - stamp <= VOICE_MAX_AGE_S else None
+
+    try:
+        state["active"] = any(
+            claimed_at(path) is not None
+            for suffix in (".playing", ".txt")
+            for path in queue.glob(f"comment_*_{VOICE_PREFIX}*{suffix}")
+        )
+        newest = None
+        for metric in METRICS:
+            for path in queue.glob(f"comment_*_{board_voice_context(metric)}.playing"):
+                stamp = claimed_at(path)
+                if stamp is not None and (newest is None or stamp > newest[0]):
+                    newest = (stamp, metric)
+        if newest is not None:
+            state["speaking"] = newest[1]
+            state["active"] = True
+    except OSError:
+        return {"active": False, "speaking": None}
+    return state
 
 
 class YosoViewError(ValueError):
@@ -130,19 +241,42 @@ def display_name(value: str) -> str:
 
 
 def board(state_dir, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
+          min_participations: int = DEFAULT_MIN_PARTICIPATIONS,
           limit: int = DEFAULT_LIMIT, clock=time.time) -> dict:
     """Project the recorded leaderboard to the fixed broadcast payload."""
     min_rounds = _int_bound(min_rounds, 1, MAX_MIN_ROUNDS, "min_rounds")
+    min_participations = _int_bound(min_participations, 1, MAX_LIMIT, "min_participations")
     limit = _int_bound(limit, 1, MAX_LIMIT, "limit")
     ledger = load_ledger(Path(state_dir) / LEDGER_FILE)
     counts = stats(ledger)
     rows = ranking(ledger, min_rounds=min_rounds, limit=limit)
+    all_boards = leaderboard_boards(ledger, min_rounds=min_rounds,
+                                    min_participations=min_participations, limit=limit)
+    def _project(metric_rows):
+        return [
+            {
+                "rank": index,
+                "user_name": display_name(row["user_name"] or row["user_login"]),
+                "hit_rate": row["hit_rate"],
+                "rounds": row["rounds"],
+                "participations": row["participations"],
+                "hits": row["hits"],
+                "used": row["used"],
+                "won": row["won"],
+                "lost": row["lost"],
+                "refunded": row["refunded"],
+                "net": row["net"],
+            }
+            for index, row in enumerate(metric_rows, 1)
+        ]
     return {
         "ok": True,
         "updated_at": int(clock()),
         "rounds": counts["rounds"],
         "viewers": counts["viewers"],
+        "canceled": counts.get("canceled", 0),
         "min_rounds": min_rounds,
+        "min_participations": min_participations,
         "limit": limit,
         "ranking": [
             {
@@ -157,12 +291,15 @@ def board(state_dir, *, min_rounds: int = DEFAULT_MIN_ROUNDS,
             }
             for index, row in enumerate(rows, 1)
         ],
+        "boards": {metric: _project(metric_rows)
+                   for metric, metric_rows in all_boards.items()},
     }
 
 
 def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
                 lease_id=None, min_rounds: int = DEFAULT_MIN_ROUNDS,
-                limit: int = DEFAULT_LIMIT, clock=time.time):
+                min_participations: int = DEFAULT_MIN_PARTICIPATIONS,
+                limit: int = DEFAULT_LIMIT, clock=time.time, queue_dir=None):
     state_dir = Path(state_dir)
     if not isinstance(runtime_id, str) or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", runtime_id) is None:
         raise YosoViewError("invalid runtime id")
@@ -175,6 +312,7 @@ def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
         except (ValueError, TypeError, AttributeError):
             raise YosoViewError("invalid lease id") from None
     min_rounds = _int_bound(min_rounds, 1, MAX_MIN_ROUNDS, "min_rounds")
+    min_participations = _int_bound(min_participations, 1, MAX_LIMIT, "min_participations")
     limit = _int_bound(limit, 1, MAX_LIMIT, "limit")
 
     class Handler(BaseHTTPRequestHandler):
@@ -211,11 +349,13 @@ def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
                 self.reply(404, b"not found", "text/plain; charset=utf-8")
                 return
             try:
-                data = board(state_dir, min_rounds=min_rounds, limit=limit, clock=clock)
+                data = board(state_dir, min_rounds=min_rounds,
+                             min_participations=min_participations, limit=limit, clock=clock)
             except (OSError, LeaderboardError, YosoViewError):
                 data, status = {"ok": False, "reason": "leaderboard-unavailable"}, 503
             else:
                 status = 200
+                data["voice"] = voice_state(queue_dir, clock=clock)
             data.update(runtime_id=runtime_id, generation=generation, lease_id=lease_id)
             self.reply(status, json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8"),
                        "application/json; charset=utf-8")
@@ -225,14 +365,16 @@ def handler_for(state_dir, runtime_id: str = "preview", *, generation=None,
 
 def serve(state_dir, *, port: int = DEFAULT_PORT, runtime_id: str = "preview",
           generation=None, lease_id=None, min_rounds: int = DEFAULT_MIN_ROUNDS,
-          limit: int = DEFAULT_LIMIT) -> None:
+          min_participations: int = DEFAULT_MIN_PARTICIPATIONS,
+          limit: int = DEFAULT_LIMIT, queue_dir=None) -> None:
     if type(port) is not int or not 1024 <= port <= 65535:
         raise YosoViewError("invalid port")
     # No --host switch: the listener can never bind publicly by configuration.
     with ThreadingHTTPServer(
         ("127.0.0.1", port),
         handler_for(state_dir, runtime_id, generation=generation, lease_id=lease_id,
-                    min_rounds=min_rounds, limit=limit),
+                    min_rounds=min_rounds, min_participations=min_participations,
+                    limit=limit, queue_dir=queue_dir),
     ) as server:
         server.serve_forever(poll_interval=0.2)
 
@@ -245,12 +387,17 @@ def main(argv=None) -> int:
     parser.add_argument("--generation", type=int)
     parser.add_argument("--lease-id")
     parser.add_argument("--min-rounds", type=int, default=DEFAULT_MIN_ROUNDS)
+    parser.add_argument("--min-participations", type=int, default=DEFAULT_MIN_PARTICIPATIONS)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    parser.add_argument("--queue-dir", type=Path, default=None,
+                        help="共有音声キュー（読み取り専用）。指定すると読み上げ中の部門へ画面が追従する")
     args = parser.parse_args(argv)
     try:
         serve(args.state_dir, port=args.port, runtime_id=args.runtime_id,
               generation=args.generation, lease_id=args.lease_id,
-              min_rounds=args.min_rounds, limit=args.limit)
+              min_rounds=args.min_rounds,
+              min_participations=args.min_participations, limit=args.limit,
+              queue_dir=args.queue_dir)
     except (OSError, YosoViewError):
         print(json.dumps({"ok": False, "reason": "view-unavailable"}))
         return 2

@@ -1,0 +1,69 @@
+"""_boss_wave_pick probes front castles with arrival_probe_due when no staffed
+castle has >= 2 known generals (#4869).
+"""
+from docich import hanjuku_chart as chart
+from docich.hanjuku.strategy import replan
+
+
+def _ch1_all_owned_mem(garrison, sorties, tick=5000):
+    castles = chart.castles(1)
+    boss = chart.boss_castle(1)
+    owned = [c for c in castles if not chart.is_boss_castle(c)]
+    return {
+        'chapter': 1,
+        'tick': tick,
+        'captured': list(owned),
+        'lost': [],
+        'world': {
+            'garrison': garrison,
+            'sorties': sorties,
+        },
+        'plan': {'orders': {}},
+        'route_probe_read_tick': {},
+        'arrival_probe_tick': {},
+    }
+
+
+def test_boss_wave_pick_probes_single_defender_castle_with_arrived_transfer():
+    castles = chart.castles(1)
+    boss = chart.boss_castle(1)
+    non_boss = [c for c in castles if not chart.is_boss_castle(c)]
+    front = non_boss[-1]
+    garrison = {c: ['どうし'] if c == chart.home_castle(1) else ([] if c != front else ['ヴィーナス'])
+                for c in non_boss}
+    sorties = {
+        'M:1': {
+            'general': 'ココット', 'source': chart.home_castle(1),
+            'target': front, 'purpose': 'move', 'status': 'overdue', 'tick': 1000,
+        },
+    }
+    mem = _ch1_all_owned_mem(garrison, sorties, tick=5000)
+    cands = replan.interim_candidates(mem, allow_sole=False)
+    boss_orders = [o for o in cands.values() if o.get('target') == boss]
+    assert boss_orders, f'Expected arrival probe boss order for {front}, got {cands}'
+    assert boss_orders[0]['source'] == front
+    assert boss_orders[0]['general'] == replan.MOVE_ANY_GENERAL
+
+
+def test_boss_wave_pick_prefers_known_two_general_castle_over_arrival_probe():
+    castles = chart.castles(1)
+    boss = chart.boss_castle(1)
+    non_boss = [c for c in castles if not chart.is_boss_castle(c)]
+    front = non_boss[-1]
+    other = non_boss[-2]
+    garrison = {c: [] for c in non_boss}
+    garrison[chart.home_castle(1)] = ['どうし']
+    garrison[front] = ['ヴィーナス']
+    garrison[other] = ['ココット', 'ゼウス']
+    sorties = {
+        'M:1': {
+            'general': 'アポロン', 'source': chart.home_castle(1),
+            'target': front, 'purpose': 'move', 'status': 'overdue', 'tick': 1000,
+        },
+    }
+    mem = _ch1_all_owned_mem(garrison, sorties, tick=5000)
+    cands = replan.interim_candidates(mem, allow_sole=False)
+    boss_orders = [o for o in cands.values() if o.get('target') == boss]
+    assert boss_orders
+    assert boss_orders[0]['source'] == other
+    assert boss_orders[0]['general'] != replan.MOVE_ANY_GENERAL

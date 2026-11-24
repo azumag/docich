@@ -168,7 +168,11 @@ def _finish(rows, event, *, env, researcher):
         return _hold(rows, "runtime_evidence_unavailable")
     try:
         if researcher is None:
-            from ..reply_research import research as researcher
+            if (decision.scope == "web"
+                    and env.get("DOCICH_REPLY_WEB_DIRECT_BATCH_ENABLED", "0") == "1"):
+                from .web_batch import research as researcher
+            else:
+                from ..reply_research import research as researcher
         evidence = researcher(
             [{"role": "user", "content": text} for text in decision.research_comments],
             decision.scope, env=env, timeout_sec=45.0,

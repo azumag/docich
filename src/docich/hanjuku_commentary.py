@@ -47,6 +47,20 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'name_confirm':
         return 'name', '主人公の名前を「どうし」と入力して、冒険を始めます。'
     if kind == 'order_start':
+        if rec.get('roster_probe') is True:
+            # Read-only check of a castle recorded with one general: this is
+            # not a sortie, so it must not be announced as an attack plan.
+            return (f'order_probe:{step}',
+                    f"{rec['source']}城の将軍一覧を読んで、増援が着いているか確認します。")
+        from .hanjuku_chart import HERO
+        if rec.get('general') == HERO:
+            # Owner 2026-11-08: 主人公はアルマムーンから動かない。Deploy answers a
+            # hero-led order with a companion picked from the live list, and a
+            # boss order may change its source too, so announcing the hero (or
+            # his castle) as this sortie's actor is a plan nobody executes.
+            return (f'order_hero:{step}',
+                    f"主人公は動かさず、{rec['target']}城へは代わりの将軍を向かわせる計画です。"
+                    f"持たせる切り札は{_cards(rec.get('cards'))}です。")
         return (f'order:{step}',
                 f"出撃準備の予定です。{rec['general']}将軍を{rec['source']}から{rec['target']}城へ向かわせる計画です。"
                 f"持たせる切り札は{_cards(rec.get('cards'))}です。")
@@ -129,17 +143,34 @@ def compose(rec: dict) -> tuple[str, str | None]:
             text += 'チャートの予定と条件が異なるため、買える範囲で進めます。'
         text += f'購入予定は{cards}です。' if cards else '切り札の購入はありません。'
         if type(soldiers) is int and soldiers > 0:
-            text += f'兵士を{soldiers}人補充します。'
+            # A plan made before this month's count is read (Issue #2366).
+            text += f'兵士を{soldiers}人補充する予定です。'
         return f"plan:{rec['month']}", text
     if kind == 'buy':
         return f"buy:{rec.get('card')}:{rec.get('qty')}", f"{rec['card']}を{rec['qty']}個購入する予定です。決定操作を進めます。"
     if kind == 'soldier_refill':
         return 'soldiers', f"兵士を{rec['qty']}人補充します。"
+    if kind == 'soldier_refill_outcome':
+        # Closes an announced refill that was never paid; never a purchase.
+        metric = rec.get('observed_metric') or {}
+        ending = {'cancelled': '確認の途中で別の画面に移ったため、今月は中止しました。',
+                  'unverified': '人数や支払いを画面で確認できなかったため、補充できたとは扱いません。',
+                  'attempt_limit': '補充の画面が決められた回数のうちに開かなかったため、今月は打ち切りました。',
+                  }.get(rec.get('resulting_event'))
+        planned = metric.get('planned')
+        if ending is None or type(planned) is not int or planned <= 0:
+            return 'soldiers_outcome', None
+        return 'soldiers_outcome', f'予定していた兵士の補充は、{ending}'
     if kind == 'poor_harvest':
         return 'harvest', '凶作です。チャートならリセットする場面ですが、このまま進めます。'
     if kind == 'prompt' and rec.get('strategy_variant') == 'accept_duel':
         return 'duel', '一騎打ちを受ける操作を選びます。成立後は青ゲージを使う予定です。'
     if kind == 'egg_battle':
+        metric = rec.get('observed_metric') or {}
+        egg_need = metric.get('egg_need')
+        if isinstance(egg_need, dict) and egg_need.get('rule') == 'melee_only_summon':
+            monster = egg_need.get('enemy_monster') or 'ゾンビ'
+            return 'egg', f'敵の召喚獣は{monster}なので、たまごを使わず白兵で対処します。'
         if rec.get('strategy_variant') == 'egg_battle_use_egg':
             return 'egg', '敵が卵で召喚獣を呼び出しました。こちらもたまごで応戦します。'
         return 'egg', '敵が卵で召喚獣を呼び出しました。コマンドはこうげきで応戦します。'
@@ -175,7 +206,8 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'chart_adjust_request', f'{why}ので、AIに新しい攻略チャートを作らせています。'
     if kind == 'chart_adjust_applied':
         digest = rec.get('order_digest') or []
-        heads = [f"{d['general']}→{d['target']}" for d in digest
+        heads = [f"{d['source']}の一覧確認" if d.get('roster_probe')
+                 else f"{d['general']}→{d['target']}" for d in digest
                  if isinstance(d, dict) and d.get('general') and d.get('target')]
         if not heads:
             steps = rec.get('local_steps') or rec.get('steps') or []
@@ -190,7 +222,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
             'retake': (f"奪われた{rec['target']}を白兵で奪い", '返します', '返す'),
             'move': (f"{rec.get('source')}から空の{rec['target']}へ", '移ります', '移る'),
         }.get(rec.get('purpose'), (f"{rec['target']}を白兵で", '攻めます', '攻める'))
-        if rec.get('strategy_variant') == 'chart_interim_fallback':
+        if rec.get('strategy_variant') in ('chart_interim_fallback', 'chart_interim_mechanical'):
             return (f"jev_interim:{rec.get('target')}",
                     f"調整チャートを待つ間、{rec['general']}が{stem}{polite}。")
         return (f"jev_interim:{rec.get('target')}",
@@ -202,6 +234,13 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'chart_interim_hold':
         # Only when there is literally nothing left to retake, attack or staff.
         return 'jev_interim_hold', '動かせる将軍と攻め先が無いため、調整チャートを待っています。'
+    if kind == 'battle_okunote_risk_accepted':
+        metric = rec.get('observed_metric') or {}
+        hp = metric.get('ally_hp')
+        safe = metric.get('safe_candidates')
+        hp_s = f'味方HP{hp}' if type(hp) is int else '味方HPは読めず'
+        safe_s = f'安全候補{len(safe)}体' if isinstance(safe, list) and safe else '安全候補あり'
+        return 'battle_okunote_risk_accepted', f'{hp_s}、{safe_s}を観測したため、おくのてを開きます。'
     return f'other:{kind}', None
 
 
@@ -212,7 +251,8 @@ SPOKEN = frozenset({
     'battle_egg_dropped', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
-    'castle_lost_observed', 'castle_owned_observed'})
+    'castle_lost_observed', 'castle_owned_observed', 'soldier_refill_outcome',
+    'battle_rescue_rearmed', 'battle_okunote_risk_accepted'})
 
 
 # ---------------------------------------------------------------- game over
@@ -315,6 +355,7 @@ def recap_body(runtime_dir, run_state) -> str:
     if not records:
         outcome = {
             'game_over': '今回はゲームオーバーとなりました。',
+            'game_clear': '今回はクリアエンディングまで到達しました。',
             'screen_stalled': '今回は画面停止で終了しました。',
             'input_stalled': '今回は入力停滞で終了しました。',
             'manual_saved_stop': '今回はセーブして終了しました。',
@@ -354,7 +395,7 @@ def recap_body(runtime_dir, run_state) -> str:
     }.get(terminal_reason, '今回の挑戦は、')
     if progress:
         story = [f"{lead}記録上は{'・'.join(progress)}まで進みました。"]
-    elif terminal_reason in {'game_over', 'screen_stalled', 'input_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
+    elif terminal_reason in {'game_over', 'game_clear', 'screen_stalled', 'input_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
         story = [f'{lead.rstrip("、")}ました。確認できた戦況から振り返ります。']
     else:
         story = ['今回の挑戦を、確認できた戦況から振り返ります。']

@@ -28,6 +28,54 @@ def screen(gold=72, on='へいしほじゅう'):
     return parse(month_canvas(gold, month=8, on=on))
 
 
+def chapterless_quantity():
+    s = quantity(gold=72)
+    s.text += 'のさゆうでケタがじょうげですうちがかわりますぞ'
+    return s
+
+
+def chapterless_memory():
+    mem = memory()
+    mem.update(chapter=None, resume_chapter_pending=True)
+    mem['shop'].update(soldiers=21, soldiers_done=False, recruit='deferred_roster')
+    return mem
+
+
+def test_chapterless_resume_cancels_refill_without_payment_and_does_not_reopen():
+    mem = chapterless_memory()
+    for _ in range(3):
+        assert p.month_step(chapterless_quantity(), mem) == [p.pad('b')]
+        mem = json.loads(json.dumps(mem))
+    assert p.month_step(chapterless_quantity(), mem) == []
+    assert mem['shop']['soldiers_done'] is True
+    assert mem['shop']['refill_outcome'] == 'unverified'
+    assert not mem['shop'].get('soldier_receipt')
+    assert mem.get('soldiers_seen') is None and mem['chapter'] is None
+    assert p.month_step(screen(), mem) != [p.pad('a')]
+    assert mem['shop']['soldiers_done'] is True
+
+
+@pytest.mark.parametrize('block', ['header', 'wrong_month', 'identity', 'not_resume',
+                                  'receipt', 'sub', 'prompt', 'changed_run'])
+def test_chapterless_cancel_requires_current_unambiguous_unpaid_editor(block):
+    mem = chapterless_memory()
+    s = chapterless_quantity()
+    if block == 'header': s.header = None
+    elif block == 'wrong_month': mem['month'] = '1-7'
+    elif block == 'identity': mem['_run_identity']['lease_id'] = ''
+    elif block == 'not_resume': mem.pop('resume_chapter_pending')
+    elif block == 'receipt': mem['shop']['soldier_receipt'] = {'status': 'pending'}
+    elif block == 'sub': mem['month_sub'] = {'kind': 'egg'}
+    elif block == 'prompt': s.text = 'じゅうじキー'
+    elif block == 'changed_run':
+        mem['shop']['chapterless_refill_cancel'] = {
+            'identity': dict(IDENTITY, lease_id='different'), 'key': '1-8', 'presses': 0}
+    assert p.quantity_step(s, mem, soldiers=True) == []
+    assert not mem['shop'].get('refill_outcome')
+    if block != 'changed_run':
+        assert 'chapterless_refill_cancel' not in mem['shop']
+
+
 def observe_count(mem, count, gold=72):
     s=quantity(gold=gold);s.text+='へいしすうは'+str(count)+'めいです'
     p.observe_events(s,mem)
@@ -54,7 +102,7 @@ def test_read_zero_cancels_inspection_then_replaces_adjusted_zero_with_affordabl
     assert p.month_step(s,mem)==[p.pad('b')]
     assert mem['army_count_check']['result']=='measured'
     assert not mem['shop'].get('soldier_receipt')
-    assert mem['shop']['soldiers']==42  # 72G minus full30G wage floor
+    assert mem['shop']['soldiers']==50  # 72G, no wage floor
     assert mem['shop']['recruit']=='deferred_army'
     assert mem['shop']['recruit_reserve']==0
     assert p.month_step(screen(),mem)==[p.pad('a')]
@@ -99,20 +147,24 @@ def test_no_runtime_identity_or_header_cannot_bind_a_count_inspection():
     assert monthly._month_army_count_check(s,memory(),{}) is None
 
 
-@pytest.mark.parametrize('gold,reserve,wages,expected',[(45,15,30,0),(100,50,30,20),
-                                                    (70,0,62,40),(500,50,30,99)])
-def test_zero_refill_keeps_egg_repair_and_the_shortfall_floor(monkeypatch,gold,reserve,wages,expected):
+@pytest.mark.parametrize('gold,reserve,repair,wages,expected',[(45,15,0,30,45),(100,50,0,30,50),
+                                                           (100,50,50,30,50),(70,0,0,62,50),
+                                                           (500,50,0,30,99)])
+def test_zero_refill_keeps_repair_and_the_shortfall_floor_ahead_of_the_egg(
+        monkeypatch,gold,reserve,repair,wages,expected):
     # Owner (2026-10-14): a soldier refill does not reserve the whole measured
-    # payroll, only the documented month-end shortfall floor.
+    # payroll, only the documented month-end shortfall floor. Owner
+    # (2026-10-17): twenty or fewer soldiers are refilled before the egg hold.
     mem=memory(gold);observe_count(mem,0,gold)
-    shop=mem['shop'];shop['reserve']=reserve
+    shop=mem['shop'];shop.update(reserve=reserve,hero_repair_reserve=repair)
     monkeypatch.setattr(economy,'_egg_recovery_wage_floor',lambda m:wages)
-    economy._zero_army_refill(mem,shop,screen(gold).header)
+    economy._low_army_refill(mem,shop,screen(gold).header)
     assert shop['soldiers']==expected
+    assert shop['reserve']==reserve  # waits, not released or paid
     assert not shop.get('soldier_receipt')
 
 
-@pytest.mark.parametrize('block',['payment','ritual','unverified_recruit','unknown_price'])
+@pytest.mark.parametrize('block',['payment','ritual','unverified_recruit'])
 def test_live_or_unverified_transaction_is_never_rewritten(block):
     mem=memory();observe_count(mem,0);shop=mem['shop']
     if block=='payment':shop['soldier_receipt']={'status':'pending'}
@@ -120,7 +172,7 @@ def test_live_or_unverified_transaction_is_never_rewritten(block):
     elif block=='unverified_recruit':shop['recruit']='unverified'
     else:shop.update(merchant_done=False,items=[['未測定',1]])
     before=deepcopy(shop)
-    economy._zero_army_refill(mem,shop,screen().header)
+    economy._low_army_refill(mem,shop,screen().header)
     assert shop==before
 
 
@@ -151,8 +203,8 @@ def test_measured_empty_army_gets_a_plan_even_before_a_future_chart_purchase(mon
     monkeypatch.setattr(p.chart,'purchase_for',lambda *a:None)
     shop=economy._plan(mem,screen().header)
     assert shop is not None
-    economy._zero_army_refill(mem,shop,screen().header)
-    assert shop['soldiers']==42 and shop['soldiers_done'] is False
+    economy._low_army_refill(mem,shop,screen().header)
+    assert shop['soldiers']==50 and shop['soldiers_done'] is False
 
 
 def test_real_policy_snapshot_distinguishes_unread_stock_from_zero_purchase_plan():
@@ -325,7 +377,7 @@ def test_native_count_intro_a_only_opens_editor_then_inspection_uses_b():
 def test_finished_recruitment_receipt_is_kept_while_remaining_cash_refills_zero_army():
     mem=memory(100);observe_count(mem,0,100);shop=mem['shop']
     shop.update(recruit='done',recruit_receipt={'payment_verified':True,'cost':50})
-    economy._zero_army_refill(mem,shop,screen(100).header)
+    economy._low_army_refill(mem,shop,screen(100).header)
     assert shop['soldiers']==50 and shop['soldiers_done'] is False
     assert shop['recruit']=='done' and shop['recruit_receipt']=={'payment_verified':True,'cost':50}
     assert not shop.get('soldier_receipt')
@@ -363,29 +415,94 @@ def test_orchestrator_does_not_fallback_to_a_on_a_frozen_unread_count_check():
 
 
 def test_skipped_egg_priority_does_not_cancel_the_measured_zero_army_refill():
-    # g747 2-4 (2026-10-13 18:40-19:50): an egg recovery skipped as
-    # unaffordable zeroed the refill (soldiers_done) while the zero-army plan
-    # re-armed it on the next frame, so the bot walked to も〜おしまい!, then
-    # refused its own exit for an hour (#2116). The zero-army plan already
-    # holds the recovery reserve, so it must win and the refill must open.
+    # g747 2-4 (#2116): a skipped recovery must not zero/rearm the refill
+    # every frame and loop through month exit. Owner (2026-10-15): once
+    # recovery is skipped, its hold may fund necessary troops, not only the
+    # spare cash left after holding recovery money that cannot be spent.
     mem=memory()
     p.month_step(screen(),mem)
     s=observe_count(mem,0)
     p.month_step(s,mem)
     mem['shop'].update(egg_priority=True, egg='skipped', reserve=20)
     assert p.month_step(screen(),mem)==[p.pad('a')]
-    # 72G minus the full 30G wage floor and the 20G recovery reserve.
-    assert mem['shop']['soldiers']==22 and mem['shop']['soldiers_done'] is False
+    assert mem['shop']['soldiers']==50 and mem['shop']['soldiers_done'] is False
     assert not mem.get('month_exit')
-    assert mem['shop']['reserve']==20       # the recovery money stays held
+    assert mem['shop']['reserve']==0
+    assert mem['shop']['egg']=='skipped' and mem['soldiers_seen']==0
+    assert not mem['shop'].get('soldier_receipt')
 
 
-def test_skipped_egg_priority_still_preserves_money_without_a_measured_zero_army():
+def test_skipped_egg_priority_refills_a_measured_positive_but_insufficient_army():
+    # The latest owner rule applies to ten soldiers too, not only zero.
     mem=memory()
     p.month_step(screen(),mem)
     s=observe_count(mem,10)
     p.month_step(s,mem)
     mem['shop'].update(soldiers=30, soldiers_done=False, soldiers_recalculated=True,
                        egg_priority=True, egg='skipped', reserve=20)
-    p.month_step(screen(),mem)
-    assert mem['shop']['soldiers']==0 and mem['shop']['soldiers_done'] is True
+    assert p.month_step(screen(),mem)==[p.pad('a')]
+    assert mem['shop']['soldiers']==40 and mem['shop']['soldiers_done'] is False
+    assert mem['shop']['reserve']==0 and mem['shop']['egg']=='skipped'
+    assert mem['soldiers_seen']==10 and not mem['shop'].get('soldier_receipt')
+
+
+def test_closing_stage_advances_leftover_plain_text_with_a():
+    # g1097 43-3: the closing stage pressed its bounded Bs against a leftover
+    # plain-text message over the month menu, then held [] forever. A is the
+    # only key that dismisses such a message; choices/unread stay guarded.
+    from test_hanjuku_month_text_advance import menu as text_menu
+    mem = memory()
+    mem['month'] = '1-11'
+    s = text_menu(on='へいしほじゅう')
+    assert s.kind == 'month_menu' and monthly._month_dialog_body(s)
+    scope = economy._soldier_count_scope(mem, s.header)
+    mem['army_count_check'] = {'scope': scope, 'stage': 'closing',
+                               'result': 'unverified', 'exit_presses': 4}
+    for _ in range(3):
+        assert monthly._month_army_count_check(s, mem, mem['shop']) == [p.pad('a')]
+    assert any(r['decision'] == 'month_text_advance' for r in mem['_records'])
+    # A real choice is never confirmed by this recovery path.
+    mem2 = memory()
+    mem2['month'] = '1-11'
+    s2 = text_menu(on='へいしほじゅう', choices=True)
+    scope2 = economy._soldier_count_scope(mem2, s2.header)
+    mem2['army_count_check'] = {'scope': scope2, 'stage': 'closing',
+                                'result': 'unverified', 'exit_presses': 4}
+    assert monthly._month_army_count_check(s2, mem2, mem2['shop']) == []
+
+
+def test_closing_stage_releases_an_unclosable_screen():
+    # g1105 43-5: a foreground screen the check can neither close nor advance
+    # stayed owned forever; army_count_owned then suppressed the no-input
+    # escape and the menu froze until screen_stalled. The tick still holds,
+    # but the check releases the screen afterwards.
+    from test_hanjuku_month_text_advance import menu as text_menu
+    mem = memory()
+    mem['month'] = '1-11'
+    s = text_menu(on='へいしほじゅう', choices=True)
+    scope = economy._soldier_count_scope(mem, s.header)
+    mem['army_count_check'] = {'scope': scope, 'stage': 'closing',
+                               'result': 'unverified', 'exit_presses': 4}
+    assert monthly._month_army_count_check(s, mem, mem['shop']) == []
+    assert mem['army_count_check']['stage'] == 'unverified'
+    assert monthly._month_army_count_check(s, mem, mem['shop']) is None
+
+
+def test_stalled_month_menu_releases_the_army_check_with_b():
+    """g1107 46-9: army_count_owned suppressed the no-input escape for 300 s
+    and the run ended screen_stalled. The month menu must close with B."""
+    from docich.hanjuku_bot import decide
+    mem = memory()
+    p.month_step(screen(), mem)
+    p.month_step(observe_count(mem, 0), mem)
+    assert p.month_step(screen(), mem) == [p.pad('a')]
+    assert monthly.army_count_owned(mem)
+    frame = month_canvas(72, month=8, on='へいしほじゅう')
+    state = {'policy': mem, 'phase': 'month_menu', 'no_input_streak': 1000,
+             'no_input_frames': [frame.digest()]}
+    actions, out = decide(frame, state, run_identity=IDENTITY)
+    assert actions == [p.pad('b')]
+    assert 'army_count_check' not in out['policy']
+    assert out['policy']['shop']['soldiers_done'] is True
+    assert not out['policy']['shop'].get('soldier_receipt')
+    assert any(r['decision'] == 'month_menu_stall_release' for r in out['_records'])

@@ -39,6 +39,30 @@ def _write_state(path, **fields):
             os.unlink(temporary)
 
 
+def _record_viewer_failure(path, viewer, *, viewer_wait_sec, elapsed_s):
+    """Record why this presenter never showed a viewer window.
+
+    The reason is otherwise lost with the tmux pane, leaving the owning
+    adapter to report only that the game window vanished.  Best effort and
+    bounded: recording must never replace the real startup failure.
+    """
+    if not path:
+        return
+    exit_code = viewer.poll()
+    try:
+        _write_state(
+            path,
+            status='viewer_timeout' if exit_code is None else 'viewer_exited',
+            reason='native game viewer did not appear',
+            viewer_wait_sec=viewer_wait_sec,
+            elapsed_s=round(max(0.0, elapsed_s), 3),
+            viewer_exit_code=exit_code,
+            at=time.time(),
+        )
+    except OSError:
+        pass
+
+
 def _groups_stopped(children):
     # A reaped wrapper (e.g. dbus-run-session) does not prove its children
     # exited. Never publish stopped while its process group still exists.
@@ -60,6 +84,15 @@ SDL_SOFTWARE_RENDER_ENV = {
     'SDL_RENDER_DRIVER': 'software',
     'SDL_FRAMEBUFFER_ACCELERATION': '0',
 }
+
+# 投影 ffplay の x11grab 入力は、既定ではストリーム解析(FPS 推定)で読んだ約20
+# フレームを捨てずに先頭から表示する。x11grab は ffplay の realtime 扱いではない
+# ので外部クロックはこの遅れを取り戻さず、起動時の遅れがそのまま常駐する。
+# 15fps では約1.3秒になり、RetroArch から直接 Pulse へ出る音声が配信で映像より
+# 約1秒先行した(2026-10-29 本番 VM 実測: 元窓→:99 の投影遅延 1.2〜1.3秒)。
+# 解析で読んだフレームは捨て、FPS 推定の先読みもしない(VM の FFmpeg 6.1.1 で
+# 最初に渡るフレームが約1.2秒前のものから約0.07秒前のものになることを確認)。
+PROJECTION_INPUT_LOW_LATENCY = ('-fflags', 'nobuffer', '-fpsprobesize', '0')
 
 CELL_ASPECT_MIN = 0.25
 CELL_ASPECT_MAX = 4.0
@@ -161,6 +194,150 @@ def _volume_percent(value: str) -> int:
     return number
 
 
+# Bounded re-projection budget for the presenter's own player (#2097). The
+# output display restart is short, so a 60s window with a 2s cadence covers it
+# while still giving up (and leaving the failed state for the operator path).
+REPROJECT_WINDOW_S = 60.0
+REPROJECT_INTERVAL_S = 2.0
+REPROJECT_ATTEMPT_LIMIT = 30
+# After a re-projected player has survived this long, the next loss gets a
+# fresh budget instead of inheriting the exhausted one.
+REPROJECT_RESET_AFTER_S = 10.0
+
+# A window manager may decorate the projection ffplay (title bar + border)
+# even though ffplay is started with -noborder: -noborder only asks SDL to
+# set the Motif hint, and a recreated output display (Xvfb :99, 2026-11-13)
+# made Xfwm4 ignore the request. A decorated window is shifted by its frame
+# extents, so the projection no longer matches the broadcast rectangle and
+# the post-deploy realign fails closed with exit 24 (docich#4051). Force the
+# decoration off after launch instead of trusting the launch-time request.
+MOTIF_HINTS_DECORATIONS_OFF = "2, 0, 0, 0, 0"
+UNDECORATE_WAIT_S = 2.0
+UNDECORATE_POLL_S = 0.1
+
+
+def _projection_window_id(title, env, *, wait_s=UNDECORATE_WAIT_S):
+    """Return the visible projection window id, or '' when it never appears."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            found = subprocess.run(
+                ['xdotool', 'search', '--onlyvisible', '--name',
+                 f'^{re.escape(title)}$'],
+                env=env, capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+        ids = [line.strip() for line in found.stdout.splitlines()
+               if re.fullmatch(r'[1-9][0-9]*', line.strip())]
+        if len(ids) == 1:
+            return ids[0]
+        if time.monotonic() >= deadline:
+            return ''
+        time.sleep(UNDECORATE_POLL_S)
+
+
+def _frame_extents(window_id, env):
+    """Return the (left, right, top, bottom) frame extents, or None if unknown."""
+    try:
+        output = subprocess.check_output(
+            ['xprop', '-id', window_id, '_NET_FRAME_EXTENTS'],
+            env=env, text=True, timeout=3)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(
+        r'_NET_FRAME_EXTENTS\(CARDINAL\) = ([0-9]+), ([0-9]+), ([0-9]+), ([0-9]+)',
+        output)
+    if match is None:
+        return None
+    return tuple(int(match.group(i)) for i in range(1, 5))
+
+
+def _undecorate_window(window_id, env, x, y):
+    """Force decorations off and move the window to (x, y). Best effort."""
+    try:
+        subprocess.run(
+            ['xprop', '-id', window_id, '-f', '_MOTIF_WM_HINTS', '32c',
+             '-set', '_MOTIF_WM_HINTS', MOTIF_HINTS_DECORATIONS_OFF],
+            env=env, check=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3)
+        subprocess.run(['xdotool', 'windowunmap', window_id],
+                       env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+        subprocess.run(['xdotool', 'windowmap', window_id],
+                       env=env, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+        # Give the window manager a moment to re-read the hint on remap
+        # before placing the now undecorated client area.
+        time.sleep(0.2)
+        subprocess.run(
+            ['xdotool', 'windowmove', '--sync', window_id, str(x), str(y)],
+            env=env, check=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f'undecorate projection window failed: {type(exc).__name__}',
+              file=sys.stderr, flush=True)
+
+
+def _ensure_projection_undecorated(title, env, x, y):
+    """Remove WM decoration from the just-started projection window (#4051).
+
+    Best effort: a missing window, missing tools, or a failed hint change
+    must never stop the projection itself; the post-deploy realign still
+    fails closed on a real geometry mismatch.
+    """
+    try:
+        window_id = _projection_window_id(title, env)
+        if not window_id:
+            return
+        extents = _frame_extents(window_id, env)
+        if not extents or not any(extents):
+            return
+        _undecorate_window(window_id, env, x, y)
+    except Exception as exc:  # noqa: BLE001 - never break the projection
+        print(f'undecorate projection window failed: {type(exc).__name__}',
+              file=sys.stderr, flush=True)
+
+
+class ReprojectPolicy:
+    """One bounded restart budget for the owned projection player.
+
+    Only the player this process started is ever restarted: no other process is
+    adopted, no window is re-searched and the game/viewer children are left
+    untouched. Attempts stop at the window or the attempt limit, after which the
+    presenter keeps publishing ``presentation_failed`` for the operator path.
+    """
+
+    def __init__(self, *, window_s: float = REPROJECT_WINDOW_S,
+                 interval_s: float = REPROJECT_INTERVAL_S,
+                 limit: int = REPROJECT_ATTEMPT_LIMIT) -> None:
+        self.window_s = window_s
+        self.interval_s = interval_s
+        self.limit = limit
+        self.lost_at: float | None = None
+        self.last_attempt_at: float | None = None
+        self.attempts = 0
+
+    def lost(self, now: float) -> None:
+        if self.lost_at is None:
+            self.lost_at = now
+
+    def due(self, now: float) -> bool:
+        if self.lost_at is None or self.attempts >= self.limit:
+            return False
+        if now - self.lost_at > self.window_s:
+            return False
+        return self.last_attempt_at is None or now - self.last_attempt_at >= self.interval_s
+
+    def attempted(self, now: float) -> None:
+        self.attempts += 1
+        self.last_attempt_at = now
+
+    def reset(self) -> None:
+        self.lost_at = None
+        self.last_attempt_at = None
+        self.attempts = 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--display', required=True)
@@ -200,8 +377,24 @@ def _parser() -> argparse.ArgumentParser:
     # exact named window changes; never restart repeatedly against one failed
     # window.
     parser.add_argument('--rebind-window', action='store_true')
+    # Opt-in: the shared output display can be recreated (start_all.sh restart)
+    # and take our own projection ffplay with it while the game keeps running.
+    # Re-attaching that player to the still-owned source window is bounded and
+    # never adopts another process; without this flag the projection stays
+    # failed for the operator path (#2097).
+    parser.add_argument('--reproject-on-player-loss', action='store_true')
+    parser.add_argument('--reproject-window-sec', type=float, default=REPROJECT_WINDOW_S,
+                        help='How long the owned projection may be re-attached (default 60s)')
+    parser.add_argument('--reproject-interval-sec', type=float, default=REPROJECT_INTERVAL_S,
+                        help='Minimum seconds between re-projection attempts (default 2s)')
     parser.add_argument('--align', choices=('center', 'left', 'right'), default='center')
     parser.add_argument('--runtime-state')
+    # Optional durable record of *why* the viewer window never appeared. The
+    # tmux window that runs this script is destroyed with its pane, so a
+    # caller that only observes "the game window is gone" cannot tell a
+    # missing window from a viewer that never showed one (docich#1221).
+    # Written only when this presenter gives up; never used to supervise.
+    parser.add_argument('--failure-state')
     # Opt-in: make the viewer ffplay and the x11grab projection ffplay use
     # SDL's CPU renderer instead of Mesa llvmpipe (software OpenGL, which burns
     # ~1 core on a 4 vCPU VM for 960x540). Off by default so other games keep
@@ -219,6 +412,8 @@ def main(argv=None) -> int:
         parser.error('command and positive presentation dimensions are required')
     if args.rebind_window and not args.window_pattern:
         parser.error('--rebind-window requires --window-pattern')
+    if args.reproject_window_sec <= 0 or args.reproject_interval_sec <= 0:
+        parser.error('re-projection window and interval must be positive')
     children = []
 
     def stop(_sig, _frame):
@@ -290,10 +485,15 @@ def main(argv=None) -> int:
             # setup failure is recorded, never allowed to stop the game.
             try:
                 if __package__:
-                    from .pulse_volume import keep_applied
+                    from .pulse_volume import keep_applied, reset_monitor_capture
                 else:
-                    from pulse_volume import keep_applied
+                    from pulse_volume import keep_applied, reset_monitor_capture
                 keep_applied(viewer, args.audio_volume_percent, evidence, env=source_env)
+                if args.audio_sink:
+                    # A manual capture boost survives corner switches and
+                    # ffmpeg restarts (PA stream-restore), so normalize it on
+                    # every launch before it can blow out the next game.
+                    reset_monitor_capture(args.audio_sink, env=source_env)
             except Exception as exc:
                 print(f'audio volume setup failed: {type(exc).__name__}', file=sys.stderr, flush=True)
                 try:
@@ -330,6 +530,7 @@ def main(argv=None) -> int:
             return windows[0] if windows else ''
 
         deadline = time.monotonic() + args.viewer_wait_sec
+        started = time.monotonic()
         window = ''
         while time.monotonic() < deadline and viewer.poll() is None:
             window = find_window()
@@ -337,6 +538,12 @@ def main(argv=None) -> int:
                 break
             time.sleep(0.1)
         if not window:
+            _record_viewer_failure(
+                args.failure_state,
+                viewer,
+                viewer_wait_sec=args.viewer_wait_sec,
+                elapsed_s=time.monotonic() - started,
+            )
             raise RuntimeError('native game viewer did not appear')
         output_env = dict(os.environ, DISPLAY=args.display)
         if args.sdl_software_render:
@@ -381,6 +588,7 @@ def main(argv=None) -> int:
                                           player_width, content_height]}
             process = launch([
                 'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
+                *PROJECTION_INPUT_LOW_LATENCY,
                 '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
                 '-window_id', window_id, '-video_size', f'{width}x{height}',
                 '-i', f':{number}',
@@ -389,6 +597,10 @@ def main(argv=None) -> int:
                 '-left', str(player_left), '-top', str(args.y),
                 '-x', str(player_width), '-y', str(args.height),
             ], env=output_env)
+            # -noborder alone does not stop the window manager decorating
+            # the projection after an output-display recreation (#4051).
+            _ensure_projection_undecorated(args.title, output_env,
+                                           player_left, args.y)
             return process, width, height
 
         player, width, height = start_projection(window)
@@ -402,6 +614,10 @@ def main(argv=None) -> int:
         projection_failed = False
         projection_failed_at = None
         missing_since = None
+        reproject = (ReprojectPolicy(window_s=args.reproject_window_sec,
+                                     interval_s=args.reproject_interval_sec)
+                     if (args.reproject_on_player_loss and args.runtime_state) else None)
+        player_alive_since = time.monotonic()
         while all(process.poll() is None for process in watched):
             if args.runtime_state and player.poll() is not None and not projection_failed:
                 _write_state(args.runtime_state, status='presentation_failed',
@@ -409,6 +625,30 @@ def main(argv=None) -> int:
                              groups=[child.pid for child in children])
                 projection_failed = True
                 projection_failed_at = time.monotonic()
+                if reproject is not None:
+                    reproject.lost(projection_failed_at)
+            if reproject is not None:
+                now = time.monotonic()
+                if player.poll() is None:
+                    if now - player_alive_since >= REPROJECT_RESET_AFTER_S:
+                        reproject.reset()
+                elif reproject.due(now):
+                    # Our own player died with the output display (start_all.sh
+                    # restart) while the game kept running: re-attach it to the
+                    # same owned source window. Bounded, opt-in, no adoption.
+                    reproject.attempted(now)
+                    try:
+                        player, width, height = start_projection(window)
+                    except Exception as exc:  # noqa: BLE001 - keep supervising
+                        print(f'reproject failed: {exc}', flush=True)
+                    else:
+                        player_alive_since = now
+                        projection_failed = False
+                        projection_failed_at = None
+                        if args.runtime_state:
+                            _write_state(args.runtime_state, status='ready', projection=projection,
+                                         display=f':{number}', window=window, width=width,
+                                         height=height, groups=[child.pid for child in children])
             if args.rebind_window:
                 current_window = find_window()
                 now = time.monotonic()
@@ -446,6 +686,7 @@ def main(argv=None) -> int:
                                 player.wait()
                         window = current_window
                         player, width, height = start_projection(window)
+                        player_alive_since = time.monotonic()
                         projection_failed = False
                         projection_failed_at = None
                         if args.runtime_state:

@@ -1,0 +1,91 @@
+"""#4606: summon/large-enemy panels route to the retreat, not a frozen melee.
+
+The three ch11 reproductions (ドラゴンフライ HP269, ランプキン HP100,
+テュポーン HP564) all opened the battle record on the monster panel itself;
+which of these panels freezes its command box cannot be discriminated from
+observations, so the class is avoided unless our HP strictly leads.
+"""
+from copy import deepcopy
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+import pytest
+from docich import hanjuku_policy as p
+from docich.hanjuku.judgment import battle as rules
+from test_hanjuku_survival import battle, menu
+
+
+def monster_panel(ally='ソーピニヨン', enemy='ドラゴンフライ', hp=48, enemy_hp=269, **changes):
+    cur = {'ally': ally, 'enemy': enemy, 'side': 'attack',
+           'ally_hp': hp, 'enemy_hp': enemy_hp,
+           'start_ally_hp': hp, 'start_enemy_hp': enemy_hp,
+           'step': None, 'planned_cards': [], 'cards_used': [],
+           'card_evidence_version': 1}
+    cur.update(changes)
+    return {'chapter': 11, 'battle': cur}
+
+
+@pytest.mark.parametrize('enemy,enemy_hp', [
+    ('ドラゴンフライ', 269), ('ランプキン', 100), ('テュポーン', 564)])
+def test_monster_panel_enemy_is_summon_class(enemy, enemy_hp):
+    cur = monster_panel(enemy=enemy, enemy_hp=enemy_hp)['battle']
+    assert p._monster_panel_enemy(cur)
+    assert p._summon_class_enemy(cur)
+    assert p._summon_enemy_hp(cur) == enemy_hp
+
+
+def test_battle_panel_goes_to_retreat_not_a_rescue_probe():
+    mem = monster_panel()
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert mem['battle']['command_open_pending']['owner'] == 'retreat'
+
+
+def test_latched_enemy_summon_uses_the_live_monster_hp():
+    # A mid-battle summon keeps the general's name: the stale 40-HP reading
+    # cannot hide the observed 200-HP monster (60*10 <= 200*7 opens the
+    # rescue, 60*2 <= 200 licenses the half-pool retreat).
+    cur = {'ally': 'ヴィーナス', 'enemy': 'アルファルファ', 'side': 'attack',
+           'ally_hp': 60, 'enemy_hp': 40, 'summon_enemy_hp': 200,
+           'enemy_summon_observed': True,
+           'start_ally_hp': 82, 'start_enemy_hp': 80,
+           'planned_cards': [], 'cards_used': []}
+    assert p._summon_class_enemy(cur)
+    assert not p._monster_panel_enemy(cur)
+    assert p._summon_enemy_hp(cur) == 200
+    assert p._survival_needed(cur)
+    assert rules._default_retreat_needed(deepcopy(cur)) is True
+    assert p._hero_retreat_needed(cur) is True
+    # Without the latch the same record is an ordinary general fight.
+    ordinary = {**cur, 'enemy_summon_observed': False}
+    assert not p._summon_class_enemy(ordinary)
+    assert not p._hero_retreat_needed(ordinary)
+
+
+def test_ordinary_general_fight_is_not_summon_class():
+    # The same deficit against a general keeps the existing rules: no
+    # summon class, and hp < enemy alone is not a retreat.
+    cur = monster_panel(ally='エピィ', enemy='ポワソン', hp=57, enemy_hp=60)['battle']
+    assert not p._monster_panel_enemy(cur)
+    assert not p._summon_class_enemy(cur)
+    assert not rules._default_retreat_needed(deepcopy(cur))
+    assert not p._hero_retreat_needed(cur)
+    # The identical numbers against the monster panel do retreat.
+    cur = monster_panel(ally='エピィ', enemy='ランプキン', hp=57, enemy_hp=60)['battle']
+    assert rules._default_retreat_needed(deepcopy(cur)) is True
+    assert p._hero_retreat_needed(cur) is True
+
+
+def test_ahead_against_the_monster_panel_keeps_fighting():
+    # Strictly ahead stays in melee: the freeze cannot be discriminated, so
+    # only non-leading summon-class panels are avoided.
+    cur = monster_panel(ally='ポセイドン', enemy='ランプキン', hp=85, enemy_hp=60)['battle']
+    assert p._monster_panel_enemy(cur)
+    assert not rules._default_retreat_needed(deepcopy(cur))
+
+
+@pytest.mark.parametrize('enemy', ['スプリミョーネ', 'ハデス', 'ハードロボ', 'エッグママ', 'クイーン'])
+def test_boss_and_king_names_are_never_summon_class(enemy):
+    cur = monster_panel(enemy=enemy)['battle']
+    assert not p._monster_panel_enemy(cur)
+    assert not p._summon_class_enemy(cur)

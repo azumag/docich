@@ -131,14 +131,14 @@ def test_full_confirmation_fade_does_not_repeat_a_either():
     assert p._egg_recovery_step(native('fee'), m, m['month_sub']) == []
 
 
-def test_general_zero_remains_zero_when_omitted_from_a_paid_return_list():
+def test_a_paid_return_list_releases_the_generals_zero():
     m = confirmed(); sub = m['month_sub']
     sub.update(hero_selected=False, individual_selected=True, individual_actor='ココット',
                individual_identity=dict(ID), individual_chapter=1, confirm_actor='ココット')
     assert p._egg_recovery_step(native('return-list'), m, sub) == [p.pad('b')]
     assert p._finish_month_sub(native('month'), m, m['shop'])
     assert m['shop']['egg_paid_actors'] == ['ココット']
-    assert p._own_egg_empty(m, {'ally': 'ココット'})
+    assert not p._own_egg_empty(m, {'ally': 'ココット'})  # the paid recovery releases this actor's zero
     assert m['egg_uses'][p.NAME] == 3 and m['egg_uses']['ゼウス'] == 3
 
 

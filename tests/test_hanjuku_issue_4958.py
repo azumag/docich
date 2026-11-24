@@ -1,0 +1,133 @@
+"""docich#4958 reproduction: 2枚目のミックミーを残しての退却は欠陥ではない。
+
+ch10 44-9 (run g1190-ch1v4): シャルドネ vs アニス HP 6 vs 37。監査の
+battle_retreat_with_resources は「選択済みだが使用未確定の札」だけを数える
+(_remaining_cards + pending)。選択されなかった残り札は一切数えないため、
+シグネチャが出た時点で2枚目は selection_planned に達していたことが確定する。
+
+このファイルは、その状況で bot がたどる各分岐が現行の設計どおりであることを
+固定する。修正ではない (欠陥ではなく正しい判断、の裏付け)。
+
+docich#4999 (owner 2026-11-22) で退却前の資源使用ルールが拡張されたため、
+本ファイルの各テストは新しい規則 (for_retreat はゲート許可の全札、
+選択済み告知の有界 grace、残り札の有界な使用試行) を反映済み。
+"""
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from docich import hanjuku_policy as p
+from docich.hanjuku import month_audit as audit
+from docich.hanjuku.judgment import battle as rules
+from test_hanjuku_card_damage_gate import memory, cards
+from test_hanjuku_survival import battle as battle_screen, memory as panel_memory, menu
+
+
+def _cur(enemy_soldiers, *, enemy_hp=37, ally_hp=6):
+    """The incident panel: シャルドネ vs the eggless アニス at 6 vs 37."""
+    return {'enemy': 'アニス', 'ally': 'シャルドネ', 'enemy_hp': enemy_hp,
+            'ally_hp': ally_hp, 'start_enemy_hp': 87, 'start_ally_hp': 56,
+            'side': 'attack', 'card_soldiers_current': enemy_soldiers is not None,
+            'ally_soldiers': 0, 'enemy_soldiers': enemy_soldiers}
+
+
+def test_micmy_gate_against_eggless_anise():
+    # ミックミーは general_damage 64。兵士3人なら吸収30の下向き34 < 37 で非致死。
+    mem = {'chapter': 10, 'tick': 1}
+    gate = rules._card_damage_gate(mem, _cur(3), 'ミックミー', listed_cards=['ミックミー'])
+    assert gate['allowed'] is True and gate['role'] == 'no_autonomous_egg_trigger'
+    assert gate['estimate']['lethal'] is False
+    # 兵士2人以下なら下向き44 >= 37 で単発致死。
+    gate = rules._card_damage_gate(mem, _cur(2), 'ミックミー', listed_cards=['ミックミー'])
+    assert gate['allowed'] is True and gate['role'] == 'single_card_lethal'
+    assert gate['estimate']['lethal'] is True
+    # 兵数未読は最悪6人扱い (60吸収→下向き4) で非致死だが卵なし敵なので使用自体は許可。
+    gate = rules._card_damage_gate(mem, _cur(None), 'ミックミー', listed_cards=['ミックミー'])
+    assert gate['allowed'] is True and gate['role'] == 'no_autonomous_egg_trigger'
+    assert gate['estimate']['lethal'] is False
+
+
+def test_critical_safe_card_defers_retreat_for_any_permitted_card():
+    mem = {'chapter': 10, 'tick': 1}
+    rescue = {'listed_cards': ['ミックミー'], 'cards_attempted': [], 'cards_checked': 0}
+    # docich#4999: ゲートが許可する未選択の一覧札は致死・回復に限らず退却行より先に使う。
+    assert rules._critical_safe_card(mem, _cur(3), rescue, for_retreat=True) is True
+    assert rules._critical_safe_card(mem, _cur(2), rescue, for_retreat=True) is True
+    # ただし同名札が attempt/selected 済みなら消費未確定として数えない。
+    rescue['cards_attempted'] = ['ミックミー']
+    assert rules._critical_safe_card(mem, _cur(2), rescue, for_retreat=True) is False
+    # g460 の線引き: 即死帯 (RETREAT_RESOURCE_FLOOR_HP=4) では非致死札の
+    # 救済探索を打ち切り退却を優先する (兵数 3 のミックミーは非致死)。
+    rescue['cards_attempted'] = []
+    assert rules._critical_safe_card(mem, _cur(3, ally_hp=4), rescue, for_retreat=True) is False
+    # ただし観測済みの致死札は即死帯でも退却を遅らせる (兵数 2 のミックミーは
+    # single_card_lethal)。確定した一撃はこの手番で決まるため、待機による
+    # g460 型の死亡とは別物 (test_hanjuku_finish_before_retreat)。
+    assert rules._critical_safe_card(mem, _cur(2, ally_hp=4), rescue, for_retreat=True) is True
+
+
+def test_pending_second_copy_keeps_bounded_window_then_spends():
+    """2枚目の選択Aを送った直後にHPが危険域へ下がった incident の主経路。
+
+    docich#4999 (owner 2026-11-22): HP6 は即死帯 (RETREAT_RESOURCE_FLOOR_HP=4)
+    の上にあるため、選択済みの使用告知は有界な grace で完走を待ち、残りの
+    1枚は退却の前に救済メニューで1回だけ使用を試行する。未確認は依然
+    unclassified＝使用実績なしとして監査の残り札に載る。
+    """
+    mem = panel_memory(6, 37)
+    mem['battle'].update(ally='シャルドネ', enemy='アニス', start_ally_hp=56,
+                         start_enemy_hp=87, side='attack',
+                         cards_selected=['ミックミー', 'ミックミー'],
+                         cards_used=['ミックミー'],
+                         card_flow={'stage': 'announce', 'card': 'ミックミー',
+                                    'selection_planned': True,
+                                    'enemy_hp_at_open': 37})
+    # grace 内では退却メニューを開かず、選択済み告知のライフサイクルを待つ。
+    assert p.battle_step(battle_screen(mem), mem) == []
+    cur = mem['battle']
+    assert cur['retreat_card_grace'] == 1
+    assert not cur.get('cards_unclassified')
+    assert any(r['decision'] == 'battle_retreat_card_wait' for r in mem['_records'])
+    # 告知フロー自身の2観測 bound が使用未確認を正直に確定する。
+    assert p.battle_step(battle_screen(mem), mem) == []
+    assert cur['cards_used'] == ['ミックミー']
+    assert cur['cards_unclassified'] == ['ミックミー']
+    # 残り1枚は退却メニュー開放の前に救済メニューの使用試行へ回る。
+    assert p.battle_step(battle_screen(mem), mem) == [p.pad('b')]
+    assert cur['command_open_pending']['owner'] == 'survival'
+    assert any(r['decision'] == 'battle_cards_before_retreat' for r in mem['_records'])
+
+
+def test_survival_list_reoffers_the_second_copy_after_confirmed_use():
+    """救済一覧が1枚目の消費を確認すれば、2枚目は普通に選べる (見逃しではない)。"""
+    mem = memory('ミックミー', enemy='アニス', enemy_hp=37, ally='シャルドネ',
+                 ally_hp=20, soldiers=(0, 3))
+    cur = mem['battle']
+    cur.update(side='attack', cards_selected=['ミックミー'], cards_used=['ミックミー'],
+               survival={'cards_checked': 1, 'listed_cards': ['ミックミー'],
+                         'cards_attempted': ['ミックミー'],
+                         'card_counts_at_selection': {'ミックミー': 2}},
+               card_flow={'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0})
+    # 同名札の消費は2回一致した実一覧 (2 -> 1) だけが根拠になる。
+    assert p.card_list_step(cards(['ミックミー']), mem) == []
+    assert p.card_list_step(cards(['ミックミー']), mem) == [p.pad('a')]
+    assert cur['cards_selected'] == ['ミックミー', 'ミックミー']
+    assert cur['card_assessment']['reason'] == 'no_autonomous_egg_trigger'
+
+
+def test_unselected_nonlethal_list_is_closed_at_critical_hp():
+    """未選択の非致死一覧は危険HPで閉じる (battle_hero_retreat_cancel_card)。
+
+    この経路では2枚目が cards_selected に載らないため監査シグネチャは出ない。
+    今回のシグネチャが出た以上、2枚目はこの経路ではなかったことの裏付け。
+    """
+    mem = memory('ミックミー', enemy='アニス', enemy_hp=37, ally='シャルドネ',
+                 ally_hp=6, soldiers=(0, 3))
+    cur = mem['battle']
+    cur.update(side='attack', cards_selected=['ミックミー'], cards_used=['ミックミー'],
+               survival={'listed_cards': ['ミックミー'], 'cards_attempted': ['ミックミー'],
+                         'card_counts_at_selection': {'ミックミー': 2}},
+               card_flow={'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0})
+    assert p.card_list_step(cards(['ミックミー']), mem) == [p.pad('b')]
+    assert any(r['decision'] == 'battle_hero_retreat_cancel_card' for r in mem['_records'])
+    assert cur['cards_selected'] == ['ミックミー']

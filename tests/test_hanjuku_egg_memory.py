@@ -1,0 +1,175 @@
+"""#4415: one observation-timestamped egg record feeds every reader.
+
+The four regressions named in the issue: 残数0→たまごなし, 正数→たまごなし,
+壊れた卵 and 古い種類のみ. They used to diverge because egg_types/egg_uses are
+written only when an egg shows and carry no observation time.
+"""
+from docich.hanjuku.state import egg_memory
+from docich.hanjuku.strategy import economy, orders, replan
+
+NAME = 'アマンディーヌ'
+
+
+def memory(tick=100, *, egg=None, uses=None, broken=False, hp=60):
+    return {'tick': tick, 'chapter': 6, 'month': '50-11', 'gold': 500,
+            'egg_types': {}, 'egg_uses': {},
+            'general_statuses': {'statuses': {
+                NAME: {'hp': hp, 'egg': egg, 'uses': uses, 'broken': broken, 'tick': tick}}}}
+
+
+def test_an_observation_keeps_type_uses_tick_and_source():
+    mem = memory()
+    rec = egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=2,
+                             present=True, source=egg_memory.SORTIE)
+    assert rec == {'egg': 'スロットエッグ', 'uses': 2, 'present': True,
+                   'broken': False, 'observed_tick': 100, 'source': egg_memory.SORTIE}
+    assert egg_memory.record(mem, NAME) is rec
+
+
+def test_zero_remaining_uses_reads_as_no_egg_but_still_owes_recovery():
+    # 残数0→たまごなし: a spent egg cannot damage with, but it is the classic
+    # recovery debt. The old egg_uses=0 must not be lost by the new read port.
+    mem = memory()
+    mem['egg_types'][NAME] = 'スロットエッグ'
+    mem['egg_uses'][NAME] = 4
+    egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=0, source=egg_memory.STATUS)
+    assert egg_memory.record(mem, NAME)['present'] is True
+    assert orders._holds_egg(mem, NAME) is False
+    assert replan._boss_eggless(mem, NAME) is True
+    assert NAME in economy._depleted_eggs(mem)
+
+
+def test_positive_count_loses_to_a_newer_no_egg_observation():
+    # 正数→たまごなし: the sortie row still says four uses, but a later measured
+    # status row shows no egg at all. The dated no-egg observation wins in every
+    # reader, and there is no egg left to recover.
+    mem = memory(tick=200)
+    mem['egg_types'][NAME] = 'スロットエッグ'
+    mem['egg_uses'][NAME] = 4
+    egg_memory.observe(mem, NAME, egg=None, uses=None, present=False,
+                       source=egg_memory.STATUS)
+    assert orders._holds_egg(mem, NAME) is False
+    assert replan._boss_eggless(mem, NAME) is True
+    assert NAME not in economy._depleted_eggs(mem)
+
+
+def test_an_older_egg_observation_does_not_override_a_fresh_status_row():
+    mem = memory(tick=100)
+    egg_memory.observe(mem, NAME, egg=None, uses=None, present=False,
+                       source=egg_memory.STATUS)
+    # The monthly status row is read 100 ticks later and shows a live egg.
+    mem['tick'] = 200
+    row = mem['general_statuses']['statuses'][NAME]
+    row.update(egg='スロットエッグ', uses=4, tick=200)
+    assert egg_memory.latest_at(mem, NAME, 200) is None
+    assert replan._boss_eggless(mem, NAME) is False
+
+
+def test_a_broken_egg_is_neither_held_nor_a_recovery_debt():
+    # 壊れた卵: the status parser reports no egg name and broken=True. It is a
+    # house repair, not the economy's monthly recovery with its 50G quote, and
+    # the wave ranks it last rather than treating it as a usable live egg.
+    mem = memory(broken=True)
+    egg_memory.observe(mem, NAME, egg=None, uses=None, broken=True, present=False,
+                       source=egg_memory.STATUS)
+    assert orders._holds_egg(mem, NAME) is False
+    assert replan._boss_egg_rank(mem, NAME) == 2
+    assert NAME not in economy._depleted_eggs(mem)
+
+
+def test_an_old_egg_type_without_an_observation_loses_to_the_measured_row():
+    # 古い種類のみ: the flat egg_types entry is the only remaining trace of an
+    # egg. It is a legacy fallback for _holds_egg, but it can no longer keep an
+    # otherwise measured eggless general in the boss wave.
+    mem = memory()
+    mem['egg_types'][NAME] = 'スロットエッグ'
+    assert orders._holds_egg(mem, NAME) is True  # legacy fallback still readable
+    assert replan._boss_eggless(mem, NAME) is True
+
+
+def test_egg_type_read_prefers_the_record_but_keeps_the_legacy_fallback():
+    mem = memory()
+    mem['egg_types'][NAME] = 'スロットエッグ'
+    assert egg_memory.egg_type(mem, NAME) == 'スロットエッグ'  # no record yet
+    egg_memory.observe(mem, NAME, egg='エラベルエッグ', uses=4,
+                       source=egg_memory.STATUS)
+    assert egg_memory.egg_type(mem, NAME) == 'エラベルエッグ'
+
+
+def test_a_direct_egg_uses_spend_outlives_a_stale_observation_count():
+    # The record is written by observation writers, but battle/ledger code can
+    # spend an egg without refreshing it. _depleted_eggs must still budget the
+    # consumed egg (CI regression on #4415, survey_cache recovery family).
+    mem = memory()
+    mem['egg_types'][NAME] = 'エラベルエッグ'
+    mem['egg_uses'][NAME] = 4
+    egg_memory.observe(mem, NAME, egg='エラベルエッグ', uses=4,
+                       source=egg_memory.STATUS)
+    assert NAME not in economy._depleted_eggs(mem)
+    mem['egg_uses'][NAME] = 0  # consumed after the row was read
+    assert NAME in economy._depleted_eggs(mem)
+    assert orders._holds_egg(mem, NAME) is False
+
+
+def test_a_fresh_live_egg_observation_still_keeps_the_general():
+    mem = memory()
+    egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=4,
+                       source=egg_memory.STATUS)
+    assert orders._holds_egg(mem, NAME) is True
+    assert replan._boss_eggless(mem, NAME) is False
+    assert NAME not in economy._depleted_eggs(mem)  # four uses is full
+
+
+def test_a_receipt_invalidates_counts_but_keeps_the_measured_presence():
+    # #4439: tick 900's status read eggless and tick 1000's recovery list
+    # showed the egg with one use. A paid ぜんかいふく must not erase the newer
+    # presence: dropping the whole record re-adopted the old 「卵なし」 row and
+    # briefly removed the recovered general from the boss wave (Devin review
+    # on #4418: the same castle's candidate list went empty after the
+    # aggregate receipt).
+    mem = memory(tick=900)
+    mem['tick'] = 1000
+    egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=1, present=True,
+                       source=egg_memory.RECOVERY)
+    assert replan._boss_eggless(mem, NAME) is False
+    from docich.hanjuku.judgment.battle import _egg_quantities_unknown
+    _egg_quantities_unknown(mem)
+    assert replan._boss_eggless(mem, NAME) is False
+    assert orders._holds_egg(mem, NAME) is True
+    assert NAME not in economy._depleted_eggs(mem)  # restored, not a debt
+    rec = egg_memory.record(mem, NAME)
+    assert rec == {'egg': 'スロットエッグ', 'uses': None, 'present': True,
+                   'broken': False, 'observed_tick': 1000,
+                   'source': egg_memory.RECOVERY}
+
+
+def test_a_receipt_cannot_reinstate_a_measured_no_egg_general():
+    mem = memory()
+    egg_memory.observe(mem, NAME, egg=None, uses=None, present=False,
+                       source=egg_memory.STATUS)
+    from docich.hanjuku.judgment.battle import _egg_quantities_unknown
+    _egg_quantities_unknown(mem)
+    assert replan._boss_eggless(mem, NAME) is True  # presence survives, not forgotten
+    assert orders._holds_egg(mem, NAME) is False
+
+
+def test_invalidate_uses_scopes_to_one_paid_actor_and_tolerates_no_records():
+    from docich.hanjuku.judgment.battle import _egg_quantities_unknown
+    other = 'ココット'
+    mem = memory(tick=900)
+    mem['tick'] = 1000
+    egg_memory.observe(mem, NAME, egg='スロットエッグ', uses=1, present=True,
+                       source=egg_memory.RECOVERY)
+    egg_memory.observe(mem, other, egg='エラベルエッグ', uses=2, present=True,
+                       source=egg_memory.RECOVERY)
+    egg_memory.invalidate_uses(mem, NAME)
+    assert egg_memory.record(mem, NAME)['uses'] is None
+    assert egg_memory.record(mem, other) == {'egg': 'エラベルエッグ', 'uses': 2,
+                                             'present': True, 'broken': False,
+                                             'observed_tick': 1000,
+                                             'source': egg_memory.RECOVERY}
+    _egg_quantities_unknown(mem)  # the aggregate receipt invalidates everyone
+    assert egg_memory.record(mem, NAME)['uses'] is None
+    assert egg_memory.record(mem, other)['uses'] is None
+    assert orders._holds_egg(mem, NAME) and orders._holds_egg(mem, other)
+    egg_memory.invalidate_uses({}, NAME)  # no records: nothing to invalidate

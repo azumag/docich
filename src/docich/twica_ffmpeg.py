@@ -46,6 +46,12 @@ def encoding_geometry(argv: list[str]) -> tuple[int, int, int] | None:
 def compose_args(argv: list[str], fd: int, geometry: tuple[int, int, int]) -> list[str]:
     width, height, fps = geometry
     args = list(argv)
+    # #970: libx264 のエンコードスレッドを上限 2 に固定し、過剰な並列を抑制する。
+    # twica RTMP 配信経路 (本番 hotspot) にも stream.py と同じ cap を適用する。
+    TWICA_ENCODER_THREADS = 2
+    if '-c:v' in args:
+        idx = args.index('-c:v')
+        args[idx:idx] = ['-threads', str(TWICA_ENCODER_THREADS)]
     post_filter = ''
     if '-vf' in args:
         if args.count('-vf') != 1:

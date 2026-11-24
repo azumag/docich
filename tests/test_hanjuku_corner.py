@@ -97,6 +97,26 @@ class HanjukuCornerFixedFailureTests(unittest.TestCase):
         ):
             self.assertEqual(hanjuku_corner.main([]), 0)
 
+    def test_clear_clock_quarantine_is_a_separate_fixed_action(self):
+        with mock.patch.object(
+            hanjuku_corner, "clear_clock_quarantine",
+            return_value={"status": "cleared", "corner": "hanjuku-hero"},
+        ) as clear, mock.patch.object(hanjuku_corner, "start") as start:
+            self.assertEqual(hanjuku_corner.main(["--clear-clock-quarantine"]), 0)
+            clear.assert_called_once_with()
+            start.assert_not_called()
+        for status in ("not_quarantined", "not_held", "not_queued",
+                       "clock_regressed", "busy"):
+            with self.subTest(status=status), mock.patch.object(
+                hanjuku_corner, "clear_clock_quarantine",
+                return_value={"status": status},
+            ):
+                self.assertEqual(
+                    hanjuku_corner.main(["--clear-clock-quarantine"]), 77)
+        with mock.patch.object(hanjuku_corner, "start", return_value={"status": "queued"}):
+            with self.assertRaises(SystemExit):
+                hanjuku_corner.main(["--clear-clock-quarantine", "--resume-latest"])
+
 
 if __name__ == "__main__":
     unittest.main()

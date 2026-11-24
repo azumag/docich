@@ -197,6 +197,16 @@ class NethackCornerManager(RetroCornerManager):
     # 独自の終了告知を finish 直後に呼ぶため、ベースの結果まとめ投稿は使わない。
     announce_end_result = False
 
+    # The automatic NetHack slot owns ``nethack_corner.json`` and its durable
+    # rotation records carry adapter ``nethack``. When the common rotation
+    # releases a failed start as unverified, only this manager may retire
+    # that released owner: the dedicated ``recover-failed-rotation`` entry
+    # is gated on the ``recovery_required`` latch and cannot see the released
+    # ledger, so without this widening every later NetHack dispatch keeps
+    # failing run_rotation's owner inspection (#2352 scope, production
+    # 2026-10-16 slot: released at 23:55 JST, never dispatched again).
+    _released_owner_adapters = frozenset({"nethack"})
+
     def __init__(
         self,
         g: GlobalConfig,
@@ -290,6 +300,11 @@ class NethackCornerManager(RetroCornerManager):
         stall_s = int(self.config.stall_timeout_minutes) * 60
         last_text: str | None = None
         unchanged_since = self._local_now()
+        # A terminal marker only counts when the run has actually produced a
+        # non-terminal screen first.  A pane that is already terminal at the
+        # very first capture is stale residue from a previous run, not a fresh
+        # death/ascension, so it must not end the run early.
+        saw_non_terminal = False
         while True:
             stopped = self._rotation_stop_result()
             if stopped is not None:
@@ -304,17 +319,30 @@ class NethackCornerManager(RetroCornerManager):
             if text is not None and text != last_text:
                 last_text = text
                 unchanged_since = now
-            if text is not None and _is_terminal_screen(text):
+            unchanged_seconds = (now - unchanged_since).total_seconds()
+            ends_at = self._parse_ends_at(latest)
+            if ends_at is not None and now >= ends_at:
+                reason = "time_limit"
+            elif text is not None and _is_terminal_screen(text) and saw_non_terminal:
                 reason = "terminal"
-            elif (now - unchanged_since).total_seconds() >= stall_s:
+            elif unchanged_seconds >= stall_s:
                 reason = "stalled"
             else:
+                if text is not None and not _is_terminal_screen(text):
+                    saw_non_terminal = True
                 continue
+            if text is not None and not _is_terminal_screen(text):
+                saw_non_terminal = True
             with self._locked():
                 latest = self._read_state()
                 if latest.get("status") != "active":
                     return self._state_result(latest)
                 latest["finish_reason"] = reason
+                # Snapshot the same observation that chose this boundary.
+                # Failed captures also count toward the existing stall guard;
+                # keep their readability separate from the elapsed timer.
+                latest["screen_unchanged_seconds"] = max(0.0, unchanged_seconds)
+                latest["screen_readable"] = text is not None
                 return self._finish_locked(latest, now)
 
     def recover_failed_rotation(self) -> CornerResult:

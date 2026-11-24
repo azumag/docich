@@ -58,6 +58,34 @@ STALE_LOCK_LANES = (
     "other",
 )
 
+# Keep in sync with ``collect_diagnostics.SEVERITY_TRIGGERS`` (#3658). Each
+# fixed name is projected as ``severity_trigger_<name>=0/1`` so a WARN runtime
+# health alert names the branch that fired even when the public actionable
+# counters all read zero. Unknown keys in the payload are ignored; missing
+# keys emit 0.
+SEVERITY_TRIGGERS = (
+    "hanjuku_resume_detached_claim",
+    "retro_corner_recovery_required",
+    "corner_rotation_recovery_required",
+    "corner_rotation_overdue",
+    "required_worker_stale",
+    "required_worker_down",
+    "paused_workers_actionable",
+    "unregistered_workers_actionable",
+    "worker_duplicates",
+    "worker_zombies",
+    "stale_locks",
+    "ai_all_failed",
+    "ai_queue_giveups",
+    "improvement_stale",
+    "improvement_retry_pending",
+    "improvement_persist_fail",
+    "improvement_persist_stale",
+    "improvement_persist_unreadable",
+    "improvement_persist_failure",
+    "improvement_persist_clone_disappeared",
+)
+
 ACTIVE_CORNER_STATUSES = frozenset({"starting", "active", "restoring"})
 ACTIVE_PAPER_IMPROVE_STATUSES = frozenset({"queued", "running"})
 
@@ -229,6 +257,13 @@ def summarize(data):
     severity = data.get("status")
     if severity not in {"ok", "warn", "critical"}:
         raise ValueError("invalid diagnostics severity")
+    # A detached resume claim is an actionable operational condition (#2870):
+    # promote an otherwise-ok payload to warn so the runtime health alert fires.
+    hanjuku_resume = data.get("hanjuku_resume")
+    if (isinstance(hanjuku_resume, dict)
+            and hanjuku_resume.get("status") == "detached_claim"
+            and severity == "ok"):
+        severity = "warn"
 
     workers = data.get("workers") or {}
     queues = data.get("queues") or {}
@@ -376,6 +411,7 @@ def summarize(data):
             f"improvement_stale={int(improvement.get('stale') is True)}",
             f"retry_pending={int(improvement.get('retry_pending') is True)}",
             f"corner_game_switch_busy={int(_game_switch_busy(corners))}",
+            f"hanjuku_resume_detached_claim={int(isinstance(hanjuku_resume, dict) and hanjuku_resume.get('status') == 'detached_claim')}",
             f"game_switch_fifo_queued={_integer(fifo, 'queued_count')}",
             f"game_switch_fifo_malformed={_integer(fifo, 'malformed_count')}",
             f"game_switch_fifo_head_present={int(isinstance(fifo, dict) and isinstance(fifo.get('head'), dict))}",
@@ -419,6 +455,13 @@ def summarize(data):
             f"bundle_unreferenced_count={_integer(bundle_storage, 'unreferenced_count') if bundle_unref_known else 0}",
             f"bundle_unreferenced_bytes={_integer(bundle_storage, 'unreferenced_bytes') if bundle_unref_known else 0}",
         ]
+    )
+    raw_triggers = data.get("severity_triggers")
+    triggers = raw_triggers if isinstance(raw_triggers, dict) else {}
+    parts.append(f"severity_triggers_reported={int(isinstance(raw_triggers, dict))}")
+    parts.extend(
+        f"severity_trigger_{name}={int(triggers.get(name) is True)}"
+        for name in SEVERITY_TRIGGERS
     )
     return severity, ",".join(parts)
 

@@ -57,13 +57,13 @@ def test_native_actor_zero_and_actual_50g_fee_confirm_without_inventing_a_screen
     assert m['_records'][-1]['observed_metric']['count_basis']=='bound_actor_flat_fee'
 
 
-def test_real_fee_payment_keeps_other_targets_and_zero_until_a_named_positive_reading():
+def test_real_fee_payment_keeps_other_targets_and_releases_this_actors_zero():
     m=selected();p._egg_recovery_step(native('fee'),m,m['month_sub'])
     assert p._finish_month_sub(ready(),m,m['shop'])
     assert m['shop']['egg_paid_actors']==['ココット']
     assert m['egg_uses']=={'リーキ':2,'アルテミス':3,'ゼウス':3,p.NAME:3}
     assert m['shop']['reserve']==200 and m['shop']['soldiers']==0
-    assert p._own_egg_empty(m,{'ally':'ココット'})
+    assert not p._own_egg_empty(m,{'ally':'ココット'})  # the paid recovery releases this actor's zero
 
 
 @pytest.mark.parametrize('bad',['selection','run','chapter','month','shop','header','gold_change',
@@ -117,13 +117,13 @@ def test_saved_unbound_hero_flag_cannot_authorize_a_new_flat_fee():
     assert p._egg_recovery_step(fee(),m,m['month_sub'])==[p.pad('b')]
 
 
-def test_flat_fee_still_preserves_a_known_full_payroll_above_30g():
+def test_flat_fee_ignores_the_known_full_payroll():
     m=selected();m['recruit_roster']={'chapter':1,'month':'3-12','tick':1200,'identity':dict(ID),
         'complete':True,'names':['ココット','リーキ','アルテミス','ゼウス'],
         'wages':{'ココット':15,'リーキ':15,'アルテミス':15,'ゼウス':15}}
     m['month_sub']['gold_before']=109;s=fee();s.header['gold']=109
-    assert p._egg_recovery_step(s,m,m['month_sub'])==[p.pad('b')]
-    assert not m['month_sub'].get('quoted_cost')
+    assert p._egg_recovery_step(s,m,m['month_sub'])==[p.pad('a')]
+    assert m['month_sub'].get('quoted_cost')==50
 
 
 def test_reselecting_an_unread_hero_row_drops_the_prior_flat_fee_binding():
@@ -165,7 +165,7 @@ def test_read_hero_replaces_general_binding_and_payment_belongs_only_to_hero():
     assert m['_records'][-1]['choice']==p.NAME
     assert p._finish_month_sub(ready(),m,m['shop'])
     assert m['shop']['egg_paid_actors']==[p.NAME]
-    assert m['egg_uses']['ココット']==0 and p._own_egg_empty(m,{'ally':p.NAME})
+    assert m['egg_uses']['ココット']==0 and not p._own_egg_empty(m,{'ally':p.NAME})
 
 
 def test_saved_mixed_flags_cannot_authorize_hero_fee_with_only_a_general_binding():

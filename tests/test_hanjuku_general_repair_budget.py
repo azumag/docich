@@ -7,6 +7,7 @@ import pytest
 from docich import hanjuku_policy as p
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse
+from docich.hanjuku.state.regions import world as _world
 
 
 def memory(name='ココット'):
@@ -29,9 +30,9 @@ def plan(mem, gold=84):
 def test_cached_plan_keeps_one_house_gift_and_wages_for_any_broken_general(name):
     mem = memory(name)
     shop = plan(mem)
-    assert shop['soldiers'] == 4
+    assert shop['soldiers'] == 34  # 84G - 50G house fee, no wage hold
     assert p._chikujou_reserve(mem, dict(shop, soldiers_done=True)) == 80
-    assert p._recruit_cash_floor(shop) == 130
+    assert p._recruit_cash_floor(shop) == 100
 
 
 def test_measured_native_16g_quote_is_declined_before_consuming_repair_fund():
@@ -61,7 +62,7 @@ def test_last_castles_only_defender_is_not_a_dispatchable_repair_budget():
     mem = memory()
     mem.update(home_lost=True, captured=['ドミノーラ'], garrison={'ドミノーラ': ['ココット']})
     assert p._chikujou_reserve(mem, dict(plan(mem), soldiers_done=True)) == 30
-    mem['garrison']['ドミノーラ'].append('ゼウス')
+    _world(mem)['garrison']['ドミノーラ'].append('ゼウス')
     assert p._chikujou_reserve(mem, dict(plan(mem), soldiers_done=True)) == 80
 
 

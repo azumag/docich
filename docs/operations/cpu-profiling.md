@@ -4,7 +4,8 @@ docich VM 全体で「何が CPU を使っているか」「どの経路が wake
 量産しているか」を、同一条件で再現できる形で記録するための短時間 profiler。
 最適化（PR2 以降）は、この baseline と同一 scenario の before/after 比較で判断する。
 
-正本コード: `ops/vm_actions/profile_cpu.py`（stdlib のみ・単一ファイル）
+正本コード: `ops/vm_actions/profile_cpu.py`（stdlib のみ。telemetry snapshot を読む
+ときだけ repo の `src/docich/agent/telemetry.py` を import する）
 
 ## 契約
 
@@ -33,7 +34,15 @@ docich VM 全体で「何が CPU を使っているか」「どの経路が wake
   （期間内に生まれて観測できた数）、voluntary/nonvoluntary context switch/秒、RSS 合計、
   thread 数合計。CPU 降順。
 - `spawns[]`: 期間内に生まれたプロセスの `component`/`spawner` 別件数。
+- `other_comms[]`: 残余 `other` コンポーネントの comm 別 CPU（最大8、CPU降順）。
+  comm は小文字の固定長ラベル（16字以内）だけを出し、secret-like な名前は
+  `redacted`。argv・パス・PIDは出さない。
 - `top_processes[]`: PID・component・cpu_pct・threads・RSS のみ。
+- `telemetry`: #3151/#3287 が書く固定 telemetry snapshot の投影（`role=agent|corner`、
+  `game`/`brain`、固定 counter/timer のみ）。`--telemetry-dir` を省略した場合は
+  `run-soren-live/agent_telemetry`（本番）または `run/agent_telemetry`（ローカル）が
+  存在すれば読む。symlink・schema 不一致・上限超過ファイルは読まない。flag off の
+  ときは snapshot 自体が無いので `status=absent`。
 - `meta.profiler_cpu_sec`: profiler 自身の CPU 消費（計測 overhead の確認用）。
 
 ## 既知の限界

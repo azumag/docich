@@ -8,11 +8,15 @@ layers want.
 from __future__ import annotations
 
 from .screen import Screen, month_confirmation_positions
+from . import menu_feedback
 from ..decision_log import _record
 from .readers import _current, _options
 
 
 FPS = 60
+VISIBLE_LIST_BATCH_MAX = 4
+VISIBLE_LIST_RELEASE_MS = 50
+MERCHANT_LIST_BATCH_MAX = 3  # 400 ms of input leaves release time in a 500 ms cycle
 
 
 def pad(button, frames=6):
@@ -47,7 +51,7 @@ MENU_NAV_PROGRESS_PX = 4
 _FEEDBACK_MENU_KINDS = frozenset({'month_menu', 'main_menu', 'castle_menu', 'general_list',
                                 'yes_no', 'shop_list', 'card_select', 'sortie_confirm',
                                 'battle_menu', 'monster_menu', 'egg_battle_menu',
-                                'okunote_menu', 'egg_choice_menu'})
+                                'okunote_menu', 'egg_choice_menu', 'name_entry'})
 
 
 def menu_navigation_reading(screen):
@@ -56,6 +60,9 @@ def menu_navigation_reading(screen):
     This never creates an input, a target selection, or an arrival receipt.
     Unknown cursors/rows and clipped/fading menus keep normal cadence.
     """
+    semantic = menu_feedback.reading(screen)
+    if semantic is not None or (screen.kind == 'month_menu' and screen.has('じゅうじキー')):
+        return semantic
     if screen.kind not in _FEEDBACK_MENU_KINDS:
         return None
     options = _options(screen)
@@ -78,32 +85,173 @@ def menu_navigation_reading(screen):
     for button, sign in (('up', -1), ('down', 1)):
         if any(abs(tx - x) <= 8 and (ty - y) * sign > 2 for tx, ty, word in options if word):
             directions.append(button)
+    # menu_to/name_step also move horizontally, one observed press at a
+    # time. Reading the next frame sooner never authorizes a confirm.
+    for button, sign in (('left', -1), ('right', 1)):
+        if any(abs(ty - y) <= 2 and (tx - x) * sign > 2 for tx, ty, word in options if word):
+            directions.append(button)
     return {'kind': screen.kind, 'cursor': [x, y], 'directions': directions} if directions else None
 
 
+def castle_list_batch(screen: Screen, label: str):
+    """Tap along a fully visible castle-list path, or keep the caller's one step.
+
+    This never scrolls beyond a visible row, wraps, or confirms a destination.
+    Each tap has an explicit released interval so it is a distinct input.
+    """
+    return _visible_list_batch(screen, label, kind='text', menu='castle_list', x=168)
+
+
+def general_list_batch(screen: Screen, label: str):
+    """Move to a visible sortie general; never scan, scroll or confirm."""
+    return _visible_list_batch(screen, label, kind='general_list', menu='castle_roster', x=144)
+
+
+def roster_list_batch(screen: Screen, label: str):
+    """Move to a visible partial-survey target, without skipping survey reads."""
+    return _visible_list_batch(screen, label, kind='text', menu='global_roster', x=168)
+
+
+def merchant_list_batch(screen: Screen, label: str):
+    """Move along visible priced rows; the shop flow still owns all purchases."""
+    return _visible_list_batch(screen, label, kind='shop_list', menu='merchant_list', x=128,
+                               limit=MERCHANT_LIST_BATCH_MAX)
+
+
+def fort_list_batch(screen: Screen, label: str):
+    return _visible_list_batch(screen, label, kind='text', menu='fort_roster', x=144)
+
+
+def egg_recovery_list_batch(screen: Screen, label: str):
+    return _visible_list_batch(screen, label, kind='text', menu='egg_recovery', x=32,
+                               ys=(47, *range(71, 168, 16)))
+
+
+def starter_list_batch(screen: Screen, label: str, *, limit=VISIBLE_LIST_BATCH_MAX):
+    from .starter_view import NAME_LEFT, UPPER_ROW_Y
+    return _visible_list_batch(screen, label, kind='starter_list', menu='starter_upper',
+                               x=NAME_LEFT, ys=UPPER_ROW_Y, limit=limit)
+
+
+def _visible_list_batch(screen, label, *, kind, menu, x, ys=tuple(range(39, 152, 16)),
+                        limit=VISIBLE_LIST_BATCH_MAX):
+    reading = menu_feedback.reading(screen)
+    if not reading or reading.get('kind') != kind or reading.get('menu') != menu:
+        return None
+    if (reading['cursor'][0] != x or reading['cursor'][1] not in ys
+            or type(limit) is not int or not 2 <= limit <= VISIBLE_LIST_BATCH_MAX):
+        return None
+    rows = [(y, word) for rx, y, word in _options(screen)
+            if rx == x and y in ys]
+    target = [y for y, word in rows if word == label]
+    if len(target) != 1:
+        return None
+    current = ys.index(reading['cursor'][1])
+    target_index = ys.index(target[0])
+    delta = target_index - current
+    distance = abs(delta)
+    if distance < 2:
+        return None
+    sign = 1 if delta > 0 else -1
+    # The full path to the requested row must be present, even when the
+    # four-tap cap means this observation only traverses its first part.
+    if any(sum(y == ys[current + sign * step] for y, _ in rows) != 1
+           for step in range(distance + 1)):
+        return None
+    button = 'down' if sign > 0 else 'up'
+    actions = [pad(button)]
+    for _ in range(min(distance, limit) - 1):
+        actions.extend([{'type': 'wait', 'ms': VISIBLE_LIST_RELEASE_MS}, pad(button)])
+    return actions
+
+
 def menu_navigation_feedback(state, actions):
-    """One short directional press on this observation can reobserve sooner."""
+    """Reobserve a short move or a bounded card/visible-list batch sooner."""
     reading = state.get('menu_navigation_reading')
     if (not isinstance(reading, dict) or type(state.get('step')) is not int
             or type(reading.get('step')) is not int or reading.get('step') != state['step']
-            or reading.get('kind') not in _FEEDBACK_MENU_KINDS
+            or (reading.get('kind') not in _FEEDBACK_MENU_KINDS
+                and not menu_feedback.valid_context(reading.get('kind'), reading.get('menu')))
             or reading.get('kind') != state.get('screen_kind')
-            or not isinstance(actions, list) or len(actions) != 1):
+            or not isinstance(actions, list) or not 1 <= len(actions) <= 7):
         return False
     directions = reading.get('directions')
     cursor = reading.get('cursor')
-    if (not isinstance(directions, list) or not 1 <= len(directions) <= 2
-            or any(d not in ('up', 'down') for d in directions)
+    if (not isinstance(directions, list) or not 1 <= len(directions) <= 4
+            or any(d not in ('up', 'down', 'left', 'right') for d in directions)
             or not isinstance(cursor, list) or len(cursor) != 2
             or any(type(n) is not int or not 0 <= n < bound for n, bound in zip(cursor, (256, 224)))):
         return False
-    action = actions[0]
-    if not isinstance(action, dict):
+    quantity = (reading.get('kind'), reading.get('menu')) in (
+        ('month_menu', 'soldier_quantity'), ('shop_quantity', 'merchant_quantity'))
+    if quantity and (len(actions) != 1 or cursor not in ([216, 199], [224, 199])):
         return False
-    buttons, hold = action.get('buttons'), action.get('hold_ms')
-    return (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
-            and buttons[0] in ('up', 'down') and buttons[0] in directions
-            and type(hold) is int and 16 <= hold <= 100)
+    if ((reading.get('kind'), reading.get('menu')) == ('world_map', 'recall_castles')
+            and (directions != ['down'] or actions != [pad('down')])):
+        return False
+    released_batch = (len(actions) > 1 and
+                      (reading.get('kind'), reading.get('menu')) in
+                      (('text', 'castle_list'), ('general_list', 'castle_roster'),
+                       ('text', 'global_roster'), ('text', 'fort_roster'),
+                       ('text', 'egg_recovery'), ('starter_list', 'starter_upper'),
+                       ('shop_list', 'merchant_list')))
+    if released_batch:
+        if len(actions) not in (3, 5, 7):
+            return False
+        for release in actions[1::2]:
+            if (not isinstance(release, dict) or set(release) != {'type', 'ms'}
+                    or release.get('type') != 'wait' or type(release.get('ms')) is not int
+                    or release['ms'] != VISIBLE_LIST_RELEASE_MS):
+                return False
+        actions = actions[::2]  # local view only; preserve the complete plan
+    if len(actions) > 4:
+        return False
+    if ((reading.get('kind'), reading.get('menu')) == ('shop_list', 'merchant_list')
+            and len(actions) > MERCHANT_LIST_BATCH_MAX):
+        return False
+    batch = len(actions) > 1
+    # Card batches retain their existing adjacent taps. Visible-list batches have
+    # explicit releases. Neither path authorizes a confirmation or a receipt.
+    if batch and not (released_batch or (reading.get('kind') == 'card_select'
+                                      and reading.get('menu') == 'sortie_cards')):
+        return False
+    direction = None
+    for action in actions:
+        if not isinstance(action, dict):
+            return False
+        buttons, hold = action.get('buttons'), action.get('hold_ms')
+        if not (action.get('type') == 'pad' and isinstance(buttons, list) and len(buttons) == 1
+                and buttons[0] in ('up', 'down', 'left', 'right') and buttons[0] in directions
+                and type(hold) is int and 16 <= hold <= 100):
+            return False
+        if quantity and hold != 100:
+            return False
+        if batch and (buttons[0] not in ('up', 'down') or hold != 100
+                      or (direction is not None and buttons[0] != direction)):
+            return False
+        direction = buttons[0]
+    return True
+
+
+def status_panel_feedback(state, actions):
+    """One early look after the monthly owner opens/closes a read-only status.
+
+    The orchestrator replaces this annotation on every observation. It says
+    nothing about delivery, the panel opening, or the general's actual state.
+    """
+    reading = state.get('status_panel_feedback')
+    if (not isinstance(reading, dict) or set(reading) != {'step', 'kind', 'transition'}
+            or type(state.get('step')) is not int or type(reading.get('step')) is not int
+            or reading['step'] != state['step']
+            or reading.get('kind') != 'text' or state.get('screen_kind') != 'text'
+            or reading.get('transition') not in ('general_status_open', 'general_status_close')
+            or not isinstance(actions, list) or len(actions) != 1
+            or not isinstance(actions[0], dict)):
+        return False
+    action = actions[0]
+    button = 'a' if reading['transition'] == 'general_status_open' else 'b'
+    return (action.get('type') == 'pad' and action.get('buttons') == [button]
+            and type(action.get('hold_ms')) is int and action['hold_ms'] == 100)
 
 
 def _menu_distance(screen: Screen, label: str):
@@ -114,6 +262,48 @@ def _menu_distance(screen: Screen, label: str):
         return None
     tx, ty, _ = min(target, key=lambda t: abs(t[1] - cur[1]) + abs(t[0] - cur[0]))
     return abs(ty - cur[1]) + abs(tx - cur[0])
+
+
+# A contiguous vertical column of menu rows can be pressed through in one run:
+# each released tap reads as a distinct move, so a 2-row target = down,wait,down.
+MENU_NAV_BATCH_MAX = 6
+MENU_NAV_RELEASE_MS = 60
+
+
+def _menu_to_batch(screen: Screen, label: str, move, *, exact=True):
+    """Expand a hand-cursor menu's vertical move into a bounded press run.
+
+    A hand-cursor menu can move two ways, so only a pure-vertical path (target
+    in the same column) batches; a left/right detour stays a single press so
+    the 2D path still re-reads each step. An unreadable/non-contiguous column
+    returns ``move`` unchanged.
+    """
+    buttons = move.get('buttons') if isinstance(move, dict) else None
+    direction = buttons[0] if isinstance(buttons, list) and buttons else None
+    if direction not in ('up', 'down'):
+        return move
+    cur = _current(screen)
+    if not cur:
+        return move
+    target = [(x, y, w) for x, y, w in _options(screen)
+              if (w == label if exact else w.startswith(label))]
+    if not target:
+        return move
+    tx, ty, _ = min(target, key=lambda t: abs(t[1] - cur[1]) + abs(t[0] - cur[0]))
+    if abs(tx - cur[0]) > 4:
+        return move
+    rows = sorted({y for x, y, w in _options(screen) if abs(x - tx) <= 4})
+    if cur[1] not in rows or ty not in rows:
+        return move
+    dist = rows.index(ty) - rows.index(cur[1])
+    count = dist if direction == 'down' else -dist
+    if count <= 1:
+        return move
+    count = min(count, MENU_NAV_BATCH_MAX)
+    actions = [move]
+    for _ in range(count - 1):
+        actions.extend([{'type': 'wait', 'ms': MENU_NAV_RELEASE_MS}, pad(direction)])
+    return actions
 
 
 def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV_PRESS_LIMIT):
@@ -151,7 +341,7 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
                         'direction': direction, 'distance': distance,
                         'presses': presses, 'cancel_sent': cancel_sent, 'held': held}
     if presses < limit:
-        return move
+        return _menu_to_batch(screen, label, move)
     if not cancel_sent:
         state['cancel_sent'] = True
         _record(mem, 'menu_nav_stuck', screen=screen.kind, choice=label,
@@ -171,7 +361,7 @@ def guarded_menu_to(screen: Screen, mem, label: str, *, key: str, limit=MENU_NAV
     _record(mem, 'menu_nav_retry', screen=screen.kind, choice=label,
             observed_metric={'held': state['held'], 'direction': direction, 'route': key},
             reason='Bで戻った後も目標行へ近づかないため、短い待機の後に移動をやり直す')
-    return move
+    return _menu_to_batch(screen, label, move)
 
 
 # ---------------------------------------------------------------- name entry
@@ -190,10 +380,15 @@ def kana_cell(ch):
     return None
 
 
-def _human_menu_open(cur, owner):
+def _human_menu_open(cur, owner, mem=None):
     if (not cur.get('egg_battle')
             and all(type(cur.get(k)) is int and cur[k] > 0 for k in ('ally_hp', 'enemy_hp'))):
         cur['command_open_pending'] = {'owner': owner, 'waits': 0}
+        if mem is not None:
+            _record(mem, 'battle_command_open_requested',
+                    ally=cur.get('ally'), enemy=cur.get('enemy'),
+                    observed_metric={'owner': owner},
+                    reason='通常戦闘の救済メニューを開くBを計画。送信・表示成功は未確認')
     return [pad('b')]
 
 

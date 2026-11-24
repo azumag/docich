@@ -38,6 +38,7 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
             'GITHUB_EVENT_ACTION': '',
             'GITHUB_SHA': 'a' * 40,
             'GITHUB_ISSUE_NUMBER': '',
+            'GITHUB_ISSUE_STATE': 'open',
             'GITHUB_ISSUE_AUTHOR': '',
             'GITHUB_ISSUE_AUTHOR_ID': '',
             'GITHUB_ISSUE_BODY': '',
@@ -53,6 +54,10 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
         data = json.loads(p.stdout)
         self.assertNotIn('duration_minutes', data)
         self.assertEqual((data['operation'], data['target'], data['ref']), ('start', 'production', 'main'))
+
+    def test_dispatch_does_not_require_issue_state(self):
+        p = self.run_auth(GITHUB_ISSUE_STATE='')
+        self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_non_owner_and_non_owner_rerun_fail_closed(self):
         self.assertNotEqual(self.run_auth(GITHUB_ACTOR='collab', GITHUB_ACTOR_ID='42').returncode, 0)
@@ -90,6 +95,21 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
             GITHUB_EVENT_NAME='issues', GITHUB_EVENT_ACTION='edited', GITHUB_ISSUE_NUMBER='293',
             GITHUB_ISSUE_AUTHOR='azumag', GITHUB_ISSUE_AUTHOR_ID='9018513', GITHUB_ISSUE_BODY=bad,
         ).returncode, 0)
+
+    def test_closed_command_issue_is_rejected(self):
+        body = json.dumps({'operation': 'start', 'confirm': 'production', 'nonce': 'closed'})
+        p = self.run_auth(
+            GITHUB_EVENT_NAME='issues',
+            GITHUB_EVENT_ACTION='edited',
+            GITHUB_ISSUE_NUMBER='293',
+            GITHUB_ISSUE_STATE='closed',
+            GITHUB_ISSUE_AUTHOR='azumag',
+            GITHUB_ISSUE_AUTHOR_ID='9018513',
+            GITHUB_ISSUE_BODY=body,
+            INPUT_OPERATION='', INPUT_CONFIRM='',
+        )
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('not open', p.stderr)
 
 
 class PaperCornerOperatorTests(unittest.TestCase):
@@ -206,6 +226,8 @@ class PaperCornerWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("github.triggering_actor == 'azumag'", text)
         self.assertIn('github.ref_protected == true', text)
         self.assertIn('github.event.issue.number == 293', text)
+        self.assertIn("github.event.issue.state == 'open'", text)
+        self.assertIn('GITHUB_ISSUE_STATE: ${{ github.event.issue.state }}', text)
         self.assertIn('environment: vm-operations', text)
         self.assertIn('persist-credentials: false', text)
         self.assertIn('submodules: false', text)

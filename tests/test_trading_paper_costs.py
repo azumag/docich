@@ -65,9 +65,25 @@ def deep_book() -> DepthBook:
 
 
 class TestPerMarketFees(unittest.TestCase):
-    def test_buy_uses_base_fee(self):
+    def test_buy_uses_higher_of_quote_and_base_fee(self):
         rate, source = resolve_fee_rate(market(), "buy")
-        self.assertEqual((rate, source), (D("0.0005"), "market"))
+        self.assertEqual((rate, source), (D("0.001"), "market"))
+        rate, source = resolve_fee_rate(market(base_fee="0.002", quote_fee="0.001"), "buy")
+        self.assertEqual((rate, source), (D("0.002"), "market"))
+
+    def test_buy_is_not_free_when_published_base_fee_is_zero(self):
+        # bitbank JPY pairs publish base=0 and quote=0.001..0.0012 (2026-11).
+        rate, source = resolve_fee_rate(market(base_fee="0", quote_fee="0.0012"), "buy")
+        self.assertEqual((rate, source), (D("0.0012"), "market"))
+
+    def test_buy_falls_back_through_single_known_sides(self):
+        self.assertEqual(resolve_fee_rate(market(base_fee="0.0007", quote_fee=None), "buy"),
+                         (D("0.0007"), "market"))
+        self.assertEqual(resolve_fee_rate(market(base_fee=None, quote_fee="0.0009"), "buy"),
+                         (D("0.0009"), "market"))
+        legacy = MarketInfo(symbol="BTC/JPY", base="BTC", quote="JPY", spot=True, active=True,
+                            taker_fee_rate=D("0.0011"))
+        self.assertEqual(resolve_fee_rate(legacy, "buy"), (D("0.0011"), "market"))
 
     def test_sell_uses_quote_fee(self):
         rate, source = resolve_fee_rate(market(), "sell")
@@ -88,8 +104,8 @@ class TestPerMarketFees(unittest.TestCase):
             try:
                 broker = PaperBroker(ledger, markets={"BTC/JPY": market()}, books={"BTC/JPY": deep_book()})
                 fill = broker.fill(decision(), timestamp=1000.0)
-                # Deep book: zero slippage, only the base taker fee widens the buy.
-                self.assertEqual(fill.price, D("1000000") * D("1.0005"))
+                # Deep book: zero slippage, only the (higher) quote taker fee widens the buy.
+                self.assertEqual(fill.price, D("1000000") * D("1.001"))
                 assert fill.cost_context is not None
                 self.assertEqual(fill.cost_context["fee_source"], "market")
                 self.assertEqual(fill.cost_context["slippage_source"], "depth")
@@ -153,7 +169,7 @@ class TestCostAccounting(unittest.TestCase):
         fill = self.broker.fill(decision(), timestamp=1000.0)
         stored = self.ledger.get_fill_for_opportunity("opp-1")
         assert stored is not None and stored.cost_context is not None
-        self.assertEqual(stored.cost_context["fee_rate"], "0.0005")
+        self.assertEqual(stored.cost_context["fee_rate"], "0.001")
         payload = build_public_status(
             worker_state="idle", last_cycle_at=1000.0, eligible_symbols=["BTC/JPY"],
             capital_reference=D("100000"), deployed_reference=D("10000"),

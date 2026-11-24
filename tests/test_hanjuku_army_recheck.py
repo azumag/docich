@@ -1,0 +1,52 @@
+"""A finished army refill releases the same-month recruit deferral (#4555).
+
+g1190 2026-11-18 65-7: the after-egg-skip fallback refilled 49→50 soldiers
+(SOLDIER_ENOUGH) and set recruit=deferred_army; _prioritise_recruit returns
+early on deferred_army, so the recruit waited for the next month and the
+collapsed roster never regrew in that visit.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
+from docich.hanjuku.strategy import economy as e
+
+ID = {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1, 'lease_id': 'l'}
+
+
+def memory(soldiers):
+    return {'chapter': 11, 'month': '65-7', 'gold': 9999, '_run_identity': dict(ID),
+            'soldiers_seen': soldiers,
+            'country_general_count': {'identity': dict(ID), 'count': 3,
+                                      'scope': [11, '65-7']},
+            'world': {'garrison': {'ゴンダル': ['シフォン']}}}
+
+
+def shop(**extra):
+    state = {'recruit': 'deferred_army', 'soldiers_done': False, 'key': '65-7',
+             'reserve': 0, 'recruit_reserve': 0}
+    state.update(extra)
+    return state
+
+
+def test_enough_soldiers_release_the_army_deferral():
+    mem = memory(50)
+    state = shop()
+    e._prioritise_recruit(mem, state, 9999)
+    assert state['recruit'] != 'deferred_army'
+    assert any(r['decision'] == 'recruit_army_rechecked' for r in mem.get('_records') or [])
+
+
+def test_a_done_refill_releases_even_with_a_stale_count():
+    mem = memory(49)
+    state = shop(soldiers_done=True)
+    e._prioritise_recruit(mem, state, 9999)
+    assert state['recruit'] != 'deferred_army'
+
+
+def test_an_unfinished_army_keeps_the_deferral():
+    mem = memory(30)
+    state = shop()
+    e._prioritise_recruit(mem, state, 9999)
+    assert state['recruit'] == 'deferred_army'

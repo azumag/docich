@@ -217,6 +217,16 @@ class TestSwitchLock(GameSwitchTestBase):
             second.release()
             first.release()
 
+    def test_busy_lock_reports_last_exclusive_holder(self):
+        first = game_switch.GameSwitchLock(self.state_dir).acquire(exclusive=True)
+        try:
+            with self.assertRaises(game_switch.GameSwitchBusyError) as caught:
+                game_switch.GameSwitchLock(self.state_dir).acquire(exclusive=True)
+        finally:
+            first.release()
+        self.assertIn("直近の排他保持", str(caught.exception))
+        self.assertIn(f"pid={os.getpid()}", str(caught.exception))
+
 
 class TestRequestReceipts(GameSwitchTestBase):
     def test_accept_allocates_generation_before_returning(self):

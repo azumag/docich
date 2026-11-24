@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy, hanjuku_chart as chart, hanjuku_chart_adjust as adjust
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_screen import Screen, Battle
+from docich.hanjuku.state.regions import plan as _plan_region
 
 RARE = 'キャトルミュー'
 
@@ -59,13 +60,28 @@ def test_no_kit_change_after_pick_or_without_measured_available_stock(picked,sto
     assert not mem.get('rare_card_kit')
 
 
+def _down_presses(actions):
+    """Rows a sweep observation moves: up to four downs (v601)."""
+    assert isinstance(actions, list) and actions
+    assert all(a == policy.pad('down') for a in actions), actions
+    assert 1 <= len(actions) <= 4
+    return len(actions)
+
+
 def test_four_row_inventory_is_scanned_boundedly_and_rewound():
     order,mem=memory();mem.pop('rare_card_kit')
     rows=inventory([('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)])
+    presses=0
+    while presses < policy.RARE_SCAN_LIMIT:
+        out=policy._rare_card_inventory(None,mem,order,rows)
+        if not out:
+            break
+        presses+=_down_presses(out)
     for _ in range(policy.RARE_SCAN_LIMIT):
-        assert policy._rare_card_inventory(None,mem,order,rows) == [policy.pad('down')]
-    for _ in range(policy.RARE_SCAN_LIMIT):
-        assert policy._rare_card_inventory(None,mem,order,rows) == [policy.pad('up')]
+        out=policy._rare_card_inventory(None,mem,order,rows)
+        if not out:
+            break
+        assert all(a == policy.pad('up') for a in out) and 1 <= len(out) <= 4
     assert policy._rare_card_inventory(None,mem,order,rows) is None
     assert policy._deploy_cards(order,mem) == list(order['cards'])
 
@@ -73,8 +89,8 @@ def test_four_row_inventory_is_scanned_boundedly_and_rewound():
 @pytest.mark.parametrize('month', ['1-10', None])
 def test_hidden_rare_row_becomes_usable_during_inventory_sweep(month):
     order,mem=memory();mem.pop('rare_card_kit');mem['month']=month
-    assert policy._rare_card_inventory(None,mem,order,inventory([
-        ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)])) == [policy.pad('down')]
+    assert _down_presses(policy._rare_card_inventory(None,mem,order,inventory([
+        ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)]))) >= 1
     assert policy._rare_card_inventory(None,mem,order,inventory([(RARE,5)])) == []
     assert mem['rare_card_kit'][order['step']] == [RARE]
 
@@ -82,7 +98,7 @@ def test_hidden_rare_row_becomes_usable_during_inventory_sweep(month):
 def test_no_rare_tactic_without_actual_carry_or_after_selected_use():
     order,mem=memory(confirmed=False)
     assert not any(t['card']==RARE for t in policy._tactics(mem,order['step']))
-    mem['order_context'][order['step']]['observed_metric']['cards']=[RARE]
+    _plan_region(mem)['order_context'][order['step']]['observed_metric']['cards']=[RARE]
     assert policy._tactics(mem,order['step'])[0]['card']==RARE
     mem['kit_spent']={order['step']:[RARE]}
     assert not any(t['card']==RARE for t in policy._tactics(mem,order['step']))
@@ -93,7 +109,7 @@ def test_normal_general_uses_carried_rare_before_clash():
     mem['battle']={'enemy':'ミント','ally':chart.HERO,'enemy_hp':70,'ally_hp':80,
         'start_enemy_hp':70,'start_ally_hp':80,'step':order['step'],'cards_used':[],
         'side':'attack','castle':'キカンドン','clashed':False,'planned_cards':[RARE]}
-    mem['card_override']={order['step']:['イッテツーン']}
+    _plan_region(mem)['card_override']={order['step']:['イッテツーン']}
     screen=Screen(lines=[],hand=None,text='');screen.kind='battle'
     screen.battle=Battle(enemy='ミント',ally=chart.HERO,enemy_hp=70,ally_hp=80)
     assert policy.battle_step(screen,mem)==[policy.pad('b')]
@@ -137,7 +153,7 @@ def test_survival_prefers_visible_rare_and_event_card_cannot_be_purchased():
 def test_deploy_discovers_hidden_rare_then_plans_only_measured_selection():
     from test_hanjuku_sortie_evidence import memory, measured_card_select
     mem=memory();mem.pop('rare_scan_month')
-    assert policy.deploy_step(measured_card_select(),mem)==[policy.pad('down')]
+    assert _down_presses(policy.deploy_step(measured_card_select(),mem)) >= 1
     assert mem['_records'][-1]['decision']=='sortie_input'
     assert mem['picked']==[]
     screen=measured_card_select((RARE,),stock='5')
@@ -153,3 +169,73 @@ def test_zero_slots_never_trigger_discovery_input():
     assert policy._rare_card_inventory(None,mem,order,inventory([
         ('イッテツーン',3),('ブラッキー',2),('ノリウツール',1),('クースカン',1)],remaining=0)) is None
     assert not mem.get('rare_scan')
+
+
+def test_second_sortie_in_same_month_reuses_measured_cattlemyu_card_stock():
+    """#4877: measured positive card_stock carries キャトルミュー even after rare_scan_month is set."""
+    order, mem = memory(boss=False)
+    mem.pop('rare_card_kit')
+    mem['rare_scan_month'] = mem['month']
+    mem['card_stock'] = {RARE: 36, 'イッテツーン': 99}
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    assert policy._rare_card_inventory(None, mem, order, top_four) == []
+    kit = mem['rare_card_kit'][order['step']]
+    assert kit[0] == RARE
+    assert sum(policy.CARD_IDS[c] for c in kit) < 48
+    assert mem['_records'][-1]['observed_metric']['stock_source'] == 'card_stock'
+
+
+def test_cached_cattlemyu_is_not_used_when_panel_short_or_dropped_or_boss():
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    # Short panel (<4 rows) without キャトルミュー proves it absent.
+    order, mem = memory(boss=False)
+    mem.pop('rare_card_kit')
+    mem['rare_scan_month'] = mem['month']
+    mem['card_stock'] = {RARE: 5}
+    assert policy._rare_card_inventory(None, mem, order, inventory([('イッテツーン', 99), ('ブラッキー', 99)])) is None
+    assert not mem.get('rare_card_kit')
+    # Dropped in this sortie: do not re-add.
+    mem['card_drop'] = {order['step']: [RARE]}
+    assert policy._rare_card_inventory(None, mem, order, top_four) is None
+    assert not mem.get('rare_card_kit')
+    # Boss order keeps Balmung/strict boss priority when キャトルミュー is off-screen.
+    border, bmem = memory(boss=True)
+    bmem.pop('rare_card_kit')
+    bmem['rare_scan_month'] = bmem['month']
+    bmem['card_stock'] = {RARE: 36}
+    assert policy._rare_card_inventory(None, bmem, border, top_four) is None
+    assert not bmem.get('rare_card_kit')
+
+
+def test_cached_cattlemyu_does_not_close_rare_scan_month_and_scroll_captures_balmung(monkeypatch):
+    """#4882: キャッシュ採用では rare_scan_month を早閉じせず、スクロール通過時のバルムンク在庫も記録する。"""
+    from types import SimpleNamespace
+    from docich.hanjuku.flows import deploy
+    order, mem = memory(boss=False)
+    mem.pop('rare_card_kit')
+    mem['month'] = '41-9'
+    mem['card_stock'] = {RARE: 18}
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    assert policy._rare_card_inventory(None, mem, order, top_four) == []
+    assert mem['rare_card_kit'][order['step']][0] == RARE
+    assert mem.get('rare_scan_month') != '41-9'
+
+    # rare_card_kit 確定後の card_scroll 中に バルムンク が映ったら balmung_held を更新する。
+    mid_rows = inventory([('ゼンマイン', 99), ('バルムンク', 40), ('ミックミー', 99), ('グルミー', 9)])
+    monkeypatch.setattr(deploy, '_order', lambda _m: order)
+    monkeypatch.setattr(deploy, '_measured_card_select', lambda _s: mid_rows)
+    screen = SimpleNamespace(kind='card_select', text='', lines=(), cursor=None, hand=None, selected=None)
+    deploy.deploy_step(screen, mem)
+    assert mem.get('balmung_held') == {'month': '41-9', 'stock': 40}
+
+
+def test_move_order_does_not_spend_cattlemyu():
+    """#4891: 自軍城への移動注文(purpose=='move')ではキャトルミューを携行・消費しない。"""
+    order, mem = memory(boss=False)
+    move_order = {**order, 'purpose': 'move', 'cards': ()}
+    mem.pop('rare_card_kit')
+    mem['card_stock'] = {RARE: 18}
+    top_four = inventory([('イッテツーン', 99), ('ブラッキー', 99), ('フットバース', 99), ('ダンスライン', 99)])
+    assert policy._rare_card_inventory(None, mem, move_order, top_four) is None
+    assert policy._rare_card_inventory(None, mem, move_order, inventory([(RARE, 18)])) is None
+    assert not mem.get('rare_card_kit')

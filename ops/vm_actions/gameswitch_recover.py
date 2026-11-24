@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""Fixed owner-only GameSwitch recover helper on the production VM (#1960).
+
+The only executable surface is the canonical CLI's ``recover``. Before it
+runs, this helper double-keys the workflow-authorized declaration against
+the canonical GameSwitch state and refuses to run unless every guard holds:
+
+- ``run-soren-live/game_switch.json`` must match the canonical fixed form
+  (required keys, schema 2, known phases with their seat invariants,
+  integer sanity, ``cleanup_pending`` flags strictly boolean). Anything
+  unknown is drift and is rejected without mutation.
+- recovery only applies to a canonical phase that equals the declared
+  phase (``failed`` or ``recovery_required``) and to the declared
+  ``cleanup_pending`` flag; a mismatch is a declared-mismatch refusal.
+- ownership proof must exist: a durable request receipt on disk for any
+  canonical ``request_id`` and a runtime directory for every referenced
+  runtime seat. Missing proof is rejected. Two reviewed exceptions: the
+  ``soren``/``soren91`` seats never materialize a per-runtime directory, and a
+  failed candidate seat whose directory the failed cleanup already removed
+  stays owned through the durable terminal-failure receipt that names the same
+  runtime identity and target. Without both, no later surface could settle the
+  dead seat and the whole corner rotation stayed latched (2026-11-14).
+- the canonical CLI runs once with a bounded deadline in a fixed argv; the
+  post-run canonical state must again be valid.
+
+The fixed exit code stands for one rejection reason so the owner-only
+workflow can report it verbatim. Shared display/audio/stream units are
+never touched and no arbitrary command, unit or argument is accepted.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+
+DOCICH = Path("/home/ubuntu/docich")
+STATE_REL = "run-soren-live/game_switch.json"
+REQUESTS_REL = "run-soren-live/game-switch/requests"
+RUNTIMES_REL = "run-soren-live/runtimes"
+LAUNCHER_REL = "bin/docich"
+CONFIG_REL = "config/docich.soren-live.toml"
+
+SCHEMA_VERSION = 2
+PHASES = frozenset(
+    {
+        "idle",
+        "validating",
+        "preparing",
+        "draining",
+        "quiescing",
+        "starting",
+        "probing",
+        "committing",
+        "ready",
+        "stopping",
+        "rolling_back",
+        "failed",
+        "recovery_required",
+    }
+)
+STABLE_PHASES = frozenset({"idle", "ready", "failed", "recovery_required"})
+IN_PROGRESS_PHASES = PHASES - STABLE_PHASES
+OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
+DECLARED_PHASES = frozenset({"failed", "recovery_required"})
+DECLARED_CLEANUP_PENDING = frozenset({"true", "false"})
+
+REQUIRED_KEYS = frozenset(
+    {
+        "schema_version",
+        "revision",
+        "phase",
+        "operation",
+        "request_id",
+        "deadline_at",
+        "next_generation",
+        "active",
+        "candidate",
+        "previous",
+        "retiring",
+        "last_result",
+        "last_error",
+        "updated_at",
+    }
+)
+RUNTIME_KEYS = frozenset(
+    {
+        "game",
+        "adapter",
+        "generation",
+        "runtime_id",
+        "lease_id",
+        "game_window",
+        "agent_window",
+        "adapter_session",
+        "started_at",
+    }
+)
+
+RUNTIME_ID_RE = re.compile(r"g([1-9][0-9]*)-([a-f0-9]{6,32})\Z")
+
+#: Coordinator adapters that never materialize ``spec.runtime_dir``. ``soren``
+#: owns one shared runtime for sorengame and ``soren91`` rides the same
+#: process, so a seated runtime of these kinds has no directory to prove
+#: anything with. Keep in sync with the adapters that use the spec directory
+#: (``git grep runtime_dir -- src/docich/adapters``).
+DIRLESS_ADAPTERS = frozenset({"soren", "soren91"})
+
+# Fixed rejection reasons surfaced as exit codes (one meaning per code).
+# 2/3/64/70/71/72 follow the reviewed recover_corner_rotation codes; the
+# 8x range carries this operation's own guard rejections.
+EX_BAD_USAGE = 2
+EX_BAD_ROOT = 3
+EX_INVALID_REQUEST = 64
+EX_RECOVERY_PENDING = 70
+EX_RECOVERY_REJECTED = 71
+EX_INVALID_RESULT = 72
+EX_DECLARED_MISMATCH = 80
+EX_UNKNOWN_DRIFT = 81
+EX_OWNERSHIP_MISSING = 82
+# A missing runtime directory is reported with the seat class it belongs to so
+# the owner-only workflow can say which seat holds the unproven proof. The
+# stable seats keep the original fixed reason (82): only a failed candidate is
+# ever allowed to lose its directory without losing ownership (see
+# ``_terminal_failure_receipt``).
+EX_OWNERSHIP_MISSING_CANDIDATE = 83
+EX_OWNERSHIP_MISSING_RETIRING = 84
+
+CLI_RECOVER_TIMEOUT_S = 420
+CLI_KILL_GRACE_S = 30
+
+
+class FixedRecoverExit(Exception):
+    """Fixed exit code plus one rejection message."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = int(code)
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _request_id_ok(value: object) -> bool:
+    try:
+        parsed = uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return isinstance(value, str) and str(value).lower() == str(parsed)
+
+
+def _seat_runtime_ok(runtime: object, label: str) -> None:
+    """One canonical runtime seat: fixed form only, no drift tolerated."""
+
+    where = f"{label} runtime"
+    if not isinstance(runtime, dict):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} is not an object")
+    missing = sorted(RUNTIME_KEYS - runtime.keys())
+    if missing:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} is missing {missing}")
+    for key in ("game", "adapter", "runtime_id", "game_window", "agent_window",
+                "adapter_session", "started_at"):
+        if not isinstance(runtime[key], str):
+            raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} {key} is not a string")
+    if not runtime["game"] or not runtime["runtime_id"] or not runtime["started_at"]:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} has an empty fixed field")
+    generation = runtime["generation"]
+    if not _is_int(generation) or generation < 1:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} generation is not a valid int")
+    match = RUNTIME_ID_RE.fullmatch(runtime["runtime_id"])
+    if not match:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} runtime_id is not in the fixed form")
+    if int(match.group(1)) != generation:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} runtime_id does not own its generation")
+    if runtime["game_window"] != f"game-g{generation}":
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} game_window is not in the fixed form")
+    if runtime["agent_window"] != f"agent-g{generation}":
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} agent_window is not in the fixed form")
+    if runtime["adapter_session"] != f"docich-game-g{generation}":
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} adapter_session is not in the fixed form")
+    lease_id = runtime["lease_id"]
+    if lease_id is not None and not isinstance(lease_id, str):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{where} lease_id is not a string or null")
+
+
+def _seated_runtimes(state: dict) -> list[tuple[str, dict]]:
+    entries: list[tuple[str, dict]] = []
+    for label in ("active", "candidate", "previous"):
+        value = state.get(label)
+        if value is not None:
+            entries.append((label, value))
+    for index, value in enumerate(state.get("retiring") or []):
+        entries.append((f"retiring[{index}]", value))
+    return entries
+
+
+def validate_shape(state: object) -> dict:
+    """Canonical game switch state, exact fixed form (fail-closed)."""
+
+    if not isinstance(state, dict):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical state is not an object")
+    missing = sorted(REQUIRED_KEYS - state.keys())
+    if missing:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"canonical state is missing {missing}")
+    if state["schema_version"] != SCHEMA_VERSION:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical state schema_version is unknown")
+    if not _is_int(state["revision"]) or state["revision"] < 0:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical revision is not a valid int")
+    if not _is_int(state["next_generation"]) or state["next_generation"] < 1:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical next_generation is not a valid int")
+    if not isinstance(state["updated_at"], str) or not state["updated_at"]:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical updated_at is not a string")
+    phase = state["phase"]
+    if not isinstance(phase, str) or phase not in PHASES:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical phase is unknown")
+    operation = state["operation"]
+    if operation is not None and operation not in OPERATIONS:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical operation is unknown")
+    request_id = state["request_id"]
+    if request_id is not None and not _request_id_ok(request_id):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical request_id is not a canonical UUID")
+    if (operation is None) != (request_id is None):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "operation and request_id must be set together")
+    if phase in IN_PROGRESS_PHASES and (operation is None or request_id is None):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "in-progress phase lost its durable request")
+    if phase in {"idle", "ready"} and (operation is not None or request_id is not None):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "stable phase keeps a durable request")
+    deadline_at = state["deadline_at"]
+    if deadline_at is not None and not isinstance(deadline_at, str):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical deadline_at is not a string or null")
+    if not isinstance(state["retiring"], list):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical retiring is not a list")
+    if phase == "idle" and any(state.get(label) is not None for label in ("active", "candidate", "previous")):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "idle phase keeps a runtime seat")
+    if phase == "ready" and (
+        state.get("active") is None or state.get("candidate") is not None
+        or state.get("previous") is not None
+    ):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "ready phase does not hold exactly the active seat")
+    if phase == "draining" and (
+        state.get("active") is None or state.get("candidate") is not None
+        or state.get("previous") is not None
+    ):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "draining phase does not hold exactly the active seat")
+    if phase in {"validating", "stopping"} and state.get("candidate") is not None:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"{phase} phase keeps a candidate seat")
+    if phase == "recovery_required" and not isinstance(state.get("last_error"), dict):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "recovery_required phase lost its fixed last_error")
+    for label, runtime in _seated_runtimes(state):
+        _seat_runtime_ok(runtime, label)
+    generations = [runtime["generation"] for _, runtime in _seated_runtimes(state)]
+    if len(generations) != len(set(generations)):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical runtime generations are not unique")
+    if generations and state["next_generation"] <= max(generations):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical next_generation does not advance")
+    last_result = state["last_result"]
+    if last_result is not None:
+        if not isinstance(last_result, dict):
+            raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical last_result is not an object")
+        pending = last_result.get("cleanup_pending")
+        if pending is not None and not isinstance(pending, bool):
+            raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical last_result cleanup_pending is not bool")
+    last_error = state["last_error"]
+    if last_error is not None and not isinstance(last_error, dict):
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "canonical last_error is not an object")
+    return state
+
+
+def load_canonical(root: Path) -> dict:
+    path = root / STATE_REL
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise FixedRecoverExit(EX_UNKNOWN_DRIFT, f"canonical state {path} is unreadable: {exc}")
+    return validate_shape(state)
+
+
+def declared_matches(state: dict, declared_phase: str, declared_cleanup_pending: bool) -> None:
+    """The authorized declaration must be exactly what canonical says."""
+
+    phase = state["phase"]
+    if phase != declared_phase:
+        raise FixedRecoverExit(
+            EX_DECLARED_MISMATCH,
+            f"canonical phase {phase} does not match the declared {declared_phase}",
+        )
+    pending_true = bool(state.get("retiring"))
+    last_result = state.get("last_result")
+    if isinstance(last_result, dict) and last_result.get("cleanup_pending") is True:
+        pending_true = True
+    if pending_true != declared_cleanup_pending:
+        raise FixedRecoverExit(
+            EX_DECLARED_MISMATCH,
+            f"canonical cleanup pending={pending_true} does not match the declared {declared_cleanup_pending}",
+        )
+
+
+def verify_ownership(root: Path, state: dict) -> None:
+    """Receipts and runtime directories prove this checkout owns the state."""
+
+    request_id = state.get("request_id")
+    if request_id is not None:
+        receipt_path = root / REQUESTS_REL / f"{request_id}.json"
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise FixedRecoverExit(
+                EX_OWNERSHIP_MISSING, f"request receipt {receipt_path} is unreadable: {exc}"
+            )
+        if not isinstance(receipt, dict):
+            raise FixedRecoverExit(EX_OWNERSHIP_MISSING, "request receipt is not an object")
+        if receipt.get("request_id") != request_id:
+            raise FixedRecoverExit(EX_OWNERSHIP_MISSING, "request receipt owns another request")
+        result = receipt.get("result")
+        if result is not None:
+            if not isinstance(result, dict):
+                raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "request receipt result is not an object")
+            pending = result.get("cleanup_pending")
+            if pending is not None and not isinstance(pending, bool):
+                raise FixedRecoverExit(EX_UNKNOWN_DRIFT, "request receipt cleanup_pending is not bool")
+    terminal_failure = _terminal_failure_receipt(root, state)
+    for label, runtime in _seated_runtimes(state):
+        # Two coordinator adapters never materialize a per-runtime directory:
+        # soren keeps one shared runtime for sorengame, and soren91 rides that
+        # same process. Their seats are normal without a directory, so the
+        # directory cannot be an ownership proof for them (2026-11-14: every
+        # rollback whose previous seat was sorengame refused with
+        # ownership_missing before the canonical CLI could restore it).
+        if runtime["adapter"] in DIRLESS_ADAPTERS:
+            continue
+        runtime_dir = root / RUNTIMES_REL / str(runtime["runtime_id"])
+        if runtime_dir.is_dir():
+            continue
+        # The runtime directory is a working directory that the failed
+        # candidate's own cleanup may already have removed. A terminal failed
+        # seat therefore keeps this checkout's ownership through the durable
+        # receipt for its own failed request; requiring the directory forever
+        # left such a seat unrecoverable.
+        if terminal_failure is not None and _dead_seat_is_owned(state, terminal_failure, label, runtime):
+            continue
+        raise FixedRecoverExit(
+            _missing_directory_reason(label),
+            f"{label} runtime directory {runtime_dir} is missing",
+        )
+
+
+def _missing_directory_reason(label: str) -> int:
+    if label == "candidate":
+        return EX_OWNERSHIP_MISSING_CANDIDATE
+    if label.startswith("retiring["):
+        return EX_OWNERSHIP_MISSING_RETIRING
+    return EX_OWNERSHIP_MISSING
+
+
+def _terminal_failure_receipt(root: Path, state: dict) -> dict | None:
+    """The durable receipt for the request canonical already recorded failed.
+
+    ``failed`` keeps no live ``request_id``, so ``last_result`` is the only
+    pointer to it. The receipt has to be this checkout's own terminal failure;
+    anything unreadable or inconsistent yields no proof (never permission).
+    """
+
+    last_result = state.get("last_result")
+    if not isinstance(last_result, dict) or last_result.get("status") != "failed":
+        return None
+    request_id = last_result.get("request_id")
+    if not _request_id_ok(request_id):
+        return None
+    try:
+        receipt = json.loads(
+            (root / REQUESTS_REL / f"{request_id}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    if receipt.get("request_id") != request_id or receipt.get("status") != "failed":
+        return None
+    result = receipt.get("result")
+    if not isinstance(result, dict) or result.get("status") != "failed":
+        return None
+    return receipt
+
+
+def _dead_seat_is_owned(state: dict, receipt: dict, label: str, runtime: dict) -> bool:
+    """The terminal failure receipt names exactly this candidate seat.
+
+    Only a failed candidate (the ``candidate`` seat or a ``retiring`` entry
+    whose cleanup role is ``failed_candidate``) can lose its directory this
+    way. A stable seat without its directory stays an ownership failure, and
+    the receipt has to name the same runtime identity and target as the seat.
+    """
+
+    if label != "candidate" and not label.startswith("retiring["):
+        return False
+    if label.startswith("retiring[") and runtime.get("cleanup_role") != "failed_candidate":
+        return False
+    last_result = state.get("last_result")
+    if not isinstance(last_result, dict):
+        return False
+    return (
+        receipt.get("runtime_id") == runtime.get("runtime_id")
+        and receipt.get("generation") == runtime.get("generation")
+        and receipt.get("target") == runtime.get("game")
+        and last_result.get("generation") == runtime.get("generation")
+        and last_result.get("to_game") == runtime.get("game")
+    )
+
+
+def run_canonical_recover(root: Path) -> int:
+    """Run only the canonical CLI recover once, with bounded time."""
+
+    launcher = root / LAUNCHER_REL
+    config = root / CONFIG_REL
+    if not (launcher.is_file() and os.access(launcher, os.X_OK)) or not config.is_file():
+        raise FixedRecoverExit(25, "reviewed docich launcher or config is missing")
+    argv = [
+        str(launcher), "--config", str(config),
+        "recover", "--timeout", str(CLI_RECOVER_TIMEOUT_S),
+    ]
+    try:
+        completed = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            timeout=CLI_RECOVER_TIMEOUT_S + CLI_KILL_GRACE_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise FixedRecoverExit(70, "canonical recover exceeded its bounded deadline")
+    return completed.returncode
+
+
+def recover(root: Path, declared_phase: str, declared_cleanup_pending: bool) -> int:
+    state = load_canonical(root)
+    declared_matches(state, declared_phase, declared_cleanup_pending)
+    verify_ownership(root, state)
+    cli_code = run_canonical_recover(root)
+    post_state = load_canonical(root)
+    if cli_code == 0:
+        # The CLI exit status alone is not evidence that the canonical state
+        # was recovered. In particular, a failed/recovery_required latch must
+        # never be reported as a successful owner-only recovery.
+        if post_state["phase"] not in {"ready", "idle"}:
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT,
+                f"canonical recover exited 0 but phase remains {post_state['phase']}",
+            )
+        # A recovery cannot roll back the durable revision or allocate a
+        # different generation. Either suggests an unrelated state transition.
+        if (post_state["revision"] < state["revision"]
+                or post_state["next_generation"] != state["next_generation"]):
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT, "canonical recover changed the state lineage",
+            )
+        before_result = state.get("last_result")
+        after_result = post_state.get("last_result")
+        # Canonical stop recovery writes an anonymous success result.
+        active = state.get("active")
+        stopped_active = (
+            state["phase"] == "failed"
+            and state.get("previous") is None
+            and isinstance(active, dict)
+            and post_state["phase"] == "idle"
+            and post_state["revision"] > state["revision"]
+            and isinstance(after_result, dict)
+            and after_result.get("request_id") == ""
+            and after_result.get("operation") == "recover"
+            and after_result.get("status") == "succeeded"
+            and after_result.get("from_game") == active["game"]
+            and "to_game" in after_result
+            and after_result["to_game"] is None
+            and _is_int(after_result.get("generation"))
+            and after_result["generation"] == active["generation"]
+            and "error_code" in after_result
+            and after_result["error_code"] is None
+        )
+        if (isinstance(before_result, dict)
+                and _request_id_ok(before_result.get("request_id"))
+                and not stopped_active
+                and (not isinstance(after_result, dict)
+                     or after_result.get("request_id") != before_result["request_id"])):
+            raise FixedRecoverExit(
+                EX_INVALID_RESULT, "canonical recover changed the request lineage",
+            )
+        return 0
+    if cli_code == 1:
+        raise FixedRecoverExit(EX_RECOVERY_PENDING, "canonical recover is pending (busy/rolled_back)")
+    raise FixedRecoverExit(EX_RECOVERY_REJECTED, "canonical recover refused this state")
+
+
+def main(argv: list[str]) -> int:
+    docich = Path(os.environ.get("DOCICH_ROOT") or DOCICH)
+    if Path.cwd() != docich:
+        raise FixedRecoverExit(EX_BAD_ROOT, "this recover only runs in its own production docich root")
+    if len(argv) != 2:
+        raise FixedRecoverExit(EX_BAD_USAGE, "usage: gameswitch_recover.py PHASE CLEANUP_PENDING")
+    phase, cleanup_pending = argv
+    if phase not in DECLARED_PHASES or cleanup_pending not in DECLARED_CLEANUP_PENDING:
+        raise FixedRecoverExit(EX_INVALID_REQUEST, "declared phase or cleanup_pending is out of the fixed form")
+    return recover(docich, phase, cleanup_pending == "true")
+
+
+if __name__ == "__main__":
+    try:
+        code = main(sys.argv[1:])
+    except FixedRecoverExit as exc:
+        print(f"guarded GameSwitch recovery refused ({exc.code}): {exc}", file=sys.stderr)
+        # Propagate the fixed code: the owner-only workflow maps it to a
+        # rejection reason, so a bare re-raise (exit 1) would lose it.
+        raise SystemExit(exc.code)
+    raise SystemExit(code)

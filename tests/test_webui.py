@@ -19,6 +19,17 @@ from docich import config  # noqa: E402
 from docich import speech  # noqa: E402
 from docich import webui  # noqa: E402
 
+# 実 HTTP fixture の共有ヘルパー (issue #2346)。PR #2340 で本ファイルに入れた
+# 追跡つき server と後片付けの待ちを ``tests/_webui_http_fixture.py`` へ移した。
+from _webui_http_fixture import (  # noqa: E402
+    assert_no_stuck_handlers as _assert_no_stuck_handlers,
+    shutdown_test_server as _shutdown_test_server,
+    tracking_server_class as _tracking_server_class,
+)
+
+# Node の起動と JS 評価には CI の並列負荷を見込む。停止時の上限は維持する。
+_NODE_TEST_TIMEOUT = 30
+
 
 def _make_global(repo_root: Path) -> config.GlobalConfig:
     return config.load_global(repo_root)
@@ -756,7 +767,7 @@ class TestHttpHandlers(unittest.TestCase):
         (self.soren / "eloop_lib.sh").write_text("# x\n")
         _write_env(self.soren, "AI_AGENT_BACKOFF_SEC=600\n")
         self.g = _make_global(self.repo_root)
-        self.server = webui.ThreadingHTTPServer(("127.0.0.1", 0), webui._Handler)
+        self.server = _tracking_server_class()(("127.0.0.1", 0), webui._Handler)
         webui._Handler.g = self.g
         webui._Handler.soren_root = self.soren
         webui._Handler.read_only = False
@@ -776,7 +787,15 @@ class TestHttpHandlers(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
-        self.server.shutdown()
+        # ThreadingHTTPServer serves each request in its own daemon thread and
+        # shutdown() only stops the accept loop.  ThreadingMixIn._Threads does
+        # not track daemon threads, so server_close() does not join a handler
+        # that is still finishing (for example writing the mutation audit
+        # event); that writer would race the temp-dir removal and fail it with
+        # ``OSError [Errno 39] Directory not empty``.  Wait for the tracked
+        # handlers explicitly before cleanup.
+        stuck = _shutdown_test_server(self.server, self.thread)
+        _assert_no_stuck_handlers(self, stuck)
         self.tmp.cleanup()
 
     def _fetch_csrf(self):
@@ -941,6 +960,301 @@ class TestHttpHandlers(unittest.TestCase):
     def test_put_config_body_too_large(self):
         status, data = self._request("PUT", "/api/config", body="x" * (webui.MAX_BODY_BYTES + 1))
         self.assertEqual(status, 413)
+
+    def test_early_403_with_unread_body_is_not_reset(self):
+        # issue #2415: 本文を読まずに返す早期 403 で、本文送信中のクライアントが
+        # RST (ConnectionResetError) を受けず応答を読めること。
+        import socket as _socket
+        # カーネル送信バッファを超えるが drain 上限 (_BODY_DRAIN_CAP_BYTES) 内の本文。
+        # 未読のまま close すると、送信中の sendall() が RST で失敗する。
+        body = b'{"values": {"PEAK_HOURS_TZ": "UTC", "PAD": "' + b"a" * (200 * 1024) + b'"}}'
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        self.assertIn(b"403", buf.split(b"\r\n", 1)[0])
+
+    def test_early_404_with_unread_body_is_not_reset(self):
+        # issue #2415: 未知パスの 404 も本文を読まずに close しない。
+        import socket as _socket
+        body = b'{"pad": "' + b"a" * (200 * 1024) + b'"}'
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("POST /api/does-not-exist HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        self.assertIn(b"404", buf.split(b"\r\n", 1)[0])
+
+    def test_early_401_with_oversized_declared_length_is_bounded(self):
+        # issue #2415: 早期エラー前の drain は上限超過の宣言長でも bounded に
+        # 打ち切り、本文を送らないクライアントで handler を占有しない。
+        import socket as _socket
+        import time as _time
+        self.g.webui.token = "supersecret123"
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            self.assertLess(_time.monotonic() - t0, 2.0, "401 が deadline 内に返らなかった")
+            self.assertIn(b"401", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+            self.g.webui.token = ""
+
+    def _raw_get_with_body(self, path, body):
+        # issue #2415 (do_GET): body を付けた GET を送り、応答の先頭行を返す。
+        # 送信中に RST が来ると sendall/recv が ConnectionResetError で落ちる。
+        import socket as _socket
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("GET " + path + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Length: " + str(len(body)) + "\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.sendall(body)
+            sock.settimeout(2.0)
+            buf = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sock.close()
+        return buf.split(b"\r\n", 1)[0]
+
+    def test_get_unauthorized_with_unread_body_is_not_reset(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            status_line = self._raw_get_with_body("/api/health", b"x" * (200 * 1024))
+        finally:
+            self.g.webui.token = ""
+        self.assertIn(b"401", status_line)
+
+    def test_get_root_with_unread_body_is_drained(self):
+        # RST の発生はタイミング依存で決定的に観測できないため、drain が宣言長で
+        # 呼ばれたことを数える (issue #2415)。修正前は呼ばれず必ず落ちる。
+        size = 200 * 1024
+        original = webui._Handler._drain_oversized_body
+        with mock.patch.object(webui._Handler, "_drain_oversized_body", autospec=True,
+                               side_effect=original) as drain:
+            status_line = self._raw_get_with_body("/", b"x" * size)
+        self.assertIn(b"200", status_line)
+        self.assertIn(mock.call(mock.ANY, size), drain.call_args_list)
+
+    def test_beta_control_oversized_body_is_not_reset(self):
+        # issue #2415 (_handle_beta_control): 長さ上限 (4096) を超える本文を読まずに
+        # 400 で返すと、送信中のクライアントが RST を受けて応答を読めない。
+        import socket as _socket
+        body = b"x" * (200 * 1024)
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            with mock.patch.object(webui._Handler, "_identity", return_value="operator"):
+                sock.sendall(
+                    ("POST /api/tsuitate-beta HTTP/1.1\r\n"
+                     "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                     "Content-Type: application/json\r\n"
+                     "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                     "Content-Length: " + str(len(body)) + "\r\n"
+                     "Connection: close\r\n\r\n").encode("ascii")
+                )
+                sock.sendall(body)
+                sock.settimeout(2.0)
+                buf = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+        finally:
+            sock.close()
+        self.assertIn(b"400", buf.split(b"\r\n", 1)[0])
+
+    def test_put_config_body_too_large_no_body_returns_413_within_deadline(self):
+        # 生ソケットで巨大 Content-Length を宣言し本文を送らない。
+        # drain に deadline が無いと 413 が返らずハングする (review P2)。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_partial_body_returns_413_within_deadline(self):
+        # 本文を一部だけ送って停止するケースでも deadline 内に 413 を返す。
+        import socket as _socket
+        import time as _time
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 262145\r\n"
+                 "Connection: close\r\n\r\n" + "x" * 17).encode("ascii")
+            )
+            sock.settimeout(2.0)
+            t0 = _time.monotonic()
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if _time.monotonic() - t0 > 2.0:
+                    break
+            elapsed = _time.monotonic() - t0
+            self.assertLess(elapsed, 2.0, "413 が deadline 内に返らなかった")
+            self.assertIn(b"413", buf.split(b"\r\n", 1)[0])
+        finally:
+            sock.close()
+
+    def test_put_config_body_too_large_slow_trickle_is_bounded(self):
+        # per-read timeout より短い間隔で送り続ける slow-trickle。
+        # 総時間 deadline が実装されていないと read が制御を返さず handler が
+        # 占有され続ける (read(n) は n バイト揃うまで内部で recv を繰り返すため)。
+        # 「413 を読める」か「RST/EOF で接続が終わる」のどちらかが期限までに
+        # 起きること = handler が期限付きで解放されることを固定する。413 の
+        # 受信自体は RST で失われ得るので、このケースでは必須にしない
+        # (DoS 保護を優先し、413 の契約は送信の速い既存テストで固定する)。
+        import socket as _socket
+        import threading as _threading
+        import time as _time
+
+        # 送信間隔 < per-read timeout にして「無通信 timeout では抜けない」状況を作る。
+        # (per-read timeout は 0.1s。実装定数に依存させず literal で固定する。)
+        trickle_interval = 0.02
+        recv_timeout = 4.0
+        release_deadline = 2.0  # 総時間 deadline (0.5s) + 十分な余裕
+        sock = _socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        stop = _threading.Event()
+        sent = [0]
+
+        def trickle():
+            end = _time.monotonic() + recv_timeout + 2.0
+            while not stop.is_set() and _time.monotonic() < end:
+                try:
+                    sock.sendall(b"x")
+                    sent[0] += 1
+                except OSError:
+                    return
+                stop.wait(trickle_interval)
+
+        sender = _threading.Thread(target=trickle, daemon=True)
+        try:
+            sock.sendall(
+                ("PUT /api/config HTTP/1.1\r\n"
+                 "Host: 127.0.0.1:" + str(self.port) + "\r\n"
+                 "Content-Type: application/json\r\n"
+                 "X-CSRF-Token: " + self.csrf_token + "\r\n"
+                 "Content-Length: 1000000000\r\n"
+                 "Connection: close\r\n\r\n").encode("ascii")
+            )
+            sender.start()
+            sock.settimeout(recv_timeout)
+            t0 = _time.monotonic()
+            buf = b""
+            closed = False
+            while b"\r\n\r\n" not in buf:
+                try:
+                    chunk = sock.recv(4096)
+                except _socket.timeout:
+                    break
+                except ConnectionResetError:
+                    closed = True
+                    break
+                if not chunk:
+                    closed = True
+                    break
+                buf += chunk
+            elapsed = _time.monotonic() - t0
+            first_status = buf.split(b"\r\n", 1)[0] if buf else b""
+            self.assertLess(
+                elapsed,
+                release_deadline,
+                "slow-trickle で handler が deadline 内に解放されなかった: elapsed=%.2fs sent=%d"
+                % (elapsed, sent[0]),
+            )
+            self.assertTrue(buf or closed, "応答も接続終了も観測できなかった")
+            # 413 以外の HTTP 応答を返してはいけない (RST/EOF は許容)。
+            if first_status:
+                self.assertIn(b"413", first_status)
+        finally:
+            stop.set()
+            try:
+                sock.close()
+            except OSError:
+                pass
+            sender.join(timeout=1.0)
 
     def test_read_only_enforced(self):
         webui._Handler.read_only = True
@@ -1234,10 +1548,14 @@ class TestHttpHandlers(unittest.TestCase):
 
     def test_workers_snapshot_tolerates_now_second_boundary(self):
         """回帰 (#1225): 秒境界をまたいでも snapshot 比較が成立すること。"""
-        status_a, data_a = self._request("GET", "/api/workers")
+        # #3737: 1回目を実時刻で取ると、CI 負荷で処理が 1 秒を超えて秒境界を
+        # またいだ場合に now_a が base の 1 秒前になり、差が 3 になって flake
+        # する。両方を mock し、差がちょうど 2 の決定論的な回帰テストにする。
+        base = int(time.time())
+        with mock.patch.object(webui.time, "time", return_value=base):
+            status_a, data_a = self._request("GET", "/api/workers")
         self.assertEqual(status_a, 200)
-        base = time.time()
-        with mock.patch.object(webui.time, "time", return_value=int(base) + 2):
+        with mock.patch.object(webui.time, "time", return_value=base + 2):
             status_b, data_b = self._request("GET", "/api/workers")
         self.assertEqual(status_b, 200)
         now_a = data_a.pop("now", None)
@@ -1397,14 +1715,24 @@ class TestHttpHandlers(unittest.TestCase):
     def test_access_log_does_not_contain_token(self):
         self.g.webui.token = "supersecret123"
         try:
-            self._request("GET", "/api/health?token=supersecret123")
-            self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
-            self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            status, _ = self._request("GET", "/api/health?token=supersecret123")
+            self.assertEqual(status, 401)
+            status, _ = self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
+            self.assertEqual(status, 200)
+            status, _ = self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            self.assertEqual(status, 401)
         finally:
             self.g.webui.token = ""
+        # 応答の受信だけでは handler の finally にあるログ書込みは完了しない。
+        _assert_no_stuck_handlers(self, self.server.wait_for_handlers())
         log_file = self.soren / "tmp/debug/webui.log"
         self.assertTrue(log_file.is_file())
         content = log_file.read_text(encoding="utf-8")
+        records = [json.loads(line) for line in content.splitlines()]
+        self.assertCountEqual(
+            [401, 200, 401],
+            [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
+        )
         self.assertNotIn("supersecret123", content)
         self.assertNotIn("wrongtoken", content)
 
@@ -1472,6 +1800,26 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_hanjuku_catalog_config(self, *, enabled=True, paused=False, rotation=True):
+        """#2024: hanjuku-hero is a non-CLI game started through the common queue."""
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            f'enabled = {str(rotation).lower()}\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero", '
+            f'enabled = {str(enabled).lower()}, paused = {str(paused).lower()}}}]\n',
+            encoding="utf-8",
+        )
+        games = Path(self.g.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        (games / "hanjuku-hero.toml").write_text(
+            '[game]\nname = "hanjuku-hero"\ntitle = "Hanjuku"\nadapter = "retroarch"\n'
+            '[retroarch]\nrom = "games/roms/hanjuku-hero.sfc"\n',
+            encoding="utf-8",
+        )
+
     def _write_weather_catalog_config(self, *, enabled=True, paused=False, rotation=True):
         path = Path(self.g.config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1510,6 +1858,48 @@ class TestHttpHandlers(unittest.TestCase):
             'manual_only = true}]\n',
             encoding="utf-8",
         )
+
+    def _write_doushi_catalog_config(self, *, enabled=True, paused=False, rotation=True):
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            f'enabled = {str(rotation).lower()}\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "doushi-card", adapter = "doushi", game = "doushi-view", '
+            f'enabled = {str(enabled).lower()}, paused = {str(paused).lower()}, '
+            'manual_only = true}]\n',
+            encoding="utf-8",
+        )
+
+    def test_rotation_view_flags_wait_overdue_on_one_reason(self):
+        # #4333: a wait held on one unchanged reason past next_due_at is the
+        # wedge signal; the view must expose it for the overlay warning.
+        self._write_catalog_config()
+        now = time.time()
+        self._write_rotation_state(
+            status="waiting", pending=None,
+            reason="other-corner-needs-finish-or-recovery",
+            reason_since=now - 3600, next_due_at=now - 3600,
+        )
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        rotation = view["rotation"]
+        self.assertEqual(rotation["status"], "waiting")
+        self.assertAlmostEqual(rotation["reason_since"], now - 3600, delta=1)
+        self.assertIsNotNone(rotation["overdue"])
+        self.assertEqual(rotation["overdue"]["reason_age_sec"], 3600)
+        self.assertEqual(rotation["overdue"]["overdue_sec"], 3600)
+
+        # A fresh reason inside the warn bound is not a wedge.
+        self._write_rotation_state(
+            status="waiting", pending=None,
+            reason="other-corner-needs-finish-or-recovery",
+            reason_since=now - 60, next_due_at=now - 3600,
+        )
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertIsNone(view["rotation"]["overdue"])
 
     def test_weather_manual_start_reserves_without_dispatch_and_is_idempotent(self):
         self._write_weather_catalog_config()
@@ -1598,6 +1988,37 @@ class TestHttpHandlers(unittest.TestCase):
             "action": "stop", "corner": "yosou-oh", "confirm": True})
         self.assertEqual(status, 409, data)
         self.assertEqual(data["error"], "yoso_not_active")
+
+    def test_doushi_manual_start_uses_common_queue_and_stays_manual_only(self):
+        self._write_doushi_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        with mock.patch("docich.doushi_corner.DoushiCornerManager.run_rotation") as run, \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "doushi-card", "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["status"], "queued")
+        self.assertIsNone(data["duration_minutes"])
+        self.assertEqual(data["corner"], {
+            "id": "doushi-card", "adapter": "doushi",
+            "game": "doushi-view", "target": "rotation",
+        })
+        run.assert_not_called()
+        popen.assert_not_called()
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["rotation"]["queued_manual"]["corner"], "doushi-card")
+        self.assertTrue(view["catalog"][0]["manual_only"])
+        self.assertEqual(view["catalog"][0]["manual_mode"], "queue")
+        self.assertEqual(view["catalog"][0]["state_file"], "doushi_corner")
+        self.assertFalse(view["catalog"][0]["eligible"])
+
+    def test_doushi_manual_stop_before_start_uses_specific_error(self):
+        self._write_doushi_catalog_config()
+        status, data = self._request("POST", "/api/corners", {
+            "action": "stop", "corner": "doushi-card", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "doushi_not_active")
 
     def test_tsuitate_corner_view_reports_end_reason_and_settled_result(self):
         self._write_tsuitate_catalog_config()
@@ -1735,6 +2156,8 @@ class TestHttpHandlers(unittest.TestCase):
             'action:"schedule"',
             'action:"cancel-schedule"',
             '"scheduled-manual-not-due"',
+            "予想の完了待ち",
+            "next_due（目安）",
         ):
             self.assertIn(marker, body)
 
@@ -1920,6 +2343,24 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/special-corner/category-search", {"query": "A", "x": 1})
         self.assertEqual(status, 400, data)
 
+    def test_special_corner_category_search_releases_lock_before_error_response(self):
+        # #2267: エラー応答を lock 保持中に送ると、応答直後に次を送るクライアントが
+        # 解放前に到着して 429 search_busy を観測し得る。送信時点で未保持を固定する。
+        from docich import webui
+
+        observed = []
+        original = webui._Handler._send_error_json
+
+        def spy(handler, code, error, detail="", field=""):
+            if code in (400, 502):
+                observed.append(webui._SPECIAL_CATEGORY_SEARCH_LOCK.locked())
+            return original(handler, code, error, detail, field)
+
+        with mock.patch.object(webui._Handler, "_send_error_json", spy):
+            status, data = self._request("POST", "/api/special-corner/category-search", {"query": "-x"})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(observed, [False])
+
     def test_special_corner_manual_start_and_receiver_require_operator_and_confirm(self):
         from docich import special_corner
         with mock.patch.object(special_corner, "launch_corner") as launch, \
@@ -2052,6 +2493,101 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(ledger.read_bytes(), before)
         for secret in ("PRIVATE-REQUEST", "PRIVATE-DETAIL"):
             self.assertNotIn(secret, json.dumps(data))
+
+    def test_get_corners_exposes_prediction_round_progress(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        state_dir = self.soren / "tmp" / "state"
+        state = state_dir / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2,
+            "games_completed": 36,
+            "max_games": 48,
+            "created_at": now - 3600,
+            "target_first_game": 10,
+            "last_game_num": 60,
+            "prediction_id": "PRIVATE-PREDICTION",
+            "outcome_ids": ["PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"],
+        }))
+        os.utime(state, (now - 120, now - 120))
+        (state_dir / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": now - 7200}))
+        (state_dir / "prediction_retry").mkdir()
+        (state_dir / "prediction_retry" / "resolve.json").write_text(json.dumps({
+            "operation": "resolve", "attempt": 2,
+            "next_retry_at": int(now + 300), "http_code": "401",
+        }))
+        (state_dir / "regression_check_in_progress").write_text("")
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        prediction = data["prediction"]
+        self.assertIs(prediction["present"], True)
+        self.assertIs(prediction["readable"], True)
+        self.assertEqual(prediction["round_version"], 2)
+        self.assertEqual(prediction["games_completed"], 36)
+        self.assertEqual(prediction["max_games"], 48)
+        self.assertEqual(prediction["remaining_games"], 12)
+        self.assertIs(prediction["complete"], False)
+        self.assertIsNone(prediction["settlement_pending"])
+        self.assertEqual(prediction["progress_age_sec"], 120)
+        self.assertIs(prediction["fence_present"], True)
+        self.assertEqual(prediction["retry"]["attempt"], 2)
+        self.assertEqual(prediction["retry"]["http_code"], "401")
+        self.assertIs(prediction["retry"]["retry_active"], True)
+        rendered = json.dumps(data)
+        for secret in ("PRIVATE-PREDICTION", "PRIVATE-A", "PRIVATE-B", "PRIVATE-C", "PRIVATE-D"):
+            self.assertNotIn(secret, rendered)
+
+    def test_get_corners_flags_a_completed_prediction_awaiting_settlement(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        state_dir = self.soren / "tmp" / "state"
+        state = state_dir / "current_prediction.json"
+        state.write_text(json.dumps({
+            "round_version": 2, "games_completed": 48, "max_games": 48,
+            "created_at": now - 7200, "prediction_id": "PRIVATE-PREDICTION",
+        }))
+        os.utime(state, (now - 600, now - 600))
+        (state_dir / "corner_boundary_prediction.json").write_text(
+            json.dumps({"completed_at": now - 3600}))
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        prediction = data["prediction"]
+        self.assertIs(prediction["complete"], True)
+        self.assertIs(prediction["settlement_pending"], True)
+        self.assertGreaterEqual(prediction["settlement_pending_sec"], 590)
+        self.assertNotIn("PRIVATE-PREDICTION", json.dumps(data))
+
+    def test_get_corners_marks_a_latch_row_released_after_scheduler_settles_it(self):
+        self._write_weather_catalog_config()
+        now = time.time()
+        self._write_rotation_state(
+            status="waiting", pending=None, reason="not-due",
+            failed_corners=[
+                {"corner": "moon-buggy", "request_id": "PRIVATE-SETTLED",
+                 "at": now - 120, "resolution": "recovery-required",
+                 "reason_code": "execution-or-state-unverified",
+                 "error_kind": "execution-error"},
+                {"corner": "weather", "request_id": "PRIVATE-OPEN",
+                 "at": now - 60, "resolution": "recovery-required",
+                 "reason_code": "execution-or-state-unverified",
+                 "error_kind": "execution-error"},
+            ],
+            released_requests={"moon-buggy": {"request_id": "PRIVATE-SETTLED",
+                                              "at": now - 30}},
+        )
+
+        status, data = self._request("GET", "/api/corners")
+
+        self.assertEqual(status, 200, data)
+        failures = {row["corner"]: row for row in data["rotation"]["recent_failures"]}
+        self.assertEqual(failures["moon-buggy"]["resolution"], "released-unverified")
+        self.assertEqual(failures["weather"]["resolution"], "recovery-required")
+        self.assertNotIn("PRIVATE-SETTLED", json.dumps(data))
 
     def test_get_corners_publishes_the_effective_interval_seconds(self):
         self._write_weather_catalog_config()
@@ -2236,33 +2772,250 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/corners", {"action": "recover"})
         self.assertEqual(status, 428, data)
 
-    def test_post_corners_start_refuses_non_cli_game_without_dispatch(self):
-        # 2026-10-11: the one-off runner is CLI-only. Starting hanjuku-hero
-        # (retroarch) dispatched a runner that always failed and latched the
-        # rotation; refuse here and point to the fixed Hanjuku operator.
-        path = Path(self.g.config_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            '[corner_rotation]\nenabled = true\nschedule_mode = "queue"\n'
-            'corners = [{id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero"}]\n',
-            encoding="utf-8",
-        )
-        games = Path(self.g.games_dir)
-        games.mkdir(parents=True, exist_ok=True)
-        (games / "hanjuku-hero.toml").write_text(
-            '[game]\nname = "hanjuku-hero"\ntitle = "Hanjuku"\nadapter = "retroarch"\n'
-            '[retroarch]\nrom = "games/roms/hanjuku-hero.sfc"\n',
-            encoding="utf-8",
-        )
-        with mock.patch("docich.webui.subprocess.Popen") as popen:
+    def test_post_corners_start_queues_hanjuku_through_common_coordinator(self):
+        # #2024: 2026-10-11 に one-off runner が hanjuku-hero (retroarch) を
+        # CLI 専用として拒否し、予約後に拒否したため rotation がラッチした。
+        # Start は docich.hanjuku_corner / start-hanjuku と同じ
+        # CornerRotationManager.queue_manual 経路で予約し、runner は起動しない。
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        ledger_path = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger_path.read_bytes()
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.retro_corner.RetroCornerManager.run_rotation") as run, \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
             status, data = self._request(
                 "POST", "/api/corners",
                 {"action": "start", "corner": "hanjuku-hero", "duration_minutes": 5,
                  "confirm": True},
             )
-        self.assertEqual(status, 400, data)
-        self.assertIn("start-hanjuku", data["detail"])
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(data["duration_minutes"], None)
+        self.assertEqual(data["corner"], {
+            "id": "hanjuku-hero", "adapter": "game", "game": "hanjuku-hero",
+            "target": "rotation",
+        })
+        self.assertNotIn("pid", data)
+        self.assertNotIn("log", data)
+        run.assert_not_called()
         popen.assert_not_called()
+        inbox = json.loads((Path(self.g.state_dir) / "corner_manual_queue.json").read_text())
+        self.assertEqual(inbox["corner"], "hanjuku-hero")
+        self.assertIsNone(inbox.get("trigger_at"))
+        # 予約は queue_manual の durable write だけで、ledger の実行予約は
+        # 次の tick が行う (ここで pending を作らない)。
+        self.assertEqual(ledger_path.read_bytes(), before)
+
+        status, view = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view["rotation"]["queued_manual"]["corner"], "hanjuku-hero")
+        row = view["catalog"][0]
+        self.assertTrue(row["manual"])
+        self.assertTrue(row["manual_start"])
+        self.assertTrue(row["manual_stop"])
+        self.assertIsNone(row["manual_start_reason"])
+        self.assertEqual(row["manual_mode"], "queue")
+        # private request id は投影に出さない
+        self.assertNotIn(inbox["request_id"], json.dumps(view))
+
+    def test_post_corners_new_game_requires_confirmation_and_preserves_other_modes(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        ledger = Path(self.g.state_dir) / "corner_rotation.json"
+        before = ledger.read_bytes()
+        payload = {"action": "new-game", "corner": "hanjuku-hero"}
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", payload)
+            self.assertEqual(status, 428, data)
+            inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+            self.assertFalse(inbox.exists())
+            payload["confirm"] = True
+            for _ in range(2):
+                status, data = self._request("POST", "/api/corners", payload)
+                self.assertEqual(status, 200, data)
+                self.assertEqual(data["action"], "new-game")
+            queued = inbox.read_bytes()
+            self.assertTrue(json.loads(queued)["new_game"])
+            for action in ("start", "resume-latest"):
+                status, data = self._request("POST", "/api/corners", {
+                    "action": action, "corner": "hanjuku-hero", "confirm": True})
+                self.assertEqual(status, 409, data)
+                self.assertEqual(inbox.read_bytes(), queued)
+            popen.assert_not_called()
+        self.assertEqual(ledger.read_bytes(), before)
+
+    def test_post_corners_new_game_refuses_other_games(self):
+        self._write_catalog_config()
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "new-game", "corner": "nsnake", "confirm": True})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "new_game_unsupported")
+        popen.assert_not_called()
+
+    def test_hanjuku_start_is_idempotent_while_the_same_reservation_waits(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            first, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+            owner = inbox.read_bytes()
+            second, replay = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual((first, second), (200, 200), (data, replay))
+        self.assertEqual(data["status"], "queued")
+        self.assertEqual(replay["status"], "queued")
+        # 同じ予約の再送は書き換えない (request id も時刻も変わらない)
+        self.assertEqual(inbox.read_bytes(), owner)
+        popen.assert_not_called()
+
+    def test_hanjuku_start_uses_catalog_id_not_game_name_for_receipt(self):
+        self._write_hanjuku_catalog_config()
+        path = Path(self.g.config_path)
+        path.write_text(path.read_text().replace('id = "hanjuku-hero"', 'id = "hanjuku-slot"'))
+        self._write_rotation_state(status="ready", pending=None)
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]):
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-slot", "confirm": True})
+        self.assertEqual(status, 200, data)
+        inbox = json.loads((Path(self.g.state_dir) / "corner_manual_queue.json").read_text())
+        self.assertEqual(inbox["corner"], "hanjuku-slot")
+
+    def test_hanjuku_start_rejects_another_request_for_the_same_corner(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        inbox.write_text(json.dumps({"corner": "hanjuku-hero", "request_id": "old-request"}))
+        before = inbox.read_bytes()
+        with mock.patch("docich.corner_rotation.CornerRotationManager.queue_manual",
+                        return_value={"status": "queued", "corner": "hanjuku-hero",
+                                      "request_id": "new-request"}):
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual(status, 500, data)
+        self.assertEqual(data["error"], "hanjuku_start_unverified")
+        self.assertNotIn("new-request", json.dumps(data))
+        self.assertEqual(inbox.read_bytes(), before)
+
+    def test_hanjuku_start_refusal_never_latches_the_rotation(self):
+        # 予約前検証 (#2024): 拒否は reservation を書く前に起き、rotation の
+        # ledger を変更しない。ここが runner 方式の退行 (予約後拒否→ラッチ) の
+        # 回帰テスト。
+        cases = (
+            ("recovery-required",
+             {"status": "recovery_required", "pending": None}, {}, 409),
+            ("rotation-disabled",
+             {"status": "ready", "pending": None}, {"rotation": False}, 409),
+            ("corner-disabled",
+             {"status": "ready", "pending": None}, {"enabled": False}, 409),
+        )
+        for name, state, config_kwargs, expected in cases:
+            with self.subTest(case=name):
+                self._write_hanjuku_catalog_config(**config_kwargs)
+                self._write_rotation_state(**state)
+                ledger_path = Path(self.g.state_dir) / "corner_rotation.json"
+                before = ledger_path.read_bytes()
+                inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+                self.assertFalse(inbox.exists())
+                with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                                return_value=["hanjuku-hero"]), \
+                        mock.patch("docich.webui.subprocess.Popen") as popen:
+                    status, data = self._request("POST", "/api/corners", {
+                        "action": "start", "corner": "hanjuku-hero", "confirm": True})
+                self.assertEqual(status, expected, data)
+                self.assertEqual(data["error"], "hanjuku_manual_refused")
+                self.assertNotIn("request_id", json.dumps(data))
+                popen.assert_not_called()
+                # 拒否は durable な予約も rotation の latch も作らない
+                self.assertEqual(ledger_path.read_bytes(), before)
+                self.assertFalse(inbox.exists())
+                persisted = json.loads(before)
+                self.assertEqual(persisted["status"], state["status"])
+                self.assertIsNone(persisted.get("manual_pending"))
+                self.assertIsNone(persisted.get("queued_manual"))
+
+    def test_hanjuku_start_conflicting_reservation_is_refused_unchanged(self):
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+        inbox = Path(self.g.state_dir) / "corner_manual_queue.json"
+        inbox.write_text(json.dumps({
+            "corner": "weather", "selected_at": time.time(),
+            "request_id": "11111111-1111-4111-8111-111111111111",
+        }), encoding="utf-8")
+        before = inbox.read_bytes()
+        with mock.patch("docich.retro_corner.RetroCornerManager._playable_games",
+                        return_value=["hanjuku-hero"]), \
+                mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["error"], "hanjuku_manual_refused")
+        popen.assert_not_called()
+        self.assertEqual(inbox.read_bytes(), before)
+
+    def test_hanjuku_start_reports_unverified_without_a_durable_reservation(self):
+        # ok は「試した」ではなく状態ファイルで決める (recover と同じ契約)。
+        # coordinator が成功を返しても予約が実在しなければ成功にしない。
+        self._write_hanjuku_catalog_config()
+        self._write_rotation_state(status="ready", pending=None)
+
+        class LyingManager:
+            def queue_manual(self, game):
+                return {"status": "queued", "corner": "hanjuku-hero",
+                        "request_id": "PRIVATE-REQUEST"}
+
+        with mock.patch("docich.corner_rotation.CornerRotationManager",
+                        return_value=LyingManager()) as manager:
+            status, data = self._request("POST", "/api/corners", {
+                "action": "start", "corner": "hanjuku-hero", "confirm": True})
+        self.assertEqual(status, 500, data)
+        self.assertEqual(data["error"], "hanjuku_start_unverified")
+        self.assertNotIn("PRIVATE-REQUEST", json.dumps(data))
+        manager.assert_called_once()
+
+    def test_post_corners_start_refuses_other_non_cli_game_without_dispatch(self):
+        # hanjuku-hero 以外の非CLIゲームは従来どおり runner へ dispatch しない
+        # (予約前拒否)。hanjuku の queue 経路へ巻き込まないことを固定する。
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\nenabled = true\nschedule_mode = "queue"\n'
+            'corners = [{id = "retro-other", adapter = "game", game = "retro-other"}]\n',
+            encoding="utf-8",
+        )
+        games = Path(self.g.games_dir)
+        games.mkdir(parents=True, exist_ok=True)
+        (games / "retro-other.toml").write_text(
+            '[game]\nname = "retro-other"\ntitle = "Retro Other"\nadapter = "retroarch"\n'
+            '[retroarch]\nrom = "games/roms/retro-other.sfc"\n',
+            encoding="utf-8",
+        )
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "start", "corner": "retro-other", "duration_minutes": 5,
+                 "confirm": True},
+            )
+        self.assertEqual(status, 400, data)
+        popen.assert_not_called()
+        self.assertFalse((Path(self.g.state_dir) / "corner_manual_queue.json").exists())
+
+    def test_hanjuku_start_is_never_handed_to_the_cli_one_off_runner(self):
+        # #2024 の二重防御: POST 経路は queue へ行くが、argv builder 自体も
+        # 非CLIゲームを one-off runner へ渡さない。予約後に拒否してラッチする
+        # 退行 (2026-10-11) を将来の呼び出し元でも閉じる。
+        self._write_hanjuku_catalog_config()
+        with self.assertRaisesRegex(ValueError, "one-off runner では手動開始できません"):
+            webui._corner_manual_argv(self.g, "hanjuku-hero", "start", 5)
 
     def test_post_corners_start_dispatches_reviewed_one_off_runner(self):
         self._write_catalog_config()
@@ -2513,6 +3266,238 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertTrue(data["latch_resolved"])
 
 
+class TestAccessLogSynchronization(unittest.TestCase):
+    def test_token_check_waits_for_post_response_access_logs(self):
+        case = TestHttpHandlers("test_access_log_does_not_contain_token")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        _assert_no_stuck_handlers(self, case.server.wait_for_handlers())
+        log_file = case.soren / "tmp/debug/webui.log"
+        # setup の CSRF ログがあっても、対象リクエストの完了待ちは省略できない。
+        setup_log = log_file.read_text(encoding="utf-8")
+        self.assertIn('"path": "/api/csrf"', setup_log)
+
+        release_logs = threading.Event()
+        log_held = threading.Event()
+        checkpoint = threading.Event()
+        finished = threading.Event()
+        errors = []
+        log_timeouts = []
+        original_log = webui._log_request
+        original_wait = case.server.wait_for_handlers
+
+        def delayed_log(soren_root, method, path, status, latency_ms, extra=""):
+            if path == "/api/health":
+                log_held.set()
+                if not release_logs.wait(timeout=10):
+                    log_timeouts.append(path)
+            original_log(soren_root, method, path, status, latency_ms, extra)
+
+        def wait_for_handlers(*args, **kwargs):
+            checkpoint.set()
+            return original_wait(*args, **kwargs)
+
+        def check_tokens():
+            try:
+                case.test_access_log_does_not_contain_token()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+                checkpoint.set()
+
+        checker = threading.Thread(target=check_tokens, daemon=True)
+        with mock.patch.object(webui, "_log_request", side_effect=delayed_log), \
+                mock.patch.object(case.server, "wait_for_handlers", side_effect=wait_for_handlers):
+            checker.start()
+            try:
+                # 待ちへ到達するか検査が終了するまで待つ。sleep による競合再現ではない。
+                self.assertTrue(checkpoint.wait(timeout=5), "token check did not reach its checkpoint")
+                self.assertTrue(log_held.wait(timeout=5), "health access logs were not held after the response")
+                self.assertFalse(finished.is_set(), "token check finished before the access logs were written")
+                self.assertEqual(setup_log, log_file.read_text(encoding="utf-8"))
+            finally:
+                release_logs.set()
+                checker.join(timeout=5)
+
+        self.assertFalse(checker.is_alive(), "token check thread did not finish")
+        self.assertEqual([], log_timeouts, "access log hold timed out before release")
+        self.assertEqual([], errors, "token check failed after releasing the access logs")
+        records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+        self.assertCountEqual(
+            [401, 200, 401],
+            [row["status"] for row in records if row["event"] == "access" and row["path"] == "/api/health"],
+        )
+
+    def test_authz_check_waits_for_post_response_audit_logs(self):
+        case = TestMutationGuard("test_authz_audit_event_logged_without_secret_or_body")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        _assert_no_stuck_handlers(self, case.server.wait_for_handlers())
+        log_file = case.soren / "tmp/debug/webui.log"
+
+        release_logs = threading.Event()
+        log_held = threading.Event()
+        checkpoint = threading.Event()
+        finished = threading.Event()
+        errors = []
+        log_timeouts = []
+        original_log = webui._log_authz_event
+        original_wait = case.server.wait_for_handlers
+
+        def delayed_log(soren_root, method, path, identity, decision, reason=""):
+            if decision == "deny" and reason == "invalid_origin":
+                log_held.set()
+                if not release_logs.wait(timeout=10):
+                    log_timeouts.append(path)
+            original_log(soren_root, method, path, identity, decision, reason)
+
+        def wait_for_handlers(*args, **kwargs):
+            checkpoint.set()
+            return original_wait(*args, **kwargs)
+
+        def check_authz():
+            try:
+                case.test_authz_audit_event_logged_without_secret_or_body()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+                checkpoint.set()
+
+        checker = threading.Thread(target=check_authz, daemon=True)
+        with mock.patch.object(webui, "_log_authz_event", side_effect=delayed_log), \
+                mock.patch.object(case.server, "wait_for_handlers", side_effect=wait_for_handlers):
+            checker.start()
+            try:
+                # invalid_origin は応答送信後に audit event を書く。検証が handler
+                # 完了の同期点へ到達するまでは終わらないことを決定的に確認する。
+                self.assertTrue(checkpoint.wait(timeout=5), "authz check did not reach its checkpoint")
+                self.assertTrue(log_held.wait(timeout=5), "invalid_origin audit log was not held after the response")
+                self.assertFalse(finished.is_set(), "authz check finished before the audit log was written")
+            finally:
+                release_logs.set()
+                checker.join(timeout=5)
+
+        self.assertFalse(checker.is_alive(), "authz check thread did not finish")
+        self.assertEqual([], log_timeouts, "authz log hold timed out before release")
+        self.assertEqual([], errors, "authz check failed after releasing the audit logs")
+        records = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(
+            any(r.get("event") == "authz" and r.get("decision") == "deny" and r.get("reason") == "invalid_origin"
+                for r in records)
+        )
+
+
+class _PostResponseWriterHandler(webui._Handler):
+    """応答を返した後に書く handler (``_guard_mutation`` の audit event 相当)。
+
+    応答送信後に ``post_response_started`` を set し、``release_post_response``
+    が set されるまで保留する。テスト側はこれで「handler が応答後の書込み途中に
+    いる」状態を決定的に作れる。解放後の書込み先は tmp 配下なので、後片付けが
+    先に tmp を消せば書込みが失敗する (= full-suite flake の再現)。
+    """
+
+    POST_RESPONSE_PATH = "/test/post-response-write"
+    WRITE_RELATIVE = "tmp/debug/post-response-audit.json"
+
+    def do_GET(self):
+        if self.path != self.POST_RESPONSE_PATH:
+            return super().do_GET()
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.server.post_response_started.set()
+        if not self.server.release_post_response.wait(timeout=5):
+            return
+        target = Path(self.soren_root) / self.WRITE_RELATIVE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("post-response write completed", encoding="utf-8")
+
+
+class TestHttpHandlerTeardownWaitsForPostResponseWriter(unittest.TestCase):
+    """応答後に書く handler が残っていても、後片付けが先に tmp を消さないこと。
+
+    PR #2340 の full-suite flake (``OSError [Errno 39] Directory not empty``) の
+    決定的な回帰テスト。daemon handler は ``server_close()`` で join されないため、
+    完了を待たずに tmp を消すと rmtree と応答後の書込みが競合する。
+    """
+
+    def test_cleanup_waits_for_handler_that_writes_after_the_response(self):
+        import http.client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = repo_root / "soren"
+            (soren / "tmp/state").mkdir(parents=True)
+            g = _make_global(repo_root)
+            handler = type("_PostResponseWriterTestHandler", (_PostResponseWriterHandler,), {})
+            handler.g = g
+            handler.soren_root = soren
+            handler.read_only = False
+            handler.start_time = time.time()
+            server = _tracking_server_class()(("127.0.0.1", 0), handler)
+            server.post_response_started = threading.Event()
+            server.release_post_response = threading.Event()
+            serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            serve_thread.start()
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            stop_result = {}
+            stopped = threading.Event()
+
+            def _stop_server():
+                try:
+                    stop_result["stuck"] = _shutdown_test_server(server, serve_thread)
+                except Exception as exc:  # pragma: no cover - assertion で理由を出す
+                    stop_result["error"] = exc
+                finally:
+                    stopped.set()
+
+            stopper = threading.Thread(target=_stop_server, daemon=True)
+            stopper_started = False
+            try:
+                conn.request("GET", _PostResponseWriterHandler.POST_RESPONSE_PATH)
+                res = conn.getresponse()
+                self.assertEqual(200, res.status)
+                res.read()
+                self.assertTrue(
+                    server.post_response_started.wait(timeout=5),
+                    "handler did not reach the post-response write",
+                )
+
+                stopper.start()
+                stopper_started = True
+                # 応答後 writer は保留中なので、後片付けはここで完了してはならない。
+                # 完了するなら handler を待たずに tmp を消した (= 競合) ということ。
+                self.assertFalse(
+                    stopped.wait(timeout=1.0),
+                    "teardown removed the tmp dir without waiting for the post-response writer",
+                )
+                self.assertTrue(
+                    soren.exists(),
+                    "handler の完了前に tmp dir が消えた",
+                )
+            finally:
+                server.release_post_response.set()
+                if stopper_started:
+                    stopper.join(timeout=5)
+                else:
+                    _shutdown_test_server(server, serve_thread)
+                conn.close()
+
+            self.assertNotIn("error", stop_result, stop_result.get("error"))
+            self.assertEqual([], stop_result.get("stuck"), "in-flight handler did not finish")
+            written = soren / _PostResponseWriterHandler.WRITE_RELATIVE
+            self.assertEqual(
+                "post-response write completed",
+                written.read_text(encoding="utf-8"),
+            )
+
+
 class TestMutationGuard(TestHttpHandlers):
     """issue #42: Host/Origin allowlist・CSRF token・Content-Type・read-only identity・
     dangerous action の再確認・CORS wildcard+credentials 不可・authorization audit event。"""
@@ -2754,6 +3739,10 @@ class TestMutationGuard(TestHttpHandlers):
                 )
         finally:
             self.g.webui.token = ""
+        # invalid_origin は拒否応答を送った後に authz event を書く。HTTP 応答の
+        # 受信完了だけでは書込み完了を意味しないため、ログを読む前に fixture が
+        # 追跡する in-flight handler を有限時間だけ待つ。
+        _assert_no_stuck_handlers(self, self.server.wait_for_handlers())
         log_file = self.soren / "tmp/debug/webui.log"
         lines = [json.loads(ln) for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
         authz = [r for r in lines if r.get("event") == "authz"]
@@ -2971,7 +3960,7 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
             BoundHandler.soren_root = soren
             BoundHandler.read_only = False
             BoundHandler.start_time = time.time()
-            server = webui.ThreadingHTTPServer(("127.0.0.1", 0), BoundHandler)
+            server = _tracking_server_class()(("127.0.0.1", 0), BoundHandler)
             th = threading.Thread(target=server.serve_forever, daemon=True)
             th.start()
             try:
@@ -2986,34 +3975,154 @@ class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
                 self.assertTrue(body["ok"])
                 conn.close()
             finally:
-                server.shutdown()
-                server.server_close()
+                # 応答後に書く handler を残したまま tmp を消さない (PR #2340)。
+                _assert_no_stuck_handlers(self, _shutdown_test_server(server, th))
+
+
+class TestCornerManualCapabilities(unittest.TestCase):
+    def test_game_start_capability_requires_cli_and_preserves_stop(self):
+        for game, adapter, allowed, reason in (
+            ("nsnake", "cli", True, None),
+            # #2024: hanjuku-hero starts through the common coordinator queue,
+            # so the CLI-only rule no longer disables its Start button.
+            ("hanjuku-hero", "retroarch", True, None),
+            ("other-game", "retroarch", False, "non-cli-manual-unsupported"),
+        ):
+            with self.subTest(game=game), mock.patch(
+                "docich.config.load_game", return_value=mock.Mock(adapter=adapter)
+            ):
+                row = mock.Mock(adapter="game", game=game)
+                self.assertEqual(webui._corner_manual_capabilities(mock.Mock(), row), {
+                    "manual_start": allowed, "manual_stop": True,
+                    "manual_start_reason": reason,
+                })
+
+    def test_hanjuku_start_needs_a_readable_game_configuration(self):
+        # 予約は coordinator が検証するが、ゲーム設定そのものが読めない場合は
+        # 開始を出さない (既存の fail-closed を hanjuku でも維持する)。
+        with mock.patch("docich.config.load_game", side_effect=ValueError("PRIVATE-CONFIG")):
+            result = webui._corner_manual_capabilities(
+                mock.Mock(), mock.Mock(adapter="game", game="hanjuku-hero"))
+        self.assertEqual(result, {"manual_start": False, "manual_stop": True,
+                                  "manual_start_reason": "game-configuration-unavailable"})
+        self.assertNotIn("PRIVATE-CONFIG", json.dumps(result))
+
+    def test_unknown_game_configuration_fails_closed_without_error_text(self):
+        with mock.patch("docich.config.load_game", side_effect=ValueError("PRIVATE-CONFIG")):
+            result = webui._corner_manual_capabilities(
+                mock.Mock(), mock.Mock(adapter="game", game="unknown"))
+        self.assertEqual(result, {"manual_start": False, "manual_stop": True,
+                                  "manual_start_reason": "game-configuration-unavailable"})
+        self.assertNotIn("PRIVATE-CONFIG", json.dumps(result))
+
+    def test_other_runners_and_queued_corners_keep_both_controls(self):
+        for adapter in ("nethack", "paper", "meriken", "weather", "tsuitate", "yoso", "doushi"):
+            with self.subTest(adapter=adapter):
+                result = webui._corner_manual_capabilities(
+                    mock.Mock(), mock.Mock(adapter=adapter, game="test"))
+                self.assertEqual(result, {"manual_start": True, "manual_stop": True,
+                                          "manual_start_reason": None})
 
 
 class TestCornerReservationDisplay(unittest.TestCase):
-    def _render(self, rotation, *, weather_status="completed"):
+    def _render(self, rotation, *, weather_status="completed", catalog=None,
+                corners=None, selected="weather", select_after=None):
         if shutil.which("node") is None:
             self.skipTest("JS レンダリング検証には node が必要 (CI runner には同梱)")
         source = webui.INDEX_HTML.split("const ROT_STATUS_JA=", 1)[1].split(
             "async function cornerAction", 1)[0]
         data = {"rotation": rotation, "game_switch": {"phase": "ready", "active_game": "sorengame"},
-                "catalog_status": "available", "catalog": [
+                "catalog_status": "available", "catalog": catalog if catalog is not None else [
                     {"id": "weather", "game": "weather-view", "adapter": "weather",
                      "manual": True, "manual_mode": "queue", "enabled": True, "paused": False,
                      "duration_minutes": 1, "state_file": "weather_corner", "eligible": True}],
-                "corners": {"weather_corner": {"present": True, "status": weather_status}}}
+                "corners": corners if corners is not None else {
+                    "weather_corner": {"present": True, "status": weather_status}}}
         script = '''
 const elements={};
-const document={getElementById(id){return elements[id]||(elements[id]={value:id==='corners-select'?'weather':'',innerHTML:'',textContent:'',style:{},querySelectorAll(){return []}})}};
+''' + "const selected=" + json.dumps(selected) + ''';
+const document={getElementById(id){return elements[id]||(elements[id]={value:id==='corners-select'?selected:'',innerHTML:'',textContent:'',style:{},querySelectorAll(){return []}})}};
 const esc=x=>String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtTime=x=>x?String(x):'-';
-''' + "const ROT_STATUS_JA=" + source + "\nrenderCorners(" + json.dumps(data) + ''');
-const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
+''' + "const ROT_STATUS_JA=" + source + "\nrenderCorners(" + json.dumps(data) + ");\n" + (
+            "document.getElementById('corners-select').value=" + json.dumps(select_after)
+            + ";updateCornerButtons();\n" if select_after is not None else ""
+        ) + '''
+const out={};for(const id of ['corners-summary','corners-catalog','corners-advice','corners-hint','corners-start','corners-new-game','corners-resume-latest','corners-stop','corners-recover','corners-duration'])out[id]=elements[id];
 process.stdout.write(JSON.stringify(out));
 '''
-        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_new_game_button_is_hanjuku_only_and_respects_start_gates(self):
+        row = {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+               "manual": True, "manual_start": True, "manual_mode": "queue",
+               "enabled": True, "paused": False, "state_file": "retro_corner"}
+        for rotation, disabled in (({"status": "ready"}, False),
+                                   ({"status": "recovery_required", "latch": True}, True),
+                                   ({"queued_manual": {"corner": "hanjuku-hero"}}, True)):
+            with self.subTest(rotation=rotation):
+                out = self._render(rotation, catalog=[row], selected=row["id"], corners={})
+                self.assertEqual(out["corners-new-game"]["style"]["display"], "")
+                self.assertEqual(out["corners-new-game"]["disabled"], disabled)
+        out = self._render({"status": "ready"})
+        self.assertEqual(out["corners-new-game"]["style"]["display"], "none")
+        self.assertTrue(out["corners-new-game"]["disabled"])
+
+    def test_hanjuku_queues_start_without_duration_and_keeps_stop(self):
+        # #2024: 半熟英雄は分数を使わない queue 方式。開始は予約ボタンとして
+        # 有効で、分数欄は無効、停止は従来どおり状態に応じて有効。
+        row = {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+               "manual": True, "manual_start": True, "manual_stop": True,
+               "manual_start_reason": None, "manual_mode": "queue",
+               "enabled": True, "paused": False, "state_file": "retro_corner"}
+        for state, can_stop in (("completed", False), ("active", True), ("restoring", True)):
+            with self.subTest(state=state):
+                out = self._render({"status": "ready"}, catalog=[row], selected=row["id"],
+                                   corners={"retro_corner": {"present": True,
+                                            "status": state, "game": "hanjuku-hero"}})
+                self.assertTrue(out["corners-duration"]["disabled"])
+                self.assertEqual(out["corners-stop"]["disabled"], not can_stop)
+                self.assertIn("ゲームオーバー", out["corners-hint"]["textContent"])
+        # 予約が無く停止対象も無いときだけ開始できる
+        out = self._render({"status": "ready"}, catalog=[row], selected=row["id"], corners={})
+        self.assertFalse(out["corners-start"]["disabled"])
+        self.assertEqual(out["corners-start"]["textContent"], "開始予約")
+        # 予約済み・要復旧では開始できない
+        out = self._render({"status": "ready", "queued_manual": {"corner": "hanjuku-hero"}},
+                           catalog=[row], selected=row["id"], corners={})
+        self.assertTrue(out["corners-start"]["disabled"])
+        out = self._render({"status": "recovery_required", "latch": True}, catalog=[row],
+                           selected=row["id"], corners={})
+        self.assertTrue(out["corners-start"]["disabled"])
+        self.assertIn("要復旧", out["corners-hint"]["textContent"])
+
+    def test_selection_change_keeps_queue_rows_startable(self):
+        catalog = [
+            {"id": "hanjuku-hero", "game": "hanjuku-hero", "adapter": "game",
+             "manual": True, "manual_start": True, "manual_stop": True,
+             "manual_start_reason": None, "manual_mode": "queue",
+             "enabled": True, "paused": False, "state_file": "retro_corner"},
+            {"id": "nsnake", "game": "nsnake", "adapter": "game", "manual": True,
+             "manual_start": True, "manual_mode": "runner",
+             "enabled": True, "paused": False, "state_file": "retro_corner"},
+        ]
+        for selected, changed in (("hanjuku-hero", "nsnake"), ("nsnake", "hanjuku-hero")):
+            with self.subTest(selected=selected):
+                out = self._render({"status": "ready"}, catalog=catalog, corners={},
+                                   selected=selected, select_after=changed)
+                self.assertFalse(out["corners-start"]["disabled"])
+                # queue 方式の半熟英雄だけ分数欄が無効
+                self.assertEqual(out["corners-duration"]["disabled"], changed == "hanjuku-hero")
+
+    def test_explicit_stop_capability_is_independent_of_start(self):
+        row = {"id": "nsnake", "game": "nsnake", "adapter": "game", "manual": True,
+               "manual_start": True, "manual_stop": False, "state_file": "retro_corner"}
+        out = self._render({"status": "ready"}, catalog=[row], selected="nsnake",
+                           corners={"retro_corner": {"present": True, "status": "active",
+                                                      "game": "nsnake"}})
+        self.assertTrue(out["corners-stop"]["disabled"])
 
     def test_queued_weather_and_blocking_owner_are_visible_while_switch_is_ready(self):
         out = self._render({"status": "waiting", "reason": "manual-request-needs-resume-or-recovery",
@@ -3084,7 +4193,7 @@ class TestPredictionWorkerDisplay(unittest.TestCase):
         self.assertIn(end_marker, html)
         source = html.split(start_marker, 1)[1].split(end_marker, 1)[0]
         script = source + "\nconst out=predictionWorkerDisplay(" + json.dumps(row, ensure_ascii=False) + "," + json.dumps(prediction, ensure_ascii=False) + "); process.stdout.write(JSON.stringify(out));"
-        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5, check=False)
+        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=_NODE_TEST_TIMEOUT, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 

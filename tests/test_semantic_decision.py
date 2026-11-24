@@ -65,6 +65,69 @@ def test_criteria_are_per_question_not_comment_global():
     assert validate_response(response, req, resolve_route()) == response
 
 
+def _with_probability_overrides(response, key, overrides):
+    """Return a response copy whose answer ``key`` probabilities carry ``overrides``."""
+    candidate = deepcopy(response)
+    candidate["answers"][key]["probabilities"] = {
+        **candidate["answers"][key]["probabilities"], **overrides}
+    return candidate
+
+
+def test_two_decimal_rounded_probability_sum_is_accepted():
+    """jev-1.13.0 publishes each probability rounded to 2 decimals, so sums can
+    land on 0.99 (#1263: 12.7% of live responses failed the old 1e-5 check and
+    cascaded into invalid_response cooldowns). Rounded sums stay valid and the
+    validation keeps its all-or-nothing idempotence."""
+    req, response = example()
+    profile = resolve_route()
+    rounded = {"c1": {"stream_bug_report": 0.89},
+               "c2": {"game_question": 0.97, "other": 0.02}}
+    for key, overrides in rounded.items():
+        candidate = _with_probability_overrides(response, key, overrides)
+        assert sum(candidate["answers"][key]["probabilities"].values()) == pytest.approx(0.99)
+        clean = validate_response(candidate, req, profile)
+        assert clean["answers"][key]["probabilities"] == candidate["answers"][key]["probabilities"]
+        assert validate_response(clean, req, profile) == clean
+
+
+@pytest.mark.parametrize("label_count,tolerance", [(2, .01), (6, .03), (14, .05)])
+@pytest.mark.parametrize("direction", [-1, 1])
+@pytest.mark.parametrize("offset,accepted", [(-1e-6, True), (0, True), (1e-6, False)])
+def test_probability_sum_tolerance_boundaries(label_count, tolerance, direction, offset, accepted):
+    labels = {f"label{i}": f"Label {i}" for i in range(label_count)}
+    probabilities = {label: (1 + direction * (tolerance + offset)) / label_count
+                     for label in labels}
+    profile = resolve_route()
+    request = {"model": profile.requested_model, "state": "synthetic", "questions": {
+        "gate": {"type": "choice", "instructions": "gate", "criteria": labels},
+    }}
+    response = {"model": profile.requested_model, "answers": {
+        "gate": {"type": "choice", "choice": "label0", "confidence": .9,
+                 "probabilities": probabilities},
+    }, "usage": {"input_tokens": 2, "output_tokens": 1}}
+    if accepted:
+        clean = validate_response(response, request, profile)
+        assert clean == response
+        assert validate_response(clean, request, profile) == clean
+    else:
+        with pytest.raises(ValueError, match="invalid_response"):
+            validate_response(response, request, profile)
+
+
+@pytest.mark.parametrize("overrides", [
+    {label: 0.0 for label in FIXTURE["response"]["answers"]["c1"]["probabilities"]},
+    {"stream_bug_report": 0.5},
+    {"stream_bug_report": 0.84},
+])
+def test_unnormalised_probability_sums_still_fail(overrides):
+    """The rounding tolerance is capped: all-zero and sums beyond one cap-width
+    from 1.0 remain invalid regardless of the label count."""
+    req, response = example()
+    candidate = _with_probability_overrides(response, "c1", overrides)
+    with pytest.raises(ValueError):
+        validate_response(candidate, req, resolve_route())
+
+
 @pytest.mark.parametrize("raw", [
     '{"model":"x","model":"y"}', '{"a":{"b":1,"b":2}}',
     '{"p":NaN}', '{"p":Infinity}', '{"p":-Infinity}', '{',

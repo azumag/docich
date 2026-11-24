@@ -1,0 +1,94 @@
+name: VM corner health monitor
+
+on:
+  schedule:
+    # Every ten minutes. Corner failures and rotation wedges need a faster
+    # signal than the hourly runtime/storage monitors, and the probe is a
+    # single read-only diagnostics call.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vm-corner-monitor-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: >-
+      ${{ github.ref == 'refs/heads/main' && github.ref_protected == true &&
+          (github.event_name == 'schedule' ||
+           (github.actor_id == 9018513 && github.triggering_actor == 'azumag')) }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure pinned SSH client
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Read sanitized runtime diagnostics
+        id: diagnostics
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          err="$RUNNER_TEMP/corner-diagnostics.err"
+          if ! diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $sha" 2>"$err")"; then
+            echo 'available=0' >> "$GITHUB_OUTPUT"
+            echo '::warning::Production diagnostics probe is unavailable.'
+            exit 0
+          fi
+          printf '%s' "$diagnostics_json" > "$RUNNER_TEMP/corner-diagnostics.json"
+          echo 'available=1' >> "$GITHUB_OUTPUT"
+
+      # Raw diagnostics, stderr, paths, credentials, and command output are
+      # never published. corner_health.py only emits fixed enums, bounded ids,
+      # ages and counts into the two deduplicated Issues.
+      - name: Assess corner health and sync alerts
+        if: steps.diagnostics.outputs.available == '1'
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 ops/vm_actions/corner_health.py \
+            --diagnostics "$RUNNER_TEMP/corner-diagnostics.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --server "$GITHUB_SERVER_URL" || status=$?
+          if [[ "$status" == '2' ]]; then
+            echo '::warning::corner health unavailable; alert state unchanged'
+            exit 0
+          fi
+          exit "$status"

@@ -7,7 +7,7 @@ import pytest
 from docich.adapters.base import Observation
 from docich.agent.brains import build_brain
 from docich.agent.loop import _run_iteration
-from docich.nethack_narration import NethackNarrator
+from docich.nethack_narration import NethackNarrator, message_kind
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import NethackLayeredPolicy, PolicyDecision
 from docich.nethack_startup import NethackStartup
@@ -353,6 +353,24 @@ def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent,
     assert brain.last_decision.actions == ()
 
 
+NO_FOOD_LISTING = "a - a newt corpse\nb - a scroll labeled ZELGO MER\n" + "\n" * 8
+
+
+def _advance(brain, text):
+    """decide() + transport ack for decide-only tests (#2806 probe flow)."""
+    from docich.nethack_observation import normalize_tty
+    actions = brain.decide(observation(text))
+    if actions and brain.last_progress_decision is not None:
+        brain.progress.sent(brain.last_progress_decision, normalize_tty(text))
+    return [a.text if a.type == "text" else a.key for a in actions]
+
+
+def _drain_inventory_probe(brain, text):
+    """Run the bounded #2806 probe (i -> listing -> Escape) to a no-food end."""
+    assert _advance(brain, text) == ["i"]
+    assert _advance(brain, NO_FOOD_LISTING) == ["Escape"]
+
+
 @pytest.mark.parametrize("intent,text", [
     ("assess_contact", "msg\n##@d.\n     \n" + _status()),
     ("hold_low_hp", "msg\n##@d.\n     \n" + _status(hp="4(10)")),
@@ -360,7 +378,13 @@ def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent,
 ])
 def test_brain_never_rests_beside_a_recognized_creature(intent, text):
     brain = build_brain(SimpleNamespace(), game())
-    actions = brain.decide(observation(text))
+    if intent == "seek_food":
+        # #2806: a Hungry frame probes the visible inventory first; a no-food
+        # probe leaves the reviewed step contract unchanged.
+        _drain_inventory_probe(brain, text)
+        actions = brain.decide(observation(text))
+    else:
+        actions = brain.decide(observation(text))
     # Still never the rest key beside a creature (#748). The brain steps away
     # on reviewed terrain instead, because standing still there is a deadlock:
     # the creature only gets a turn when the hero takes one.
@@ -386,8 +410,13 @@ def test_brain_prefers_real_step_and_uses_explicit_wait_without_one():
     assert brain.last_decision.intent == "explore_step"
     # owner decision 2026-09-23: 空腹の全tierで完全なframeなら `.` を送る
     # (入力なしが永久凍結になるため)。質問・未知画面・player不明は依然無入力。
+    # #2806: each food-emergency frame probes the visible inventory first;
+    # after a no-food probe the reviewed wait turn resumes unchanged.
     for extra in ("Fainting", "Weak", "Starved"):
-        assert [a.text for a in brain.decide(observation("msg\n###@.\n     \n" + _status(extra=extra)))] == ["."]
+        text = "msg\n###@.\n     \n" + _status(extra=extra)
+        if _advance(brain, text) == ["i"]:
+            _advance(brain, NO_FOOD_LISTING)
+        assert [a.text for a in brain.decide(observation(text))] == ["."]
         assert brain.last_decision.intent == "food_emergency"
 
 
@@ -433,3 +462,46 @@ def test_a_feline_blocking_the_only_exit_gets_one_ordinary_bump():
     cleared = "msg\n-.@-\n----\n" + _status()
     assert [a.text for a in brain.decide(observation(cleared))] == ["h"]
     assert brain.last_decision.intent == "explore_step"
+
+
+@pytest.mark.parametrize("message,expected", [
+    ('Something is written here in the dust. You read: "?d acra ??m".', "床に文字が刻まれています。内容を画面で確認しながら進みます。"),
+    ("This cookie has a scrap of paper inside. It reads: rumor has it.", "噂話のメッセージが表示されています。内容を確認しながら進みます。"),
+])
+def test_message_kind_narration_uses_fixed_text(audio, message, expected):
+    g = SimpleNamespace()
+    narrator = NethackNarrator(g, game(narration={"enabled": True}))
+    obs = normalized(frame(message))
+    narrator.consider(obs, NethackLayeredPolicy().decide(obs))
+    assert audio.call_args.args[1] == expected
+    assert "Is this" not in audio.call_args.args[1] and "dust" not in audio.call_args.args[1]
+
+
+def test_quoted_question_in_a_statement_is_not_an_engraving():
+    obs = normalized(frame("You read: \"Is this a question?\" -- and shrug."))
+    assert message_kind(obs) is None
+
+
+def test_pager_more_without_known_kind_is_explained(audio):
+    narrator = NethackNarrator(SimpleNamespace(), game(narration={"enabled": True}))
+    obs = normalized(frame("You see a long passage. --More--"))
+    narrator.consider(obs, NethackLayeredPolicy().decide(obs))
+    assert audio.call_args.args[1] == "メッセージの続きがあるため、画面の内容を確認しながら次へ進みます。"
+
+
+def test_message_kind_does_not_override_safety_or_change_actions(audio):
+    narrator = NethackNarrator(SimpleNamespace(), game(narration={"enabled": True}))
+    obs = normalized(frame('Something is written here in the dust. --More--', hp="2(16)"))
+    decision = NethackLayeredPolicy().decide(obs)
+    narrator.consider(obs, decision)
+    assert decision.intent in {"survival_emergency", "advance_message"}
+    if decision.intent == "survival_emergency":
+        assert audio.call_args.args[1] == "体力が危険な水準です。安全な画面では . で1ターン待機します。"
+
+
+def test_message_narration_keeps_policy_actions(audio):
+    brain = build_brain(SimpleNamespace(), game(narration={"enabled": True}))
+    obs = observation(frame('Something is written here in the dust. You read: "?d"'))
+    actions = brain.decide(obs)
+    assert actions == list(NethackLayeredPolicy().decide(normalized(obs.text)).actions)
+    assert audio.call_count == 1

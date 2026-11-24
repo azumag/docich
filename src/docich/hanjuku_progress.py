@@ -105,7 +105,13 @@ def completed_count(runtime: Path, identity: dict):
     if saved.get('ambiguous'):
         return None
     best = saved.get('cleared')
-    bot = read_record(runtime / 'hanjuku_bot.json', limit=256 * 1024)
+    # The bot's memory can briefly outgrow the bounded-record limit while the
+    # brain compacts it (g1163 2026-11-12 02:2x). The score card keeps reading
+    # the next snapshot instead of failing the whole view.
+    try:
+        bot = read_record(runtime / 'hanjuku_bot.json', limit=256 * 1024)
+    except AdapterError:
+        bot = {}
     if bot:
         trace = bot.get('decision_trace')
         if not isinstance(trace, dict) or any(trace.get(k) != v for k, v in identity.items()):

@@ -17,7 +17,9 @@ from .adapters import make_coordinator_adapter
 from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_slot
-from .game_switch import GameSwitchStore, atomic_write_json, new_request_id
+from .game_switch import (GameSwitchError, GameSwitchStore,
+                          TERMINAL_RECEIPT_STATUSES, atomic_write_json,
+                          new_request_id, validate_request_id)
 from .overlay_queue import OVERLAY_BODY_LIMIT
 from .procs import user_bus_env
 from .tmux import Tmux
@@ -223,6 +225,61 @@ class PaperCornerManager:
                 return 'switch-busy'
 
         return self._with_guard(reconcile)
+
+    def settle_released_failure(self, request_id):
+        """Retire a pre-start PAPER owner after rotation proves its slot free."""
+        try:
+            request_id = validate_request_id(request_id)
+        except (TypeError, ValueError, GameSwitchError):
+            return False
+
+        def settle():
+            try:
+                with self.store.lock(exclusive=True):
+                    state = self._read_state()
+                    if (state.get('status') != 'starting'
+                            or state.get('rotation_request_id') != request_id
+                            or state.get('started_at') is not None):
+                        return False
+                    canonical, missing = self.store.canonical.load()
+                    if (missing or canonical.get('phase') not in ('idle', 'ready')
+                            or any(canonical.get(key) is not None for key in
+                                   ('operation', 'request_id', 'deadline_at',
+                                    'candidate', 'previous'))
+                            or canonical.get('retiring')):
+                        return False
+                    active = canonical.get('active')
+                    if (not isinstance(active, dict)
+                            or active.get('game') in (None, PAPER_VIEW_NAME)
+                            or any(not isinstance(active.get(key), str) or not active[key]
+                                   for key in ('game', 'runtime_id', 'lease_id'))
+                            or type(active.get('generation')) is not int
+                            or active['generation'] < 1):
+                        return False
+                    receipt = self.store.receipts.load(request_id)
+                    if (isinstance(receipt, dict)
+                            and receipt.get('status') not in TERMINAL_RECEIPT_STATUSES):
+                        return False
+                    if any(row.get('request_id') == request_id
+                           for row in self.store.receipts.queued()):
+                        return False
+                    state.update(status='interrupted',
+                                 completed_at=state.get('completed_at') or self.clock(),
+                                 end_reason='released-failure-before-start')
+                    self.save(state)
+                    # stop_manual() writes a durable marker for a *starting*
+                    # owner. Leaving this old request's marker behind would
+                    # make the next owner restore right after it starts (the
+                    # old stop carries over). Clear it under the same guards
+                    # that proved the old owner released; Doushi's settle does
+                    # the same.
+                    from .corner_rotation import clear_rotation_stop_request
+                    clear_rotation_stop_request(self.g, self.path)
+                    return True
+            except (OSError, ValueError, GameSwitchError):
+                return False
+
+        return self._with_guard(settle) is True
 
     def summary(self):
         try:
@@ -1190,6 +1247,33 @@ class PaperCornerManager:
         # Persist each slot's text before sending it. Its queue ACK and audio
         # drain are separate durable states; a restart resumes the same slot.
         from .trading.corner_script import SEGMENT_KEYS, covered_entry
+        # M2 (Issue #2454): capture the generation-time boundary (last fill in
+        # the interval) once per corner run so the cursor advances to exactly
+        # the population that was explained (no silent skip of late arrivals).
+        if "interval_last_fill" not in state:
+            try:
+                from .trading.corner_interval import (
+                    get_cursor as _ci_get_cursor,
+                    fills_in_interval as _ci_fills_in_interval,
+                )
+
+                _db_path = self.trading_dir / "paper.sqlite3"
+                _cursor_before = _ci_get_cursor(_db_path, "paper")
+                _interval_fills = _ci_fills_in_interval(
+                    _db_path, _cursor_before, now=self.clock()
+                )
+                if _interval_fills:
+                    _last = _interval_fills[-1]
+                    state["interval_last_fill"] = [
+                        float(str(_last["filled_at"])),
+                        str(_last["fill_id"]),
+                    ]
+                else:
+                    state["interval_last_fill"] = None
+                self.save(state)
+            except Exception:
+                state["interval_last_fill"] = None
+                self.save(state)
         pending = None
         for index, slot in enumerate(SEGMENT_KEYS, start=1):
             from .corner_rotation import clear_rotation_stop_request, rotation_stop_requested
@@ -1252,6 +1336,33 @@ class PaperCornerManager:
         state['end_reason'] = 'eight-slots-drained'
         if state.get('ai_failure_reason'):
             state['end_detail'] = str(state['ai_failure_reason'])[:240]
+        self.save(state)
+        # M2 (Issue #2454): advance the explanation boundary cursor only after
+        # the full explanation (all slots) is durably saved AND successful
+        # (fail-closed: a failed explanation never advances the cursor).
+        # Use the generation-time boundary stored in state, not a recompute.
+        _boundary = state.get("interval_last_fill")
+        if _boundary is not None and not state.get("ai_failure_reason"):
+            try:
+                from .trading.corner_interval import _upsert_cursor_exclusive, _ensure_cursor_table
+                import sqlite3 as _sqlite3
+
+                _db_path = self.trading_dir / "paper.sqlite3"
+                _filled_at, _fill_id = float(_boundary[0]), str(_boundary[1])
+                _ensure_cursor_table(_db_path)
+                _conn = _sqlite3.connect(
+                    f"file:{str(_db_path.resolve())}?mode=rw", uri=True
+                )
+                try:
+                    _conn.row_factory = _sqlite3.Row
+                    _upsert_cursor_exclusive(_conn, "paper", _filled_at, _fill_id, self.clock())
+                    _conn.commit()
+                finally:
+                    _conn.close()
+            except Exception:
+                pass
+        # Clean up the stored boundary.
+        state.pop("interval_last_fill", None)
         self.save(state)
         # Preserve the existing final queue monitor as the last restore gate.
         if not self._wait_for_speech(state):

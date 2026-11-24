@@ -64,6 +64,58 @@ def test_terminal_and_symlink_and_large_records_hidden(tmp_path):
     assert 'castles' not in d._collect_hanjuku_tactical(tmp_path,110)
 
 
+def test_stale_record_keeps_a_bounded_age_and_reason(tmp_path):
+    setup(tmp_path)
+    out = d._collect_hanjuku_tactical(tmp_path, 200)
+    assert out['status'] == 'stale'
+    assert out['reason'] == 'record_stale'
+    assert out['age_sec'] == 100
+    # The last written position stays observable under the stale label.
+    assert out['chapter'] == 1 and isinstance(out['policy'], dict)
+
+
+def test_stale_record_without_a_valid_chapter_still_hides_the_policy(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].pop('chapter')
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 200)
+    assert out['status'] == 'stale'
+    assert 'chapter' not in out and 'policy' not in out
+
+
+def test_soft_omission_keeps_the_fixed_detail_cause(monkeypatch):
+    payload = {'hanjuku_tactical': {'status': 'stale', 'reason': 'record_stale',
+                                    'age_sec': 100, 'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert tactical['status'] == 'output_omitted'
+    assert tactical['detail_status'] == 'stale'
+    assert tactical['detail_reason'] == 'record_stale'
+    assert tactical['age_sec'] == 100
+
+
+def test_an_unknown_detail_token_is_not_copied(monkeypatch):
+    payload = {'hanjuku_tactical': {'status': 'PRIVATE', 'reason': 'DO NOT EMIT',
+                                    'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert 'detail_status' not in tactical
+    assert 'detail_reason' not in tactical
+    assert 'PRIVATE' not in str(tactical) and 'DO NOT EMIT' not in str(tactical)
+
+
 def test_generation_switch_during_read_hides_projection(tmp_path,monkeypatch):
     setup(tmp_path); original=d._read_hanjuku_record; calls=0
     def read(path):
@@ -176,3 +228,218 @@ def test_later_chapter_card_prediction_still_checks_generation_after_read(tmp_pa
     monkeypatch.setattr(d, '_read_hanjuku_record', read)
     out = d._collect_hanjuku_tactical(tmp_path, 110)
     assert out['status'] == 'identity_changed' and 'last_card_assessment' not in out
+
+
+def house_record(bot):
+    identity = dict(bot['decision_trace'])
+    bot['policy'].update(_run_identity=identity, chapter=2, month='4-5',
+        last_house_deferral={'identity': identity, 'chapter': 2, 'month': '4-5',
+                             'tick': 498, 'code': 'position_unread', 'phase': 'house_confirm',
+                             'reason': 'PRIVATE', 'general': 'PRIVATE'})
+    return bot['policy']['last_house_deferral']
+
+
+def test_house_deferral_survives_close_and_is_bounded_private_readonly(tmp_path):
+    file, bot = setup(tmp_path)
+    house_record(bot)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    before = file.read_bytes()
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['last_house_deferral'] == {'age_ticks': 2, 'code': 'position_unread', 'phase': 'house_confirm'}
+    assert 'PRIVATE' not in json.dumps(out) and 'private-lease' not in json.dumps(out)
+    assert file.read_bytes() == before
+
+
+@pytest.mark.parametrize('change', [dict(tick=501), dict(tick=99), dict(tick=True),
+    dict(chapter=True), dict(chapter=1), dict(month='4-4'), dict(identity={})])
+def test_old_or_malformed_house_deferral_hidden(tmp_path, change):
+    _, bot = setup(tmp_path); record = house_record(bot); record.update(change)
+    assert d._project_hanjuku_house_deferral(bot['policy'], bot['decision_trace']) is None
+
+
+def test_house_deferral_identity_types_and_arbitrary_fields_rejected(tmp_path):
+    _, bot = setup(tmp_path); record = house_record(bot)
+    record.update(code=['SECRET'], phase={'SECRET': 1})
+    assert d._project_hanjuku_house_deferral(bot['policy'], bot['decision_trace']) == {
+        'age_ticks': 2, 'code': 'unknown', 'phase': 'other'}
+    record['identity'] = {**record['identity'], 'generation': True}
+    assert d._project_hanjuku_house_deferral(bot['policy'], bot['decision_trace']) is None
+
+
+def test_house_deferral_kept_in_budget_reduction(monkeypatch):
+    receipt = {'age_ticks': 2, 'code': 'alignment_limit', 'phase': 'house_confirm'}
+    payload = {'hanjuku_tactical': {'status': 'ok', 'castles': ['x'*2000],
+                                  'last_house_deferral': {**receipt, 'secret': 'PRIVATE'}},
+               'ai': {'recent_events': [], 'anomalous_components': {}}, 'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    text = d._diagnostics_budget(payload)
+    assert payload['hanjuku_tactical']['last_house_deferral'] == receipt
+    assert 'PRIVATE' not in text and len(text.encode()) <= 600
+
+
+def test_real_exit_receipt_reaches_projection_after_house_state_removed(tmp_path):
+    from docich.hanjuku.flows import house
+    _, bot = setup(tmp_path)
+    mem = bot['policy']
+    mem.update(_run_identity=dict(bot['decision_trace']), chapter=2, month='4-5',
+               house={'phase': 'house_confirm', 'age': 3, 'total': 12})
+    assert house._exit(mem, 'PRIVATE reason', diagnostic_code='position_unread') == []
+    assert mem['house']['phase'] == 'close'
+    mem.pop('house')
+    mem = json.loads(json.dumps(mem))
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) == {
+        'age_ticks': 0, 'code': 'position_unread', 'phase': 'house_confirm'}
+
+
+@pytest.mark.parametrize('phase', ['castle_confirm', 'house_view', 'house_confirm'])
+def test_route_deferral_projects_only_in_its_fresh_scope(tmp_path, monkeypatch, phase):
+    from docich.hanjuku.flows import house
+    _, bot = setup(tmp_path)
+    mem = bot['policy']
+    mem.update(_run_identity=dict(bot['decision_trace']), month='4-5',
+               house={'phase': phase, 'source': 'PRIVATE'})
+    monkeypatch.setattr(house, '_house_route_problem', lambda _: ('PRIVATE', ['PRIVATE']))
+    assert house._defer_unsafe_house_route(mem)
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) == {
+        'age_ticks': 0, 'code': 'route_unverified', 'phase': phase}
+    mem['tick'] += 401
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None
+    mem['tick'] -= 401
+    mem['_run_identity'] = {**mem['_run_identity'], 'generation': 515}
+    assert d._project_hanjuku_house_deferral(mem, bot['decision_trace']) is None
+
+
+def test_unsupported_chapter_keeps_a_bounded_policy_summary(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, variant='chart', active='3-Z1',
+                         orders={'3-Z1': 'pending', '3-B1': 'pending'},
+                         captured=['グリン'], garrison={'アルマムーン': ['どうし']},
+                         cursor=[712, 160], approx_fallback=False,
+                         approx_localize_miss=2)
+    bot.update(screen_kind='map', phase='field', step=7, no_input_streak=0)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['status'] == 'unsupported_chapter' and out['chapter'] == 3
+    policy = out['policy']
+    assert policy['chapter'] == 3 and policy['variant'] == 'chart'
+    assert policy['active'] == '3-Z1'
+    assert policy['orders'] == {'3-Z1': 'pending', '3-B1': 'pending'}
+    assert policy['garrison'] == {'アルマムーン': 1}
+    assert policy['cursor'] == [712, 160]
+    assert policy['approx_localize_miss'] == 2
+    assert policy['screen_kind'] == 'map' and policy['phase'] == 'field'
+    assert policy['step'] == 7 and policy['no_input_streak'] == 0
+    # No free text, identities or hashes leak through the compact summary.
+    text = json.dumps(out, ensure_ascii=False)
+    for secret in ('private-lease', 'DO NOT EMIT', 'private-general'):
+        assert secret not in text
+
+
+def test_tactical_omission_preserves_the_policy_summary(monkeypatch):
+    policy = {'chapter': 3, 'active': '3-Z1', 'orders': {'3-Z1': 'pending'}}
+    payload = {'hanjuku_tactical': {'status': 'unsupported_chapter', 'chapter': 3,
+                                    'age_sec': 10, 'policy': policy,
+                                    'castles': ['x' * 2000]},
+               'ai': {'recent_events': ['x' * 2000], 'anomalous_components': {}},
+               'nethack_history': {'daily': {'records': []},
+                                   'completed_runs': {'records': []}},
+               'workers': {'details': {}},
+               'soren91_drop_profile': {'profileStatus': 'missing'}}
+    monkeypatch.setattr(d, 'MAX_JSON_BYTES', 600)
+    d._diagnostics_budget(payload)
+    tactical = payload['hanjuku_tactical']
+    assert tactical['status'] == 'output_omitted'
+    assert tactical['chapter'] == 3 and tactical['policy'] == policy
+
+
+def test_recent_decisions_are_fixed_tokens_only(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy'].update(chapter=3, variant='chart_unavailable', active=None)
+    file.write_text(json.dumps(bot)); os.utime(file, (100, 100))
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [
+        {'schema': 1, **active, 'event': 'action_plan', 'decision': 'situation_held',
+         'screen_kind': 'map', 'at': 105, 'reason': 'DO NOT EMIT', 'chart_step': '3-Z1',
+         'strategy_variant': 'sortie_menu_unclassified'},
+        {'schema': 1, **active, 'event': 'action_plan', 'decision': 'order_start',
+         'screen_kind': 'map', 'at': 108, 'reason': 'DO NOT EMIT',
+         'strategy_variant': 'DO NOT EMIT'},
+    ]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(row, ensure_ascii=False) for row in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    recent = out['policy']['recent_decisions']
+    assert [row['decision'] for row in recent] == ['situation_held', 'order_start']
+    assert [row['screen_kind'] for row in recent] == ['map', 'map']
+    assert [row['strategy_variant'] for row in recent] == ['sortie_menu_unclassified', None]
+    text = json.dumps(out, ensure_ascii=False)
+    assert 'DO NOT EMIT' not in text and '3-Z1' not in text
+
+
+def test_sortie_launch_stall_detected(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [
+        {'schema': 1, **active, 'event': 'decision', 'decision': 'order_start',
+         'screen_kind': 'map', 'at': 100 + i}
+        for i in range(4)]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    launch = out['policy']['sortie_launch']
+    assert launch == {'order_start': 4, 'order_launched': 0, 'stalled': True}
+
+
+def test_sortie_launch_not_stalled_when_launched(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [{'schema': 1, **active, 'event': 'decision', 'decision': n,
+             'screen_kind': 'map', 'at': 100}
+            for n in ['order_start', 'order_start', 'order_start', 'order_launched']]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    launch = out['policy']['sortie_launch']
+    assert launch == {'order_start': 3, 'order_launched': 1, 'stalled': False}
+
+
+def test_camp_tail_counts_camp_decisions(tmp_path):
+    file, bot = setup(tmp_path)
+    active = json.loads((tmp_path / 'game_switch.json').read_text())['active']
+    rows = [{'schema': 1, **active, 'event': 'decision', 'decision': n,
+             'screen_kind': 'map', 'at': 100}
+            for n in ['camp_found', 'camp_enter', 'camp_recall_aborted', 'camp_recall_aborted']]
+    (file.parent / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r) for r in rows) + '\n')
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    assert out['policy']['camp'] == {'counts': {
+        'camp_found': 1, 'camp_enter': 1, 'camp_recall_aborted': 2}}
+
+
+def test_recall_projection_reports_an_armed_retry_window(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['flow'] = {'recall_skip': {'tick': 460}, 'recall_skip_ticks': 120,
+                             'recall_retry': {'count': 2},
+                             'retreat_rechecks': {'first': {}, 'second': {}},
+                             'retreat_anonymous_budget': {'reads': 9}}
+    file.write_text(json.dumps(bot))
+    os.utime(file, (100, 100))
+    recall = d._collect_hanjuku_tactical(tmp_path, 110)['policy']['recall']
+    assert recall['state'] == 'idle'
+    assert recall['skip'] == {'age': 40, 'window': 120, 'retry': 2}
+    assert recall['queue'] == 2 and recall['anonymous_reads'] == 9
+
+
+def test_recall_projection_reports_the_stage_and_keeps_names_private(tmp_path):
+    file, bot = setup(tmp_path)
+    bot['policy']['flow'] = {'recall': {'stage': 'to_camp', 'steps': 3,
+                                        'target': [120, 80], 'general': 'private-general'}}
+    file.write_text(json.dumps(bot))
+    os.utime(file, (100, 100))
+    out = d._collect_hanjuku_tactical(tmp_path, 110)
+    recall = out['policy']['recall']
+    assert recall == {'state': 'recalling', 'stage': 'to_camp', 'steps': 3,
+                      'named': False, 'hero': False, 'target': [120, 80]}
+    assert 'private-general' not in json.dumps(out, ensure_ascii=False)
+

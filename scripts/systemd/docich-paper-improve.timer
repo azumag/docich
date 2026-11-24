@@ -1,0 +1,14 @@
+[Unit]
+Description=Run gated crypto PAPER strategy improvement once daily
+
+[Timer]
+# 06:20 JST: after docich-nethack-daily-improve (05:10 JST). Persistent=true
+# catches up once after downtime; the service gate still limits AI calls to
+# about one per day.
+OnCalendar=*-*-* 06:20:00 Asia/Tokyo
+Persistent=true
+AccuracySec=1min
+Unit=docich-paper-improve.service
+
+[Install]
+WantedBy=timers.target

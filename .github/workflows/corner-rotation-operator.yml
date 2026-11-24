@@ -8,7 +8,7 @@ on:
         required: true
         default: restart-service
         type: choice
-        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume]
+        options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-cancel-queued-hanjuku, cancel-queued-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner]
       expected_reservation:
         description: Reviewed reservation fingerprint (cancel, administrative release, or failed-before-AI resume recovery)
         required: false
@@ -100,7 +100,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
           printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
 
-      - name: Require production to equal current protected main
+      - name: Require production at the deployed reviewed baseline
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -110,13 +110,7 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
-          python3 - "$status_json" "$SHA" <<'PY'
-          import json, sys
-          data = json.loads(sys.argv[1])
-          expected = sys.argv[2]
-          if data.get('status') != 'configured' or data.get('sha') != expected:
-              raise SystemExit('production is not exactly current protected main')
-          PY
+          python3 -I control/ops/vm_actions/check_operator_parity.py "$status_json" "$SHA" control
 
       - name: Check or cancel only the reviewed detached Hanjuku manual reservation
         if: steps.auth.outputs.operation == 'check-cancel-hanjuku' || steps.auth.outputs.operation == 'cancel-hanjuku'
@@ -138,6 +132,28 @@ jobs:
           fi
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           { printf 'CANCEL_MODE=%s\nCANCEL_EXPECTED=%s\n' "$mode" "$EXPECTED"; cat control/ops/vm_actions/cancel_hanjuku_manual.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Check or cancel only the queued Hanjuku manual reservation before dispatch
+        if: steps.auth.outputs.operation == 'check-cancel-queued-hanjuku' || steps.auth.outputs.operation == 'cancel-queued-hanjuku'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          OPERATION: ${{ steps.auth.outputs.operation }}
+        run: |
+          set -euo pipefail
+          EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"
+          mode=check
+          if [[ "$OPERATION" == cancel-queued-hanjuku ]]; then
+            [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
+            mode=apply
+          else
+            [[ "$OPERATION" == check-cancel-queued-hanjuku && -z "$EXPECTED" ]]
+          fi
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'QUEUED_CANCEL_MODE=%s\nQUEUED_CANCEL_EXPECTED=%s\n' "$mode" "$EXPECTED"; cat control/ops/vm_actions/cancel_hanjuku_queued.sh; } |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Check or administratively release only the separately approved Hanjuku reservation
@@ -168,6 +184,35 @@ jobs:
             gateway_rc=$?
           fi
           python3 -I control/src/docich/hanjuku_admin_result.py "$gateway_result" "$mode" "$SHA" "$gateway_rc"
+
+      - name: Check or administratively release only the reviewed stale failed owner
+        if: steps.auth.outputs.operation == 'check-release-stale-failed-owner' || steps.auth.outputs.operation == 'release-stale-failed-owner'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          OPERATION: ${{ steps.auth.outputs.operation }}
+        run: |
+          set -euo pipefail
+          EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"
+          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
+          mode=check
+          if [[ "$OPERATION" == release-stale-failed-owner ]]; then
+            mode=release
+          else
+            [[ "$OPERATION" == check-release-stale-failed-owner ]]
+          fi
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          if gateway_result="$(
+            { printf 'STALE_FAILED_MODE=%s\nSTALE_FAILED_EXPECTED=%s\nSTALE_FAILED_SHA=%s\n' "$mode" "$EXPECTED" "$SHA"; cat control/ops/vm_actions/release_stale_failed_owner.sh; } |
+              ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" 2>/dev/null
+          )"; then
+            gateway_rc=0
+          else
+            gateway_rc=$?
+          fi
+          python3 -I control/src/docich/hanjuku_admin_result.py "$gateway_result" "$mode" "$SHA" "$gateway_rc" mystery
 
       - name: Recover only the failed corner rotation slot
         if: steps.auth.outputs.operation == 'recover-failed'
@@ -234,6 +279,20 @@ jobs:
           cat control/ops/vm_actions/start_hanjuku_corner.sh |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Clear a clock-gap quarantine for the queued Hanjuku request
+        if: steps.auth.outputs.operation == 'clear-hanjuku-clock-quarantine'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/clear_hanjuku_clock_quarantine.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          echo 'cleared the clock-gap hold; the queued Hanjuku request remains for the normal tick'
+
       - name: Resume Hanjuku once from latest remaining checkpoint
         if: steps.auth.outputs.operation == 'resume-hanjuku-latest'
         shell: bash
@@ -256,7 +315,7 @@ jobs:
           PY
 
       - name: Check or recover the same failed-before-AI checkpoint transfer
-        if: steps.auth.outputs.operation == 'check-recover-hanjuku-resume' || steps.auth.outputs.operation == 'recover-hanjuku-resume'
+        if: steps.auth.outputs.operation == 'check-recover-hanjuku-resume' || steps.auth.outputs.operation == 'recover-hanjuku-resume' || steps.auth.outputs.operation == 'recover-hanjuku-retry'
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -266,12 +325,15 @@ jobs:
         run: |
           set -euo pipefail
           EXPECTED="$(python3 -I control/ops/vm_actions/corner_rotation_input.py)"
-          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
           mode=check
           if [[ "$OPERATION" == recover-hanjuku-resume ]]; then
             mode=recover
+            [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
+          elif [[ "$OPERATION" == recover-hanjuku-retry ]]; then
+            mode=retry
           else
             [[ "$OPERATION" == check-recover-hanjuku-resume ]]
+            [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]]
           fi
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           result="$(
@@ -287,4 +349,50 @@ jobs:
               raise SystemExit('checkpoint startup recovery unverified')
           print('checkpoint startup recovery eligible' if sys.argv[3] == 'check'
                 else 'same logical checkpoint recovery queued; native restoration still pending')
+          PY
+
+      - name: Check or control the owned Hanjuku prediction round
+        if: >-
+          steps.auth.outputs.operation == 'check-cancel-prediction' ||
+          steps.auth.outputs.operation == 'cancel-prediction' ||
+          steps.auth.outputs.operation == 'check-sync-prediction' ||
+          steps.auth.outputs.operation == 'sync-prediction'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          OPERATION: ${{ steps.auth.outputs.operation }}
+        run: |
+          set -euo pipefail
+          # Fixed enum only: never a prediction id, outcome index or command.
+          control=cancel
+          mode=check
+          case "$OPERATION" in
+            check-cancel-prediction) control=cancel; mode=check ;;
+            cancel-prediction) control=cancel; mode=apply ;;
+            check-sync-prediction) control=sync; mode=check ;;
+            sync-prediction) control=sync; mode=apply ;;
+            *) exit 64 ;;
+          esac
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          result="$(
+            { printf 'PREDICTION_MODE=%s\nPREDICTION_OPERATION=%s\n' "$mode" "$control"; cat control/ops/vm_actions/control_hanjuku_prediction.sh; } |
+              ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          )"
+          python3 - "$result" "$SHA" "$mode" "$control" <<'PY'
+          import json, sys
+          result = json.loads(sys.argv[1])
+          if (result.get('status') != 'executed' or type(result.get('exit_code')) is not int
+                  or result.get('sha') != sys.argv[2] or result.get('output') != 'withheld'):
+              raise SystemExit('prediction control unverified')
+          if sys.argv[3] == 'check':
+              # A check refuses (non-zero) exactly when nothing is actionable.
+              if result['exit_code'] != 0:
+                  raise SystemExit('owned prediction round is not actionable')
+              print('one owned prediction round is eligible')
+          else:
+              if result['exit_code'] != 0:
+                  raise SystemExit('prediction control refused')
+              print(f'owned prediction round {sys.argv[4]} applied')
           PY

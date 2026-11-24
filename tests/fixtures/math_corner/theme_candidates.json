@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "corner": "math",
+  "fixtureId": "fixed-math-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Non-production synthetic theme candidate list for the math corner. Candidates are planning input only; titles, formulas and explanations must not be presented as verified mathematical data.",
+  "candidates": [
+    {
+      "id": "birthday-paradox",
+      "title": "なぜ23人集まると誕生日が重なる確率が約50%になるのか",
+      "domain": "probability-combinatorics",
+      "description": "相補事象と独立同分布の積で表す衝突確率、対の数 n(n-1)/2 が直感を裏切る仕組み、ハッシュ衝突・誕生日攻撃への一般化。",
+      "fixtureId": "fixed-math-001"
+    },
+    {
+      "id": "shortest-path",
+      "title": "2点間の最短経路はどうやって見つけるのか",
+      "domain": "graph-theory",
+      "description": "グラフ上の最短路問題としての定式化、ダイクストラ法や動的計画法の考え方、カーナビ・通信網への応用。",
+      "fixtureId": null
+    },
+    {
+      "id": "election-systems",
+      "title": "選挙制度を変えるとなぜ結果が変わるのか",
+      "domain": "social-choice",
+      "description": "単純多数制・比例代表・ ranked choice の集計モデル、多数決のパラドックスと制度的トレードオフ。",
+      "fixtureId": null
+    },
+    {
+      "id": "primes-and-cryptography",
+      "title": "なぜ素数が暗号に使われるのか",
+      "domain": "number-theory",
+      "description": "素因数分解の一方向性、剰余演算と公開鍵暗号の関係、安全性の計算量的根拠。",
+      "fixtureId": null
+    },
+    {
+      "id": "bayesian-inference",
+      "title": "検査が陽性でも本当に病気なのか",
+      "domain": "statistics-inference",
+      "description": "ベイズの定理による事前確率・事後確率の更新、感度・特異度と有病率が直感を裏切る仕組み。",
+      "fixtureId": null
+    },
+    {
+      "id": "game-theory",
+      "title": "なぜ利害が衝突すると最適なはずの選択が裏目に出るのか",
+      "domain": "game-theory",
+      "description": "ナッシュ均衡と支配戦略、囚人のジレンマの小さい例、経済・生物・交渉への応用。",
+      "fixtureId": null
+    },
+    {
+      "id": "linear-algebra-images-ai",
+      "title": "画像やAIはなぜ行列で表せるのか",
+      "domain": "linear-algebra",
+      "description": "ピクセルを行列として見ると回転・縮小・特徴抽出が線形変換になる仕組み、固有値・主成分分析への橋渡し。",
+      "fixtureId": null
+    },
+    {
+      "id": "fourier-transform",
+      "title": "波の重なりはなぜ分解できるのか",
+      "domain": "fourier-analysis",
+      "description": "周期関数を三角関数の和で書くフーリエ展開、音声・画像圧縮・信号処理への応用。",
+      "fixtureId": null
+    },
+    {
+      "id": "graph-theory",
+      "title": "ケーニヒスベルクの橋はなぜ一度ずつ渡れないのか",
+      "domain": "graph-theory",
+      "description": "頂点と辺への抽象化、オイラー路の次数条件、ネットワーク解析への一般化。",
+      "fixtureId": null
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true
+  }
+}

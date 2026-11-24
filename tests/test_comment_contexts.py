@@ -221,3 +221,207 @@ def test_special_corner_note_follows_webui_settings(tmp_path):
     assert 'ゲームA(特別コーナー)' in text
     assert 'コーナーの説明: ゲームAの映像です。 目標はクリア。' in text
     assert 'Fly Me' not in text and '50面' not in text
+
+
+def _hanjuku_ops(tmp_path, *, config=None, max_chars="1200", host_mode="main", game="hanjuku-hero"):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': game}}))
+    env = _provider_env(root)
+    env['COMMENT_OPS_CONTEXT_MAX_CHARS'] = max_chars
+    if config is not None:
+        (root / 'hanjuku-hero.toml').write_text(config, encoding='utf-8')
+        env['DOCICH_HANJUKU_CONFIG_FILE'] = str(root / 'hanjuku-hero.toml')
+    else:
+        env['DOCICH_HANJUKU_CONFIG_FILE'] = str(root / 'missing.toml')
+    return SorenGameContextProvider(root, env).build(host_mode=host_mode).comment_ops_context
+
+
+ENABLED_TOML = '[hanjuku.chart_adjust]\nenabled = true\nagents = "a:b"\n'
+
+
+def test_hanjuku_screen_explains_how_the_bot_works(tmp_path):
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML)
+    for needle in ('半熟英雄BOTの仕組み', 'ヒューリスティック', '動作ログを見て定期的に改善', '保守的',
+                   'ハイブリッド', 'アルゴリズムへ置き換えられる', 'レイテンシ',
+                   'ソ連ゲームの戦略改善・メリケンAIの行は半熟BOTの話ではない'):
+        assert needle in text, needle
+    lines = text.split('\n')
+    assert '画面が違ってもソレンゲームの話として答える' in lines[1]
+    assert '半熟英雄BOTの仕組み' in lines[2]
+
+
+@pytest.mark.parametrize('config, expected, forbidden', [
+    (ENABLED_TOML, 'LLMの動的判断は有効', '止めていて'),
+    ('[hanjuku.chart_adjust]\nenabled = false\nagents = "a:b"\n', '一時的に止めていて', '動的判断は有効'),
+    ('[hanjuku.chart_adjust]\nenabled = true\nagents = ""\n', '一時的に止めていて', '動的判断は有効'),
+    ('[hanjuku.chart_adjust]\nenabled = true\nagents = "a:b"\ndirect_enabled = true\ndirect_agents = ""\n',
+     '一時的に止めていて', '動的判断は有効'),
+])
+def test_hanjuku_llm_state_follows_measured_config(tmp_path, config, expected, forbidden):
+    text = _hanjuku_ops(tmp_path, config=config)
+    assert expected in text
+    assert forbidden not in text
+
+
+@pytest.mark.parametrize('config', [None, 'enabled = [broken', '[hanjuku.chart_adjust]\nenabled = "yes"\n'])
+def test_hanjuku_llm_state_is_omitted_when_config_is_unreadable(tmp_path, config):
+    text = _hanjuku_ops(tmp_path, config=config)
+    assert 'ハイブリッド' in text
+    assert 'いまの状態' not in text
+
+
+def test_hanjuku_explanation_survives_the_ops_character_limit(tmp_path):
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML, max_chars='200')
+    assert 'レイテンシ' in text and 'LLMの動的判断は有効' in text
+
+
+@pytest.mark.parametrize('game, host_mode', [('robots', 'main'), ('sorengame', 'main'), ('hanjuku-hero', 'soren91')])
+def test_hanjuku_explanation_is_only_for_the_hanjuku_screen(tmp_path, game, host_mode):
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML, game=game, host_mode=host_mode)
+    assert '半熟英雄BOTの仕組み' not in text
+
+
+def test_provider_uses_the_game_profile_as_its_single_source(tmp_path):
+    from docich.comment import game_profile
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML)
+    lines = text.split('\n')
+    assert lines[2:2 + len(game_profile.HANJUKU_HOW_IT_WORKS)] == list(game_profile.HANJUKU_HOW_IT_WORKS)
+    assert lines[2 + len(game_profile.HANJUKU_HOW_IT_WORKS)] == game_profile.HANJUKU_LLM_ON
+
+
+def test_provider_reads_its_allowlisted_env_not_os_environ(tmp_path, monkeypatch):
+    other = tmp_path / 'process-env.toml'
+    other.write_text('[hanjuku.chart_adjust]\nenabled = false\nagents = "a:b"\n', encoding='utf-8')
+    monkeypatch.setenv('DOCICH_HANJUKU_CONFIG_FILE', str(other))
+    text = _hanjuku_ops(tmp_path, config=ENABLED_TOML)  # the provider env says: enabled
+    assert 'LLMの動的判断は有効' in text and '止めていて' not in text
+
+
+def test_doushi_corner_context_names_the_leader_and_popular_card(tmp_path):
+    # owner 2026-11-23: コーナー中の返答を画面（同志カード大賞のボード）に合わせる。
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'doushi-view'}}))
+    runtime_id = 'g4-a1b2c3d4'
+    runtime_dir = root / 'runtimes' / runtime_id
+    runtime_dir.mkdir(parents=True)
+    (root / 'doushi_corner.json').write_text(json.dumps({
+        'doushi_runtime_identity': {'game': 'doushi-view', 'runtime_id': runtime_id,
+                                    'generation': 4, 'lease_id': 'l1'}}))
+    (runtime_dir / 'doushi_ranking.json').write_text(json.dumps({'payload': {
+        'by_count': [{'rank': 1, 'username': 'アリス', 'redemption_count': 42}],
+        'by_points': [{'rank': 1, 'username': 'ボブ', 'total_points': 1200}],
+        'popular_cards': [{'rank': 1, 'card_name': '赤いカード', 'actual_count': 30,
+                           'drawer_count': 5}]}}), encoding='utf-8')
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '同志カード大賞' in text
+    assert 'アリス' in text and '42枚' in text
+    assert 'ボブ' in text and '1200ポイント' in text
+    assert '赤いカード' in text and '30枚' in text
+    assert len(text) <= 600
+
+
+def test_doushi_corner_falls_back_without_a_payload(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'doushi-view'}}))
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert isinstance(text, str) and text
+
+
+def test_yosou_corner_context_names_the_leader_and_round_count(tmp_path):
+    # owner 2026-11-23: コーナー中の返答が画面（予想王のボード）と噛み合うようにする。
+    from docich import prediction_leaderboard as lb
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    ledger = lb.new_ledger()
+    lb.record(ledger, {'id': 'p1', 'title': 't', 'status': 'RESOLVED',
+                       'winning_outcome_id': 'o1', 'ended_at': '2026-11-01T00:00:00Z',
+                       'outcomes': [{'id': 'o1', 'title': 'a', 'users': 1, 'channel_points': 100,
+                                     'top_predictors': [{'user_id': 'u1', 'user_login': 'alice',
+                                                         'user_name': 'Alice429',
+                                                         'channel_points_used': 10,
+                                                         'channel_points_won': 200}]},
+                                    {'id': 'o2', 'title': 'b', 'users': 0, 'channel_points': 0,
+                                     'top_predictors': None}]},
+              corner='hanjuku')
+    lb.save(root / lb.FILE, ledger)
+    from docich.comment import prompt
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    final_context = prompt.with_defaults({'game_state_context': text})['game_state_context']
+    assert '予想王' in text
+    assert '確定した予想は1件' in text
+    assert 'Alice429' in text
+    assert 'Alice429' in final_context
+    assert '確定した予想は1件' in final_context
+    assert '\n' in text
+    assert len(final_context) <= 600
+
+
+def test_yosou_corner_falls_back_without_a_ledger(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert isinstance(text, str) and text
+    assert '確定した予想は' not in text
+
+
+def test_yosou_corner_reports_zero_for_an_existing_empty_ledger(tmp_path):
+    from docich import prediction_leaderboard as lb
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    lb.save(root / lb.FILE, lb.new_ledger())
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '確定した予想は0件' in text
+    assert '的中率トップは' not in text
+
+
+def test_yosou_corner_falls_back_for_a_corrupt_ledger(tmp_path):
+    from docich import prediction_leaderboard as lb
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'yosou-view'}}))
+    (root / lb.FILE).write_text('{', encoding='utf-8')
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert '確定した予想は' not in text
+
+
+def test_mystery_corner_context_names_the_case_and_phase(tmp_path):
+    # owner 2026-11-23: ミステリー中のコメント返しが画面と無関係だった。
+    # ケース（被害者・場所・容疑者）と段階を返答コンテキストに含める。
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'mystery-view'}}))
+    (root / 'mystery_view.json').write_text(json.dumps({
+        'phase': 'interrogate',
+        'case': {'victim': '評論家・ペン太', 'place': '山中のペンション',
+                 'suspects': [{'name': 'ゴン太', 'role': '運転手'},
+                              {'name': 'ワトすけ', 'role': '弁護士'}]}}), encoding='utf-8')
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert 'AI探偵ミステリー' in text
+    assert '評論家・ペン太' in text and '山中のペンション' in text
+    assert 'ゴン太（運転手）' in text
+    assert '容疑者尋問' in text
+    assert len(text) <= 600
+
+
+def test_mystery_corner_falls_back_when_the_payload_is_missing(tmp_path):
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'mystery-view'}}))
+    text = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert isinstance(text, str) and text
+    assert 'AI探偵ミステリー' not in text
+
+
+def test_provider_non_soviet_game_state_comes_from_the_profile_module(tmp_path):
+    from docich.comment import game_profile
+    root = _input_root(tmp_path)
+    (root / 'canonical.json').write_text(json.dumps({
+        'phase': 'ready', 'game': 'sorengame', 'active': {'game': 'hanjuku-hero'}}))
+    state = SorenGameContextProvider(root, _provider_env(root)).build(host_mode='main').game_state_context
+    assert state == game_profile.build('hanjuku-hero')['game_state']

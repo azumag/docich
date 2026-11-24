@@ -13,6 +13,8 @@ from docich.nethack_strategist import (
     CommandStrategist,
     DispatchErrorKind,
     evaluate_proposal,
+    PROMPT_ESCAPE,
+    default_prompt_answer,
     execution_plan,
     safe_dispatch_error_kind,
 )
@@ -179,11 +181,10 @@ class TestProposalEvaluation(unittest.TestCase):
             current_observation=obs(),
             current_inventory=before,
         )
-        self.assertTrue(approved.approved)
-        # Approval is not execution authorization in P3d.
-        plan = execution_plan(approved)
-        self.assertFalse(plan.allowed)
-        self.assertEqual(plan.actions, ())
+        # The snapshot is still fresh, so only the missing consume executor rejects it.
+        self.assertFalse(approved.approved)
+        self.assertIn("no reviewed executor", approved.reason)
+        self.assertFalse(execution_plan(approved).allowed)
 
         changed = parse_visible_inventory("a - a potion called cloudy\n")
         rejected = evaluate_proposal(
@@ -216,12 +217,14 @@ class TestProposalEvaluation(unittest.TestCase):
             current_observation=prompt_obs,
         )
         self.assertTrue(approved.approved)
-        self.assertFalse(execution_plan(approved).allowed)
+        plan = execution_plan(approved)
+        self.assertTrue(plan.allowed)
+        self.assertEqual([(a.type, a.text) for a in plan.actions], [("text", "n")])
 
         stale = evaluate_proposal(request, yes, current_observation=obs("prompt is gone"))
         self.assertFalse(stale.approved)
 
-    def test_kind_must_match_original_intent(self) -> None:
+    def test_kinds_without_reviewed_executor_are_rejected(self) -> None:
         request = emergency_request()
         proposal = StrategicProposal(
             schema_version=1,
@@ -230,7 +233,57 @@ class TestProposalEvaluation(unittest.TestCase):
         )
         result = evaluate_proposal(request, proposal, current_observation=obs())
         self.assertFalse(result.approved)
-        self.assertIn("not allowed", result.reason)
+        self.assertIn("no reviewed executor", result.reason)
+
+    def test_prompt_answer_must_be_compatible_with_prompt_type(self) -> None:
+        cases = [
+            ("Really attack? [yn]", "y", True),
+            ("Really attack? [yn]", "h", False),
+            ("In what direction? ", "h", True),
+            ("In what direction? ", "x", False),
+            ("What do you want to eat? [a-b]", "a", True),
+            ("What do you want to eat? [a-b]", "\n", False),
+            ("Call a potion: ", "cloudy", False),
+            ("Call a potion: ", "ESC", True),
+            ("something unrecognized?", "a", False),
+            ("something unrecognized?", "ESC", True),
+        ]
+        for message, answer, expected in cases:
+            with self.subTest(message=message, answer=answer):
+                prompt_obs = obs(message)
+                decision = PolicyDecision(
+                    layer="strategic",
+                    intent="prompt_decision",
+                    reason="visible prompt",
+                    requires_llm=True,
+                )
+                request = build_strategic_request(prompt_obs, decision)
+                proposal = StrategicProposal(
+                    schema_version=1,
+                    kind="answer_prompt",
+                    rationale="answer visible prompt",
+                    prompt_answer=answer,
+                )
+                evaluation = evaluate_proposal(request, proposal, current_observation=prompt_obs)
+                self.assertEqual(evaluation.approved, expected, evaluation.reason)
+
+    def test_escape_answer_maps_to_special_escape_key(self) -> None:
+        prompt_obs = obs("Call a potion: ")
+        decision = PolicyDecision(layer="strategic", intent="prompt_decision", reason="prompt", requires_llm=True)
+        request = build_strategic_request(prompt_obs, decision)
+        proposal = StrategicProposal(
+            schema_version=1, kind="answer_prompt", rationale="cancel", prompt_answer="ESC"
+        )
+        plan = execution_plan(evaluate_proposal(request, proposal, current_observation=prompt_obs))
+        self.assertTrue(plan.allowed)
+        self.assertEqual([(a.type, a.key) for a in plan.actions], [("special", "Escape")])
+
+    def test_default_prompt_answer_is_safe_and_total_for_blocking_prompts(self) -> None:
+        self.assertEqual(default_prompt_answer(obs("Really attack? [yn]")), "n")
+        self.assertEqual(default_prompt_answer(obs("In what direction? ")), PROMPT_ESCAPE)
+        self.assertEqual(default_prompt_answer(obs("Call a potion: ")), PROMPT_ESCAPE)
+        self.assertEqual(default_prompt_answer(obs("something unrecognized?")), PROMPT_ESCAPE)
+        self.assertIsNone(default_prompt_answer(obs("nothing to answer")))
 
     def test_only_explicit_rest_is_executable_and_it_sends_dot(self) -> None:
         request = emergency_request()
@@ -254,7 +307,7 @@ class TestProposalEvaluation(unittest.TestCase):
                 request = build_strategic_request(obs(), decision)
                 evaluation = evaluate_proposal(request, proposal, current_observation=obs())
                 self.assertFalse(evaluation.approved)
-                self.assertIn("not allowed", evaluation.reason)
+                self.assertIn("rest requires", evaluation.reason)
 
 
 if __name__ == "__main__":

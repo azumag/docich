@@ -5,6 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import sys
+import uuid
 import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
@@ -98,6 +99,131 @@ def test_terminal_failure_reconciliation_holds_both_ownership_guards(tmp_path, m
     assert json.loads(mgr.path.read_text()) == {**original, 'status': 'completed'}
 
 
+def test_released_prestart_paper_owner_allows_later_rotation(tmp_path, monkeypatch):
+    g = setup(tmp_path)
+    mgr = manager(g)
+    old_request = str(uuid.uuid4())
+    mgr.save({'status': 'starting', 'rotation_request_id': old_request,
+              'previous_game': 'sorengame', 'requested_at': 100})
+    canonical = {'phase': 'ready', 'active': {
+        'game': 'sorengame', 'runtime_id': 'base', 'lease_id': 'lease', 'generation': 1}}
+    monkeypatch.setattr(mgr.store.canonical, 'load', lambda: (canonical, False))
+
+    assert mgr.settle_released_failure(old_request) is True
+    saved = json.loads(mgr.path.read_text())
+    assert saved['status'] == 'interrupted'
+    assert saved['rotation_request_id'] == old_request
+    assert saved['end_reason'] == 'released-failure-before-start'
+
+    seen = []
+    monkeypatch.setattr(mgr, '_start_locked', lambda **kwargs: seen.append(kwargs) or 'completed')
+    new_request = str(uuid.uuid4())
+    assert mgr.run_rotation(new_request) == 'completed'
+    assert seen == [{'rotation_request_id': new_request}]
+
+
+def test_released_prestart_paper_owner_clears_the_old_stop_marker(tmp_path, monkeypatch):
+    """旧要求の durable stop marker を settle が残さず、新要求へ持ち越さない。
+
+    stop_manual は starting の owner に marker を付ける。marker が残ったまま
+    settle して新しい要求を始めると、Paper の _run_locked が同じ marker を読んで
+    開始直後に restore へ進む (旧要求の停止が新要求へ持ち越される)。
+    """
+    from docich.corner_rotation import (STOP_REQUEST_DIR,
+                                        CornerRotationManager,
+                                        rotation_stop_requested,
+                                        stop_manual)
+
+    g = setup(tmp_path)
+    mgr = manager(g)
+    old_request = str(uuid.uuid4())
+    mgr.save({'status': 'starting', 'rotation_request_id': old_request,
+              'previous_game': 'sorengame', 'requested_at': 100})
+    marker = Path(g.state_dir) / STOP_REQUEST_DIR / mgr.path.name
+
+    # producer: 稼働中の rotation が共通 lock を持つ間、starting owner への
+    # stop は直接実行ではなく durable marker になる。
+    rotation = CornerRotationManager(g)
+    with rotation.locked() as acquired:
+        assert acquired is True
+        assert stop_manual(g, mgr, lambda: 'direct') == 'queued'
+    assert rotation_stop_requested(g, mgr.path) is True
+    assert marker.exists()
+
+    canonical = {'phase': 'ready', 'active': {
+        'game': 'sorengame', 'runtime_id': 'base', 'lease_id': 'lease', 'generation': 1}}
+    monkeypatch.setattr(mgr.store.canonical, 'load', lambda: (canonical, False))
+
+    assert mgr.settle_released_failure(old_request) is True
+    saved = json.loads(mgr.path.read_text())
+    assert saved['status'] == 'interrupted'
+    assert saved['rotation_request_id'] == old_request
+    assert saved['end_reason'] == 'released-failure-before-start'
+
+    # reader: 旧要求の停止は新 owner へ持ち越されない。
+    assert rotation_stop_requested(g, mgr.path) is False
+    assert not marker.exists()
+
+    seen = []
+    monkeypatch.setattr(mgr, '_start_locked', lambda **kwargs: seen.append(kwargs) or 'completed')
+    new_request = str(uuid.uuid4())
+    assert mgr.run_rotation(new_request) == 'completed'
+    assert seen == [{'rotation_request_id': new_request}]
+    assert rotation_stop_requested(g, mgr.path) is False
+
+
+def test_refused_released_prestart_paper_owner_keeps_the_stop_marker(tmp_path, monkeypatch):
+    """slot 解放を証明できない settle は marker を消さない (fail-closed)。"""
+    from docich.corner_rotation import (CornerRotationManager, STOP_REQUEST_DIR,
+                                        rotation_stop_requested, stop_manual)
+
+    g = setup(tmp_path)
+    mgr = manager(g)
+    old_request = str(uuid.uuid4())
+    mgr.save({'status': 'starting', 'rotation_request_id': old_request,
+              'previous_game': 'sorengame', 'requested_at': 100})
+    marker = Path(g.state_dir) / STOP_REQUEST_DIR / mgr.path.name
+    rotation = CornerRotationManager(g)
+    with rotation.locked() as acquired:
+        assert acquired is True
+        assert stop_manual(g, mgr, lambda: 'direct') == 'queued'
+    assert marker.exists()
+
+    canonical = {'phase': 'ready', 'active': {
+        'game': 'paper-view', 'runtime_id': 'paper', 'lease_id': 'lease', 'generation': 2}}
+    monkeypatch.setattr(mgr.store.canonical, 'load', lambda: (canonical, False))
+
+    assert mgr.settle_released_failure(old_request) is False
+    assert json.loads(mgr.path.read_text())['status'] == 'starting'
+    assert rotation_stop_requested(g, mgr.path) is True
+    assert marker.exists()
+
+
+def test_released_prestart_paper_owner_rejects_unproven_slot(tmp_path, monkeypatch):
+    g = setup(tmp_path)
+    mgr = manager(g)
+    old_request = str(uuid.uuid4())
+    mgr.save({'status': 'starting', 'rotation_request_id': old_request,
+              'previous_game': 'sorengame', 'requested_at': 100})
+    canonical = {'phase': 'ready', 'active': {
+        'game': 'paper-view', 'runtime_id': 'paper', 'lease_id': 'lease', 'generation': 2}}
+    monkeypatch.setattr(mgr.store.canonical, 'load', lambda: (canonical, False))
+
+    assert mgr.settle_released_failure(str(uuid.uuid4())) is False
+    assert mgr.settle_released_failure(old_request) is False
+    canonical['active'] = {
+        'game': 'sorengame', 'runtime_id': 'base', 'lease_id': 'lease', 'generation': 3}
+    canonical['phase'] = 'draining'
+    assert mgr.settle_released_failure(old_request) is False
+    canonical['phase'] = 'ready'
+    with mgr.store.lock(exclusive=True):
+        assert mgr.settle_released_failure(old_request) is False
+    monkeypatch.setattr(mgr.store.receipts, 'load',
+                        lambda _request_id: {'status': 'accepted'})
+    assert mgr.settle_released_failure(old_request) is False
+    assert json.loads(mgr.path.read_text())['status'] == 'starting'
+
+
 def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
@@ -106,7 +232,7 @@ def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
     state.mkdir(parents=True, exist_ok=True)
     # An in-flight prediction is what the boundary must confirm.
     (state/'prediction_worker.pid').write_text(str(os.getpid()))
-    (state/'current_prediction.json').write_text(json.dumps({'status':'ACTIVE'}))
+    (state/'current_prediction.json').write_text(json.dumps({'prediction_id':'p1','outcome_ids':['o1','o2'],'created_at':1}))
     def sleep(seconds):
         if now[0] == due:
             now[0]+=35*60
@@ -496,7 +622,7 @@ def test_production_profile_initializes_paper_and_full_rotation_offline(tmp_path
     monkeypatch.setattr(subprocess, 'Popen', reject_runtime)
     config = ROOT / 'config/docich.soren-live.toml'
     g = replace(load_global(ROOT, config), state_dir=tmp_path / 'state')
-    expected = ('cloudflare-api:cf/qwen/qwen3-30b-a3b-fp8' if flag == '1'
+    expected = ('cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast' if flag == '1'
                 else tomllib.loads(config.read_text())['paper_corner']['improve_agents'])
     paper = manager(g)
     rotation = CornerRotationManager(g)

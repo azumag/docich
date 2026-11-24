@@ -78,6 +78,8 @@ def test_failed_direction_input_cannot_confirm_the_wrong_card_or_wait_forever():
 
 def test_chart_card_announcement_times_out_without_claiming_consumption():
     mem = chart_card()
+    # already-retried announce: the post-retry timeout still exits unclassified
+    mem['battle']['card_flow']['announce_retried'] = True
     screen = menu(CARDS, selected=1, kind='text')
     assert policy.card_list_step(screen, mem) == [policy.pad('a')]
     for _ in range(policy.CARD_ANNOUNCE_LIMIT):
@@ -93,7 +95,8 @@ def test_chart_card_announcement_times_out_without_claiming_consumption():
 def test_hotloaded_announcement_without_a_counter_also_exits():
     mem = chart_card()
     mem['battle']['cards_selected'] = ['ブラッキー']
-    mem['battle']['card_flow'].update(stage='announce', selection_planned=True)
+    mem['battle']['card_flow'].update(stage='announce', selection_planned=True,
+                                     announce_retried=True)  # post-retry exit
     for _ in range(policy.CARD_ANNOUNCE_LIMIT):
         assert policy.card_list_step(menu(CARDS, selected=1, kind='text'), mem) == []
     assert policy.card_list_step(menu(CARDS, selected=1, kind='text'), mem) == [policy.pad('b')]
@@ -156,3 +159,22 @@ def test_old_preselection_watch_cannot_borrow_an_earlier_same_named_selection():
     assert not cur.get('enemy_egg_dropped')
     assert not cur.get('enemy_egg_drop_expected')
     assert 'egg_drop_watch' not in cur
+
+
+def test_egg_drop_unconfirmed_records_once_per_battle():
+    """#4335: repeated enemy_hp drops re-recorded battle_egg_drop_unconfirmed
+    every selection — the same ambiguity must be logged once per battle."""
+    mem = chart_card('イッテツーン')
+    cur = mem['battle']
+    cur['enemy_hp'] = 26
+    assert policy.card_list_step(menu(CARDS, selected=0, kind='text'), mem) == [policy.pad('a')]
+    cur['enemy_hp'] = 25
+    policy.battle_step(battle(mem), mem)
+    # A second candidate trigger in the same battle must not re-record.
+    cur['egg_drop_watch'] = {'card': 'イッテツーン', 'hp': 30, 'value': 8,
+                             'threshold': 4, 'max_hp_sum': 67, 'evidence_version': 2}
+    cur['enemy_hp'] = 24
+    policy.battle_step(battle(mem), mem)
+    records = [r for r in mem['_records'] if r['decision'] == 'battle_egg_drop_unconfirmed']
+    assert len(records) == 1, records
+    assert cur['enemy_egg_drop_expected'] is True

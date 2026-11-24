@@ -74,6 +74,34 @@ test("malformed records fail closed without leaking raw values", () => {
   assert.throws(() => parseDataset("SENSITIVE_FIXTURE"), { message: "invalid_dataset_json" });
 });
 
+test("measurement fields: disallowed values are dropped, not stored", () => {
+  const raw = game("sanitized-measurement");
+  raw.decisions[0].clocks = { senteMs: 300000, goteMs: 300000, running: "evil", serverTime: -1 };
+  raw.decisions[0].rejectionReason = "raw SENSITIVE_FIXTURE error";
+  raw.decisions[0].decisionLatencyMs = -5;
+  raw.decisions[0].candidateCount = 1.5;
+  const normalized = normalizeGameRecord(raw);
+  assert.ok(normalized);
+  assert.equal(normalized.decisions[0].clocks, undefined);
+  assert.equal(normalized.decisions[0].rejectionReason, undefined);
+  assert.equal(normalized.decisions[0].decisionLatencyMs, undefined);
+  assert.equal(normalized.decisions[0].candidateCount, undefined);
+  assert.equal(JSON.stringify(normalized).includes("SENSITIVE_FIXTURE"), false);
+});
+
+test("measurement fields: valid values are retained", () => {
+  const raw = game("measurement-valid");
+  raw.decisions[0].clocks = { senteMs: 300000, goteMs: 290000, running: "sente", serverTime: 100 };
+  raw.decisions[0].rejectionReason = "ack_error";
+  raw.decisions[0].decisionLatencyMs = 42;
+  raw.decisions[0].candidateCount = 7;
+  const normalized = normalizeGameRecord(raw);
+  assert.ok(normalized);
+  assert.deepEqual(normalized.decisions[0].clocks, { senteMs: 300000, goteMs: 290000, running: "sente", serverTime: 100 });
+  assert.equal(normalized.decisions[0].rejectionReason, "ack_error");
+  assert.equal(normalized.decisions[0].decisionLatencyMs, 42);
+  assert.equal(normalized.decisions[0].candidateCount, 7);
+});
 test("unknown termination reasons remain unknown even with a known outcome", () => {
   const records = ["win", "loss", "draw"].map((outcome) => game(`unknown-${outcome}`, { outcome, reason: "unknown" }));
   const summary = report(records);

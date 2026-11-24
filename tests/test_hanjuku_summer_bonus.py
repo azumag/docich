@@ -18,7 +18,11 @@ from docich.hanjuku_commentary import compose
 from docich.hanjuku_screen import Screen, find_hand, parse
 from docich.hanjuku_font import TextLine
 from docich.hanjuku_bot import NO_INPUT_HOLD_MAX, decide
+from docich.hanjuku_pixels import read_png
+from docich.hanjuku.flows.prompts import _summer_bonus_choice_band
 from test_hanjuku_chart_bot import Canvas
+
+FIXTURES = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
 LABELS = ('バカンス', 'ボーナス', 'まとめて解雇')
 
@@ -320,3 +324,183 @@ def test_the_first_post_choice_line_can_advance_before_the_final_result(choice, 
     assert actions == [p.pad('a')]
     assert state['screen_kind'] == 'summer_bonus_message'
     assert 'summer_bonus_plan' not in state['policy']
+
+
+def _measured_response_frame(text='よめないてきすと'):
+    """The captured response page's measured shape (g825, 2ねん8がつ).
+
+    The dialogue window keeps its outer frame tiles on every page: a single
+    unknown cell at x=248 on the rows 159/175/191/207. A band row made only
+    of that edge tile is a response page, not a choice row, so the unread
+    response must still advance (tests/fixtures/hanjuku/
+    g825-summer-response.png is the captured original).
+    """
+    c = Canvas((120, 120, 120))
+    c.text(8, 8, '2ねん8のつき30G')
+    c.text(24, 150, text)
+    for y in (159, 175, 191, 207):
+        c.tile(248, y, 0x0123456789ABCDEF)
+    return c.frame()
+
+
+def test_unreadable_response_after_confirm_still_advances(monkeypatch):
+    """After A confirms a choice, if the menu disappears but the response
+    text is unreadable (no keywords), we still advance instead of pressing up
+    on an empty menu."""
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    # Response screen with no readable keywords (simulating OCR failure),
+    # shaped like the captured response page: prose content plus the panel's
+    # outer frame tiles on the band rows.
+    actions, state = decide(_measured_response_frame(), state)
+    assert actions == [p.pad('a')]
+    assert state['screen_kind'] == 'summer_bonus_message'
+    assert 'summer_bonus_plan' not in state['policy']
+    # The record should note the response was unread
+    rec = next(r for r in state['_records'] if r.get('decision') == 'summer_bonus_message')
+    assert '応答文は未読' in rec['reason']
+
+
+def test_the_captured_bonus_response_page_advances_the_episode(monkeypatch):
+    """The real captured response page (g825, 2ねん8がつ30G) is a response,
+    not a menu.
+
+    The measured page keeps only the panel's outer frame tiles on the band
+    rows, so the choice band is denied; its readable keywords then advance
+    the episode. This is the live-observed path (g825 decision 9393).
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'bonus')
+    _, state = decide(prompt_canvas(selected=1), {})
+    assert state['policy']['summer_bonus_plan']['confirmation_planned'] is True
+    frame = read_png(FIXTURES / 'g825-summer-response.png')
+    screen = parse(frame)
+    assert 'さすがは' in screen.text.replace(' ', '')
+    assert screen.hand is None
+    assert not _summer_bonus_choice_band(screen)
+    actions, state = decide(frame, state)
+    assert actions == [p.pad('a')]
+    assert state['screen_kind'] == 'summer_bonus_message'
+    assert 'summer_bonus_plan' not in state['policy']
+    rec = next(r for r in state['_records'] if r.get('decision') == 'summer_bonus_message')
+    assert rec['target'] == 'bonus'
+
+
+def test_the_captured_post_a_fade_is_not_a_result(monkeypatch):
+    """The measured post-A fade (g825, 0.9s after the confirm A) keeps inner
+    band tiles at x=32..224, so the menu cannot be denied yet: the episode
+    re-observes instead of confirming an unread row. This matches the live
+    g825 decision 9392 (one up press, no A)."""
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'bonus')
+    _, state = decide(prompt_canvas(selected=1), {})
+    frame = read_png(FIXTURES / 'g825-summer-post-a-fade.png')
+    screen = parse(frame)
+    assert screen.hand is None
+    assert _summer_bonus_choice_band(screen) is True
+    actions, state = decide(frame, state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'bonus'
+
+
+def _unreadable_choice_band_frame(*, question=None, unknown_prose=False, hand=True):
+    """The 8月 prompt with every choice label unreadable.
+
+    The choice band is still drawn (unknown tiles at 176/192/208) and the cursor
+    hand can still sit on the まとめて解雇 row, so the menu is still up even
+    though no label can be read.
+    """
+    c = Canvas((16, 72, 57))
+    c.text(8, 8, '5ねん8のつき7572G')
+    if question is not None:
+        c.text(24, 150, question)
+    if unknown_prose:
+        c.tile(24, 150, 0x0123456789ABCDEF)
+    for y in (176, 192, 208):
+        c.tile(176, y, 0x0123456789ABCDEF)
+    if hand:
+        c.hand(138, 202)          # まとめて解雇 row
+    return c.frame()
+
+
+def test_an_unreadable_choice_band_with_the_discharge_hand_is_not_a_result(monkeypatch):
+    """The prompt's own question is not the post-choice response.
+
+    A planned A is not evidence that the menu went away, and the prose band
+    holds the prompt's question as well as the response text, so reading that
+    band must not advance the episode while the choice band and its hand are
+    still on screen.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    assert state['policy']['summer_bonus_plan']['confirmation_planned'] is True
+    actions, state = decide(_unreadable_choice_band_frame(question='どちらにする'), state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_one_unknown_tile_in_the_prose_band_is_not_a_response(monkeypatch):
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    actions, state = decide(_unreadable_choice_band_frame(unknown_prose=True), state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_a_planned_confirmation_alone_does_not_advance_a_menu_we_cannot_read(monkeypatch):
+    """A single unread tile must not stand in for the response page.
+
+    No hand is detected here, but the choice band is still drawn: the menu
+    cannot be denied, so A is never sent.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    frame = _unreadable_choice_band_frame(question='どちらにする', hand=False)
+    assert parse(frame).hand is None
+    actions, state = decide(frame, state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_a_lone_third_choice_row_is_still_the_menu(monkeypatch):
+    """The band ends at the まとめて解雇 row (208), not at 207.
+
+    With the upper two rows and the cursor missing, only the third row can be
+    left on screen; that alone must not be read as the post-choice response.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    c = Canvas((16, 72, 57))
+    c.text(8, 8, '5ねん8のつき7572G')
+    c.text(24, 150, 'どちらにする')
+    c.tile(176, 208, 0x0123456789ABCDEF)      # まとめて解雇 row only
+    frame = c.frame()
+    assert [line.y for line in parse(frame).lines if line.y >= 176] == [208]
+    assert parse(frame).hand is None
+    actions, state = decide(frame, state)
+    assert actions == [p.pad('up')]
+    assert state['screen_kind'] == 'summer_bonus'
+    assert state['policy']['summer_bonus_plan']['target'] == 'vacation'
+
+
+def test_the_tail_cell_of_the_third_choice_stays_protected(monkeypatch):
+    """A lone tail cell at x=232/y208 is the まとめて解雇 label, not a response.
+
+    The choice label's tail lands exactly on the inner-column boundary, so the
+    outer-frame exclusion must not drop it; otherwise a menu with only that
+    cell left would be misread as the post-choice response page and A would
+    be sent. x=224 is the control that already stayed protected.
+    """
+    monkeypatch.setattr(p.random, 'choice', lambda seq: 'vacation')
+    _, state = decide(prompt_canvas(selected=0), {})
+    for x in (224, 232):
+        c = Canvas((16, 72, 57))
+        c.text(8, 8, '5ねん8のつき7572G')
+        c.text(24, 150, 'どちらにする')
+        c.tile(x, 208, 0x0123456789ABCDEF)
+        actions, state2 = decide(c.frame(), state)
+        assert actions == [p.pad('up')], (x, actions)
+        assert state2['screen_kind'] == 'summer_bonus'
+        assert state2['policy']['summer_bonus_plan']['target'] == 'vacation'

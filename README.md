@@ -25,6 +25,17 @@ tmux session: docich
 各windowは監督ループ配下で動き、異常終了時は指数バックオフで再起動します。
 RTMPキーは状態表示と監督ログでマスクされます。
 
+### 市場データブリッジ (infra/market-bridge)
+
+Windows ターミナル側のブレイジと Linux 側のプロバイダを `mbridge` パッケージで結ぶ。ブレイジ側は loopback 専用の 5 ルート（health/readiness/snapshot/scanner/subscriptions）のみを公開し、注文・口座・プロキシ経路は持たない（`tests` の静的ガードで不在を固定）。Linux 側プロバイダは取得→検証→原子公開を境界付きで行い、欠落またはハングする Windows ブレイジがあってもプロセスは存続しつつ unready（fail-closed）を返す。
+
+Sequence 空間（`mbridge.common.contract`）:
+
+- `Snapshot.sequence`: 公開エンベロープの連番。Linux 側プロバイダが発行する単調連番で、ブレイジ側から派生しない。コンシューマはこのフィールドで公開エンベロープを順序づける。
+- `Snapshot.upstream_sequence`: ブレイジ側（Windows アダプタ）の読取連番をそのまま保持。公開順序には関与せず、プロバイダは上書きしない。非増加の `upstream_sequence` は `sequence_regressed` で拒否され、ブレイジからの再送読取を防ぐ。
+
+詳細は [`infra/market-bridge/mbridge/common/contract.py`](infra/market-bridge/mbridge/common/contract.py) のモジュール docstring および [`infra/market-bridge/bridge.example.toml`](infra/market-bridge/bridge.example.toml) を参照。
+
 ## 本番Sorenとの境界
 
 同じVMで稼働する現在の sorengame 本番は
@@ -362,6 +373,7 @@ docs/architecture.md          canonical architecture
 docs/multi_repo_plan.md       submodule 構成と共通部品化ロードマップ
 docs/games/                   per-game contracts
 docs/twitch_closed_captions.md caption architecture and production evidence
+ops/runtime_context/ops_brief_source.md  public ops-brief input (tracked, projected to ops_brief.json)
 handoff.md                    private Soren/docich operational handoff (not in Git; kept to the newest 30
                               sections, older ones archived next to it by ops/local/handoff_rotate.py)
 ```
@@ -394,3 +406,4 @@ GitHub wiki のページ原稿は `wiki/` ディレクトリでバージョン�
 - [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup
 - [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md): Soren移行の完了状況と将来gate
 - [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md): native captions
+- [`docs/vrchat-osc.md`](docs/vrchat-osc.md): VRChat アバターとの OSC 双方向連携 (VR同志)

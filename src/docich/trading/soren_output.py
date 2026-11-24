@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+from ..comment_queue import comment_queue_dir
 from ..config import ConfigError, GlobalConfig, load_game
 from ..meriken_voice import resolve_meriken_speaker
 from ..overlay_queue import append_event, regenerate_overlay
@@ -75,6 +77,25 @@ def _paper_corner_speech_text(text: str, event_id: str, *, corner_owner: str = "
     return body
 
 
+def _safe_is_dir(path: Path) -> bool:
+    """Python 3.12 raises ``PermissionError`` from ``is_dir`` on EACCES.
+
+    A non-runtime host can have an unreadable ``/home/ubuntu/soren``; that is
+    "not the soren root", not a fatal config error.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def resolve_soren_root(g: GlobalConfig) -> Path:
     raw = (g.webui.soren_root or "").strip()
     if raw:
@@ -91,15 +112,15 @@ def resolve_soren_root(g: GlobalConfig) -> Path:
             if not runtime.is_absolute():
                 runtime = g.repo_root / runtime
             runtime = runtime.resolve()
-            if runtime.is_dir():
+            if _safe_is_dir(runtime):
                 return runtime
     except ConfigError:
         pass
     candidate = g.repo_root / "games" / "soviet_now"
-    if (candidate / "eloop_lib.sh").is_file():
+    if _safe_is_file(candidate / "eloop_lib.sh"):
         return candidate.resolve()
     cwd = Path.cwd()
-    if (cwd / "eloop_lib.sh").is_file():
+    if _safe_is_file(cwd / "eloop_lib.sh"):
         return cwd.resolve()
     return candidate.resolve()
 
@@ -196,13 +217,18 @@ def enqueue_chat(
 
 def enqueue_audio_text(
     g: GlobalConfig, text: str, *, context: str = "soren91", speaker: str = "",
-    runtime_fence: dict | None = None,
+    runtime_fence: dict | None = None, dedup_scope: str = "",
 ) -> None:
     """Enqueue one TTS line into the Soren audio queue with an explicit speaker.
 
     Used so the Soren91 (Meriken) corner speaks in the Meriken voice rather
     than the default host speaker.  Same-VM only; paused/duplicate-suppressed
     enqueues are sink-side no-ops (rc=0).
+
+    ``runtime_fence`` binds the line to one live game-switch runtime so a
+    stopped or superseded run cannot still be heard.  ``dedup_scope`` narrows
+    the same-text suppression to one runtime occurrence, so a legitimate
+    repeat in a later scene or a later run is spoken instead of dropped.
     """
     import subprocess
 
@@ -216,10 +242,20 @@ def enqueue_audio_text(
     if runtime_fence is not None:
         command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "$3"'
         command.append(json.dumps(runtime_fence, separators=(",", ":")))
+    if dedup_scope:
+        if runtime_fence is None:
+            command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "" "$3"'
+        else:
+            command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "$3" "$4"'
+        command.append(str(dedup_scope))
     try:
+        env = os.environ.copy()
+        # Share the reader's resolved queue without sourcing the whole .env.
+        env["COMMENT_QUEUE_DIR"] = str(comment_queue_dir(root))
         proc = subprocess.run(
             command,
             cwd=str(root),
+            env=env,
             text=True,
             capture_output=True,
             timeout=30.0,

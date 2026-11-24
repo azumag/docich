@@ -7,12 +7,22 @@ import os
 from pathlib import Path
 import time
 
+from .comment_queue import comment_queue_dir, is_quiet
 from .trading.soren_output import resolve_soren_root
 
 QUEUE_DIR = 'docich_program_queue'
 REGISTRY_FILE = 'docich_program_active.json'
 # program_lock の保持中に他コーナーが starting/active のまま残る状態。
 BUSY_OWNER_STATUSES = frozenset({'starting', 'active', 'restoring', 'recovery_required', 'failed'})
+# 復帰失敗例外 (corner_terminal.normalize_terminal_paper_failure) を使える専用view state。
+# canonical が記録済みの元ゲームへ戻った証明があるときだけ terminal とみなし、
+# それ以外の game/retro 等の failed は従来どおり fail-closed とする。
+RECOVERED_FAILURE_OWNER_TARGETS = {
+    'paper_corner.json': 'paper-view',
+    'paper_corner_manual.json': 'paper-view',
+    'doushi_corner.json': 'doushi-view',
+    'mystery_corner.json': 'mystery-view',
+}
 
 
 class CornerWaitExpired(RuntimeError):
@@ -59,15 +69,77 @@ def _worker_running(root, name):
     return _pid_is_alive(_read_pid_file(root / f'{name}.pid'))
 
 
-def _prediction_in_flight(state_dir: Path) -> bool:
-    """True only while the prediction worker runs an ACTIVE/LOCKED prediction."""
+def _prediction_int(value, *, upper):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= upper else None
+
+
+def _prediction_snapshot(state_dir: Path) -> dict:
+    """Bounded view of the unresolved prediction, or an empty snapshot.
+
+    docich#3335 (B): the soviet_now writer never puts ``status`` in the state
+    file — it only writes one after verifying the remote prediction is
+    ACTIVE, and it deletes the file at resolution. So a well-formed file
+    (non-empty ``prediction_id`` plus at least two ``outcome_ids``; a
+    ``created_at`` of 0 is fine because the recovered state writes that) is
+    itself an in-flight record. When ``status`` IS present the strict
+    contract applies: only ACTIVE/LOCKED counts, so a future writer that
+    records terminal statuses (RESOLVED/CANCELED) stays correct.
+
+    ``remaining_games`` is the round's own count (``round_version=2``). A
+    legacy record without that counter has no bounded remaining value, so the
+    notice falls back to a plain ``予想終了後`` label. Every field is bounded:
+    the projection is read by the broadcast and must not publish state values
+    it did not validate.
+    """
+    empty = {
+        'in_flight': False,
+        'worker_running': False,
+        'remaining_games': None,
+        'max_games': None,
+        'games_completed': None,
+        'started_at': None,
+    }
     if not _worker_running(state_dir, PREDICTION_WORKER):
-        return False
+        return empty
+    empty['worker_running'] = True
     try:
         state = json.loads((state_dir / PREDICTION_STATE_FILE).read_text())
     except (OSError, ValueError):
-        return False
-    return isinstance(state, dict) and state.get('status') in PREDICTION_ACTIVE_STATUSES
+        return empty
+    if not isinstance(state, dict):
+        return empty
+    if 'status' in state:
+        in_flight = state.get('status') in PREDICTION_ACTIVE_STATUSES
+    else:
+        outcomes = state.get('outcome_ids')
+        prediction_id = state.get('prediction_id')
+        in_flight = (isinstance(prediction_id, str) and bool(prediction_id)
+                     and isinstance(outcomes, list) and len(outcomes) >= 2)
+    if not in_flight:
+        return empty
+    max_games = _prediction_int(state.get('max_games'), upper=100)
+    completed = _prediction_int(state.get('games_completed'), upper=100)
+    remaining = None
+    if max_games is not None and completed is not None:
+        remaining = max(0, min(100, max_games - completed))
+    started_at = state.get('created_at')
+    if (type(started_at) not in (int, float) or isinstance(started_at, bool)
+            or not math.isfinite(started_at) or started_at <= 0):
+        started_at = None
+    return {
+        'in_flight': True,
+        'worker_running': True,
+        'remaining_games': remaining,
+        'max_games': max_games,
+        'games_completed': completed,
+        'started_at': started_at,
+    }
+
+
+def _prediction_in_flight(state_dir: Path) -> bool:
+    return _prediction_snapshot(Path(state_dir))['in_flight']
 
 
 def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
@@ -80,20 +152,58 @@ def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float)
     return requested_at <= stamp <= now
 
 
-def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
-    """Confirmed prediction boundary while a prediction is actually in flight.
+def _audio_queue_quiet(state_dir: Path) -> bool:
+    """True while the shared comment/audio queue is completely quiet.
 
-    Only an in-flight prediction holds the corner back (so the prediction is
-    not paused mid-count). Improvement cycles and interleaved A/B are not
-    gated: the match/round boundary that keeps a game from being cut is owned
-    by the game-switch coordinator, and A/B simply pauses and resumes. A
-    stopped or paused prediction worker never blocks, and when no prediction
-    is in flight the corner may proceed immediately.
+    ``state_dir`` is ``<soren>/tmp/state`` (see ``program_slot``), so the Soren
+    root the shell sink runs in is two levels up. Both the queued ``.txt`` and
+    the playing ``.playing`` marker hold the corner back: an intro must not cut
+    into a comment that is already being read out. A missing or unreadable queue
+    is quiet, so a broken queue never blocks every corner.
+    """
+    return is_quiet(comment_queue_dir(Path(state_dir).parent.parent))
+
+
+def prediction_in_flight(state_dir: Path) -> bool:
+    """True while a Soren prediction holds the corner boundary (public view).
+
+    The advance notice uses this gate only: while the 48-game prediction is
+    waiting to settle, the exact corner start cannot be promised. The audio
+    queue is deliberately not part of this probe (it delays a corner that is
+    already starting, it does not move the scheduled time).
+    """
+    return _prediction_in_flight(Path(state_dir))
+
+
+def prediction_snapshot(state_dir: Path) -> dict:
+    """Bounded prediction state for the notice (in-flight flag + remaining)."""
+    return _prediction_snapshot(Path(state_dir))
+
+
+def prediction_worker_running(state_dir: Path) -> bool:
+    """True while the prediction worker can still create a prediction."""
+    return _worker_running(Path(state_dir), PREDICTION_WORKER)
+
+
+def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
+    """Confirmed prediction and audio boundary before a corner may start.
+
+    Two conditions hold a corner back:
+
+    - an in-flight prediction (only while the prediction worker actually runs,
+      so a stopped worker never blocks the corners forever; a well-formed
+      state file without ``status`` counts as in-flight per docich#3335), and
+    - a non-empty shared comment/audio queue (queued or playing item).
+
+    Improvement cycles and interleaved A/B are not gated: the match/round
+    boundary that keeps a game from being cut is owned by the game-switch
+    coordinator, and A/B simply pauses and resumes. When no prediction is in
+    flight and the audio queue is quiet the corner may proceed immediately.
     """
     now = time.time() if now is None else now
     if _prediction_in_flight(state_dir) and not _fresh_boundary(state_dir, 'prediction', requested_at, now):
         return False
-    return True
+    return _audio_queue_quiet(state_dir)
 
 
 @contextmanager
@@ -113,13 +223,14 @@ def program_lock(g, owner_state=None, *, wait_deadline_ts=None, sleep=time.sleep
 
 
 def _observed_owner_status(previous, state, owner_state):
-    # Only dedicated PAPER records in this canonical state directory may use
+    # Only dedicated view records in this canonical state directory may use
     # the recovered-failure exception. Retro/other profiles remain fail-closed.
     previous = Path(previous)
-    if (previous.name in {'paper_corner.json', 'paper_corner_manual.json'}
+    target_game = RECOVERED_FAILURE_OWNER_TARGETS.get(previous.name)
+    if (target_game is not None
             and previous.parent.resolve() == Path(owner_state).parent.resolve()):
         from .corner_terminal import normalize_terminal_paper_failure
-        state = normalize_terminal_paper_failure(previous.parent, state)
+        state = normalize_terminal_paper_failure(previous.parent, state, target_game)
     return state.get('status')
 
 
@@ -139,6 +250,66 @@ def _register_owner(root, owner_state):
             if _observed_owner_status(previous, state, owner_state) in BUSY_OWNER_STATUSES:
                 raise RuntimeError('another corner must recover or finish before starting')
     atomic_write_json(registry, {'owner_state': str(owner_state)})
+
+
+def _same_state_file(left, right):
+    """Return True only when both paths name the same existing state file."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        # A released corner's own state file may already be gone (the corner
+        # never wrote it, or cleanup removed it). Fall back to a normalized
+        # path comparison so a stale registry row that names that same path
+        # can still be retired instead of livelocking the shared slot.
+        try:
+            return str(Path(left).expanduser().resolve()) == str(
+                Path(right).expanduser().resolve()
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+
+def release_program_owner(g, owner_state):
+    """Drop the shared program registry row that still names a released corner.
+
+    The rotation releases a failed corner without rewriting that corner's own
+    state (#2187), so the registry can keep naming a corner whose request the
+    ledger already proved released.  ``_owner_free`` reads only that row and
+    observes ``failed`` as BUSY forever, which livelocks every later corner in
+    the shared program slot (#2282).
+
+    The row is dropped only while it still names the same existing state file,
+    independent of relative/absolute or symlink path spelling, and only under
+    the program flock. A corner that has since taken the slot therefore keeps
+    its own ownership. A flock held by a running corner means the registry
+    already names that corner, so there is nothing stale to drop. Missing or
+    unresolved paths fail closed. Returns True when a row was actually removed.
+    """
+    root = resolve_soren_root(g) / 'tmp/state'
+    root.mkdir(parents=True, exist_ok=True)
+    registry = root / REGISTRY_FILE
+    try:
+        with (root / 'docich_program.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return False
+            try:
+                current = json.loads(registry.read_text())
+            except (OSError, ValueError):
+                return False
+            if not isinstance(current, dict):
+                return False
+            current_owner = current.get('owner_state')
+            if not isinstance(current_owner, str) or not _same_state_file(current_owner, owner_state):
+                return False
+            try:
+                registry.unlink()
+            except OSError:
+                return False
+            return True
+    except OSError:
+        return False
 
 
 def _owner_free(root, owner_state):
@@ -264,7 +435,7 @@ def _earlier_waiter_exists(root, key, requested_at):
 
 @contextmanager
 def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll_s=5.0,
-                  requested_at=None, queue_status='waiting'):
+                  requested_at=None, queue_status='waiting', wait_boundary=False, now=time.time):
     """キュー待ち付き program 占有。順番が来たら所有権を取って yield する。
 
     待ち行列はキー別ファイル (FIFO: 先に待ち始めた他コーナーを追い越さない)。
@@ -287,9 +458,9 @@ def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll
                 except BlockingIOError:
                     pass
                 else:
-                    if _owner_free(root, owner_state) and not _earlier_waiter_exists(
+                    if (_owner_free(root, owner_state) and not _earlier_waiter_exists(
                         root, key, requested_at
-                    ):
+                    ) and (not wait_boundary or boundary_ready(root, requested_at, now=now()))):
                         from .game_switch import atomic_write_json
                         atomic_write_json(root / REGISTRY_FILE, {'owner_state': str(owner_state)})
                         _queue_write(root, key, status='running')
@@ -342,7 +513,8 @@ def program_slot(g, owner_state, *, requested_at, wait_deadline_ts, wait_boundar
             _queue_write(root, key, status='error' if isinstance(exc, ProgramRegistryError) else 'cancelled')
             raise
     with _program_slot(root, owner_state, wait_deadline_ts, sleep=sleep, poll_s=poll_s,
-                       requested_at=requested_at, queue_status='waiting_turn') as slot_root:
+                       requested_at=requested_at, queue_status='waiting_turn',
+                       wait_boundary=wait_boundary, now=now) as slot_root:
         yield slot_root
 
 

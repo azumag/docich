@@ -134,7 +134,8 @@ class AuthorizeTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr)
 
     def test_configure_jev_route_requires_production_main_and_confirmation(self):
-        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'disable_jev_route'):
+        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'configure_jev_route_clef',
+                   'configure_jev_route_clef_reuse', 'disable_jev_route'):
             p=self.run_auth(
                 GITHUB_REPOSITORY_PRIVATE='false',
                 INPUT_OPERATION=op,
@@ -429,6 +430,56 @@ class AuthorizeTests(unittest.TestCase):
         self.assertIn("cat control/ops/vm_actions/recover_bgm_mute.sh | ssh", step)
         self.assertNotIn("VM_COMMAND", step)
 
+    def test_loop_pause_release_is_fixed_confirmed_main_only(self):
+        # docich #2061: the release must be owner-only, production-only,
+        # main-only and confirmation-gated, and it must never accept an
+        # argument or an arbitrary command.
+        for overrides in (
+            dict(INPUT_TARGET="preview"), dict(INPUT_REF="feature"), dict(INPUT_CONFIRM=""),
+            dict(INPUT_CONFIRM="PRODUCTION"),
+            dict(GITHUB_ACTOR="collab", GITHUB_ACTOR_ID="42"),
+            dict(GITHUB_TRIGGERING_ACTOR="collab"),
+        ):
+            values = dict(INPUT_OPERATION="release_soren_loop_pause", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+            values.update(overrides)
+            self.assertNotEqual(self.run_auth(**values).returncode, 0)
+        for operation in ("release_soren_loop_pause --force", "release_soren_loop_pause;id",
+                          "release_soren_loop_pause "):
+            self.assertNotEqual(
+                self.run_auth(INPUT_OPERATION=operation, INPUT_TARGET="production",
+                              INPUT_REF="main", INPUT_CONFIRM="production").returncode,
+                0,
+            )
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false",
+                          INPUT_OPERATION="release_soren_loop_pause", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        step = WF.read_text().split("Release the loop pause a consumed succeeded switch owns", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/release_soren_loop_pause.sh | \\", step)
+        self.assertIn('"exec docich production $SHA"', step)
+        self.assertNotIn("VM_COMMAND", step)
+        # One fixed exit code per refusal reason, reported verbatim.
+        for code, reason in (
+            ("70", "canonical_unavailable"), ("71", "phase_not_releasable"),
+            ("72", "game_still_active"), ("73", "no_soren_candidate"),
+            ("74", "pause_not_owned"), ("75", "receipt_not_owner"),
+            ("76", "unexpected_failure"), ("77", "handover_in_flight"),
+        ):
+            with self.subTest(code=code):
+                self.assertIn(f'{code}) reason="{reason}"', step)
+        self.assertIn('*) reason="transport_failure"', step)
+        # The fixed entry itself is argument-free and pins the production root.
+        script = (ROOT / "ops/vm_actions/release_soren_loop_pause.sh").read_text()
+        self.assertIn('[[ $# -eq 0 ]] || exit 2', script)
+        self.assertIn('[[ "$(pwd -P)" == /home/ubuntu/docich ]] || exit 3', script)
+        self.assertIn("exec python3 ops/vm_actions/release_soren_loop_pause.py", script)
+        self.assertNotIn("eval", script)
+        self.assertNotIn("$1", script)
+        entry = (ROOT / "ops/vm_actions/release_soren_loop_pause.py").read_text()
+        self.assertIn('ROOT = Path("/home/ubuntu/docich")', entry)
+        self.assertIn("len(sys.argv) != 1", entry)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)
@@ -551,6 +602,41 @@ class GatewayTests(unittest.TestCase):
         self.assertIn('VM operation rejected: tracked_vm_drift',err)
         self.assertNotIn('tracked VM drift detected',err)
 
+    def test_deploy_reject_is_recorded_and_reported_by_status(self):
+        # docich#3666: the workflow reconcile step only sees a failed deploy
+        # via the status op. A rejected deploy must leave its fixed reason
+        # code in the state root so status can report it, and a later
+        # successful deploy must clear it.
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        self.assertEqual(self.call(f'bootstrap docich production {sha}').returncode,0)
+        (self.doc/'app.py').write_text('manual-hotfix\n')
+        self.assertNotEqual(self.call(f'deploy docich production {sha}').returncode,0)
+        p=self.call(f'status docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual(json.loads(p.stdout.decode()).get('last_deploy_reject'),'tracked_vm_drift')
+        (self.doc/'app.py').write_text('v1\n')
+        self.assertEqual(self.call(f'deploy docich production {sha}').returncode,0)
+        p=self.call(f'status docich production {sha}')
+        self.assertIsNone(json.loads(p.stdout.decode()).get('last_deploy_reject'))
+
+    def test_last_deploy_reject_is_bound_to_the_rejected_sha(self):
+        # PR #3667 review: a rejection recorded for sha A must not be
+        # attributed to a status query for a different sha B -- the
+        # submodule_unchanged terminal message would otherwise misread a
+        # stale reason as the current push's cause.
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        self.assertEqual(self.call(f'bootstrap docich production {sha}').returncode,0)
+        (self.doc/'app.py').write_text('manual-hotfix\n')
+        self.assertNotEqual(self.call(f'deploy docich production {sha}').returncode,0)
+        other='0'*40
+        p=self.call(f'status docich production {other}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertIsNone(json.loads(p.stdout.decode()).get('last_deploy_reject'))
+        p=self.call(f'status docich production {sha}')
+        self.assertEqual(json.loads(p.stdout.decode()).get('last_deploy_reject'),'tracked_vm_drift')
+
     # Issue #410: unexpected deploy exceptions must not bypass fixed reason
     # codes with raw tracebacks (argv/paths) on Actions output.
     def _load_gateway(self):
@@ -669,6 +755,106 @@ class GatewayTests(unittest.TestCase):
         self.assertNotEqual(p.returncode,0)
         self.assertIn('rebaseline_not_ancestor',p.stderr.decode())
 
+    # docich#2681: a clean checkout whose HEAD moved out-of-band is
+    # auto-rebaselined inside the deploy when the HEAD is an ancestor of the
+    # requested reviewed commit (rebaseline_git's reviewed conditions).
+    def test_deploy_auto_rebaselines_clean_ancestor_head(self):
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','out-of-band'],check=True)
+        drift=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        cand=self.base/'auto-rebase-cand'
+        subprocess.run(['git','clone','-q',self.doc,cand],check=True)
+        subprocess.run(['git','-C',cand,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',cand,'config','user.name','T'],check=True)
+        (Path(cand)/'app.py').write_text('v3\n')
+        subprocess.run(['git','-C',cand,'add','app.py'],check=True)
+        subprocess.run(['git','-C',cand,'commit','-qm','reviewed'],check=True)
+        sha=subprocess.check_output(['git','-C',cand,'rev-parse','HEAD'],text=True).strip()
+        bundle_path=self.base/'auto-rebase.bundle'
+        subprocess.run(['git','-C',cand,'bundle','create',bundle_path,'HEAD'],check=True)
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle_path.read_bytes()).returncode,0)
+        self._write_baseline(base)
+        p=self.call(f'deploy docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        payload = json.loads(p.stdout)
+        self.assertEqual(payload.pop('git_gc'), {'status': 'unavailable'})
+        payload.pop('bundle_mode', None)
+        self.assertEqual(payload, {'status':'deployed','sha':sha,'rebaselined_from':base})
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],sha)
+        self.assertEqual(state['rebaseline_history'][-1],
+                         {'from':base,'to':drift,'target':sha,'auto':True})
+        self.assertEqual((self.doc/'app.py').read_text(),'v3\n')
+
+    # The 2026-10-23 incident shape: a local commit that never reached main is
+    # not an ancestor of the reviewed deploy target and must still fail closed,
+    # with the out-of-band HEAD preserved for diagnosis.
+    def test_deploy_auto_rebaseline_refuses_out_of_band_commit_not_on_main(self):
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','local gitlink bump'],check=True)
+        drift=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self._write_baseline(base)
+        p=self.call(f'deploy docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('VM operation rejected: tracked_vm_drift',p.stderr.decode())
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],base)
+        self.assertEqual(subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip(),drift)
+
+    # docich#2681 review: a deploy that fails after the auto-rebaseline must
+    # roll production back to the out-of-band HEAD and keep the rebaselined
+    # baseline, so state.json and the checkout stay consistent for the next
+    # deploy attempt (baseline == HEAD, no deployment_intent).
+    def test_deploy_failure_after_auto_rebaseline_keeps_rebaselined_baseline(self):
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        (self.doc/'app.py').write_text('out-of-band\n')
+        subprocess.run(['git','-C',self.doc,'add','app.py'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','out-of-band'],check=True)
+        head=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        cand=self.base/'rollback-cand'
+        subprocess.run(['git','clone','-q',self.doc,cand],check=True)
+        subprocess.run(['git','-C',cand,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',cand,'config','user.name','T'],check=True)
+        (Path(cand)/'app.py').write_text('reviewed\n')
+        subprocess.run(['git','-C',cand,'add','app.py'],check=True)
+        subprocess.run(['git','-C',cand,'commit','-qm','reviewed'],check=True)
+        sha=subprocess.check_output(['git','-C',cand,'rev-parse','HEAD'],text=True).strip()
+        bundle_path=self.base/'rollback.bundle'
+        subprocess.run(['git','-C',cand,'bundle','create',bundle_path,'HEAD'],check=True)
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle_path.read_bytes()).returncode,0)
+        self._write_baseline(base)
+        module=self._load_gateway()
+        def _induce(*args, **kwargs):
+            raise RuntimeError('induced projection failure')
+        module._plan_projections=_induce
+        import io
+        from contextlib import redirect_stderr
+        env=dict(os.environ)
+        env['SSH_ORIGINAL_COMMAND']=f'deploy docich production {sha}'
+        env['VMOPS_TESTING']='1'
+        old_argv, old_environ = sys.argv, dict(os.environ)
+        os.environ.clear(); os.environ.update(env)
+        sys.argv=['gateway.py',str(self.config)]
+        buf=io.StringIO(); code=None
+        try:
+            with redirect_stderr(buf):
+                module.main()
+        except SystemExit as exc:
+            code=exc.code
+        finally:
+            sys.argv=old_argv; os.environ.clear(); os.environ.update(old_environ)
+        self.assertEqual(code,1)
+        self.assertEqual(buf.getvalue(),'VM operation rejected: operation_rejected\n')
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],head)
+        self.assertNotIn('deployment_intent',state)
+        self.assertEqual(state['rebaseline_history'][-1],
+                         {'from':base,'to':head,'target':sha,'auto':True})
+        self.assertEqual(subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip(),head)
+        self.assertEqual((self.doc/'app.py').read_text(),'out-of-band\n')
+
 
     def test_preview_deploy_and_exec(self):
         sha,bundle=self.make_docich_bundle()
@@ -728,10 +914,13 @@ class GatewayTests(unittest.TestCase):
             'args=sys.argv[1:]\n'
             'route = args[args.index("--route")+1] if "--route" in args else ("disable" if "--disable" in args else None)\n'
             'Path(os.environ["SOREN_ROOT"], "observed").write_text(\n'
-            '    "route=%s vercel_key=%s typesafe_key_untouched=%s" % (\n'
+            '    "route=%s vercel_key=%s typesafe_key_untouched=%s clef_account=%s clef_token=%s reuse=%s" % (\n'
             '        route,\n'
             '        "present" if os.environ.get("DOCICH_JEV_VERCEL_API_KEY") else "absent",\n'
             '        "yes" if "TYPESAFE_API_KEY" not in os.environ else "no",\n'
+            '        "present" if os.environ.get("DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID") else "absent",\n'
+            '        "present" if os.environ.get("DOCICH_JEV_CLOUDFLARE_API_TOKEN") else "absent",\n'
+            '        "yes" if "--reuse-existing-cloudflare-credentials" in args else "no",\n'
             '    )\n'
             ')\n'
             'print("configured")\n',
@@ -744,26 +933,101 @@ class GatewayTests(unittest.TestCase):
             'docich':{'production':str(self.doc),'mode':'git',
                       'projections':{'games/soviet_now':str(soren)}}
         }}))
+        account='a'*32
+        token='SYNTHETIC_CLEF_TOKEN'
         # direct: no stdin secret, TYPESAFE_API_KEY (a #678-owned key) never
         # flows through this operation at all.
         p=self.call(f'configure_jev_route_direct docich production {sha}')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
-                         'route=direct vercel_key=absent typesafe_key_untouched=yes')
+                         'route=direct vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent reuse=no')
         # vercel: stdin carries only the vercel key, withheld from stdout/logs.
         p=self.call(f'configure_jev_route_vercel docich production {sha}',b'SECRET_VERCEL_KEY')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertNotIn(b'SECRET_VERCEL_KEY',p.stdout)
         self.assertEqual((soren/'observed').read_text(),
-                         'route=vercel vercel_key=present typesafe_key_untouched=yes')
+                         'route=vercel vercel_key=present typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent reuse=no')
         logs=sorted((self.state/'logs').glob('*.log'), key=lambda p: p.stat().st_mtime)
         self.assertTrue(logs)
         self.assertNotIn('SECRET_VERCEL_KEY', logs[-1].read_text())
-        # disable: no stdin secret either.
+        # clef with empty stdin: the reversible switch that reuses the running
+        # chat worker's already-retained pair. Neither half is sent here.
+        p=self.call(f'configure_jev_route_clef docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=clef vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent reuse=no')
+        # clef with the one-time provisioning pair: both halves reach the
+        # configurator and neither value reaches stdout or the VM log.
+        p=self.call(f'configure_jev_route_clef docich production {sha}',
+                    ('%s\n%s' % (account, token)).encode())
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertNotIn(token.encode(),p.stdout)
+        self.assertNotIn(account.encode(),p.stdout)
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=clef vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=present clef_token=present reuse=no')
+        log_text=''.join(p.read_text() for p in sorted((self.state/'logs').glob('*.log')))
+        self.assertNotIn(token, log_text)
+        self.assertNotIn(account, log_text)
+        # disable: no stdin secret either; the retained Clef pair is not sent.
         p=self.call(f'disable_jev_route docich production {sha}')
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(),
-                         'route=disable vercel_key=absent typesafe_key_untouched=yes')
+                         'route=disable vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent reuse=no')
+        # clef_reuse: the fixed reuse operation appends its own flag, sends no
+        # secret to the child, and still requires empty stdin.
+        p=self.call(f'configure_jev_route_clef_reuse docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=clef vercel_key=absent typesafe_key_untouched=yes '
+                         'clef_account=absent clef_token=absent reuse=yes')
+        p=self.call(f'configure_jev_route_clef_reuse docich production {sha}',b'UNEXPECTED')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('configure_jev_route_key_invalid',p.stderr.decode())
+
+    def test_configure_jev_route_clef_rejects_malformed_or_partial_credential_pair(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_jev_route.py').write_text('print("should not run")\n', encoding='utf-8')
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev route configurator'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        account_ref='a'*32
+        cases={
+            'token only': b'SYNTHETIC_CLEF_TOKEN',
+            'account only': account_ref.encode(),
+            'empty token': ('%s\n' % account_ref).encode(),
+            'empty account': b'\nSYNTHETIC_CLEF_TOKEN',
+            'uppercase account': ('%s\n%s' % ('A'*32, 'SYNTHETIC_CLEF_TOKEN')).encode(),
+            'short account': ('%s\n%s' % ('a'*31, 'SYNTHETIC_CLEF_TOKEN')).encode(),
+            'token with newline': ('%s\n%s\n%s' % (account_ref, 'SYNTHETIC', 'CLEF_TOKEN')).encode(),
+            'carriage return': ('%s\n%s' % (account_ref, 'SYNTHETIC\rTOKEN')).encode(),
+            'nul byte': ('%s\n%s' % (account_ref, 'SYNTHETIC\0TOKEN')).encode(),
+            'oversized': account_ref.encode() + b'\n' + b't'*9000,
+        }
+        for label,payload in cases.items():
+            p=self.call(f'configure_jev_route_clef docich production {sha}',payload)
+            self.assertNotEqual(p.returncode,0,label)
+            self.assertIn('configure_jev_route_clef_credential_invalid',p.stderr.decode(),label)
+        # A rejected payload must not have run the configurator at all.
+        self.assertFalse((soren/'observed').exists())
+
+    def test_configure_jev_route_clef_is_production_only(self):
+        # The gateway reports only fixed reason codes, so this proves the
+        # production gate for both Clef operations; that the reuse operation is
+        # recognised at all is covered by its empty-stdin execution test.
+        for op in ('configure_jev_route_clef', 'configure_jev_route_clef_reuse'):
+            p=self.call(f'{op} docich preview {"0"*40}')
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('configure_jev_route_production_only',p.stderr.decode(),op)
 
     def test_configure_jev_route_direct_rejects_unexpected_stdin_payload(self):
         soren=self.base/'soren'; soren.mkdir()
@@ -962,12 +1226,15 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_jev_route_configuration_uses_environment_secret_and_fixed_gateway_operation(self):
         text=WF.read_text()
-        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'disable_jev_route'):
+        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'configure_jev_route_clef',
+                   'configure_jev_route_clef_reuse', 'disable_jev_route'):
             self.assertIn(op,text)
         self.assertIn('DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
         self.assertIn('printf \'%s\' "$DOCICH_JEV_VERCEL_API_KEY" | ssh',text)
         self.assertIn('"configure_jev_route_direct docich production $SHA"',text)
         self.assertIn('"configure_jev_route_vercel docich production $SHA"',text)
+        self.assertIn('"configure_jev_route_clef docich production $SHA"',text)
+        self.assertIn('"configure_jev_route_clef_reuse docich production $SHA"',text)
         self.assertIn('"disable_jev_route docich production $SHA"',text)
         self.assertNotIn('VM_COMMAND: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
         # The direct route never binds or sends #678's own TYPESAFE_API_KEY
@@ -978,6 +1245,26 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn('TYPESAFE_API_KEY: ${{',block)
         self.assertNotIn('"$TYPESAFE_API_KEY"',block)
         self.assertIn('< /dev/null ssh',block)
+
+    def test_clef_route_step_sends_both_secrets_or_none_and_keeps_jev_reversible(self):
+        # #2301: the Clef switch is explicit and reversible. When the dedicated
+        # pair is configured it is the only stdin payload; when it is absent the
+        # step must still run with empty stdin so the worker's already-retained
+        # Clef credentials are reused instead of demanding re-entry.
+        text=WF.read_text()
+        start=text.index('Route Jev classification through Cloudflare Workers AI (clef)')
+        end=text.index('Disable docich Jev route delegation',start)
+        block=text[start:end]
+        self.assertIn('DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID }}',block)
+        self.assertIn('DOCICH_JEV_CLOUDFLARE_API_TOKEN: ${{ secrets.DOCICH_JEV_CLOUDFLARE_API_TOKEN }}',block)
+        self.assertIn('printf \'%s\\n%s\' "$DOCICH_JEV_CLOUDFLARE_ACCOUNT_ID" "$DOCICH_JEV_CLOUDFLARE_API_TOKEN" | ssh',block)
+        self.assertIn('< /dev/null ssh',block)
+        self.assertIn('"configure_jev_route_clef docich production $SHA"',block)
+        # Never bind either Clef half as a generic command channel, and never
+        # let the JEV-direct key or the Vercel key ride the Clef step.
+        self.assertNotIn('VM_COMMAND',block)
+        self.assertNotIn('TYPESAFE_API_KEY',block)
+        self.assertNotIn('DOCICH_JEV_VERCEL_API_KEY',block)
 
     def test_reconcile_uses_dedicated_narrow_operation_without_exec_shell(self):
         # Issue #225: the reviewed pre-synced reconcile must not ride the

@@ -18,6 +18,7 @@ import re
 import json
 from pathlib import Path
 
+from docich.hanjuku.state.regions import plan as _plan_region
 from . import hanjuku_chart as chart
 
 SCHEMA = 1
@@ -33,11 +34,39 @@ CARD_NAMES = frozenset({
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
     'ブレイコウ', 'ブンシーン', 'ファイアーボイス', 'ファバード', 'エンジェリン', 'マグネガキン',
     'ハリケーン', 'キャトルミュー'})
+# Owner (2026-10-29): 主人公のいる城が手薄になるのはよくない -- the game ends
+# when the hero falls. An off-chart order leaves this many other generals
+# with the hero; the hero leaving is a separate decision. With a single
+# castle of ours the hero may be left alone, or nothing could ever attack.
+# Owner (2026-11-17): 城はしゅじんこうでも一人残して出撃できるように -- the
+# hero alone now satisfies the guard, so every other general may sortie.
+HERO_CASTLE_GUARD = 0
+
+
+def hero_guard_short(names, general, unavailable=(), *, sole_castle=False) -> bool:
+    """True when sending ``general`` from ``names`` thins the hero's castle.
+
+    ``names`` is one castle's general list; ``unavailable`` (marching, location
+    unknown) never guards. A general not in the list (a spare picked on the
+    real list) still takes one of the others. Owner 2026-11-17: the hero
+    alone satisfies the guard (しゅじんこう一人残して出撃可), so this stays
+    False while the hero stays; an emptied castle — the hero leaving too —
+    is still a separate rule, since an empty castle falls to the next enemy.
+    """
+    if chart.guard_free():
+        return False        # chapter 9's road: rear castles sit behind the front
+    present = set(names or ()) - set(unavailable or ())
+    if chart.HERO not in present or general == chart.HERO:
+        return False
+    others = present - {chart.HERO}
+    left = len(others - {general}) if general in others else len(others) - 1
+    return left < HERO_CASTLE_GUARD
 
 
 def settings(raw) -> dict:
     """``[hanjuku.chart_adjust]``: a non-empty ``agents`` chain is consent to
-    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice."""
+    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice;
+    ``rate_limit_cooldown_s`` pauses generation after a provider rate limit (#2936)."""
     raw = raw if isinstance(raw, dict) else {}
     enabled = raw.get('enabled', False)
     agents = raw.get('agents', '')
@@ -47,6 +76,7 @@ def settings(raw) -> dict:
     attempts = raw.get('max_attempts', 2)
     interim = raw.get('interim_jev', False)
     interim_timeout = raw.get('interim_timeout_ms', 1500)
+    cooldown = raw.get('rate_limit_cooldown_s', 300)
     if type(enabled) is not bool or type(interim) is not bool or type(direct_enabled) is not bool:
         raise ValueError('hanjuku.chart_adjust enabled/interim_jev/direct_enabled must be boolean')
     if not isinstance(agents, str) or len(agents) > 1024:
@@ -70,9 +100,12 @@ def settings(raw) -> dict:
         raise ValueError('hanjuku.chart_adjust.max_attempts must be 1..3')
     if type(interim_timeout) is not int or not 50 <= interim_timeout <= 5000:
         raise ValueError('hanjuku.chart_adjust.interim_timeout_ms must be 50..5000')
+    if type(cooldown) is not int or not 30 <= cooldown <= 3600:
+        raise ValueError('hanjuku.chart_adjust.rate_limit_cooldown_s must be 30..3600')
     return {'enabled': enabled and bool(agents.strip()), 'agents': agents.strip(),
             'direct_enabled': direct_enabled,
             'timeout_s': timeout, 'max_attempts': attempts,
+            'rate_limit_cooldown_s': cooldown,
             'interim_jev': interim, 'interim_timeout_ms': interim_timeout}
 
 
@@ -94,8 +127,9 @@ def request_id(mem) -> str:
     # Interim (JEV) orders do not change the situation the LLM was asked
     # about; otherwise every interim sortie would discard a pending answer.
     basis = {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or []),
-             'orders': dict(sorted((k, v) for k, v in (mem.get('orders') or {}).items()
-                                   if not str(k).startswith(INTERIM_PREFIX)))}
+             'orders': dict(sorted((k, v) for k, v in (_plan_region(mem).get('orders') or {}).items()
+                                   if not str(k).startswith(INTERIM_PREFIX)
+                                   and ':M' not in str(k)))}
     raw = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -128,13 +162,44 @@ def request_digest(record) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _sole_castle(request) -> bool:
+    """Never lifts the hero-castle guard (owner 2026-11-06)."""
+    return False
+    owned = request.get('owned')
+    if isinstance(owned, (list, tuple)):
+        return len(set(owned)) == 1
+    chapter, captured = request.get('chapter'), request.get('captured')
+    if type(chapter) is not int or not isinstance(captured, (list, tuple)):
+        return False
+    home = set() if request.get('home_lost') else {chart.home_castle(chapter)}
+    return len(set(captured) | home) == 1
+
+
+# The actor token a source-probe order carries. It is a placeholder, not a
+# person: the real general is chosen from the live list when the sortie opens.
+# Owner 2026-11-09 (twice): any name-like token reads as a nonexistent general
+# in the broadcast's 出撃計画, so a probe is written as a dash and the older
+# しょうぐん/余剰将軍/'' stay accepted on input.
+PROBE_GENERAL = '—'
+LEGACY_PROBE_GENERALS = frozenset({'しょうぐん', '余剰将軍', ''})
+
+
+def _probe_actor(general) -> bool:
+    return general == PROBE_GENERAL or general in LEGACY_PROBE_GENERALS
+
+
 def startable(order, request) -> str | None:
     """Why ``order`` cannot start in the requested situation, or None.
 
-    Allowed: the general is recorded in the source castle, or nothing is
-    recorded about that general (unknown). Refused: a lost source, a
-    general recorded in another castle or marching (g421 e7df88f1: F2/F3/F5
-    named generals absent from their sources and all failed).
+    A named actor is eligible only when the source garrison records that
+    actor. An unread castle may instead be inspected by an explicit
+    source_probe with the non-person placeholder 余剰将軍; its actual
+    actor is chosen only from the live general list. Refuse absent, marching,
+    elsewhere, and unconfirmed named actors before adopting a plan.
+
+    The hero is never a candidate: the owner keeps him at アルマムーン, and
+    deploy already answers every hero-led order with a companion, so a plan
+    naming him would stand as a sortie nobody carries out (owner 2026-11-08).
     """
     if not isinstance(request, dict):
         return None
@@ -142,15 +207,39 @@ def startable(order, request) -> str | None:
     lost = set(request.get('lost') or ())
     if source in lost:
         return 'source_lost'
+    if general == chart.HERO and not (order.get('purpose') == 'move'
+                                      and (chart.guard_free(request.get('chapter'))
+                                           # Owner 2026-11-18: the hero moves to
+                                           # the chapter-11 hub to recruit there.
+                                           or order.get('hero_hub_move') is True)):
+        # Chapter 9 walks the hero toward the front so recruits join there
+        # (owner 2026-11-11); he still never attacks.
+        return 'hero_not_dispatchable'
     marching = {item.get('general') for item in request.get('en_route') or () if isinstance(item, dict)}
     if general in marching:
         return 'general_marching'
     garrison = request.get('garrison') if isinstance(request.get('garrison'), dict) else {}
-    if general in (garrison.get(source) or ()):
+    # A source probe is an information-gathering step, not a claimed actor.
+    # The real list/guard checks in deploy decide whether anyone can leave.
+    if order.get('source_probe') is True:
+        return None if _probe_actor(general) else 'invalid_source_probe'
+    present = garrison.get(source) or ()
+    if general in present:
+        # Owner 2026-11-18 04:1x: the hero may leave the home castle alone to
+        # recruit at the chapter-11 hub, even though that empties it.
+        if order.get('hero_hub_move') is True:
+            return None
+        # A measured singleton cannot dispatch its last defender (chapter 9
+        # excepted, owner 2026-11-09: ``chart.sender_min`` is 1 there).
+        if len(set(present) - marching) < chart.sender_min(request.get('chapter')):
+            return 'source_last_defender'
+        if not chart.is_boss_castle(order['target']) and hero_guard_short(
+                present, general, marching, sole_castle=_sole_castle(request)):
+            return 'hero_castle_guard'
         return None
     if any(general in (names or ()) for castle, names in garrison.items() if castle != source):
         return 'general_elsewhere'
-    return None
+    return 'general_unconfirmed_at_source'
 
 
 def _text(value, field, *, limit=MAX_NOTE, required=True):
@@ -200,10 +289,32 @@ def _order(raw, castles, base_steps):
     # about it.
     if after is not None and after[0] == 'captured' and after[1] == target:
         after = None
-    return {'step': step, 'general': _text(raw.get('general'), 'general', limit=16),
-            'source': source, 'target': target, 'cards': tuple(cards),
-            'after': after,
-            'note': _text(raw.get('note'), 'note', required=False)}
+    purpose = raw.get('purpose')
+    if purpose not in (None, 'move', 'attack', 'retake'):
+        raise ValueError('invalid purpose')
+    order = {'step': step, 'general': _text(raw.get('general'), 'general', limit=16),
+             'source': source, 'target': target, 'cards': tuple(cards),
+             'after': after,
+             'note': _text(raw.get('note'), 'note', required=False)}
+    if purpose is not None:
+        # A move is exempt from the two-general reserve (g1133 2026-11-05: the
+        # mechanical plan dropped the purpose, so its staging moves were held
+        # by the attack rule and never started for an hour). An untyped order
+        # keeps its old shape, so nothing else changes.
+        order['purpose'] = purpose
+    probe = raw.get('source_probe')
+    if probe is not None:
+        if probe is not True or not _probe_actor(order['general']):
+            raise ValueError('invalid source_probe')
+        order['source_probe'] = True
+    roster_probe = raw.get('roster_probe')
+    if roster_probe is not None:
+        # Read-only: open the source list and back out. Only a source probe
+        # may carry it (a named sortie cannot be silently turned into a read).
+        if roster_probe is not True or order.get('source_probe') is not True:
+            raise ValueError('invalid roster_probe')
+        order['roster_probe'] = True
+    return order
 
 
 def _purchases(raw):
@@ -257,11 +368,24 @@ def validate(doc) -> dict:
                                or not re.fullmatch(r'[0-9a-f]{64}', digest)):
         raise ValueError('invalid request_digest')
     from .hanjuku_roster import roles
+    # The orders are the plan; the month's purchases are an optional side
+    # part. A malformed purchase plan used to discard a whole otherwise-valid
+    # answer (history: adjust_worker generate_failed invalid_output
+    # 'invalid purchases' five times), costing another LLM cycle. Keep the
+    # orders and drop only the purchases. Recruitment stays strict: its roles
+    # drive who is hired, so a malformed spec is not silently ignored.
+    dropped_parts = []
     recruitment = roles(doc['recruitment']) if doc.get('recruitment') is not None else None
+    try:
+        purchases = _purchases(doc.get('purchases'))
+    except ValueError:
+        purchases = None
+        dropped_parts.append('purchases')
     return {'schema': SCHEMA, 'chapter': chapter, 'request_id': rid, 'orders': orders,
             'recruitment': recruitment,
             'request_digest': digest,
-            'purchases': _purchases(doc.get('purchases')),
+            'dropped_parts': dropped_parts,
+            'purchases': purchases,
             'generated_at': (doc['generated_at'] if type(doc.get('generated_at')) in (int, float)
                              and math.isfinite(doc['generated_at']) else None),
             'source': _text(doc.get('source'), 'source', limit=40, required=False),
@@ -294,6 +418,10 @@ def save(runtime_dir: Path, doc, request=None) -> dict:
     from .game_switch import atomic_write_json
     from .hanjuku_run import append_log
     normalized = validate(doc)
+    if normalized.get('dropped_parts'):
+        append_log(Path(runtime_dir), HISTORY_LOG, {'event': 'adjusted_parts_dropped',
+                                                    'request_id': normalized['request_id'],
+                                                    'parts': list(normalized['dropped_parts'])})
     if isinstance(request, dict) and isinstance(request.get('request_digest'), str):
         # Bind the answer to the payload revision it answered; the policy
         # refuses an answer whose digest is not the current request's.

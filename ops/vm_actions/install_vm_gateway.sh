@@ -34,9 +34,11 @@ read -r key_type key_body _ < "$pubkey_file"
 install -d -o root -g root -m 0755 /usr/local/libexec/azumag-vm-ops
 install -o root -g root -m 0644 "$source_dir/ops_brief.py" /usr/local/libexec/azumag-vm-ops/ops_brief.py
 install -o root -g root -m 0644 "$source_dir/projection_io.py" /usr/local/libexec/azumag-vm-ops/projection_io.py
+# #4412: the gateway loads the A/B pre-flight module next to itself.
+install -o root -g root -m 0644 "$source_dir/ab_gate_preflight.py" /usr/local/libexec/azumag-vm-ops/ab_gate_preflight.py
 install -o root -g root -m 0755 "$gateway_source" /usr/local/libexec/azumag-vm-ops/gateway.py
 install -o root -g root -m 0755 "$source_dir/stage_repair.py" /usr/local/libexec/azumag-vm-ops/stage_repair.py
-for helper in gateway_entry.py hanjuku_evidence_gateway.py hanjuku_evidence.py; do
+for helper in gateway_entry.py hanjuku_evidence_gateway.py hanjuku_evidence.py tsuitate_status_gateway.py; do
   install -o root -g root -m 0644 "$source_dir/$helper" "/usr/local/libexec/azumag-vm-ops/$helper"
 done
 
@@ -89,7 +91,11 @@ fi
 chown root:root /etc/azumag-vm-ops.json
 chmod 0644 /etc/azumag-vm-ops.json
 
-install -d -o "$ssh_user" -g "$group_name" -m 0700 /home/ubuntu/.local/state/github-vm-ops
+# install -d only applies ownership to its final operand. Create each XDG state
+# parent explicitly so root-run installs cannot leave user state parents root-owned.
+install -d -o "$ssh_user" -g "$group_name" -m 0755 "$home_dir/.local"
+install -d -o "$ssh_user" -g "$group_name" -m 0755 "$home_dir/.local/state"
+install -d -o "$ssh_user" -g "$group_name" -m 0700 "$home_dir/.local/state/github-vm-ops"
 install -d -o "$ssh_user" -g "$group_name" -m 0700 "$home_dir/.ssh"
 authorized="$home_dir/.ssh/authorized_keys"
 touch "$authorized"

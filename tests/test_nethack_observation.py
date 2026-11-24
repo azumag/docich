@@ -357,3 +357,29 @@ class TestNethackObservation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("message", [
+    # Production 2026-10-23 01:02 JST: the resumed run reprinted the dust
+    # engraving and the agent held with 0 actions for 608 s (finish_reason
+    # stalled, repeated_hold=300, prompt=unknown). It is prose, not a prompt.
+    'Something is written here in the dust. You read: "?d acra ??m".',
+    "You read: \"Is this a question?\" -- and shrug.",
+    "The oracle speaks of a ?d acra ??m. You nod.",
+])
+def test_sentence_terminated_message_with_question_marks_is_not_a_prompt(message):
+    obs = normalize_tty(tty_layout(message))
+    assert obs.prompt == "none"
+
+
+@pytest.mark.parametrize("message", [
+    "Really save?",
+    "Would you like to inspect this unusual object.",
+    "What do you want to eat?",
+    "Call a potion:",
+    "Choose a spell [a-z].",
+    "Continue?",
+])
+def test_question_forms_keep_blocking_even_with_odd_punctuation(message):
+    obs = normalize_tty(tty_layout(message))
+    assert obs.prompt not in {"none"}

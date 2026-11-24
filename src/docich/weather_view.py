@@ -27,7 +27,7 @@ CUE_MAX_BYTES = 64 * 1024
 _MAP_DATA = json.dumps({"polygons": POLYGONS, "points": CITY_POINTS, "labels": CITY_LABELS, "viewbox": VIEWBOX}, separators=(",", ":")).replace("<", "\\u003c")
 
 HTML = r'''<!doctype html>
-<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="ja" translate="no"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="google" content="notranslate">
 <title>docich 全国の天気予報</title>
 <style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07111d;color:#edf5fa;font-family:"Noto Sans CJK JP","Yu Gothic",sans-serif}

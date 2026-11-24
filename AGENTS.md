@@ -24,8 +24,16 @@
 - 半熟英雄はオーナー指示（2026-10-06）に従い、配信側のcontain投影だけ右寄せし、測定した左余白に拡張観測カードを表示してよい。元ゲームの窓・映像比率・表示サイズ・入力座標と共通枠は維持する。他ゲームへ広げない。詳細は `docs/operations/hanjuku-gap-layout.md`。
 - その他のゲームの余白は黒で埋め中央配置する。正方形なら540×540＋左右210px、4:3なら720×540＋左右120px。
 - 配信のゲーム領域はSorenと同じ `(x=0, y=90, width=960, height=540)`。上・右・下のステータス枠と通知枠の位置・サイズを変えない。
+- 例外（配信ネイティブの情報画面: 天気予報・予想王・AI探偵ミステリー・共産主義法律シミュレーター・ドウシカードのみ）: この5つはゲームではなく配信向けの情報画面であり、`display.width/height`（本番 1280×720）が既知なら映像を全画面 `(0, 0, width, height)` に提示して、その間だけステータス枠・通知枠を覆ってよい。根拠は weather の全画面化（PR #1874、2026-10-07 オーナー承認）と予想王（Issue #2237、2026-10-15 オーナー判断）、AI探偵ミステリー（2026-10-21 オーナー依頼）。枠の位置・サイズは変更せず、コーナー終了時は既存 GameSwitch の復帰経路で元画面へ戻す（枠を隠す/戻す専用経路を追加しない）。ビューHTMLは960×540を基準に縦横比維持で拡大する。`display.width/height` が無い環境では従来の `viewport` へ fallback する。他のゲーム・コーナーへ広げない。詳細は `docs/features/yosou-oh-corner.md`、`docs/features/weather-corner.md`、`docs/features/mystery-corner.md`。
+- 例外（ステータスオーバーレイの一時非表示: マーダーミステリーコーナーのみ）: mysteryコーナーの実行中だけ OBS のステータスオーバーレイ（statsOverlay/opsOverlay）を非表示にし、終了・退避時の正規復元経路で必ず表示へ戻す（2026-10-20 オーナー承認、#2494）。通知オーバーレイと他コーナーの表示動作は対象外・不変。復帰時の再表示は best-effort で、失敗時は durable フラグにより次の復帰経路で再試行する。
 - ゲーム切替時に配信エンコーダを再起動しない。入力座標とAI観測は元ゲームの座標系を使う。
 - 検証ではゲームUIの四辺・スコア・操作案内の欠けがないことと、周囲の枠・配信PIDの維持を確認する。ウィンドウ外寸が合うだけでは完了にしない。
+
+### 配信HTML view 標準（2026-10-15）
+
+- docich が配信のために開く Chromium は共通の `broadcast_browser_command(...)` を使い、翻訳UIを出さない標準引数（`--disable-translate` と `TranslateUI` を含む feature gate）を必ず渡す。日本語ページは `--lang=ja-JP` も渡し、配信HTMLの先頭で `<html lang="ja" translate="no">` と `<meta name="google" content="notranslate">` を宣言する。片方だけの view を増やさない。
+- view の世代session（tmux）は server の環境から作られるため、view 自身が使う import path と capability は `_game_session_env()` で明示的に渡す。渡す capability はレビュー済みの key だけに限定し、WebUI の operator/viewer token を view の session へ出さない。
+- 新しい HTML view は `tests/test_broadcast_view_standard.py` の対象へ追加する。詳細は `docs/broadcast-html-view-standard.md`。
 
 
 この指示は Astra / Codex / Claude Code など、開発に関わるすべてのエージェントへ適用する。
@@ -54,10 +62,10 @@
 
 - 対象コミット、決定、実行コマンドと結果、未確認事項、残件、次の具体的な一手を事実ベースで残す。デプロイしただけ、テストが緑なだけで「直った」と書かない。
 - `handoff` スキルがある場合は `/handoff` の保存モードを使ってよい。
-- 引き継ぎ更新の区切りで `python3 ops/local/handoff_rotate.py rotate` を一度実行し、正本を最新30節に保つ。あふれた節は正本の隣の `handoff-archive/` へバイトそのまま退避され、`verify` で残存を確認できる。詳細は `docs/operations/ops-brief.md`。
 - 運用正本は承認済みの非公開共通領域で管理する。内部記録のため公開Gitへ追加せず、checkoutごとの複製やSorenサブモジュール・VM側への独立更新を行わない。共有場所・アクセス権の新設や正本移行は別途確認し、参照方法の整備だけで移行済みと書かない。
-- 公開投影 `ops/runtime_context/ops_brief.json` を更新する場合は、docichの `python3 ops/vm_actions/ops_brief.py build` と `check-source` を共通正本から実行する。`--handoff /絶対パス/共通領域/handoff.md` は `DOCICH_HANDOFF_PATH` より優先する。公開可能な最新見出し3件・ソースSHA-256・出力SHA-256だけを決定的に生成し、見出しに機密情報を含めず、docichの作業ブランチでレビュー・コミットする。
-- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できない。最終commit・push直前の `build` / `check-source` は公開投影を更新する作業だけで必要とし、通常のコード・テスト・文書変更へ一律に要求しない。正本の欠落・照合失敗を成功扱いせず、参照できない場合は既存投影を維持して正本との一致は未確認と記録する。並行更新され得る正本に対して過去の照合成功を恒久的な保証としてコードや文書に記録しない。
+- 引き継ぎ更新の区切りで `python3 ops/local/handoff_rotate.py rotate` を一度実行し、正本を最新30節に保つ。あふれた節は正本の隣の `handoff-archive/` へバイトそのまま退避され、`verify` で残存を確認できる。詳細は `docs/operations/ops-brief.md`。
+- 公開投影 `ops/runtime_context/ops_brief.json` の入力は tracked `ops/runtime_context/ops_brief_source.md` であり、非公開 handoff ではない。配信で触れる価値があるときだけ同ファイルの先頭3見出しを編集し、`python3 ops/vm_actions/ops_brief.py build` と `check-source` を実行して、公開可能なtopic・ソースSHA-256・出力SHA-256だけを決定的に生成し、見出しに機密情報を含めず、docichの作業ブランチでレビュー・コミットする。非公開 handoff を入力にするのは旧artifactを検証する場合だけで、`--source`（別名 `--handoff`）または `DOCICH_HANDOFF_PATH` で明示参照する。
+- CIは `check-artifact`・`check-source` とstale検知回帰テストを実行する。tracked sourceはcheckoutに含まれるため、CIでも投影の一致を検証できる。旧handoff由来artifactの検証は非公開ソースが要るため、参照できない場合は既存投影を維持し、未読・未確認と記録する。正本の欠落・照合失敗を成功扱いしない。
 - runtimeの `prompts/ops_brief.md` は親の生成物を入力にcanonical gatewayが同一deploy transactionで生成・検証する。`games/soviet_now/prompts/ops_brief.md` の既存tracked copyはlegacyであり、以後の配布元ではない。Soren側で手動再生成・コミット・VMコピーは不要。旧 `games/soviet_now/tools/build_ops_brief.sh` はこの経路では使用しない。
 - gateway初回切替・drift・未配布の扱いは `docs/operations/ops-brief.md` を参照する。生成だけでVM反映済みと書かない。
 - GitHub上の文書改訂だけで運用状況に変更がない場合は、PR本文を引き継ぎとし、運用中の `handoff.md` / `ops_brief.md` を書き換えない。生成・配布環境がない場合は未実施と記録し、配布済みと書かない。
@@ -65,6 +73,32 @@
 ## 3. 機密情報を書かない
 
 ストリームキー、OAuth token、APIキー、秘密鍵、push targetなどの機密情報は、`handoff.md` を含むこのリポジトリのどのファイル、ログ、Issueにも書かない。テストや進捗表示を理由に資格情報を探索・抽出しない。
+
+### 3.1 投稿前スキャンと合成値の使用（2026-10-23、2026-11-05 フォールバック追補）
+
+レビューコメントの実測表へ実行環境の資格情報の実値を貼った事案（2026-10-23）を受け、以下を必須とする。
+
+必須なのは**投稿前スキャンの実施**であり、投稿経路は実行環境の可否に応じて可変とする
+（docich#3337 の環境別整理と DSH 判断 2026-11-05 に基づく追補）。
+
+- GitHub への投稿（Issue / PR のコメントおよび本文）は、投稿前に `agent-guards/secret_scan.py`（ワークスペース直下、リポジトリ外）で走査し、clean を確認してから投稿する。**スキャン抜きの投稿は経路を問わず禁止する。**
+- 投稿経路は以下のフォールバック表に従う。上から順に、実行可能な最初の経路を使う。
+
+| 環境条件 | 第1経路 | フォールバック | 逸脱記録 |
+|---|---|---|---|
+| `agent-guards` 配置済み・bash と gh が実行可 | `agent-guards/gh-comment` 経由で投稿（正規） | — | 不要 |
+| `agent-guards` 配置済み・gh が実行不可（TLS 検証失敗等） | `secret_scan.py` で走査し clean を証跡化 → curl / GitHub Web UI 等で投稿 | clean 証跡つき代理投稿依頼 | 要 `[process-deviation]` |
+| bash 実行不可・`agent-guards` 未配置 | 実行可能な別環境で `secret_scan.py` を走査（リモートスキャン）→ MCP / 代理投稿 | スキャン結果を明記した代理投稿依頼 | 要 `[process-deviation]` |
+
+- フォールバック経路で投稿した場合は、本文またはスレッドへ逸脱記録を1行残す。形式:
+  `[process-deviation] 環境 / スキャン結果 / 投稿経路 / 理由`
+  （例: `[process-deviation] envA-mac-sandbox / secret_scan: clean / curl 投稿 / gh TLS 検証失敗`）
+- curl での投稿は最終手段とする。代理投稿（健全な環境の gh / MCP）が可能なら curl より優先する。
+- curl を使う場合、`gh auth token` 等で取得したトークンの値を echo・ログ・ファイル保存しない（コマンド置換で変数へ直接入れ、再利用しない）。
+- フォールバック利用中も、下記の合成値・要約の規律は変わらず適用する。
+- 実測・検証・レビューの入力例には合成値のみを使う。実物の資格情報・トークン・コマンド出力の実値を、表・フィクスチャ・ログへ貼らない。
+- 秘密情報を含みうるコマンド出力やログはそのまま貼らず、要約して書く。
+- スキャンは最後の網であり、上記の規律の代替ではない。
 
 ## 4. handoff と永続メモリの棚卸し
 
@@ -84,6 +118,7 @@ VMとリポジトリが乖離した場合は履歴・内容・実際の動作か
 - 配備前に対象ファイル一覧と旧SHAを確認し、バックアップを取る。配備後はリモートmainの最終コミットとVM現物のSHA-256を対象ファイルごとに比較する。配布したテストも含む。`prompts/ops_brief.md` はSorenのtracked copyではなく、対象docichコミットの公開用生成物から再生成したバイト列と比較する。秘密情報・実行時stateはGitへ追加しない。
 - Sorenのmainが確定したら、docichの`games/soviet_now`参照もそのコミットへ更新し、最新HEADの必須CI成功後にdocichのmainへ統合する。最後にリモートmainの実際の参照先を確認する。
 - 並行更新があれば直前にfetchし、他の修正を含む後続コミットへ統合する。古い参照やVMファイルで上書きしない。共有`soren-integration`でcheckout・commitせず、他の作業が使っていない同目的の既存ディレクトリ、または専用の軽量worktreeを使う。
+- PR作成前に `origin/main` をバックマージ（またはリベース）し、コンフリクトを解消した状態でCIを開始する。PR作成後にmainが進んだ場合も、pushしてCIを回す前に再度取り込む。コンフリクトをPRのCI結果で見つける運用にしない。
 - ファイル一致と実行中プロセスへの反映は別に確認する。再起動が必要な変更は対象workerだけを入れ替え、旧子プロセスの終了、新PID・起動時刻・実効設定を検証する。配信・共通基盤のPID維持も確認する。文書だけの変更では再起動しない。
 - 最終報告・handoffにはSoren/docichのmainコミット、照合範囲と結果、CI、実機確認、残件を残す。部分照合だけでVM全体の一致を主張しない。親handoff由来の生成物だけを更新する場合、Sorenコミット/gitlink更新は不要で、docichのレビュー・CI・main・canonical VM配布の範囲で同期する。
 
@@ -127,6 +162,8 @@ worker（radio/chat/improve_daemon）は起動時に `core/config.sh` の `VAR="
 
 - production VM 上の tracked file の直接編集。
 - ad-hoc な `git pull` / `reset` / `checkout` や手動コピーを正式 deployment として使う。
+- `/home/ubuntu/docich` の production checkout 上での `gh pr merge`、branch switch、開発・merge 作業。PR merge は checkout を変えない GitHub API/UI または別 worktree から行い、merge 後に必要なら承認手順で production checkout を `main` へ正規化する。
+- gateway の deploy / rebaseline / reconcile 実行中に、production checkout の HEAD を動かす操作（branch switch・`git checkout`・`git reset`・手動 merge/fetch）。deploy transaction は checkout HEAD を baseline 採用の判定材料に使うため、実行中に HEAD が動くと途中 HEAD が baseline として記録され rollback_incomplete になる（docich#3709）。checkout を正規化する必要がある場合は、進行中の deploy または recovery の完了を gateway status で確認してから行う。
 - PR / protected main を迂回する通常変更。
 - unknown drift の無条件上書き。drift は fail-closed とし、原因診断から修復する。
 - secret・token・Authorization header・prompt 本文・生成本文・環境変数の Actions 出力。
@@ -165,3 +202,24 @@ worker / queue / model / provider / fallback / runtime component を変更した
 - 復旧を急ぐ場合でも、機密情報（§3）、破壊的操作の禁止、ユーザーが元から設定した休止状態の維持（勝手に解除しない）は守る。
 - 例外は、復旧操作が原因そのものを悪化させる場合だけ。その場合も代替の復旧経路を先に確保してから原因側を触る。
 - 例: コーナーの表示が凍結しているときは、まず当該コーナーを正規 CLI で終了して復帰（背景ゲームの再表示とフレーム更新）を実測し、レンダラー側の調査はその後に行う。
+
+## 13. ローカルでのテスト実行（共有 Mac の資源）
+
+開発用の Mac は複数のエージェントと配信系の常駐プロセスで共有している。フルスイート（`tests/` 全体。約1.5万件、CPU 約10分ぶん、一時ファイル約2.8万個）を複数のエージェントが `-n 8` で同時に流すと、全コアと fseventsd が埋まり、利用者のアプリが重くなる。
+
+- テストは PR ごとに CI が実行する。ローカルでは変更に関係するテストファイルだけを実行する（例: `python3 -m pytest -q tests/test_hanjuku_chart_bot.py`）。
+- 半熟だけを変更する PR は、CI がフルスイートの代わりに半熟スイート（`tests/test_hanjuku*.py` と、`hanjuku` に言及する他のテストファイル）を実行する。半熟以外のコードが直接 import する半熟モジュールを変更した場合と、判定できない場合はフルスイートになる。判定は `.github/scripts/ci_test_scope.py`。フルスイートは main で毎晩も実行する。夜間の失敗は半熟 PR が他の領域を壊した可能性があるので、優先して調べる。
+- CI のテストジョブ（`full-suite` / `hanjuku-suite`）は、収集されたテストをファイル単位で 2 つのシャードに分けて別 runner で並列に実行する（`.github/scripts/ci_shard.py`、環境変数 `CI_SHARD=1/2`）。シャードは収集結果から機械的に切るので、テストファイルの追加に CI の編集は要らない。`ci-required` はマトリクス全体の結果を見る。ローカルの実行は `CI_SHARD` を設定しない限り変わらない。
+- main へのマージには `ci-required` チェックの成功が必要である（2026-11-02 オーナー決定）。赤または実行中の PR を `--admin` で通さない。通常のマージに `--admin` は使わない。例外は本番障害の復旧に必要な場合だけで、理由を PR に書く。main が赤のときは他の作業より先に main を直す。
+- ローカルで全体を流すのは CI では確認できない理由があるときに限り、1 つの変更につき 1 回までにする。失敗したら、失敗したテストのファイルだけを再実行する。
+- macOS で CI 外の実行には、`conftest.py` が自動で次を適用する: 全プロセスの優先度を下げる（`nice` 10 とディスク I/O の utility 段階。利用者のアプリが CPU とディスクを優先して使える）、xdist の並列数を `DOCICH_TEST_MAX_WORKERS`（既定 4）までに抑える（`-n 8` を指定しても 4 になる）、フルスイートはマシン全体で同時に 1 本までにし、後から始めた方は先の実行が終わるまで待つ（最大 `DOCICH_TEST_LOCK_WAIT` 秒、既定 1800）。
+- 待ちを避けるために `DOCICH_TEST_FOREGROUND=1` を使わない。これは利用者が手元で意図して急ぐときだけに使う。
+- フルスイートの `timeout` は、実行時間（約4〜6分）に待ち時間を足して設定する。
+
+## 14. 検証系 worktree の作成先（#2735）
+
+- 検証系 worktree は本番 VM の soren root（`storage_reclaim.sh` の `$root` = `/home/ubuntu/soren`）配下の `$root/tmp/verify/<issue>-<slug>/` に作る。ローカル checkout の root と混同しない。
+- `/tmp` 直下、または `$root/tmp` 直下を worktree の親にしない。
+- 検証終了時は `git worktree remove` で必ず片付ける（不要になったら `git worktree prune`）。保存先の分離だけでは残留は防げず、放置が根因だった。
+- 残留の観測: `sys_tmp_reclaim_candidates` は `/tmp` 専用。`$root/tmp/verify/` 配下の残留は `storage_breakdown` の `soren_tmp`（合計 bytes のみ・coarse）でしか見えないため、手動確認も併用する。規約違反で `/tmp` 直下に置かれた worktree は `sys_tmp_top_level`（git_worktree 分類）に現れ、24h 経過後に `sys_tmp_reclaim_candidates` が検知する。
+- `stale_patterns` の age gate（`$root/tmp` 直下の depth-1 glob）はこの配下を対象にしない。`storage_reclaim.sh` の verify 専用 sweep（#4172）は、3日 gate・gate 期間内に更新されたファイルなし・プロセス参照なしをすべて満たす場合だけ APPLY で削除する。linked worktree は `git worktree remove` と `git worktree prune` で処理し、解消できなければ KEEP。symlink は指し先を追わず保持する。判断できない場合は KEEP/SKIP（fail-closed）。検証終了時の `git worktree remove` を必ず行い、残留物は参照状況を確認して手動回収する。

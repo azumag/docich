@@ -36,7 +36,7 @@ test("Builds proposal has only the requested Worker, root, branch and watch scop
   assert.equal(plan.deployCommand,
     './node_modules/.bin/cf deploy --prebuilt --worker docich-tsuitate-bot --tag "$(git rev-parse HEAD)"');
   assert.deepEqual(plan.buildVariables,
-    { NODE_VERSION: "24.18.0", CF_SEND_TELEMETRY: "false" });
+    { NODE_VERSION: "22.23.4", CF_SEND_TELEMETRY: "false" });
 });
 
 test("normal pushes include nested target files and mixed target/unrelated changes", () => {

@@ -53,7 +53,7 @@ function renderBenchmark(perf) {
     if (sub) sub.textContent = "5分足履歴待ち";
     return;
   }
-  const actual = maybeNumber(benchmark.actual_today_realized_pnl_jpy);
+  const actual = maybeNumber(benchmark.actual_interval_realized_pnl_jpy);
   const theoretical = maybeNumber(benchmark.theoretical_pnl_jpy);
   if (theoretical === null) {
     target.textContent = "比較待ち";
@@ -243,7 +243,7 @@ function render(data) {
     ? "評価待ち" : fmtMoney(perf.equity_jpy);
   $("equity").className = perf.equity_jpy === null || perf.equity_jpy === undefined ? "v muted" : "v";
   setPnl("totalpnl", perf.cumulative_pnl_jpy, "価格不足");
-  setPnl("todaypnl", perf.today_realized_pnl_jpy, "-");
+  setPnl("todaypnl", perf.interval_realized_pnl_jpy, "-");
   renderBenchmark(perf);
   setPnl("unrealized", perf.unrealized_pnl_jpy, "価格不足");
   $("positions").textContent = `${p.position_count ?? 0} 銘柄`;
@@ -325,22 +325,52 @@ function renderLive(data) {
   }
 }
 
+// Visibility-aware presentation polling. Trading decision/risk/fill paths are
+// untouched: this only gates browser-side read-only refreshes and pauses them
+// while the tab is hidden, matching the #970 Web UI polling guidance. In-flight
+// requests are deduplicated so a slow response never stacks fetches.
+let dashboardPollInFlight = false;
+let livePollInFlight = false;
+
 async function poll() {
+  if (document.hidden) return;
+  if (dashboardPollInFlight) return;
+  dashboardPollInFlight = true;
   try {
     const res = await fetch("/api/trading/dashboard", { cache: "no-store" });
     if (res.ok) render(await res.json());
-  } catch (e) { /* keep the last frame; the server is local and read-only */ }
+  } catch (e) { /* keep the last frame; the server is local and read-only */ } finally {
+    dashboardPollInFlight = false;
+  }
 }
 
 async function pollLive() {
+  if (document.hidden) return;
+  if (livePollInFlight) return;
+  livePollInFlight = true;
   try {
     const res = await fetch("/api/trading/live", { cache: "no-store" });
     if (res.ok) renderLive(await res.json());
-  } catch (e) { /* preserve last live frame */ }
+  } catch (e) { /* preserve last live frame */ } finally {
+    livePollInFlight = false;
+  }
 }
 
-poll();
-pollLive();
-setInterval(poll, 2000);
-setInterval(pollLive, 1000);
+let dashboardTimer = null;
+let liveTimer = null;
+function startPolling() {
+  if (dashboardTimer) return;
+  if (!document.hidden) { poll(); pollLive(); }
+  dashboardTimer = setInterval(poll, 2000);
+  liveTimer = setInterval(pollLive, 1000);
+}
+function stopPolling() {
+  if (dashboardTimer) { clearInterval(dashboardTimer); dashboardTimer = null; }
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else startPolling();
+});
+startPolling();
 window.addEventListener("resize", () => render.lastData && render(render.lastData));

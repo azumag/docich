@@ -10,9 +10,11 @@ switch that gets rolled back because Twitch was unreachable is a real one.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .config import GlobalConfig, load_game
@@ -30,11 +32,39 @@ TITLE_SYNC_SKIP_REASONS = frozenset({
     "category_not_configured", "updater_missing", "dispatch_failed",
 })
 
+# Reconciliation of metadata that no switch commit owns (#2673).  A game
+# switch announces post-commit, so a path that never commits -- a failed
+# restore, a manual ``failed -> idle`` repair, a re-started background game,
+# or a corner stop that returns to no active seat -- leaves the previous
+# corner's title and category on air.  The rotation tick re-announces only
+# when the runtime it can see differs from the last one it asked for.
+RECONCILE_STATE_NAME = "stream_metadata_last.json"
+RECONCILE_SCHEMA = 1
+# A background game counts as running only while its state file is being
+# rewritten; a parked loop stops updating it.
+BACKGROUND_STATE_FRESH_S = 120.0
+BACKGROUND_GAME = "sorengame"
+#: The only game whose viewer title names a measured in-run goal. A chapter
+#: clear changes the title to the next goal (see ``stream_title_context``).
+PROGRESS_TITLE_GAME = "hanjuku-hero"
+# A failed announce is retried only after this backoff, so an unreachable
+# platform cannot turn a one-minute tick into a request storm.
+RECONCILE_RETRY_BACKOFF_S = 300.0
+
 # ``paper-view`` is a synthetic program view, not a game in ``config/games``.
 # Use Twitch's technology category instead of leaving the category of the game
 # that was displaced behind.
 PAPER_CATEGORY_ID = "509670"
 PAPER_CATEGORY_NAME = "Science & Technology"
+
+# ``mystery-view`` (AI探偵ミステリー, #684) is likewise synthetic.  The corner is
+# a participatory talk show rather than a playable game, so it follows the
+# Just Chatting category for the 30 minutes it owns the stream (2026-10-21
+# owner request: the title/category must follow the corner).  Never leave the
+# displaced game's metadata on air while the case board is showing.
+MYSTERY_VIEW_NAME = "mystery-view"
+MYSTERY_CATEGORY_ID = "509658"
+MYSTERY_CATEGORY_NAME = "Just Chatting"
 
 # ``external-video-view`` (the OBS-sourced special corner) is likewise
 # synthetic.  Its title, suffix and category are operator settings
@@ -51,6 +81,7 @@ VIEWER_GAME_NAMES = {
     "ninvaders": "Space Invaders", "nsnake": "Snake",
     "pacman4console": "Pac-Man", "robots": "Robots",
     "paper-view": "ペーパートレード",
+    MYSTERY_VIEW_NAME: "AI探偵ミステリー",
     FLYHOME_VIEW_NAME: "Fly Me To The Home!",
 }
 
@@ -63,8 +94,8 @@ def viewer_title_args(game: str, g: GlobalConfig | None = None) -> list[str]:
     """
     game = validate_game_name(game)
     label = VIEWER_GAME_NAMES.get(game, game)
-    suffix = {"paper-view": "AIの検証配信",
-              SPECIAL_VIEW_NAME: FLYHOME_TITLE_SUFFIX}.get(game, "AIプレイ配信")
+    from .stream_title_context import challenge_phrase
+    suffix = FLYHOME_TITLE_SUFFIX if game == SPECIAL_VIEW_NAME else challenge_phrase(game)
     if g is not None and game == SPECIAL_VIEW_NAME:
         settings = _special_settings(g)
         return ["--activity", settings["title"], "--strategy", settings["title_suffix"]]
@@ -259,12 +290,16 @@ def _announce_explicit_category(
     return True
 
 
-def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
+def announce_stream_game(
+    g: GlobalConfig, game: str, *, spawn=None, title_only: bool = False
+) -> bool:
     """Ask the Soren updater to follow ``game``; ``False`` when skipped.
 
     Fixed arguments only: the game name (validated) and the reviewed games
     directory.  ``--games-dir`` is required because the script defaults to the
     Soren checkout, while the game definitions live in this repository.
+    ``title_only`` is used when the game is already on air and only its
+    measured progress (the next goal) changed; the category stays untouched.
     """
     try:
         game = validate_game_name(game)
@@ -277,12 +312,17 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     if not script.is_file() or not os.access(script, os.X_OK):
         _record_title_sync_skip(g, "updater_missing")
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
+    # Capture the goal marker before the title is composed. If the count moves
+    # while the arguments are built, the older marker is stored and the next
+    # tick re-announces instead of leaving the title one chapter behind.
+    marker = _title_marker(g, game)
     argv = [
         str(script),
         "--game",
         game,
         "--games-dir",
         str(Path(g.games_dir).resolve()),
+        *(["--title-only"] if title_only else []),
         *viewer_title_args(game, g),
     ]
     try:
@@ -294,7 +334,192 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     except Exception:
         _record_title_sync_skip(g, "dispatch_failed")
         raise
+    _record_announced(g, game, marker)
     return True
+
+
+def _announced_state_path(g: GlobalConfig) -> Path:
+    return Path(g.state_dir) / RECONCILE_STATE_NAME
+
+
+def _title_marker(g: GlobalConfig, game: str) -> str | None:
+    """The bounded progress marker of a game whose title follows its record.
+
+    Only Hanjuku has a measured in-run count that changes a viewer title. A
+    missing or unreadable marker returns ``None``; reconciliation then treats
+    the game name alone as the identity and never re-announces on that alone.
+    """
+    if game != PROGRESS_TITLE_GAME:
+        return None
+    try:
+        from .stream_title_context import hanjuku_progress_marker
+
+        return hanjuku_progress_marker(Path(g.state_dir))
+    except Exception:
+        return None
+
+
+_MARKER_UNSET = object()
+
+
+def _record_announced(g: GlobalConfig, game: str, marker=_MARKER_UNSET) -> None:
+    """Remember which runtime (and progress) the metadata was last pointed at.
+
+    Best-effort: this record only dedupes reconciliation, so a failed write
+    must never disturb the announce that already happened. Callers that
+    composed a title pass the marker captured before composing; others let it
+    be read here.
+    """
+    if marker is _MARKER_UNSET:
+        marker = _title_marker(g, game)
+    _write_announce_record(g, game, "announced", marker)
+
+
+def _record_dispatch_failure(g: GlobalConfig, game: str) -> None:
+    """Remember a failed attempt so reconciliation backs off instead of spamming."""
+    _write_announce_record(g, game, "failed", _title_marker(g, game))
+
+
+def _write_announce_record(
+    g: GlobalConfig, game: str, status: str, marker: str | None = None
+) -> None:
+    if not isinstance(game, str) or not game:
+        return
+    try:
+        from .game_switch import atomic_write_json
+
+        atomic_write_json(
+            _announced_state_path(g),
+            {
+                "schema": RECONCILE_SCHEMA,
+                "game": game,
+                "status": status,
+                "marker": marker,
+                "at": time.time(),
+            },
+        )
+    except Exception:
+        return
+
+
+def _announce_record(g: GlobalConfig) -> dict | None:
+    try:
+        data = json.loads(_announced_state_path(g).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != RECONCILE_SCHEMA:
+        return None
+    return data
+
+
+def last_announced_game(g: GlobalConfig) -> str | None:
+    """The last runtime announced to the platforms, or ``None`` when unknown."""
+    data = _announce_record(g)
+    if data is None:
+        return None
+    game = data.get("game")
+    return game if isinstance(game, str) and game else None
+
+
+def _plane_active_game(state: dict) -> str | None:
+    """The committed game/view of a ``ready`` canonical state."""
+    active = state.get("active")
+    if not isinstance(active, dict):
+        return None
+    game = active.get("game")
+    return game if isinstance(game, str) and game else None
+
+
+def _live_background_game(g: GlobalConfig) -> str | None:
+    """The Soren game that keeps writing its state file, if any.
+
+    Only consulted while the plane owns no seat: a running corner parks the
+    loop, so a fresh state file there would otherwise be misattributed.
+    """
+    try:
+        from .trading.soren_output import resolve_soren_root
+
+        root = resolve_soren_root(g)
+    except Exception:
+        return None
+    now = time.time()
+    for candidate in (root / "game_state.json", root / "tmp" / "state" / "game_state.json"):
+        try:
+            fresh = now - candidate.stat().st_mtime <= BACKGROUND_STATE_FRESH_S
+        except OSError:
+            continue
+        if fresh:
+            return BACKGROUND_GAME
+    return None
+
+
+def intended_stream_game(g: GlobalConfig) -> str | None:
+    """The runtime the stream should currently describe, or ``None``.
+
+    ``ready`` defers to the committed seat.  ``idle`` is the state a failed
+    restore or a corner stop leaves behind, and it is exactly where a live
+    background game has no announcement path (#2673).  Every other phase is a
+    transition in flight, so reconciliation stays out of the way.
+    """
+    try:
+        state = json.loads(
+            (Path(g.state_dir) / "game_switch.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    phase = state.get("phase")
+    if phase == "ready":
+        return _plane_active_game(state)
+    if phase == "idle":
+        return _live_background_game(g)
+    return None
+
+
+def reconcile_stream_metadata(g: GlobalConfig, *, spawn=None) -> bool:
+    """Re-announce metadata when the visible runtime or its goal changed.
+
+    Runs from the corner-rotation tick.  Returns ``True`` only when a new
+    announce was dispatched.  Never raises: a cosmetic mismatch must not take
+    the rotation down.  A failed attempt is remembered so a broken updater is
+    retried after a backoff instead of once per tick.
+
+    The game name alone is the identity for every game except
+    ``PROGRESS_TITLE_GAME``, whose title names the current chapter goal. For
+    that game a changed progress marker re-announces only the title, so the
+    stream follows the next goal after a chapter clear without touching the
+    category.
+    """
+    try:
+        intended = intended_stream_game(g)
+        if intended is None:
+            return False
+        record = _announce_record(g)
+        marker = _title_marker(g, intended)
+        same_game = record is not None and record.get("game") == intended
+        if same_game:
+            if record.get("status") == "failed":
+                last = record.get("at")
+                if (isinstance(last, (int, float)) and not isinstance(last, bool)
+                        and time.time() - float(last) < RECONCILE_RETRY_BACKOFF_S):
+                    return False
+            elif marker is None or record.get("marker") == marker:
+                return False
+        if twitch_category(g, intended) is None:
+            return False
+        try:
+            announced = announce_stream_game(
+                g, intended, spawn=spawn,
+                title_only=bool(same_game and record.get("status") != "failed"
+                                and marker is not None),
+            )
+        except Exception:
+            _record_dispatch_failure(g, intended)
+            return False
+        return announced
+    except Exception:
+        return False
 
 
 def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
@@ -303,6 +528,23 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
         g,
         category_id=PAPER_CATEGORY_ID,
         category_name=PAPER_CATEGORY_NAME,
+        spawn=spawn,
+    )
+
+
+def announce_stream_mystery(g: GlobalConfig, *, spawn=None) -> bool:
+    """Move the stream to the AI探偵ミステリー title and Just Chatting category.
+
+    The case board is a participatory talk show, not a playable game, so it has
+    no ``config/games`` row to resolve.  The explicit-category path keeps the
+    displaced game's metadata from staying on air and the normal restore hook
+    announces the previous game again when the corner ends.
+    """
+    return _announce_explicit_category(
+        g,
+        category_id=MYSTERY_CATEGORY_ID,
+        category_name=MYSTERY_CATEGORY_NAME,
+        view=MYSTERY_VIEW_NAME,
         spawn=spawn,
     )
 
@@ -339,11 +581,21 @@ def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     """
     from .adapters.program import PAPER_VIEW_NAME
 
+    view = game in (PAPER_VIEW_NAME, MYSTERY_VIEW_NAME, SPECIAL_VIEW_NAME)
     if game == PAPER_VIEW_NAME:
-        return announce_stream_paper(g, spawn=spawn)
-    if game == SPECIAL_VIEW_NAME:
-        return announce_stream_special(g, spawn=spawn)
-    return announce_stream_game(g, game, spawn=spawn)
+        announced = announce_stream_paper(g, spawn=spawn)
+    elif game == MYSTERY_VIEW_NAME:
+        announced = announce_stream_mystery(g, spawn=spawn)
+    elif game == SPECIAL_VIEW_NAME:
+        announced = announce_stream_special(g, spawn=spawn)
+    else:
+        announced = announce_stream_game(g, game, spawn=spawn)
+    if announced and view:
+        # The reconciliation hook compares against this record, so every
+        # commit-driven announce must update it too. Game paths record their
+        # own marker inside ``announce_stream_game``; view paths record here.
+        _record_announced(g, game)
+    return announced
 
 
 def commit_hook(g: GlobalConfig, *, spawn=None):
