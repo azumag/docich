@@ -3329,7 +3329,7 @@ def _sortie_is_current_for_departure_request(mem, step, request):
     if not isinstance(sortie, dict):
         return False
     status = sortie.get('status')
-    if status not in ('en_route', 'arrived', 'launched_unconfirmed'):
+    if status not in ('en_route', 'arrived', 'launched_unconfirmed', 'overdue'):
         return False
 
     snapshot = request.get('snapshot')
@@ -3342,8 +3342,9 @@ def _sortie_is_current_for_departure_request(mem, step, request):
                     and sortie.get('general') == request.get('general') == binding.get('general')
                     and sortie.get('source') == request.get('source') == binding.get('source'))
 
-    # An arrived record is a completed leg, not proof that this request departed.
-    if status == 'arrived':
+    # Arrived/overdue records are not live marches; without a matching
+    # confirmation binding they may belong to an earlier request.
+    if status in ('arrived', 'overdue'):
         return False
     # An untagged active march cannot be attributed safely; preserve the guard.
     return True

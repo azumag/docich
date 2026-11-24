@@ -120,6 +120,19 @@ def test_a_previous_overdue_sortie_does_not_block_a_new_request():
     assert release_records(mem) == []
 
 
+def test_a_sortie_matching_the_current_confirmation_overdue_is_preserved():
+    mem = order_mem()
+    _world(mem).setdefault('sorties', {})[STEP] = {
+        'status': 'overdue', 'confirmation_tick': 450,
+        'general': 'ゼウス', 'source': 'ハヤク',
+    }
+    result = release(mem, bound_request(450))
+    assert _plan_region(mem)['orders'][STEP] == 'pending'
+    assert 'order_failed' not in decisions(mem)
+    assert release_records(mem)[-1]['resulting_event'] == 'request_released_not_owned'
+    assert result.permitted_recovery == 'reconfirm'
+
+
 def test_a_sortie_matching_the_current_confirmation_is_preserved():
     mem = order_mem()
     _world(mem).setdefault('sorties', {})[STEP] = {
