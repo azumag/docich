@@ -1648,6 +1648,7 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
         'hanjuku-chart-v1469-recall-yjump-goal',
         'hanjuku-chart-v1470-ch4-site-bounded-wait',
         'hanjuku-chart-v1473-hidden-season-site-priority',
+        'hanjuku-chart-v1472-status-panel-owner-unreadable-skip',
     ):
         state['bot_version'] = marker
         assert module._project_corner_state(state)['bot_version'] == marker
