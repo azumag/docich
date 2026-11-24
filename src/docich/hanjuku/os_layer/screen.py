@@ -633,6 +633,9 @@ class Screen:
     options: list = field(default_factory=list)
     menu_rows: list[TextLine] = field(default_factory=list)
     menu_cursor: int | None = None
+    # Chapter-clear password screen: the scrollable right-hand word list as
+    # (y, word) rows (grey text the light mask does not read).
+    password_list: list = field(default_factory=list)
     egg_rows: list[EggRow] = field(default_factory=list)
     # (味方, 敵) の兵士数。読めない側は None、フィールド計測なしは全体で None。
     field_soldiers: tuple[int | None, int | None] | None = None
@@ -1284,6 +1287,15 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.marker = _target_marker(frame)
         screen.cursor = _free_cursor(row_masks(frame, white), frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'password_entry':
+        # The right-hand list is grey (120,120,120) on the green panel; the
+        # normal light mask never sees it. Read it so the entry order can be
+        # derived from the actual collected order instead of fixed indices.
+        grey_rows = read_lines(frame, predicate=lambda r, g, b: 95 <= min(r, g, b) <= 165
+                               and max(r, g, b) - min(r, g, b) <= 12,
+                               rect=(160, 15, 252, 145))
+        screen.password_list = [(ln.y, ''.join(w for _, w in ln.spans()))
+                                for ln in grey_rows if ln.spans()]
     screen.okunote_only_box = _okunote_only_box(frame, screen)
     if screen.kind == 'text':
         screen.prose_attached_marks = attached_mark_cells(
