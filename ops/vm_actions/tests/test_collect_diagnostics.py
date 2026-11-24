@@ -1645,6 +1645,7 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
         'hanjuku-chart-v1465-unowned-screen-review-guards',
         'hanjuku-chart-v1466-status-panel-owner-name',
         'hanjuku-chart-v1467-status-panel-owner-unreadable-egg',
+        'hanjuku-chart-v1468-departure-request-ownership',
     ):
         state['bot_version'] = marker
         assert module._project_corner_state(state)['bot_version'] == marker
