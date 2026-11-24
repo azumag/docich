@@ -10,7 +10,7 @@ import pytest
 from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import deploy as D, map as M
 from docich.hanjuku.strategy import orders
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import plan as _plan_region, world as _world
 from docich.hanjuku_screen import Screen
 from test_hanjuku_hero_guard import boss_memory
 from test_hanjuku_sortie_evidence import (actor_panel, measured_card_select,
@@ -99,7 +99,9 @@ def test_general_list_timeout_receipt_survives_card_select_stage():
     assert [r['decision'] for r in mem['_records']].count('boss_companion_required') == 1
 
 def test_strategy_companion_source_gate_expires():
-    chapter = 9
+    # Chapter 9 has no static chart.orders() because its boss moves; use a
+    # non-moving boss chapter to exercise the same readiness gate deterministically.
+    chapter = 10
     home = chart.home_castle(chapter)
     boss = chart.boss_castle(chapter)
     order = next(o for o in chart.orders(chapter) if o['target'] == boss)
