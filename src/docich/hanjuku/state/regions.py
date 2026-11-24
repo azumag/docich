@@ -257,6 +257,7 @@ KEY_OWNERSHIP = {
     'retries_retired': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 退役リトライの戦略記録
     'route_probe_read_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 経路プローブ読み取りtick
     'shop': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 購入計画(戦略economyが書く)
+    'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理
     'site_step_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # サイトstep再武装の戦略管理
     'sortie_cancelled_observed_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 出撃キャンセル観測カウント(orders調整用)
     'sortie_cancelled_observed_gates': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 同上ゲート
