@@ -854,6 +854,13 @@ def _ready(order, mem) -> bool:
             and not routes.order_allowed(mem, order,
                                          _source(order, mem) if 'step' in order else order.get('source'))):
         return False
+    # Owner 2026-11-24 (chapter 12): no boss march leaves the home castle
+    # (it is absorbed or camps on the way); the hero goes to the staging castle
+    # first and only that castle sends.
+    if (routes.staging_phase(mem) is not None and chart.is_boss_castle(order.get('target'))
+            and routes.staging_blocks(mem, order,
+                                      _source(order, mem) if 'step' in order else order.get('source'))):
+        return False
     if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
         # runtime must never navigate either endpoint from that old plan.
@@ -1278,6 +1285,7 @@ def _relaunch_overdue_boss(mem):
     now = int(mem.get('tick') or 0)
     status = _plan_region(mem).setdefault('orders', {})
     reading = boss_cell_measurement(mem)
+    routes.staging_update(mem)
     for step, sortie in _sorties(mem).items():
         # An unconfirmed launch keeps its cell in planned_target only; g1075
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
@@ -1289,6 +1297,8 @@ def _relaunch_overdue_boss(mem):
                 or type(sortie.get('tick')) is not int
                 or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
+        if routes.staging_blocks(mem, {'target': target}, sortie.get('source')):
+            continue        # the staging castle sends the next wave, not this source
         relaunches = mem.setdefault('boss_relaunch', {})
         # Owner 2026-10-30: a spent relaunch budget must not park a site
         # forever. After a very long wait past the normal limit the step

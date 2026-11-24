@@ -224,6 +224,7 @@ KEY_OWNERSHIP = {
     'chart_plan_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # チャート計画の策定tick
     'corridor_drained': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの枯渇管理(定数DRAINED経由)
     'hero_hub_move_eval': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 主人公ハブ移動の月次評価簿記(#4546)
+    'boss_staging': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter12 ボス出撃の拠点集結の段階・期限簿記
     'hub_reinforce_eval': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ハブ増援優先の月次簿記(#4495/#4547)
     'hero_locate': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 主人公の所在確認の予算・発行済み指示(v843)
     'corridor_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの城一覧確認予算(v707)
