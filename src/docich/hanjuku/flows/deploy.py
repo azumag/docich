@@ -1826,6 +1826,10 @@ def _clear_empty_kit_retry_state(mem, step):
         value = mem.get(key)
         if isinstance(value, dict) and value.get('step') == step:
             mem.pop(key, None)
+    # Keep the next attempt's confirmation budget fresh even when this legacy
+    # counter was injected through the flat-state compatibility path.
+    mem.setdefault('sortie_confirm_miss', {})[step] = 0
+    mem.setdefault('sortie_confirm_blind', {}).pop(step, None)
 
 
 def _reject_empty_planned_kit(screen, mem, order, want, carried, inventory_evidence):
