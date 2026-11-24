@@ -498,6 +498,25 @@ def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
     assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
 
 
+def test_camp_group_screen_preserves_and_renders_screen_evidence(runtime_dir):
+    value = state(10, '17-4', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_group_screen', event='unclassified_screen_closed',
+                      reason='未分類画面を有界待機後に閉じた',
+                      metric={'camp': [131, 113], 'stage': 'menu',
+                              'screen_kind': 'text', 'text': 'せめこまれました'})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['camp_event']
+    assert event['kind'] == 'camp_recall_cancelled'
+    assert event['screen'] == 'text'
+    assert event['screen_text'] == 'せめこまれました'
+    rendered = audit.render(record)
+    assert '最終画面: text' in rendered
+    assert 'せめこまれました' in rendered
+
+
 def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -711,6 +730,33 @@ def test_egg_drop_only_loss_is_not_high_confidence(runtime_dir):
     assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
 
 
+
+
+def test_egg_only_loss_is_medium_confidence_because_count_is_not_battle_receipt(runtime_dir):
+    value = state(11, '17-10', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'egg_uses': 1, 'ally_hp': 0, 'enemy_hp': 65},
+                            general='コンポート')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['battle_event']['resources'] == ['egg']
+    assert incident['battle_event']['egg_ledger_only'] is True
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['egg_count_not_current_battle_proof']
+
+
+def test_plain_card_loss_remains_high_even_with_stale_egg_count(runtime_dir):
+    value = state(11, '17-10', 0)
+    record = _battle_record('battle_result', outcome='loss',
+                            metric={'egg_uses': 1, 'cards_selected': ['クースカン'],
+                                    'cards_used': [], 'ally_hp': 0, 'enemy_hp': 65},
+                            general='コンポート')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['battle_event']['resources'] == ['egg', 'card']
+    assert incident['battle_event']['egg_ledger_only'] is False
+    assert incident['confidence'] == 'high'
+
 def test_plain_card_loss_stays_high_confidence(runtime_dir):
     value = state(9, '1-1', 0)
     record = _battle_record('battle_result', outcome='loss',
@@ -791,6 +837,7 @@ def test_battle_resource_events_are_classified():
         metric={'egg_uses': 2, 'ally_hp': 0, 'enemy_hp': 40}, general='バゲット'))
     assert loss_egg['kind'] == 'battle_loss_with_resources'
     assert loss_egg['resources'] == ['egg']
+    assert loss_egg['egg_ledger_only'] is True
     loss_card = audit._battle_resource_event(_battle_record(
         'battle_result', outcome='loss',
         metric={'cards_selected': ['A', 'B'], 'cards_used': ['A'],
@@ -811,6 +858,7 @@ def test_battle_resource_events_are_classified():
         metric={'egg_uses': 2, 'ally_hp': 5, 'enemy_hp': 50}, general='ブラウニー'))
     assert retreat['kind'] == 'battle_retreat_with_resources'
     assert retreat['resources'] == ['egg']
+    assert retreat['egg_ledger_only'] is False
     preempted = audit._battle_resource_event(_battle_record(
         'battle_retreat_preempted_card', card='クースカン',
         metric={'ally_hp': 12, 'enemy_hp': 41}, general='マフィン'))
@@ -1034,6 +1082,37 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert '築城可能なまま月一終了' in audit._issue_title(record)
     assert '### 築城' in audit.render(record)
     assert len(seen) == 1
+
+
+def test_chikujou_month_end_renders_last_held_visible_rows(runtime_dir):
+    value = _chikujou_state()
+    # The terminal diagnostic reads the persisted decision journal, as it does
+    # in production; the in-memory records passed to observe are not that file.
+    note(runtime_dir, 999, decision='chikujou_held', month='1-1',
+         deviation_reason='castle_scroll_no_progress',
+         observed_metric={'visible': ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン'],
+                          'scrolls': 9, 'stalled': 3},
+         reason='築城一覧の移動が効かないためBで戻る')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'chikujou_held', 'month': '1-1', 'at': 999,
+                    'deviation_reason': 'castle_scroll_no_progress',
+                    'observed_metric': {'visible': ['アトランチス', 'ファルゲ',
+                                                    'リグア', 'アルマムーン'],
+                                        'scrolls': 9, 'stalled': 3},
+                    'reason': '築城一覧の移動が効かないためBで戻る'},
+                   {'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    diagnostic = record['chikujou_event']['terminal_diagnostic']
+    assert diagnostic['deviation_reason'] == 'castle_scroll_no_progress'
+    assert diagnostic['visible'] == ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン']
+    assert diagnostic['scrolls'] == 9
+    assert diagnostic['stalled'] == 3
+    rendered = audit.render(record)
+    assert '最終保留理由: castle_scroll_no_progress' in rendered
+    assert 'ファルゲ' in rendered
+    assert 'scrolls: 9 / stalled: 3' in rendered
 
 
 def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
@@ -2024,8 +2103,10 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     miss = {'schema': 1, 'event': 'decision', 'at': 1001,
             'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
             'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
-            'screen_kind': 'egg_battle_menu', 'reason': '携行切り札を開けず攻撃',
-            'observed_metric': {'cards_left': ['ノリウツール']}, **IDENTITY}
+            'reason': '携行切り札を開けず攻撃',
+            'observed_metric': {'cards_left': ['ノリウツール'],
+                                'screen': 'egg_battle_menu',
+                                'text': 'こうげきたいきゃく'}, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
     assert len(sealed) == 1
@@ -2033,9 +2114,12 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert incident['kind'] == 'card_miss'
     assert incident['auto_file'] is True
     assert incident['card'] == 'ノリウツール'
+    assert incident['battle_event']['screen'] == 'egg_battle_menu'
+    assert incident['battle_event']['screen_text'] == 'こうげきたいきゃく'
     assert '切り札未使用' in audit._issue_title(incident)
     body = audit.render(incident)
     assert 'ノリウツール' in body and 'card_miss' in body
+    assert 'egg_battle_menu' in body and 'こうげきたいきゃく' in body
     comment = audit.render_comment(incident)
     assert '再発' in comment
     # The same decision observed again does not seal a second incident.
