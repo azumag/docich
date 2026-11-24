@@ -294,6 +294,18 @@ def test_sampler_does_not_reuse_persistent_cache_past_retention(tmp_path, monkey
     assert not list(cache_dir.glob("*.json"))
 
 
+def test_chart_cache_rejects_impossible_ohlc_before_persisting(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    cache = TimeframeChartCache(trading_dir)
+    rows = _rows("1m", count=3, start_ms=int(NOW * 1000) - 3 * STEP_MS["1m"])
+    record = build_timeframe_view("BTC/JPY", "1m", rows, now=NOW)
+    invalid = dict(record)
+    invalid["bars"] = [dict(bar) for bar in record["bars"]]
+    invalid["bars"][0]["h"] = invalid["bars"][0]["o"] - 1
+    assert cache.save("BTC/JPY", "1m", invalid, now=NOW) is False
+    assert not (trading_dir / "timeframe_chart_cache").exists()
+
+
 def test_chart_cache_evicts_oldest_entries_to_respect_byte_cap(tmp_path):
     trading_dir = _trading_dir(tmp_path)
     cache = TimeframeChartCache(trading_dir, max_bytes=10_000_000)
