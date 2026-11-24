@@ -8145,6 +8145,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1472-status-panel-owner-unreadable-skip",
             "hanjuku-chart-v1477-boss-camp-recall",
             "hanjuku-chart-v1482-ch12-boss-staging",
+            "hanjuku-chart-v1481-boss-camp-recall-followup",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",

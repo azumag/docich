@@ -206,12 +206,14 @@ class BotExitDiagnosticTest(unittest.TestCase):
             state = {}
             hint = bot._apply_camp_watch_hint(state, runtime, {"hanjuku": identity})
             self.assertEqual(hint["generals"], {"キッシュ": 8})
-            self.assertEqual(state["camp_watch_hint"]["generals"], {"キッシュ": 8})
+            # decide() copies only state['policy']; the hint must live there.
+            self.assertEqual(state["policy"]["camp_watch_hint"]["generals"],
+                             {"キッシュ": 8})
             # A different run or a missing/corrupt file never injects stale months.
-            state = {"camp_watch_hint": {"generals": {"old": 9}}}
+            state = {"policy": {"camp_watch_hint": {"generals": {"old": 9}}}}
             bot._apply_camp_watch_hint(state, runtime,
                                        {"hanjuku": {**identity, "lease_id": "other"}})
-            self.assertNotIn("camp_watch_hint", state)
+            self.assertNotIn("camp_watch_hint", state["policy"])
         finally:
             (runtime / bot.month_audit.AUDIT_FILE).unlink(missing_ok=True)
             runtime.rmdir()
