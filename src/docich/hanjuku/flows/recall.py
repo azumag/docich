@@ -2255,7 +2255,6 @@ def _abort_camp_recall(mem, state, screen, reason):
     return []
 
 
-
 def enter_fort(mem, state):
     """Start the 砦's own route: its generals leave by しゅつげき, not by きかん."""
     state.update(stage='fort_menu', steps=0, camp_kind='dome')
