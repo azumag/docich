@@ -686,8 +686,17 @@ def _apply_season_sites(mem, sites):
         if not isinstance(reading, dict):
             continue
         kind = reading.get('kind')
-        if kind not in ('skull', 'closed', 'hidden', 'ambiguous'):
+        if kind not in ('skull', 'closed', 'hidden', 'ambiguous', 'cursor'):
             kind = 'unreadable'
+        if kind == 'cursor':
+            # The Y view's own cursor sits on this box: nothing can be read, so
+            # neither the state, the marker nor the streaks change (g1342
+            # 2026-11-25 00:24: its outline once read as a live skull).
+            held = seen.get(name)
+            if isinstance(held, dict):
+                held['cursor_tick'] = tick
+                held['cursor_streak'] = int(held.get('cursor_streak') or 0) + 1
+            continue
         if kind == 'hidden' and not healthy:
             # A dimmed/transitional frame has no reliable skull read anywhere;
             # it is not evidence that this particular king disappeared.
@@ -704,7 +713,8 @@ def _apply_season_sites(mem, sites):
         was = row.get('marker')
         row.update({'marker': kind, 'marker_tick': tick, 'last_read_tick': tick,
                     'light': reading.get('light'), 'terrain': reading.get('terrain'),
-                    'camp': reading.get('camp'),
+                    'camp': reading.get('camp'), 'cursor_streak': 0,
+                    'shape': reading.get('shape'),
                     # Why the skull is missing: our own flag sits on the box. An
                     # abandoned camp hides a live king's skull too, so this is
                     # recorded evidence only and never changes the rule.
