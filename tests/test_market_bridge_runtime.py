@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "infra" / "market-bridge"))
 from mbridge.common.auth import build_headers  # noqa: E402
 from mbridge.common.contract import (Candidate, Quote, Snapshot,  # noqa: E402
                                      validate_envelope)
+from mbridge.common.timeutil import Caller, DeadlineExceeded  # noqa: E402
 from mbridge.linux.client import BridgeClient, BridgeError  # noqa: E402
 from mbridge.linux.provider import MarketBridgeProvider  # noqa: E402
 from mbridge.windows.adapters import (KabuAdapter, Mt5Adapter,  # noqa: E402
@@ -502,6 +503,90 @@ class EndToEndTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(adapter, name))
                 self.assertFalse(hasattr(client, name))
+
+
+class CallerHangTests(unittest.TestCase):
+    def test_capacity_is_reserved_before_submit_can_race(self):
+        caller = Caller(workers=1, name="test-submit-race")
+        self.addCleanup(caller.close)
+        work_release = threading.Event()
+        submit_entered = threading.Event()
+        submit_release = threading.Event()
+        original_submit = caller._pool.submit
+
+        def blocked_submit(fn, *args, **kwargs):
+            submit_entered.set()
+            if not submit_release.wait(timeout=3.0):
+                raise AssertionError("test did not release the first submit")
+            return original_submit(fn, *args, **kwargs)
+
+        caller._pool.submit = blocked_submit
+        first_result = {}
+
+        def first_call():
+            first_result['value'] = caller.call(lambda: work_release.wait(timeout=3.0),
+                                                timeout_s=3.0)
+
+        first = threading.Thread(target=first_call)
+        first.start()
+        self.assertTrue(submit_entered.wait(timeout=1.0))
+        second_result = {}
+
+        def second_call():
+            started = time.monotonic()
+            try:
+                caller.call(lambda: "unexpected", timeout_s=3.0)
+            except DeadlineExceeded as exc:
+                second_result['error'] = exc
+            second_result['elapsed'] = time.monotonic() - started
+
+        second = threading.Thread(target=second_call)
+        second.start()
+        second.join(timeout=0.5)
+        self.assertFalse(second.is_alive(), "a reserved slot must reject before submit")
+        self.assertIsInstance(second_result.get('error'), DeadlineExceeded)
+        self.assertLess(second_result.get('elapsed', 99.0), 0.5)
+        submit_release.set()
+        work_release.set()
+        first.join(timeout=2.0)
+        self.assertFalse(first.is_alive())
+        self.assertTrue(first_result.get('value'))
+
+
+    def test_full_pool_fails_closed_immediately(self):
+        caller = Caller(workers=2, name="test-hang")
+        self.addCleanup(caller.close)
+        release = threading.Event()
+
+        def hang():
+            release.wait()  # never released -> worker stuck for the test
+
+        # Occupy every worker through call() so _running reflects real in-flight
+        # calls backed by un-stoppable futures.
+        t1 = threading.Thread(target=lambda: caller.call(hang, timeout_s=30.0))
+        t2 = threading.Thread(target=lambda: caller.call(hang, timeout_s=30.0))
+        t1.start()
+        t2.start()
+        deadline = time.monotonic() + 5.0
+        while True:
+            with caller._lock:
+                running = caller._running
+            if running >= 2:
+                break
+            if time.monotonic() > deadline:
+                self.fail("caller workers did not become occupied")
+            time.sleep(0.01)
+
+        # A new call must fail closed immediately instead of waiting up to
+        # timeout_s for a worker that will never free.
+        start = time.monotonic()
+        with self.assertRaises(DeadlineExceeded):
+            caller.call(lambda: "ok", timeout_s=30.0)
+        self.assertLess(time.monotonic() - start, 2.0,
+                        "must fail fast when the pool is full")
+        release.set()
+        t1.join(timeout=2)
+        t2.join(timeout=2)
 
 
 if __name__ == "__main__":
