@@ -8140,6 +8140,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1471-roster-due-probe",
             "hanjuku-chart-v1473-hidden-season-site-priority",
             "hanjuku-chart-v1476-site-cursor-shape",
+            "hanjuku-chart-v1480-ch4-boss-dispatch",
             "hanjuku-chart-v1478-site-nearest-source",
             "hanjuku-chart-v1472-status-panel-owner-unreadable-skip",
             "hanjuku-chart-v1477-boss-camp-recall",
