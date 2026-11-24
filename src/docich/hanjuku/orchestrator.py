@@ -254,11 +254,11 @@ def _dome_camp_menu_text_owned(recall, recall_dialog, kind):
     return bool(recall_dialog and isinstance(recall, dict)
                 and recall.get('stage') == 'menu'
                 and recall.get('camp_kind') == 'dome'
-                and kind in ('text', 'unknown'))
+                and kind == 'text')
 
 
 def event_text_advance_step(mem, phase, kind, key, actions, guarded=False):
-    """Advance unrelated event narration without consuming a live build wait."""
+    """Advance unrelated event narration without consuming a live foreground-owner wait."""
     guarded = guarded or _chikujou_menu_text_owned(mem, kind, key)
     advanced = event_text_advance(mem, phase, kind, key, actions, guarded)
     if advanced:
@@ -2497,6 +2497,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     summon_scene = bool(battle.get('summon_scene') or mem.get('summon_scene'))
     from .state.regions import plan as _plan_here
     plan_active = bool(_plan_here(mem).get('active'))
+    # A dome recall already owns its text frame and will use its bounded B-close;
+    # the faster generic event-A shortcut must not overtake that owner.
     text_guarded = (event_guarded and not (
         kind == 'text' and phase == 'dialogue' and screen.text
         and not named_hold and not summon_scene and not plan_active)
