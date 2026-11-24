@@ -626,6 +626,20 @@ def _note_exception_fault(scope, exc, where):
               file=sys.stderr)
 
 
+def _apply_camp_watch_hint(state, runtime, meta):
+    """Attach the monthly audit's bounded camp-month evidence to the state."""
+    try:
+        hint = month_audit.camp_watch_hint(
+            runtime, identity=(meta.get('hanjuku') if isinstance(meta, dict) else None))
+    except Exception:
+        hint = None
+    if hint:
+        state['camp_watch_hint'] = hint
+    else:
+        state.pop('camp_watch_hint', None)
+    return hint
+
+
 def _unsortable_path(obj, path=''):
     """Path of the first dict whose keys mix types (json sort_keys cannot order them)."""
     if isinstance(obj, dict):
@@ -756,6 +770,11 @@ def main():
             # under the limit.
             state=state_budget.load_state(runtime/'hanjuku_bot.json',BOT_STATE_LIMIT)
             hanjuku_resume.inherit_running_chapter(runtime,state)
+            # The monthly audit counts the same camps from a complete roster
+            # list. Hand that bounded evidence to the policy so a lost
+            # exemption counter can still expire a months-long camp; it is a
+            # read-only hint, refreshed every observation and never an input.
+            _apply_camp_watch_hint(state, runtime, meta)
             # The previous observation is the closed month's last complete
             # state when this observation crosses the month boundary.
             audit_before=month_audit.capture(state)

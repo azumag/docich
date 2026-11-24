@@ -39,7 +39,10 @@
   - 月次スキャン完了時に fresh な status で再カウントしてからタスクを
     組み直す。
   - カウントが失われていても、同run・同章の退却再確認行が免除窓より
-    古ければ、その観測月数でシードする（キッシュは 7-11 から4ヶ月以上）。
+    古ければ、その観測月数でシードする。
+  - 月次監査の `camp_watch`（完全な名簿から数えた連続野営月数）を bot が
+    観測開始時に bounded hint (`camp_watch_hint`) として渡し、失われた
+    カウントを補完する。hint は run 同一性が一致する場合だけ採用する。
   - 月次タスクの帰還状態に `task_recall: True` を付け、同将軍の古い
     再確認行を `camp_recheck.release_for_task` で破棄する。
 - `flows/camp_recheck.py`
@@ -60,6 +63,8 @@
   - `release_for_task` が古い行を削除すること
 - `tests/test_hanjuku_boss_camp_remarch.py`: 月次タスクが `task_recall` を
   持ち、古い再確認行を解放すること。
+- `tests/test_hanjuku_bot_exit_diagnostic.py`: 監査 hint が同一 run のときだけ
+  policy state に付き、異なる run では古い hint を破棄すること。
 - 関連: `test_hanjuku_post_month_status.py`, `test_hanjuku_camp_proof_binding.py`,
   `test_hanjuku_retreat_recheck.py`, 帰還系テスト。
 

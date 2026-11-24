@@ -8,6 +8,9 @@ the monthly task became ``boss_move`` again and the camp never expired into a
 plain recall home. The count is now idempotent per (general, month) and only a
 fresh complete scan may remove a resolved camp.
 """
+import json
+
+from docich.hanjuku import month_audit
 from docich.hanjuku.flows import post_month_status as post
 from docich.hanjuku.os_layer import roster as receipts
 
@@ -75,6 +78,38 @@ def test_a_long_unresolved_camp_seeds_a_lost_counter():
     assert post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
                        memory['boss_camp_exempt'], chapter=4) == [
         {'kind': 'recall', 'name': 'キッシュ'}]
+
+
+def test_the_audit_camp_months_seed_a_lost_policy_counter(tmp_path):
+    rt = tmp_path / 'runtimes' / 'g-test'
+    rt.mkdir(parents=True)
+    identity = dict(IDENTITY)
+    (rt / month_audit.AUDIT_FILE).write_text(json.dumps({
+        'schema': 1, 'identity': identity,
+        'camp_watch': {'month': '8-6', 'generals': {
+            'キッシュ': {'last_month': '8-6', 'months': 8}}}}), encoding='utf-8')
+    hint = month_audit.camp_watch_hint(rt, identity=identity)
+    assert hint['generals'] == {'キッシュ': 8}
+    memory = mem(month='8-6', camp_watch_hint=hint)
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                           fresh=True)
+    assert memory['boss_camp_exempt']['キッシュ'] == 8
+    assert post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
+                       memory['boss_camp_exempt'], chapter=4) == [
+        {'kind': 'recall', 'name': 'キッシュ'}]
+
+
+def test_the_audit_hint_requires_the_same_run_identity(tmp_path):
+    rt = tmp_path / 'runtimes' / 'g-test'
+    rt.mkdir(parents=True)
+    other = {**IDENTITY, 'lease_id': 'other'}
+    (rt / month_audit.AUDIT_FILE).write_text(json.dumps({
+        'schema': 1, 'identity': other,
+        'camp_watch': {'month': '8-6', 'generals': {
+            'キッシュ': {'last_month': '8-6', 'months': 8}}}}), encoding='utf-8')
+    assert month_audit.camp_watch_hint(rt, identity=dict(IDENTITY)) is None
+    (rt / month_audit.AUDIT_FILE).write_text('{not json', encoding='utf-8')
+    assert month_audit.camp_watch_hint(rt, identity=dict(IDENTITY)) is None
 
 
 def test_an_expired_siege_is_queued_for_recall_home_not_boss_move():

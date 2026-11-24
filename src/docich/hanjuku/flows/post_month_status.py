@@ -357,15 +357,23 @@ def _count_boss_camps(mem, statuses, scope, boss_unlocked, *, fresh):
         average = (sum(usable) // len(usable)) if usable else 1000
         return max(0, (now - tick) // max(1, average))
 
+    hint = mem.get('camp_watch_hint') or {}
+    hint_months = (hint.get('generals') if isinstance(hint, dict) else None)
+    hint_months = hint_months if isinstance(hint_months, dict) else {}
     month = scope[1] if len(scope) > 1 else None
     for name in camping:
         if names.get(name) != month:
             # A lost counter cannot pin a general forever. The scoped recheck
-            # row is a measured "this camp is still unlocated" receipt; when it
-            # is already older than the exemption window, seed the count so the
-            # task becomes a plain recall home instead of another boss_move
-            # (live g1342 2026-11-25: キッシュ had been camped since 7-11).
+            # row and the monthly audit's complete-list count are measured
+            # "this camp is still unresolved" receipts; when either is older
+            # than the exemption window, seed the count so the task becomes a
+            # plain recall home instead of another boss_move (live g1342
+            # 2026-11-25: キッシュ had been camped since 7-11 and had already
+            # accumulated 8 audited months).
             observed = _long_camp_months(name) if not previous.get(name) else 0
+            audit_months = hint_months.get(name)
+            if type(audit_months) is int and audit_months > observed:
+                observed = audit_months
             if observed > BOSS_CAMP_EXEMPT_MONTHS:
                 previous[name] = observed
             else:
