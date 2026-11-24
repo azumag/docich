@@ -498,6 +498,25 @@ def test_camp_cancel_and_unconfirmed_are_recorded(runtime_dir):
     assert kinds == ['camp_recall_cancelled', 'camp_recall_unconfirmed']
 
 
+def test_camp_group_screen_preserves_and_renders_screen_evidence(runtime_dir):
+    value = state(10, '17-4', 0)
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_camp_record(
+                      'camp_group_screen', event='unclassified_screen_closed',
+                      reason='未分類画面を有界待機後に閉じた',
+                      metric={'camp': [131, 113], 'stage': 'menu',
+                              'screen_kind': 'text', 'text': 'せめこまれました'})],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['camp_event']
+    assert event['kind'] == 'camp_recall_cancelled'
+    assert event['screen'] == 'text'
+    assert event['screen_text'] == 'せめこまれました'
+    rendered = audit.render(record)
+    assert '最終画面: text' in rendered
+    assert 'せめこまれました' in rendered
+
+
 def test_camp_dispatch_unconfirmed_issue_renders_stage_and_status(runtime_dir):
     value = state(9, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
