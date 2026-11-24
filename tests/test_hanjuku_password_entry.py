@@ -40,7 +40,7 @@ def test_dynamic_confirms_the_phrase_word_under_the_hand():
     from docich.hanjuku.flows import password
     mem = {}
     screen = _screen(ROWS, 23)          # hand on われらが = phrase[0]
-    assert password.password_step(screen, mem) == [password.pad('a', 10)]
+    assert password.password_step(screen, mem) == [password.pad('a', 30)]
     assert mem['password_entry']['dyn_step'] == 1
 
 
