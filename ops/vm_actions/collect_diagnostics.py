@@ -8126,6 +8126,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1465-unowned-screen-review-guards",
             "hanjuku-chart-v1466-status-panel-owner-name",
             "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
+            "hanjuku-chart-v1470-interim-order-purpose",
             "hanjuku-chart-v1457-interim-order-failure-purpose",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
