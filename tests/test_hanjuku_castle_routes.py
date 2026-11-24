@@ -98,6 +98,17 @@ def test_adopted_attack_is_held_if_its_source_is_no_longer_owned():
     assert mem['_records'][-1]['decision'] == 'sortie_route_unverified'
 
 
+def test_adopted_attack_to_an_owned_target_is_rejected_outside_road_chapters():
+    mem = {'chapter': 1, 'captured': [], 'home_lost': False}
+    target = chart.home_castle(1)  # the home castle is owned without a captured row
+    attack = {'step': 'I:attack:owned-home', 'target': target, 'purpose': 'attack'}
+    assert not routes.order_allowed(mem, attack, '任意の出撃元')
+
+    # Non-road chapters still have no route-geometry restriction for a move.
+    move = {'step': 'I:move:owned-home', 'target': target, 'purpose': 'move'}
+    assert routes.order_allowed(mem, move, '任意の出撃元')
+
+
 def test_adopted_attack_is_held_if_its_target_became_owned():
     mem = state()
     order = {'step': 'I:attack:captured-target', 'source': 'イーピヨル',
