@@ -1,0 +1,182 @@
+"""A long boss-adjacent camp must not reset its exemption every month.
+
+Live g1342 2026-11-24/25 (ch4): ``boss_camp_exempt`` was 6 at 8-5, but the
+8-6 ``arm`` read a stale row that said ``field`` (a battle had interrupted the
+last recall) and dropped the count. The roster scan then measured キッシュ
+camped at 四季王城(北東), yet the same-month scope gate skipped recounting, so
+the monthly task became ``boss_move`` again and the camp never expired into a
+plain recall home. The count is now idempotent per (general, month) and only a
+fresh complete scan may remove a resolved camp.
+"""
+import json
+
+from docich.hanjuku import month_audit
+from docich.hanjuku.flows import post_month_status as post
+from docich.hanjuku.os_layer import roster as receipts
+
+SITE = '四季王城(北東)'
+CAMPED = {'location': 'camp', 'hp': 26, 'max_hp': 26, 'broken': False,
+          'marker': {'castle_candidate': SITE}}
+IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g-test', 'generation': 1,
+            'lease_id': 'lease-test'}
+
+
+def mem(**fields):
+    return {'chapter': 4, 'month': '8-6', 'tick': 60000, '_records': [],
+            '_run_identity': dict(IDENTITY), 'gold': 3000, **fields}
+
+
+def cache(row, month='8-5', dirty=None):
+    return {'scope': [4, month], 'complete': True,
+            'dirty': dirty or {},
+            'identity': receipts.run_identity(IDENTITY),
+            'statuses': {'キッシュ': dict(row)}}
+
+
+def test_a_stale_field_read_does_not_erase_a_long_boss_camp():
+    memory = mem(month='8-6', boss_camp_exempt={'キッシュ': 6},
+                 boss_camp_exempt_scope=[4, '8-5'],
+                 general_statuses=cache({'location': 'field'},
+                                        dirty={'キッシュ': ['location']}))
+    post.arm(memory)
+    # The stale cache cannot prove the camp resolved: six months stay counted.
+    assert memory['boss_camp_exempt'] == {'キッシュ': 6}
+    # The fresh scan then measures the camp and counts 8-6 exactly once.
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True, fresh=True)
+    assert memory['boss_camp_exempt'] == {'キッシュ': 7}
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True, fresh=True)
+    assert memory['boss_camp_exempt'] == {'キッシュ': 7}
+
+
+def test_the_same_month_is_counted_once_across_arm_and_scan():
+    memory = mem(boss_camp_exempt={'キッシュ': 6},
+                 general_statuses=cache(CAMPED))
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                           fresh=False)
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                           fresh=True)
+    assert memory['boss_camp_exempt'] == {'キッシュ': 7}
+
+
+def test_a_fresh_scan_clears_a_resolved_camp():
+    memory = mem(boss_camp_exempt={'キッシュ': 7})
+    post._count_boss_camps(memory, {'キッシュ': {'location': 'castle',
+                                                 'castle': 'フヌイヌム'}},
+                           [4, '8-7'], True, fresh=True)
+    assert 'boss_camp_exempt' not in memory
+    assert 'boss_camp_counted' not in memory
+
+
+def test_a_long_unresolved_camp_seeds_a_lost_counter():
+    memory = mem(month='8-6', tick=60000, month_durations=[1000, 1000, 1000],
+                 flow={'retreat_rechecks': {'キッシュ': {
+                     'tick': 55227, 'chapter': 4, 'attempts': 3,
+                     'identity': dict(IDENTITY)}}})
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                           fresh=True)
+    assert memory['boss_camp_exempt']['キッシュ'] > post.BOSS_CAMP_EXEMPT_MONTHS
+    assert post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
+                       memory['boss_camp_exempt'], chapter=4) == [
+        {'kind': 'recall', 'name': 'キッシュ'}]
+
+
+def test_the_audit_camp_months_seed_a_lost_policy_counter(tmp_path):
+    rt = tmp_path / 'runtimes' / 'g-test'
+    rt.mkdir(parents=True)
+    identity = dict(IDENTITY)
+    (rt / month_audit.AUDIT_FILE).write_text(json.dumps({
+        'schema': 1, 'identity': identity,
+        'camp_watch': {'month': '8-6', 'generals': {
+            'キッシュ': {'last_month': '8-6', 'months': 8}}}}), encoding='utf-8')
+    hint = month_audit.camp_watch_hint(rt, identity=identity)
+    assert hint['generals'] == {'キッシュ': 8}
+    memory = mem(month='8-6', camp_watch_hint=hint)
+    post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                           fresh=True)
+    assert memory['boss_camp_exempt']['キッシュ'] == 8
+    assert post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
+                       memory['boss_camp_exempt'], chapter=4) == [
+        {'kind': 'recall', 'name': 'キッシュ'}]
+
+
+def test_the_audit_hint_requires_the_same_run_identity(tmp_path):
+    rt = tmp_path / 'runtimes' / 'g-test'
+    rt.mkdir(parents=True)
+    other = {**IDENTITY, 'lease_id': 'other'}
+    (rt / month_audit.AUDIT_FILE).write_text(json.dumps({
+        'schema': 1, 'identity': other,
+        'camp_watch': {'month': '8-6', 'generals': {
+            'キッシュ': {'last_month': '8-6', 'months': 8}}}}), encoding='utf-8')
+    assert month_audit.camp_watch_hint(rt, identity=dict(IDENTITY)) is None
+    (rt / month_audit.AUDIT_FILE).write_text('{not json', encoding='utf-8')
+    assert month_audit.camp_watch_hint(rt, identity=dict(IDENTITY)) is None
+
+
+def test_malformed_retreat_recheck_state_is_ignored_when_seeding_camp_months():
+    # Persisted state is untrusted: a partial/corrupt queue or row must not
+    # crash the monthly scan or manufacture a long-camp exemption.
+    for queue in ('corrupt', {'キッシュ': 'corrupt'}):
+        memory = mem(month='8-6', tick=60000, month_durations=[1000, 1000, 1000],
+                     flow={'retreat_rechecks': queue})
+        post._count_boss_camps(memory, {'キッシュ': CAMPED}, [4, '8-6'], True,
+                               fresh=True)
+        assert memory['boss_camp_exempt'] == {'キッシュ': 1}
+
+
+def test_an_expired_siege_is_queued_for_recall_home_not_boss_move():
+    memory = mem(boss_camp_exempt={'キッシュ': post.BOSS_CAMP_EXEMPT_MONTHS + 1})
+    tasks = post._tasks({'キッシュ': dict(CAMPED)}, ['キッシュ'],
+                        memory['boss_camp_exempt'], chapter=4)
+    assert tasks == [{'kind': 'recall', 'name': 'キッシュ'}]
+
+
+def test_a_fresh_recall_task_is_not_adopted_by_a_stale_retreat_recheck():
+    from docich import hanjuku_policy as p
+    from docich.hanjuku.flows import camp_recheck
+    from docich.hanjuku.state.regions import flow as _flow
+    from test_hanjuku_chart_bot import camp_menu
+    from test_hanjuku_retreat_recheck import FRAME, memory as recheck_memory
+
+    memory = recheck_memory()                 # valid queue row for ゼウス
+    _flow(memory)['retreat_rechecks']['ゼウス']['attempts'] = 3
+    _flow(memory)['recall'] = {'stage': 'menu', 'steps': 0, 'general': 'ゼウス',
+                               'target': [26, 66], 'task_recall': True,
+                               'boss_move': True, 'goal': 'けっかい'}
+    actions = camp_recheck.step(camp_menu(1), memory, FRAME,
+                                lambda *args, **kwargs: [p.pad('a')])
+    assert actions == [p.pad('a')]              # handed to the recall flow
+    recall = _flow(memory)['recall']
+    assert recall.get('anonymous_recheck') is not True
+    assert not any(r.get('decision') == 'retreat_recheck_unconfirmed'
+                   for r in memory['_records'])
+
+
+def test_an_ordinary_camp_recall_still_uses_the_retreat_recheck():
+    from docich import hanjuku_policy as p
+    from docich.hanjuku.flows import camp_recheck
+    from docich.hanjuku.state.regions import flow as _flow
+    from test_hanjuku_chart_bot import camp_menu
+    from test_hanjuku_retreat_recheck import FRAME, memory as recheck_memory
+
+    memory = recheck_memory()
+    _flow(memory)['retreat_rechecks']['ゼウス']['attempts'] = 0
+    _flow(memory)['recall'] = {'stage': 'menu', 'steps': 0, 'general': 'ゼウス',
+                               'target': [26, 66]}
+    actions = camp_recheck.step(camp_menu(1), memory, FRAME,
+                                lambda *args, **kwargs: [p.pad('a')])
+    # Without the task flag the same menu is adopted by the (here unproven)
+    # retreat recheck and closed with B; the task flag is the discriminator.
+    assert actions == [p.pad('b')]
+    assert any(r.get('decision') == 'retreat_recheck_unconfirmed'
+               for r in memory['_records'])
+
+
+def test_release_for_task_drops_the_stale_row():
+    from docich.hanjuku.flows import camp_recheck
+    from docich.hanjuku.state.regions import flow as _flow
+    from test_hanjuku_retreat_recheck import memory as recheck_memory
+
+    memory = recheck_memory()
+    assert camp_recheck.release_for_task(memory, 'ゼウス') is True
+    assert not _flow(memory).get('retreat_rechecks')
+    assert camp_recheck.release_for_task(memory, 'ゼウス') is False

@@ -295,6 +295,7 @@ KEY_OWNERSHIP = {
     'bijin_guard': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 美女イベントのプロンプトガード
     'boss_camp_exempt': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # ラン同一性リセットリスト(orchestrator:586)で管理される月次免除
     'boss_camp_exempt_scope': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 同上のスコープ
+    'boss_camp_counted': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # 免除月数の数え済み(将軍→月)
     'boss_card_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃手順のボス用カードホールド
     'boss_card_hold_scope': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スコープ
     'boss_entry_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス突入ホールド手順状態

@@ -1534,7 +1534,7 @@ IDLE_TEXT_HEAD = 16      # leading characters of the screen text kept
 # drop log can report exactly which observations were discarded.
 IDENTITY_RESET_KEYS = (
     'house', 'post_month_status', 'post_month_status_last', 'boss_camp_exempt',
-    'boss_camp_exempt_scope', 'general_statuses', 'house_field_scan',
+    'boss_camp_exempt_scope', 'boss_camp_counted', 'general_statuses', 'house_field_scan',
     'house_scan_tick', 'house_scan_month', 'month_roster_scan',
     'country_income', 'country_wages', 'recruit_field_scan_attempts',
     'recruit_month_scan_attempts', 'recruit_roster_attempts', 'house_eggs',
