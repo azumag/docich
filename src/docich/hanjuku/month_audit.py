@@ -620,16 +620,22 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
     # _decision_counts truncates its compact map to the 30 most frequent names;
     # a busy phase can therefore hide a real battle_start from this count.
     battle_starts = sum(1 for row in rows if row.get('decision') == 'battle_start')
+    from .. import hanjuku_chart as chart
     from .. import hanjuku_reference as reference
     boss_battles = sum(1 for row in rows if row.get('decision') == 'battle_start'
                        and (row.get('enemy') == current.get('boss_name')
                             or row.get('enemy') in reference.BOSS_GENERALS))
     signals = ['boss_no_battle']
-    if not mem.get('boss_cell'):
+    # A single measured boss cell and the pursuit state machine are specific
+    # to the moving-boss chapter. Chapter 4 has four static Shikiou sites, and
+    # other chapters use their charted boss castle directly; reporting these
+    # two moving-boss signals there is noise, not missing evidence.
+    moving_boss = current.get('chapter') == chart.MOVING_BOSS_CHAPTER
+    if moving_boss and not mem.get('boss_cell'):
         signals.append('boss_cell_missing')
     if not (mem.get('boss_hp_seen') or mem.get('boss_hp_history')):
         signals.append('boss_hp_missing')
-    if not any(name.startswith('boss_pursuit') for name in counts):
+    if moving_boss and not any(name.startswith('boss_pursuit') for name in counts):
         signals.append('boss_pursuit_idle')
     for name in _signals(context, counts, 0, 0, battle_starts):
         if name not in signals:
