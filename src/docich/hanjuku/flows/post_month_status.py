@@ -308,6 +308,79 @@ def _house_freshly_read(mem):
     return fresh
 
 
+def _count_boss_camps(mem, statuses, scope, boss_unlocked, *, fresh):
+    """Count consecutive months each general is observed camped at a boss site.
+
+    ``arm`` runs before the roster scan and may read a stale or cold row: a
+    battle can leave the cached location as ``field`` while the general is
+    still camped, and the old scope-gated count then dropped every month of
+    the siege (live g1342 2026-11-24/25: boss_camp_exempt 6 at 8-5 became
+    missing at 8-6, so キッシュ was re-ordered at the boss every month instead
+    of being recalled home). Counting is now idempotent per (general, month);
+    only a fresh complete scan may remove a resolved camp. A stale read adds
+    evidence but never erases it.
+    """
+    if not boss_unlocked:
+        mem.pop('boss_camp_exempt', None)
+        mem.pop('boss_camp_counted', None)
+        return
+    camping = {name for name, row in (statuses or {}).items()
+               if isinstance(row, dict) and row.get('location') == 'camp'
+               and _boss_camp_holds_siege(row)}
+    previous = {name: int(value) for name, value in
+                (mem.get('boss_camp_exempt') or {}).items()
+                if isinstance(name, str) and type(value) is int}
+    counted = mem.get('boss_camp_counted') or {}
+    if not isinstance(counted, dict) or counted.get('scope') != list(scope):
+        counted = {'scope': list(scope), 'names': {}}
+    names = counted.get('names') if isinstance(counted.get('names'), dict) else {}
+    if fresh:
+        for name in list(previous):
+            if name not in camping:
+                previous.pop(name, None)
+        for name in list(names):
+            if name not in camping:
+                names.pop(name, None)
+    def _long_camp_months(name):
+        """Months a measured camp has stayed unresolved since its recheck."""
+        row = (_flow(mem).get('retreat_rechecks') or {}).get(name) or {}
+        tick, now = row.get('tick'), mem.get('tick')
+        if (not isinstance(row, dict) or type(tick) is not int
+                or type(now) is not int or now <= tick
+                or row.get('chapter') != mem.get('chapter')
+                or receipts.run_identity(row.get('identity'))
+                != receipts.run_identity(mem.get('_run_identity'))):
+            return 0
+        usable = [int(value) for value in (mem.get('month_durations') or [])[-3:]
+                  if type(value) is int]
+        average = (sum(usable) // len(usable)) if usable else 1000
+        return max(0, (now - tick) // max(1, average))
+
+    month = scope[1] if len(scope) > 1 else None
+    for name in camping:
+        if names.get(name) != month:
+            # A lost counter cannot pin a general forever. The scoped recheck
+            # row is a measured "this camp is still unlocated" receipt; when it
+            # is already older than the exemption window, seed the count so the
+            # task becomes a plain recall home instead of another boss_move
+            # (live g1342 2026-11-25: キッシュ had been camped since 7-11).
+            observed = _long_camp_months(name) if not previous.get(name) else 0
+            if observed > BOSS_CAMP_EXEMPT_MONTHS:
+                previous[name] = observed
+            else:
+                previous[name] = int(previous.get(name) or 0) + 1
+            names[name] = month
+    if not camping and fresh:
+        mem.pop('boss_camp_exempt', None)
+        mem.pop('boss_camp_counted', None)
+        return
+    if previous:
+        mem['boss_camp_exempt'] = previous
+    else:
+        mem.pop('boss_camp_exempt', None)
+    mem['boss_camp_counted'] = {'scope': list(scope), 'names': names}
+
+
 def arm(mem):
     """The month alone never invalidates a verified per-general reading."""
     scope = [mem.get('chapter'), mem.get('month')]
@@ -445,22 +518,14 @@ def arm(mem):
     # the Y map shows our flag; do not wait for another roster SELECT.
     promoted = _promote_pending(mem, statuses)
     # Count each general observed camping on the boss castle once per month.
-    # ``arm`` can also be re-entered inside the same month after ``_finish``
-    # dropped the owner state, so gate the increment on the counted scope —
-    # never on the presence of a live owner.
+    # The count is idempotent per (general, month), so re-entering ``arm`` after
+    # ``_finish`` cannot double-count. A scan is due whenever this cached view is
+    # stale; that read may add a camp but must not erase months of evidence.
     boss_unlocked = _boss_unlocked(mem)
     if mem.get('boss_camp_exempt_scope') != scope:
         mem['boss_camp_exempt_scope'] = list(scope)
-        camping = ({
-            name for name, row in statuses.items()
-            if row.get('location') == 'camp' and _boss_camp_holds_siege(row)}
-            if boss_unlocked else set())
-        previous = mem.get('boss_camp_exempt') or {}
-        counted = {name: int(previous.get(name) or 0) + 1 for name in camping}
-        if counted:
-            mem['boss_camp_exempt'] = counted
-        else:
-            mem.pop('boss_camp_exempt', None)
+    _count_boss_camps(mem, statuses, scope, boss_unlocked,
+                      fresh=not scan and cache is not None)
     tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
                    camp_stays=_camp_stays(mem), road=_road_skips_checks(mem),
                    boss_unlocked=boss_unlocked, chapter=mem.get('chapter'))
@@ -1264,6 +1329,8 @@ def _complete_scan(mem, state):
                 tracking['remaining'] = len(carry)
         else:
             mem.pop('carry_tracking', None)
+    _count_boss_camps(mem, state['statuses'], list(state['scope']),
+                      _boss_unlocked(mem), fresh=True)
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
                             road=_road_skips_checks(mem),
@@ -2124,10 +2191,19 @@ def step(screen, mem, frame):
                          reason='ピッカーを閉じた直後のrelay帰還フローが残っているため、別将軍の帰還でflow.recallを上書きしない')
                 return []
             state.pop('relay_hold_logged', None)
+            # The monthly task is an explicit return instruction for this
+            # general. A stale retreat-recheck row (often from months ago,
+            # attempts already spent) must not adopt this camp menu and close
+            # it with B (live g1342 2026-11-24 23:41: キッシュ's boss_move was
+            # consumed by `retreat_recheck_unconfirmed`). Drop the row and mark
+            # the recall as task-owned; camp_recheck then hands it to recall.py.
+            from . import camp_recheck as camp_recheck_flow
+            camp_recheck_flow.release_for_task(mem, name)
             _flow(mem)['recall'] = {
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
                 'general': name, 'camp_kind': camp.get('kind'),
+                'task_recall': True,
                 # #4901: without the measured body cell the menu stage's
                 # flag->body retry can never arm on a task recall, so a tent
                 # whose flag cell does not open the menu loops
