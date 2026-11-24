@@ -1975,6 +1975,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.pop('expect_menu',None)
         mem.pop('menu_miss',None)   # a real menu proves the cell was correct
     flow=(mem.get('battle') or {}).get('card_flow')
+    # The persisted five-item scroll belongs to one battle menu only.  A stale
+    # policy.battle can outlive its battle (g1190 ch12 2026-11-24), so expiry
+    # is checked against every live frame, not only battle_end.
+    battle_menus_flow.expire_human_scroll(screen, mem)
     # A readable card name routes the open list, but a depleted list draws no
     # card name at all (g452 07:14: ヴィーナス had spent both イッテツーン, the
     # きりふだ menu showed nothing, the flow stayed on this text screen and
