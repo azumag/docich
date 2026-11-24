@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from docich.hanjuku.flows import boss_pursuit, house
+from docich.hanjuku.flows import boss_pursuit, house, post_month_status
 from docich.hanjuku.flows.battle_menus import orphan_battle_menu_step
 from docich.hanjuku.flows.status_panel import status_panel_owner_active
 from docich.hanjuku.os_layer.commands import pad
@@ -247,8 +247,54 @@ def test_dispatcher_does_not_let_the_monthly_scan_claim_another_generals_page():
     assert actions == [pad('b')]
     assert 'battle_status_screen_return' in decisions(result)
     state = result['policy']['post_month_status']
-    assert state['stage'] == 'status'
+    assert state['stage'] == 'blocked'
+    assert state['failure'] == 'status_general_mismatch'
     assert state['phase_reads'] == 0
+    assert not state['statuses']
+    recorded = decisions(result)
+    assert 'post_month_status_unverified' in recorded
+    assert 'house_egg_seen' not in recorded
+
+
+def test_named_status_owner_survives_an_unreadable_egg_row():
+    screen = panel()
+    # The owner still needs its bounded retry when the name is legible but the
+    # egg row is not. Do not let the name-only guard turn that into an early B.
+    screen.lines = [line for line in screen.lines if line.y != 111]
+    assert house.general_status_name(screen) == 'ヴィーナス'
+    monthly = policy(post_month_status=post_month_state())['policy']
+    monthly['_run_identity'] = dict(IDENTITY)
+    assert status_panel_owner_active(monthly, screen) is True
+    pursuit = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
+               'boss_pursuit': boss_probe(0)}
+    assert status_panel_owner_active(pursuit, screen) is True
+
+
+def test_post_month_status_does_not_record_a_different_generals_egg():
+    mem = policy(post_month_status=post_month_state(selected='ゼウス'))['policy']
+    mem['_run_identity'] = dict(IDENTITY)
+    mem['_records'] = []
+    screen = panel()
+    assert status_panel_owner_active(mem, screen) is False
+    assert post_month_status.step(screen, mem, None) == [pad('b')]
+    state = mem['post_month_status']
+    assert state['stage'] == 'blocked'
+    assert state['failure'] == 'status_general_mismatch'
+    recorded = decisions({'_records': mem['_records']})
+    assert 'post_month_status_unverified' in recorded
+    assert 'house_egg_seen' not in recorded
+    assert 'ヴィーナス' not in mem.get('house_eggs', {})
+
+
+def test_boss_pursuit_closes_a_different_generals_status_immediately():
+    mem = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
+           'boss_pursuit': {**boss_probe(0), 'general': 'ゼウス'}}
+    screen = panel()
+    assert status_panel_owner_active(mem, screen) is False
+    assert boss_pursuit.step(screen, mem, None) == [pad('b')]
+    assert mem['boss_pursuit']['outcome'] == 'status_general_mismatch'
+    assert mem['boss_pursuit']['fort_reads'] == 0
+    assert 'boss_pursuit_unverified' in decisions({'_records': mem['_records']})
 
 
 def test_monthly_scan_without_a_named_target_does_not_claim_the_page():
