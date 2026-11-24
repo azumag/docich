@@ -1757,6 +1757,37 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                              'garrison_rotate': True,
                              'note': f'暫定: 空の{castle}へ{_general_label(general)}を{source}から移動'})
             covered.add(castle)
+    # docich#5127: the recall flow registers ``roster_read_due`` in any
+    # chapter, but only chapter 9's corridor probe consumed it — and the boss
+    # wave only for a blind/kept launch_probe's own source. In every other
+    # chapter the due expired unread and the recalled general stayed
+    # unaccounted. Mint one read-only roster probe for the least-read due
+    # castle: the sortie menu's list read is the arrival receipt. The due is
+    # popped by the complete read (deploy._observe_garrison), never by the
+    # mint, so a rebuilt plan keeps offering the same step until the roster
+    # is actually read.
+    # Any order out of the due castle already opens its list, which consumes
+    # the due at the read — a second probe for the same source is noise.
+    opened = {o.get('source') for o in (*sorties['retake'], *sorties['attack'],
+                                      *moves, *staffing, *rotation,
+                                      *boss_wave_orders, *wave_orders)}
+    due_orders = []
+    due_sources = sorted((c for c in routes.roster_read_due(mem)
+                          if c in owned and c not in opened),
+                         key=lambda c: ((mem.get('route_probe_read_tick') or {}).get(c, 0), c))
+    if due_sources:
+        source = due_sources[0]
+        # The probe never launches: the boss castle label is legal from every
+        # chapter's own castle (``order_allowed``), and 'move' keeps the read
+        # out of the thin-army attack gate.
+        target = chart.boss_castle(chapter)
+        if target == source or target not in castles:
+            target = next((c for c in castles if c != source), source)
+        due_orders.append({
+            'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
+            'cards': [], 'after': None, 'purpose': 'move',
+            'source_probe': True, 'roster_probe': True,
+            'note': f'暫定: 帰還の到着確認として{source}の将軍一覧を読む'})
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
@@ -1799,8 +1830,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         front, tail = [], lead
     else:
         front, tail = lead[:1], lead[1:]
-    for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
-                  *attacks, *stage_more, *rotation, *wave_orders):
+    for order in (*due_orders, *front, *staffing, *waves, *boss_wave_orders,
+                  *tail, *attacks, *stage_more, *rotation, *wave_orders):
         if order.get('purpose') == 'move':
             leg = (order.get('source'), order.get('target'))
             if (leg[1], leg[0]) in pairs:
@@ -2240,6 +2271,18 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     def stable_step(order):
         identity = '|'.join(str(order.get(k) or '')
                             for k in ('purpose', 'source', 'target', 'general'))
+        if order.get('roster_probe') is True:
+            # A finished read settles the step 'done'; the same stamp rule as
+            # ``_mechanical_step`` keeps a later request for the same castle —
+            # a retained due after a partial read, or the next dispatch into
+            # it — from inheriting that finished status (docich#5127).
+            ticks = [s.get('tick') for _, s in routes.unread_dispatches(mem, order.get('source'))
+                     if isinstance(s, dict)]
+            stamp = max((t for t in ticks if type(t) is int), default=None)
+            if stamp is None:
+                read_tick = (_world(mem).get('garrison_tick') or {}).get(order.get('source'))
+                stamp = read_tick if type(read_tick) is int else 0
+            identity += '|probe:' + str(stamp)
         stable = steps.get(identity)
         if not stable:
             state['interim_count'] = state.get('interim_count', 0) + 1
