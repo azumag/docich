@@ -217,6 +217,7 @@ def _begin_human_scroll(cur, screen=None):
         'active': True,
         'ups': 0,
         'observations': 0,
+        'age': 0,
         'actor': _screen_ally_name(screen) if screen is not None else None,
         'last_frame': getattr(screen, 'frame_sha256', None) if screen is not None else None,
         'last_cursor': getattr(screen, 'menu_cursor', None) if screen is not None else None,
@@ -232,7 +233,7 @@ def _release_human_scroll(mem, cur, reason, *, observed=None):
     if not isinstance(state, dict):
         return
     metric = {'ups': state.get('ups'), 'exhausted': bool(state.get('exhausted')),
-              'observations': state.get('observations')}
+              'observations': state.get('observations'), 'age': state.get('age')}
     if observed:
         metric.update(observed)
     _record(mem, 'battle_menu_scroll_released', **_battle_labels(cur),
@@ -260,7 +261,8 @@ def _human_scroll_expired(screen, cur):
     if (isinstance(actor, str) and actor
             and isinstance(live, str) and live and actor != live):
         return True
-    if int(state.get('observations') or 0) > HUMAN_COMMAND_SCROLL_OBSERVATION_LIMIT:
+    if (int(state.get('observations') or 0) > HUMAN_COMMAND_SCROLL_OBSERVATION_LIMIT
+            or int(state.get('age') or 0) > HUMAN_COMMAND_SCROLL_OBSERVATION_LIMIT):
         return True
     return False
 
@@ -278,6 +280,9 @@ def expire_human_scroll(screen, mem):
     state = _human_scroll_state(cur)
     if not isinstance(state, dict):
         return
+    # Age every observation, including unreadable transients that never reach
+    # _human_scroll_step; otherwise a marker could outlive its menu.
+    state['age'] = int(state.get('age') or 0) + 1
     if not _human_scroll_expired(screen, cur):
         return
     _release_human_scroll(
