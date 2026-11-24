@@ -2042,3 +2042,26 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     audit.observe(runtime_dir, audit.capture(second), state(1, '1-1', 2), [miss],
                   now=1002, on_sealed=sealed.append)
     assert len(sealed) == 1
+
+
+def test_boss_battle_starts_are_counted_beyond_the_truncated_decision_map(tmp_path):
+    # Issue #5276: _decision_counts keeps only 30 names, so a busy phase can
+    # drop 'battle_start' from the compact map. The incident must still count
+    # every battle_start row directly.
+    current = {
+        'chapter': 9, 'boss_name': 'ハデス', 'bosses': ['ボス'],
+        'started_at': 1000.0, 'first_tick': 0, 'last_at': 1700.0,
+        'last_tick': 400, 'observations': 200, 'max_gap_s': 1.0,
+        'bot_version': 'synthetic-v1',
+    }
+    rows = [{'at': 1000.0 + i, 'decision': f'filler_{i:02d}'}
+            for i in range(30) for _ in range(2)]
+    rows.append({'at': 1700.0, 'decision': 'battle_start', 'enemy': '別の敵'})
+    state_value = _boss_state()
+    record = audit._build_boss_incident(str(tmp_path), state_value, state_value,
+                                        [], 1700.0, current, rows=rows)
+    assert 'battle_start' not in record['decisions']['counts']
+    assert record['boss_phase']['battle_starts'] == 1
+    assert record['sorties']['battle_starts'] == 1
+    assert record['battles']['decisions'] == 1
+

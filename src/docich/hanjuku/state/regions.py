@@ -206,6 +206,8 @@ KEY_OWNERSHIP = {
     'attack_defeat_hold': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの連続敗北クールダウン(v717)
     'attack_underpowered': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # chapter9 corridorの攻撃見送り記録(v725)
     'boss_cell_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスセルプローブ割当(リセット登録のみ・兄弟のboss_step_probeに同じ)
+    'boss_companion_source_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5276 出撃元のボス同行待ち時計(step別)
+    'boss_companion_source_wait_expired': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5276 出撃元待ちの満了証票(step別)
     'boss_egg_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # replan戦略層のボス卵待ち計画
     'boss_probe_rotation': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスプローブ割当の戦略管理
     'boss_relaunch': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボス再出撃の戦略管理
@@ -317,6 +319,7 @@ KEY_OWNERSHIP = {
     'castle_jump_skip': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スキップ
     'castle_jump_y': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上 Y 経路退避
     'castle_jump_menu_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # Xメニュー失敗回数(step別)
+    'castle_jump_stall_failures': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # #5275/#5276 城ジャンプ再開ループの停滞回数(step別)
     'general_jump': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # しょうぐん一覧SELECTジャンプ状態
     'general_jump_skip': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上スキップ
     'castle_status_as_list': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城ステータスをリストとして読む手順状態

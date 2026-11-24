@@ -737,6 +737,39 @@ def _boss_companion_wait_expired(mem, order):
     return True
 
 
+BOSS_COMPANION_SOURCE_WAIT_TICKS = 200   # ~5 min: then continue to the bounded deploy flow
+
+
+def _boss_companion_source_wait_expired(mem, order):
+    """Bound the planner's wait for an eligible boss companion at the source.
+
+    Keep an expiry receipt so repeated readiness checks cannot restart the
+    same step's deadline before the order reaches the deploy flow.
+    """
+    step = order.get('step')
+    if not isinstance(step, str) or not step:
+        return False
+    expired = mem.setdefault('boss_companion_source_wait_expired', {})
+    if expired.get(step) is True:
+        return True
+    wait = mem.setdefault('boss_companion_source_wait', {})
+    started = wait.get(step)
+    now = int(mem.get('tick') or 0)
+    if type(started) is not int:
+        wait[step] = now
+        return False
+    elapsed = now - started
+    if elapsed < BOSS_COMPANION_SOURCE_WAIT_TICKS:
+        return False
+    wait.pop(step, None)
+    expired[step] = True
+    _record(mem, 'boss_companion_source_timeout', chart_step=step,
+            target=order.get('target'),
+            observed_metric={'waited_ticks': elapsed},
+            reason='出撃元に適格な代役が来ないため待機上限で出撃手順へ進み、主人公単独の可否を実一覧で判断する')
+    return True
+
+
 def _ready(order, mem) -> bool:
     # docich#4690: a source-list probe carries no named general, so every
     # later readiness check (the corridor road gate included) answers for a
@@ -782,11 +815,10 @@ def _ready(order, mem) -> bool:
                 return False
         if (companion_source is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
-            # Chapter 4's summon sites retain their measured egg-holder gate.
-            # Other boss orders start the shared deadline here, before the
-            # planner can hide them from the deploy flow indefinitely.
+            # Chapter-4 summon sites keep their measured egg-holder gate. Other
+            # boss orders get a bounded source wait before reaching deploy.
             if (order.get('target') in chart.boss_sites(4)
-                    or not _boss_companion_wait_expired(mem, order)):
+                    or not _boss_companion_source_wait_expired(mem, order)):
                 return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (companion_source if _is_boss_order(order, mem)
@@ -2473,6 +2505,10 @@ def _finish_order(mem, state, **fields):
         flow_state = _flow(mem)
         for key in ('boss_companion_wait', 'boss_companion_wait_expired'):
             section = flow_state.get(key)
+            if isinstance(section, dict):
+                section.pop(step, None)
+        for key in ('boss_companion_source_wait', 'boss_companion_source_wait_expired'):
+            section = mem.get(key)
             if isinstance(section, dict):
                 section.pop(step, None)
     if step:
