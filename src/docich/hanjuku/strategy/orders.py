@@ -174,11 +174,15 @@ def _boss_companion_source(order, mem):
     chapter = mem.get('chapter') or 0
     owned = _owned(mem) & set(chart.castles(chapter))
     if order.get('target') in chart.boss_sites(4):
-        # Owner 2026-10-30: 強い将軍から. Every read list's strongest companion
-        # competes, not the chart source's first fit one (g1075 08:20-08:25
-        # sent each source's lone アルテミス 49/7, カペリーニ 63/7, ミュスカデ
-        # 57/9). The hero's castle, where joiners stand, is read first while
-        # no read list holds one as strong as the hero.
+        # Owner 2026-10-30 (強い将軍から) chose the strongest read companion.
+        # Owner 2026-11-05 later established that strength does not decide a
+        # boss fight (an egg does), and that among equally fit sources the
+        # shortest march goes first. g1342 2026-11-24 still paid cross-map
+        # marches: ポセイドン from アルカ to 南東 (1159 cells) while
+        # ネクスドリア (343) held a fit egg-holder, and ブカティーニ from
+        # フヌイヌム to 北西 (793) while アルカ (377) was closer. Pick a source
+        # inside the near-distance band; strength ranks within that band and
+        # a source outside it never wins on strength alone.
         best = {c: names[0] for c in owned
                 if (names := _order_hero_alternatives(order, mem, garrison.get(c), relaxed=False))}
         if not best:
@@ -191,8 +195,13 @@ def _boss_companion_source(order, mem):
         if (home in owned and garrison.get(home) is None
                 and not any(_boss_comparable(mem, g) for g in best.values())):
             return home
-        return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
-                   default=None)
+        if not best:
+            return None
+        distances = {c: _distance(chapter, c, order['target']) for c in best}
+        nearest = min(distances.values())
+        pool = [c for c, distance in distances.items()
+                if distance <= nearest * SEASON_SOURCE_NEAR_RATIO]
+        return max(pool, key=lambda c: (_strength(best[c]), -distances[c]))
     castles = [source] + sorted(owned - {source})
     need = chart.sender_min(chapter)
     sole = len(owned) <= 1
@@ -473,6 +482,13 @@ def _normal_missing(mem):
 # Owner 2026-10-30 (全城条件は厳しいため緩和): a 四季王 site may start while
 # one normal castle is missing or lost; two or more still waits for retakes.
 SEASON_SITE_MISSING_LIMIT = 1
+
+# Among 四季王 sources within this ratio of the nearest eligible march,
+# strength still ranks first; beyond it the shorter march wins. Owner
+# 2026-11-05: an egg, not strength, decides the boss fight. A 16-cell
+# difference (アルカ 739 vs アルマムーン 755 to 南西) stays strength-ranked,
+# while 343 vs 1159 to 南東 no longer pays the cross-map march.
+SEASON_SOURCE_NEAR_RATIO = 1.25
 
 
 def _season_site_ready(order, mem):
@@ -2085,6 +2101,32 @@ def _follow_general(mem, order, garrison, owned):
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
         base_source = order.get('source')
+        if order.get('target') in chart.boss_sites(4):
+            # The plan (LLM or mechanical) may pin a far castle because that
+            # is where its named general stands. A 四季王 site is not tied to
+            # that general: deploy picks the eligible egg-holder at the source.
+            # Redirect to the nearest eligible source so the march time is not
+            # paid on every wave (g1342 2026-11-24: 1159-cell and 793-cell
+            # marches while fit companions stood 343/377 cells away).
+            where = _boss_companion_source(order, mem)
+            overrides = _plan_region(mem).setdefault('source_override', {})
+            if where is None:
+                if overrides.pop(order['step'], None) is not None:
+                    _record(mem, 'boss_source_override_cleared', chart_step=order['step'],
+                            target=order.get('target'),
+                            reason='適格な卵持ち代役の記録が無いため、古い出撃元上書きを捨てて待機に戻す')
+                return
+            if where == base_source:
+                overrides.pop(order['step'], None)
+                return
+            if overrides.get(order['step']) != where:
+                overrides[order['step']] = where
+                _record(mem, 'boss_companion_source', chart_step=order['step'],
+                        observed_metric={'source': source, 'companion_at': where,
+                                         'distance': _distance(mem.get('chapter') or 0,
+                                                               where, order['target'])},
+                        reason='ボスへ最も近い適格な卵持ち代役の城を出撃元にする')
+            return
         if (general and general != NAME and base_source in owned
                 and general in (_known_roster(mem, garrison, base_source) or ())):
             overrides = _plan_region(mem).get('source_override') or {}
