@@ -60,6 +60,155 @@ CARD_LIST_SAME_FRAME_LIMIT = 12
 # 将軍を脅かさないので、卵・おくのてを消費せず白兵で処理する。
 MELEE_ONLY_SUMMONS = frozenset({'ゾンビ', 'ウゴカザル'})
 
+# Owner 2026-11-24: the five-item human command list (こうげき / もうこうげき /
+# たまごをつかう (grey) / きりふだ / たいきゃく) is a three-row window.  When it
+# was left scrolled to the bottom page, the bot saw only きりふだ/たいきゃく and
+# sent B 297 times; B does not close this box (measured 2026-11-24, 10/40-frame
+# presses changed nothing).  Walk the cursor up one row per observation until
+# the cursor row is exactly こうげき, then confirm.  The bound is well above the
+# measured four ups; the overrun holds instead of falling back to B.
+HUMAN_COMMAND_SCROLL_UP_LIMIT = 6
+HUMAN_COMMAND_SCROLL_KEY = 'human_command_scroll'
+
+
+def _cursor_exact_label(screen):
+    """Exactly the row text under the measured cursor, or None when unread.
+
+    The same list contains こうげき and もうこうげき, and the latter contains
+    the former as a substring.  Every caller must compare the whole row, never
+    use a substring test, or it would confirm もうこうげき (measured: Ku-mon
+    swallows Athena on that row).
+    """
+    y = getattr(screen, 'menu_cursor', None)
+    if type(y) is not int:
+        return None
+    for line in getattr(screen, 'menu_rows', ()) or ():
+        if line.y != y:
+            continue
+        spans = [(x, word) for x, word in line.spans() if x >= 176]
+        return spans[0][1] if len(spans) == 1 else None
+    return None
+
+
+def _human_five_item_box(screen, labels=None):
+    """The scrolled human command list: きりふだ visible, no おくのて row.
+
+    A grey たまご row is not read as text, so the bottom/middle pages show
+    きりふだ without たまご.  A real egg-battle box carries たまご (white or
+    grey) and its 4th おくのて row; neither is this list.
+    """
+    if labels is None:
+        labels = {word for _, _, word in _options(screen)}
+    if getattr(screen, 'kind', None) not in ('battle_menu', 'egg_battle_menu'):
+        return False
+    if getattr(screen, 'menu_cursor', None) not in (176, 192, 196, 208, 212):
+        return False
+    if (getattr(screen, 'hidden_battle_commands', False)
+            or getattr(screen, 'disabled_item_box', False)
+            or getattr(screen, 'okunote_only_box', False)):
+        return False
+    # The human command list is drawn over the live battle panel.  A bare
+    # menu with no HP rows is a synthetic/legacy card-flow box, not this list.
+    if not getattr(screen, 'egg_rows', None):
+        return False
+    return ('きりふだ' in labels and 'おくのて' not in labels
+            and 'たまごをつかう' not in labels)
+
+
+def _human_scroll_state(cur):
+    return cur.get(HUMAN_COMMAND_SCROLL_KEY) if isinstance(cur, dict) else None
+
+
+def _human_scroll_active(cur):
+    state = _human_scroll_state(cur)
+    return isinstance(state, dict) and state.get('active') is True
+
+
+def _human_scroll_owns(screen, labels, cur, *, chapter=None):
+    """True while the measured five-item scroll owns this command box.
+
+    The evidence is specific to the ch12 boss command list observed in g1190.
+    Other chapters have real grey-egg summon menus with the same OCR shape;
+    their existing card/egg owner must retain control.
+    """
+    if chapter != 12:
+        return False
+    if _human_five_item_box(screen, labels):
+        return True
+    if not _human_scroll_active(cur):
+        return False
+    if getattr(screen, 'menu_cursor', None) is None:
+        return False
+    if not labels or labels.intersection({'おくのて', 'たまごをつかう'}):
+        return False
+    # The upper page drops きりふだ from OCR; only the attack rows remain.
+    return bool(labels.intersection({'こうげき', 'もうこうげき', 'きりふだ', 'たいきゃく'}))
+
+
+def _stale_battle_actor(screen, cur):
+    """The screen's own general is not the one policy.battle remembers.
+
+    g1190 ch12 2026-11-24: policy.battle still held エストラゴン/カシス while
+    the live frame was アテナ vs クーモン.  The stale enemy general is normal in
+    a summon fight (the panel names the monster), so only the ally row is
+    evidence; the general cannot be replaced between observations.
+    """
+    if not isinstance(cur, dict):
+        return False
+    ally = cur.get('ally')
+    names = [row.name for row in (getattr(screen, 'egg_rows', ()) or ())
+             if row.side == 'ally' and isinstance(row.name, str) and row.name]
+    return bool(isinstance(ally, str) and ally and names and ally not in names)
+
+
+def _begin_human_scroll(cur):
+    """Create the persisted scroll episode once; never restart an exhausted one."""
+    state = _human_scroll_state(cur)
+    if isinstance(state, dict):
+        return state
+    state = cur[HUMAN_COMMAND_SCROLL_KEY] = {'active': True, 'ups': 0}
+    return state
+
+
+def _human_scroll_step(screen, mem, cur, labels):
+    """One closed-loop up per observation until the cursor row is こうげき.
+
+    Returns a pad action list, or None when no scroll episode is active.  The
+    episode is popped only after A on the exact こうげき row, so a mid-scroll
+    page change to ``egg_battle_menu`` cannot make the egg owner scroll down
+    again.  On the bounded overrun the episode records why and holds: it never
+    sends B and never restarts the same six ups.
+    """
+    state = _human_scroll_state(cur)
+    if not isinstance(state, dict) or state.get('active') is not True:
+        return None
+    exact = _cursor_exact_label(screen)
+    if exact == 'こうげき':
+        cur.pop(HUMAN_COMMAND_SCROLL_KEY, None)
+        _record(mem, 'battle_menu_scroll_attack', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                                 'cursor_label': exact, 'ups': state.get('ups')},
+                reason='五項目コマンドリストを上へ戻し、カーソル行が完全一致でこうげきになったためAで確定する')
+        return [pad('a')]
+    if state.get('exhausted'):
+        return []
+    ups = int(state.get('ups') or 0)
+    if ups < HUMAN_COMMAND_SCROLL_UP_LIMIT:
+        state['ups'] = ups + 1
+        _record(mem, 'battle_menu_scroll_up', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                                 'cursor_label': exact, 'up_attempt': ups + 1,
+                                 'limit': HUMAN_COMMAND_SCROLL_UP_LIMIT},
+                reason='攻撃コマンドが上にスクロールアウトした五項目リストのため、Bではなく上へ戻す')
+        return [pad('up')]
+    state['exhausted'] = True
+    _record(mem, 'battle_menu_scroll_exhausted', **_battle_labels(cur),
+            observed_metric={'labels': sorted(labels), 'cursor_y': screen.menu_cursor,
+                             'cursor_label': exact, 'ups': ups,
+                             'limit': HUMAN_COMMAND_SCROLL_UP_LIMIT},
+            reason='有界な上スクロール上限でもこうげき行を観測できないため、Bを送らず入力を保留する')
+    return []
+
 
 def _is_empty_card_list_text(screen: Screen) -> bool:
     """True when the battle card box explicitly states no cards are carried."""
@@ -961,7 +1110,14 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
-    if _screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur):
+    _labels = {word for _, _, word in _options(screen)}
+    # A measured five-item scroll owns this box even before the B fallback:
+    # its きりふだ/たいきゃく-only bottom page is not a modal overlay.  An
+    # active card flow still owns the menu: it deliberately walks to きりふだ.
+    _scroll_owned = not flow and _human_scroll_owns(
+        screen, _labels, cur, chapter=mem.get('chapter'))
+    if (_screen_egg_empty(screen, mem, cur) and not _own_egg_empty(mem, cur)
+            and not _scroll_owned):
         _record(mem, 'battle_egg_actor_unconfirmed',
                 reason='実画面の本人は残数0のため、旧戦闘文脈で卵を選ばず戻る')
         return [pad('b')]
@@ -984,22 +1140,32 @@ def battle_menu_step(screen: Screen, mem):
             mem['egg_action'] = 'use_egg'
             if isinstance(cur, dict) and isinstance(cur.get('independent'), dict):
                 cur['independent']['action'] = 'use_egg'
-    _labels = {word for _, _, word in _options(screen)}
     _plain_attack_box = ('こうげき' in _labels and 'たいきゃく' in _labels
                          and not _labels.intersection({'おくのて', 'たまごをつかう', 'きりふだ'}))
+    if _scroll_owned:
+        _begin_human_scroll(cur)
+        scroll = _human_scroll_step(screen, mem, cur, _labels)
+        if scroll is not None:
+            return scroll
     _sha = getattr(screen, 'frame_sha256', None)
     _recent = [d for d in (cur.get('menu_recent') or []) if isinstance(d, str)][:2]
     cur['menu_same'] = int(cur.get('menu_same') or 0) + 1 if _sha in _recent else 0
     if _sha is not None:
         cur['menu_recent'] = ([_sha] + [d for d in _recent if d != _sha])[:2]
+    _modal_box = bool(getattr(screen, 'hidden_battle_commands', False)
+                      or getattr(screen, 'disabled_item_box', False)
+                      or getattr(screen, 'okunote_only_box', False))
     if (int(cur.get('menu_same') or 0) >= 10
             and _labels and 'たいきゃく' in _labels
-            and not _labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'})):
-        # A command box with no usable command is a modal overlay: A on the
-        # dead きりふだ row does nothing. B closes it and the melee resumes
-        # (owner 2026-11-16).
+            and not _labels.intersection({'こうげき', 'もうこうげき', 'たまごをつかう'})
+            and (_modal_box or (screen.menu_cursor is None and not screen.menu_rows))):
+        # A command box with no usable command and no readable rows/cursor is
+        # a modal overlay: A on the dead きりふだ row does nothing. B closes
+        # it and the melee resumes (owner 2026-11-16). A readable 5-item list
+        # is never closed with B; it is scrolled up above (owner 2026-11-24).
         _record(mem, 'battle_menu_close', **_battle_labels(cur),
-                observed_metric={'labels': sorted(_labels)},
+                observed_metric={'labels': sorted(_labels), 'modal_box': _modal_box,
+                                 'cursor_y': screen.menu_cursor},
                 reason='攻撃コマンドの無い戦闘メニューはBで閉じて白兵へ戻る')
         return [pad('b')]
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
@@ -2316,6 +2482,21 @@ def _defender_summon_egg_menu(screen, mem, battle):
         return None
     guard = battle.setdefault('okunote_summon_preempt', {'opens': 0})
     labels = [w for _, _, w in _options(screen)]
+    if (mem.get('chapter') == 12 and 'おくのて' not in labels
+            and 'たまごをつかう' not in labels
+            and (_human_five_item_box(screen, set(labels))
+                 or _human_scroll_active(battle)
+                 or _stale_battle_actor(screen, battle))):
+        # The human command list has no おくのて row. Its upper page reads as
+        # this egg box, and a stale policy.battle used to send the cursor back
+        # down to the bottom page after every up. Never scroll it.
+        if not guard.get('human_command_list'):
+            guard['human_command_list'] = True
+            _record(mem, 'battle_okunote_summon_human_menu', **_battle_labels(battle),
+                    observed_metric={'visible': labels, 'cursor_y': screen.menu_cursor,
+                                     'stale_actor': _stale_battle_actor(screen, battle)},
+                    reason='人間用五項目コマンドリストにおくのて行は無いため、下方スクロールせず実コマンドへ戻す')
+        return None
     from . import okunote
     if 'おくのて' in labels:
         move = _menu_move_batch(screen, 'おくのて', _battle_menu_to(screen, 'おくのて'))
@@ -2436,6 +2617,24 @@ def egg_battle_step(screen: Screen, mem):
         mem.pop('enemy_general_menu', None)
         mem.pop('enemy_general_menu_pending', None)
         return [pad('a')]
+    _labels = {word for _, _, word in _options(screen)}
+    _battle_ctx = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    # The same five-item list is classified egg_battle_menu once きりふだ drops
+    # off its upper page. The persisted scroll episode (or a stale policy.battle
+    # whose ally is not the general on the panel) owns it here too: never scroll
+    # it back down and never confirm もうこうげき (owner 2026-11-24).  A real
+    # egg box with たまご/おくのて visible keeps its own owner.
+    _human_menu = (
+        _human_scroll_owns(screen, _labels, _battle_ctx, chapter=mem.get('chapter'))
+        or (_stale_battle_actor(screen, _battle_ctx)
+            and bool(_labels.intersection({'こうげき', 'もうこうげき'}))
+            and not _labels.intersection({'たまごをつかう', 'おくのて'}))
+    )
+    if mem.get('chapter') == 12 and _battle_ctx and _human_menu:
+        _begin_human_scroll(_battle_ctx)
+        _scroll = _human_scroll_step(screen, mem, _battle_ctx, _labels)
+        if _scroll is not None:
+            return _scroll
     partial_enemy = _partial_enemy_general_command(screen)
     if partial_enemy:
         for key in ('egg_battle', 'egg_action', 'egg_key', 'egg_needed',
