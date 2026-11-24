@@ -150,6 +150,7 @@ class EnvelopeValidationTests(unittest.TestCase):
 
 class AuthTests(unittest.TestCase):
     def setUp(self):
+        auth.reset_replay_cache()
         self.secret = auth.parse_key(base64.urlsafe_b64encode(SYNTHETIC_SECRET).decode())
         self.headers = auth.build_headers(self.secret, ts=int(NOW), nonce="a1b2c3d4")
 
@@ -170,6 +171,22 @@ class AuthTests(unittest.TestCase):
         tampered = dict(self.headers, **{"X-Docich-Bridge": value})
         self.assertEqual(auth.verify_headers(tampered, secret=self.secret, now=NOW),
                          (False, "auth_failed"))
+
+    def test_replay_within_skew_is_rejected(self):
+        # Same nonce re-sent within the skew window is a replay.
+        self.assertEqual(auth.verify_headers(self.headers, secret=self.secret, now=NOW),
+                         (True, "ok"))
+        self.assertEqual(auth.verify_headers(self.headers, secret=self.secret, now=NOW + 30),
+                         (False, "replay_detected"))
+
+    def test_replay_allowed_after_skew_expiry(self):
+        # Same nonce with a fresh timestamp is accepted once the skew window
+        # has elapsed (the cache entry is evicted after skew).
+        self.assertEqual(auth.verify_headers(self.headers, secret=self.secret, now=NOW),
+                         (True, "ok"))
+        rotated = auth.build_headers(self.secret, ts=int(NOW + 120), nonce="a1b2c3d4")
+        self.assertEqual(auth.verify_headers(rotated, secret=self.secret, now=NOW + 120),
+                         (True, "ok"))
 
     def test_invalid_bridge_key_is_rejected(self):
         with self.assertRaises(ValueError):

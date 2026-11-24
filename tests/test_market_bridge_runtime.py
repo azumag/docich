@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 import sys
 import tempfile
 import threading
@@ -18,7 +19,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "infra" / "market-bridge"))
 
-from mbridge.common.auth import build_headers  # noqa: E402
+from mbridge.common.auth import build_headers, reset_replay_cache  # noqa: E402
 from mbridge.common.contract import (Candidate, Quote, Snapshot,  # noqa: E402
                                      validate_envelope)
 from mbridge.common.timeutil import Caller, DeadlineExceeded  # noqa: E402
@@ -287,6 +288,7 @@ class Mt5ChildTests(unittest.TestCase):
 
 class BridgeServerTests(unittest.TestCase):
     def setUp(self):
+        reset_replay_cache()
         self.adapter = FakeReadingAdapter(ready_reading())
         self.server = BridgeServer(market="stocks", adapter=self.adapter, secret=SECRET,
                                    clock=lambda: NOW, request_deadline_s=0.2)
@@ -298,7 +300,8 @@ class BridgeServerTests(unittest.TestCase):
         self.server.stop()
 
     def _request(self, method, path, *, body=None, auth=True):
-        headers = build_headers(SECRET, ts=int(NOW), nonce="a1b2c3d4") if auth else {}
+        headers = (build_headers(SECRET, ts=int(NOW), nonce=secrets.token_hex(8))
+                   if auth else {})
         data = json.dumps(body).encode() if body is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json"

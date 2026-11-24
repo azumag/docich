@@ -10,12 +10,47 @@ import base64
 import hashlib
 import hmac
 import re
+import threading
 from typing import Mapping
 
 TS_RE = re.compile(r"\d{10,12}\Z")
 NONCE_RE = re.compile(r"[0-9a-f]{8,64}\Z")
 HEADER = "X-Docich-Bridge"
 KEY_ID_HEADER = "X-Docich-Key-Id"
+
+# Server-side replay cache: (key_id, nonce) -> expiry timestamp.
+# An accepted nonce is remembered until ``now + max_skew_s`` so the same nonce
+# cannot be reused within the skew window.  Entries are lazily evicted at their
+# expiry, keeping the cache bounded by the skew window and allowing a nonce to
+# be reused only after the window elapses.  Guarded by a lock because the
+# bridge server handles requests on multiple threads.
+_REPLAY_LOCK = threading.Lock()
+_REPLAY_CACHE: dict[tuple[str, str], float] = {}
+
+
+def reset_replay_cache() -> None:
+    """Test-only: forget every remembered nonce."""
+    with _REPLAY_LOCK:
+        _REPLAY_CACHE.clear()
+
+
+def _record_nonce(key_id: str, nonce: str, now: float, max_skew_s: float) -> bool:
+    """Return False if the nonce is still within its skew window (a replay).
+
+    Only called after the HMAC signature has been verified, so unauthenticated
+    attempts never pollute the cache.  The entry expires at ``now +
+    max_skew_s`` and is lazily evicted, so a nonce may legitimately be reused
+    once the skew window has elapsed.
+    """
+    with _REPLAY_LOCK:
+        expiry = now + max_skew_s
+        stale = [k for k, e in _REPLAY_CACHE.items() if e <= now]
+        for k in stale:
+            del _REPLAY_CACHE[k]
+        if (key_id, nonce) in _REPLAY_CACHE:
+            return False
+        _REPLAY_CACHE[(key_id, nonce)] = expiry
+        return True
 
 
 def key_id_for(secret: bytes) -> str:
@@ -72,4 +107,8 @@ def verify_headers(headers: Mapping[str, str], *, secret: bytes, now: float,
     expected = signature(secret, ts, parts[1])
     if not hmac.compare_digest(parts[2], expected):
         return False, "auth_failed"
+    # Replay guard: reject a nonce already used within the skew window.  Checked
+    # only after a valid signature so invalid attempts never occupy the cache.
+    if not _record_nonce(key_id, parts[1], now, max_skew_s):
+        return False, "replay_detected"
     return True, "ok"
