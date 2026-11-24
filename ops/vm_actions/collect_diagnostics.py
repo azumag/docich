@@ -8157,6 +8157,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1488-discharge-last-general",
             "hanjuku-chart-v1488-summon-card-without-egg",
             "hanjuku-chart-v1489-discharge-last-general",
+            "hanjuku-chart-v1490-fort-recall-picker-owner-bounded",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
 
