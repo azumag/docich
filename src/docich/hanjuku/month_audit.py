@@ -2411,7 +2411,6 @@ def _sortie_cards_event(record, mem, records=None):
         'inventory': dict(sorted(stock.items())[:12]),
         'planned_cards': [card for card in (order.get('cards') or [])
                           if isinstance(card, str)][:12],
-        'carried': [],
         'reason': _bounded_text(record.get('reason'), 200),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
     }
