@@ -32,6 +32,7 @@ PLANNED = frozenset({
     'order_substitute', 'battle_survival', 'battle_card', 'month_plan', 'buy',
     'soldier_refill', 'prompt', 'gift', 'egg_battle', 'independent_menu',
     'chart_adjust_request', 'chart_interim_order', 'chart_interim_hold',
+    'boss_last_general_order',
 })
 
 
@@ -233,6 +234,10 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'chart_interim_hold':
         # Only when there is literally nothing left to retake, attack or staff.
         return 'jev_interim_hold', '動かせる将軍と攻め先が無いため、調整チャートを待っています。'
+    if kind == 'boss_last_general_order':
+        return (f'boss_last_general:{step}',
+                f"全城を実測しても予備の将軍が残らないため、ボス追跡のために"
+                f"{rec.get('source')}の最後の1将軍{rec['general']}を出します。")
     if kind == 'battle_okunote_risk_accepted':
         metric = rec.get('observed_metric') or {}
         hp = metric.get('ally_hp')
@@ -250,6 +255,7 @@ SPOKEN = frozenset({
     'battle_egg_dropped', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
+    'boss_last_general_order',
     'castle_lost_observed', 'castle_owned_observed', 'soldier_refill_outcome',
     'battle_rescue_rearmed', 'battle_okunote_risk_accepted'})
 

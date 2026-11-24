@@ -1636,6 +1636,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    state['bot_version']='hanjuku-chart-v1456-boss-last-general'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1456-boss-last-general'
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
@@ -1876,6 +1878,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1420-chikujou-reserve-check",
                  "hanjuku-chart-v1424-sortie-measured-kit",
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
+                 "hanjuku-chart-v1456-boss-last-general",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

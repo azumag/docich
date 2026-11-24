@@ -809,7 +809,10 @@ def _ready(order, mem) -> bool:
         # one-general last castle was started every ~85 steps and never
         # launched (g1190 17-x). Other boss charts (chapter 4's sites) keep
         # their measured one-general reprobe rule.
-        if chart.corridor(mem.get('chapter') or 0):
+        # docich#5082: the bounded ``boss_last_general`` order is exactly the
+        # one-general sortie this gate rejects; its own episode guards bound it.
+        if (chart.corridor(mem.get('chapter') or 0)
+                and order.get('boss_last_general') is not True):
             source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
             if source_names is not None and len(set(source_names)) < 2:
                 return False
@@ -2259,6 +2262,8 @@ def _defense_break_allowed(order, mem):
 def _reserve_source_guard(order, mem):
     if chart.guard_free(mem.get('chapter')):
         return False        # chapter 9 (owner 2026-11-09): a castle may send its last general
+    if order.get('boss_last_general') is True:
+        return False        # docich#5082: the boss-phase exception empties the source on purpose
     if _defense_break_allowed(order, mem):
         return False
     # Original chart offensives and boss waves retain their sequences. A
@@ -2413,6 +2418,7 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
         return False   # fresh joiners are checked by _keep_sortie_defender
     if (_plan_region(mem).get('active') != order.get('step')
             and not chart.guard_free(mem.get('chapter'))
+            and order.get('boss_last_general') is not True
             and isinstance(present, (list, tuple)) and present
             and len(set(present) - unavailable) < 2):
         return True  # pre-flight only: never reopen a plan for the last defender
