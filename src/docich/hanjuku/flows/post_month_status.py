@@ -1917,22 +1917,22 @@ def step(screen, mem, frame):
         walked = [name for name in (state.get('walked') or ())
                   if isinstance(name, str) and name]
         if selected in state['names'] or selected in skipped:
-            # Use the walk order (which includes skipped pages), not the
-            # successfully-read names, for the wrap and last-row proofs.  With
-            # a skipped first general, names[0]/names[-1] would miss the real
-            # end of the roster.
-            first = walked[0] if walked else (state['names'][0] if state['names'] else None)
-            last = walked[-1] if walked else (names[-1] if names else None)
+            # A skipped first general is absent from names, so the wrap proof
+            # uses the walk order then.  Without a skip the legacy proofs apply
+            # unchanged (names[0], the screen's own last row, len(names)).
+            first = (walked[0] if skipped and walked
+                     else state['names'][0] if state['names'] else None)
+            read_count = len(state['names']) + len(skipped)
             at_end = (house._roster_scroll_end(screen, frame)
                       or (len(names) < receipts.VISIBLE_NAME_ROWS
-                          and selected == last))
+                          and selected == names[-1]))
             wrapped = selected == first and state.get('list_moves', 0) > 0
             if (at_end or wrapped) and _complete_scan(mem, state):
                 state.pop('end_stall', None)
                 state.pop('end_stall_selected', None)
                 return [pad('b')]
-            if (len(walked) >= receipts.VISIBLE_NAME_ROWS
-                    and selected == last):
+            if (read_count >= receipts.VISIBLE_NAME_ROWS
+                    and selected == names[-1]):
                 # Full-page non-wrapping list (live 299x224): down on the last
                 # row never moves and never shows scroll-end pixels. Count the
                 # stall and let a passing membership proof finish the walk.
