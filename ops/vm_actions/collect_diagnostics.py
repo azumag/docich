@@ -8106,6 +8106,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1446-password-measured-order",
             "hanjuku-chart-v1446-boss-companion-wait-bound",
             "hanjuku-chart-v1447-password-measured-order",
+            "hanjuku-chart-v1448-auto-carry-safe-card",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",
