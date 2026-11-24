@@ -1,0 +1,65 @@
+"""docich#5421: a Y jump must not unpack a boss label that has no cell.
+
+Live g1342 2026-11-24 22:14 JST: a chapter-4 boss_move recall pressed Y on
+the いどう destination picker. ``chart.boss_castle(4)`` is the shared label
+'ボス' and chapter 4 has no such castle, so ``boss_probe_cell`` returned None
+and ``_y_jump_step`` raised TypeError on every observation. The brain exited
+code 2 with no input, which looked like the whole-map G cursor stopping.
+"""
+from docich.hanjuku.flows import recall
+from docich.hanjuku.os_layer import navigation as nav
+from docich.hanjuku.os_layer.commands import pad
+
+
+def _mem(**extra):
+    return {'chapter': 4, 'tick': 100, '_records': [],
+            'y_jump': {'goal': 'ボス', 'mode': 'target', 'step': 'RECALL',
+                       'moves': 0, 'wait': 0, 'tick': 100,
+                       'goal_cell': None}, **extra}
+
+
+def test_an_unresolved_goal_closes_the_view_and_records_it(monkeypatch):
+    monkeypatch.setattr(nav, 'world_cursor',
+                        lambda frame, chapter=None: (100.0, 100.0))
+    mem = _mem()
+    actions = nav._y_jump_step(mem, None)
+    assert actions == [pad('y')]              # close, never decide blind
+    assert 'y_jump' not in mem
+    assert mem['y_jump_last']['why'] == 'goal_unresolved'
+    record = mem['_records'][-1]
+    assert record['decision'] == 'y_jump_failed'
+    assert record['resulting_event'] == 'goal_unresolved'
+    # the recall route owns this signature, never a target-sortie one
+    assert record['chart_step'] == 'RECALL'
+    assert record['observed_metric'] == {'chapter': 4, 'goal': 'ボス'}
+
+
+def test_a_real_chapter_four_site_still_steers_the_cursor(monkeypatch):
+    monkeypatch.setattr(nav, 'world_cursor',
+                        lambda frame, chapter=None: (100.0, 100.0))
+    mem = _mem()
+    mem['y_jump'].update(goal='四季王城(北東)', goal_cell=None)
+    actions = nav._y_jump_step(mem, None)
+    assert actions and all(action['type'] == 'pad' for action in actions)
+    assert {action['buttons'][0] for action in actions} == {'right', 'up'}
+    assert 'y_jump' in mem                     # still aiming
+    assert not [r for r in mem['_records'] if r.get('decision') == 'y_jump_failed']
+
+
+def test_a_goal_cell_that_is_not_a_pair_is_rejected():
+    jump = {'goal': 'ボス', 'step': 'RECALL'}
+    assert nav._jump_goal_cell({'chapter': 4}, jump, 4) is None
+    assert nav._jump_goal_cell({'chapter': 4}, {'goal': '四季王城(北東)',
+                                                'step': 'RECALL'}, 4) == (882, 125)
+    assert nav._jump_goal_cell({'chapter': 4}, jump, 99) is None
+
+
+def test_chapter_four_boss_move_goal_uses_the_measured_site():
+    mem = {'chapter': 4}
+    assert recall._boss_move_goal(
+        mem, {'goal': 'ボス', 'camp_world': [880, 120]}, None) == '四季王城(北東)'
+    # an already concrete, existing castle name is kept as-is
+    assert recall._boss_move_goal(
+        mem, {'goal': '四季王城(南西)'}, None) == '四季王城(南西)'
+    # no measured position: never invent one of the four sites
+    assert recall._boss_move_goal(mem, {'goal': 'ボス'}, None) is None

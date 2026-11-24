@@ -145,6 +145,24 @@ def _boss_move_ready(info):
             and maximum > 0 and hp > maximum // 2)
 
 
+def _boss_move_goal(info, chapter):
+    """The measured boss site a boss_move job aims at, or None.
+
+    ``chart.boss_castle(4)`` is the shared label 'ボス' and chapter 4 has no
+    such cell: its boss is spread over four 四季王 sites. The roster marker
+    already measured which site this general is camped at/next to, so carry
+    that name instead of the label. Live g1342 2026-11-24 22:14 aimed a
+    chapter-4 boss_move Y jump at 'ボス' and the brain raised on every
+    observation (docich#5421).
+    """
+    from ... import hanjuku_chart as chart
+    marker = info.get('marker')
+    candidate = marker.get('castle_candidate') if isinstance(marker, dict) else None
+    if isinstance(candidate, str) and chart.castles(chapter or 0).get(candidate):
+        return candidate
+    return None
+
+
 def _road_skips_checks(mem):
     """Chapter 9 before its boss phase: no monthly locate or camp recall.
 
@@ -180,7 +198,7 @@ def _boss_unlocked(mem):
 
 
 def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
-           boss_unlocked=True):
+           boss_unlocked=True, chapter=None):
     """``camp_stays``: a moving-boss chapter never recalls a camp home (owner
     2026-11-09); the camp is re-sent at the boss by the camp flow instead.
     ``road``: chapter 9 before the boss phase keeps only repairs."""
@@ -213,7 +231,20 @@ def _tasks(statuses, names, boss_camp_months=None, camp_stays=False, road=False,
                 # #3505: an intact siege camper marches on to the boss by the
                 # camp menu's いどう instead of idling the exempt months away.
                 if _boss_move_ready(info):
-                    queue.append({'kind': 'boss_move', 'name': name})
+                    # ``chapter=None`` keeps the historical shape for callers
+                    # that did not measure a chapter (unit fixtures); the live
+                    # arm path always passes it, so a chapter-4 site name is
+                    # carried instead of the label 'ボス'.
+                    goal = (_boss_move_goal(info, chapter)
+                            if chapter is not None else None)
+                    if goal:
+                        queue.append({'kind': 'boss_move', 'name': name,
+                                      'goal': goal})
+                    elif chapter is None:
+                        queue.append({'kind': 'boss_move', 'name': name})
+                    # No measured single site (chapter 4 without a roster
+                    # marker): keep the siege exemption. A boss_move aimed at
+                    # the label 'ボス' has no cell and froze the Y jump.
                 continue
             queue.append({'kind': 'recall', 'name': name})
         elif info.get('location') == 'castle':
@@ -432,7 +463,7 @@ def arm(mem):
             mem.pop('boss_camp_exempt', None)
     tasks = _tasks(statuses, list(statuses), mem.get('boss_camp_exempt'),
                    camp_stays=_camp_stays(mem), road=_road_skips_checks(mem),
-                   boss_unlocked=boss_unlocked)
+                   boss_unlocked=boss_unlocked, chapter=mem.get('chapter'))
     if not scan and not manifest_due and not tasks:
         # Common case: zero input and zero roster navigation this month.
         mem['post_month_status_last'] = {
@@ -1236,7 +1267,8 @@ def _complete_scan(mem, state):
     state['tasks'] = _tasks(state['statuses'], state['names'],
                             mem.get('boss_camp_exempt'), camp_stays=_camp_stays(mem),
                             road=_road_skips_checks(mem),
-                            boss_unlocked=_boss_unlocked(mem))
+                            boss_unlocked=_boss_unlocked(mem),
+                            chapter=mem.get('chapter'))
     mem['general_statuses'] = {
         'scope': list(state['scope']), 'identity': state['identity'],
         'statuses': state['statuses'], 'dirty': {}, 'pending_joins': [],
@@ -2102,7 +2134,8 @@ def step(screen, mem, frame):
                 # camp_menu_not_opened until it aborts.
                 **({'camp_body': body}
                    if (body := camp_body_target(frame, camp['target'])) else {}),
-                **({'boss_move': True} if job['kind'] == 'boss_move' else {})}
+                **({'boss_move': True} if job['kind'] == 'boss_move' else {}),
+                **({'goal': job['goal']} if job.get('goal') else {})}
             # docich#5105: the visible-camp path binds origin/camp_world at
             # creation; a task recall never did, so _recall_goal could not
             # locate this camp for the いどう→Y route. The SELECT-centred

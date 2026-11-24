@@ -37,8 +37,10 @@ def _mem_with_status(row, month='2-6'):
 def test_a_healthy_boss_camper_gets_a_boss_move_task():
     mem = _mem_with_status({**CAMPED, 'hp': 49, 'max_hp': 49})
     post.arm(mem)
+    # The live arm path knows the chapter, so the task carries the measured
+    # site (chapter 4's boss is four sites; docich#5421).
     assert mem['post_month_status']['tasks'] == [
-        {'kind': 'boss_move', 'name': 'ゼウス'}]
+        {'kind': 'boss_move', 'name': 'ゼウス', 'goal': BOSS}]
 
 
 def test_an_injured_boss_camper_keeps_the_plain_exemption():
