@@ -10,10 +10,10 @@
 
 ## 結論: (d) 判定不能 — #5324 と近い防衛待ちだが、この occurrence の根因は特定できない
 
-issue の記録では、月内に次の読み取り専用プローブが行われ、その後に `chart_defense_wait` が記録されている。
+月内集計欄は確定/発射/`order_start`/`order_launched` がすべて0である。一方、incident JSON の `after`（本文の「翌5分」窓）には、次の読み取り専用プローブと待機が記録されている。**これらは月内集計ではなく、検出後の翌5分の観測である。**
 
 1. `グリン` の城一覧を開く → `roster_probe_complete` → `order_done`
-2. `メガパタ` の城一覧を開く → `roster_probe_complete` → `order_done`
+2. 調整チャート適用後、`メガパタ` を出撃元とする読み取り注文 → 城一覧を開く → `roster_probe_complete` → `order_done`
 3. `chart_defense_wait`: 「出撃元に将軍2人以上を残す制約で候補0件」
 4. その後 `defense_observed`、戦闘へ遷移
 
