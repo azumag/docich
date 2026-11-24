@@ -2799,6 +2799,38 @@ def _enemy_command_wait(mem, key, scope, decision, metric, wait_reason,
     return []
 
 
+def _summon_card_row_hidden(screen, battle, *, cards_left, empty_egg):
+    """A carried card is still unrevealed in the summon command box.
+
+    Owner 2026-11-22: in an enemy-summon fight the きりふだ row sits below
+    たまごをつかう and is absent from the command text until the box scrolls,
+    so a carried card must be revealed and opened before こうげき.
+    Owner 2026-11-25: ボス戦や敵が召喚獣をだしたとき、卵を持っておらず
+    きりふだを持っている場合は切り札を使う.
+
+    A greyed or spent egg row drops out of the white OCR (measured in
+    ``os_layer/screen.py``: たまごをつかう drops out of OCR), so "no egg row
+    in a measured summon command box" is the same no-egg evidence as an
+    observed zero count.  The old gate required the row or a measured zero and
+    therefore never scrolled, and the turn attacked with the card in hand
+    (card_miss series #5259/#5322/#5331/#5352/#5362/#5373/#5381/#5398).
+
+    This only decides navigation.  Opening still requires the readable
+    きりふだ row, so an unread or greyed frame can never spend a card.
+    ``screen.kind`` is required for the missing-row branch: a message panel
+    keeps the egg-battle latch and can contain こうげき wording, and spending
+    the bounded scroll budget there would leave the real box unscrolled.
+    """
+    if not cards_left or battle.get('card_flow') or 'きりふだ' in (screen.text or ''):
+        return False
+    text = screen.text or ''
+    if 'たまごをつかう' in text or empty_egg:
+        return True
+    if battle.get('summon_egg_unavailable'):
+        return True   # the defence summon box already proved the egg row dead
+    return screen.kind == 'egg_battle_menu' and ('こうげき' in text or 'もうこうげき' in text)
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -3113,15 +3145,16 @@ def egg_battle_step(screen: Screen, mem):
         # こうげき while a carried card was still in planned_cards.  In a
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
         # the visible command text until the box scrolls down; open it first.
-        if (cards_left and 'きりふだ' not in (screen.text or '')
-                and ('たまごをつかう' in (screen.text or '') or empty_egg)
-                and not battle.get('card_flow')):
+        if _summon_card_row_hidden(screen, battle, cards_left=cards_left,
+                                   empty_egg=empty_egg):
             scrolls = int(battle.get('summon_card_scroll') or 0)
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
                 battle['summon_card_scroll'] = scrolls + 1
                 _record(mem, 'battle_summon_card_scroll', **_battle_labels(battle),
                         observed_metric={'scrolls': scrolls + 1, 'cards_left': list(cards_left),
-                                         'text': (screen.text or '')[:60]},
+                                         'text': (screen.text or '')[:60],
+                                         'screen_kind': screen.kind,
+                                         'empty_egg': bool(empty_egg)},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
         resume = battle.get('summon_card_resume')
@@ -3138,6 +3171,10 @@ def egg_battle_step(screen: Screen, mem):
                                        'note': ('召喚会話で中断された携行切り札を再開'
                                                 if resume else '敵召喚獣戦の携行切り札を開幕使用'),
                                        'enemy_hp_at_open': battle.get('enemy_hp')}
+                # A later card in the same fight needs its own bounded look at
+                # the box, which returns to the top page after the list closes
+                # (owner 2026-11-24: 2枚目以降の切り札も開く).
+                battle['summon_card_scroll'] = 0
                 battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
                         card=card,
@@ -3267,10 +3304,23 @@ def egg_battle_step(screen: Screen, mem):
                     and not battle.get('boss_card_missed_noted')):
                 battle['boss_card_missed_noted'] = True
                 _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
+                        # The month audit projects the battle identity from
+                        # these top-level fields (#5398 was filed as
+                        # 戦闘: 不明 / 城: 不明 / 画面: None, which left the
+                        # summon-vs-boss and attack-vs-defence question open).
+                        ally=battle.get('ally'), enemy=battle.get('enemy'),
+                        castle=battle.get('castle'), side=battle.get('side'),
+                        screen_kind=screen.kind,
                         observed_metric={'cards_left': list(cards_left),
                                          'screen': screen.kind,
                                          'text': (screen.text or '')[:80],
                                          'scrolls': battle.get('summon_card_scroll'),
+                                         'summon_egg_unavailable': bool(
+                                             battle.get('summon_egg_unavailable')),
+                                         'empty_egg': bool(empty_egg),
+                                         'enemy_summon_observed': bool(
+                                             battle.get('enemy_summon_observed')
+                                             or battle.get('card_summon_observed')),
                                          'cursor': screen.menu_cursor},
                         reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         return [pad('a')] if move == 'here' else _emit_moves(move)
