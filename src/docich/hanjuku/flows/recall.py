@@ -2080,6 +2080,36 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
                                 'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
 
 
+def _boss_move_goal(mem, state, marker=None):
+    """The concrete boss site this いどう aims at, or None.
+
+    #3505 assumes one boss castle, but chapter 4 spreads the boss over four
+    四季王 sites and ``chart.boss_castle(4)`` answers the label 'ボス' with no
+    cell. Live g1342 2026-11-24 22:14: a chapter-4 boss_move recall pressed Y
+    with that goal, ``_y_jump_step`` could not unpack a cell and the brain
+    raised on every observation (the whole-map G cursor appeared stopped).
+    Prefer the goal the monthly task measured from the roster marker, then the
+    site nearest the measured camp; never invent a site from nothing.
+    """
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    goal = state.get('goal')
+    if isinstance(goal, str) and cells.get(goal):
+        return goal
+    sites = [name for name in chart.boss_sites(chapter)
+             if isinstance(name, str) and cells.get(name)]
+    if len(sites) == 1:
+        return sites[0]
+    if not sites:
+        return None
+    anchor = state.get('camp_world') or state.get('origin')
+    if (isinstance(anchor, (list, tuple)) and len(anchor) == 2
+            and all(type(value) is int for value in anchor)):
+        return min(sites, key=lambda name: (abs(cells[name][0] - anchor[0])
+                                            + abs(cells[name][1] - anchor[1]), name))
+    return None
+
+
 def _boss_move_dest_step(screen, mem, frame, state, marker):
     """Aim the destination marker at the boss castle and confirm (いどう).
 
@@ -2089,7 +2119,7 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
     measured on the cell, never a blind confirm.
     """
     from . import map as _map
-    goal = state.get('goal') or chart.boss_castle(mem.get('chapter') or 0)
+    goal = _boss_move_goal(mem, state, marker)
     state['goal'] = goal
     if not goal or not marker or frame is None:
         state['boss_lost'] = int(state.get('boss_lost') or 0) + 1

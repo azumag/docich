@@ -159,6 +159,52 @@ class BotExitDiagnosticTest(unittest.TestCase):
         self.assertEqual(out["actions"], actions)
         self.assertIn("persist_failed KeyError", err)
 
+    def test_a_policy_exception_is_handed_to_the_recurrence_counter(self):
+        # docich#5421: the same TypeError on every observation sends no input,
+        # so the second occurrence must reach the issue filer's counter.
+        state = {"policy": {"chapter": 4, "month": "8-1"},
+                 "decision_trace": {"runtime_id": "g1"}}
+        calls = []
+        with mock.patch.object(bot.fault_issue, "note_fault",
+                               side_effect=lambda *a, **k: calls.append(k)):
+            try:
+                raise TypeError("cannot unpack non-iterable NoneType object")
+            except TypeError as exc:
+                bot._note_exception_fault(
+                    {"runtime": bot.ROOT / "run" / "runtimes" / "x",
+                     "state": state,
+                     "meta": {"hanjuku": {"runtime_id": "g1"}}},
+                    exc, "TypeError(...) at navigation.py:642:_y_jump_step")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["kind"], bot.fault_issue.KIND_BRAIN_ERROR)
+        self.assertTrue(calls[0]["signature"].startswith("TypeError@"))
+        self.assertIn("_y_jump_step", calls[0]["detail"])
+        self.assertEqual(calls[0]["chapter"], 4)
+        self.assertEqual(calls[0]["month"], "8-1")
+
+    def test_a_configuration_error_before_the_state_load_is_not_reported(self):
+        calls = []
+        with mock.patch.object(bot.fault_issue, "note_fault",
+                               side_effect=lambda *a, **k: calls.append(k)):
+            try:
+                raise ValueError("wrong game")
+            except ValueError as exc:
+                bot._note_exception_fault({}, exc, "ValueError('wrong game')")
+        self.assertEqual(calls, [])
+
+    def test_a_recall_yjump_failure_reaches_the_recurrence_counter(self):
+        actions = [{"type": "pad", "buttons": ["y"], "hold_ms": 100}]
+        record = {"decision": "y_jump_failed", "chart_step": "RECALL",
+                  "resulting_event": "goal_unresolved", "target": "ボス"}
+        calls = []
+        with mock.patch.object(bot.fault_issue, "note_decision_faults",
+                               side_effect=lambda *a, **k: calls.append((a, k))):
+            code, err, out = _decided(actions, {"step": 1, "_records": [record]})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out["actions"], actions)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["chapter"], None)
+
 
 if __name__ == "__main__":
     unittest.main()

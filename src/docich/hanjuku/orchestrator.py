@@ -1128,6 +1128,7 @@ def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
         decision_log._record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
                              screen=screen.kind,
                              observed_metric={'moves': jump.get('moves'), 'unknown_holds': held},
+                             resulting_event='view_unreadable',
                              reason='全体マップのジャンプ中に読めない画面が続いたため、ジャンプを中断して既定の入力に戻す')
         return None
     jump['unknown_holds'] = held + 1

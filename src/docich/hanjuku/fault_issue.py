@@ -1,0 +1,238 @@
+"""File one GitHub issue when the same bot failure recurs.
+
+The brain exits code 2 for an ``invalid observation``/``policy_error`` and the
+agent then sends no input for that observation. A single such exit is a
+fail-soft by design; the same signature returning every few hundred
+milliseconds is a real defect that silently freezes the run (live g1342
+2026-11-24 22:14: a chapter-4 boss_move Y jump aimed at the label 'ボス',
+``boss_probe_cell`` returned None, and the unpack raised on every observation
+while the whole-map G cursor looked stopped).
+
+The existing monthly audit already knows how to dedupe, redact and file an
+issue (``month_audit.file_issue``/``spawn_issue_filer``). This module reuses
+that pipeline instead of opening a second one: it keeps a small per-runtime
+counter, and once one signature repeats within a window it appends a sealed
+``brain_error``/``y_jump_stall`` incident and starts the same detached gh
+filer. It never sends game input and never waits for gh.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+import traceback
+from pathlib import Path
+
+from ..game_switch import atomic_write_json
+from . import month_audit
+
+FAULTS_FILE = 'hanjuku_faults.json'
+FAULTS_SCHEMA = 1
+FAULTS_READ_LIMIT = 64 * 1024
+FAULT_ENTRIES = 24              # bounded signatures kept per runtime
+FAULT_THRESHOLD = 3             # same signature occurrences that count as a recurrence
+FAULT_WINDOW_SECONDS = 1800     # occurrences further apart start a new episode
+FAULT_COOLDOWN_SECONDS = 6 * 3600   # one filed issue per signature per cooldown
+FAULT_DETAIL_LIMIT = 400
+FAULT_SAMPLES = 5
+
+KIND_BRAIN_ERROR = 'brain_error'
+KIND_YJUMP_STALL = 'y_jump_stall'
+
+
+def exception_signature(exc, where='') -> str:
+    """A stable, secret-free identity for one exception.
+
+    The innermost project frame plus the exception class is what "the same
+    failure" means here; the message and observation data are deliberately
+    not part of the key so a changing score or cell still dedupes.
+    """
+    frames = [frame for frame in traceback.extract_tb(exc.__traceback__)
+              if '/lib/python' not in frame.filename]
+    head = frames[-1] if frames else None
+    location = (f'{Path(head.filename).name}:{head.lineno}:{head.name}'
+                if head is not None else 'unknown')
+    if not location and where:
+        location = where[:120]
+    return f'{type(exc).__name__}@{location}'
+
+
+def _entry_count(entry):
+    value = entry.get('count') if isinstance(entry, dict) else None
+    return value if type(value) is int and value > 0 else 0
+
+
+def _number(value):
+    return value if type(value) in (int, float) and value >= 0 else None
+
+
+def _load(path):
+    try:
+        if path.is_symlink() or not path.is_file():
+            return {'schema': FAULTS_SCHEMA, 'entries': {}}
+        raw = path.read_bytes()[:FAULTS_READ_LIMIT]
+        data = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return {'schema': FAULTS_SCHEMA, 'entries': {}}
+    if not isinstance(data, dict) or data.get('schema') != FAULTS_SCHEMA:
+        return {'schema': FAULTS_SCHEMA, 'entries': {}}
+    entries = data.get('entries')
+    return {'schema': FAULTS_SCHEMA,
+            'entries': entries if isinstance(entries, dict) else {}}
+
+
+def _prune(entries):
+    rows = [(key, entry) for key, entry in entries.items()
+            if isinstance(key, str) and isinstance(entry, dict)]
+    rows.sort(key=lambda item: _number(item[1].get('last_at')) or 0, reverse=True)
+    return dict(rows[:FAULT_ENTRIES])
+
+
+def _save(path, state):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, {'schema': FAULTS_SCHEMA,
+                             'entries': _prune(state.get('entries') or {})})
+
+
+def _sample(record):
+    return {key: record.get(key) for key in
+            ('at', 'decision', 'chart_step', 'target', 'general', 'reason',
+             'resulting_event', 'observed_metric')
+            if record.get(key) is not None}
+
+
+def _incident(*, kind, signature, count, first_at, last_at, detail,
+              identity, chapter, month, bot_version, runtime, records,
+              fingerprint, incident_id):
+    window = max(0.0, float(last_at) - float(first_at))
+    samples = [_sample(row) for row in (records or ())[:FAULT_SAMPLES]
+               if isinstance(row, dict)]
+    return {
+        'schema': month_audit.SCHEMA,
+        'kind': kind,
+        'confidence': 'high',
+        'signature': signature,
+        'fingerprint': fingerprint,
+        'incident_id': incident_id,
+        'created_at': float(last_at),
+        'auto_file': True,
+        'chapter': chapter,
+        'month': month,
+        'confidence_reasons': [
+            f'同じ失敗 {signature} が {count} 回再発（{int(window)}秒以内）',
+        ],
+        'fault': {
+            'signature': signature,
+            'count': count,
+            'detail': (detail or '')[:FAULT_DETAIL_LIMIT],
+            'first_at': float(first_at),
+            'last_at': float(last_at),
+            'window_s': round(window, 1),
+        },
+        'evidence': {
+            'identity': identity if isinstance(identity, dict) else {},
+            'bot_version': bot_version,
+            'runtime_dir': str(runtime),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+        },
+        'month_summary': {
+            'chapter': chapter,
+            'month': month,
+            'observations': count,
+            'duration_s': round(window, 1),
+            'max_gap_s': 0.0,
+        },
+        'decisions': {'before': samples, 'counts': {}},
+        'plan': {},
+        'world': {},
+        'sorties': {},
+    }
+
+
+def note_fault(runtime, *, signature, detail='', kind=KIND_BRAIN_ERROR,
+               identity=None, chapter=None, month=None, bot_version=None,
+               records=None, now=None, threshold=FAULT_THRESHOLD,
+               window=FAULT_WINDOW_SECONDS, cooldown=FAULT_COOLDOWN_SECONDS):
+    """Count one failure; file/comment once the same one recurs.
+
+    Returns ``{'status': ...}``; any filesystem or gh problem is reported as
+    a status value instead of raising into the caller's decision loop.
+    """
+    runtime = Path(runtime)
+    if not isinstance(signature, str) or not signature:
+        return {'status': 'invalid_signature'}
+    if runtime.is_symlink():
+        return {'status': 'invalid_runtime'}
+    now = float(time.time() if now is None else now)
+    path = runtime / FAULTS_FILE
+    state = _load(path)
+    entries = state.get('entries') or {}
+    entry = entries.get(signature)
+    entry = entry if isinstance(entry, dict) else {}
+    last = _number(entry.get('last_at'))
+    count = (_entry_count(entry)
+             if last is not None and now - last <= float(window) else 0)
+    first = (_number(entry.get('first_at'))
+             if count and _number(entry.get('first_at')) is not None else now)
+    count += 1
+    reported = _number(entry.get('reported_at'))
+    due = (count >= int(threshold)
+           and (reported is None or now - reported >= float(cooldown)))
+    result = {'status': 'counted', 'count': count, 'signature': signature}
+    if due:
+        digest = hashlib.sha1(f'{kind}:{signature}'.encode('utf-8')).hexdigest()[:16]
+        incident_id = f'{digest}-{int(now)}-{count}'
+        record = _incident(kind=kind, signature=signature, count=count,
+                           first_at=first, last_at=now, detail=detail,
+                           identity=identity, chapter=chapter, month=month,
+                           bot_version=bot_version, runtime=runtime,
+                           records=records, fingerprint=digest,
+                           incident_id=incident_id)
+        try:
+            month_audit.record_incident(runtime, record)
+            filed = month_audit.spawn_issue_filer(runtime, record)
+        except (OSError, month_audit.AuditError) as exc:
+            result.update(status='fault_write_failed',
+                          error=type(exc).__name__)
+        else:
+            entry['reported_at'] = now
+            result.update(status='reported' if filed else 'recorded',
+                          incident_id=incident_id, fingerprint=digest)
+    entries[signature] = {
+        'kind': kind,
+        'count': count,
+        'first_at': first,
+        'last_at': now,
+        **({'reported_at': entry['reported_at']} if entry.get('reported_at') else {}),
+        **({'incident_id': result.get('incident_id')} if result.get('incident_id') else {}),
+    }
+    state['entries'] = entries
+    try:
+        _save(path, state)
+    except OSError:
+        result['status'] = result.get('status', 'counted')
+        result['state_error'] = True
+    return result
+
+
+def note_decision_faults(runtime, records, *, identity=None, chapter=None,
+                         month=None, bot_version=None, now=None):
+    """Count recurring recall Y-jump failures from one observation's records."""
+    hits = {}
+    for record in records or ():
+        if not isinstance(record, dict) or record.get('decision') != 'y_jump_failed':
+            continue
+        if record.get('chart_step') != 'RECALL':
+            continue
+        event = record.get('resulting_event') or 'unknown'
+        hits.setdefault(f'y_jump_failed:RECALL:{event}', record)
+    results = []
+    for signature, record in hits.items():
+        detail = f"{record.get('target') or '不明'}: {record.get('reason') or ''}"
+        results.append(note_fault(
+            runtime, signature=signature, detail=detail,
+            kind=KIND_YJUMP_STALL, identity=identity, chapter=chapter,
+            month=month, bot_version=bot_version, records=[record], now=now))
+    return results

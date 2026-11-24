@@ -3229,6 +3229,16 @@ def _append_incident(runtime, record, on_sealed=None):
         on_sealed(record)
 
 
+def record_incident(runtime, record, on_sealed=None):
+    """Append one already-sealed incident (fault_issue reuses this pipeline).
+
+    The monthly audit owns the incident log format, the gh dedupe and the
+    secret scan; a non-monthly producer must not write a second log.
+    """
+    _append_incident(runtime, record, on_sealed)
+    return record
+
+
 ISSUE_LOG = 'hanjuku_month_audit_issue.log'
 ISSUE_LOG_LIMIT = 1024 * 1024
 
@@ -3676,6 +3686,17 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    fault = record.get('fault') or {}
+    if kind in ('brain_error', 'y_jump_stall'):
+        body += [
+            ('### brain例外' if kind == 'brain_error' else '### 帰還Yジャンプの失敗'),
+            '',
+            f"- 署名: {fault.get('signature') or '不明'}",
+            f"- 再発: {fault.get('count')}回 / 初回 {_clock(fault.get('first_at'))}"
+            f" / 最終 {_clock(fault.get('last_at'))} / window {fault.get('window_s')}秒",
+            f"- 詳細: {_md(fault.get('detail'))}",
+            '',
+        ]
     if stall:
         body += [
             '### コーナー停止',
@@ -3914,6 +3935,22 @@ def render_comment(record):
             f"- 時刻: {_clock(battle.get('at'))}",
             f"- incident_id: {BT}{record.get('incident_id')}{BT}",
         ])
+    fault = record.get('fault') or {}
+    if record.get('kind') in ('brain_error', 'y_jump_stall'):
+        label = ('brain例外' if record.get('kind') == 'brain_error'
+                 else '帰還Yジャンプ失敗')
+        return '\n'.join([
+            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            f"### 再発: {label}",
+            '',
+            f"- 署名: {fault.get('signature') or '不明'}",
+            f"- 章: ch{record.get('chapter')} {record.get('month') or ''}",
+            f"- 再発: {fault.get('count')}回 / 初回 {_clock(fault.get('first_at'))}"
+            f" / 最終 {_clock(fault.get('last_at'))}",
+            f"- 詳細: {_md(fault.get('detail'))}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     month = record.get('month_summary') or {}
     sorties = record.get('sorties') or {}
     labels = [SIGNAL_LABELS.get(name, name) for name in record.get('signals') or []]
@@ -4052,6 +4089,14 @@ def _issue_title(record):
     if kind == 'boss_phase_no_battle':
         boss = (record.get('boss_phase') or {}).get('boss_name') or 'ボス'
         return f"[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch{record.get('chapter')} {boss}"[:100]
+    if kind == 'brain_error':
+        fault = record.get('fault') or {}
+        return (f"[半熟英雄] brain例外で入力停止が再発: ch{record.get('chapter')} "
+                f"{fault.get('signature') or '不明'}")[:100]
+    if kind == 'y_jump_stall':
+        fault = record.get('fault') or {}
+        return (f"[半熟英雄] 帰還Yジャンプ失敗が再発: ch{record.get('chapter')} "
+                f"{fault.get('signature') or '不明'}")[:100]
     label = PRIMARY_LABELS.get(record.get('signature'), '原因未分類')
     return f"{TITLE_PREFIX}: ch{record.get('chapter')} {label}"[:100]
 
