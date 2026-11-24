@@ -37,6 +37,45 @@ def listing(gold=300, rows=(('ノリウツール', 18),), selected=0):
     return screen
 
 
+def test_mickey_is_bought_before_the_cheaper_kuusukan(ready):
+    # g1342 6-7/6-8: the catalogue order filled the cheaper クースカン first and
+    # ミックミー got 0 copies for months. The recommended set is
+    # クースカン+ミックミーx2, so the same budget must now buy ミックミー.
+    rows = (('クースカン', 24), ('ミックミー', 40))
+    b.plan_bargains(ready, ready['shop'], listing(gold=200, rows=rows).header,
+                    listed=dict(rows))
+    items = dict(ready['shop']['items'])
+    assert items.get('ミックミー') == 2
+    assert items.get('クースカン') == 1
+    assert ready['shop']['items'][0][0] == 'ミックミー'
+
+
+def test_the_half_price_cart_buys_a_listed_target_with_unread_stock(ready):
+    # ch4's card census aborts (observation_limit), so a never-owned kind stays
+    # unknown and ミックミー could never be bought. At the half-price cart a real
+    # listing is price evidence, and the ask stays bounded by the target.
+    ready['card_stock'].pop('ミックミー')
+    ready['shop']['cheap_vendor'] = True
+    rows = (('ミックミー', 20),)
+    b.plan_bargains(ready, ready['shop'], listing(gold=300, rows=rows).header,
+                    listed=dict(rows))
+    assert ['ミックミー', 2] in ready['shop']['items']
+
+
+def test_an_ordinary_merchant_still_leaves_unread_stock_alone(ready):
+    # The 2026-11-22 rule stays for the monthly merchant: only the half-price
+    # cart may ask for a kind whose count was never read.
+    ready['card_stock'].pop('ミックミー')
+    rows = (('ミックミー', 40),)
+    b.plan_bargains(ready, ready['shop'], listing(gold=300, rows=rows).header,
+                    listed=dict(rows))
+    assert not any(name == 'ミックミー' for name, _ in ready['shop']['items'])
+
+
+def test_bargain_order_covers_every_target():
+    assert set(b.BARGAIN_ORDER) == set(b.BARGAIN_TARGETS)
+
+
 def test_empty_plan_buys_a_visible_strong_card_with_spare_cash(ready):
     assert p.shop_step(listing(), ready) == [p.pad('a')]
     assert ready['shop']['want'] == ['ノリウツール', 3, 18]
@@ -56,7 +95,8 @@ def test_monthly_plan_opens_merchant_without_a_chart_card_order():
 
 def test_actual_cart_stock_replaces_unavailable_provisional_candidates(ready):
     b.plan_bargains(ready, ready['shop'], listing().header)
-    assert ready['shop']['items'][0][0] == 'ノリウツール'
+    # The priority order starts with ミックミー (owner 2026-11-24).
+    assert ready['shop']['items'][0][0] == 'ミックミー'
     # This vendor has only ミックミー: do not walk away just because the
     # first two provisional candidates consumed the preliminary budget.
     assert p.shop_step(listing(rows=(('ミックミー', 40),)), ready) == [p.pad('a')]
