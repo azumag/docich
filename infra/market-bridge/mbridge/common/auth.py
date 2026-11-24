@@ -34,11 +34,11 @@ def reset_replay_cache() -> None:
         _REPLAY_CACHE.clear()
 
 
-def _record_nonce(key_id: str, nonce: str, signed_ts: int, max_skew_s: float) -> str:
+def _record_nonce(key_id: str, nonce: str, signed_ts: int, max_skew_s: float, now: float) -> str:
     """Return a fixed reason code; capacity exhaustion fails closed.
 
     Only called after the HMAC signature has been verified, so unauthenticated
-    attempts never pollute the cache.  The entry expires at ``now +
+    attempts never pollute the cache.  The entry expires at ``signed_ts +
     max_skew_s`` and is lazily evicted, so a nonce may legitimately be reused
     once the skew window has elapsed.
     """
@@ -113,7 +113,7 @@ def verify_headers(headers: Mapping[str, str], *, secret: bytes, now: float,
         return False, "auth_failed"
     # Replay guard: reject a nonce already used within the skew window.  Checked
     # only after a valid signature so invalid attempts never occupy the cache.
-    replay_reason = _record_nonce(key_id, parts[1], ts, max_skew_s)
+    replay_reason = _record_nonce(key_id, parts[1], ts, max_skew_s, now)
     if replay_reason != "ok":
         return False, replay_reason
     return True, "ok"
