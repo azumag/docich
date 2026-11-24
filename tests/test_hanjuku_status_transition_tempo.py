@@ -57,11 +57,13 @@ def test_early_old_roster_does_not_resend_a_or_keep_fast_polling():
     assert 'どうし' not in state['policy']['post_month_status']['statuses']
 
 
-def test_another_generals_status_does_not_count_as_the_requested_panel():
+def test_another_generals_status_leaves_the_requested_panel_immediately():
     _, state, _ = open_status()
     actions, state = decide(status('ゼウス'), state)
-    assert actions == []
+    assert actions == [commands.pad('b')]
     assert entry.observation_interval_ms(state, actions) == 1500
+    assert state['policy']['post_month_status']['stage'] == 'blocked'
+    assert state['policy']['post_month_status']['failure'] == 'status_general_mismatch'
     assert not state['policy']['post_month_status']['statuses']
 
 
