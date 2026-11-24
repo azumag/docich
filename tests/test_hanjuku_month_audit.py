@@ -321,12 +321,31 @@ def test_boss_battle_evidence_is_not_only_battle_start():
     assert audit._boss_battle_seen(value, [], 9, 'ハデス') is True
 
 
-def _run_boss(runtime, count=401, *, battle_at=None, hp=False):
+def _run_boss(runtime, count=401, *, battle_at=None, hp=False,
+              live_sortie=False, sortie_age=10):
     for index in range(count):
         at = 1000 + index * STEP
         value = _boss_state(month='1-1', tick=index)
         if hp:
             value['policy']['boss_hp_seen'] = {'hp': 50, 'castle': 'ボス', 'tick': index}
+        if live_sortie:
+            value['policy']['tick'] = index + sortie_age
+            value['policy']['world']['sorties'] = {
+                'boss-en-route': {
+                    'status': 'en_route', 'general': 'G1', 'source': 'S',
+                    'target': 'ボス', 'purpose': 'attack', 'tick': index,
+                },
+                'boss-unconfirmed': {
+                    'status': 'launched_unconfirmed', 'general': 'G2', 'source': 'S',
+                    'target': 'ボス', 'purpose': None, 'tick': index,
+                },
+            }
+            value['policy']['world']['launched_orders'] = {
+                'boss-unconfirmed': {
+                    'target': 'ボス', 'source': 'S', 'general': 'G2',
+                    'purpose': 'attack', 'tick': index,
+                },
+            }
         records = []
         if battle_at == index:
             records = [{'decision': 'battle_start', 'enemy': 'ハデス', 'at': at}]
@@ -347,6 +366,35 @@ def test_boss_phase_without_a_battle_is_recorded_after_the_grace(runtime_dir):
     assert record['boss_phase']['observed_s'] >= audit.BOSS_NO_BATTLE_SECONDS
     assert 'ボスフェーズでボス戦闘ゼロ' in audit._issue_title(record)
     assert '### ボスフェーズ' in audit.render(record)
+
+
+def test_boss_phase_with_live_boss_attack_sorties_is_deferred_until_they_settle(runtime_dir):
+    _run_boss(runtime_dir, live_sortie=True)
+    assert audit.load_incidents(runtime_dir) == []
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['boss']['reported'] is False
+    assert saved['boss']['live_boss_sortie_deferred'] is True
+
+    # Once the boss-targeted orders settle, the already-expired phase is
+    # evaluated on the next observation instead of being suppressed forever.
+    value = _boss_state(tick=401)
+    value['policy']['world']['sorties'] = {
+        'boss-en-route': {'status': 'arrived', 'target': 'ボス',
+                          'purpose': 'attack', 'tick': 390},
+        'boss-unconfirmed': {'status': 'arrived', 'target': 'ボス',
+                             'purpose': 'attack', 'tick': 390},
+    }
+    audit.observe(runtime_dir, audit.capture(value), value, [],
+                  now=1000 + 401 * STEP)
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_stale_boss_attack_sorties_do_not_suppress_the_audit(runtime_dir):
+    _run_boss(runtime_dir, live_sortie=True,
+              sortie_age=audit.BOSS_LIVE_SORTIE_MAX_AGE_TICKS + 1)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'boss_phase_no_battle'
 
 
 def test_boss_phase_with_a_battle_is_not_recorded(runtime_dir):
