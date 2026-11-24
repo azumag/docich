@@ -1636,6 +1636,18 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    state['bot_version']='hanjuku-chart-v1448-auto-carry-safe-card'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1448-auto-carry-safe-card'
+    state['bot_version']='hanjuku-chart-v1449-chikujou-hold-note'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-chikujou-hold-note'
+    state['bot_version']='hanjuku-chart-v1451-dome-camp-terminal-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1451-dome-camp-terminal-evidence'
+    state['bot_version']='hanjuku-chart-v1449-dome-camp-terminal-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-dome-camp-terminal-evidence'
+    state['bot_version']='hanjuku-chart-v1447-password-measured-order'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1447-password-measured-order'
+    state['bot_version']='hanjuku-chart-v1440-chikujou-event-text-advance'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1440-chikujou-event-text-advance'
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
