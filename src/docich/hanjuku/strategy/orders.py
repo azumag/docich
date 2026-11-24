@@ -757,6 +757,10 @@ def _boss_companion_source_wait_expired(mem, order):
     now = int(mem.get('tick') or 0)
     if type(started) is not int:
         wait[step] = now
+        _record(mem, 'boss_companion_source_wait', chart_step=step,
+                target=order.get('target'),
+                observed_metric={'waited_ticks': 0},
+                reason='出撃元に適格な代役が来るまで、上限付きの待機を開始する')
         return False
     elapsed = now - started
     if elapsed < BOSS_COMPANION_SOURCE_WAIT_TICKS:
@@ -807,18 +811,20 @@ def _ready(order, mem) -> bool:
         # The corridor chapter's moving boss: the game refuses a sortie from a
         # castle that keeps only one general, so the chart's boss order from the
         # one-general last castle was started every ~85 steps and never
-        # launched (g1190 17-x). Other boss charts (chapter 4's sites) keep
-        # their measured one-general reprobe rule.
+        # launched (g1190 17-x). Other boss charts use the bounded source wait
+        # below instead of this one-general guard.
         if chart.corridor(mem.get('chapter') or 0):
             source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
             if source_names is not None and len(set(source_names)) < 2:
                 return False
         if (companion_source is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
-            # Chapter-4 summon sites keep their measured egg-holder gate. Other
-            # boss orders get a bounded source wait before reaching deploy.
-            if (order.get('target') in chart.boss_sites(4)
-                    or not _boss_companion_source_wait_expired(mem, order)):
+            # Every boss order gets the same bounded source wait before it
+            # reaches deploy. Chapter-4 summon sites used to short-circuit
+            # here without arming the timer, so an order whose source held no
+            # eligible egg-holding companion waited forever and never reached
+            # deploy's bounded fallback (docich#5397).
+            if not _boss_companion_source_wait_expired(mem, order):
                 return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (companion_source if _is_boss_order(order, mem)
@@ -827,7 +833,6 @@ def _ready(order, mem) -> bool:
         # observed, safe hero or fails the order. Do not keep _ready blocked
         # forever on an injured companion or a broken/depleted hero.
         if not (_is_boss_order(order, mem)
-                and order.get('target') not in chart.boss_sites(4)
                 and _boss_companion_wait_expired(mem, order)):
             return False
     after = order['after']
