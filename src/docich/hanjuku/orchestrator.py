@@ -268,10 +268,12 @@ def event_text_advance_step(mem, phase, kind, key, actions, guarded=False, dome_
             # castle transition. Give the resumed native list its own wait.
             sub['build_wait'] = 0
         if (isinstance(dome_recall, dict) and dome_recall.get('stage') == 'menu'
-                and dome_recall.get('camp_kind') == 'dome'):
-            # The event A advances the known defense notice. Restart the dome
-            # menu's bounded wait so the resulting screen gets a full window.
+                and dome_recall.get('camp_kind') == 'dome'
+                and dome_recall.get('event_text_advance_restarted') is not True):
+            # One known text advance gets a fresh menu window. Further event
+            # A presses must not extend the dome's bounded close indefinitely.
             dome_recall['menu_other'] = 0
+            dome_recall['event_text_advance_restarted'] = True
     return advanced
 
 
