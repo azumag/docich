@@ -76,3 +76,11 @@ fingerprint 重複排除・occurrence コメント・secret scan・`auto-generat
 - 実際の ch4 ボス至近野営で、月次マーカーが4サイトのどれかを返すことと、
   そのサイトへのYジャンプが着地・確定することは、配備後の実観測で確認する。
 - テスト成功は実機の帰還成功やGカーソルの移動を保証しない。
+
+
+## 実装メタデータ
+
+- Hot-load marker: `hanjuku-chart-v1469-recall-yjump-goal`
+- Diagnostics collector の固定 allowlist と marker contract test も同じ値へ同期する。
+- `hanjuku_faults.json` は 64 KiB + 1 byte までしか読み込まず、上限超過した状態は破棄して再初期化する。
+- traceback がない例外では呼び出し元が渡す短い `where` を signature の fallback に使う。
