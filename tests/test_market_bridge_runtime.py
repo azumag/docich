@@ -506,6 +506,53 @@ class EndToEndTests(unittest.TestCase):
 
 
 class CallerHangTests(unittest.TestCase):
+    def test_capacity_is_reserved_before_submit_can_race(self):
+        caller = Caller(workers=1, name="test-submit-race")
+        self.addCleanup(caller.close)
+        work_release = threading.Event()
+        submit_entered = threading.Event()
+        submit_release = threading.Event()
+        original_submit = caller._pool.submit
+
+        def blocked_submit(fn, *args, **kwargs):
+            submit_entered.set()
+            if not submit_release.wait(timeout=3.0):
+                raise AssertionError("test did not release the first submit")
+            return original_submit(fn, *args, **kwargs)
+
+        caller._pool.submit = blocked_submit
+        first_result = {}
+
+        def first_call():
+            first_result['value'] = caller.call(lambda: work_release.wait(timeout=3.0),
+                                                timeout_s=3.0)
+
+        first = threading.Thread(target=first_call)
+        first.start()
+        self.assertTrue(submit_entered.wait(timeout=1.0))
+        second_result = {}
+
+        def second_call():
+            started = time.monotonic()
+            try:
+                caller.call(lambda: "unexpected", timeout_s=3.0)
+            except DeadlineExceeded as exc:
+                second_result['error'] = exc
+            second_result['elapsed'] = time.monotonic() - started
+
+        second = threading.Thread(target=second_call)
+        second.start()
+        second.join(timeout=0.5)
+        self.assertFalse(second.is_alive(), "a reserved slot must reject before submit")
+        self.assertIsInstance(second_result.get('error'), DeadlineExceeded)
+        self.assertLess(second_result.get('elapsed', 99.0), 0.5)
+        submit_release.set()
+        work_release.set()
+        first.join(timeout=2.0)
+        self.assertFalse(first.is_alive())
+        self.assertTrue(first_result.get('value'))
+
+
     def test_full_pool_fails_closed_immediately(self):
         caller = Caller(workers=2, name="test-hang")
         self.addCleanup(caller.close)
