@@ -52,10 +52,10 @@ def status_panel_owner_active(mem, screen):
         # stage names a person; roster/menu stages keep their existing owner
         # rules and are not filtered by an unreadable name row.
         if post_month_status.state_is_current(mem, state):
-            info = house.general_status(screen)
+            visible_general = house.general_status_name(screen)
             target = state.get('selected')
-            if (isinstance(info, dict) and isinstance(target, str)
-                    and info.get('general') == target):
+            if (isinstance(visible_general, str) and isinstance(target, str)
+                    and visible_general == target):
                 return True
 
     house_state = mem.get('house')
@@ -64,11 +64,11 @@ def status_panel_owner_active(mem, screen):
             and house_state.get('chapter') == mem.get('chapter')):
         # The owner reads through house.general_status; a panel it cannot name
         # (or another general's) is not its page, so the orphan B still runs.
-        info = house.general_status(screen)
+        visible_general = house.general_status_name(screen)
         target = (house_state.get('selected')
                   if house_state.get('phase') == 'status'
                   else house_state.get('general'))
-        if info is not None and isinstance(target, str) and info.get('general') == target:
+        if isinstance(visible_general, str) and isinstance(target, str) and visible_general == target:
             return True
 
     probe = mem.get('arrival_status_probe')
@@ -100,9 +100,9 @@ def status_panel_owner_active(mem, screen):
         # Only the pursued general's card qualifies; another general's page is
         # not this route's panel, so the orphan B closes it instead of waiting
         # out the 40 reads (#5410).
-        info = house.general_status(screen)
+        visible_general = house.general_status_name(screen)
         target = probe.get('general')
-        if (isinstance(info, dict) and isinstance(target, str)
-                and info.get('general') == target):
+        if (isinstance(visible_general, str) and isinstance(target, str)
+                and visible_general == target):
             return True
     return False
