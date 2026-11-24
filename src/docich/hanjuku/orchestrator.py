@@ -250,7 +250,7 @@ def _chikujou_menu_text_owned(mem, kind, key):
 
 
 def _dome_camp_menu_text_owned(recall, recall_dialog, kind):
-    """Keep unmeasured dome-camp screens under the recall's bounded close path."""
+    """Recognize recall-owned dome text so its bounded menu wait can restart once."""
     return bool(recall_dialog and isinstance(recall, dict)
                 and recall.get('stage') == 'menu'
                 and recall.get('camp_kind') == 'dome'
