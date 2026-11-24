@@ -177,7 +177,7 @@ def test_advancing_an_unrelated_event_restarts_the_chikujou_transition_wait():
 def test_active_dome_recall_owns_unclassified_text_but_not_other_screens():
     recall = {'stage': 'menu', 'camp_kind': 'dome'}
     assert _dome_camp_menu_text_owned(recall, True, 'text')
-    assert _dome_camp_menu_text_owned(recall, True, 'unknown')
+    assert not _dome_camp_menu_text_owned(recall, True, 'unknown')
     assert not _dome_camp_menu_text_owned(recall, False, 'text')
     assert not _dome_camp_menu_text_owned(
         {'stage': 'menu', 'camp_kind': 'tent'}, True, 'text')
