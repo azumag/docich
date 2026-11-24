@@ -45,3 +45,16 @@
   （完全なドクロ）で読めていることを最初に確認する。light が常に 6〜14 なら暗いフレームを読んでおり、
   閾値（15）を見直す。
 - 北西・南西への出撃が実際に launch して戦う。
+
+## 可逆性と野営（オーナー追加確認 2026-11-24）
+
+撃破された王のドクロは消える。一方、自軍の野営放置が生きている王のドクロを隠すこともあり、
+野営が解消されればドクロはまた見える。このため hidden→closed は常に可逆に保つ。
+
+- closed が書くのは `season_sites` の行だけ。plan の step を done/dropped にせず、`boss_victories`・
+  `boss_defeated` も書かない（これらは従来の HP 0 実測経路のみ）。`_site_king_down` を使う各所
+  （orders / replan / policy）は毎回 `season_sites` から再計算する。
+- 機械ボス計画は closed 地点を計画から外して作り直されるため、ドクロが再び読めて open に戻ったとき
+  `world._restore_site_step` がその地点の step を採用中の機械計画へ戻す（`season_site_step_restored`）。
+- 自軍の旗（オレンジ）が箱にあるときは `hidden_with_camp` と `camp` 画素数を状態と記録に残す。
+  理由の可視化だけで、判定規則は変えない。

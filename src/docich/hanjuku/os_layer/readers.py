@@ -199,6 +199,8 @@ SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
 SEASON_TERRAIN_RATIO = 0.95
 SEASON_SKULL_VISIBLE = 15       # full skull measured 25; partial 南東 measured 8
 SEASON_SKULL_ABSENT = 2         # no skull pixels at all (measured 0 in 北東)
+SEASON_CAMP_FLAG = (255, 181, 0)   # our army's orange pennant (a camp/march marker)
+SEASON_CAMP_MIN = 6                # flag pixels that make a skull-less box 'with camp'
 SEASON_SITE_HEALTHY_READS = 2   # other sites that must still read definitively
 
 
@@ -243,7 +245,8 @@ def season_site_readings(frame, chapter, cursor=None):
             kind = 'hidden'
         else:
             kind = 'ambiguous'
-        readings[name] = {'kind': kind, 'light': light, 'terrain': terrain,
+        camp = sum(1 for px in pixels if _near_colour(px, SEASON_CAMP_FLAG))
+        readings[name] = {'kind': kind, 'light': light, 'terrain': terrain, 'camp': camp,
                           'pixels': len(pixels)}
     definite = sum(1 for row in readings.values() if row['kind'] in ('skull', 'closed'))
     skulls = sum(1 for row in readings.values() if row['kind'] == 'skull')

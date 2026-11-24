@@ -6,13 +6,13 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, sorties as _sorties
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
 from ... import hanjuku_chart as chart
 from ..decision_log import _record, _tally
-from .readers import STATUS_NAMES, _cursor
+from .readers import SEASON_CAMP_MIN, STATUS_NAMES, _cursor
 
 
 NAME = chart.HERO
@@ -704,6 +704,12 @@ def _apply_season_sites(mem, sites):
         was = row.get('marker')
         row.update({'marker': kind, 'marker_tick': tick, 'last_read_tick': tick,
                     'light': reading.get('light'), 'terrain': reading.get('terrain'),
+                    'camp': reading.get('camp'),
+                    # Why the skull is missing: our own flag sits on the box. An
+                    # abandoned camp hides a live king's skull too, so this is
+                    # recorded evidence only and never changes the rule.
+                    'hidden_with_camp': (kind == 'hidden'
+                                         and (reading.get('camp') or 0) >= SEASON_CAMP_MIN),
                     'hidden_streak': count if kind == 'hidden' else 0,
                     'ambiguous_streak': count if kind == 'ambiguous' else 0,
                     'unreadable_streak': count if kind == 'unreadable' else 0,
@@ -713,6 +719,8 @@ def _apply_season_sites(mem, sites):
             # decision log; the site's counters above are the cadence evidence.
             _record(mem, 'season_site_marker', castle=name,
                     observed_metric={'marker': kind, 'previous': was,
+                                     'camp': reading.get('camp'),
+                                     'hidden_with_camp': row['hidden_with_camp'],
                                      'light': reading.get('light'),
                                      'terrain': reading.get('terrain'),
                                      'healthy': healthy, 'streak': count},
@@ -740,11 +748,16 @@ def _apply_season_sites(mem, sites):
                                          'healthy': healthy},
                         reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
                 continue
+        was_closed = row.get('state') == 'closed'
         row.update({'state': target_state, 'chapter': chapter, 'tick': tick,
                     'readings': count, 'marker': kind})
+        if target_state == 'open' and was_closed:
+            _restore_site_step(mem, name)
         _record(mem, 'season_site_closed' if target_state == 'closed' else 'season_site_open',
                 castle=name,
                 observed_metric={'site': name, 'marker': kind, 'readings': count,
+                                 'camp': reading.get('camp'),
+                                 'hidden_with_camp': row['hidden_with_camp'],
                                  'light': reading.get('light'),
                                  'terrain': reading.get('terrain'),
                                  'healthy': healthy},
@@ -754,6 +767,31 @@ def _apply_season_sites(mem, sites):
                         '全体マップの四季王の印が旗に変わったため、この地点は撃破済みとして出撃しない'
                         if target_state == 'closed' else
                         '全体マップの四季王の印がドクロのため、撃破済みの記録を取り消して出撃対象へ戻す'))
+
+
+def _restore_site_step(mem, site):
+    """A reopened site returns to an adopted mechanical boss plan.
+
+    The mechanical plan is rebuilt without closed sites, so a wrongly closed
+    site would otherwise wait until that plan is exhausted. Only the plan's
+    order list and a never-run step's status are touched; the closure itself
+    stored nothing else (no done/dropped step, no victory, no boss_defeated).
+    """
+    region = _plan_region(mem)
+    stored = region.get('chart_plan')
+    orders = stored.get('orders') if isinstance(stored, dict) else None
+    if not isinstance(orders, list) or stored.get('source') != 'mechanical':
+        return
+    base = next((o for o in chart.orders(4) if o.get('target') == site), None)
+    if base is None or any(isinstance(o, dict) and o.get('step') == base['step'] for o in orders):
+        return
+    orders.append({**base, 'cards': list(base.get('cards') or ()), 'after': base.get('after')})
+    status = region.setdefault('orders', {})
+    if status.get(base['step']) in (None, 'failed'):
+        status[base['step']] = 'pending'
+    _record(mem, 'season_site_step_restored', chart_step=base['step'],
+            observed_metric={'site': site},
+            reason='ドクロが再び読めて地点が open に戻ったため、機械ボス計画へその地点のstepを戻す')
 
 
 BOSS_SKULL_READINGS = 2      # equal Y-view skull readings before the cell is used

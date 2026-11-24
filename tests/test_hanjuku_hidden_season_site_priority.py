@@ -245,3 +245,42 @@ def test_a_closed_site_does_not_stall_the_plan_or_attract_boss_orders(site):
                for other in SITES if other != site)
     follow = orders.next_order(mem)
     assert follow is not None and follow.get('target') != site
+
+
+@pytest.mark.parametrize('site', SITES)
+def test_a_wrong_closure_stores_nothing_permanent_and_a_reopen_restores_the_plan_step(site):
+    """The hidden-x3 closure only sets season_sites; nothing else is written."""
+    step = boss_order(site)['step']
+    others = [o for o in chart.orders(4) if o.get('target') in SITES and o['target'] != site]
+    mem = memory()
+    mem['plan'] = {'chart_plan': {'source': 'mechanical', 'orders': [dict(o) for o in others]},
+                   'orders': {step: 'pending'}}
+    apply(mem, only_hidden(site), 3)
+    assert closed_sites(mem) == {site}
+    assert mem['boss_defeated'] is None and not mem.get('boss_victories')
+    assert mem['plan']['orders'][step] == 'pending'
+    assert step not in {o['step'] for o in mem['plan']['chart_plan']['orders']}
+    apply(mem, skulls_everywhere(), 2)
+    assert closed_sites(mem) == set()
+    assert step in {o['step'] for o in mem['plan']['chart_plan']['orders']}
+    assert mem['plan']['orders'][step] == 'pending'
+    assert any(r.get('decision') == 'season_site_step_restored' for r in mem['_records'])
+    apply(mem, skulls_everywhere(), 2)             # no duplicate on further skull reads
+    assert [o['step'] for o in mem['plan']['chart_plan']['orders']].count(step) == 1
+
+
+@pytest.mark.parametrize('frame', [NE_DEFEATED, LIVE_2350])
+def test_a_hidden_site_with_our_flag_on_it_is_recorded_as_hidden_with_camp(frame):
+    """An abandoned camp hides a live skull too: say why the skull is missing."""
+    mem = memory()
+    apply(mem, frame, 3)
+    row = mem['season_sites'][NE]
+    assert row['marker'] == 'hidden' and row['hidden_with_camp'] and row['camp'] >= 6
+    assert all(not mem['season_sites'][s]['hidden_with_camp'] for s in SITES if s != NE)
+    closed = [r for r in mem['_records'] if r['decision'] == 'season_site_closed']
+    assert closed[0]['observed_metric']['hidden_with_camp'] is True
+    # The annotation never changes the rule: the site is still just hidden-x3
+    # closed and a returning skull reopens it with nothing else stored.
+    apply(mem, skulls_everywhere(), 2)
+    assert closed_sites(mem) == set() and not mem['season_sites'][NE]['hidden_with_camp']
+    assert mem['boss_defeated'] is None and not mem.get('boss_victories')
