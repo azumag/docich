@@ -21,7 +21,7 @@ from .orders import (RETIRED_ORDER_STATES,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets,
-                               _site_king_down, _source,
+                               _site_king_down, _source, site_companion_reserve,
                                _defense_move_pick, _defense_priority_castles, _defense_score,
                                _garrison_plan, _post_conquest_wait,
                                _source_list_open, _source_location_recheck, _source_location_recheck_due,
@@ -1780,7 +1780,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # covered by an ordinary move above are not duplicated.
     if _post_conquest_wait(mem):
         moved = {o['target'] for o in moves}
-        moves.extend(o for o in _defense_rebalance(mem, owned, busy, heading)
+        moves.extend(o for o in _defense_rebalance(
+                         mem, owned, busy | site_companion_reserve(mem), heading)
                      if o['target'] not in moved)
     # Owner 2026-11-04: 人数に余裕があるときは一つの城へ波状攻撃.
     # Generate the first attempt for every target (and the moves that staff
@@ -1822,7 +1823,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # 後ろに置く。
     committed = {o['general'] for o in (*moves, *sorties['retake'], *sorties['attack'])}
     rotation = _garrison_rotation(
-        mem, owned, busy | planned_busy | wave_committed
+        mem, owned, busy | planned_busy | wave_committed | site_companion_reserve(mem)
         | (committed - {MOVE_ANY_GENERAL}), heading,
         taken={o['target'] for o in (*sorties['retake'], *sorties['attack'], *moves)})
     # An owned castle recorded empty loses itself to the next enemy stack, and
