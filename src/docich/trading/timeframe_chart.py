@@ -445,15 +445,25 @@ class TimeframeChartCache:
                 or record.get("timeframe") != timeframe):
             return False
         bars = record.get("bars")
-        if not isinstance(bars, list) or not 2 <= len(bars) <= MAX_BARS:
+        if (not isinstance(bars, list) or not 2 <= len(bars) <= MAX_BARS
+                or record.get("bar_count") != len(bars)):
             return False
+        previous_timestamp = None
         for bar in bars:
             if not isinstance(bar, Mapping):
                 return False
-            if _positive(bar.get("t")) is None:
+            timestamp = _positive(bar.get("t"))
+            open_ = _positive(bar.get("o"))
+            high = _positive(bar.get("h"))
+            low = _positive(bar.get("l"))
+            close = _positive(bar.get("c"))
+            if None in (timestamp, open_, high, low, close):
                 return False
-            if any(_positive(bar.get(key)) is None for key in ("o", "h", "l", "c")):
+            if high < max(open_, close) or low > min(open_, close) or high < low:
                 return False
+            if previous_timestamp is not None and timestamp <= previous_timestamp:
+                return False
+            previous_timestamp = timestamp
             if _nonnegative(bar.get("v")) is None:
                 return False
             if (not isinstance(bar.get("closed"), bool)
@@ -467,19 +477,30 @@ class TimeframeChartCache:
         if (moment is None or self.directory.is_symlink()
                 or not self.directory.is_dir()):
             return
+        try:
+            paths = tuple(self.directory.iterdir())
+        except OSError:
+            return
         entries: list[tuple[float, int, Path]] = []
-        for path in self.directory.iterdir():
+        for path in paths:
             if not _CHART_CACHE_FILE_RE.fullmatch(path.name) or path.is_symlink():
                 continue
             try:
                 metadata = os.stat(path, follow_symlinks=False)
                 if not stat.S_ISREG(metadata.st_mode):
                     continue
+                if metadata.st_size > self.max_bytes:
+                    path.unlink()
+                    continue
                 payload = json.loads(path.read_text(encoding="utf-8"))
+                symbol = payload.get("symbol") if isinstance(payload, Mapping) else None
+                timeframe = payload.get("timeframe") if isinstance(payload, Mapping) else None
                 fetched_at = (
                     _finite(payload.get("fetched_at"))
                     if isinstance(payload, Mapping)
                     and payload.get("schema_version") == CHART_CACHE_SCHEMA_VERSION
+                    and self._path(symbol, timeframe, self.directory) == path
+                    and self._valid_record(payload.get("record"), symbol, timeframe)
                     else None
                 )
                 if (fetched_at is None or fetched_at > moment
