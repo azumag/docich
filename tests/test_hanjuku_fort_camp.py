@@ -193,9 +193,6 @@ def test_the_picker_opens_the_y_jump_because_a_fort_has_no_castle_in_view(monkey
     assert mem['y_jump']['goal'] == 'アルマムーン' and mem['y_jump']['mode'] == 'target'
 
 
-
-
-
 @pytest.mark.parametrize('stage,counter', [
     ('fort_menu', 'fort_menu_observations'),
     ('fort_list', 'fort_list_observations'),
@@ -252,7 +249,6 @@ def test_orchestrator_routes_only_the_requested_fort_picker_to_recall():
         {'stage': 'dest', 'fort_picker_requested': True}, 'map_target', 'field')
     assert not orchestrator._fort_picker_owns_map_target(owned, 'map_target', 'concert')
     assert not orchestrator._fort_picker_owns_map_target(owned, 'map', 'field')
-
 
 
 def test_the_next_general_follows_soon_after_a_fort_sortie():
