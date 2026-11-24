@@ -1981,7 +1981,7 @@ def test_battle_loss_comments_before_the_generic_hour(runtime_dir):
     value = state(10, '1-1', 0)
     audit.observe(runtime_dir, audit.capture(value), value,
                   [_battle_record('battle_result', outcome='loss',
-                                  metric={'egg_uses': 2, 'ally_hp': 0,
+                                  metric={'egg_uses': 2, 'cards_selected': ['クースカン'], 'cards_used': [], 'ally_hp': 0,
                                           'enemy_hp': 40}, general='バゲット')],
                   now=1000)
     record = audit.load_incidents(runtime_dir)[0]
