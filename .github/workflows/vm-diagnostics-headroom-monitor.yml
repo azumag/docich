@@ -90,49 +90,22 @@ jobs:
           print(f'usage_percent={percent}')
           print(f'alert={int(percent >= warn)}')
           PY
-          # #3341 Phase 0 follow-up: the collector now reports per-section byte
-          # accounting under diagnostics.meta.section_bytes (top-N key names +
-          # others + total; bytes and key names only). Reparse the envelope the
-          # probe already downloaded so the aggregate survives in the run
-          # summary instead of being discarded with RUNNER_TEMP. A missing map
-          # means the deployed collector predates #3342 or dropped the
-          # accounting at the hard ceiling; record it, never fail the probe.
-          # Section names are collector-internal keys but are still filtered to
-          # a fixed character class so envelope content can never inject markup
-          # or workflow commands into the summary or the annotation.
+          # #3341: expose only validated section names and byte counts to the alert.
+          # The helper never publishes section values or arbitrary collector text.
           if [[ -f "$RUNNER_TEMP/diagnostics-headroom.json" ]]; then
-            python3 - "$RUNNER_TEMP/diagnostics-headroom.json" >> "$GITHUB_STEP_SUMMARY" <<'PY' || echo '- section_bytes: extraction failed'
+            python3 - "$RUNNER_TEMP/diagnostics-headroom.json" "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY" <<'PY' || echo '- section_bytes: extraction failed'
           import json
-          import re
           import sys
           from pathlib import Path
+          from ops.vm_actions.diagnostics_headroom import summarize_section_bytes
 
-          doc = json.loads(Path(sys.argv[1]).read_text())
-          diagnostics = doc.get('diagnostics')
-          meta = diagnostics.get('meta') if isinstance(diagnostics, dict) else None
-          section_bytes = meta.get('section_bytes') if isinstance(meta, dict) else None
-          top = section_bytes.get('top') if isinstance(section_bytes, dict) else None
-          if not isinstance(top, dict) or not top:
-              print('- section_bytes: absent (collector predates #3342 or accounting dropped at hard ceiling)')
-              print('::notice::diagnostics section_bytes=absent', file=sys.stderr)
-              raise SystemExit(0)
-          total = section_bytes.get('total')
-          total = total if isinstance(total, int) else 0
-          others = section_bytes.get('others')
-          others = others if isinstance(others, int) else 0
-          print('- section_bytes:')
-          ranked = sorted(top.items(), key=lambda item: -item[1])
-          for name, size in ranked:
-              safe = name if re.fullmatch(r'[A-Za-z0-9_]+', name) else '?'
-              size = size if isinstance(size, int) else 0
-              percent = (size * 100) // total if total > 0 else 0
-              print(f'  - {safe}: {size} B ({percent}%)')
-          print(f'  - others: {others} B')
-          print(f'  - total: {total} B')
-          lead = ranked[0]
-          lead_name = lead[0] if re.fullmatch(r'[A-Za-z0-9_]+', lead[0]) else '?'
-          lead_size = lead[1] if isinstance(lead[1], int) else 0
-          print(f'::notice::diagnostics section_bytes top={lead_name}:{lead_size}B total={total}B', file=sys.stderr)
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          compact, lines = summarize_section_bytes(document)
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(f"section_bytes_summary={compact}\n")
+          with open(sys.argv[3], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          print(f"::notice::diagnostics section_bytes={compact}", file=sys.stderr)
           PY
           fi
 
@@ -159,6 +132,7 @@ jobs:
           ENVELOPE_BYTES: ${{ steps.diagnostics.outputs.envelope_bytes }}
           CAP_BYTES: ${{ steps.diagnostics.outputs.cap_bytes }}
           USAGE_PERCENT: ${{ steps.diagnostics.outputs.usage_percent }}
+          SECTION_BYTES_SUMMARY: ${{ steps.diagnostics.outputs.section_bytes_summary }}
         run: |
           set -euo pipefail
           title='[VM diagnostics] availability/headroom alert'
@@ -171,12 +145,12 @@ jobs:
           fi
           if [[ "$AVAILABLE" == '1' ]]; then
             state="headroom_low"
-            detail="- envelope_bytes: ${ENVELOPE_BYTES}\n- cap_bytes: ${CAP_BYTES}\n- usage_percent: ${USAGE_PERCENT}"
+            detail="- envelope_bytes: ${ENVELOPE_BYTES}\n- cap_bytes: ${CAP_BYTES}\n- usage_percent: ${USAGE_PERCENT}\n- section_bytes: ${SECTION_BYTES_SUMMARY:-unavailable}"
           else
             state="unavailable"
-            detail="- envelope_bytes: unavailable\n- cap_bytes: unavailable\n- usage_percent: unavailable"
+            detail="- envelope_bytes: unavailable\n- cap_bytes: unavailable\n- usage_percent: unavailable\n- section_bytes: ${SECTION_BYTES_SUMMARY:-unavailable}"
           fi
-          body="$(printf 'Production diagnostics health needs attention.\n\n- state: %s\n%b\n- warning threshold: %s%%\n- Workflow: %s/%s/actions/runs/%s\n\nOnly fixed status and numeric headroom fields are published. Raw diagnostics, stderr, paths, credentials, and command output are never published. This monitor is read-only.\n' "$state" "$detail" "$WARN_PERCENT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          body="$(printf 'Production diagnostics health needs attention.\n\n- state: %s\n%b\n- warning threshold: %s%%\n- Workflow: %s/%s/actions/runs/%s\n\nOnly fixed status, numeric headroom fields, and validated section names with byte counts are published. Section values, raw diagnostics, stderr, paths, credentials, and command output are never published. This monitor is read-only.\n' "$state" "$detail" "$WARN_PERCENT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
           for number in "${alerts[@]}"; do
             gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
             exit 0

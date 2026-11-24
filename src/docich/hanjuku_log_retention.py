@@ -32,7 +32,7 @@ LOG_FILES = (
 )
 RUN_FILE = 'hanjuku_run.json'
 GAME = 'hanjuku-hero'
-TERMINAL_REASONS = frozenset({'game_over', 'screen_stalled', 'input_stalled'})
+TERMINAL_REASONS = frozenset({'game_over', 'screen_stalled', 'input_stalled', 'game_clear'})
 CANONICAL_KEYS = ('active', 'candidate', 'previous')
 
 

@@ -355,6 +355,7 @@ def recap_body(runtime_dir, run_state) -> str:
     if not records:
         outcome = {
             'game_over': '今回はゲームオーバーとなりました。',
+            'game_clear': '今回はクリアエンディングまで到達しました。',
             'screen_stalled': '今回は画面停止で終了しました。',
             'input_stalled': '今回は入力停滞で終了しました。',
             'manual_saved_stop': '今回はセーブして終了しました。',
@@ -394,7 +395,7 @@ def recap_body(runtime_dir, run_state) -> str:
     }.get(terminal_reason, '今回の挑戦は、')
     if progress:
         story = [f"{lead}記録上は{'・'.join(progress)}まで進みました。"]
-    elif terminal_reason in {'game_over', 'screen_stalled', 'input_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
+    elif terminal_reason in {'game_over', 'game_clear', 'screen_stalled', 'input_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
         story = [f'{lead.rstrip("、")}ました。確認できた戦況から振り返ります。']
     else:
         story = ['今回の挑戦を、確認できた戦況から振り返ります。']

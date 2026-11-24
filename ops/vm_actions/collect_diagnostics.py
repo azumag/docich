@@ -2927,19 +2927,26 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
         else:
             type_sources["type_arg"] += 1
         by_type[row["type"]] = by_type.get(row["type"], 0) + 1
-        owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
+        owner = by_owner.setdefault(
+            row["owner"],
+            {"count": 0, "cpu_pct": 0.0, "rss_mb": 0.0, "renderer_rss_mb": 0.0},
+        )
         owner["count"] += 1
         owner["cpu_pct"] += row["cpu_pct"]
+        owner["rss_mb"] += row["rss_kb"] / 1024.0
         if row["type"] == "gpu":
             owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
         elif row["type"] == "renderer":
             owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+            owner["renderer_rss_mb"] += row["rss_kb"] / 1024.0
 
     for owner in by_owner.values():
         owner["cpu_pct"] = round(owner["cpu_pct"], 1)
         for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
             if key in owner:
                 owner[key] = round(owner[key], 1)
+        for key in ("rss_mb", "renderer_rss_mb"):
+            owner[key] = round(owner[key], 1)
 
     result = {
         "schema_version": 1,
@@ -6985,7 +6992,7 @@ def _project_corner_state(data):
         "end_reason": (data.get("end_reason") if data.get("end_reason")
                        in {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                            "manual_forced_stop",
-                           "switch-terminal-before-corner-active", "game-completed",
+                           "switch-terminal-before-corner-active", "game-completed", "game_clear",
                            "queue-timeout", "beta-stopped", "manual", "match-timeout",
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
@@ -8099,6 +8106,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1388-crying-egg-battle-menu",
             "hanjuku-chart-v1389-idou-y-route-recall-hold",
             "hanjuku-chart-v1392-dispatch-starve-measure",
+            "hanjuku-chart-v1393-roster-due-consume",
             "hanjuku-chart-v1397-recall-map-hold",
             "hanjuku-chart-v1398-egg-retry-on-hp-loss",
             "hanjuku-chart-v1399-recall-map-hold",
@@ -8122,7 +8130,39 @@ def _project_corner_state(data):
             "hanjuku-chart-v1461-melee-only-ugokazaru",
             "hanjuku-chart-v1462-status-panel-owner-guard",
             "hanjuku-chart-v1463-battle-menu-scrolled-bottom",
-            "hanjuku-chart-v1464-boss-static-audit-signals",
+            "hanjuku-chart-v1464-status-panel-owner-followups",
+            "hanjuku-chart-v1465-unowned-screen-review-guards",
+            "hanjuku-chart-v1466-status-panel-owner-name",
+            "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
+            "hanjuku-chart-v1468-battle-menu-bounded-episode",
+            "hanjuku-chart-v1469-recall-yjump-goal",
+            "hanjuku-chart-v1470-ch4-site-bounded-wait",
+            "hanjuku-chart-v1471-roster-due-probe",
+            "hanjuku-chart-v1473-hidden-season-site-priority",
+            "hanjuku-chart-v1474-departure-request-ownership",
+            "hanjuku-chart-v1476-site-cursor-shape",
+            "hanjuku-chart-v1480-ch4-boss-dispatch",
+            "hanjuku-chart-v1478-site-nearest-source",
+            "hanjuku-chart-v1472-status-panel-owner-unreadable-skip",
+            "hanjuku-chart-v1477-boss-camp-recall",
+            "hanjuku-chart-v1483-ch12-boss-staging",
+            "hanjuku-chart-v1484-clear-ending-corner-end",
+            "hanjuku-chart-v1485-locked-boss-activation",
+            "hanjuku-chart-v1485-camp-watch-hint-identity",
+            "hanjuku-chart-v1486-locked-boss-activation",
+            "hanjuku-chart-v1486-ch4-southern-kings",
+            "hanjuku-chart-v1484-sortie-kit-evidence-confidence",
+            "hanjuku-chart-v1486-ch4-southern-kings",
+            "hanjuku-chart-v1487-ch4-southern-kings",
+            "hanjuku-chart-v1488-discharge-last-general",
+            "hanjuku-chart-v1488-summon-card-without-egg",
+            "hanjuku-chart-v1489-discharge-last-general",
+            "hanjuku-chart-v1490-fort-recall-picker-owner-bounded",
+            "hanjuku-chart-v1491-boss-static-audit-signals",
+            "hanjuku-chart-v1478-departure-request-ownership",
+            "hanjuku-chart-v1481-boss-camp-recall-followup",
+
+            "hanjuku-chart-v1482-departure-request-ownership",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",
@@ -8198,7 +8238,8 @@ def _project_corner_state(data):
                 "hanjuku-chart-v169-repair-interruption",
                 "hanjuku-chart-v170-chapter-two-boss",
                 "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety", "hanjuku-chart-v215-roster-known-members", "hanjuku-chart-v216-roster-selected-name", "hanjuku-chart-v218-egg-before-retreat", "hanjuku-chart-v219-boss-and-army-refill", "hanjuku-chart-v220-finishing-resources",
-            "hanjuku-chart-v221-recall-status-proof"} else None),
+            "hanjuku-chart-v221-recall-status-proof",
+            "hanjuku-chart-v1485-camp-watch-identity-subset"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),

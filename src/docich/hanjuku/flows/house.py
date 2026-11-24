@@ -165,19 +165,65 @@ def location_row(screen):
     return next((r.span(24, 168).replace(' ', '') for r in screen.lines if r.y == 151), None)
 
 
-def general_status(screen):
+def name_has_digits(name):
+    """True when an *expected* general name carries a digit of its own.
+
+    Live panels in this repository only show digit-free names, so a digit in
+    an OCR'd name is normally evidence of a misread (``ヴィーナス1``), and both
+    readers reject it.  When the caller is matching one known general whose
+    real name contains a digit (later chapters, e.g. ``てつじん8ごう``), the
+    digit is part of the expected identity instead: the readers may accept it
+    but only for that exact expected name.
+    """
+    return isinstance(name, str) and bool(re.search(r'\d', name))
+
+
+def _name_row_readable(name, allow_digits):
+    """Reject blank/unknown names and, unless the target has a digit, digits."""
+    return (bool(name) and UNKNOWN not in name
+            and not re.search(r'\s' if allow_digits else r'[\d\s]', name))
+
+
+def general_status_name(screen, *, expected=None):
+    """Read the named-general heading without requiring a readable egg row.
+
+    A status reader must retain ownership when the name is visible but the egg
+    row is temporarily unreadable; its bounded retry is responsible for that
+    row. The name and adjacent しょうぐん label identify the page.
+
+    ``expected`` only decides whether the target's own digits are acceptable;
+    a different (digit-free) name is still returned so the caller can prove
+    this is another general's page.
+    """
+    allow_digits = name_has_digits(expected)
+    for x, y in ((24, 39), (16, 31)):
+        row = next((r for r in screen.lines if r.y == y), None)
+        if row is None:
+            continue
+        name = row.span(x, x + 64).strip()
+        if (not _name_row_readable(name, allow_digits)
+                or row.span(x + 64, x + 112) != 'しょうぐん'):
+            continue
+        return name
+    return None
+
+
+def general_status(screen, *, expected=None):
     """Read the named general and egg row, never equate zero uses with broken.
 
     Main-menu panels use x=24/88, y=39 and egg y=119. Field/sortie panels
     use x=16/80, y=31 and egg y=111. Unknown tiles invalidate the egg row.
+    ``expected`` admits digits only when the target general's own name has
+    one; every other caller keeps the measured digit rejection.
     """
+    allow_digits = name_has_digits(expected)
     for x, y in ((24, 39), (16, 31)):
         row = next((r for r in screen.lines if r.y == y), None)
         egg = next((r for r in screen.lines if r.y == y + 80), None)
         if row is None or egg is None:
             continue
         name = row.span(x, x + 64).strip()
-        if (not name or UNKNOWN in name or re.search(r'[\d\s]', name)
+        if (not _name_row_readable(name, allow_digits)
                 or row.span(x + 64, x + 112) != 'しょうぐん'):
             continue
         text = egg.span(x, x + 112).replace(' ', '')
@@ -756,8 +802,8 @@ def _capture_selection_marker(state, mem, frame, name):
                                'tick': mem.get('tick')}
 
 
-def _observe_status(screen, mem):
-    info = general_status(screen)
+def _observe_status(screen, mem, *, expected=None):
+    info = general_status(screen, expected=expected)
     if info:
         name = info['general']
         state = mem.get('house') or {}
