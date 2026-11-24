@@ -168,8 +168,9 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'egg_battle':
         metric = rec.get('observed_metric') or {}
         egg_need = metric.get('egg_need')
-        if isinstance(egg_need, dict) and egg_need.get('rule') == 'zombie_melee':
-            return 'egg', '敵の召喚獣はゾンビなので、たまごを使わず白兵で対処します。'
+        if isinstance(egg_need, dict) and egg_need.get('rule') == 'melee_only_summon':
+            monster = egg_need.get('enemy_monster') or 'ゾンビ'
+            return 'egg', f'敵の召喚獣は{monster}なので、たまごを使わず白兵で対処します。'
         if rec.get('strategy_variant') == 'egg_battle_use_egg':
             return 'egg', '敵が卵で召喚獣を呼び出しました。こちらもたまごで応戦します。'
         return 'egg', '敵が卵で召喚獣を呼び出しました。コマンドはこうげきで応戦します。'

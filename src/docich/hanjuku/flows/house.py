@@ -114,6 +114,13 @@ def _entry_exit(mem, reason, code, entry=None):
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
+# The general status page is reopened/held by the roster walk; the orchestrator
+# now stands down its orphan B while this flow is the owner
+# (status_panel.status_panel_owner_active).  A panel that cannot be read as the
+# selected general must therefore leave after a bounded number of observations
+# with B instead of spending the whole STEP_LIMIT as no-input holds.  Matches
+# post_month_status.STATUS_RETRIES (12).
+STATUS_READ_LIMIT = 12
 # Expected cells of the empty-inventory receipt that may be hidden under the
 # source castle's sprite (g1163 2026-11-11 いちじょうだに needs 1).
 SORTIE_PANEL_OCCLUDED = 2
@@ -1878,7 +1885,7 @@ def _step_once(screen, mem, frame):
             if actions == [pad('a')]:
                 state['selected'] = target
                 _capture_selection_marker(state, mem, frame, target)
-                _phase(state, 'status')
+                _phase(state, 'status', status_reads=0)
             elif actions:
                 from ..os_layer.commands import roster_list_batch
                 actions = roster_list_batch(screen, target) or actions
@@ -1893,12 +1900,26 @@ def _step_once(screen, mem, frame):
             return [pad('b')]
         state['selected'] = selected
         _capture_selection_marker(state, mem, frame, selected)
-        _phase(state, 'status')
+        _phase(state, 'status', status_reads=0)
         return [pad('a')]
     if phase == 'status':
         info = _observe_status(screen, mem)
         if not info or info['general'] != state.get('selected'):
+            reads = int(state.get('status_reads') or 0) + 1
+            state['status_reads'] = reads
+            if reads >= STATUS_READ_LIMIT:
+                # The orphan close now yields this page to us, so an unreadable
+                # or wrong general must still end in a real B (one observation,
+                # not a STEP_LIMIT of no-input holds with the panel held open).
+                _record(mem, 'status_unreadable',
+                        observed_metric={'reads': reads, 'limit': STATUS_READ_LIMIT,
+                                         'selected': state.get('selected'),
+                                         'screen': screen.kind},
+                        reason='一覧から開いた本人ステータスを読めないため卵修理の観察を有限に終了')
+                _exit(mem, '本人ステータスを読めないまま観察上限に達したため入力を止める')
+                return [pad('b')]
             return []
+        state.pop('status_reads', None)
         name = info['general']
         _tally_open_once(mem, state, 'partial' if state.get('from_survey') else 'full', info)
         receipts.wage(mem, info)

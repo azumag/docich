@@ -298,7 +298,7 @@ def test_a_zombie_summon_does_not_rearm_the_okunote():
     # Owner 2026-11-24: ゾンビ召喚には卵も奥の手も使わず白兵で対処する。
     mem = egg_fight_memory(ally_hp=50)
     battle = mem['battle']
-    battle.update(summon_enemy_hp=263, zombie_melee=True,
+    battle.update(summon_enemy_hp=263, melee_only_summon=True,
                   okunote_summon_preempt={
                       'opens': 1, 'downs': p.DEFENDER_SUMMON_SCROLL_LIMIT,
                       'exhausted': True, 'exhausted_reason': 'scroll_unread',

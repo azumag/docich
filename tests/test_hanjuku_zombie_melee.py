@@ -46,10 +46,10 @@ def test_a_zombie_is_answered_by_melee_instead_of_our_egg():
     assert mem['egg_action'] == 'attack'
     assert mem['egg_needed'] is False
     decision = egg_decision(mem)
-    assert decision['observed_metric']['egg_need']['rule'] == 'zombie_melee'
+    assert decision['observed_metric']['egg_need']['rule'] == 'melee_only_summon'
     assert decision['strategy_variant'] == 'egg_battle_attack'
     assert 'ゾンビ' in decision['reason']
-    assert mem['battle']['zombie_melee'] is True
+    assert mem['battle']['melee_only_summon'] is True
 
 
 def test_zombie_melee_overrides_even_a_huge_monster_hp():
@@ -58,7 +58,7 @@ def test_zombie_melee_overrides_even_a_huge_monster_hp():
     with_zombie(screen, hp=900)
     assert policy.egg_battle_step(screen, mem) == [policy.pad('a')]
     assert mem['egg_action'] == 'attack'
-    assert egg_decision(mem)['observed_metric']['egg_need']['rule'] == 'zombie_melee'
+    assert egg_decision(mem)['observed_metric']['egg_need']['rule'] == 'melee_only_summon'
 
 
 def test_learned_egg_wins_do_not_bring_the_egg_back():
@@ -78,7 +78,7 @@ def test_a_hot_loaded_use_egg_decision_is_reverted_to_melee():
     assert policy.egg_battle_step(screen, mem) == [policy.pad('a')]
     assert mem['egg_action'] == 'attack'
     assert mem['battle']['independent']['action'] == 'attack'
-    assert any(d['strategy_variant'] == 'egg_battle_zombie_melee'
+    assert any(d['strategy_variant'] == 'egg_battle_melee_only'
                for d in mem['_records'] if d['decision'] == 'egg_battle')
 
 
@@ -93,8 +93,8 @@ def test_only_a_measured_single_zombie_uses_the_rule(mutation):
     else:
         screen.egg_rows[1] = EggRow('プチデビル', 240, 'enemy', 80)
     policy.egg_battle_step(screen, mem)
-    assert egg_decision(mem)['observed_metric']['egg_need']['rule'] != 'zombie_melee'
-    assert mem['battle'].get('zombie_melee') is not True
+    assert egg_decision(mem)['observed_metric']['egg_need']['rule'] != 'melee_only_summon'
+    assert mem['battle'].get('melee_only_summon') is not True
 
 
 def test_zombie_melee_skips_the_okunote_lottery():
@@ -105,12 +105,12 @@ def test_zombie_melee_skips_the_okunote_lottery():
               'card_summon_observed': True, 'okunote_only_observed': True,
               'summon_enemy_hp': 200, 'ally_hp': 60}
     assert policy._defender_summon_preempt(mem, battle)['due'] is True
-    battle['zombie_melee'] = True
+    battle['melee_only_summon'] = True
     assert policy._defender_summon_preempt(mem, battle) is None
 
 
 def test_narration_names_the_zombie_and_melee():
     from docich import hanjuku_commentary as commentary
     record = {'decision': 'egg_battle', 'strategy_variant': 'egg_battle_attack',
-              'observed_metric': {'egg_need': {'rule': 'zombie_melee'}}}
+              'observed_metric': {'egg_need': {'rule': 'melee_only_summon'}}}
     assert commentary.compose(record)[1] == '敵の召喚獣はゾンビなので、たまごを使わず白兵で対処します。'
