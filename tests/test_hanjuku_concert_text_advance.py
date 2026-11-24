@@ -145,9 +145,6 @@ def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
         'イデ',  # partial castle-name typewriter prefix
         'イデ!',  # width-folded complete label before the suffix
         'イデ！じょう',  # partial quote before the cost line
-        'ファ',  # #5313: typewriter prefix of the remaining castle
-        'ファルゲ',
-        'ファルゲじょう',
         'カラじょうですな',  # partial typewriter quote
         'カラじょうですな5Gかかりますがよろしいですかなうむッ!',
         'カラじょうのレベルが2',
@@ -163,6 +160,18 @@ def test_live_chikujou_text_is_never_advanced_as_generic_event_narration():
                 mem, 'event', 'text', f'text:{text}', down) is False
         assert mem['month_sub']['build_wait'] == 7
         assert 'event_text_watch' not in mem
+
+
+def test_chapter10_partial_falge_label_is_owned_by_chikujou():
+    # #5313: ファルゲ was the remaining affordable castle in chapter 10.
+    mem = {'chapter': 10, 'month_sub': {'kind': 'chikujou', 'build_wait': 7}}
+    for text in ('ファ', 'ファルゲ', 'ファルゲじょう'):
+        for _ in range(EVENT_TEXT_ADVANCE_MAX + 2):
+            assert event_text_advance_step(
+                mem, 'event', 'text', f'text:{text}', []) is False
+        assert mem['month_sub']['build_wait'] == 7
+        assert 'event_text_watch' not in mem
+
 
 
 def test_advancing_an_unrelated_event_restarts_the_chikujou_transition_wait():
