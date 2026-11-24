@@ -1005,7 +1005,7 @@ def _build_sortie_incident(runtime, state, after, event, now):
     rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
                            state.get('identity'))
     counts = _decision_counts(rows)
-    terminal_diagnostic = _chikujou_terminal_diagnostic(rows, mem.get('month'))
+    terminal_diagnostic = _chikujou_terminal_diagnostic(rows, event.get('month'))
     if terminal_diagnostic:
         event = dict(event)
         event['terminal_diagnostic'] = terminal_diagnostic
@@ -1836,7 +1836,7 @@ def _chikujou_terminal_diagnostic(rows, month):
     for row in reversed(rows):
         if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
             continue
-        if row.get('month') not in (None, month):
+        if month is not None and row.get('month') not in (None, month):
             continue
         metric = row.get('observed_metric')
         if not isinstance(metric, dict):
