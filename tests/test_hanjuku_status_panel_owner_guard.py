@@ -18,7 +18,7 @@ frame); every owner-read assertion below uses
 import json
 from pathlib import Path
 
-from docich.hanjuku.flows import boss_pursuit, house
+from docich.hanjuku.flows import boss_pursuit, house, post_month_status
 from docich.hanjuku.flows.battle_menus import orphan_battle_menu_step
 from docich.hanjuku.flows.status_panel import status_panel_owner_active
 from docich.hanjuku.os_layer.commands import pad
@@ -209,23 +209,28 @@ def test_named_status_owner_survives_an_unreadable_egg_row():
     screen.lines = [line for line in screen.lines if line.y != 111]
     assert house.general_status_name(screen) == 'ヴィーナス'
     monthly = policy(post_month_status=post_month_state())['policy']
+    monthly['_run_identity'] = dict(IDENTITY)
     assert status_panel_owner_active(monthly, screen) is True
     pursuit = {'chapter': 9, 'month': '9-1', 'tick': 1000, '_records': [],
                'boss_pursuit': boss_probe(0)}
     assert status_panel_owner_active(pursuit, screen) is True
 
 
-def test_dispatcher_releases_post_month_status_for_a_different_general():
-    actions, result = observe(policy(
-        post_month_status=post_month_state(selected='ゼウス')))
-    assert actions == [pad('b')]
-    state = result['policy']['post_month_status']
+def test_post_month_status_leaves_a_different_general_immediately():
+    mem = policy(post_month_status=post_month_state(selected='ゼウス'))['policy']
+    mem['_run_identity'] = dict(IDENTITY)
+    mem['_records'] = []
+    screen = panel()
+    assert status_panel_owner_active(mem, screen) is False
+    assert post_month_status.step(screen, mem, None) == [pad('b')]
+    state = mem['post_month_status']
     assert state['stage'] == 'blocked'
     assert state['failure'] == 'status_general_mismatch'
-    assert 'post_month_status_unverified' in decisions(result)
+    recorded = [r['decision'] for r in mem['_records']]
+    assert 'post_month_status_unverified' in recorded
     # Do not let _observe_status write another general's egg into the ledger.
-    assert 'house_egg_seen' not in decisions(result)
-    assert 'ヴィーナス' not in result['policy'].get('house_eggs', {})
+    assert 'house_egg_seen' not in recorded
+    assert 'ヴィーナス' not in mem.get('house_eggs', {})
 
 
 def test_boss_pursuit_closes_a_different_generals_status_immediately():
