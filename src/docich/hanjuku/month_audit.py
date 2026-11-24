@@ -2740,7 +2740,7 @@ def camp_watch_hint(runtime, *, identity=None, limit=8):
         return None
     if not isinstance(state, dict) or state.get('schema') != SCHEMA:
         return None
-    if identity is not None and state.get('identity') != identity:
+    if identity is not None and _identity_key(state.get('identity')) != _identity_key(identity):
         return None
     watch = state.get('camp_watch')
     generals = watch.get('generals') if isinstance(watch, dict) else None
