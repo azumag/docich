@@ -778,6 +778,32 @@ def test_sortie_order_failure_skips_move_orders(runtime_dir):
                   now=1000)
     assert audit.load_incidents(runtime_dir) == []
 
+
+def test_interim_move_order_failure_is_skipped_from_record_purpose(runtime_dir):
+    # Interim orders are absent from chart_plan; the terminal record must carry
+    # the purpose so the existing non-sortie exclusion still applies.
+    value = state(3, '6-2', 0,
+                  plan={'orders': {}, 'chart_plan': {'orders': []}})
+    record = _sortie_record(
+        'order_failed', deviation='移動元に残す将軍がいない',
+        step='I:743437:328a9db8')
+    record.update(purpose='move', general='アテナ',
+                  source='パタゴーヌ', target='アルマムーン')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_interim_attack_order_failure_is_still_filed(runtime_dir):
+    value = state(3, '6-2', 0,
+                  plan={'orders': {}, 'chart_plan': {'orders': []}})
+    record = _sortie_record(
+        'order_failed', deviation='城メニューが開かない',
+        step='I:123456:abcdef')
+    record.update(purpose='attack', target='敵城')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['sortie_event']['purpose'] == 'attack'
+
 def _battle_record(decision, *, outcome=None, metric=None, general=None,
                    choice=None, card=None, step='A:1:1'):
     return {'decision': decision, 'outcome': outcome, 'observed_metric': metric or {},
