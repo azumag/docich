@@ -68,14 +68,15 @@ def move_leg(mem, source, target, owned=None):
 
 
 def order_allowed(mem, order, source):
-    if not is_road(mem.get('chapter')):
-        return True
     owned = _owned(mem)
     target = order.get('target')
     # An adopted attack must still target an enemy castle at the moment it
-    # commits. A stale plan cannot turn a newly captured castle into an attack.
+    # commits, even in chapters without a measured road graph. A stale plan
+    # cannot turn a newly captured castle into an attack.
     if order.get('purpose') == 'attack' and target in owned:
         return False
+    if not is_road(mem.get('chapter')):
+        return True
     if source not in owned:
         return False
     if chart.is_boss_castle(target):
