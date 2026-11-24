@@ -8147,6 +8147,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1438-chikujou-castle-width-fold",
             "hanjuku-chart-v1443-boss-companion-stage-timeout",
             "hanjuku-chart-v1444-chikujou-skip-note",
+            "hanjuku-chart-v1456-boss-last-general",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",

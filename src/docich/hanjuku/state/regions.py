@@ -209,6 +209,8 @@ KEY_OWNERSHIP = {
     'boss_companion_source_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5276 出撃元のボス同行待ち時計(step別)
     'boss_companion_source_wait_expired': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5276 出撃元待ちの満了証票(step別)
     'boss_egg_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # replan戦略層のボス卵待ち計画
+    'boss_last_general_since': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5082 ボスフェーズ「最後の1将軍」枯渇エピソード開始tick
+    'boss_last_general_used': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5082 同上: 発行済み例外注文(エピソードあたり1件)
     'boss_probe_rotation': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスプローブ割当の戦略管理
     'boss_relaunch': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボス再出撃の戦略管理
     'boss_stale_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #4561 枯渇後のYビュー測定待ち

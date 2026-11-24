@@ -16,8 +16,10 @@ from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from .orders import (RETIRED_ORDER_STATES,
+                               ORDER_DISPATCH_STARVE_TICKS,
                                _arrival_castle, _boss_companion_source, _boss_egg_depleted,
-                               _whitehouse_open,
+                               _order_hero_alternatives, _strength, _whitehouse_open,
+                               boss_only_phase,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets,
@@ -2186,6 +2188,199 @@ def _defense_gate(mem):
     return 'hold'
 
 
+def _stable_interim_step(state, rid, order):
+    """The deterministic interim step id for ``order`` (docich#4728 naming).
+
+    An identical (purpose, source, target, general) keeps its step within one
+    state so a failure is not re-issued every rebuild, while a changed state
+    starts a fresh namespace and a retry is possible after the board moved
+    (docich#4729).
+    """
+    steps = state.setdefault('interim_steps', {})
+    identity = '|'.join(str(order.get(k) or '')
+                        for k in ('purpose', 'source', 'target', 'general'))
+    stable = steps.get(identity)
+    if not stable:
+        state['interim_count'] = state.get('interim_count', 0) + 1
+        digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]
+        stable = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{digest}"
+        steps[identity] = stable
+    return stable
+
+
+def _boss_last_general_besieged(mem):
+    """Castles under an active siege the exception must not empty (docich#5082).
+
+    A live ``plan.attack`` record means the castle is besieged right now;
+    ``defense_seen`` keeps the same recency window the corridor's
+    ``_defended_recently`` uses, so a just-defended castle is not drained
+    while the enemy may still be at its gate.
+    """
+    from .corridor import DEFENSE_WINDOW_TICKS
+    now = int(mem.get('tick') or 0)
+    attack = _plan_region(mem).get('attack') or {}
+    out = {attack['castle']} if (attack.get('side') == 'defense'
+                                 and isinstance(attack.get('castle'), str)) else set()
+    for castle, tick in (mem.get('defense_seen') or {}).items():
+        if type(tick) is int and 0 <= now - tick <= DEFENSE_WINDOW_TICKS:
+            out.add(castle)
+    return out
+
+
+def _boss_last_general_ready(mem):
+    """``(owned, free, reading)`` while the 'last general' pre-conditions hold.
+
+    docich#5082, all required at once: an active boss phase (the audit's
+    ``boss_only_phase`` twin) with a confirmed boss cell — two same-cell
+    readings, and a still-fresh one for the moving boss — every owned
+    castle's roster read (an unread one keeps the probe route, which
+    outranks this exception), and no measured castle holding two free
+    generals (``need=2`` fails everywhere, so the ordinary source selection
+    is empty). Returns None as soon as any condition breaks.
+    """
+    if not boss_only_phase(mem):
+        return None
+    chapter = mem.get('chapter') or 0
+    reading = mem.get('boss_cell')
+    if not (isinstance(reading, dict) and reading.get('chapter') == chapter
+            and type(reading.get('readings')) is int and reading['readings'] >= 2
+            and isinstance(reading.get('cell'), (list, tuple))
+            and len(reading['cell']) == 2):
+        return None
+    if chapter == chart.MOVING_BOSS_CHAPTER:
+        tick, measured = mem.get('tick'), reading.get('tick')
+        if not (type(tick) is int and type(measured) is int
+                and 0 <= tick - measured <= chart.MOVING_BOSS_TICKS):
+            return None
+    if chart.boss_castle(chapter) not in chart.castles(chapter):
+        return None      # no navigable boss cell: the order could never start
+    owned = (_owned(mem) - set(mem.get('lost') or ())) & set(chart.castles(chapter))
+    if not owned:
+        return None
+    garrison = _world(mem).get('garrison') or {}
+    if any(garrison.get(c) is None for c in owned):
+        return None      # an unread roster keeps the probe route
+    busy = (_en_route(mem)[0]
+            | set(_world(mem).get('general_location_unknown') or ()))
+    free = {c: [g for g in _known_residents(mem, garrison, c) or ()
+                if g not in busy] for c in owned}
+    if any(len(set(names)) >= 2 for names in free.values()):
+        return None      # a measured pair means need=2 works somewhere
+    return owned, free, reading
+
+
+def _boss_last_general_source(mem, owned, free, reading):
+    """``(source, general)`` of the exception order, or None (docich#5082).
+
+    Farthest from the threats first — the boss cell plus every enemy castle
+    cell — the stronger general on a tie, and the home castle only when
+    nothing else can send (its pick is recorded ``source=home``). A castle
+    under siege is skipped, and the named general is the one deploy's
+    companion picker would take, so the minted order can actually start.
+    """
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    home = chart.home_castle(chapter)
+    threats = []
+    if isinstance(reading.get('cell'), (list, tuple)):
+        threats.append(tuple(reading['cell']))
+    threats += [tuple(xy) for name, xy in cells.items()
+                if name not in owned and not chart.is_boss_castle(name)
+                and isinstance(xy, (list, tuple))]
+    stub = {'target': chart.boss_castle(chapter), 'purpose': 'attack'}
+    besieged = _boss_last_general_besieged(mem)
+    ranked = []
+    for castle in owned:
+        if castle in besieged or not free.get(castle):
+            continue
+        alternatives = _order_hero_alternatives(stub, mem, free[castle])
+        if not alternatives:
+            continue     # nobody deployable: the survival guards stand
+        general = alternatives[0]
+        xy = cells.get(castle)
+        distance = (min(round(((xy[0] - t[0]) ** 2 + (xy[1] - t[1]) ** 2) ** 0.5)
+                        for t in threats)
+                    if isinstance(xy, (list, tuple)) and threats else 0)
+        strength = _strength(general)
+        ranked.append((castle == home, -distance, -strength[0], -strength[1],
+                       castle, general))
+    if not ranked:
+        return None
+    ranked.sort()
+    _, _, _, _, castle, general = ranked[0]
+    return castle, general
+
+
+def _boss_last_general_order(mem, state, rid):
+    """Mint the bounded boss-phase 'last general' order, or None (docich#5082).
+
+    The exception is a fail-open but bounded escape from the
+    ``chart_interim_hold`` loop: it fires at most once per continuous
+    starvation episode after ``ORDER_DISPATCH_STARVE_TICKS`` (the same
+    ~90-second bound #5095's dispatch guarantee uses), and only while
+    ``_boss_last_general_ready`` holds. ``boss_last_general_used`` latches
+    the episode's order; when its general is no longer in the field (his
+    return or loss is the next evaluation) the episode closes and a fresh
+    bounded wait re-arms. An order that never launched keeps the episode
+    latched — the exception does not spam a sortie the game refused.
+    """
+    now = int(mem.get('tick') or 0)
+    conditions = _boss_last_general_ready(mem)
+    if conditions is None:
+        mem.pop('boss_last_general_since', None)
+        return None
+    since = mem.get('boss_last_general_since')
+    if type(since) is not int:
+        mem['boss_last_general_since'] = now
+        return None
+    used = mem.get('boss_last_general_used')
+    if isinstance(used, dict):
+        busy = (_en_route(mem)[0]
+                | set(_world(mem).get('general_location_unknown') or ()))
+        if used.get('general') in busy:
+            return None          # still out: one outstanding exception at a time
+        if _sorties(mem).get(used.get('step')):
+            # The issued sortie actually left and its general is back or
+            # lost: close the episode and re-arm the bounded wait.
+            mem.pop('boss_last_general_used', None)
+            mem['boss_last_general_since'] = now
+            return None
+        if used.get('since') == since:
+            return None          # fired but never launched in this episode
+    if now - since < ORDER_DISPATCH_STARVE_TICKS:
+        return None
+    owned, free, reading = conditions
+    picked = _boss_last_general_source(mem, owned, free, reading)
+    if picked is None:
+        return None
+    source, general = picked
+    chapter = mem.get('chapter') or 0
+    home, boss = chart.home_castle(chapter), chart.boss_castle(chapter)
+    order = {'general': general, 'source': source, 'target': boss, 'cards': [],
+             'after': None, 'purpose': 'attack', 'boss_last_general': True,
+             'note': (f'暫定: 全城実測済みでneed=2を満たす城が無いため、'
+                      f'ボス追跡のために{source}の最後の1将軍{general}を出す')}
+    step = _stable_interim_step(state, rid, order)
+    status = _plan_region(mem).get('orders') or {}
+    if status.get(step) in RETIRED_ORDER_STATES:
+        return None     # this exact order already ran its course
+    order['step'] = step
+    mem['boss_last_general_used'] = {'since': since, 'step': step,
+                                   'general': general, 'source': source}
+    _record(mem, 'boss_last_general_order', chart_step=step,
+            strategy_variant='chart_adjust_pending', request_id=rid,
+            choice='boss_last_general', confidence=None,
+            general=general, source=source, target=boss, purpose='attack',
+            deviation_reason='boss_last_general',
+            observed_metric={'since': since, 'wait': now - since,
+                             'boss_cell': list(reading.get('cell')),
+                             'source_is_home': source == home},
+            reason=('全城実測済みで need=2 を満たす城が無いため、ボス追跡のために'
+                    + ('本城(source=home)の' if source == home else f'{source}の')
+                    + '最後の1将軍を出す（ボスフェーズ限定・1エピソード1件）'))
+    return order
+
+
 def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     """Start the next deterministic sortie while no adjusted plan is pending.
 
@@ -2210,10 +2405,21 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
             # (read empty, no probe due); waiting on it held every other
             # candidate (g1075 2026-10-29 11:38-11:47, リグア retake).
             and _source_list_open(interim, mem))
+    if (busy and interim.get('boss_last_general') is True
+            and status.get(interim['step']) not in ('launched', 'launched_unconfirmed')
+            and _boss_last_general_ready(mem) is None):
+        # The exception's pre-conditions broke before its sortie launched:
+        # release the slot rather than hold it forever (docich#5082).
+        state['interim_order'] = None
+        busy = None
     if busy:
         return
     candidates = interim_candidates(mem, allow_sole)
     if not candidates:
+        order = _boss_last_general_order(mem, state, rid)
+        if order is not None:
+            state['interim_order'] = order
+            return
         # A hold nobody can act on used to be silent (g530: sortie
         # stopped with zero evidence); record the starvation once per
         # request revision so diagnostics can see it.
@@ -2235,25 +2441,15 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     # forever. Name the interim step after the order itself: an identical
     # (purpose, source, target, general) keeps its step, and a failed one is
     # skipped instead of re-tried.
-    steps = state.setdefault('interim_steps', {})
-
     def stable_step(order):
-        identity = '|'.join(str(order.get(k) or '')
-                            for k in ('purpose', 'source', 'target', 'general'))
-        stable = steps.get(identity)
-        if not stable:
-            state['interim_count'] = state.get('interim_count', 0) + 1
-            digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]
-            # Namespace the identity by the request id: within one state the
-            # same order keeps its step (so a failure is not re-issued every
-            # rebuild), but a changed state starts a fresh namespace, so a
-            # retry is still possible after the board actually moved
-            # (docich#4729: the bare hash made ユージア→セレーネ permanently
-            # failed and next_order returned None while four candidates were
-            # ready).
-            stable = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{digest}"
-            steps[identity] = stable
-        return stable
+        # Namespace the identity by the request id: within one state the
+        # same order keeps its step (so a failure is not re-issued every
+        # rebuild), but a changed state starts a fresh namespace, so a
+        # retry is still possible after the board actually moved
+        # (docich#4729: the bare hash made ユージア→セレーネ permanently
+        # failed and next_order returned None while four candidates were
+        # ready).
+        return _stable_interim_step(state, rid, order)
 
     # A settled interim step must not be re-issued: the top candidate whose
     # step already read 'failed' was re-picked on every rebuild, so
