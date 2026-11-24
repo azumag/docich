@@ -1489,6 +1489,17 @@ def _no_input_hold_max(kind, phase, screen, bounded_wait):
     return NO_INPUT_HOLD_MAX
 
 
+def _fort_picker_owns_map_target(recall, kind, phase):
+    """Only the picker opened by the fort-status A belongs to camp recall."""
+    return (
+        isinstance(recall, dict)
+        and recall.get('stage') == 'fort_status'
+        and recall.get('fort_picker_requested') is True
+        and kind == 'map_target'
+        and phase != 'concert'
+    )
+
+
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
@@ -2126,13 +2137,17 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                           or recall_flow.is_fort_menu(screen)))
         fort_route = (recall_flow.in_fort_route(recall_in_flight)
                       and kind in ('text', 'unknown') and phase != 'concert')
+        # A fort's A on the selected general status panel opens its own
+        # map_target. Route that frame back to recall only while that exact
+        # request is pending; unrelated order pickers remain with map_flow.
+        fort_picker = _fort_picker_owns_map_target(recall_in_flight, kind, phase)
         # The menu stage also owns the field frames: when the A on the tent
         # did not open the menu, the recall has to re-centre the tent; the
         # sortie's castle jump otherwise consumed the frame (g1190 77-10
         # 178836 camp_enter -> 178838 castle_jump_confirm).
         field_picker = ((stage in ('to_camp', 'dest', 'menu')
                          and kind in ('map', 'map_target') and phase != 'concert'))
-        if camp_menu or fort_route or field_picker:
+        if camp_menu or fort_route or fort_picker or field_picker:
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:
         actions = map_flow.general_jump_step(screen, mem, frame)
