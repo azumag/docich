@@ -21,4 +21,4 @@ ch10 17-4では、ドーム型野営を開いた後に防衛告知の `text` 画
 
 回帰テストは、築城画面の所有権、ドーム帰還中の防衛テキスト抑止、既存の有限B閉鎖を検証する。実機で帰還が成立することは別途 runtime 受入確認が必要。
 
-現在のhot-load marker: `hanjuku-chart-v1447-dome-camp-event-text-owner`。
+現在のhot-load marker: `hanjuku-chart-v1451-dome-camp-terminal-evidence`。
