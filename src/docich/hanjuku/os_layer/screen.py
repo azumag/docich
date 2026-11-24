@@ -1288,14 +1288,20 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         screen.cursor = _free_cursor(row_masks(frame, white), frame)
     screen.kind = classify_text(screen)
     if screen.kind == 'password_entry':
-        # The right-hand list is grey (120,120,120) on the green panel; the
-        # normal light mask never sees it. Read it so the entry order can be
-        # derived from the actual collected order instead of fixed indices.
-        grey_rows = read_lines(frame, predicate=lambda r, g, b: 95 <= min(r, g, b) <= 165
-                               and max(r, g, b) - min(r, g, b) <= 12,
-                               rect=(160, 15, 252, 145))
-        screen.password_list = [(ln.y, ''.join(w for _, w in ln.spans()))
-                                for ln in grey_rows if ln.spans()]
+        # The right-hand list sits on the green panel: available words are
+        # white (248,252,248) and already-used ones grey (120,120,120); the
+        # normal light mask misses the grey rows entirely. Read both so the
+        # entry order comes from the actual collected order (#5325).
+        rows = {}
+        for predicate in (
+                lambda r, g, b: min(r, g, b) >= 170,
+                lambda r, g, b: 95 <= min(r, g, b) <= 165
+                and max(r, g, b) - min(r, g, b) <= 12):
+            for ln in read_lines(frame, predicate=predicate, rect=(160, 15, 252, 145)):
+                text = ''.join(w for _, w in ln.spans())
+                if text:
+                    rows.setdefault(ln.y, text)
+        screen.password_list = sorted(rows.items())
     screen.okunote_only_box = _okunote_only_box(frame, screen)
     if screen.kind == 'text':
         screen.prose_attached_marks = attached_mark_cells(
