@@ -1686,20 +1686,66 @@ def _castle_jump_y_fallback(screen, mem, jump, rows):
     budget. The stall is a property of the panel, not of the order: once the
     menu is closed the ordinary map step retries the same source through the
     whole-map Y jump (mode 'map'), and walks only when Y cannot run.
-    """
-    mem.pop('castle_jump', None)
-    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': jump.get('step'),
-                               'tick': int(mem.get('tick') or 0)}
-    mem['castle_jump_y'] = {'step': jump.get('step'), 'source': jump.get('source'),
-                            'tick': int(mem.get('tick') or 0)}
-    _record(mem, 'castle_jump_y_fallback', chart_step=jump.get('step'),
-            target=jump.get('source'), screen=screen.kind,
-            observed_metric={'scrolls': jump.get('scrolls'),
-                             'stalled': jump.get('scroll_stall'),
-                             'rows': [word for _, word in rows]},
-            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
-    return [pad('b')]
 
+    Issues #5275 / #5276: that resume bypassed ``_end_castle_jump``, so the
+    menu-failure counter never advanced and open → scroll → stall → fallback
+    → reopen could repeat without bound. Count stalls per step and give the
+    step up at ``CASTLE_JUMP_ABANDON``, the same bound a menu failure uses, so
+    the planner can pick another source. A reanchor owns no step and keeps its
+    bounded list retries (there is nothing to abandon).
+    """
+    step_key = jump.get('step')
+    source = jump.get('source')
+    mem.pop('castle_jump', None)
+    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': step_key,
+                               'tick': int(mem.get('tick') or 0)}
+    mem['castle_jump_y'] = {'step': step_key, 'source': source,
+                            'tick': int(mem.get('tick') or 0)}
+    stalls = None
+    if step_key is not None:
+        stalls = mem.get('castle_jump_stall_failures')
+        stalls = stalls if isinstance(stalls, dict) else {}
+        n = int(stalls.get(step_key) or 0) + 1
+        stalls[step_key] = n
+        mem['castle_jump_stall_failures'] = stalls
+    else:
+        n = 0
+    metric = {'scrolls': jump.get('scrolls'),
+              'stalled': jump.get('scroll_stall'),
+              'rows': [word for _, word in rows]}
+    if stalls is not None:
+        metric['stall_failures'] = n
+    _record(mem, 'castle_jump_y_fallback', chart_step=step_key,
+            target=source, screen=screen.kind, observed_metric=metric,
+            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
+    if step_key is not None and n >= CASTLE_JUMP_ABANDON:
+        # Same retirement as _end_castle_jump's abandon path: without this the
+        # same stalled list is re-opened on every resume with no escape.
+        _plan_region(mem).setdefault('orders', {})[step_key] = 'failed'
+        if (_plan_region(mem).get('active') == step_key):
+            _plan_region(mem)['active'] = None
+        stalls.pop(step_key, None)
+        mem['castle_jump_stall_failures'] = stalls
+        mem.pop('castle_jump_y', None)
+        mem['castle_jump_skip'] = {'step': step_key, 'tick': int(mem.get('tick') or 0)}
+        adjust = mem.get('chart_adjust')
+        if isinstance(adjust, dict):
+            interim = adjust.get('interim_order') or {}
+            if isinstance(interim, dict) and interim.get('step') == step_key:
+                adjust.pop('interim_order', None)
+                steps = adjust.get('interim_steps')
+                if isinstance(steps, dict):
+                    for key, value in list(steps.items()):
+                        if value == step_key:
+                            steps.pop(key)
+                _record(mem, 'chart_interim_abandoned', chart_step=step_key,
+                        observed_metric={'stall_failures': n, 'why': 'scroll_stalled'},
+                        reason='暫定注文の城ジャンプがページ送り停滞で上限に達したため破棄して基本計画へ戻す')
+        _record(mem, 'castle_jump_abandoned', chart_step=step_key,
+                target=source, screen=screen.kind,
+                observed_metric={'stall_failures': n, 'why': 'scroll_stalled'},
+                reason='しろ一覧のページ送り停滞が上限に達したため、この出撃元の注文を諦めて別の城から組み直す')
+    return [pad('b')]
 
 def _jump_successor(mem, order, jump=None):
     """The live order that continues a re-planned jump, or None.
