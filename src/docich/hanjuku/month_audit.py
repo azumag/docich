@@ -2720,6 +2720,48 @@ def capture(state):
         return None
 
 
+def camp_watch_hint(runtime, *, identity=None, limit=8):
+    """Bounded per-general consecutive camp months from the audit state.
+
+    The policy's own exemption counter is rebuilt from status snapshots and can
+    lose months when a battle leaves a stale ``field`` row. The audit counts
+    the same camps month by month from a complete status list, so the bot hands
+    this read-only hint to the policy at observation start. It is evidence, not
+    a command: the policy still requires a current camp row before using it.
+    """
+    runtime = Path(runtime)
+    path = runtime / AUDIT_FILE
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        raw = path.read_bytes()[:MAX_STATE_BYTES]
+        state = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    if not isinstance(state, dict) or state.get('schema') != SCHEMA:
+        return None
+    if identity is not None and state.get('identity') != identity:
+        return None
+    watch = state.get('camp_watch')
+    generals = watch.get('generals') if isinstance(watch, dict) else None
+    month = watch.get('month') if isinstance(watch, dict) else None
+    if not isinstance(generals, dict):
+        return None
+    out = {}
+    for name, row in list(generals.items())[:limit]:
+        if not isinstance(name, str) or not isinstance(row, dict):
+            continue
+        if row.get('last_month') != month:
+            continue
+        months = row.get('months')
+        if type(months) is int and 0 < months <= 24:
+            out[name] = months
+    if not out:
+        return None
+    return {'identity': state.get('identity') or {},
+            'month': month, 'generals': out}
+
+
 def _new_state(identity):
     return {
         'schema': SCHEMA,

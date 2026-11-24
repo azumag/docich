@@ -192,6 +192,30 @@ class BotExitDiagnosticTest(unittest.TestCase):
                 bot._note_exception_fault({}, exc, "ValueError('wrong game')")
         self.assertEqual(calls, [])
 
+    def test_the_audit_camp_watch_hint_is_attached_to_the_policy_state(self):
+        import tempfile
+        runtime = Path(tempfile.mkdtemp(prefix="camp-watch-hint-"))
+        try:
+            identity = {"game": "hanjuku-hero", "runtime_id": "g1",
+                        "generation": 1, "lease_id": "lease"}
+            (runtime / bot.month_audit.AUDIT_FILE).write_text(
+                json.dumps({"schema": 1, "identity": identity,
+                            "camp_watch": {"month": "8-6", "generals": {
+                                "キッシュ": {"last_month": "8-6", "months": 8}}}}),
+                encoding="utf-8")
+            state = {}
+            hint = bot._apply_camp_watch_hint(state, runtime, {"hanjuku": identity})
+            self.assertEqual(hint["generals"], {"キッシュ": 8})
+            self.assertEqual(state["camp_watch_hint"]["generals"], {"キッシュ": 8})
+            # A different run or a missing/corrupt file never injects stale months.
+            state = {"camp_watch_hint": {"generals": {"old": 9}}}
+            bot._apply_camp_watch_hint(state, runtime,
+                                       {"hanjuku": {**identity, "lease_id": "other"}})
+            self.assertNotIn("camp_watch_hint", state)
+        finally:
+            (runtime / bot.month_audit.AUDIT_FILE).unlink(missing_ok=True)
+            runtime.rmdir()
+
     def test_a_recall_yjump_failure_reaches_the_recurrence_counter(self):
         actions = [{"type": "pad", "buttons": ["y"], "hold_ms": 100}]
         record = {"decision": "y_jump_failed", "chart_step": "RECALL",

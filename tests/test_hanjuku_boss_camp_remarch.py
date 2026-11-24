@@ -64,6 +64,7 @@ def test_a_broken_boss_camper_is_recalled_not_moved():
 
 def test_boss_move_task_marks_the_recall_state(monkeypatch):
     mem = memory()
+    _flow(mem)['retreat_rechecks'] = {'ゼウス': {'attempts': 3}}
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='task_jump',
@@ -76,7 +77,10 @@ def test_boss_move_task_marks_the_recall_state(monkeypatch):
                         lambda _screen, _mem, _frame: [pad('a')])
     assert post.step(screen, mem, object()) == [pad('a')]
     assert _flow(mem)['recall']['boss_move'] is True
+    assert _flow(mem)['recall']['task_recall'] is True
     assert _flow(mem)['recall']['stage'] == 'to_camp'
+    # The explicit monthly task owns the camp menu; a stale recheck row is gone.
+    assert 'ゼウス' not in (_flow(mem).get('retreat_rechecks') or {})
 
 
 def _camp_menu_screen(selected):
