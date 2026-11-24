@@ -172,7 +172,8 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
                         {"unchanged_since": proof["since"] + 1}, {"unchanged_seconds": 999},
                         {"observed_monotonic": 381}):
             malformed.append({**loop, **changes})
-        for index, state in enumerate([run_state(), run_state(terminal_reason="screen_stalled", unchanged_seconds=300),
+        for index, state in enumerate([run_state(), run_state(terminal_reason="game_clear"),
+                      run_state(terminal_reason="screen_stalled", unchanged_seconds=300),
                       input_stalled, loop, *malformed,
                       *(run_state(**v) for v in INVALID_TERMINAL)]):
             (self.run / "hanjuku_run.json").write_text(json.dumps(state))
