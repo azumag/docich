@@ -89,12 +89,17 @@ def _okunote_last_resort_gate(cur, last_resort, now=None):
     return True
 
 
-def orphan_battle_menu_step(screen, mem):
+def orphan_battle_menu_step(screen, mem, *, owner_active=None):
     """Close an unbound parent menu finitely, then require new native context.
 
     The gray commands do not identify an actor, HP or a usable Okunote. A
     background animation/fade must neither refill the cancellation budget nor
     release an exhausted episode to the generic scene-confirm fallback.
+
+    ``owner_active`` is the orchestrator's pre-flow snapshot
+    (``status_panel.status_panel_owner_active``): when a live flow is reading
+    this general status page, the page belongs to it and this step returns
+    None.  Returning ``[]`` would stop the dispatcher before that owner ran.
     """
     flow = mem.get('orphan_battle_menu')
     restored = isinstance(mem.get('resume_battle_menu'), dict)
@@ -105,10 +110,22 @@ def orphan_battle_menu_step(screen, mem):
     # A general's status page (opened by the monthly/roster walk) says
     # 「しろのなかにいます」 and 「Bボタンでもどる」.  The plain-command fade
     # path was advancing it with A forever (g1190 2026-11-22 09:00, n=30341).
+    # The owners that read this page dispatch after this step, so only close it
+    # when no owner was active before the flows ran (post_month_status failed
+    # every month with status_unreadable because this B beat its reader).  When
+    # an owner is active, return None before the plain-command A path below:
+    # advancing the owner's page with A is the g1190 loop this branch fixed.
     text = screen.text or ''
     if ('Bボタンでもどる' in text
             and ('しろのなかにいます' in text
                  or ('HP' in text and 'ちんぎん' in text))):
+        if owner_active:
+            # Drop the stale claim, as the close path did: the owner reads this
+            # page and returns to its roster, and a leftover plain-command flow
+            # would press A on that roster frame ahead of the same owner.
+            mem.pop('orphan_battle_menu', None)
+            mem.pop('resume_battle_menu', None)
+            return None
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         _record(mem, 'battle_status_screen_return',
