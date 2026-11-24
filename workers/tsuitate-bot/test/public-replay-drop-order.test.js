@@ -27,13 +27,13 @@ function base(pieces, hand, patch = {}) {
   };
 }
 
-test("v13 defers an occupancy-fragile drop behind a path-safe move to the same square", () => {
+test("v14 defers an occupancy-fragile drop behind a path-safe move to the same square", () => {
   const state = base([["5i", "K"], ["5e", "G"]], { G: 1 });
   const allowed = new Set(["G*5f", "5e5f"]);
   const forbiddenMoves = only(state, allowed);
 
   const first = chooseMove(state, { profile: profile(), forbiddenMoves, seed: "public-replay-29" });
-  assert.equal(BRAIN_VERSION, "tsuitate-brain-v13");
+  assert.equal(BRAIN_VERSION, "tsuitate-brain-v14");
   assert.equal(first.usi, "5e5f");
 
   // The drop is deferred, not forbidden. If the path-safe move itself is

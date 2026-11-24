@@ -181,6 +181,15 @@ def test_board_has_the_deduction_and_reveal_panels():
     assert 'lang="ja"' in html and 'translate="no"' in html
 
 
+def test_long_suspect_and_alibi_fields_scroll_instead_of_hiding_the_ui():
+    # owner 2026-11-23: 容疑者・アリバイが長いと欄からはみ出してUIが隠れる。
+    # 各列は縦スクロールし、長い名前・証言は折り返して読めるようにする。
+    html = mystery_view.HTML
+    assert "#suspects,#mrooms,#msusp{flex:1;min-height:0;overflow-y:auto" in html
+    assert "overflow-wrap:anywhere" in html and "word-break:break-word" in html
+    assert "#msusp::-webkit-scrollbar" in html
+
+
 def test_revealed_payload_carries_the_explanation_sections(tmp_path):
     path = payload_path(tmp_path)
     payload = _payload(tmp_path, revealed=True)

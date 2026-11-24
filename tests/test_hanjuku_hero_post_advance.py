@@ -61,14 +61,14 @@ def locate_orders(mem):
 
 
 def test_an_unnamed_hero_reads_the_post_castle_before_the_rear_marches():
-    # A, B, C ours and no roster names the hero: the post is B (one behind C),
-    # and the plan stopped visiting B, so nothing would ever read it again.
+    # A, B, C ours and no roster names the hero: chapter 9 posts him at the
+    # front (C), and the plan stopped visiting C, so nothing would read it.
     mem = memory([A, B, C])
-    drain(mem, B)
+    drain(mem, C)
     found = locate_orders(mem)
     assert len(found) == 1
-    assert found[0]['source'] == B
-    assert found[0]['purpose'] == 'move'
+    assert found[0]['source'] == C
+    assert found[0]['purpose'] == 'attack'
     assert mem[corridor.HERO_LOCATE]['count'] == 1
     # With no attack available the read leads the plan, ahead of the rear march.
     steps = [o['step'] for o in orders(mem)]
@@ -100,7 +100,7 @@ def test_the_belief_expires_and_the_read_takes_over():
     drain(mem, C)
     corridor.note_hero_post(mem, B, tick=5000 - corridor.HERO_POST_TTL - 1)
     assert hero_orders(mem) == []
-    assert [o['source'] for o in locate_orders(mem)] == [C]
+    assert [o['source'] for o in locate_orders(mem)] == [D]
 
 
 def test_a_live_list_that_misses_the_hero_drops_the_belief():

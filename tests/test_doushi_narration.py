@@ -1,8 +1,9 @@
 """Bounded 同志カード大賞 announcement contracts (#934 PR-5).
 
 No Twitch, overlay queue, audio worker or production write: both sinks are
-injected and the ranking is a synthetic design-§6 payload. The owner approval
-gate (``ANNOUNCEMENT_ENABLED``) must hold both sinks shut by default.
+injected and the ranking is a synthetic design-§6 payload. Owner approval
+2026-11-23 turned the speech on; the overlay stays off (the ranking view already
+shows the same content).
 """
 from __future__ import annotations
 
@@ -93,7 +94,9 @@ def test_overlay_body_reports_an_empty_board_without_rows():
     assert dn.overlay_body(None).endswith("ランキング対象の同志はまだいません")
 
 
-def test_announcement_is_held_shut_until_the_owner_approves(env, monkeypatch):
+def test_the_owner_approved_the_speech_and_the_overlay_stays_off(env):
+    # owner 2026-11-23: 同志カード大賞を読み上げる。画面は ranking view が出すため
+    # overlay の重複カードは出さない。
     events, speeches = [], []
 
     result = dn.announce(
@@ -103,15 +106,27 @@ def test_announcement_is_held_shut_until_the_owner_approves(env, monkeypatch):
         speech=lambda g, text, **kwargs: speeches.append((text, kwargs)),
         now=lambda: 1000.0)
 
-    assert dn.ANNOUNCEMENT_ENABLED is False
-    assert result == {"overlay": "skipped", "speech": "skipped"}
-    assert events == [] and speeches == []
+    assert dn.SPEECH_ENABLED is True and dn.OVERLAY_ENABLED is False
+    assert result == {"overlay": "skipped", "speech": "sent"}
+    assert events == []
+    (text, kwargs), = speeches
+    assert text == dn.narration_text(payload(3))
+    assert kwargs == {"context": "doushi:ranking", "speaker": ""}
+
+    # コーナー側の audio_enabled が false のときは読み上げない（opt-in は維持）。
+    quiet = dn.announce(
+        env.g, payload(3), request_id="r-quiet", audio_enabled=False,
+        overlay=lambda root, event: events.append((root, event)),
+        speech=lambda g, text, **kwargs: speeches.append((text, kwargs)),
+        now=lambda: 1000.0)
+    assert quiet == {"overlay": "skipped", "speech": "skipped"}
+    assert len(speeches) == 1
 
 
-def test_approving_the_flag_publishes_exactly_one_overlay_event_and_opts_into_speech(
+def test_enabling_the_overlay_publishes_exactly_one_event_and_speech_is_opt_in(
         env, monkeypatch):
     events, speeches = [], []
-    monkeypatch.setattr(dn, "ANNOUNCEMENT_ENABLED", True)
+    monkeypatch.setattr(dn, "OVERLAY_ENABLED", True)
 
     result = dn.announce(
         env.g, payload(3), request_id="11111111-1111-4111-8111-111111111111",
@@ -142,7 +157,7 @@ def test_approving_the_flag_publishes_exactly_one_overlay_event_and_opts_into_sp
 
 
 def test_announce_never_raises_on_a_sink_failure(env, monkeypatch):
-    monkeypatch.setattr(dn, "ANNOUNCEMENT_ENABLED", True)
+    monkeypatch.setattr(dn, "OVERLAY_ENABLED", True)
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("SECRET-SINK-BODY")
@@ -173,9 +188,9 @@ def test_announcement_reads_only_the_transient_runtime_payload(tmp_path, monkeyp
 
     assert dn._load_payload(g)["card_type_total"] == 128
     dn.announcement(g, request_id="r2", now=lambda: 7.0)
-    assert seen == []  # still owner-gated
+    assert seen == []  # overlay は出さない（speech のみ）
 
-    monkeypatch.setattr(dn, "ANNOUNCEMENT_ENABLED", True)
+    monkeypatch.setattr(dn, "OVERLAY_ENABLED", True)
     dn.announcement(g, request_id="r2", now=lambda: 7.0)
     assert len(seen) == 1 and seen[0]["category"] == "prediction"
     assert "128 種類" in seen[0]["body"]
@@ -206,7 +221,6 @@ def test_announcement_never_falls_back_to_a_previous_ranking(tmp_path, monkeypat
         (state / "doushi_corner.json").write_text(
             json.dumps({"doushi_runtime_identity": identity}), encoding="utf-8")
     g = SimpleNamespace(state_dir=state, webui=SimpleNamespace(soren_root=str(tmp_path)))
-    monkeypatch.setattr(dn, "ANNOUNCEMENT_ENABLED", True)
     seen = []
     monkeypatch.setattr(dn, "append_event", lambda root, event: seen.append(event))
 

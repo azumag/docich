@@ -75,11 +75,25 @@ def test_decide_nudges_a_frozen_cursorless_map_before_the_generic_hold(monkeypat
     import docich.hanjuku.os_layer.screen as screen_module
     monkeypatch.setattr(screen_module, 'parse', lambda frame, phase=None: fake)
     frame = Frame(256, 224, bytes((40, 140, 20)) * (256 * 224))
-    state = {'policy': {'chapter': 1}}
-    seen = []
+    identity = {
+        'game': 'hanjuku-hero', 'generation': 1,
+        'runtime_id': 'g1-field-idle-test', 'lease_id': 'field-idle-test',
+    }
+    # Owner 2026-11-23: the whole-map Y refresh needs an idle field with no
+    # active order; an active interim plan keeps the field input-free.
+    idle = {'tick': 1, 'chapter': 1, '_run_identity': dict(identity),
+            'survey_run_identity': dict(identity), 'plan': {'orders': {}},
+            '_records': []}
+    assert orchestrator.field_idle_world_map_nudge(idle, 'field', 'map', 1) == [orchestrator.pad('y')]
+    state = {'policy': {
+        'chapter': 1, '_run_identity': dict(identity),
+        'survey_run_identity': dict(identity),
+    }}
+    seen, decisions = [], []
     for _ in range(orchestrator.MAP_UNSTEERABLE_HOLD_MAX + 1):
-        actions, state = orchestrator.decide(frame, state)
+        actions, state = orchestrator.decide(frame, state, run_identity=identity)
         seen.append(actions)
+        decisions += [r['decision'] for r in state.get('_records', [])]
     assert all(actions == [] for actions in seen[:-1])
     assert seen[-1] == [orchestrator.pad('select')]
-    assert state['_records'][-1]['decision'] == 'map_unsteerable_nudge'
+    assert decisions[-1] == 'map_unsteerable_nudge'

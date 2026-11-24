@@ -363,17 +363,17 @@ def test_legacy_tree_cleanup_reaps_child_mirror_and_preserves_shared_process(tmp
     owned=[guardian.pid,game.pid];child=None
     try:
         deadline=time.monotonic()+5
+        child_text=''
         while time.monotonic()<deadline:
             try:
-                raw=child_file.read_text().strip()
-                if raw:
-                    child=int(raw)
-                    break
-            except (OSError,ValueError):
-                pass
+                child_text=child_file.read_text().strip()
+            except FileNotFoundError:
+                child_text=''
+            if child_text:
+                break
             time.sleep(.02)
-        assert child is not None, "child pid was not atomically published before the deadline"
-        owned.append(child)
+        assert child_text, 'child pid file was not populated before the deadline'
+        child=int(child_text);owned.append(child)
         # This is the same existing physical-tree function used by old tmux
         # cleanup. No newly hotloaded adapter method is needed.
         result=terminate_process_tree([game.pid,guardian.pid])

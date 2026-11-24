@@ -1,0 +1,107 @@
+"""A battle that cuts the target jump must not confirm the restored marker.
+
+The destination picker comes back with its marker wherever the game left it
+after an interrupting fight, while the bot still holds the arrival receipt of
+the Y jump it made before the fight. Confirming that receipt sends the general
+to a cell offset from the plan. After a battle the target jump has to be redone
+so the marker is placed on the measured cell again.
+"""
+from unittest.mock import patch
+
+from docich import hanjuku_chart as chart, hanjuku_policy as p
+from docich.hanjuku.os_layer.screen import Screen
+from docich.hanjuku.state.regions import flow as _flow
+
+from test_hanjuku_execution_binding import confirm, memory
+
+STEP = '1-A3'
+TARGET = 'スペンソニア'
+
+
+def target_map():
+    return Screen([], None, '', kind='map_target', marker=(50, 50))
+
+
+def placement(mem, confirmed_tick):
+    """The arrival receipt a target Y jump left before the fight."""
+    mem.update({
+        'near_goal': {'step': STEP, 'goal': TARGET, 'mode': 'target'},
+        'y_jumped': {STEP: TARGET},
+        'y_jumped_res': {STEP: [0.0, 0.0]},
+        'y_jump_target_confirmed': {'step': STEP, 'tick': confirmed_tick},
+        'y_jump_target_closed': {'step': STEP, 'tick': confirmed_tick - 1},
+        'cursor': list(chart.castles(1)[TARGET]),
+    })
+
+
+def battle_interrupts(mem):
+    p.observe_sortie_transition(Screen([], None, '', kind='defense_started'), mem, 'map_target')
+
+
+def test_a_battle_during_the_target_jump_marks_a_rejump():
+    mem = memory(); confirm(mem); placement(mem, 15)
+    mem['y_jump_return'] = 'target'
+    mem['y_jumps'] = {f'{STEP}:target': 4}
+    mem['y_jump_last'] = {'step': STEP, 'mode': 'target', 'moves': 3,
+                          'why': 'view_closed', 'tick': 14}
+    battle_interrupts(mem)
+    attempt = _flow(mem)['sortie_attempt']
+    assert attempt['battle_interrupt'] is True
+    assert attempt['battle_interrupt_tick'] == mem['tick']
+    # The pre-battle placement is gone and the interrupted attempt no longer
+    # eats the fresh jump's budget.
+    assert 'cursor' not in mem and 'near_goal' not in mem
+    assert not mem.get('y_jumped') and not mem.get('y_jumped_res')
+    assert 'y_jump_target_confirmed' not in mem and 'y_jump_target_closed' not in mem
+    assert f'{STEP}:target' not in mem['y_jumps']
+    assert 'y_jump_last' not in mem
+    # The battle screen must not close the order as if the picker had gone.
+    assert _flow(mem).get('departure_request') is None
+    assert _plan_orders(mem) == 'pending'
+
+
+def _plan_orders(mem):
+    from docich.hanjuku.state.regions import plan as _plan
+    return (_plan(mem).get('orders') or {}).get(STEP)
+
+
+def test_the_resumed_picker_redoes_the_jump_instead_of_confirming():
+    mem = memory(); confirm(mem); placement(mem, 15)
+    battle_interrupts(mem)
+    # The game returns to the destination picker; the transition hook re-arms
+    # the order the battle screen closed as unconfirmed.
+    p.observe_sortie_transition(target_map(), mem, 'defense_started')
+    with patch.object(p, '_align_on_roof', return_value='on'), \
+            patch.object(p, '_target_roof_under_marker', return_value=True):
+        actions = p.target_step(target_map(), mem, None)
+    assert actions == [p.pad('y')]
+    assert 'near_goal' not in mem and not mem.get('y_jumped') and 'cursor' not in mem
+    assert _flow(mem).get('departure_request') is None
+    assert _plan_orders(mem) == 'pending'
+    assert [r['decision'] for r in mem['_records']].count('sortie_target_rejump') == 1
+
+
+def test_a_target_jump_made_after_the_battle_is_kept():
+    """A jump that already re-placed the marker after the fight is not redone."""
+    mem = memory(); confirm(mem); placement(mem, 25)
+    attempt = _flow(mem)['sortie_attempt']
+    attempt['battle_interrupt'] = True
+    attempt['battle_interrupt_tick'] = 20
+    with patch.object(p, '_align_on_roof', return_value='on'), \
+            patch.object(p, '_target_roof_under_marker', return_value=True):
+        actions = p.target_step(target_map(), mem, None)
+    assert actions == [p.pad('a')]
+    assert _flow(mem)['departure_request']['step'] == STEP
+    assert not any(r['decision'] == 'sortie_target_rejump' for r in mem['_records'])
+    assert not _flow(mem)['sortie_attempt'].get('battle_interrupt')
+
+
+def test_a_battle_after_the_jump_was_confirmed_still_redoes_it():
+    """The confirmed jump's receipt is stale even though no view is open."""
+    mem = memory(); confirm(mem); placement(mem, 15)
+    battle_interrupts(mem)
+    assert 'y_jump' not in mem
+    p.observe_sortie_transition(target_map(), mem, 'defense_started')
+    with patch.object(p, '_align_on_roof', return_value='on'), \
+            patch.object(p, '_target_roof_under_marker', return_value=True):
+        assert p.target_step(target_map(), mem, None) == [p.pad('y')]

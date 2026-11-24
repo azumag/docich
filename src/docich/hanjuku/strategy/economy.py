@@ -1281,6 +1281,14 @@ def _plan_extras(mem, shop, reserve, recruit):
                         month=shop.get('key'),
                         reason='第9話でも壊れた家の修理費を優先し、築城は見送る')
             shop['chikujou'] = 'skipped'
+            # Leave the eval marker too, so the month audit recognises the
+            # skipped row as an explained hold instead of filing a reason-less
+            # chikujou_available_at_end (docich#5163).
+            shop['chikujou_last_eval'] = {'month': shop.get('key'),
+                                          'gold': shop.get('gold_start'),
+                                          'reserve': shop.get('reserve'),
+                                          'affordable': False,
+                                          'reason': 'hero_repair'}
         else:
             shop['chikujou'] = 'check'
     else:

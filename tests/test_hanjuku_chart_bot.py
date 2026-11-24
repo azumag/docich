@@ -198,8 +198,10 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert policy._plan(_planned_mem(), {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
     refill = policy._plan(_planned_mem(), {'year': 1, 'month': 6, 'gold': 999})
-    # BARGAIN_TARGETS (2026-11-02): spare cash stocks useful cards to target.
-    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 3], ['ゼンマイン', 2]]
+    # BARGAIN_ORDER (2026-11-24): ミックミー first, then the recommended
+    # クースカン, within the monthly 8-copy cap.
+    assert refill['items'] == [['ミックミー', 2], ['クースカン', 3],
+                               ['ノリウツール', 2], ['ころぼぐんだん', 1]]
     assert refill['soldiers'] == 99  # optional cards do not take the refill budget
     assert refill['variant'] == 'soldier_refill_only'
 
@@ -899,26 +901,13 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     spent = Canvas()
     spent.text(176, 175, 'こうげき')
     spent.text(176, 191, 'もうこうげき')
+    spent.hand(98, 169)
     actions, state = decide(spent.frame(), state)
     assert state['screen_kind'] == 'egg_battle_menu'
-    # With no cards left the bot tries the retreat once (owner 2026-09-29)
-    # instead of attacking into a summon it cannot answer.
-    assert actions[0]['buttons'] == ['b']
+    # Owner 2026-11-23: retreat is banned everywhere.  With no egg and no card
+    # the summon turn attacks (the hand is readable on こうげき).
+    assert actions[0]['buttons'] == ['a']
     assert state['policy']['egg_battle_row_dead'] is True
-    # Three bounded return attempts; no immediate A after an unconfirmed B.
-    for _ in range(2):
-        actions, state = decide(spent.frame(), state)
-        assert actions[0]['buttons'] == ['b']
-    # g1107: with the row unreadable the cursor cannot be confirmed, so a
-    # blind A on the greyed egg row is rejected forever. The bot nudges up a
-    # bounded number of times to re-observe, then holds instead of confirming.
-    for _ in range(6):
-        actions, state = decide(spent.frame(), state)
-        assert actions[0]['buttons'] == ['up']
-    actions, state = decide(spent.frame(), state)
-    assert actions == []
-    actions, state = decide(spent.frame(), state)
-    assert actions == []
 
 
 def test_experience_prefers_a_better_action_and_stays_with_an_untried_default():
@@ -2341,6 +2330,7 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
+
     # g1190: the hand can remain on the じゅうじキー hint below the menu.
     # A blind walk only positions the cursor; that hint is not proof that the
     # target row is selected. A fresh frame must show the exact row under hand.
@@ -2384,6 +2374,14 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert mem['_records'][-1]['decision'] == 'month_blind_nav_confirmed'
     assert policy._month_opened(move, mem, 'へいしほじゅう')
     assert 'month_blind_opened' not in mem
+
+    # A foreground discharge menu must never start the blind month-menu plan.
+    from docich.hanjuku.os_layer.screen import Screen
+    discharge = Screen(hint.lines, hint.hand, hint.text, kind='discharge_menu')
+    foreign_mem = {'month': '1-11', 'month_nav': {'cancel_sent': True}, '_records': []}
+    foreign_move = policy._month_menu_move(discharge, foreign_mem, 'へいしほじゅう')
+    assert 'month_blind_nav' not in foreign_mem
+    assert foreign_move != [policy.pad('a')]
 
 
 def test_menu_nav_guard_never_cuts_off_navigation_that_keeps_closing_in():
@@ -3941,7 +3939,11 @@ def test_short_generals_save_insufficient_fee_without_building_it_away():
     policy.month_step(parse(month_canvas(49, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['soldiers'] == 0
     assert mem['shop']['recruit'] == 'skipped'
-    assert mem['shop']['chikujou'] == 'skipped'
+    # docich#5186: an unaffordable eval keeps the row open for a same-menu
+    # reserve release and records the failing signature instead of closing
+    # as 'skipped'.
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_last_eval']['affordable'] is False
     assert 'month_sub' not in mem
 
 
@@ -4189,8 +4191,10 @@ def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
     policy._plan(mem, {'year': 1, 'month': 7, 'gold': 80}).update(
         egg='not_needed', soldiers=0, soldiers_done=True, soldiers_before_recruit_done=True)
     policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem)
-    # The house fund plus wage/recruit holds exceed 80G.
-    assert mem['shop']['chikujou'] == 'skipped'
+    # The house fund plus wage/recruit holds exceed 80G; the row stays open
+    # for a same-menu reserve release and the failing eval is recorded.
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_last_eval']['affordable'] is False
     assert 'month_sub' not in mem
 
 
@@ -4583,3 +4587,65 @@ def test_a_visible_cursor_resets_the_blind_map_streak():
     visible = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     policy.map_step(visible, mem, frame)
     assert mem.get('map_blind') is None
+
+
+def test_summon_menu_records_a_missed_carried_card_for_the_audit():
+    # When the summon turn attacks with a carried card still in hand, one
+    # battle_boss_card_missed decision feeds the month audit's card_miss issue.
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.hand(98, 169)
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': [], 'cards_selected': [],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    actions, state = decide(c.frame(), state)
+    assert actions and actions[0]['buttons'] == ['a']
+    assert state['policy']['battle'].get('boss_card_missed_noted') is True
+
+
+def test_a_battle_that_already_used_a_card_does_not_file_a_miss():
+    # docich#5217: ミックミーを使った後に残った札は「開けなかった」証拠ではない。
+    # 台帳の card_miss は「携行札を1枚も開かずに攻撃した」ときだけ記録する。
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.hand(98, 169)
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': ['ミックミー'],
+                                   'cards_selected': ['ミックミー'],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    _, state = decide(c.frame(), state)
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
+
+
+def test_summon_menu_does_not_file_card_miss_before_attack_cursor_is_read():
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': [], 'cards_selected': [],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    _, state = decide(c.frame(), state)
+    assert not state['policy']['battle'].get('boss_card_missed_noted')
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))

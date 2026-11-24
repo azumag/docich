@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 import math
 from pathlib import Path
 import sqlite3
+import stat
 from typing import Mapping
 
 from .market_cache import load_cache
@@ -35,35 +36,67 @@ def _dec(value: object) -> Decimal | None:
     return result if result.is_finite() else None
 
 
+class _PerformanceLedgerError(RuntimeError):
+    """A PAPER fill ledger that cannot support a complete accounting result."""
+
+    def __init__(self, reason_code: str):
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
 def _rows(db_path: Path) -> list[tuple[str, str, str, Decimal, Decimal, float]]:
     target = Path(db_path)
-    if not target.is_file():
-        return []
+    try:
+        metadata = target.stat()
+    except FileNotFoundError as exc:
+        raise _PerformanceLedgerError("ledger_missing") from exc
+    except OSError as exc:
+        # Path.is_file() can collapse some access failures into False on newer
+        # Python versions.  stat() keeps a denied/unreadable ledger distinct
+        # from a genuinely absent file.
+        raise _PerformanceLedgerError("ledger_read_error") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise _PerformanceLedgerError("ledger_read_error")
+
+    conn = None
     try:
         uri = f"file:{target.resolve()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
-    except (OSError, sqlite3.Error):
-        return []
-    try:
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(paper_fills)").fetchall()
+        }
+        required = {"fill_id", "symbol", "side", "amount", "price", "filled_at"}
+        if not required.issubset(columns):
+            raise _PerformanceLedgerError("ledger_schema_invalid")
         raw = conn.execute(
             """SELECT fill_id, symbol, side, amount, price, filled_at
-                 FROM paper_fills ORDER BY filled_at, rowid"""
+                 FROM paper_fills ORDER BY filled_at, fill_id"""
         ).fetchall()
-    except sqlite3.Error:
-        return []
+    except _PerformanceLedgerError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise _PerformanceLedgerError("ledger_read_error") from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+
     result: list[tuple[str, str, str, Decimal, Decimal, float]] = []
     for fill_id, symbol, side, amount_text, price_text, filled_at in raw:
         amount = _dec(amount_text)
         price = _dec(price_text)
         try:
             stamp = float(filled_at)
-        except (TypeError, ValueError):
-            continue
-        if amount is None or price is None or amount <= 0 or price <= 0:
-            continue
-        result.append((str(fill_id), str(symbol), str(side), amount, price, stamp))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _PerformanceLedgerError("ledger_invalid_row") from exc
+        if (
+            not isinstance(fill_id, str) or not fill_id.strip()
+            or not isinstance(symbol, str) or not symbol.strip()
+            or side not in {"buy", "sell"}
+            or amount is None or price is None or amount <= 0 or price <= 0
+            or not math.isfinite(stamp) or stamp < 0
+        ):
+            raise _PerformanceLedgerError("ledger_invalid_row")
+        result.append((fill_id, symbol, side, amount, price, stamp))
     return result
 
 
@@ -110,6 +143,8 @@ def _benchmark_unavailable(
         "slippage_bps": None,
         "theoretical_pnl_jpy": None,
         "theoretical_return_pct": None,
+        "actual_interval_realized_pnl_jpy": None if actual is None else str(actual),
+        # Deprecated compatibility alias; remove after consumers migrate.
         "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
         "gap_jpy": None,
         "capture_rate_pct": None,
@@ -124,8 +159,8 @@ def _benchmark_unavailable(
         "coverage_ratio": None,
         "reason": reason,
         "definition": (
-            "当日5分足の終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
-            "元本全額、手数料とスリッページ込みで計算します。"
+            "指定区間（未指定時は当日）の5分足終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
+            "元本全額、手数料とスリッページ込みで計算します。実績の目標値やバックテスト結果ではありません。"
         ),
     }
 
@@ -136,15 +171,16 @@ def build_theoretical_benchmark(
     capital_reference: object,
     actual_today_realized: object,
     now: float,
+    interval_start: float | None = None,
     taker_fee_rate: object = DEFAULT_TAKER_FEE_RATE,
     slippage_bps: object = DEFAULT_SLIPPAGE_BPS,
 ) -> dict[str, object]:
-    """Compare today's realized PAPER P/L with a bounded hindsight benchmark.
+    """Compare realized PAPER P/L with a bounded hindsight benchmark.
 
     The benchmark is deliberately narrow: it picks the best single symbol and
-    one buy-then-sell round trip from timestamped 5-minute closes observed
-    during the current JST day.  It is not a backtest, does not combine
-    symbols, and never claims that intrabar prices were available.
+    one buy-then-sell round trip from timestamped 5-minute closes observed in
+    the interval [interval_start, now].  When interval_start is None the
+    previous current-JST-day window is used.
     """
     moment = float(now)
     date = dt.datetime.fromtimestamp(moment, tz=dt.timezone.utc).astimezone(JST).date().isoformat()
@@ -154,7 +190,9 @@ def build_theoretical_benchmark(
         return _benchmark_unavailable(date=date, actual=actual, reason="history_not_configured")
     if capital is None or capital <= 0:
         return _benchmark_unavailable(date=date, actual=actual, reason="capital_unavailable")
-
+    window_start = interval_start if interval_start is not None else _day_start_epoch(moment)
+    day_end = window_start + 24 * 60 * 60
+    target_end = min(moment, day_end)
     fee = _dec(taker_fee_rate)
     slippage = _dec(slippage_bps)
     if (
@@ -162,17 +200,6 @@ def build_theoretical_benchmark(
         or slippage < 0 or slippage >= BPS
     ):
         return _benchmark_unavailable(date=date, actual=actual, reason="execution_cost_unavailable")
-
-    try:
-        cache = load_cache(Path(cache_path))
-    except (OSError, ValueError):
-        cache = {}
-    if not cache:
-        return _benchmark_unavailable(date=date, actual=actual, reason="intraday_history_unavailable")
-
-    day_start = _day_start_epoch(moment)
-    day_end = day_start + 24 * 60 * 60
-    target_end = min(moment, day_end)
     buy_factor = (D("1") + slippage / BPS) * (D("1") + fee)
     sell_factor = (D("1") - slippage / BPS) * (D("1") - fee)
     best: dict[str, object] | None = None
@@ -180,6 +207,14 @@ def build_theoretical_benchmark(
     observed_bars = 0
     observed_symbols = 0
     history_symbols = 0
+
+    try:
+        cache_path = Path(cache_path) if cache_path is not None else None
+        cache = load_cache(cache_path) if cache_path is not None else {}
+    except (OSError, ValueError):
+        cache = {}
+    if not cache:
+        return _benchmark_unavailable(date=date, actual=actual, reason="intraday_history_unavailable")
 
     for symbol, entry in sorted(cache.items()):
         if not isinstance(entry, Mapping):
@@ -193,7 +228,7 @@ def build_theoretical_benchmark(
         points = [
             (timestamp, close)
             for timestamp, close in _history_points(entry)
-            if day_start <= timestamp <= target_end + 1
+            if window_start <= timestamp <= target_end + 1
         ]
         if points:
             history_symbols += 1
@@ -203,15 +238,15 @@ def build_theoretical_benchmark(
         observed_bars += len(points)
         first_timestamp = points[0][0]
         last_timestamp = points[-1][0]
-        elapsed = max(float(timeframe_s), target_end - day_start)
-        covered = max(0.0, min(target_end, last_timestamp) - max(day_start, first_timestamp))
+        elapsed = max(float(timeframe_s), target_end - window_start)
+        covered = max(0.0, min(target_end, last_timestamp) - max(window_start, first_timestamp))
         coverage_ratio = min(1.0, covered / elapsed)
         max_internal_gap = max(
             next_timestamp - timestamp
             for (timestamp, _), (next_timestamp, _) in zip(points, points[1:])
         )
         coverage_complete = (
-            first_timestamp <= day_start + timeframe_s * BENCHMARK_TOLERANCE_BARS
+            first_timestamp <= window_start + timeframe_s * BENCHMARK_TOLERANCE_BARS
             and last_timestamp >= target_end - timeframe_s * BENCHMARK_TOLERANCE_BARS
             and max_internal_gap <= timeframe_s * MAX_INTERNAL_GAP_BARS
         )
@@ -272,6 +307,8 @@ def build_theoretical_benchmark(
         "slippage_bps": str(slippage),
         "theoretical_pnl_jpy": str(theoretical_pnl),
         "theoretical_return_pct": str(theoretical_return_pct),
+        "actual_interval_realized_pnl_jpy": None if actual is None else str(actual),
+        # Deprecated compatibility alias; remove after consumers migrate.
         "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
         "gap_jpy": None if gap is None else str(gap),
         "capture_rate_pct": None if capture is None else str(capture),
@@ -286,9 +323,76 @@ def build_theoretical_benchmark(
         "coverage_ratio": coverage_ratio,
         "reason": "partial_intraday_coverage" if not best["coverage_complete"] else "",
         "definition": (
-            "当日5分足の終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
+            "指定区間（未指定時は当日）の5分足終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
             "元本全額、手数料とスリッページ込みで計算します。"
         ),
+    }
+
+
+def _unavailable_performance(
+    *,
+    reason_code: str,
+    capital_reference: object,
+    positions: Mapping[str, object],
+    prices: Mapping[str, object],
+    now: float,
+    market_cache_path: Path | None,
+    interval_start: float | tuple[float, str] | None,
+) -> dict[str, object]:
+    """Keep an unreadable/invalid ledger from becoming a successful zero result."""
+    position_rows: list[dict[str, object]] = []
+    priced = 0
+    for symbol, raw_amount in positions.items():
+        amount = _dec(raw_amount)
+        if amount is None or amount == 0:
+            continue
+        price = _dec(prices.get(str(symbol)))
+        market_value = None
+        if price is not None and price > 0:
+            priced += 1
+            market_value = amount * price
+        position_rows.append({
+            "symbol": str(symbol),
+            "amount": str(amount),
+            "avg_cost": None,
+            "last_price": None if price is None else str(price),
+            "market_value_jpy": None if market_value is None else str(market_value),
+            "unrealized_pnl_jpy": None,
+        })
+    position_rows.sort(
+        key=lambda item: _dec(item.get("market_value_jpy")) or ZERO,
+        reverse=True,
+    )
+    interval_start_ts = (
+        float(interval_start[0])
+        if isinstance(interval_start, tuple) and len(interval_start) == 2
+        else float(interval_start) if interval_start is not None else None
+    )
+    benchmark = build_theoretical_benchmark(
+        market_cache_path,
+        capital_reference=capital_reference,
+        actual_today_realized=None,
+        now=now,
+        interval_start=interval_start_ts,
+    )
+    invalid = reason_code in {"ledger_invalid_row", "ledger_schema_invalid"}
+    return {
+        "as_of": float(now),
+        "complete": False,
+        "position_count": len(position_rows),
+        "priced_positions": priced,
+        "valued_positions": 0,
+        "realized_total_jpy": None,
+        "interval_realized_pnl_jpy": None,
+        "today_realized_pnl_jpy": None,
+        "unrealized_pnl_jpy": None,
+        "cumulative_pnl_jpy": None,
+        "equity_jpy": None,
+        "ledger_status": "invalid" if invalid else "unavailable",
+        "ledger_reason_code": reason_code,
+        "unpaired_sell_count": None,
+        "theoretical_benchmark": benchmark,
+        "positions": position_rows,
     }
 
 
@@ -300,37 +404,87 @@ def build_performance(
     prices: Mapping[str, object],
     now: float,
     market_cache_path: Path | None = None,
+    interval_start: float | tuple[float, str] | None = None,
 ) -> dict[str, object]:
     """Return bounded JPY P/L facts using average-cost accounting.
 
     ``cumulative_pnl_jpy`` includes realized + current unrealized P/L only
     when every open position has both a usable public price and ledger cost
-    basis. ``today_realized`` is exact for fills since JST midnight and is
-    intentionally labelled as realized-only; we do not invent a midnight
-    mark-to-market baseline.
+    basis. ``interval_realized`` is the realized P/L for fills since
+    ``interval_start`` (epoch seconds) or a strict (timestamp, fill_id)
+    cursor. When ``interval_start`` is None the previous JST-midnight
+    ``today_realized`` semantics apply.
     """
+    try:
+        fills = _rows(db_path)
+    except _PerformanceLedgerError as exc:
+        return _unavailable_performance(
+            reason_code=exc.reason_code,
+            capital_reference=capital_reference,
+            positions=positions,
+            prices=prices,
+            now=now,
+            market_cache_path=market_cache_path,
+            interval_start=interval_start,
+        )
+
     capital = _dec(capital_reference)
-    day_start = _day_start_epoch(now)
+    interval_cursor = None
+    if isinstance(interval_start, tuple) and len(interval_start) == 2:
+        interval_cursor = (float(interval_start[0]), str(interval_start[1]))
+        interval_start_ts = interval_cursor[0]
+    else:
+        interval_start_ts = float(interval_start) if interval_start is not None else None
+    day_start = interval_start_ts if interval_start_ts is not None else _day_start_epoch(now)
     lots: dict[str, list[Decimal]] = {}
     realized_total = ZERO
-    realized_today = ZERO
+    realized_interval = ZERO
 
-    for _fill_id, symbol, side, amount, price, filled_at in _rows(db_path):
+    unpaired_sells = 0
+    for fill_id, symbol, side, amount, price, filled_at in fills:
         held, cost = lots.setdefault(symbol, [ZERO, ZERO])
         if side == "buy":
             lots[symbol][0] = held + amount
             lots[symbol][1] = cost + amount * price
             continue
-        if side != "sell" or held <= 0:
+        if side != "sell":
             continue
+        if held <= 0:
+            unpaired_sells += 1
+            continue
+        if amount > held:
+            unpaired_sells += 1
         sold = min(amount, held)
         average = cost / held
         pnl = sold * (price - average)
         realized_total += pnl
-        if filled_at >= day_start:
-            realized_today += pnl
+        if interval_cursor is not None:
+            in_interval = (filled_at, fill_id) > interval_cursor
+        else:
+            in_interval = filled_at >= day_start
+        if in_interval:
+            realized_interval += pnl
         lots[symbol][0] = held - sold
         lots[symbol][1] = max(ZERO, cost - average * sold)
+
+    # The public position snapshot must reconcile exactly with the fill-ledger
+    # lots. Otherwise an omitted or stale holding could make realized-only P/L
+    # look like complete equity.
+    position_snapshot_matches = True
+    supplied_positions: dict[str, Decimal] = {}
+    for raw_symbol, raw_amount in positions.items():
+        symbol = str(raw_symbol)
+        amount = _dec(raw_amount)
+        if amount is None:
+            position_snapshot_matches = False
+            continue
+        supplied_positions[symbol] = amount
+    for symbol, (held, _cost) in lots.items():
+        if held != supplied_positions.get(symbol, ZERO):
+            position_snapshot_matches = False
+    for symbol, amount in supplied_positions.items():
+        if amount != lots.get(symbol, [ZERO, ZERO])[0]:
+            position_snapshot_matches = False
 
     position_rows: list[dict[str, object]] = []
     unrealized = ZERO
@@ -372,14 +526,17 @@ def build_performance(
         key=lambda item: _dec(item.get("market_value_jpy")) or ZERO,
         reverse=True,
     )
-    complete = total_positions == valued
+    ledger_complete = unpaired_sells == 0
+    complete = total_positions == valued and ledger_complete and position_snapshot_matches
     cumulative = realized_total + unrealized if complete else None
+    benchmark_actual = realized_interval if ledger_complete else None
     equity = None if capital is None or cumulative is None else capital + cumulative
     benchmark = build_theoretical_benchmark(
         market_cache_path,
         capital_reference=capital,
-        actual_today_realized=realized_today,
+        actual_today_realized=benchmark_actual,
         now=now,
+        interval_start=day_start,
     )
     return {
         "as_of": float(now),
@@ -387,8 +544,17 @@ def build_performance(
         "position_count": total_positions,
         "priced_positions": priced,
         "valued_positions": valued,
-        "realized_total_jpy": str(realized_total),
-        "today_realized_pnl_jpy": str(realized_today),
+        "realized_total_jpy": str(realized_total) if ledger_complete else None,
+        "interval_realized_pnl_jpy": str(realized_interval) if ledger_complete else None,
+        # Deprecated compatibility alias; remove after all consumers migrate.
+        "today_realized_pnl_jpy": str(realized_interval) if ledger_complete else None,
+        "ledger_status": "partial" if not (ledger_complete and position_snapshot_matches) else "ok",
+        "ledger_reason_code": (
+            "unpaired_sell" if not ledger_complete
+            else "position_snapshot_mismatch" if not position_snapshot_matches
+            else "ok"
+        ),
+        "unpaired_sell_count": unpaired_sells,
         "unrealized_pnl_jpy": str(unrealized) if complete else None,
         "cumulative_pnl_jpy": None if cumulative is None else str(cumulative),
         "equity_jpy": None if equity is None else str(equity),
@@ -401,7 +567,11 @@ def realized_pnl_for_fill(db_path: Path, fill_id: str) -> Decimal | None:
     """Return realized P/L for one sell fill, or None for buys/unknown rows."""
     target = str(fill_id)
     lots: dict[str, list[Decimal]] = {}
-    for current_id, symbol, side, amount, price, _filled_at in _rows(db_path):
+    try:
+        fills = _rows(db_path)
+    except _PerformanceLedgerError:
+        return None
+    for current_id, symbol, side, amount, price, _filled_at in fills:
         held, cost = lots.setdefault(symbol, [ZERO, ZERO])
         if side == "buy":
             lots[symbol][0] = held + amount
@@ -413,7 +583,15 @@ def realized_pnl_for_fill(db_path: Path, fill_id: str) -> Decimal | None:
             if current_id == target:
                 return None
             continue
-        sold = min(amount, held)
+        if amount > held:
+            # The unpaired excess invalidates this inventory lot. Retire the
+            # matched remainder so later buys start a fresh, correctly based
+            # lot instead of inheriting stale pre-oversell cost.
+            lots[symbol] = [ZERO, ZERO]
+            if current_id == target:
+                return None
+            continue
+        sold = amount
         average = cost / held
         pnl = sold * (price - average)
         lots[symbol][0] = held - sold

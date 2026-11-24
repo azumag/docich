@@ -1,7 +1,6 @@
-"""The hero stands one road castle behind the front.
+"""Chapter 9 posts the hero at the captured front.
 
-Owner 2026-11-12: 主人公は前線の自城一つ前の自城に常駐したほうが良い。
-新しく将軍をやとったときに常に主人公のいる後方から送ることになる。
+Owner 2026-11-24: とれた城の最前線に主人公を置く（以前は一つ前の城）。
 """
 import pytest
 
@@ -36,12 +35,10 @@ def hero_orders(mem):
         return [o for o in corridor.orders(mem) if o.get('corridor_hero')]
 
 
-def test_the_hero_steps_back_when_a_wave_left_him_in_the_front():
-    # A, B, C ours; the target is D, so the front is C and the post is B.
+def test_the_hero_already_at_the_front_stays():
+    # A, B, C ours; the target is D, so the front is C and the post is C.
     mem = memory(C, [A, B, C])
-    orders = hero_orders(mem)
-    assert len(orders) == 1
-    assert (orders[0]['source'], orders[0]['target']) == (C, B)
+    assert hero_orders(mem) == []
 
 
 def test_the_hero_walks_forward_while_he_is_behind_the_post():
@@ -53,9 +50,12 @@ def test_the_hero_walks_forward_while_he_is_behind_the_post():
     assert orders[0]['target'] == B          # one hop forward, never straight to the front
 
 
-def test_the_hero_on_his_post_gets_no_order():
+def test_the_hero_on_the_old_rear_post_walks_to_the_front():
+    # The old post (one behind the front) is no longer the post in chapter 9.
     mem = memory(B, [A, B, C])
-    assert hero_orders(mem) == []
+    orders = hero_orders(mem)
+    assert len(orders) == 1
+    assert (orders[0]['source'], orders[0]['target']) == (B, C)
 
 
 def test_no_post_exists_when_the_home_castle_is_the_front():

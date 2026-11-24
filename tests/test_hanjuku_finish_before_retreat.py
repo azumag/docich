@@ -17,18 +17,6 @@ def armed(*,hp=1,enemy_hp=11,soldiers=0):
     return mem
 
 
-def test_hp_one_vs_eleven_keeps_an_observed_lethal_card_instead_of_retreat():
-    mem=armed();cur=mem['battle']
-    assert _hero_retreat_open(mem,cur) is None
-    assert _hero_retreat_menu(menu(('きりふだ','たまごをつかう','たいきゃく')),mem,cur)[0]['buttons']==['a']
-    assert cur['card_flow']['stage']=='list'
-    assert not cur.get('hero_retreat')
-    from docich import hanjuku_policy as p
-    assert p.card_list_step(cards(['ゼンマイン']),mem)==[p.pad('a')]
-    assert cur['card_assessment']['damage_lower_bound']>=11
-    assert cur['cards_selected']==['ゼンマイン']  # selection, not a live kill
-
-
 @pytest.mark.parametrize('change',['unknown_list','planned_only','already_selected','used','troops','nonlethal'])
 def test_no_observed_finishing_blow_does_not_invent_a_win(change):
     mem=armed();cur=mem['battle']

@@ -1071,7 +1071,30 @@ def _promote_pending(mem, statuses):
     return promoted
 
 
-def _roster_end_assumable(state):
+def _complete_scan_blocked(state):
+    """Which membership-proof guard still fails, for the failure record.
+
+    ``post_month_status_unverified`` names the guard so a live
+    ``roster_end_unconfirmed`` can be triaged from the decision log alone
+    instead of a frame-by-frame replay (v506's residual problem).
+    """
+    names = list(state.get('names') or ())
+    if not names or not state.get('top_confirmed'):
+        return 'top_unconfirmed'
+    if len(set(names)) != len(names):
+        return 'duplicate_names'
+    statuses = state.get('statuses')
+    if (not isinstance(statuses, dict)
+            or any(not isinstance(statuses.get(name), dict) for name in names)):
+        return 'status_unread'
+    if any(name in state.get('dirty', ()) for name in names):
+        return 'dirty'
+    if any(statuses[name].get('location') == 'unknown' for name in names):
+        return 'location_unknown'
+    return None
+
+
+def _roster_end_assumable(mem, state):
     """The walk listed the game's whole roster, only its end pixels failed.
 
     The roster caps at 32 (``MAX_SCAN``): once a walk that started at the hero
@@ -1081,9 +1104,33 @@ def _roster_end_assumable(state):
     ``names: 32`` and 13 stalled reads). The month then continues into the
     per-general tasks instead of dropping them, and nothing is evicted because
     ``complete`` stays False.
+
+    A shorter roster hits the same dead end: a full last page stalls on its
+    last row, and a wrapped or short page still fails when one membership
+    guard (``location: unknown`` from an unrecognised status sentence, a
+    duplicate OCR name) never passes ``_complete_scan``. The country's own
+    headcount is the game's membership count: an enumeration that matches the
+    verified ``country_general_count`` for this scope, with every collected
+    name's status read and none still dirty, is the same proof the 32-name
+    ceiling gives -- continue into the tasks, still with ``complete`` False.
     """
-    return (bool(state.get('top_confirmed'))
-            and len(list(state.get('names') or ())) >= MAX_SCAN)
+    names = list(state.get('names') or ())
+    if not names or not state.get('top_confirmed'):
+        return False
+    if len(names) >= MAX_SCAN:
+        return True
+    statuses = state.get('statuses')
+    if (not isinstance(statuses, dict)
+            or len(set(names)) != len(names)
+            or any(not isinstance(statuses.get(name), dict) for name in names)
+            or any(name in state.get('dirty', ()) for name in names)):
+        return False
+    country = mem.get('country_general_count')
+    if not isinstance(country, dict):
+        return False
+    count = receipts.country_count(mem, 'generals')
+    return (type(count) is int and count == len(names)
+            and country.get('scope') == list(state.get('scope') or []))
 
 
 def _recorded_castle(mem, name):
@@ -1425,13 +1472,24 @@ def resume_after_battle(mem, battle):
          reason='戦闘で中断した月次ステータス処理を優先し、出撃計画ではなく元の確認手順へ戻る')
 
 
+def state_is_current(mem, state):
+    """True when ``state`` was armed for this chapter/month and this run.
+
+    ``step`` drops any other state as stale or foreign.  The orchestrator's
+    status-panel guard calls this same predicate: a state that step would drop
+    must never suppress the orphan close on the general status page.
+    """
+    return (isinstance(state, dict)
+            and state.get('scope') == [mem.get('chapter'), mem.get('month')]
+            and state.get('identity') == receipts.run_identity(mem.get('_run_identity')))
+
+
 def step(screen, mem, frame):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
     if not isinstance(state, dict):
         return None
-    if (state.get('scope') != [mem.get('chapter'), mem.get('month')]
-            or state.get('identity') != receipts.run_identity(mem.get('_run_identity'))):
+    if not state_is_current(mem, state):
         mem.pop('post_month_status', None)
         return None
     # An already-armed scan (from before the boss waves appeared) must not
@@ -1756,7 +1814,7 @@ def step(screen, mem, frame):
                 state.pop('end_stall', None)
                 state.pop('end_stall_selected', None)
             if state['phase_reads'] > STATUS_RETRIES:
-                if _roster_end_assumable(state):
+                if _roster_end_assumable(mem, state):
                     # The whole roster is enumerated; only the end proof is
                     # missing. Continue into the per-general tasks (no eviction)
                     # instead of failing the month and repeating it next month.
@@ -1777,7 +1835,8 @@ def step(screen, mem, frame):
                                       'top_confirmed': bool(state.get('top_confirmed')),
                                       'dirty': list(state.get('dirty') or ()),
                                       'phase_reads': state['phase_reads'],
-                                      'end_stall': int(state.get('end_stall') or 0)},
+                                      'end_stall': int(state.get('end_stall') or 0),
+                                      'blocked': _complete_scan_blocked(state)},
                      reason='将軍一覧の末尾が確認できず、通常の出撃計画を保留')
                 _stage(state, 'blocked')
                 return [pad('b')]

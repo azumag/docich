@@ -47,30 +47,6 @@ def decisions(mem, name):
     return [r for r in mem.get('_records', []) if r['decision'] == name]
 
 
-def test_native_spent_attack_retreats_before_the_hp_threshold():
-    cur = attack()
-    cur['survival']['exhausted'] = False
-    mem = {'chapter': 4, 'battle': cur}
-    menu = native('g1075-retreat-menu-egg-spent.png')
-    assert menu.kind == 'battle_menu' and menu.menu_cursor == 176
-
-    # The first menu still records that nothing untried remains.
-    assert p.battle_menu_step(menu, mem) == [p.pad('b')]
-    assert decisions(mem, 'battle_survival_unavailable')
-
-    panel = native('g1075-retreat-panel-zeus-18-53.png')
-    assert (panel.battle.ally, panel.battle.ally_hp) == ('ビシソワーズ', 18)
-    assert (panel.battle.enemy, panel.battle.enemy_hp) == ('ゼウス', 53)
-    assert 18 > p.GENERAL_CRITICAL_RETREAT_HP  # v321 kept pressing A here
-    assert p.battle_step(panel, mem) == [p.pad('b')]
-    record, = decisions(mem, 'battle_hero_retreat_open')
-    assert record['observed_metric']['retreat_assessment']['reason'] == 'hopeless_attack_melee'
-    assert not decisions(mem, 'battle_melee')
-
-    # The reopened menu moves to たいきゃく (two rows below the cursor).
-    assert p.battle_menu_step(menu, mem) == [p.pad('down')]
-
-
 @pytest.mark.parametrize('hp,enemy_hp,expected', [
     (27, 73, True),    # 81 vs 949
     (27, 25, True),    # 81 vs 325

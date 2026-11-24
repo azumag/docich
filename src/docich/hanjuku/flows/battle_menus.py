@@ -48,6 +48,17 @@ from ..strategy.economy import _egg_recheck
 LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
 EMPTY_CARD_LIST_TEXTS = ('きりふだはありません', 'きりふだなし', 'なにももってない')
 CARD_LIST_SAME_FRAME_LIMIT = 12
+# Owner 2026-11-24: 相手（敵が召喚したモンスター）がゾンビなら卵を使わず
+# 白兵で対処する。ゾンビパンチは0ダメージ、ケアルは自己回復で、将軍を倒す
+# 即死・自爆の技能を持たない (hanjuku_reference.MONSTER_SKILLS)。原典チャート
+# (games/hanjuku-sfc-speedrun/charts/7.md) も対ブラウニーで「ゾンビは召喚
+# させ、もうこうげきでターン経過」と白兵を指示している。実画面の敵召喚獣が
+# 1体だけ読め、名前が完全一致したときだけ適用する (未知・複数・未読へ広げない)。
+#
+# Owner 2026-11-24 (追加): ウゴカザルも同じ。2つの技「なぐれっ！」「かきむしれ！」
+# はどちらも0ダメージで、卵を使わず「こうげき」だけで倒せる。ゾンビと同じく
+# 将軍を脅かさないので、卵・おくのてを消費せず白兵で処理する。
+MELEE_ONLY_SUMMONS = frozenset({'ゾンビ', 'ウゴカザル'})
 
 
 def _is_empty_card_list_text(screen: Screen) -> bool:
@@ -78,12 +89,17 @@ def _okunote_last_resort_gate(cur, last_resort, now=None):
     return True
 
 
-def orphan_battle_menu_step(screen, mem):
+def orphan_battle_menu_step(screen, mem, *, owner_active=None):
     """Close an unbound parent menu finitely, then require new native context.
 
     The gray commands do not identify an actor, HP or a usable Okunote. A
     background animation/fade must neither refill the cancellation budget nor
     release an exhausted episode to the generic scene-confirm fallback.
+
+    ``owner_active`` is the orchestrator's pre-flow snapshot
+    (``status_panel.status_panel_owner_active``): when a live flow is reading
+    this general status page, the page belongs to it and this step returns
+    None.  Returning ``[]`` would stop the dispatcher before that owner ran.
     """
     flow = mem.get('orphan_battle_menu')
     restored = isinstance(mem.get('resume_battle_menu'), dict)
@@ -94,10 +110,22 @@ def orphan_battle_menu_step(screen, mem):
     # A general's status page (opened by the monthly/roster walk) says
     # 「しろのなかにいます」 and 「Bボタンでもどる」.  The plain-command fade
     # path was advancing it with A forever (g1190 2026-11-22 09:00, n=30341).
+    # The owners that read this page dispatch after this step, so only close it
+    # when no owner was active before the flows ran (post_month_status failed
+    # every month with status_unreadable because this B beat its reader).  When
+    # an owner is active, return None before the plain-command A path below:
+    # advancing the owner's page with A is the g1190 loop this branch fixed.
     text = screen.text or ''
     if ('Bボタンでもどる' in text
             and ('しろのなかにいます' in text
                  or ('HP' in text and 'ちんぎん' in text))):
+        if owner_active:
+            # Drop the stale claim, as the close path did: the owner reads this
+            # page and returns to its roster, and a leftover plain-command flow
+            # would press A on that roster frame ahead of the same owner.
+            mem.pop('orphan_battle_menu', None)
+            mem.pop('resume_battle_menu', None)
+            return None
         mem.pop('orphan_battle_menu', None)
         mem.pop('resume_battle_menu', None)
         _record(mem, 'battle_status_screen_return',
@@ -335,95 +363,16 @@ def _retreat_forbidden(mem, cur):
 
 
 def _hero_retreat_menu(screen, mem, cur):
-    # A castle defense cannot retreat (owner 2026-09-29; the menu has no
-    # たいきゃく row there), so never try to select it.
-    if not (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)) or cur.get('side') == 'defense':
-        return None
-    if _retreat_forbidden(mem, cur):
-        if not cur.get('retreat_forbidden_noted'):
-            cur['retreat_forbidden_noted'] = True
-            _record(mem, 'battle_retreat_forbidden', **_battle_labels(cur),
-                    general=cur.get('ally'), enemy=cur.get('enemy'),
-                    castle=cur.get('castle'), side=cur.get('side'),
-                    reason='第9話では主人公以外は退却しないため、卵・切り札・奥の手で応戦する')
-        return None
-    if _egg_rescue_pending(cur):
-        return []
-    if ('きりふだ' in {w for _, _, w in _options(screen)}
-            and _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True)):
-        return _survival_menu(screen, mem, cur)
-    if _egg_before_retreat(mem, cur, menu=True) and 'たまごをつかう' in {w for _, _, w in _options(screen)}:
-        if (cur.get('card_flow') or {}).get('stage') == 'announce':
-            _card_use_unclassified(mem, cur, '本人の未試行の卵を優先し、切り札の使用告知は未確認として保持')
-        else:
-            cur['card_flow'] = None
-        _survival_state(mem, cur)['egg_priority'] = True
-        return _survival_menu(screen, mem, cur)
-    flow = cur.setdefault('hero_retreat', {})
-    if flow.get('unavailable') or flow.get('exhausted'):
-        return None
-    # docich#4999 (owner 2026-11-22): spend resources before the retreat row.
-    # A pending selection on this menu screen means its announce already
-    # ended without a receipt — settle it honestly, then give remaining
-    # cards one bounded retry through the survival menu before choosing
-    # たいきゃく. Below the immediate-loss floor the detour stops.
-    card_flow = cur.get('card_flow') or {}
-    if card_flow.get('selection_planned'):
-        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘メニューへ戻ったため未分類として保持')
-    else:
-        cur['card_flow'] = None
-    if not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur):
-        return _survival_menu(screen, mem, cur)
-    if 'たいきゃく' not in {w for _, _, w in _options(screen)}:
-        flow['unavailable'] = True
-        _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
+    # Owner 2026-11-23: retreat is banned uniformly.  It was chosen in a pinch
+    # (often after cards/eggs ran out) and the menu then stalled the battle.
+    # Fight to the end with こうげき instead.  Record once per battle.
+    if not cur.get('retreat_banned_noted'):
+        cur['retreat_banned_noted'] = True
+        _record(mem, 'battle_retreat_banned', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'),
                 castle=cur.get('castle'), side=cur.get('side'),
-                reason='退却が有効な項目として読めないため卵・切り札・奥の手で対処')
-        return None
-    if flow.get('selected'):
-        flow['wait'] = flow.get('wait', 0) + 1
-        if flow['wait'] <= 3:
-            return []
-        if flow['selected'] >= 2:
-            flow['exhausted'] = True
-            return [pad('b')]
-    flow['menu_ticks'] = flow.get('menu_ticks', 0) + 1
-    if flow['menu_ticks'] > 8:
-        flow['exhausted'] = True
-        return [pad('b')]
-    move = _battle_menu_move(screen, mem, 'たいきゃく')
-    if move != 'here':
-        return _emit_moves(move)
-    cur['card_flow'] = None
-    flow['selected'] = flow.get('selected', 0) + 1
-    flow['wait'] = 0
-    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
-            general=cur.get('ally'), enemy=cur.get('enemy'),
-            castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
-            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
-                             'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
-                             'cards_selected': cur.get('cards_selected', []),
-                             'cards_used': cur.get('cards_used', []),
-                             # docich#5117: the live list proved these are not
-                             # carried, so they are neither spendable nor a
-                             # "left behind" resource.
-                             'cards_missing': list(cur.get('cards_missing') or ()),
-                             # docich#5101: a card the bot already tried (or
-                             # spent its one bounded retry on) is not "left
-                             # unused" — the audit needs the attempt receipts
-                             # to tell a designed post-attempt retreat from a
-                             # card that was never given a chance.
-                             'cards_attempted': list((cur.get('survival') or {})
-                                                     .get('cards_attempted') or []),
-                             'cards_spend_retry': list(cur.get('cards_spend_retry') or ()),
-                             'cards_spend_attempts': dict(cur.get('cards_spend_attempts') or {}),
-                             'card_pending': (cur.get('card_flow') or {}).get('card')
-                             if isinstance(cur.get('card_flow'), dict) else None,
-                             'retreat_assessment': dict(cur.get('retreat_assessment') or {})},
-            resulting_event='retreat_selected_not_yet_confirmed',
-            reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')
-    return [pad('a')]
+                reason='退却は停滞の原因になるため一律禁止し、切り札・卵を使い切った後もそのまま戦い切る')
+    return None
 
 
 RESCUE_RECLOSE_WAIT = 3     # observations a spent rescue menu may stay open
@@ -964,6 +913,22 @@ CARD_ROW_WALK_TOPDOWN = 2    # ups that reach the command box's top row
 CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
 CARD_MENU_TICK_LIMIT = 8     # same bound as before: the walk finishes by tick 5
 
+def _carried_card_left(mem, cur):
+    """A card the general actually carries and has not spent yet.
+
+    Castle stock alone is not "holding" a card for the miss audit; only the
+    planned sortie kit or a confirmed carried kit counts.
+    """
+    attempted = {*(cur.get('cards_selected') or []), *(cur.get('cards_used') or []),
+                 *(cur.get('cards_unclassified') or []), *(cur.get('cards_missing') or [])}
+    planned = [c for c in (cur.get('planned_cards') or [])
+               if isinstance(c, str) and c not in attempted]
+    if planned:
+        return planned[0]
+    kit = _confirmed_carried_kit(mem, cur) or []
+    return next((c for c in kit if isinstance(c, str) and c not in attempted), None)
+
+
 def _card_row_walk(flow, screen, ticks):
     '''docich#4673: reach きりふだ without a readable command-box cursor.
 
@@ -1354,6 +1319,57 @@ def _okunote_only_box_step(screen, mem, cur):
     return [pad('down')]
 
 
+def _safer_rescue_available(mem, cur):
+    """A measured egg or carried card the battle could still spend.
+
+    The command menu always draws たまごをつかう/きりふだ/たいきゃく, so their
+    labels cannot prove a usable resource: 2026-11-24 13:10 JST the decline
+    claimed 使用可能な卵/切り札 while パプリカ had no egg (has_egg false) and
+    an empty carried list, and the general fell in melee. Only the battle's
+    own measured plan (``cur['egg_plan']``) counts here.
+    """
+    plan = cur.get('egg_plan') if isinstance(cur.get('egg_plan'), dict) else {}
+    profile = plan.get('ally_profile') if isinstance(plan.get('ally_profile'), dict) else {}
+    if profile.get('has_egg') is True and not _own_egg_empty(mem, cur):
+        return True
+    return any(isinstance(row, dict) and row.get('usable') is True
+               for row in (plan.get('cards') or ()))
+
+
+def _okunote_risk_protected(mem, cur, hp, ally_full, enemy_full):
+    """A low HP battle still has a safer rescue than the irreversible lottery.
+
+    The original gate treated the visible きりふだ/たまご rows as proof of a
+    usable card or egg, which they never were (the rows are always drawn).
+    It also required a confirmed ``side == 'defense'``; battles that interrupt
+    a sortie have ``side`` and ``castle`` unknown and could never rescue a
+    losing general at all (2026-11-24 13:1x-13:2x: パプリカ/デュオニソス/
+    キャンディー declined at HP 34/21/8/22 and were lost). A confirmed attack
+    keeps the old policy; an unclassified battle may now open the lottery when
+    no measured egg/card is left.
+    """
+    hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
+    return bool(
+        cur.get('ally') in (None, 'だいじん')
+        or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
+        or cur.get('side') == 'attack'
+        or (cur.get('side') == 'defense'
+            and cur.get('castle') not in chart.castles(mem.get('chapter') or 0))
+        or cur.get('enemy') in chart.BOSSES.values()
+        or cur.get('planned_cards') or cur.get('card_flow')
+        or cur.get('egg_battle') or mem.get('egg_battle')
+        or cur.get('card_summon_observed')
+        or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
+        or _safer_rescue_available(mem, cur)
+        or type(hp) is not int or hp <= 0
+        or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
+        or ally_full is None or enemy_full is None
+        or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
+        or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
+        or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
+        or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
@@ -1555,25 +1571,7 @@ def okunote_step(screen, mem):
             conserve = (_hold_melee_egg(mem, cur, visible)
                         or cur.get('card_soldiers_current') is not True
                         or cur.get('card_hp_unread') or cur.get('card_context_unclassified'))
-            hero = cur.get('ally') in (NAME, 'しじんこう', 'しゅじんこう')
-            protected = (
-                cur.get('ally') in (None, 'だいじん')
-                or (hero and type(hp) is int and hp <= OKUNOTE_MAX_SELF_DAMAGE)
-                or cur.get('side') != 'defense'
-                or cur.get('castle') not in chart.castles(mem.get('chapter') or 0)
-                or cur.get('enemy') in chart.BOSSES.values()
-                or cur.get('planned_cards') or cur.get('card_flow')
-                or cur.get('egg_battle') or mem.get('egg_battle')
-                or cur.get('card_summon_observed')
-                or cur.get('okunote_last_resort_recorded') or cur.get('okunote_last_resort_selected')
-                or 'きりふだ' in visible or 'たまごをつかう' in visible
-                or type(hp) is not int or hp <= 0
-                or type(cur.get('enemy_hp')) is not int or cur.get('enemy_hp') <= 0
-                or ally_full is None or enemy_full is None
-                or type(cur.get('start_ally_hp')) is not int or cur['start_ally_hp'] <= 0
-                or type(cur.get('start_enemy_hp')) is not int or cur['start_enemy_hp'] <= 0
-                or cur['start_ally_hp'] > ally_full or cur['start_enemy_hp'] > enemy_full
-                or cur.get('enemy_hp') > cur['start_enemy_hp'] or hp > cur['start_ally_hp'])
+            protected = _okunote_risk_protected(mem, cur, hp, ally_full, enemy_full)
             if conserve:
                 if not flow.get('risk_conserved'):
                     flow['risk_conserved'] = True
@@ -1587,7 +1585,8 @@ def okunote_step(screen, mem):
                 if not flow.get('risk_declined'):
                     flow['risk_declined'] = True
                     _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
-                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                            observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE,
+                                             'side': cur.get('side'), 'castle': cur.get('castle')},
                             reason='低HPだが主人公・計画札・召喚戦・ボス・使用可能な卵/切り札などの既存保護条件があるため、奥の手を開かず白兵へ戻る')
                 rescue['exhausted'] = True
                 return [pad('b')]
@@ -2222,23 +2221,67 @@ def _egg_retreat_return(screen, mem, battle):
 SUMMON_SCROLL_REARM_TICKS = 40      # observations (~60 s) before one more look
 SUMMON_SCROLL_REARM_LIMIT = 2       # extra looks per battle
 
+# Owner 2026-11-24: 城守り戦で敵の召喚獣が生きている間は、おくのて行が一度
+# 読めなかっただけで通常攻撃へ戻さない。live g1342 2026-11-24 02:59 フーリック
+# (ゼウス vs ビシソワーズ→ドラゴンフライ, 召喚獣HP263) は 17 回おくのてを
+# 引いた後、描画途中の箱で最後の 2 押しが反映されず「おくのて行なし」と判定して
+# こうげきへ戻り、城を失った。召喚獣が生きている間は短い間隔で読み直しを続ける
+# (押下・確定は従来どおり有界。確定は可視行のみ)。
+SUMMON_SCROLL_LIVE_REARM_TICKS = 8
+SUMMON_SCROLL_LIVE_REARM_LIMIT = 12
+# An unread cursor / a one-row redraw is not proof that おくのて is absent.
+SUMMON_SCROLL_UNREAD_WAITS = 3
+
+
+def _live_defense_summon(battle):
+    """A castle defense whose enemy summon still justifies drawing おくのて."""
+    if battle.get('side') != 'defense':
+        return False
+    if not (battle.get('enemy_summon_observed') or battle.get('card_summon_observed')):
+        return False
+    hp = battle.get('summon_enemy_hp')
+    if type(hp) is int:
+        # A summon one edge hit finishes needs no lottery (owner 2026-11-04).
+        return hp > EGG_WALL_DAMAGE
+    return True     # an unread summon HP is not evidence of the one-hit case
+
 
 def _summon_scroll_rearm(mem, battle, guard):
-    """Re-open the bounded scroll after a failed label read, at most twice."""
+    """Re-open the bounded scroll after a failed label read.
+
+    A live castle-defense summon keeps the route open with a short gap, so one
+    unread frame cannot end 奥の手 for the rest of the fight. Other fights keep
+    the finite two looks.
+    """
     if guard.get('exhausted_reason') != 'scroll_unread':
         return False
+    hp = battle.get('summon_enemy_hp')
+    if type(hp) is int and 0 < hp <= EGG_WALL_DAMAGE:
+        return False    # 一撃で倒せる残りHPでは奥の手を使わない (owner 2026-11-04)
+    if battle.get('melee_only_summon'):
+        return False    # 0ダメージ召喚獣は白兵で対処し、抽選を開かない (owner 2026-11-24)
+    live = _live_defense_summon(battle)
+    limit = SUMMON_SCROLL_LIVE_REARM_LIMIT if live else SUMMON_SCROLL_REARM_LIMIT
+    gap = SUMMON_SCROLL_LIVE_REARM_TICKS if live else SUMMON_SCROLL_REARM_TICKS
     rearms = int(guard.get('rearms') or 0)
-    if rearms >= SUMMON_SCROLL_REARM_LIMIT:
+    if rearms >= limit:
+        if not guard.get('rearm_limit_recorded'):
+            guard['rearm_limit_recorded'] = True
+            _record(mem, 'battle_okunote_summon_rearm_limit', **_battle_labels(battle),
+                    observed_metric={'rearms': rearms, 'limit': limit,
+                                     'summon_live': live,
+                                     'summon_enemy_hp': battle.get('summon_enemy_hp')},
+                    reason='おくのて行の読み直し上限に達したため、以後は実コマンドで応戦する')
         return False
     since = guard.get('exhausted_tick')
     now = int(mem.get('tick') or 0)
-    if type(since) is not int or now - since < SUMMON_SCROLL_REARM_TICKS:
+    if type(since) is not int or now - since < gap:
         return False
-    guard.update(exhausted=False, downs=0, stage='scroll_rearm',
+    guard.update(exhausted=False, downs=0, stage='scroll_rearm', unread_waits=0,
                  rearms=rearms + 1, exhausted_tick=0, exhausted_reason=None)
     _record(mem, 'battle_okunote_summon_rearm', **_battle_labels(battle),
-            observed_metric={'rearms': rearms + 1, 'limit': SUMMON_SCROLL_REARM_LIMIT,
-                             'waited_ticks': now - since},
+            observed_metric={'rearms': rearms + 1, 'limit': limit,
+                             'waited_ticks': now - since, 'summon_live': live},
             reason='おくのて行が読めないまま同一戦闘で打ち切っていたが、召喚獣が残っているため有界で読み直す')
     return True
 
@@ -2312,6 +2355,23 @@ def _defender_summon_egg_menu(screen, mem, battle):
                                  'down_attempt': downs + batch, 'batch': batch},
                 reason='たまごをつかう（灰色）の下のおくのて行へカーソルを下げる')
         return [pad('down') for _ in range(batch)]
+    # The scroll budget is spent. A frame whose cursor or rows are still
+    # unread (the box is redrawing) is not evidence that おくのて is absent:
+    # live g1342 02:59:05 sent the last pair into a redrawing defense box and
+    # the very next frame had an unread cursor, so the old code latched the
+    # route off and attacked with the summon still alive. Re-read first, then
+    # give the turn back only from a readable box.
+    waits = int(guard.get('unread_waits') or 0)
+    if ((screen.menu_cursor is None or len(labels) < 2)
+            and waits < SUMMON_SCROLL_UNREAD_WAITS):
+        guard['unread_waits'] = waits + 1
+        _record(mem, 'battle_okunote_summon_unread_box', **_battle_labels(battle),
+                observed_metric={'waits': waits + 1, 'limit': SUMMON_SCROLL_UNREAD_WAITS,
+                                 'cursor_y': screen.menu_cursor, 'visible': labels,
+                                 'down_attempts': downs},
+                reason='おくのて行の探索中に箱のカーソル/行が未読のため、行なしと断定せず再観測する')
+        return [{'type': 'wait', 'ms': 50}]
+    guard.pop('unread_waits', None)
     guard.update(exhausted=True, exhausted_reason='scroll_unread',
                  exhausted_tick=int(mem.get('tick') or 0))
     _record(mem, 'battle_okunote_summon_open_failed', **_battle_labels(battle),
@@ -2368,6 +2428,8 @@ def egg_battle_step(screen: Screen, mem):
     summon is answered with an egg rather than a stall or blind attack.
     This is original pattern ⑥ (own egg when melee is not enough); patterns
     ②④⑤ stay chart-directed. Messages inside it advance with A.
+    A measured ゾンビ summon is the exception: it is met with melee and the
+    egg is kept (owner 2026-11-24, ``MELEE_ONLY_SUMMONS``).
     """
     if screen.kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage', None)
@@ -2432,7 +2494,17 @@ def egg_battle_step(screen: Screen, mem):
     enemy_monsters = [r for r in enemy_rows
                       if r.name in reference.MONSTER_SKILLS
                       and type(r.hp) is int and r.hp > 0]
+    # Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。HP比や
+    # 経験則より優先するが、実画面で敵召喚獣が1体だけ読めて名前が一致した
+    # ときだけ適用する (未知・複数・未読の敵へは広げない)。
+    melee_only = (len(enemy_rows) == len(enemy_monsters) == 1
+                  and enemy_monsters[0].name in MELEE_ONLY_SUMMONS)
+    if isinstance(mem.get('battle'), dict):
+        # Keep the okunote preempt from spending our general's HP on a lottery
+        # against a zero-damage zombie; cleared as soon as the panel changes.
+        mem['battle']['melee_only_summon'] = melee_only
     summon_threat = bool(general_reading and len(enemy_rows) == len(enemy_monsters) == 1
+                        and not melee_only
                         and (enemy_monsters[0].name == 'ダークエルフ'
                              or general_reading[0] * 10
                              <= enemy_monsters[0].hp * BEHIND_EGG_RATIO_TENTHS))
@@ -2441,9 +2513,14 @@ def egg_battle_step(screen: Screen, mem):
         egg_evidence = {**egg_evidence, 'rule': 'enemy_monster_threat',
                         'enemy_monster': enemy_monsters[0].name,
                         'enemy_monster_hp': enemy_monsters[0].hp}
+    elif melee_only:
+        wants_egg = False
+        egg_evidence = {**egg_evidence, 'rule': 'melee_only_summon',
+                        'enemy_monster': enemy_monsters[0].name,
+                        'enemy_monster_hp': enemy_monsters[0].hp}
     empty_egg = _screen_egg_empty(screen, mem, battle)
     hero_summon = isinstance(battle, dict) and battle.get('ally') == NAME
-    if hero_summon and not wants_egg:
+    if hero_summon and not wants_egg and not melee_only:
         # g604 3-11: どうし 66/90 looked healthy against チコリ (HP11), so the
         # egg was "saved"; the summoned ダークエルフ's ひとだまくん is instant
         # death (gcgx evil_egg) and HP comparisons cannot price it. A dead
@@ -2468,8 +2545,10 @@ def egg_battle_step(screen: Screen, mem):
         # ⑥の写像: HP不利ならたまご、勝てそうなら温存 (attack) から始める。
         action = experience.preferred(exp, key, default='use_egg' if wants_egg and not empty_egg else 'attack',
                                       kind='egg_summon')
-        if (hero_summon or summon_threat or combat_danger) and not empty_egg:
+        if (hero_summon or summon_threat or combat_danger) and not empty_egg and not melee_only:
             action = 'use_egg'  # learned attacks cannot overrule a measured summon threat
+        if melee_only:
+            action = 'attack'   # owner 2026-11-24: zombie is met by melee, never by our egg
         if action == 'use_egg' and empty_egg:
             action = 'attack'
         mem['egg_action'] = action
@@ -2484,7 +2563,10 @@ def egg_battle_step(screen: Screen, mem):
                 expected_metric='召喚獣への対処と戦闘結果',
                 observed_metric={'experience_key': key, 'egg_need': egg_evidence},
                 source_pattern='⑥',
-                reason=('チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
+                reason=(f'オーナー指示 (2026-11-24): 相手が{enemy_monsters[0].name}'
+                        '（0ダメージ召喚獣）のため、たまごを使わず白兵で対処する'
+                        if melee_only else
+                        'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、'
                         '自軍が健在でHP・兵士数・戦闘力から白兵を続けられそうならたまごを温存）'
                         if not wants_egg else
                         'チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）'))
@@ -2512,7 +2594,10 @@ def egg_battle_step(screen: Screen, mem):
         return [pad('b')]
     # 途中昇格: 温存していた (前回まで勝てていた) のに劣勢になったら、たまごを
     # 使う判断へ切り替える。回復しても温存へは戻さない (一方向だけ)。
-    if ((mem.get('egg_needed') is False or summon_threat or combat_danger) and wants_egg and not empty_egg
+    # 相手がゾンビのときはこの昇格も行わない (owner 2026-11-24)。
+    if (not melee_only
+            and (mem.get('egg_needed') is False or summon_threat or combat_danger)
+            and wants_egg and not empty_egg
             and mem.get('egg_action') == 'attack'):
         mem['egg_action'] = 'use_egg'
         if isinstance(battle.get('independent'), dict):
@@ -2527,6 +2612,24 @@ def egg_battle_step(screen: Screen, mem):
                         if combat_danger else '温存していたが、自軍のHPが最大の7割以下になるか、'
                         'HPと兵士の合戦力が敵の7割を下回ったため途中でたまごを'
                         '使う判断へ切り替える'))
+    if melee_only:
+        # A hot-loaded or learned 卵 decision made before the panel was read
+        # must not spend the egg on a zombie (owner 2026-11-24). Record the
+        # reversal once per battle; later observations just keep attacking.
+        if mem.get('egg_action') != 'attack' and not battle.get('melee_only_override'):
+            battle['melee_only_override'] = True
+            _record(mem, 'egg_battle', strategy_variant='egg_battle_melee_only',
+                    deviation_reason='チャート外: 敵の卵召喚戦（0ダメージ召喚獣は白兵）',
+                    expected_metric='0ダメージ召喚獣への白兵と戦闘結果',
+                    observed_metric={'egg_need': egg_evidence,
+                                     'enemy_monster': enemy_monsters[0].name,
+                                     'enemy_monster_hp': enemy_monsters[0].hp},
+                    source_pattern='⑥',
+                    reason=(f'オーナー指示 (2026-11-24): 相手が{enemy_monsters[0].name}'
+                            '（0ダメージ召喚獣）のため、たまごの温存判断を白兵へ戻す'))
+        mem['egg_action'] = 'attack'
+        if isinstance(battle.get('independent'), dict):
+            battle['independent']['action'] = 'attack'
     mem['egg_needed'] = wants_egg
     action = mem.get('egg_action', 'use_egg')
     if empty_egg or (action == 'use_egg' and 'たまごをつかう' not in screen.text):
@@ -2564,8 +2667,24 @@ def egg_battle_step(screen: Screen, mem):
     if action == 'attack':
         battle = (mem.get('battle') if isinstance(mem.get('battle'), dict)
                   else mem.setdefault('egg_retreat_flow', {}))
+        interrupted_flow = battle.get('card_flow')
+        if (isinstance(interrupted_flow, dict)
+                and interrupted_flow.get('stage') in ('menu', 'down', 'list')
+                and not interrupted_flow.get('selection_planned')
+                and not interrupted_flow.get('read_kit')):
+            # The enemy summon dialogue can replace the normal battle menu
+            # between planning a card and opening its list.  The old cursor
+            # navigation belongs to the previous menu; keep the exact card
+            # intent, then reopen it from the summon menu's real list.
+            interrupted_card = interrupted_flow.get('card')
+            if isinstance(interrupted_card, str):
+                battle['summon_card_resume'] = {
+                    'card': interrupted_card,
+                    'tactic_id': interrupted_flow.get('tactic_id'),
+                }
+            battle['card_flow'] = None
         attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
-                     *(battle.get('cards_unclassified') or [])}
+                     *(battle.get('cards_unclassified') or []), *(battle.get('cards_missing') or [])}
         cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
         if not cards_left:
             # The summon battle's battle context often has no planned_cards,
@@ -2579,7 +2698,7 @@ def egg_battle_step(screen: Screen, mem):
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
         # the visible command text until the box scrolls down; open it first.
         if (cards_left and 'きりふだ' not in (screen.text or '')
-                and 'たまごをつかう' in (screen.text or '')
+                and ('たまごをつかう' in (screen.text or '') or empty_egg)
                 and not battle.get('card_flow')):
             scrolls = int(battle.get('summon_card_scroll') or 0)
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
@@ -2589,19 +2708,29 @@ def egg_battle_step(screen: Screen, mem):
                                          'text': (screen.text or '')[:60]},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
+        resume = battle.get('summon_card_resume')
+        if not isinstance(resume, dict) or resume.get('card') not in cards_left:
+            resume = None
+            battle.pop('summon_card_resume', None)
         if (cards_left and 'きりふだ' in (screen.text or '')
                 and not battle.get('card_flow')):
             target = _battle_menu_to(screen, 'きりふだ')
             move = _menu_move_batch(screen, 'きりふだ', target) if target is not None else None
             if move == 'here':
-                battle['card_flow'] = {'card': cards_left[0], 'stage': 'list',
-                                       'note': '敵召喚獣戦の携行切り札を開幕使用',
+                card = resume['card'] if resume else cards_left[0]
+                battle['card_flow'] = {'card': card, 'stage': 'list',
+                                       'note': ('召喚会話で中断された携行切り札を再開'
+                                                if resume else '敵召喚獣戦の携行切り札を開幕使用'),
                                        'enemy_hp_at_open': battle.get('enemy_hp')}
+                battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
-                        card=cards_left[0],
+                        card=card,
                         observed_metric={'enemy': battle.get('enemy'),
-                                         'cards_left': list(cards_left)},
-                        reason='敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く')
+                                         'cards_left': list(cards_left),
+                                         'resumed_pending_flow': bool(resume),
+                                         'resumed_tactic_id': resume.get('tactic_id') if resume else None},
+                        reason=('召喚会話で中断された未選択の切り札を実一覧から再開する'
+                                if resume else '敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く'))
                 return [pad('a')]
             if move is not None:
                 return _emit_moves(move)
@@ -2610,11 +2739,8 @@ def egg_battle_step(screen: Screen, mem):
         # and actually request retreat if the normal command menu is reached.
         # g460 安全弁は「卵か札か退却のどれもない」局面だけ。勝てそうなので
         # たまごを温存している間は、まず白兵で戦う (退却しない)。
-        if (not cards_left and battle.get('side') != 'defense'
-                and (wants_egg or empty_egg or 'たまごをつかう' not in screen.text)):
-            returning = _egg_retreat_return(screen, mem, battle)
-            if returning is not None:
-                return returning
+        # Owner 2026-11-23: retreat is banned; with no card the summon turn
+        # attacks instead of probing the retreat menu.
         # g508: after Excalibur fell, stale general HP82 concealed the
         # wounded Venus while blind A kept choosing the weakest attack.
         # Fierce attack adds lost HP to damage, but can miss/lose initiative;
@@ -2711,6 +2837,26 @@ def egg_battle_step(screen: Screen, mem):
                                      'enemy_hp': enemy_rows[0].hp if len(enemy_rows) == 1 else None},
                     reason=('卵・予定札がなく退却もできない負傷将軍は、実HPに基づきもうこうげきで応戦する'
                             if fierce else '実コマンド位置を確認して通常攻撃へ戻す'))
+        if move == 'here' and label == 'こうげき':
+            # File only after the attack row is actually selected. An unread
+            # cursor or an in-progress walk is not evidence that the card was
+            # skipped in favour of an attack.
+            missed = _carried_card_left(mem, battle)
+            # docich#5217: once this battle has spent a card, the next one is
+            # not evidence that the bot skipped cards in favour of an attack.
+            # The audit's card_miss signal is "attacked without opening any of
+            # the carried cards"; filing after a real use only produces
+            # duplicates (live: ミックミー used, ノリウツール left, 3 issues).
+            if (missed and cards_left and not battle.get('cards_used')
+                    and not battle.get('boss_card_missed_noted')):
+                battle['boss_card_missed_noted'] = True
+                _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
+                        observed_metric={'cards_left': list(cards_left),
+                                         'screen': screen.kind,
+                                         'text': (screen.text or '')[:80],
+                                         'scrolls': battle.get('summon_card_scroll'),
+                                         'cursor': screen.menu_cursor},
+                        reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         return [pad('a')] if move == 'here' else _emit_moves(move)
     _egg_recheck(mem)
     if screen.hand:
@@ -3089,7 +3235,9 @@ def monster_menu_step(screen: Screen, mem):
     special_cycle = balloon_cycle or akematsu_cycle or omedetori_cycle
     # A live deployment can change a rule while the menu HP stays unchanged.
     # Re-evaluate old cached choices on the first new-policy observation.
-    special_epoch = '20261029-omedetori-v1' if omedetori_cycle else '20261016-balloon-akematsu-v2'
+    special_epoch = ('20261029-omedetori-v1' if omedetori_cycle
+                     else '20261124-balloon-final-jelly-v1' if balloon_cycle
+                     else '20261016-balloon-akematsu-v2')
     if (not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state
             or (special_cycle and mem.get('monster_menu_choice_policy_epoch') != special_epoch)
             or (akematsu_cycle and mem.get('monster_menu_choice') != akematsu['action'])
@@ -3228,7 +3376,14 @@ def monster_menu_step(screen: Screen, mem):
                    '両技に攻撃性能がない召喚獣のため、無効な攻撃を繰り返さず戻す')
         elif balloon_cycle:
             label = second if action == 'skill2' else first
-            if balloon['rule'] == 'survival_buffer':
+            if balloon['rule'] == 'final_jelly_shout':
+                why = ('ファイナルゼリー戦でHP1000以上に達したため、以降も'
+                       '「シャウト」を続けて相手を削り切る（オーナー 2026-11-24）')
+            elif balloon['rule'] == 'final_jelly_inflate':
+                why = (f'ファイナルゼリー戦でシャウトへ移るため、HP{ally_hp}を'
+                       f'目標{balloon["target_hp"]}以上へ「ふくらむ」で引き上げる'
+                       '（オーナー 2026-11-24）')
+            elif balloon['rule'] == 'survival_buffer':
                 why = (f"シャウト後HP{balloon['post_shout_hp']}が、被ダメージ推定"
                        f"{balloon['incoming_damage']}に25%の余裕を加えた"
                        f"{balloon['survival_hits']}回分を超えるため全回復を待たず攻撃")

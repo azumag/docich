@@ -1247,6 +1247,33 @@ class PaperCornerManager:
         # Persist each slot's text before sending it. Its queue ACK and audio
         # drain are separate durable states; a restart resumes the same slot.
         from .trading.corner_script import SEGMENT_KEYS, covered_entry
+        # M2 (Issue #2454): capture the generation-time boundary (last fill in
+        # the interval) once per corner run so the cursor advances to exactly
+        # the population that was explained (no silent skip of late arrivals).
+        if "interval_last_fill" not in state:
+            try:
+                from .trading.corner_interval import (
+                    get_cursor as _ci_get_cursor,
+                    fills_in_interval as _ci_fills_in_interval,
+                )
+
+                _db_path = self.trading_dir / "paper.sqlite3"
+                _cursor_before = _ci_get_cursor(_db_path, "paper")
+                _interval_fills = _ci_fills_in_interval(
+                    _db_path, _cursor_before, now=self.clock()
+                )
+                if _interval_fills:
+                    _last = _interval_fills[-1]
+                    state["interval_last_fill"] = [
+                        float(str(_last["filled_at"])),
+                        str(_last["fill_id"]),
+                    ]
+                else:
+                    state["interval_last_fill"] = None
+                self.save(state)
+            except Exception:
+                state["interval_last_fill"] = None
+                self.save(state)
         pending = None
         for index, slot in enumerate(SEGMENT_KEYS, start=1):
             from .corner_rotation import clear_rotation_stop_request, rotation_stop_requested
@@ -1309,6 +1336,33 @@ class PaperCornerManager:
         state['end_reason'] = 'eight-slots-drained'
         if state.get('ai_failure_reason'):
             state['end_detail'] = str(state['ai_failure_reason'])[:240]
+        self.save(state)
+        # M2 (Issue #2454): advance the explanation boundary cursor only after
+        # the full explanation (all slots) is durably saved AND successful
+        # (fail-closed: a failed explanation never advances the cursor).
+        # Use the generation-time boundary stored in state, not a recompute.
+        _boundary = state.get("interval_last_fill")
+        if _boundary is not None and not state.get("ai_failure_reason"):
+            try:
+                from .trading.corner_interval import _upsert_cursor_exclusive, _ensure_cursor_table
+                import sqlite3 as _sqlite3
+
+                _db_path = self.trading_dir / "paper.sqlite3"
+                _filled_at, _fill_id = float(_boundary[0]), str(_boundary[1])
+                _ensure_cursor_table(_db_path)
+                _conn = _sqlite3.connect(
+                    f"file:{str(_db_path.resolve())}?mode=rw", uri=True
+                )
+                try:
+                    _conn.row_factory = _sqlite3.Row
+                    _upsert_cursor_exclusive(_conn, "paper", _filled_at, _fill_id, self.clock())
+                    _conn.commit()
+                finally:
+                    _conn.close()
+            except Exception:
+                pass
+        # Clean up the stored boundary.
+        state.pop("interval_last_fill", None)
         self.save(state)
         # Preserve the existing final queue monitor as the last restore gate.
         if not self._wait_for_speech(state):

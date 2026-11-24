@@ -978,12 +978,21 @@ def _hanjuku_generals(policy: Mapping[str, object], identity):
     that recruits still shows 名簿人数＋加入人数 instead of 不明; a confirmed
     departure is already removed from those lists by the brain. Anything
     older, another run/chapter or an invalid shape stays unknown.
+
+    When no complete list exists at all, the country-status page's own
+    headcount (``country_general_count``, the しょうぐん Nにん row the brain
+    reads each month in ``flows/house``) is the fallback. A roster walk can
+    stall for months (``roster_end_unconfirmed``), and without this source
+    the card stayed 不明 forever even though the game prints the count.
+
+    Returns (count, month, base, joins, source); source is 'receipt',
+    'record' or 'country', None when the count stays unknown.
     """
     chapter, current_month = policy.get("chapter"), policy.get("month")
     current_tick = policy.get("tick")
     if (type(chapter) is not int or chapter <= 0
             or not isinstance(current_month, str) or type(current_tick) is not int):
-        return None, None, None, None
+        return None, None, None, None, None
     previous_month = _hanjuku_previous_month(current_month)
     survey = policy.get("roster_survey")
     candidates = ([("receipt", survey.get("receipt"))]
@@ -1003,8 +1012,21 @@ def _hanjuku_generals(policy: Mapping[str, object], identity):
         joins = 0
         if kind == "record" or roster_month == previous_month:
             joins = _hanjuku_pending_joins(policy, names)
-        return base + joins, roster_month, base, joins
-    return None, None, None, None
+        return base + joins, roster_month, base, joins, kind
+    # 加入 announcements are not added on top of the page count: the number
+    # the game prints already includes this month's recruits, and without the
+    # roster's name list pending joins cannot be deduplicated against it.
+    country = policy.get("country_general_count")
+    if isinstance(country, dict):
+        scope = country.get("scope")
+        count, tick = country.get("count"), country.get("tick")
+        if (country.get("identity") == identity
+                and isinstance(scope, list) and len(scope) == 2
+                and scope[0] == chapter and scope[1] in (current_month, previous_month)
+                and type(count) is int and 0 <= count <= HANJUKU_MAX_GENERALS
+                and type(tick) is int and 0 <= tick <= current_tick):
+            return count, scope[1], count, 0, "country"
+    return None, None, None, None, None
 
 
 def _policy_region(policy, key):
@@ -1401,7 +1423,7 @@ def _hanjuku_snapshot(root: Path, state: Mapping[str, object]):
         orders = policy.get("orders") if isinstance(policy.get("orders"), dict) else None
         egg_uses = policy.get("egg_uses") if isinstance(policy.get("egg_uses"), dict) else {}
         # Chapter and currency are last observations, not predictions or orders.
-        generals, generals_month, generals_base, generals_joins = _hanjuku_generals(policy, identity)
+        generals, generals_month, generals_base, generals_joins, generals_source = _hanjuku_generals(policy, identity)
         # Country-status facts: 半熟レベル/半熟値/現在収入 are last observations.
         # Owner 2026-11-04: keep the previous values on the card until a
         # successful page read rewrites them; a month rollover or an unreadable
@@ -1433,6 +1455,7 @@ def _hanjuku_snapshot(root: Path, state: Mapping[str, object]):
                   "generals_previous": generals is not None and generals_month != policy.get("month"),
                   "generals_roster": generals_base,
                   "generals_joins": generals_joins,
+                  "generals_source": generals_source,
                   "hanjuku_level": hanjuku_level,
                   "hanjuku_value": hanjuku_value,
                   "income": income,

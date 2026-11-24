@@ -1054,12 +1054,12 @@ test("viewer check and consecutive foul feedback reach the shared brain", async 
     };
     let reply = await post(initial, { binding });
     const attempts = [];
-    // v11: 脱出候補がどれも露出過多で残り予算が3以上のときは、王手の幾何を満たす
-    // ブロックを先に試し、その後は応手内の玉移動を試す。9手で応手を尽くす。
+    // v14: 王手が確定している間は可視の玉脱出を先に試し、応手（ブロック・捕獲）は
+    // その後に残る。9手で応手を尽くす。
     for (let ply = 1; ply <= 9; ply += 1) {
       const move = (await reply.json()).move;
-      if (ply === 1) assert.ok(!move.endsWith("OU"));
-      else assert.ok(move.endsWith("OU"));
+      if (ply === 1) assert.ok(move.endsWith("OU"), "the first check response is a visible escape");
+      if (ply === 4) assert.ok(!move.endsWith("OU"), "a blocking response is still reachable");
       assert.ok(!attempts.includes(move));
       attempts.push(move);
       reply = await post({ ...initial, requestId: `check-${color}-${ply}`, basePly: ply - 1, ply,

@@ -152,6 +152,21 @@ def _boss_companion_unfit(mem, name):
                 and hp * 10 < maximum * 6))
 
 
+def _known_roster(mem, garrison, castle):
+    """Complete roster when known, else the partial page minus confirmed moves."""
+    names = garrison.get(castle)
+    if names is not None:
+        return names
+    partial = (_world(mem).get('garrison_partial') or {}).get(castle)
+    if not isinstance(partial, list) or not partial:
+        return None
+    elsewhere = {name for other, members in garrison.items()
+                 if other != castle and isinstance(members, list)
+                 for name in members}
+    remaining = [g for g in partial if g not in elsewhere]
+    return remaining or None
+
+
 def _boss_companion_source(order, mem):
     """Recorded garrisons permit opening a list, never prove a departure."""
     garrison = _world(mem).get('garrison') or {}
@@ -179,13 +194,23 @@ def _boss_companion_source(order, mem):
         return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
                    default=None)
     castles = [source] + sorted(owned - {source})
-    return next((castle for castle in castles if castle in owned
-                 and _order_hero_alternatives(order, mem, garrison.get(castle))), None)
+    need = chart.sender_min(chapter)
+    sole = len(owned) <= 1
+    for castle in castles:
+        if castle not in owned:
+            continue
+        names = _known_roster(mem, garrison, castle)
+        if not _order_hero_alternatives(order, mem, names):
+            continue
+        if castle == source or sole or len(set(names or ())) >= need:
+            return castle
+    return None
 
 
 def _hero_source_alternative(order, mem):
+    garrison = _world(mem).get('garrison') or {}
     return (order.get('general') == NAME
-            and bool(_order_hero_alternatives(order, mem, (_world(mem).get('garrison') or {}).get(_source(order, mem)))))
+            and bool(_order_hero_alternatives(order, mem, _known_roster(mem, garrison, _source(order, mem)))))
 
 
 def _gate_dicts(mem, *keys):
@@ -676,6 +701,75 @@ def _season_site_held(order, mem):
             or len(lost) > SEASON_SITE_MISSING_LIMIT or _site_king_down(mem, order.get('target')))
 
 
+BOSS_COMPANION_WAIT_TICKS = 200   # bounded wait before a safe hero-only boss attempt
+
+
+def _boss_companion_wait_expired(mem, order):
+    """Share one per-step deadline across planner, deploy and target gates.
+
+    A timeout must survive the general-list backout: otherwise the target
+    picker starts a fresh timer and the same boss order waits forever in stages.
+    The hero is only selected by deploy.py after a fresh readable roster proves
+    he is present and the existing egg/broken-hero guards still pass.
+    """
+    flow_state = _flow(mem)
+    step = order.get('step')
+    if not isinstance(step, str) or not step:
+        return False
+    expired = flow_state.setdefault('boss_companion_wait_expired', {})
+    if expired.get(step) is True:
+        return True
+    wait = flow_state.setdefault('boss_companion_wait', {})
+    started = wait.get(step)
+    now = int(mem.get('tick') or 0)
+    if type(started) is not int:
+        wait[step] = now
+        return False
+    elapsed = now - started
+    if elapsed < BOSS_COMPANION_WAIT_TICKS:
+        return False
+    wait.pop(step, None)
+    expired[step] = True
+    _record(mem, 'boss_companion_timeout', chart_step=step,
+            target=order.get('target'),
+            observed_metric={'waited_ticks': elapsed},
+            reason='十分な代役を待つ上限に達したため、実一覧で主人公の在席と安全条件を再確認する')
+    return True
+
+
+BOSS_COMPANION_SOURCE_WAIT_TICKS = 200   # ~5 min: then continue to the bounded deploy flow
+
+
+def _boss_companion_source_wait_expired(mem, order):
+    """Bound the planner's wait for an eligible boss companion at the source.
+
+    Keep an expiry receipt so repeated readiness checks cannot restart the
+    same step's deadline before the order reaches the deploy flow.
+    """
+    step = order.get('step')
+    if not isinstance(step, str) or not step:
+        return False
+    expired = mem.setdefault('boss_companion_source_wait_expired', {})
+    if expired.get(step) is True:
+        return True
+    wait = mem.setdefault('boss_companion_source_wait', {})
+    started = wait.get(step)
+    now = int(mem.get('tick') or 0)
+    if type(started) is not int:
+        wait[step] = now
+        return False
+    elapsed = now - started
+    if elapsed < BOSS_COMPANION_SOURCE_WAIT_TICKS:
+        return False
+    wait.pop(step, None)
+    expired[step] = True
+    _record(mem, 'boss_companion_source_timeout', chart_step=step,
+            target=order.get('target'),
+            observed_metric={'waited_ticks': elapsed},
+            reason='出撃元に適格な代役が来ないため待機上限で出撃手順へ進み、主人公単独の可否を実一覧で判断する')
+    return True
+
+
 def _ready(order, mem) -> bool:
     # docich#4690: a source-list probe carries no named general, so every
     # later readiness check (the corridor road gate included) answers for a
@@ -706,8 +800,10 @@ def _ready(order, mem) -> bool:
         return False
     if not _boss_target_unlocked(order, mem):
         return False
+    companion_source = None
     if ('step' in order and _is_boss_order(order, mem) and order.get('purpose') != 'move'
             and order.get('roster_probe') is not True):
+        companion_source = _boss_companion_source(order, mem)
         # The corridor chapter's moving boss: the game refuses a sortie from a
         # castle that keeps only one general, so the chart's boss order from the
         # one-general last castle was started every ~85 steps and never
@@ -717,13 +813,23 @@ def _ready(order, mem) -> bool:
             source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
             if source_names is not None and len(set(source_names)) < 2:
                 return False
-        if (_boss_companion_source(order, mem) is None
+        if (companion_source is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
-            return False
+            # Chapter-4 summon sites keep their measured egg-holder gate. Other
+            # boss orders get a bounded source wait before reaching deploy.
+            if (order.get('target') in chart.boss_sites(4)
+                    or not _boss_companion_source_wait_expired(mem, order)):
+                return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
-            and not (_boss_companion_source(order, mem) if _is_boss_order(order, mem)
+            and not (companion_source if _is_boss_order(order, mem)
                      else _hero_source_alternative(order, mem))):
-        return False
+        # After the same bounded wait, deploy_step either selects a freshly
+        # observed, safe hero or fails the order. Do not keep _ready blocked
+        # forever on an injured companion or a broken/depleted hero.
+        if not (_is_boss_order(order, mem)
+                and order.get('target') not in chart.boss_sites(4)
+                and _boss_companion_wait_expired(mem, order)):
+            return False
     after = order['after']
     captured = set(mem.get('captured', []))
     if after is None:
@@ -1215,13 +1321,33 @@ def _redirect_blocked_sources(mem):
     seen = set()
     for order in [*_orders(mem), *(_world(mem).get('launched_orders') or {}).values()]:
         step = order.get('step')
-        if (not step or step in seen or step in overrides
-                or status.get(step) != 'pending'):
+        if not step or step in seen or status.get(step) != 'pending':
             continue
         seen.add(step)
         source, target = order.get('source'), order.get('target')
         blocker = (source and target
                    and chart.march_blocker(chapter, source, target, owned))
+        if blocker == source:
+            # The source itself is not an intermediate blocker.  Treating it as
+            # one re-pointed the order to the same castle and re-issued the
+            # same cancelled sortie forever (ch5 8-4: カルーン→ジュメルズ,
+            # blocker カルーン).
+            blocker = None
+        if order.get('purpose') == 'move':
+            general = order.get('general')
+            garrison = _world(mem).get('garrison') or {}
+            if (blocker and overrides.get(step) == blocker
+                    and (not general or general not in (garrison.get(blocker) or ()))):
+                overrides.pop(step, None)
+            continue
+        if blocker and chart.is_boss_castle(target):
+            blocker_names = _known_roster(mem, _world(mem).get('garrison') or {}, blocker)
+            if blocker_names is not None and len(set(blocker_names)) < chart.sender_min(chapter):
+                if overrides.get(step) == blocker:
+                    overrides.pop(step, None)
+                continue
+        if step in overrides:
+            continue
         if blocker:
             overrides[step] = blocker
             _record(mem, 'sortie_source_march_block', chart_step=step,
@@ -1904,6 +2030,14 @@ def _follow_general(mem, order, garrison, owned):
     owned = owned & set(chart.castles(mem.get('chapter') or 0))
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
+        base_source = order.get('source')
+        if (general and general != NAME and base_source in owned
+                and general in (_known_roster(mem, garrison, base_source) or ())):
+            overrides = _plan_region(mem).get('source_override') or {}
+            override_src = overrides.get(order['step'])
+            if override_src and general not in (_known_roster(mem, garrison, override_src) or ()):
+                overrides.pop(order['step'], None)
+            return
         where = _boss_companion_source(order, mem)
         if where in owned and where != source:
             _plan_region(mem).setdefault('source_override', {})[order['step']] = where
@@ -2367,6 +2501,16 @@ def drop_retired_step_context(mem):
 
 def _finish_order(mem, state, **fields):
     step = _plan_region(mem).get('active')
+    if step and state in ('failed', 'done', 'launched', 'launched_unconfirmed'):
+        flow_state = _flow(mem)
+        for key in ('boss_companion_wait', 'boss_companion_wait_expired'):
+            section = flow_state.get(key)
+            if isinstance(section, dict):
+                section.pop(step, None)
+        for key in ('boss_companion_source_wait', 'boss_companion_source_wait_expired'):
+            section = mem.get(key)
+            if isinstance(section, dict):
+                section.pop(step, None)
     if step:
         _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':

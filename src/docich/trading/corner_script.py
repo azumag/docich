@@ -229,6 +229,51 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         for item in snap.get("fills", [])
         if isinstance(item, Mapping)
     ]
+    # Interval fills/picks (Issue #2454): population since the last explanation
+    # cursor, plus up to MAX_PICKS representative fills with grounds.
+    interval_fills = []
+    interval_picks = []
+    try:
+        from .corner_interval import (
+            get_cursor as _ci_get_cursor,
+            fills_in_interval as _ci_fills_in_interval,
+            select_picks as _ci_select_picks,
+            interval_realized as _ci_interval_realized,
+        )
+
+        _db_path = target / "paper.sqlite3"
+        _cursor = _ci_get_cursor(_db_path, "paper")
+        _interval_fills = _ci_fills_in_interval(_db_path, _cursor, now=moment)
+        _picks = _ci_select_picks(_db_path, _interval_fills, max_picks=3)
+        interval_fills = [
+            {
+                "fill_id": str(f.get("fill_id", "")),
+                "symbol": str(f.get("symbol", "")),
+                "side": str(f.get("side", "")),
+                "amount": str(f.get("amount", "")),
+                "price": str(f.get("price", "")),
+                "filled_at": f.get("filled_at"),
+                "reason_code": str(f.get("reason_code", "")),
+            }
+            for f in _interval_fills
+        ]
+        interval_picks = [
+            {
+                "fill_id": str(p.get("fill_id", "")),
+                "symbol": str(p.get("symbol", "")),
+                "side": str(p.get("side", "")),
+                "amount": str(p.get("amount", "")),
+                "price": str(p.get("price", "")),
+                "filled_at": p.get("filled_at"),
+                "reason_code": str(p.get("reason_code", "")),
+            }
+            for p in _picks
+        ]
+        interval_realized_value = str(_ci_interval_realized(_db_path, _cursor, now=moment))
+    except Exception:
+        interval_fills = []
+        interval_picks = []
+        interval_realized_value = None
     skipped = [
         {
             "symbol": str(item.get("symbol", "")),
@@ -289,6 +334,8 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         ],
         "skipped_decisions": skipped,
         "recent_fills": fills,
+        "interval_fills": interval_fills,
+        "interval_picks": interval_picks,
         "fresh_markets": int(portfolio.get("fresh_markets", 0) or 0),
         "total_markets": int(portfolio.get("total_markets", 0) or 0),
         "focus": focus,
@@ -366,16 +413,16 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "parameterは既存パラメータ調整です。各案に根拠(evidence)と確信度(confidence: low/medium/high)を付けます。\n"
         "- ニュース単発を根拠に自動売買ルールを直接追加する提案は禁止。検証方法・反証条件をrationaleに含めてください。\n"
         "【時間足チャートの解説】\n"
-        "- facts.timeframes は注目銘柄の日足・1時間足・15分足・1分足の公開ローソクです。各要素は bars(本数)、"
+        "- facts.timeframes は注目銘柄の日足・1時間足・15分足・5分足・1分足の公開ローソクです。各要素は bars(本数)、"
         "last_close、range_change_pct(表示区間の変化率)、momentum_pct(直近数本の勢い)、sma、bb_upper/bb_lower"
         "(ボリンジャーバンド)、bb_position(0が下限・1が上限)、trend、bb_phrase を持ちます。\n"
-        "- chart では4つの時間足を1つずつ、『事実』→『解釈』→『次に何を見るか』の順で解説します。"
+        "- chart では facts.timeframes に含まれる全ての時間足を1つずつ、『事実』→『解釈』→『次に何を見るか』の順で解説します。"
         "数値は facts にあるものだけを使い、無い足や空のtimeframesは正直に『取得できていない』と述べる。作らない。\n"
         "- ボリンジャーバンドは終値が上限寄りか下限寄りか、モメンタムは勢いが強いか弱いかを、価格の丸暗記より先に噛み砕く。\n"
         "- facts.fill_timeframes は直近の模擬約定銘柄の1時間足・15分足です。直近の約定を1つずつ、"
         "どの時間足のどの位置（バンド位置・勢い）だったかを recent_fills と突き合わせて説明します。"
         "売買判断の根拠を捏造してはいけません。\n"
-        "- 表示中のチャートは表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っている点を必要なら一言添える。\n"
+        "- 表示中のチャートは表示専用です。公開OHLCの5分足とは別に、売買判断は戦略用5分足（保存済み終値系列）と戦略パラメータで行う点を必要なら一言添える。\n"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 各セグメントの最初の一文は、数字ではなく相場や判断の意味を先に言う。\n"
@@ -394,18 +441,20 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- 同じ文型・同じオチを各段落で繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
         "【損益の扱い】\n"
         "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
-        "- performance.today_realized_pnl_jpy は本日の確定損益として触れる。\n"
+        "- performance.interval_realized_pnl_jpy は区間の確定損益（前回説明から今回説明まで）として触れる。\n- facts.interval_fills は前回説明から今回説明までの約定母集団（区間 fills）、facts.interval_picks はその代表ピック（最大3件・根拠付き）です。review/fills セグメントで活用してください。\n- 区間約定の扱い: 0件なら「約定0件」と明言。1〜5件なら時系列で全件。6件以上なら facts.interval_picks の代表3件を根拠（P&L最大・数量最大・状態変化・損切り/リスク）付きで選抜し、母集団件数も併記。\n"
         "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
-        "- performance.theoretical_benchmark が status=ready または partial の場合、実績の本日確定損益と理論値を比較する。\n"
-        "  これは当日5分足の終値だけを使い、1銘柄を1回だけ売買できた場合の後知恵による比較値であり、実績の目標値やバックテスト結果ではない。\n"
-        "  partial は『本日ここまでの暫定値』と明示し、status=unavailable は数字を作らず比較待ちと伝える。\n"
+        "- performance.theoretical_benchmark が status=ready または partial の場合、区間損益と理論値を比較する。\n"
+        "  これは区間内の5分足終値だけを使い、1銘柄を1回だけ売買できた場合の後知恵比較であり、実績の目標値やバックテスト結果ではない。\n"
+        "  partial は「区間ここまでの暫定値」と明示し、unavailable は数字を作らず比較待ちと伝える。\n"
         "次の11キーを持つJSONオブジェクト1つを出力してください。\n"
         "- corner: 今日の相場の見取り図と、今日いちばん見るべき点を語るオープニング。\n"
         "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
-        "- chart: facts.timeframes の4つの時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
+        "  本文取得済みの事実と分析・見通しを区別し、出典（媒体名またはURL）を示す。\n"
+        "  見出しのみ・本文取得失敗の項目は、その取得限界を明示し、見出しから記事本文や因果を創作しない。確認できる背景・対象資産との関連・観測点を説明し、見出しだけで短絡終了しない。\n"
+        "- chart: facts.timeframes に含まれる全ての時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
         "- strategy: facts.slot_strategies があれば【銘柄別の戦略】に従い、銘柄ごとの戦略の狙いを損益・見送り傾向・ニュースから観測すべき点と結び付ける。"
         "無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
-        "- result: 累積損益・本日実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
+        "- result: 累積損益・区間実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
         "- fills: 直近約定を1件ずつ、signalの観測値と閾値で『なぜ発注したか』を数値つきで説明する。\n"
         "- review: facts.round_trips の往復を1件ずつ、判断の良し悪しを根拠つきで評価し、次に活かす点を述べる。\n"
         "- improve: 取引結果・往復レビュー・ニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
@@ -560,14 +609,16 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
     perf = facts.get("performance") if isinstance(facts.get("performance"), Mapping) else {}
     parts: list[str] = []
     cumulative = perf.get("cumulative_pnl_jpy")
-    today = perf.get("today_realized_pnl_jpy")
+    interval = perf.get("interval_realized_pnl_jpy")
+    if interval is None:
+        interval = perf.get("today_realized_pnl_jpy")  # deprecated compatibility alias
     unrealized = perf.get("unrealized_pnl_jpy")
     if cumulative is not None:
         parts.append(f"評価込みの累積損益は{_fmt_num(cumulative) or cumulative}円")
     else:
         parts.append("累積損益は一部の保有価格が不足していて評価待ち")
-    if today is not None:
-        parts.append(f"本日の確定損益は{_fmt_num(today) or today}円")
+    if interval is not None:
+        parts.append(f"区間の確定損益（前回説明から今回説明まで）は{_fmt_num(interval) or interval}円")
     if unrealized is not None:
         parts.append(f"現在の含み損益は{_fmt_num(unrealized) or unrealized}円")
     return "、".join(parts) + "です。" + _pnl_interpretation(facts)
@@ -577,19 +628,21 @@ def _benchmark_text(facts: Mapping[str, object]) -> str:
     performance = facts.get("performance") if isinstance(facts.get("performance"), Mapping) else {}
     benchmark = performance.get("theoretical_benchmark")
     if not isinstance(benchmark, Mapping):
-        return "本日実績と理論値の比較は、まだ表示できません。"
+        return "区間実績と理論値の比較は、まだ表示できません。"
     status = str(benchmark.get("status") or "unavailable")
     theoretical = benchmark.get("theoretical_pnl_jpy")
-    actual = benchmark.get("actual_today_realized_pnl_jpy")
+    actual = benchmark.get("actual_interval_realized_pnl_jpy")
+    if actual is None:
+        actual = benchmark.get("actual_today_realized_pnl_jpy")  # deprecated compatibility alias
     if status not in {"ready", "partial"} or theoretical is None:
-        return "本日実績と理論値の比較は、日中5分足の履歴がそろうまで待ちです。"
+        return "区間実績と理論値の比較は、区間内5分足の履歴がそろうまで待ちです。"
     theoretical_text = _fmt_num(theoretical) or str(theoretical)
     actual_text = _fmt_num(actual) if actual is not None else None
     if actual_text is None:
         actual_text = str(actual) if actual is not None else "確認待ち"
     capture = _fmt_num(benchmark.get("capture_rate_pct"))
     symbol = str(benchmark.get("best_symbol") or "対象銘柄")
-    scope = "本日ここまでの暫定値" if status == "partial" else "本日の観測値"
+    scope = "区間ここまでの暫定値" if status == "partial" else "区間の観測値"
     rate_text = f"捕捉率は{capture}%です" if capture is not None else "捕捉率は算出待ちです"
     return (
         f"{scope}で比べると、確定損益は{actual_text}円、理論値は{theoretical_text}円でした。"
@@ -635,10 +688,10 @@ def _chart_text(facts: Mapping[str, object]) -> str:
     if not timeframes:
         return (
             "時間足チャートの解説です。今回は公開ローソクの取得が間に合わず、"
-            "日足・1時間足・15分足・1分足の数字をお伝えできません。データが取れ次第、次のコーナーで扱います。"
+            "日足・1時間足・15分足・5分足・1分足の数字をお伝えできません。データが取れ次第、次のコーナーで扱います。"
         )
-    parts = ["時間足チャートの解説です。注目銘柄を4つの時間足で見ていきます。"]
-    for view in timeframes[:4]:
+    parts = [f"時間足チャートの解説です。注目銘柄を{len(timeframes)}つの時間足で見ていきます。"]
+    for view in timeframes:
         label = str(view.get("label") or view.get("timeframe") or "")
         trend = str(view.get("trend") or "不明")
         change = _fmt_pct(view.get("range_change_pct"))
@@ -660,7 +713,7 @@ def _chart_text(facts: Mapping[str, object]) -> str:
                 f"なお直近約定の{first.get('symbol')}は、{view.get('label')}で{view.get('trend')}基調、"
                 f"{view.get('bb_phrase')}です。発注の理由は約定の解説で扱います。"
             )
-    parts.append("表示中のローソクは公開データの表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っています。")
+    parts.append("表示中のローソクは公開データの表示専用です。売買判断は戦略用5分足（保存済み終値系列）と戦略パラメータで行っています。")
     return "".join(parts)
 
 
@@ -843,7 +896,7 @@ def _fills_text(facts: Mapping[str, object]) -> str:
                 f"{symbol}の{side}約定は記録がありますが、発注根拠の詳細が残っていないため、"
                 f"価格と{reason}だけをお伝えします。"
             )
-    parts.append("表示中のチャートは参考で、実際の判断は保存済みの5分足と戦略パラメータで行っています。")
+    parts.append("表示中のチャートは参考です。実際の判断は戦略用5分足（保存済み終値系列）と戦略パラメータで行っています。")
     return "".join(parts)
 
 
@@ -927,7 +980,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
 
     improve = (
         "最後に改善です。利益が出ていても一回の利確だけで作戦成功とは決めませんし、"
-        "損失なら相場のせいにして逃げません。累積損益、本日の確定損益、含み損益と見送りの偏りを"
+        "損失なら相場のせいにして逃げません。累積損益、区間の確定損益、含み損益と見送りの偏りを"
         "並べて、エントリー条件と投入額がちゃんと仕事をしているかを次の改善で検証します。"
     )
     if improvement:
@@ -1005,6 +1058,10 @@ def generate_corner_script(
             "segments": render_fallback({}),
         }
     fallback = render_fallback(facts)
+
+    # Do not advance the explanation cursor here. This function can return a
+    # dry-run/fallback script and has no durable explanation record to commit.
+    # M2 must commit that record and its cursor together at the manager boundary.
 
     if dry_run:
         return {"source": "fallback", "reason": "dry-run", "segments": fallback}
@@ -1124,6 +1181,37 @@ def build_next_prompt(
         '"rationale": "検証方法と反証条件", "evidence": "根拠", "confidence": "low|medium|high"}]'
         if news_hints else ""
     )
+    chart_guidance = ""
+    if target_key == "chart":
+        chart_guidance = (
+            "【時間足チャートの解説】\n"
+            "- facts.timeframes に含まれる全ての時間足（日足・1時間足・15分足・5分足・1分足）の公開ローソクを、"
+            "存在する範囲で順に解説してください。4つに切り詰めないでください。\n"
+            "- 取得できない時間足は取得できていないと述べ、足や数値を補わないでください。\n"
+            "- 公開OHLCの5分足は表示専用です。売買判断に使う戦略用5分足（保存済み終値系列）と混同しないでください。\n"
+        )
+    news_guidance = ""
+    if target_key == "news":
+        news_items = research.get("news_items") if isinstance(research.get("news_items"), list) else []
+        backend = str(research.get("research_backend") or "")
+        if backend == "websearch_verified_body" and news_items:
+            news_guidance = (
+                "【ニュース本文の取得状態: 検証済み本文】\n"
+                "- news_items.summary はHTTPS本文からreceipt/hash検証を通した抜粋です。抜粋に書かれた事実を中心に説明し、"
+                "媒体・本文の事実とあなたの分析を分けてください。抜粋にない詳細や因果は補わないでください。\n"
+            )
+        elif backend == "google_news_wikipedia" and news_items:
+            news_guidance = (
+                "【ニュース本文の取得状態: 見出しとRSS要約のみ】\n"
+                "- Google News RSSのtitle/source/published_at/summaryだけが根拠です。summaryも記事全文ではありません。"
+                "本文を読んだように語らず、見出しから確認できる範囲と推測を分け、方向や因果を断定しないでください。\n"
+            )
+        else:
+            news_guidance = (
+                "【ニュース本文の取得状態: 取得失敗または対象なし】\n"
+                "- 信頼できるニュース項目は取得できていません。存在しない記事・見出し・媒体を作らず、"
+                "取得できなかったことを短く明示してください。ニュース枠は省略せず、他の実データとの関係だけを慎重に述べてください。\n"
+            )
     label = SEGMENT_LABELS.get(target_key, "")
     if target_key == "strategy" and facts.get("slot_strategies"):
         label = "銘柄別の戦略"
@@ -1154,6 +1242,8 @@ def build_next_prompt(
         f"【話し済みの切り口】{covered_text}\n"
         f"{target_instruction}"
         f"{_slot_guidance(facts)}"
+        f"{news_guidance}"
+        f"{chart_guidance}"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
@@ -1267,6 +1357,10 @@ def generate_next_narration(
             facts["research"] = research_context
     except Exception as exc:
         return {"status": "failed", "reason": _safe_reason(exc)}
+
+    # A generated segment is not durable until the manager saves it. Advancing
+    # the cursor here could skip fills if the following state write fails.
+    # Keep M2 fail-closed until record and cursor share one transaction.
 
     try:
         prompt = build_next_prompt(facts, covered, target_key)

@@ -290,6 +290,45 @@ def _close_target_jump(mem, jump):
 
 
 
+def forget_target_placement(mem, step=None):
+    """Drop a target-marker placement that an interruption made stale.
+
+    The map cursor and a Y-view confirmation are receipts for the screen that
+    produced them. When a battle (or a month menu/event) takes the screen, the
+    destination picker comes back with its marker wherever the game left it,
+    while ``cursor``/``y_jumped`` still name the pre-interruption cell. The
+    resumed picker then reads that old placement as "already arrived" and the
+    sortie goes to a cell offset from the planned one (v664 g1163: a month
+    menu, then a defense; the retained オシロガ cell sent シュゼット to a
+    cliff). Forget both so the target is found again by a fresh Y jump.
+
+    ``step`` bounds the per-order receipts; without it (a battle whose order
+    ownership is already settled) every placement is stale and is dropped.
+    The cursor is always dropped: it is a camera estimate for that screen.
+    """
+    mem.pop('cursor', None)
+    near = mem.get('near_goal')
+    if not isinstance(near, dict) or step is None or near.get('step') == step:
+        mem.pop('near_goal', None)
+    if step is None:
+        mem.pop('y_jumped', None)
+        mem.pop('y_jumped_res', None)
+        mem.pop('y_jump_target_confirmed', None)
+        mem.pop('y_jump_target_closed', None)
+    else:
+        for key in ('y_jumped', 'y_jumped_res'):
+            bucket = mem.get(key)
+            if isinstance(bucket, dict):
+                bucket.pop(step, None)
+        for key in ('y_jump_target_confirmed', 'y_jump_target_closed'):
+            entry = mem.get(key)
+            if isinstance(entry, dict) and entry.get('step') == step:
+                mem.pop(key, None)
+    if mem.get('y_jump_return') == 'target':
+        mem.pop('y_jump_return', None)
+    mem['uncertain'] = True
+
+
 def _forget_failed_jump(mem, step, mode=None):
     """A new attempt of ``step`` may open the view again.
 
@@ -545,7 +584,7 @@ def y_jump_unreachable(mem, goal):
     return type(tick) is not int or now - tick < Y_JUMP_UNREACHABLE_TICKS
 
 
-def _start_y_jump(mem, order, name, mode):
+def _start_y_jump(mem, order, name, mode, goal_cell=None):
     key = f"{order['step']}:{mode}"
     jumps = mem.setdefault('y_jumps', {})
     _tally(mem, f'yjump:{key}')
@@ -554,6 +593,11 @@ def _start_y_jump(mem, order, name, mode):
     jumps[key] = jumps.get(key, 0) + 1
     mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0,
                      'tick': int(mem.get('tick') or 0)}
+    if (isinstance(goal_cell, (list, tuple)) and len(goal_cell) == 2
+            and all(type(value) is int for value in goal_cell)
+            and not chart.is_boss_castle(name)):
+        # The route's planned aim cell, not necessarily the castle's own cell.
+        mem['y_jump']['goal_cell'] = list(goal_cell)
     _record(mem, 'y_jump_open', chart_step=order['step'], target=name,
             observed_metric={'cursor': mem.get('cursor'), 'mode': mode, 'attempt': jumps[key]},
             reason='全体マップ（Y）で目的の城を直接選ぶ')
@@ -596,6 +640,17 @@ def _y_jump_step(mem, frame):
         if isinstance(probe, dict) and 'origin_cursor' not in probe:
             probe['origin_cursor'] = list(jump['origin_cursor'])
     gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
+    # A route can aim at a measured cell that is not the castle's own cell
+    # (chapter 9's サヌト→オシロガ steps one tile north of the cliff). The
+    # caller freezes that planned cell when it opens the jump, so the jump
+    # lands on the same cell the walking path uses; otherwise a battle that
+    # forces a fresh jump would quietly restore the bare castle cell and
+    # shift the planned sortie.
+    planned = jump.get('goal_cell')
+    if (not chart.is_boss_castle(jump.get('goal') or '')
+            and isinstance(planned, (list, tuple)) and len(planned) == 2
+            and all(type(value) is int for value in planned)):
+        gx, gy = planned
     ox, oy = Y_JUMP_OFFSET[chapter]
     # A moving-boss goal is re-measured while this jump is open (the pursuit
     # keeps calling _apply_skull_boss), so the live probe cell walks away from

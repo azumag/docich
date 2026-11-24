@@ -11,6 +11,11 @@ BALLOON_UNMEASURED_SHOUT_HP = 6144
 BALLOON_ZERO_LOSS_SHOUT_HP = 4096
 BALLOON_ZERO_LOSS_REQUIRED_SAMPLES = 2
 BALLOON_MIN_POST_SHOUT_HP = 512
+# Owner 2026-11-24: against ファイナルゼリー, once ふくらむ has raised our HP to
+# at least 1000, keep shouting until the opponent is gone instead of alternating
+# back to ふくらむ after each shout halves our own HP below the target.
+BALLOON_FINAL_JELLY_SHOUT_HP = 1000
+BALLOON_FINAL_JELLY = 'ファイナルゼリー'
 _STATE_KEY = 'balloon_finch_survival'
 
 
@@ -58,6 +63,10 @@ def balloon_assessment(mem, ally, enemy, max_hp):
     estimate even if the enemy attacks before inflation. An observed shout
     yields at most old/2 HP, so double the residual loss to cover attack-before-
     shout ordering. Neither formula covers unobserved stronger attacks.
+
+    ファイナルゼリー is the owner-requested exception (2026-11-24): after one
+    inflation reaches 1000 HP, keep shouting instead of alternating back to
+    ふくらむ when the shout halves our own HP below 1000.
     """
     state = _state(mem, ally, enemy, max_hp)
     hp = ally.hp if ally is not None else None
@@ -87,6 +96,24 @@ def balloon_assessment(mem, ally, enemy, max_hp):
                         _sample(state, 2 * (expected - hp))
     damage = state['damage'] if state is not None else 0
     zeros = state['zero_samples'] if state is not None else 0
+    if (state is not None and enemy is not None
+            and enemy.name == BALLOON_FINAL_JELLY and _hp(hp, max_hp)):
+        # Latch the route: the first shout halves our own HP below 1000, and
+        # the owner wants the remaining turns to keep shouting, not re-inflate.
+        if hp >= BALLOON_FINAL_JELLY_SHOUT_HP:
+            state['final_jelly_shout'] = True
+        shouting = bool(state.get('final_jelly_shout'))
+        return {
+            'action': 'skill2' if shouting else 'skill1',
+            'rule': 'final_jelly_shout' if shouting else 'final_jelly_inflate',
+            'target_hp': BALLOON_FINAL_JELLY_SHOUT_HP,
+            'incoming_damage': damage or None,
+            'buffered_damage': None,
+            'survival_hits': BALLOON_SURVIVAL_HITS,
+            'post_shout_hp': hp // 2,
+            'damage_samples': state['samples'],
+            'zero_loss_samples': zeros,
+        }
     buffered = (5 * damage + 3) // 4 if damage else None
     required = BALLOON_SURVIVAL_HITS * buffered if buffered is not None else None
     if required is not None:

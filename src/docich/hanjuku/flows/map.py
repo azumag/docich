@@ -24,8 +24,8 @@ from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_
 from ..os_layer.commands import (VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad,
                                  roster_list_batch)
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
-                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell, nav_step,
-                                   y_jump_unreachable)
+                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell,
+                                   forget_target_placement, nav_step, y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _canonical_general, _cursor, _options,
                                 _roof_under_cursor, season_sites, world_cursor, world_flags,
                                 world_markers)
@@ -35,7 +35,8 @@ from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
-from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order,
+from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT,
+                               _boss_companion_wait_expired, _broken_hero_order,
                                drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
@@ -74,9 +75,29 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             _flow(mem)['sortie_attempt'] = attempt
     if not attempt:
         return
-    if (mem.get('y_jump') or {}).get('mode') == 'target' or mem.get('y_jump_return') == 'target':
+    own_target_jump = ((mem.get('y_jump') or {}).get('mode') == 'target'
+                       or mem.get('y_jump_return') == 'target')
+    if (screen.kind in SORTIE_INTERRUPTING_BATTLE_KINDS and order
+            and order.get('step') == attempt.get('step')):
+        # A fight cut the destination selection. The marker the picker restores
+        # afterwards sits wherever the game left it, not the cell our Y jump
+        # put it on, and a pre-battle arrival receipt still names the old cell.
+        # Mark the attempt so the resumed picker re-does the target jump
+        # (``target_step``) instead of confirming the restored marker, and give
+        # that jump a fresh attempt budget: the interrupted one must not eat it.
+        step = attempt.get('step')
+        if not attempt.get('battle_interrupt'):
+            attempt['battle_interrupt'] = True
+            tick = mem.get('tick')
+            attempt['battle_interrupt_tick'] = tick if type(tick) is int else None
+            (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
+            _forget_failed_jump(mem, step, 'target')
+        forget_target_placement(mem, step)
+    if own_target_jump:
         # Our own Y jump for the target (the view and the fade back), not an
-        # interruption.
+        # interruption. Captured before the battle reset above dropped
+        # ``y_jump_return``: the reset is about placement, not about treating
+        # our own view as a closed picker.
         if screen.kind in ('map_target', 'map'):
             mem.pop('y_jump_return', None)      # back on a map: normal tracking resumes
         else:
@@ -93,16 +114,13 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 # battle, the marker came back unplaced and the bot idled).
                 (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
                 _forget_failed_jump(mem, step, 'target')
-                (mem.get('y_jumped') or {}).pop(step, None)
-                # The remembered marker cell is from before the interruption
-                # too. g1163 2026-11-11 12:24:03 kept オシロガ's cell after
-                # the month menu, read the resumed marker as arrived, aligned
-                # it on a roof nearby and sent シュゼット to a cliff where she
-                # camped. Forget it so the target is found again by a jump.
-                mem.pop('cursor', None)
-                if (mem.get('near_goal') or {}).get('step') == step:
-                    mem.pop('near_goal', None)
-                mem['uncertain'] = True
+                # The remembered marker cell and the Y-view receipt are from
+                # before the interruption too. g1163 2026-11-11 12:24:03 kept
+                # オシロガ's cell after the month menu, read the resumed
+                # marker as arrived, aligned it on a roof nearby and sent
+                # シュゼット to a cliff where she camped. Forget both so the
+                # target is found again by a fresh jump.
+                forget_target_placement(mem, step)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
         attempt['target_seen'] = True
@@ -112,6 +130,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             or not order or order['step'] != attempt['step']):
         return
     step = order['step']
+    # The target picker closed (a battle, event or a plain return): its cursor
+    # and Y-jump receipt no longer describe any marker on screen. A re-armed
+    # attempt must re-place the target instead of confirming the restored
+    # marker at the old cell.
+    forget_target_placement(mem, step)
     request = flow(mem).get('departure_request')
     if isinstance(request, dict) and request.get('step') == step:
         if (_departure_receipt_sent(mem, request) and isinstance(request.get('snapshot'), dict)
@@ -1052,7 +1075,7 @@ def _hold_off_castle(screen, mem, order) -> bool:
 
 def _measured_goal(mem, order, castle):
     """Last coordinate boundary, including already-issued reconciliation."""
-    goal = chart.castles(mem.get('chapter') or 0).get(castle)
+    goal = chart.aim_cell(mem.get('chapter') or 0, _source(order, mem), castle)
     if goal is None:
         _plan_region(mem)['active'] = None
         forget_picked(mem)
@@ -1128,6 +1151,7 @@ def _drop_jump_state(mem, step):
                       if not k.startswith(f'{step}:')}
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
+    (mem.get('y_jumped_res') or {}).pop(step, None)
     last = mem.get('y_jump_last') or {}
     if last.get('step') == step:
         mem.pop('y_jump_last', None)
@@ -1662,20 +1686,66 @@ def _castle_jump_y_fallback(screen, mem, jump, rows):
     budget. The stall is a property of the panel, not of the order: once the
     menu is closed the ordinary map step retries the same source through the
     whole-map Y jump (mode 'map'), and walks only when Y cannot run.
-    """
-    mem.pop('castle_jump', None)
-    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': jump.get('step'),
-                               'tick': int(mem.get('tick') or 0)}
-    mem['castle_jump_y'] = {'step': jump.get('step'), 'source': jump.get('source'),
-                            'tick': int(mem.get('tick') or 0)}
-    _record(mem, 'castle_jump_y_fallback', chart_step=jump.get('step'),
-            target=jump.get('source'), screen=screen.kind,
-            observed_metric={'scrolls': jump.get('scrolls'),
-                             'stalled': jump.get('scroll_stall'),
-                             'rows': [word for _, word in rows]},
-            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
-    return [pad('b')]
 
+    Issues #5275 / #5276: that resume bypassed ``_end_castle_jump``, so the
+    menu-failure counter never advanced and open → scroll → stall → fallback
+    → reopen could repeat without bound. Count stalls per step and give the
+    step up at ``CASTLE_JUMP_ABANDON``, the same bound a menu failure uses, so
+    the planner can pick another source. A reanchor owns no step and keeps its
+    bounded list retries (there is nothing to abandon).
+    """
+    step_key = jump.get('step')
+    source = jump.get('source')
+    mem.pop('castle_jump', None)
+    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': step_key,
+                               'tick': int(mem.get('tick') or 0)}
+    mem['castle_jump_y'] = {'step': step_key, 'source': source,
+                            'tick': int(mem.get('tick') or 0)}
+    stalls = None
+    if step_key is not None:
+        stalls = mem.get('castle_jump_stall_failures')
+        stalls = stalls if isinstance(stalls, dict) else {}
+        n = int(stalls.get(step_key) or 0) + 1
+        stalls[step_key] = n
+        mem['castle_jump_stall_failures'] = stalls
+    else:
+        n = 0
+    metric = {'scrolls': jump.get('scrolls'),
+              'stalled': jump.get('scroll_stall'),
+              'rows': [word for _, word in rows]}
+    if stalls is not None:
+        metric['stall_failures'] = n
+    _record(mem, 'castle_jump_y_fallback', chart_step=step_key,
+            target=source, screen=screen.kind, observed_metric=metric,
+            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
+    if step_key is not None and n >= CASTLE_JUMP_ABANDON:
+        # Same retirement as _end_castle_jump's abandon path: without this the
+        # same stalled list is re-opened on every resume with no escape.
+        _plan_region(mem).setdefault('orders', {})[step_key] = 'failed'
+        if (_plan_region(mem).get('active') == step_key):
+            _plan_region(mem)['active'] = None
+        stalls.pop(step_key, None)
+        mem['castle_jump_stall_failures'] = stalls
+        mem.pop('castle_jump_y', None)
+        mem['castle_jump_skip'] = {'step': step_key, 'tick': int(mem.get('tick') or 0)}
+        adjust = mem.get('chart_adjust')
+        if isinstance(adjust, dict):
+            interim = adjust.get('interim_order') or {}
+            if isinstance(interim, dict) and interim.get('step') == step_key:
+                adjust.pop('interim_order', None)
+                steps = adjust.get('interim_steps')
+                if isinstance(steps, dict):
+                    for key, value in list(steps.items()):
+                        if value == step_key:
+                            steps.pop(key)
+                _record(mem, 'chart_interim_abandoned', chart_step=step_key,
+                        observed_metric={'stall_failures': n, 'why': 'scroll_stalled'},
+                        reason='暫定注文の城ジャンプがページ送り停滞で上限に達したため破棄して基本計画へ戻す')
+        _record(mem, 'castle_jump_abandoned', chart_step=step_key,
+                target=source, screen=screen.kind,
+                observed_metric={'stall_failures': n, 'why': 'scroll_stalled'},
+                reason='しろ一覧のページ送り停滞が上限に達したため、この出撃元の注文を諦めて別の城から組み直す')
+    return [pad('b')]
 
 def _jump_successor(mem, order, jump=None):
     """The live order that continues a re-planned jump, or None.
@@ -2577,6 +2647,16 @@ def map_step(screen: Screen, mem, frame):
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
         _forget_failed_jump(mem, order['step'])
+        # A restarted attempt gets a fresh destination placement. A receipt
+        # left by the previous attempt would confirm the new picker's marker
+        # on the old cell without a jump (the rearm path after an interrupted
+        # sortie does not pass through the resumed-picker cleanup).
+        for key in ('y_jumped', 'y_jumped_res'):
+            bucket = mem.get(key)
+            if isinstance(bucket, dict):
+                bucket.pop(order['step'], None)
+        if (mem.get('near_goal') or {}).get('step') == order['step']:
+            mem.pop('near_goal', None)
         mem.pop('castle_verified', None)
         if order.get('source_probe') is True:
             mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
@@ -2695,6 +2775,24 @@ def map_step(screen: Screen, mem, frame):
     return _deploy_input(screen, mem, order, result, '出撃元の城へカーソルを移動')
 
 
+def _target_confirm_actions(mem, order):
+    """Confirm the sortie target; chapter 9's オシロガ steps up once first.
+
+    Owner 2026-11-24: the オシロガ sortie still caught the cliff even after
+    the aim was shifted; pressing UP once immediately before the confirming A
+    lands the march on the passable cell above it.
+    """
+    if ((mem.get('chapter') or 0) == 9 and order.get('target') == 'オシロガ'):
+        seen = _flow(mem).setdefault('ch9_oshiroga_confirm', {})
+        if not seen.get(order['step']):
+            seen[order['step']] = True
+            _record(mem, 'ch9_oshiroga_confirm_up', chart_step=order['step'],
+                    target=order['target'],
+                    reason='オシロガの出撃確定直前に↑を1回押して崖を避ける')
+            return [pad('up'), pad('a')]
+    return [pad('a')]
+
+
 def target_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
         return []
@@ -2704,15 +2802,36 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    attempt = _flow(mem).get('sortie_attempt')
+    if (isinstance(attempt, dict) and attempt.get('step') == order['step']
+            and attempt.get('battle_interrupt')):
+        # The battle that cut the target selection left its marker where the
+        # game restored it. A confirmation receipt from before that fight is
+        # not evidence about this screen: unless a fresh target jump placed the
+        # marker after the interruption, drop the old placement so the jump
+        # below runs again. The jump lands on the measured cell and the marker
+        # is read from that fresh placement.
+        interrupt_tick = attempt.get('battle_interrupt_tick')
+        placed_tick = (mem.get('y_jump_target_confirmed') or {}).get('tick')
+        freshly_placed = (type(interrupt_tick) is int and type(placed_tick) is int
+                          and placed_tick >= interrupt_tick)
+        attempt.pop('battle_interrupt', None)
+        attempt.pop('battle_interrupt_tick', None)
+        if not freshly_placed:
+            forget_target_placement(mem, order['step'])
+            _record(mem, 'sortie_target_rejump', chart_step=order['step'],
+                    target=order['target'], screen=screen.kind,
+                    reason='戦闘割り込みで出撃先マーカーが復元されたため、割り込み前の到達記録を捨ててYジャンプをやり直す')
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
             and (_plan_region(mem).get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
         _flow(mem).pop('sortie_attempt', None)
-        return _hold_guarded_sortie(mem, order, 'boss_companion_required',
-            '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
-            {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
+        if not _boss_companion_wait_expired(mem, order):
+            return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+                '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
+                {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
@@ -2762,7 +2881,10 @@ def target_step(screen: Screen, mem, frame):
                     screen=screen.kind, reason='全体マップで選んだ出撃先の近くに屋根が無いため全体マップを開き直す')
     if (result is None and screen.marker and not y_jump_unreachable(mem, order['target'])
             and _want_y_jump(mem, order, order['target'], 'target')):
-        return _start_y_jump(mem, order, order['target'], 'target')
+        # Carry the same measured cell the walking path uses (route offsets
+        # included) into the Y view. A fresh jump after a battle must not
+        # silently fall back to the bare castle cell.
+        return _start_y_jump(mem, order, order['target'], 'target', goal_cell=goal)
     if result is None:
         if (chart.is_boss_castle(order['target'])
                 and (mem.get('y_jumped') or {}).get(order['step']) == order['target']):
@@ -2827,7 +2949,7 @@ def target_step(screen: Screen, mem, frame):
                 **context, target=order['target'],
                 resulting_event='planned_not_yet_sent',
                 reason=f"{context['general']}を{order['target']}へ出撃するAを要求。送信・受理・出発は未確認のまま在城事実を消さない")
-        return [pad('a')]
+        return _target_confirm_actions(mem, order)
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
 

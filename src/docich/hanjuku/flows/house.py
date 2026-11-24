@@ -114,6 +114,13 @@ def _entry_exit(mem, reason, code, entry=None):
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
+# The general status page is reopened/held by the roster walk; the orchestrator
+# now stands down its orphan B while this flow is the owner
+# (status_panel.status_panel_owner_active).  A panel that cannot be read as the
+# selected general must therefore leave after a bounded number of observations
+# with B instead of spending the whole STEP_LIMIT as no-input holds.  Matches
+# post_month_status.STATUS_RETRIES (12).
+STATUS_READ_LIMIT = 12
 # Expected cells of the empty-inventory receipt that may be hidden under the
 # source castle's sprite (g1163 2026-11-11 いちじょうだに needs 1).
 SORTIE_PANEL_OCCLUDED = 2
@@ -1317,21 +1324,34 @@ def step(screen, mem, frame):
     never accepts input is left (``house_idle_escape``) instead of spinning.
     """
     state = mem.get('house')
-    from .boss_pursuit import wave_active
+    # Do not import/evaluate the chapter-9 predicate for unrelated chapters or
+    # when the house flow does not own a boss-deferable phase. Apart from
+    # avoiding needless work, this keeps the normal policy facade's chart
+    # rebinding contract intact (docich#5170 CI regression).
     if (isinstance(state, dict) and mem.get('chapter') == 9
-            and wave_active(mem)
-            and isinstance(mem.get('boss_cell'), dict)
             and state.get('phase') in HOUSE_BOSS_DEFER_PHASES):
-        # The house's egg/roster walk owns the map for dozens of observations
-        # while the boss waves camp (live g1288 2026-11-20 09:2x: five waves,
-        # house roster_next, no pursuit). Leave the scan; the next month/reason
-        # re-arms it after the waves settle.
-        mem.pop('house', None)
-        _record(mem, 'scan_deferred_for_boss',
-                observed_metric={'phase': state.get('phase'),
-                                 'roster_month': state.get('roster_month')},
-                reason='ボス波が飛んでいるため卵・名簿スキャンを保留し、フィールドをボス追撃へ明け渡す')
-        return None
+        from .boss_pursuit import wave_active
+        from .recall import boss_phase
+        # docich#5170 (owner 2026-11-23): the whole boss phase (every road castle
+        # ours, the moving boss the only target) must be free for the boss sortie.
+        # Waiting for an active wave left the monthly roster scan owning the field
+        # for the entire phase (live: 600 s / 4250 observations, zero battles).
+        boss_phase_now = boss_phase(mem)
+        if (boss_phase_now
+                or (wave_active(mem) and isinstance(mem.get('boss_cell'), dict))):
+            # The house's egg/roster walk owns the map for dozens of observations
+            # while the boss waves camp (live g1288 2026-11-20 09:2x: five waves,
+            # house roster_next, no pursuit). Leave the scan; the next month/reason
+            # re-arms it after the waves settle.
+            mem.pop('house', None)
+            _record(mem, 'scan_deferred_for_boss',
+                    observed_metric={'phase': state.get('phase'),
+                                     'roster_month': state.get('roster_month'),
+                                     'boss_phase': boss_phase_now},
+                    reason=('ボス戦の段階（全街道城が自軍）のため卵・名簿スキャンを保留し、'
+                            'フィールドをボス追撃へ明け渡す' if boss_phase_now else
+                            'ボス波が飛んでいるため卵・名簿スキャンを保留し、フィールドをボス追撃へ明け渡す'))
+            return None
     actions = _step_chain(screen, mem, frame)
     state = mem.get('house')
     if state is None:
@@ -1865,7 +1885,7 @@ def _step_once(screen, mem, frame):
             if actions == [pad('a')]:
                 state['selected'] = target
                 _capture_selection_marker(state, mem, frame, target)
-                _phase(state, 'status')
+                _phase(state, 'status', status_reads=0)
             elif actions:
                 from ..os_layer.commands import roster_list_batch
                 actions = roster_list_batch(screen, target) or actions
@@ -1880,12 +1900,26 @@ def _step_once(screen, mem, frame):
             return [pad('b')]
         state['selected'] = selected
         _capture_selection_marker(state, mem, frame, selected)
-        _phase(state, 'status')
+        _phase(state, 'status', status_reads=0)
         return [pad('a')]
     if phase == 'status':
         info = _observe_status(screen, mem)
         if not info or info['general'] != state.get('selected'):
+            reads = int(state.get('status_reads') or 0) + 1
+            state['status_reads'] = reads
+            if reads >= STATUS_READ_LIMIT:
+                # The orphan close now yields this page to us, so an unreadable
+                # or wrong general must still end in a real B (one observation,
+                # not a STEP_LIMIT of no-input holds with the panel held open).
+                _record(mem, 'status_unreadable',
+                        observed_metric={'reads': reads, 'limit': STATUS_READ_LIMIT,
+                                         'selected': state.get('selected'),
+                                         'screen': screen.kind},
+                        reason='一覧から開いた本人ステータスを読めないため卵修理の観察を有限に終了')
+                _exit(mem, '本人ステータスを読めないまま観察上限に達したため入力を止める')
+                return [pad('b')]
             return []
+        state.pop('status_reads', None)
         name = info['general']
         _tally_open_once(mem, state, 'partial' if state.get('from_survey') else 'full', info)
         receipts.wage(mem, info)
