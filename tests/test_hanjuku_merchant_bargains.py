@@ -50,6 +50,28 @@ def test_mickey_is_bought_before_the_cheaper_kuusukan(ready):
     assert ready['shop']['items'][0][0] == 'ミックミー'
 
 
+def test_the_half_price_cart_buys_a_listed_target_with_unread_stock(ready):
+    # ch4's card census aborts (observation_limit), so a never-owned kind stays
+    # unknown and ミックミー could never be bought. At the half-price cart a real
+    # listing is price evidence, and the ask stays bounded by the target.
+    ready['card_stock'].pop('ミックミー')
+    ready['shop']['cheap_vendor'] = True
+    rows = (('ミックミー', 20),)
+    b.plan_bargains(ready, ready['shop'], listing(gold=300, rows=rows).header,
+                    listed=dict(rows))
+    assert ['ミックミー', 2] in ready['shop']['items']
+
+
+def test_an_ordinary_merchant_still_leaves_unread_stock_alone(ready):
+    # The 2026-11-22 rule stays for the monthly merchant: only the half-price
+    # cart may ask for a kind whose count was never read.
+    ready['card_stock'].pop('ミックミー')
+    rows = (('ミックミー', 40),)
+    b.plan_bargains(ready, ready['shop'], listing(gold=300, rows=rows).header,
+                    listed=dict(rows))
+    assert not any(name == 'ミックミー' for name, _ in ready['shop']['items'])
+
+
 def test_bargain_order_covers_every_target():
     assert set(b.BARGAIN_ORDER) == set(b.BARGAIN_TARGETS)
 

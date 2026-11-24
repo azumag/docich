@@ -8117,6 +8117,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1456-password-phrase-ocr",
             "hanjuku-chart-v1457-empty-kit-cancel",
             "hanjuku-chart-v1458-merchant-mickey-priority",
+            "hanjuku-chart-v1459-merchant-listed-unknown",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",

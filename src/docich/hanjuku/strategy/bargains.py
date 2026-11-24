@@ -447,10 +447,21 @@ def plan_bargains(mem, shop, header, *, listed=None):
             if name in queued or (name in bought and not cheap_pass):
                 continue  # chart quantities and already-attempted purchases stay untouched
             count = held(mem, name)
-            if count is None:
-                # Unknown stock is not 0: asking 99 from a guess is exactly the
-                # refusal loop this ledger replaces (owner 2026-11-22).
-                continue
+            unknown_stock = count is None
+            if unknown_stock:
+                if listed is None or not (cheap_pass or shop.get('cheap_vendor')):
+                    # Without a real listing there is no price evidence; asking
+                    # from an invented 0 is the refusal loop the ledger replaces
+                    # (owner 2026-11-22). An ordinary merchant keeps that rule.
+                    continue
+                # Owner 2026-11-24: at the half-price cart (中華の行商人) a
+                # listed target with unread stock is bought up to its monthly
+                # target. ch4's card census is disabled (observation_limit), so
+                # a kind never owned stays unknown and ミックミー could never be
+                # bought at all. The ask stays bounded by BARGAIN_TARGETS;
+                # ordinary merchants and spare-cash guesses still never buy an
+                # unknown count.
+                count = 0
             seen_basis[name] = count
             target = target * factor
             price = KNOWN_PRICES[name] if listed is None else listed.get(name)
@@ -461,7 +472,11 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 # Owner (2026-11-05): 目標在庫に達していても、チャートに関係なく
                 # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
                 need = copy_cap
-            qty = min(need, copy_cap - copies, budget // price, hold_room(mem, name))
+            room = (BARGAIN_TARGETS[name] if unknown_stock
+                    else hold_room(mem, name))
+            if room is None:
+                continue
+            qty = min(need, copy_cap - copies, budget // price, room)
             if qty:
                 added.append([name, qty])
                 budget -= qty * price
