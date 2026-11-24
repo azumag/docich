@@ -102,7 +102,13 @@ def test_adopted_attack_to_an_owned_target_is_rejected_outside_road_chapters():
     mem = {'chapter': 1, 'captured': [], 'home_lost': False}
     target = chart.home_castle(1)  # the home castle is owned without a captured row
     attack = {'step': 'I:attack:owned-home', 'target': target, 'purpose': 'attack'}
-    assert not routes.order_allowed(mem, attack, '任意の出撃元')
+    assert not routes.order_allowed(mem, attack, target)
+
+    enemy = next(c for c in chart.castles(1) if c != target)
+    unowned_source = {'step': 'I:attack:unowned-source', 'target': enemy, 'purpose': 'attack'}
+    assert not routes.order_allowed(mem, unowned_source, '未所有の城')
+    valid_attack = {'step': 'I:attack:valid-nonroad', 'target': enemy, 'purpose': 'attack'}
+    assert routes.order_allowed(mem, valid_attack, target)
 
     # Non-road chapters still have no route-geometry restriction for a move.
     move = {'step': 'I:move:owned-home', 'target': target, 'purpose': 'move'}
