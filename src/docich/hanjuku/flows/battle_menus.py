@@ -18,7 +18,8 @@ from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, 
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
-                               _behind, _boss_tactics_allowed, _card_damage_gate, _card_gate_alternatives, _card_gate_choice,
+                               _behind, _boss_tactics_allowed, _card_damage_gate,
+                               _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
                                DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, DEFENSE_MENU_READ_LIMIT,
                                EGG_WALL_DAMAGE, SUMMON_SCROLL_BATCH,
@@ -1249,7 +1250,7 @@ CARD_ROW_WALK_AFTER = 2      # held observations before the deterministic walk
 CARD_MENU_TICK_LIMIT = 8     # same bound as before: the walk finishes by tick 5
 
 def _card_usable_in_battle(mem, cur, card):
-    """A boss-only card is eligible only after the measured boss gate opens."""
+    """Match the battle-use gate so forbidden boss cards are not audit misses."""
     return card not in reference.BOSS_ONLY_CARDS or _boss_tactics_allowed(mem, cur)
 
 
