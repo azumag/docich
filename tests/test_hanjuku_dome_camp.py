@@ -99,7 +99,7 @@ def test_a_small_tent_holds_an_unrelated_text_screen_without_spending_steps(monk
 
 
 
-def test_dome_unclassified_text_is_held_then_closed_without_generic_advance():
+def test_dome_unclassified_text_is_held_then_closed_after_bounded_wait():
     mem = {'chapter': 10, 'tick': 100, '_records': []}
     _flow(mem)['recall'] = {
         'stage': 'menu', 'steps': 0, 'camp_kind': 'dome',
