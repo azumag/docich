@@ -1904,6 +1904,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1420-chikujou-reserve-check",
                  "hanjuku-chart-v1424-sortie-measured-kit",
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
+                 "hanjuku-chart-v1485-camp-watch-identity-subset",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

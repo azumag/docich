@@ -204,7 +204,8 @@ class BotExitDiagnosticTest(unittest.TestCase):
                                 "キッシュ": {"last_month": "8-6", "months": 8}}}}),
                 encoding="utf-8")
             state = {}
-            hint = bot._apply_camp_watch_hint(state, runtime, {"hanjuku": identity})
+            hint = bot._apply_camp_watch_hint(
+                state, runtime, {"hanjuku": {**identity, "observation_id": "extra-meta"}})
             self.assertEqual(hint["generals"], {"キッシュ": 8})
             # decide() copies only state['policy']; the hint must live there.
             self.assertEqual(state["policy"]["camp_watch_hint"]["generals"],
