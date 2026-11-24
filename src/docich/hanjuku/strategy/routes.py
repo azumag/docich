@@ -73,7 +73,7 @@ def order_allowed(mem, order, source):
     # An adopted attack must still target an enemy castle at the moment it
     # commits, even in chapters without a measured road graph. A stale plan
     # cannot turn a newly captured castle into an attack.
-    if order.get('purpose') == 'attack' and target in owned:
+    if order.get('purpose') == 'attack' and (source not in owned or target in owned):
         return False
     if not is_road(mem.get('chapter')):
         return True
