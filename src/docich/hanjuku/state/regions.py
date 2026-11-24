@@ -43,6 +43,8 @@ KEY_OWNERSHIP = {
     'omedetori_cycle_menu': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},
     'camp_battle_tick': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 戦闘中断の記録間隔(v815)
     'departure_miss':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    # Released sent-request cycles before a departure failure may settle the order.
+    'departure_sent_miss': {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
     # --- 出撃 ExecutionJournal (段階1: migrated) ---
     '_departure_input':  {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
     # --- 出撃 FlowSession (段階2へ宣言) ---
