@@ -44,6 +44,7 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
 
 
 CARD_SCROLL_HOLD_MAX = 8        # rows one burst scroll may cross (#4884)
+EMPTY_PLANNED_KIT_RETRY_LIMIT = 1  # empty confirmation gets one fresh card-selection attempt (#5353)
 RARE_REWIND_STEPS = 4           # rows one rewind observation may return
 
 
@@ -1785,6 +1786,83 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
     return [pad('b'), pad('b')]
 
 
+def _planned_sortie_kit(order, mem):
+    """The kit the plan intended before per-attempt drops and misses."""
+    step = order.get('step')
+    rare = (mem.get('rare_card_kit') or {}).get(step)
+    if rare is not None:
+        return list(rare)
+    overrides = _plan_region(mem).get('card_override') or {}
+    planned = list(overrides.get(step, order.get('cards') or ()) or ())
+    strong = (mem.get('strong_card_kit') or {}).get(step)
+    dropper = _extra_card_name((mem.get('dropper_card_kit') or {}).get(step))
+    for card in (strong, dropper):
+        if card and card not in planned:
+            planned.append(card)
+    return planned
+
+
+def _requires_nonempty_sortie_kit(order, mem, want):
+    """Only ordinary sorties with an intended kit may not depart empty."""
+    if (order.get('purpose') == 'move' or order.get('source_probe')
+            or order.get('roster_probe') or _is_boss_order(order, mem)):
+        return False
+    return bool(_planned_sortie_kit(order, mem) or want)
+
+
+def _clear_empty_kit_retry_state(mem, step):
+    for key in ('card_drop', 'card_scroll', 'card_unreadable', 'card_skip_departure',
+                'sortie_confirm_miss', 'sortie_confirm_blind'):
+        bucket = mem.get(key)
+        if isinstance(bucket, dict):
+            bucket.pop(step, None)
+    misses = mem.get('card_miss')
+    if isinstance(misses, dict):
+        prefix = f'{step}:'
+        for key in list(misses):
+            if isinstance(key, str) and key.startswith(prefix):
+                misses.pop(key, None)
+    for key in ('card_zero_at_start', 'card_scroll_last', 'card_upper_boundary'):
+        value = mem.get(key)
+        if isinstance(value, dict) and value.get('step') == step:
+            mem.pop(key, None)
+
+
+def _reject_empty_planned_kit(screen, mem, order, want, carried, inventory_evidence):
+    """Retry once, then fail closed instead of confirming a planned empty kit."""
+    step = order['step']
+    retries = _plan_region(mem).setdefault('sortie_empty_kit_retries', {})
+    previous = retries.get(step, 0)
+    if type(previous) is not int or previous < 0:
+        previous = 0
+    attempt = previous + 1
+    planned = _planned_sortie_kit(order, mem)
+    expected = planned or list(want or ())
+    dropped = list((mem.get('card_drop') or {}).get(step) or ())[:3]
+    zero = mem.get('card_zero_at_start')
+    zero_cards = list(zero.get('cards') or ())[:3] if isinstance(zero, dict) and zero.get('step') == step else []
+    observed = {'planned': expected, 'carried': carried, 'inventory_evidence': inventory_evidence,
+                'screen': screen.kind, 'attempt': attempt,
+                'retry_limit': EMPTY_PLANNED_KIT_RETRY_LIMIT,
+                'card_drop': dropped, 'card_zero_at_start': zero_cards,
+                'card_unreadable': (mem.get('card_unreadable') or {}).get(step),
+                'card_skip_departure': (mem.get('card_skip_departure') or {}).get(step)}
+    reason = ('計画済み切り札を1枚も実測できないため、空携行での出撃を拒否してカード選択を再試行する'
+              if attempt <= EMPTY_PLANNED_KIT_RETRY_LIMIT else
+              '再試行後も計画済み切り札を1枚も実測できないため、空携行での出撃を拒否して注文を終了する')
+    _record(mem, 'sortie_empty_planned_kit_rejected',
+            **_deploy_context(order, mem, expected_metric=expected),
+            carried=carried, observed_metric=observed, reason=reason)
+    _clear_empty_kit_retry_state(mem, step)
+    if attempt <= EMPTY_PLANNED_KIT_RETRY_LIMIT:
+        retries[step] = attempt
+        return _hold_guarded_sortie(mem, order, 'sortie_empty_kit_retry', reason, observed)
+    retries.pop(step, None)
+    _finish_order(mem, 'failed', deviation_reason='計画済み切り札を携行できないため空携行の出撃を拒否',
+                  observed_metric=observed, reason=reason)
+    return [pad('b'), pad('b')]
+
+
 def _hold_locked_boss(mem, order):
     """Recheck unsent active orders too; retain already-sent reconciliation."""
     status = (_plan_region(mem).get('orders') or {}).get(order['step'])
@@ -2716,6 +2794,20 @@ def deploy_step(screen: Screen, mem, *, frame=None):
         ambiguous = carried is None
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
+        if (_requires_nonempty_sortie_kit(order, mem, want)
+                and (carried is None or not carried)):
+            misses = mem.setdefault('sortie_confirm_miss', {})
+            misses[order['step']] = misses.get(order['step'], 0) + 1
+            limit = (SORTIE_CONFIRM_UNREADABLE_LIMIT if carried is None
+                     else SORTIE_CONFIRM_LIMIT)
+            if misses[order['step']] >= limit:
+                return _reject_empty_planned_kit(screen, mem, order, want, carried,
+                                                 inventory_evidence)
+            return _hold_deploy(screen, mem, order,
+                                '計画済み切り札を1枚も実測できないため空携行での出撃を承認せず保留',
+                                carried=carried,
+                                hold_variant=('planned_kit_unreadable' if carried is None
+                                              else 'planned_kit_empty'))
         if (order.get('corridor') and not want and carried is not None
                 and (_plan_region(mem).get('orders') or {}).get(order['step'])
                 not in {'launched', 'launched_unconfirmed'}):
@@ -2795,6 +2887,7 @@ def deploy_step(screen: Screen, mem, *, frame=None):
         if move is None:
             return _hold_deploy(screen, mem, order, '出撃確認カーソルまたは承認項目を読めないため保留', carried=carried)
         if move == 'here':
+            (_plan_region(mem).get('sortie_empty_kit_retries') or {}).pop(order['step'], None)
             context = _deploy_context(order, mem, expected_metric=want)
             from ..strategy.execution import confirm_departure_order
             from ..os_layer.roster import run_identity
