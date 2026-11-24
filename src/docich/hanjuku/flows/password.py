@@ -23,6 +23,12 @@ v1456 は左下を「未入力の残り語グリッド」、右リストを「�
 
 mem に残すのは往復回数などの上限カウンタとナビゲーションの向きだけで、
 語数・入力順は持たない。途中の語数から再開しても続きを入力できる。
+
+mem は毎観測 ``hanjuku_bot.json`` へ保存され ``json.load`` で復元される。
+そのため保存する値はすべて JSON ネイティブ型 (int/str/list/dict/None) に
+正規化し、比較も同じ正規化を通す。タプルのまま保存すると復元後は list に
+なり、同じ画面なのに「変わった」と誤判定して端判定・hold が壊れる
+(v1458 の実機 E2E: リスト先頭で up を 40 回送って nav_exhausted)。
 """
 from __future__ import annotations
 
@@ -48,6 +54,22 @@ _NAV_FRAMES = 8            # 実測: 押下8フレームで 1 行動く
 _LEGACY_STATE_KEYS = ('dyn_step', 'dyn_search', 'grid_len', 'cycles', 'tops',
                       'idx', 'step', 'advance', 'a_repeat', 'reset_index',
                       'probe_total', 'sweep')
+
+
+def _json_native(value):
+    """Return *value* in the shape it has after a JSON round trip.
+
+    ``mem`` is persisted to ``hanjuku_bot.json`` between observations and
+    restored with ``json.load``: tuples come back as lists. Build every mem
+    key through this function and compare reads through it as well, so the
+    live and restored shapes are identical. Dict keys are stringified because
+    JSON would do the same.
+    """
+    if isinstance(value, dict):
+        return {str(key): _json_native(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_native(item) for item in value]
+    return value
 
 
 def _rows(screen):
@@ -97,8 +119,8 @@ def _list_words_readable(screen):
 
 def _screen_key(screen, st):
     """What the flow saw: a changed picture may release a previous hold."""
-    grey = tuple(sorted(getattr(screen, 'password_list_grey', ()) or ()))
-    return (st.get('entered'), tuple(_rows(screen)), grey)
+    grey = sorted(getattr(screen, 'password_list_grey', ()) or ())
+    return _json_native((st.get('entered'), _rows(screen), grey))
 
 
 def _hold(mem, screen, st, event, reason, metric=None):
@@ -132,10 +154,11 @@ def _navigate(screen, mem, st, rows, sel, target):
     observations are required at an edge so one frame of input latency does
     not look like the end of the list.
     """
-    sig = (sel[0], tuple(rows), tuple(sorted(getattr(screen, 'password_list_grey', ()) or ())))
+    sig = _json_native((sel[0], rows,
+                        sorted(getattr(screen, 'password_list_grey', ()) or ())))
     phase = st.get('nav_phase') or 'top'
     if st.get('nav_pending') is not None:
-        if sig == st.get('nav_sig'):
+        if _json_native(st.get('nav_sig')) == sig:
             st['nav_idle'] = int(st.get('nav_idle') or 0) + 1
         else:
             st['nav_idle'] = 0
@@ -183,7 +206,8 @@ def password_step(screen, mem):
 
     # A held screen stays silent while the picture is identical; a changed
     # screen (a delayed input landing, the list opening) releases the hold.
-    if st.get('held_key') == _screen_key(screen, st):
+    # Compare through _json_native because held_key was restored from JSON.
+    if _json_native(st.get('held_key')) == _screen_key(screen, st):
         return []
     st.pop('held_key', None)
 

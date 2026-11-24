@@ -4,6 +4,7 @@ The flow never resets the game and never presses A on a row it cannot prove:
 it stops after a bounded number of prompt A presses or navigation presses and
 records why it held.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -20,15 +21,31 @@ def screen(name):
     return parse(read_png(FIXTURES / f'hanjuku-password-{name}.png'))
 
 
+def observe(frame, mem):
+    """One production observation including the bot's JSON mem round trip.
+
+    ``hanjuku_bot.json`` restores mem with ``json.load``, so tuples become
+    lists. The equality assert proves only JSON-native values were stored and
+    that they survive the restore unchanged; without it v1458's tuple
+    ``nav_sig``/``held_key`` look different on every observation.
+    """
+    actions = password.password_step(frame, mem)
+    restored = json.loads(json.dumps(mem))
+    assert restored == mem
+    mem.clear()
+    mem.update(restored)
+    return actions
+
+
 def test_a_prompt_that_never_shows_a_list_stops_after_three_a(monkeypatch):
     events = []
     monkeypatch.setattr(password, '_record', lambda _, event, **kw: events.append(event))
     frame = screen('prompt-only')
     mem = {}
     for _ in range(password._PROMPT_A_MAX):
-        assert password.password_step(frame, mem) == [password.pad('a', password._A_FRAMES)]
+        assert observe(frame, mem) == [password.pad('a', password._A_FRAMES)]
     for _ in range(3):
-        assert password.password_step(frame, mem) == []
+        assert observe(frame, mem) == []
     assert events == ['password_entry_list_missing']
 
 
@@ -39,7 +56,7 @@ def test_a_scan_that_never_finds_the_word_holds(monkeypatch):
     # must stop instead of pressing down forever.
     frame = screen('list-bottom-edge')
     mem = {}
-    actions = [password.password_step(frame, mem) for _ in range(8)]
+    actions = [observe(frame, mem) for _ in range(8)]
     assert actions[0] == [password.pad('up', password._NAV_FRAMES)]
     assert actions[4] == []
     assert actions[5:] == [[], [], []]
@@ -51,7 +68,7 @@ def test_the_navigation_round_trip_cap_holds_and_records(monkeypatch):
     monkeypatch.setattr(password, '_record', lambda _, event, **kw: events.append(event))
     mem = {'password_entry': {'last_k': 9, 'entered': 9,
                               'nav_presses': password._NAV_MAX}}
-    assert password.password_step(screen('ninth-entered'), mem) == []
+    assert observe(screen('ninth-entered'), mem) == []
     assert events == ['password_entry_nav_exhausted']
 
 
@@ -60,7 +77,7 @@ def test_a_stale_old_flow_state_is_dropped(monkeypatch):
     mem = {'password_entry': {'dyn_step': 4, 'grid_len': 2, 'cycles': 6,
                               'a_repeat': 4, 'reset_index': 2, 'sweep': 1}}
     # われらが is already entered (k=1); a stale dyn_step must not skip it.
-    assert password.password_step(screen('first-entered'), mem) == [
+    assert observe(screen('first-entered'), mem) == [
         password.pad('up', password._NAV_FRAMES)]
     st = mem['password_entry']
     for key in password._LEGACY_STATE_KEYS:
