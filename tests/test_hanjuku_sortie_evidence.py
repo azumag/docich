@@ -943,6 +943,7 @@ def test_a_planned_kit_with_measured_empty_confirmation_retries_once():
     assert plan['orders'][order['step']] == 'pending'
     assert plan['sortie_empty_kit_retries'][order['step']] == 1
     assert order['step'] not in (mem.get('card_drop') or {})
+    assert (mem.get('sortie_confirm_miss') or {}).get(order['step'], 0) == 0
     assert mem['_records'][-1]['decision'] == 'sortie_empty_kit_retry'
     assert not any(row['decision'] == 'sortie_confirm' for row in mem['_records'])
 
