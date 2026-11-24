@@ -3,6 +3,7 @@ from docich.hanjuku.orchestrator import (
     EVENT_TEXT_ADVANCE_MAX,
     event_text_advance,
     event_text_advance_step,
+    _dome_camp_menu_text_owned,
 )
 
 
@@ -170,3 +171,26 @@ def test_advancing_an_unrelated_event_restarts_the_chikujou_transition_wait():
         ]
         assert results[-1] is True
         assert mem['month_sub']['build_wait'] == 0
+
+
+
+def test_active_dome_recall_owns_unclassified_text_but_not_other_screens():
+    recall = {'stage': 'menu', 'camp_kind': 'dome'}
+    assert _dome_camp_menu_text_owned(recall, True, 'text')
+    assert _dome_camp_menu_text_owned(recall, True, 'unknown')
+    assert not _dome_camp_menu_text_owned(recall, False, 'text')
+    assert not _dome_camp_menu_text_owned(
+        {'stage': 'menu', 'camp_kind': 'tent'}, True, 'text')
+    assert not _dome_camp_menu_text_owned(
+        {'stage': 'fort_menu', 'camp_kind': 'dome'}, True, 'text')
+    assert not _dome_camp_menu_text_owned(recall, True, 'map')
+
+
+def test_dome_recall_text_never_uses_the_generic_event_a():
+    recall = {'stage': 'menu', 'camp_kind': 'dome'}
+    guarded = _dome_camp_menu_text_owned(recall, True, 'text')
+    mem = {}
+    for _ in range(EVENT_TEXT_ADVANCE_MAX + 2):
+        assert event_text_advance_step(
+            mem, 'event', 'text', 'text:せめこまれました', [], guarded) is False
+    assert 'event_text_watch' not in mem
