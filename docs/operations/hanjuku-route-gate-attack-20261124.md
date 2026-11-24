@@ -27,5 +27,4 @@ trusting stale route evidence from an adopted plan.
 
 `tests/test_hanjuku_castle_routes.py` covers both a registered-endpoint
 diagonal attack that must be held and a measured road-leg attack that must
-continue, plus source/target ownership changes after planning. The current
-marker is `hanjuku-chart-v1439-attack-route-revalidation`; diagnostics retains the historical v1435 marker.
+continue, plus source/target ownership changes after planning. The current marker is `hanjuku-chart-v1453-attack-route-revalidation`; diagnostics allowlists the historical v1450 marker and this v1453 marker.
