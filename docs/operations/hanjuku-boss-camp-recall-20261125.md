@@ -68,6 +68,18 @@
 - 関連: `test_hanjuku_post_month_status.py`, `test_hanjuku_camp_proof_binding.py`,
   `test_hanjuku_retreat_recheck.py`, 帰還系テスト。
 
+## 追補（v1478）
+
+配備後の実測で次の2点を確認し、追補した。
+
+- 監査 hint は `state['camp_watch_hint']` に置いていたが、`decide` が
+  `state['policy']` だけを渡すため policy から見えていなかった。hint を
+  `policy['camp_watch_hint']` に置く。
+- 月次タスクの帰還で位置が測定できず、自軍城が複数ある場合
+  `_recall_goal` が None を返し、ピッカーの fallback が野営地点で確定して
+  「移動なし」を dispatched として記録していた（キッシュ 01:11）。
+  `task_recall` のときは、主人公の城が一意でなければ章の本城（所有城）へ
+  フォールバックする。通常の野営帰還の保守的な None は変えない。
 ## 未確認・残件
 
 - 配備後の実機で、次の月次タスクが `recall（帰還）` になり、キッシュが

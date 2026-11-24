@@ -627,16 +627,23 @@ def _note_exception_fault(scope, exc, where):
 
 
 def _apply_camp_watch_hint(state, runtime, meta):
-    """Attach the monthly audit's bounded camp-month evidence to the state."""
+    """Attach the monthly audit's bounded camp-month evidence to the policy.
+
+    ``decide`` copies only ``state['policy']`` into the policy memory, so a
+    top-level key was never visible to ``_count_boss_camps`` (live v1477).
+    """
+    policy = state.get('policy')
+    if not isinstance(policy, dict):
+        policy = state['policy'] = {}
     try:
         hint = month_audit.camp_watch_hint(
             runtime, identity=(meta.get('hanjuku') if isinstance(meta, dict) else None))
     except Exception:
         hint = None
     if hint:
-        state['camp_watch_hint'] = hint
+        policy['camp_watch_hint'] = hint
     else:
-        state.pop('camp_watch_hint', None)
+        policy.pop('camp_watch_hint', None)
     return hint
 
 

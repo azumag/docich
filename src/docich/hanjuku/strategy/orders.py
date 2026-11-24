@@ -2852,6 +2852,17 @@ def _recall_goal(mem, flags=None):
             c, sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1)) for o in positions))) if owned else None
     if hero_castle:
         return hero_castle
+    if state.get('task_recall'):
+        # A monthly task is an explicit return instruction: never leave the
+        # destination unresolved. With no measured position and no unique
+        # hero castle the old tail returned None, the picker fallback then
+        # confirmed the camp itself and recorded a non-move as dispatched
+        # (live g1342 2026-11-25 01:11, キッシュ). Any owned castle is a
+        # better destination than staying camped; prefer the chapter's home.
+        home = chart.home_castle(chapter)
+        if home in owned:
+            return home
+        return owned[0] if owned else None
     return owned[0] if len(owned) == 1 else None
 def _fort_recall_goal(mem, state):
     """The nearest own castle to the 砦, by whichever position is measured.
