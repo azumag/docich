@@ -1636,6 +1636,15 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    for marker in (
+        'hanjuku-chart-v1464-status-panel-owner-followups',
+        'hanjuku-chart-v1465-unowned-screen-review-guards',
+        'hanjuku-chart-v1466-status-panel-owner-name',
+        'hanjuku-chart-v1467-status-panel-owner-unreadable-egg',
+        'hanjuku-chart-v1468-departure-request-ownership',
+    ):
+        state['bot_version'] = marker
+        assert module._project_corner_state(state)['bot_version'] == marker
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
