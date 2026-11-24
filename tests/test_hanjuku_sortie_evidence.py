@@ -929,6 +929,55 @@ def test_a_readable_but_mismatched_kit_is_approved_after_bounded_readings():
     assert [r['decision'] for r in mem['_records'][-2:]] == ['sortie_kit_mismatch', 'sortie_confirm']
 
 
+def test_a_planned_kit_with_measured_empty_confirmation_retries_once():
+    mem = _c2_memory()
+    order = policy._order(mem)
+    assert order['cards']
+    mem['card_drop'] = {order['step']: list(order['cards'])}
+    screen = measured_empty_sortie()
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    actions = policy.deploy_step(screen, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    plan = policy._plan_region(mem)
+    assert plan['orders'][order['step']] == 'pending'
+    assert plan['sortie_empty_kit_retries'][order['step']] == 1
+    assert order['step'] not in (mem.get('card_drop') or {})
+    assert mem['_records'][-1]['decision'] == 'sortie_empty_kit_retry'
+    assert not any(row['decision'] == 'sortie_confirm' for row in mem['_records'])
+
+
+def test_a_planned_kit_still_empty_after_retry_fails_instead_of_departing():
+    mem = _c2_memory()
+    order = policy._order(mem)
+    mem['card_drop'] = {order['step']: list(order['cards'])}
+    screen = measured_empty_sortie()
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT):
+        actions = policy.deploy_step(screen, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    plan = policy._plan_region(mem)
+    plan['active'] = order['step']
+    plan['orders'][order['step']] = 'pending'
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    actions = policy.deploy_step(screen, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert plan['orders'][order['step']] == 'failed'
+    assert order['step'] not in plan.get('sortie_empty_kit_retries', {})
+    assert mem['_records'][-1]['decision'] == 'order_failed'
+
+
+def test_an_unreadable_confirmation_does_not_blind_approve_a_planned_kit():
+    mem = _c2_memory()
+    screen = menu('sortie_confirm', ['うむッ!'], hand=False)
+    for _ in range(policy.SORTIE_CONFIRM_UNREADABLE_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    actions = policy.deploy_step(screen, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_empty_kit_retry'
+    assert not any(row['decision'] == 'sortie_confirm_blind_approve' for row in mem['_records'])
+
+
 def test_an_unreadable_sortie_confirmation_approves_once_then_cancels():
     """Owner 2026-11-10: an unreadable departure confirmation departs anyway.
 
@@ -936,6 +985,8 @@ def test_an_unreadable_sortie_confirmation_approves_once_then_cancels():
     the blind A did nothing, so the existing cancel path takes over.
     """
     mem = _c2_memory()
+    # The legacy blind-approve policy remains for explicitly cardless orders.
+    policy._plan_region(mem).setdefault('card_override', {})['1-C2'] = []
     screen = menu('sortie_confirm', ['うむッ!'], hand=False)
     for _ in range(policy.SORTIE_CONFIRM_UNREADABLE_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
