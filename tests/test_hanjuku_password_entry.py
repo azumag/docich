@@ -51,6 +51,20 @@ def test_dynamic_moves_toward_a_visible_phrase_word():
     assert password.password_step(screen, mem) == [password.pad('up')]
 
 
+def test_dynamic_finishes_a_partial_attempt_in_phrase_order():
+    from docich.hanjuku.flows import password
+    mem = {}
+    screen = _screen(ROWS, 23)
+    # われらが was already consumed by the earlier fixed-index attempt;
+    # the next remaining phrase word is かんじゅく, even though it is offscreen.
+    screen.text = (
+        'パスワードヲジュンバンニイレテクダサイ。'
+        'かんじゅくせいめいたいのいだいなるははエッグママの'
+        'きゅうでんオヴァリウムよわれをみちびけ'
+    )
+    assert password.password_step(screen, mem) == [password.pad('down')]
+
+
 def test_dynamic_scrolls_when_the_word_is_off_screen():
     from docich.hanjuku.flows import password
     mem = {'password_entry': {'dyn_step': 1}}   # want かんじゅく, not visible
