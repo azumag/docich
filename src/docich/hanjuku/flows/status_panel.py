@@ -47,7 +47,10 @@ def status_panel_owner_active(mem, screen):
     if isinstance(state, dict) and state.get('stage') == 'status':
         # The same scope/identity check that makes post_month_status.step drop
         # a stale or foreign scan.  A leftover state must not suppress the B.
-        if post_month_status.state_is_current(mem, state):
+        target = state.get('selected')
+        if (post_month_status.state_is_current(mem, state)
+                and isinstance(target, str) and target
+                and house.general_status_name(screen) == target):
             return True
 
     house_state = mem.get('house')
@@ -80,7 +83,10 @@ def status_panel_owner_active(mem, screen):
     probe = mem.get('boss_pursuit')
     if (isinstance(probe, dict) and mem.get('chapter') == 9
             and probe.get('fort_stage') == 'status'):
-        # The 砦's status card: A here opens the destination picker, so the
-        # generic B must not close it.  The flow's own 40-read cap ends it.
-        return True
+        # The 砦's status card belongs to this pursuit only when its named
+        # general matches the one selected from the fort roster.
+        target = probe.get('general')
+        if (isinstance(target, str) and target
+                and house.general_status_name(screen) == target):
+            return True
     return False
