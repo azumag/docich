@@ -11,6 +11,12 @@ These tests drive ``docich.hanjuku_bot.decide`` (the dispatcher), not just the
 flow, and use the exact frames saved by the isolated probe. policy is JSON
 round-tripped between observations, and policy.battle keeps the live stale
 エストラゴン/カシス context so the egg preempt cannot scroll the box back down.
+
+The follow-up reproduced the second silent stop on a real enemy-general
+command menu (g747): its rows sit in the left column (x=40) and the player's
+up is ignored.  A stale actor must not start the human scroll there, and an
+exhausted episode must release the frame within a bounded hold instead of
+returning [] forever.
 """
 from __future__ import annotations
 
@@ -158,3 +164,107 @@ def test_the_whole_walk_never_sends_b_or_down_with_stale_policy():
     assert ['down'] not in flat
     assert flat[-1] == ['a']
     assert not any(r.get('decision') == 'battle_okunote_summon_scroll' for r in records)
+
+
+ENEMY_COMMAND_FRAME = 'g747-enemy-command-1310.png'
+
+
+def observe_png(name, state, records):
+    """One dispatcher observation from an arbitrary fixture PNG."""
+    actions, updated = decide(read_png(FIXTURES / name).resized(), state,
+                              run_identity=IDENTITY)
+    records.extend(updated.get('_records') or [])
+    next_state = {key: value for key, value in updated.items()
+                  if key not in ('_records', '_experience')}
+    next_state['policy'] = json.loads(json.dumps(next_state['policy']))
+    return [list(a.get('buttons') or []) for a in actions
+            if isinstance(a, dict)], next_state
+
+
+def test_enemy_general_left_column_with_stale_context_is_not_a_human_scroll():
+    # Real g747 frame: the enemy general's command menu is in the left column
+    # (x=40) and ignores the player's up/down.  The stale policy.battle ally
+    # (エストラゴン) is not the panel's ally (てつじん8ごう), but that alone
+    # must not turn this box into the human five-item list.
+    records = []
+    actions, st = observe_png(ENEMY_COMMAND_FRAME, state(guard_downs=0), records)
+    assert actions == [], actions
+    assert 'human_command_scroll' not in st['policy']['battle']
+    assert [r['decision'] for r in records] == ['enemy_general_menu_wait']
+    assert not any('scroll' in str(r.get('decision')) for r in records)
+
+
+def test_enemy_left_column_never_holds_a_persisted_episode():
+    # Even if an older observation had started the episode, the first live
+    # enemy frame releases it instead of spending six no-op ups and holding.
+    records = []
+    st = state(guard_downs=0)
+    st['policy']['battle']['human_command_scroll'] = {
+        'active': True, 'ups': 3, 'observations': 3, 'actor': 'てつじん8ごう'}
+    actions, st = observe_png(ENEMY_COMMAND_FRAME, st, records)
+    assert actions == [], actions
+    assert 'human_command_scroll' not in st['policy']['battle']
+    assert records[0]['decision'] == 'battle_menu_scroll_released'
+
+
+def test_exhausted_episode_releases_within_bounded_observations():
+    # A persisted exhausted episode may hold only HUMAN_COMMAND_SCROLL_
+    # EXHAUSTED_HOLD observations and then returns the frame to its owner.
+    # The old code returned [] on every subsequent observation.
+    from docich.hanjuku.flows.battle_menus import HUMAN_COMMAND_SCROLL_EXHAUSTED_HOLD
+    records = []
+    st = state()
+    st['policy']['battle']['human_command_scroll'] = {
+        'active': True, 'ups': 6, 'observations': 6, 'actor': 'アテナ',
+        'exhausted': True}
+    sent = []
+    released = False
+    for _ in range(HUMAN_COMMAND_SCROLL_EXHAUSTED_HOLD + 2):
+        actions, st = observe('bottom', st, records)
+        sent.extend(actions)
+        if 'human_command_scroll' not in st['policy']['battle']:
+            released = True
+        if sent:
+            break
+    assert released
+    assert any(r['decision'] == 'battle_menu_scroll_released' for r in records)
+    assert sent, 'an input must come out within the bounded hold'
+
+
+def test_changed_ally_releases_the_old_actor_and_scopes_the_new_episode():
+    # The live panel is アテナ; an episode remembered under a different general
+    # cannot keep ownership.  The same five-item frame is then owned by アテナ.
+    records = []
+    st = state()
+    st['policy']['battle']['human_command_scroll'] = {
+        'active': True, 'ups': 3, 'observations': 3, 'actor': '別の将軍'}
+    actions, st = observe('bottom', st, records)
+    assert actions == [['up']], actions
+    assert records[0]['decision'] == 'battle_menu_scroll_released'
+    marker = st['policy']['battle']['human_command_scroll']
+    assert marker['actor'] == 'アテナ'
+
+
+def test_leaving_the_battle_menu_clears_the_episode():
+    records = []
+    st = state()
+    st['policy']['battle']['human_command_scroll'] = {
+        'active': True, 'ups': 2, 'observations': 2, 'actor': 'アテナ'}
+    actions, st = observe_png('g1075-barmiseri-attack-dialogue.png', st, records)
+    assert 'human_command_scroll' not in st['policy']['battle']
+    assert any(r['decision'] == 'battle_menu_scroll_released' for r in records)
+
+
+def test_cursor_row_text_joins_split_spans_but_ignores_the_left_column():
+    from docich.hanjuku.flows.battle_menus import _cursor_row_text
+    from docich.hanjuku_font import TextLine
+    from docich.hanjuku_screen import Screen
+
+    split = Screen([TextLine(176, ((176, 'こう'), (200, 'げき')))], None, 'こうげき')
+    split.menu_rows = list(split.lines)
+    split.menu_cursor = 176
+    assert _cursor_row_text(split) == 'こうげき'
+    left = Screen([TextLine(176, ((40, 'こうげき'),))], None, 'こうげき')
+    left.menu_rows = list(left.lines)
+    left.menu_cursor = 176
+    assert _cursor_row_text(left) is None
