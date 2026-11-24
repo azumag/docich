@@ -3753,6 +3753,9 @@ def render(record):
             f" / 対象: {sortie_cards.get('target') or '不明'}",
             f"- 在庫: {sortie_cards.get('inventory')} / 携行: なし"
             f" / 計画cards: {sortie_cards.get('planned_cards')}",
+            *(["- 型: 計画はあるが携行できていない（デプロイの選択・確認の失敗）"]
+               if sortie_cards.get('planned_cards') else
+               ["- 型: 計画が空（自動携行の対象・v1448 以降）"]),
             f"- 決定: {sortie_cards.get('decision')} / 理由: {sortie_cards.get('reason') or '不明'}",
             '',
         ]
