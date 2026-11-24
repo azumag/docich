@@ -2683,7 +2683,10 @@ def egg_battle_step(screen: Screen, mem):
         own_attack_menu = (general_reading is not None
                            and battle.get('side') == 'attack'
                            and enemy_summon_menu
-                           and 'こうげき' in (screen.text or ''))
+                           and 'こうげき' in (screen.text or '')
+                           # キャトルミュー is a separate rare-tactic flow, not
+                           # the ordinary carried-card row hidden below the egg.
+                           and 'キャトルミュー' not in cards_left)
         if (cards_left and 'きりふだ' not in (screen.text or '')
                 and ('たまごをつかう' in (screen.text or '') or empty_egg
                      or own_attack_menu)
