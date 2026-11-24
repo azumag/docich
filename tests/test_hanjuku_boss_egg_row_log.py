@@ -158,7 +158,6 @@ def test_selected_or_announcement_card_flow_is_not_reopened():
     assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
 
 
-
 def test_boss_only_card_is_not_reported_as_missed_before_boss_entry(monkeypatch):
     # VERIFY-5458 path 2: a carried Balmung is intentionally unavailable
     # during an ordinary battle launched from a boss sortie.
