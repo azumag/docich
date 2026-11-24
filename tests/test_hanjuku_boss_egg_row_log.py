@@ -156,3 +156,46 @@ def test_selected_or_announcement_card_flow_is_not_reopened():
     B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem)
     assert battle['card_flow']['stage'] == 'announce'
     assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
+def test_boss_only_card_is_not_reported_as_missed_before_boss_entry(monkeypatch):
+    # VERIFY-5458 path 2: a carried Balmung is intentionally unavailable
+    # during an ordinary battle launched from a boss sortie.
+    mem = memory(castle='セレーネ')
+    mem['battle'].update(enemy='ニンフ', planned_cards=['バルムンク'],
+                         summon_card_scroll=B.SUMMON_CARD_SCROLL_LIMIT)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    B.egg_battle_step(screen(text='こうげき'), mem)
+
+    assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+    assert not mem['battle'].get('boss_card_missed_noted')
+
+
+def test_ordinary_carried_card_is_still_reported_when_boss_only_card_is_filtered(monkeypatch):
+    mem = memory(castle='セレーネ')
+    mem['battle'].update(enemy='ニンフ', planned_cards=['バルムンク', 'エンジェリン'],
+                         summon_card_scroll=B.SUMMON_CARD_SCROLL_LIMIT)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    B.egg_battle_step(screen(text='こうげき'), mem)
+
+    rows = [r for r in mem['_records'] if r['decision'] == 'battle_boss_card_missed']
+    assert len(rows) == 1
+    assert rows[0]['card'] == 'エンジェリン'
+
+
+def test_boss_only_card_remains_eligible_after_measured_boss_entry(monkeypatch):
+    mem = memory()
+    mem['battle'].update(planned_cards=['バルムンク'], entry_evidence='measured_boss_entry',
+                         summon_card_scroll=B.SUMMON_CARD_SCROLL_LIMIT)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    B.egg_battle_step(screen(text='こうげき'), mem)
+
+    rows = [r for r in mem['_records'] if r['decision'] == 'battle_boss_card_missed']
+    assert len(rows) == 1
+    assert rows[0]['card'] == 'バルムンク'
