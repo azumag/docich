@@ -2616,10 +2616,12 @@ def egg_battle_step(screen: Screen, mem):
     # off its upper page. The persisted scroll episode (or a stale policy.battle
     # whose ally is not the general on the panel) owns it here too: never scroll
     # it back down and never confirm もうこうげき (owner 2026-11-24).
-    if (mem.get('chapter') == 12 and _battle_ctx
-            and (_human_scroll_owns(screen, _labels, _battle_ctx, chapter=mem.get('chapter'))
-                 or (_stale_battle_actor(screen, _battle_ctx)
-                     and bool(_labels.intersection({'こうげき', 'もうこうげき'})))):
+    _human_menu = (
+        _human_scroll_owns(screen, _labels, _battle_ctx, chapter=mem.get('chapter'))
+        or (_stale_battle_actor(screen, _battle_ctx)
+            and bool(_labels.intersection({'こうげき', 'もうこうげき'})))
+    )
+    if mem.get('chapter') == 12 and _battle_ctx and _human_menu:
         _begin_human_scroll(_battle_ctx)
         _scroll = _human_scroll_step(screen, mem, _battle_ctx, _labels)
         if _scroll is not None:
