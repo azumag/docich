@@ -137,8 +137,15 @@ TEST_AUX_SOURCES = (
 )
 
 TEST_TARGET_DIR = 'tests/hanjuku_speedrun'
+#: The copied tests are an ordinary package.  With ``__init__.py`` pytest's
+#: prepend import mode names them ``hanjuku_speedrun.test_x`` instead of
+#: ``test_x``, so they can share one session with ``tests/test_hanjuku_x.py``
+#: without ``import file mismatch``.
+TEST_INIT_REL = f'{TEST_TARGET_DIR}/__init__.py'
+TEST_PACKAGE = PurePosixPath(TEST_TARGET_DIR).name
 TEST_CONFTEST_REL = f'{TEST_TARGET_DIR}/conftest.py'
 TEST_SUPPORT_REL = f'{TEST_TARGET_DIR}/hanjuku_speedrun_test_support.py'
+TEST_SUPPORT_STEM = PurePosixPath(TEST_SUPPORT_REL).stem
 TEST_SUPPORT_BODY = '''"""Helpers for copied tests that read the shared original-corner fixtures."""
 from __future__ import annotations
 
@@ -262,7 +269,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_current_roster_budget.py': (
         ('from copy import deepcopy\n',
          'from copy import deepcopy\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("E = json.loads((ROOT / 'g747-month-refill-evidence.json').read_text())",
          "E = speedrun_game(json.loads("
          "(ROOT / 'g747-month-refill-evidence.json').read_text()))", 1),
@@ -270,7 +277,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_recall_arrival_status.py': (
         ('from copy import deepcopy\n',
          'from copy import deepcopy\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("EVIDENCE=json.loads((ROOT/'g749-cinnamon-recall-evidence.json').read_text())",
          "EVIDENCE=speedrun_game(json.loads("
          "(ROOT/'g749-cinnamon-recall-evidence.json').read_text()))", 1),
@@ -278,7 +285,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_conserved_army_reobserve.py': (
         ('from copy import deepcopy\n',
          'from copy import deepcopy\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("EVIDENCE = json.loads((ROOT / 'g745-coco-semillon-evidence.json').read_text())",
          "EVIDENCE = speedrun_game(json.loads("
          "(ROOT / 'g745-coco-semillon-evidence.json').read_text()))", 1),
@@ -286,7 +293,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_army_count_check.py': (
         ('from copy import deepcopy\n',
          'from copy import deepcopy\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("d=json.loads((Path(__file__).parent.parent/'fixtures/hanjuku/"
          "g745-unread-army-plan.json').read_text())",
          "d=speedrun_game(json.loads((Path(__file__).parent.parent/'fixtures/hanjuku/"
@@ -302,7 +309,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_live_summon_shield.py': (
         ('from copy import deepcopy\n',
          'from copy import deepcopy\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("EVIDENCE = json.loads((ROOT / 'g747-live-shield-evidence.json').read_text())",
          "EVIDENCE = speedrun_game(json.loads("
          "(ROOT / 'g747-live-shield-evidence.json').read_text()))", 1),
@@ -310,7 +317,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_wounded_summoner.py': (
         ('from copy import deepcopy\n',
          'from copy import deepcopy\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("EVIDENCE = json.loads((ROOT / 'g745-emergency-egg-evidence.json').read_text())",
          "EVIDENCE = speedrun_game(json.loads("
          "(ROOT / 'g745-emergency-egg-evidence.json').read_text()))", 1),
@@ -318,7 +325,7 @@ TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
     'tests/test_hanjuku_naruto_damage.py': (
         ('from dataclasses import replace\n',
          'from dataclasses import replace\n'
-         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+         'from .hanjuku_speedrun_test_support import speedrun_game\n', 1),
         ("EVIDENCE = json.loads((ROOT / 'g749-naruto-evidence.json').read_text())",
          "EVIDENCE = speedrun_game(json.loads("
          "(ROOT / 'g749-naruto-evidence.json').read_text()))", 1),
@@ -620,18 +627,29 @@ def _select_test_paths(paths: list[str], sha: str, repo: Path) -> list[str]:
 
 
 def _build_test_module_map(test_paths: list[str]) -> dict[str, str]:
+    """Map the copied tests and helpers to their names in the package.
+
+    A copied test is now importable as ``hanjuku_speedrun.test_x``; the
+    original test tree keeps ``test_x``.  Both the bare sibling spelling and
+    the ``tests.``-prefixed spelling of a copied module resolve to the package
+    name, so :func:`_rewrite_import` can turn them into relative imports.
+    """
     mapping: dict[str, str] = {}
     for path in test_paths:
         stem = PurePosixPath(path).stem
         pure = PurePosixPath(path)
         if pure.parent == PurePosixPath('tests'):
-            sources = (f'tests.{stem}',)
+            sources = (f'tests.{stem}', stem)
         elif pure.parent == PurePosixPath('tests/helpers'):
-            sources = (f'tests.helpers.{stem}', f'helpers.{stem}')
+            sources = (f'tests.helpers.{stem}', f'helpers.{stem}', stem)
         else:  # pragma: no cover - selection only returns known paths
             continue
         for source in sources:
-            mapping[source] = stem
+            mapping[source] = f'{TEST_PACKAGE}.{stem}'
+    # The support module is generated here rather than copied, so it has no
+    # path in ``test_paths``.  The copied tests must still reach it inside the
+    # package, never through a same-named module on ``sys.path``.
+    mapping[TEST_SUPPORT_STEM] = f'{TEST_PACKAGE}.{TEST_SUPPORT_STEM}'
     return mapping
 
 
@@ -1101,23 +1119,54 @@ def _format_import_from(module: str, names: list[tuple[str, str | None]]) -> str
     return f'from {module} import ' + ', '.join(_format_alias(*name) for name in names)
 
 
+def _relative_test_module(module: str, package: str) -> str | None:
+    """Return ``module`` relative to ``package``, or ``None`` if it is outside."""
+    if module == package:
+        return '.'
+    prefix = f'{package}.'
+    if module.startswith(prefix):
+        return f'.{module[len(prefix):]}'
+    return None
+
+
 def _rewrite_import(
     node: ast.Import | ast.ImportFrom,
     package: str,
     module_map: dict[str, str],
     path: str,
+    *,
+    test_package: str | None = None,
 ) -> tuple[list[str] | None, str | None]:
     if isinstance(node, ast.Import):
-        names = []
+        entries: list[tuple[str, str, list[tuple[str, str | None]]]] = []
         changed = False
         for alias in node.names:
             target = _module_lookup(alias.name, module_map) or alias.name
             if target != alias.name:
                 changed = True
-            names.append((target, alias.asname))
+            relative = (_relative_test_module(target, test_package)
+                        if test_package is not None else None)
+            if relative is not None and relative != '.':
+                # ``import test_x as alias`` cannot be written relatively;
+                # ``from . import test_x as alias`` binds the same module.
+                parent, _, leaf = relative.rpartition('.')
+                entry = ('from', parent or '.', [(leaf, alias.asname)])
+            else:
+                entry = ('import', '', [(target, alias.asname)])
+            if (entries and entries[-1][0] == entry[0]
+                    and entries[-1][1] == entry[1]):
+                entries[-1][2].extend(entry[2])
+            else:
+                entries.append(entry)
         if not changed:
             return None, None
-        return ['import ' + ', '.join(_format_alias(*name) for name in names)], None
+        lines = []
+        for kind, module, names in entries:
+            if kind == 'from':
+                lines.append(_format_import_from(module, names))
+            else:
+                lines.append('import ' + ', '.join(_format_alias(*name) for name in names))
+        return lines, None
 
     absolute = _resolve_relative(node.module, node.level, package)
     if absolute is None:
@@ -1125,11 +1174,17 @@ def _rewrite_import(
             f'relative import level {node.level} goes above the package root'
         )
 
+    def _maybe_relative(module: str) -> str:
+        if test_package is None:
+            return module
+        relative = _relative_test_module(module, test_package)
+        return relative if relative is not None else module
+
     # When the module itself is copied, every imported name lives in the copy.
     absolute_target = _module_lookup(absolute, module_map)
     if absolute_target is not None:
         names = [(alias.name, alias.asname) for alias in node.names]
-        return [_format_import_from(absolute_target, names)], None
+        return [_format_import_from(_maybe_relative(absolute_target), names)], None
 
     # Otherwise a name may itself be a copied module (``from docich import
     # hanjuku_run``).  Split only when the target module really differs, and
@@ -1142,7 +1197,7 @@ def _rewrite_import(
         if target is not None:
             target_module, _, target_name = target.rpartition('.')
             if target_module:
-                entry = (target_module, [(target_name, alias.asname)])
+                entry = (_maybe_relative(target_module), [(target_name, alias.asname)])
             else:
                 entry = ('', [(target, alias.asname)])
             changed = True
@@ -1209,6 +1264,8 @@ def _conftest_body() -> str:
         '"""Generated skips for the copied hanjuku-speedrun tests."""',
         'from __future__ import annotations',
         '',
+        'from pathlib import Path',
+        '',
         'import pytest',
         '',
         '',
@@ -1219,9 +1276,16 @@ def _conftest_body() -> str:
     lines.extend([
         '}',
         '',
+        'PACKAGE_DIR = Path(__file__).resolve().parent',
+        '',
         '',
         'def pytest_collection_modifyitems(config, items):',
         '    for item in items:',
+        '        # This hook runs for the whole session, and the original tests',
+        '        # keep the same node id suffix.  Scope the skips to the package',
+        '        # (the copy is the key, not the original test of the same name).',
+        '        if PACKAGE_DIR not in Path(str(item.path)).resolve().parents:',
+        '            continue',
         '        nodeid = item.nodeid.replace("\\\\", "/")',
         '        for key, reason in TEST_SKIPS.items():',
         '            if nodeid == key or nodeid.endswith("/" + key):',
@@ -1291,7 +1355,10 @@ def _transform_python(path: str, data: bytes, sha: str,
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        replacement, reason = _rewrite_import(node, package, module_map, path)
+        replacement, reason = _rewrite_import(
+            node, package, module_map, path,
+            test_package=TEST_PACKAGE if is_test else None,
+        )
         if reason is not None:
             diagnostics.append(Diagnostic(path, node.lineno, reason))
             continue
@@ -1457,6 +1524,10 @@ def _build(source_ref: str, repo: Path, *, include_tests: bool = True
             diagnostics.extend(file_reviews)
         test_files[target] = text.encode('utf-8')
 
+    if test_files and TEST_INIT_REL not in test_files:
+        # An empty package: only the generated marker, no code.  The marker
+        # keeps the file diffable and ``check`` can report drift on it.
+        test_files[TEST_INIT_REL] = _insert_header('', sha).encode('utf-8')
     if test_files and TEST_CONFTEST_REL not in test_files:
         test_files[TEST_CONFTEST_REL] = _insert_header(
             _conftest_body(), sha,
