@@ -1162,7 +1162,7 @@ class CornerRotationManager:
         if (raw.get("status") != "active" or raw.get("game") != "hanjuku-hero"):
             return
         reason = raw.get("end_reason")
-        if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+        if reason not in {"game_over", "screen_stalled", "input_stalled", "game_clear"}:
             # The manager may have died before it ever saw the terminal; check
             # the durable run record itself when a runtime is known.
             runtime_id = raw.get("bot_runtime_id")
@@ -1177,7 +1177,7 @@ class CornerRotationManager:
             except Exception:
                 return
             reason = record.get("terminal_reason")
-            if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+            if reason not in {"game_over", "screen_stalled", "input_stalled", "game_clear"}:
                 return
         path = getattr(adapter, "state_path", None)
         if path is None:

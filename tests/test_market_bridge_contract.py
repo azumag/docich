@@ -29,7 +29,8 @@ SYNTHETIC_SECRET = b"s" * 32  # test-only value, not a credential
 def snap(**changes):
     base = dict(
         market="stocks", source="kabu-station", source_epoch="kabu-win-01",
-        generation=1, sequence=1, status="ready", reason="ok", market_state="open",
+        generation=1, sequence=1, upstream_sequence=1, status="ready",
+        reason="ok", market_state="open",
         source_ts=NOW - 1, received_ts=NOW,
         quotes=(Quote("JP.7203", 100.0, 100.1, 10, 10, NOW - 1, NOW, 1),),
         candidates=(Candidate("JP.7203", 1, 1.0, NOW - 1),))
@@ -75,6 +76,13 @@ class SnapshotValidationTests(unittest.TestCase):
                          (False, "generation_conflict"))
         self.assertEqual(validate_snapshot(snap(source_epoch="kabu-other"), **self.kwargs()),
                          (False, "generation_conflict"))
+
+    def test_upstream_sequence_roundtrip_and_validation(self):
+        restored = decode_snapshot(encode_snapshot(snap(upstream_sequence=42)))
+        self.assertEqual(restored.upstream_sequence, 42)
+        self.assertEqual(validate_snapshot(restored, **self.kwargs()), (True, "ok"))
+        self.assertEqual(validate_snapshot(snap(upstream_sequence=-1), **self.kwargs()),
+                         (False, "invalid_sequence"))
 
     def test_stale_and_future_source_time(self):
         self.assertEqual(validate_snapshot(snap(source_ts=NOW - 60), **self.kwargs()),

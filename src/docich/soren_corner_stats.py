@@ -1570,7 +1570,7 @@ def _console_progress(root, state, history, history_status, now):
         next_step = "collect-results"
     # Fixed categories only; do not publish exception text, paths or arbitrary
     # fields from corner state. Unknown reasons stay unknown.
-    reasons = {"game_over", "screen_stalled", "manual_saved_stop", "manual_forced_stop",
+    reasons = {"game_over", "game_clear", "screen_stalled", "manual_saved_stop", "manual_forced_stop",
                "switch-terminal-before-corner-active"}
     errors = {"recovery_required", "quiesce_failed", "readiness_timeout", "deadline_exceeded"}
     reason = state.get("end_reason")
