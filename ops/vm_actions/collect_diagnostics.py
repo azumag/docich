@@ -8127,6 +8127,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1457-empty-kit-cancel",
             "hanjuku-chart-v1458-merchant-mickey-priority",
             "hanjuku-chart-v1459-merchant-listed-unknown",
+            "hanjuku-chart-v1460-retreat-unclassified-export",
             "hanjuku-chart-v1460-password-entered-field",
             "hanjuku-chart-v1461-melee-only-ugokazaru",
             "hanjuku-chart-v1462-status-panel-owner-guard",
@@ -8168,15 +8169,16 @@ def _project_corner_state(data):
             "hanjuku-chart-v1493-recall-scene-covered-dispatch",
             "hanjuku-chart-v1495-recall-scene-covered-dispatch-audit",
             "hanjuku-chart-v1496-card-open-limit",
-
             "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1493-interim-order-purpose",
             "hanjuku-chart-v1494-boss-audit-live-sortie-defer",
-            "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1498-recall-battle-mode-lost",
-
             "hanjuku-chart-v1499-adjusted-stock-fallback",
+
+            "hanjuku-chart-v1500-retreat-cards-unclassified",
             "hanjuku-chart-v1500-boss-wave-stock-cards",
+
+            "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
             "hanjuku-chart-v1482-departure-request-ownership",
