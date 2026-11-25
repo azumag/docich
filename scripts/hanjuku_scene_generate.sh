@@ -24,6 +24,10 @@ fi
 declare -F ai_generate_list >/dev/null || { printf 'unavailable\n' >"$scene_failure"; exit 2; }
 scene_role=BATCH_COMMENTARY_AGENTS
 scene_agents="${BATCH_COMMENTARY_AGENTS:-}"
+# Periodic recap may name its own short chain.  The label/lane and all queue
+# policy stay the same; only the candidate models are narrowed so the 15-minute
+# job does not spend its budget cycling through unrelated fallbacks.
+if [ -n "${HANJUKU_PERIODIC_AGENTS:-}" ]; then scene_agents="$HANJUKU_PERIODIC_AGENTS"; fi
 if [ -z "$scene_agents" ]; then scene_role=RADIO_AGENTS; scene_agents="${RADIO_AGENTS:-}"; fi
 if [ -z "$scene_agents" ]; then scene_role=AI_COMMON_AGENTS; scene_agents="${AI_COMMON_AGENTS:-}"; fi
 [ -n "$scene_agents" ] || { printf 'unavailable\n' >"$scene_failure"; exit 2; }

@@ -123,6 +123,10 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
         _write_result(runtime, identity, int(request_file.get('seq') or 0),
                       'disabled', None, 0, None)
         return 'disabled', None, 0, None
+    if cfg.get('agents'):
+        os.environ['HANJUKU_PERIODIC_AGENTS'] = cfg['agents']
+    else:
+        os.environ.pop('HANJUKU_PERIODIC_AGENTS', None)
     try:
         request = checked_request(runtime, identity, now)
         current(g, game, runtime, request, now=now)

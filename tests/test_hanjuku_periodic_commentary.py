@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -95,6 +96,16 @@ def test_config_is_opt_in_and_bounded():
         periodic.settings({'interval_s': 60})
     with pytest.raises(ValueError):
         periodic.settings({'max_attempts': True})
+    assert periodic.settings({'agents': 'opencode-go:deepseek-v4.1-flash'})['agents'] == \
+        'opencode-go:deepseek-v4.1-flash'
+    with pytest.raises(ValueError):
+        periodic.settings({'agents': 'model; rm -rf /'})
+
+
+def test_scene_generate_helper_honors_the_periodic_agent_override():
+    helper = (ROOT / 'scripts/hanjuku_scene_generate.sh').read_text(encoding='utf-8')
+    assert 'HANJUKU_PERIODIC_AGENTS' in helper
+    assert 'scene_agents="$HANJUKU_PERIODIC_AGENTS"' in helper
 
 
 def test_live_game_config_is_read_from_the_game_file(tmp_path):
@@ -105,7 +116,7 @@ def test_live_game_config_is_read_from_the_game_file(tmp_path):
     assert periodic.config(game)['enabled'] is False
     assert periodic.config(game, path) == {
         'enabled': True, 'interval_s': 600.0, 'retry_s': 300.0,
-        'generation_timeout_s': 90.0, 'max_attempts': 2}
+        'generation_timeout_s': 90.0, 'max_attempts': 2, 'agents': ''}
 
 
 def test_current_falls_back_to_observed_country_counts_without_shop():
@@ -294,6 +305,23 @@ def _worker(live, monkeypatch, output, delivered, recent=()):
         SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime, now=live.now,
         generate_fn=lambda *args: (output, 'RADIO_AGENTS'),
         deliver_fn=lambda *args, **kwargs: delivered.append((args, kwargs)) or 'enqueued')
+
+
+def test_worker_sets_the_periodic_agent_override(live, monkeypatch):
+    seen = []
+    live.game.raw['hanjuku']['periodic_commentary']['agents'] = (
+        'opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash')
+    _write(live.runtime / periodic.REQUEST, _request(live))
+    monkeypatch.setattr(worker, 'load_game', lambda *args: live.game)
+    monkeypatch.setattr(worker, 'current', lambda *args, **kwargs: RUN)
+    worker.consume(
+        SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime,
+        now=live.now,
+        generate_fn=lambda *args: seen.append(os.environ.get('HANJUKU_PERIODIC_AGENTS'))
+        or (json.dumps({'texts': ['第8章の14年2月、所持金は732ゴールドです。']},
+                       ensure_ascii=False), 'RADIO_AGENTS'),
+        deliver_fn=lambda *args, **kwargs: 'enqueued')
+    assert seen == ['opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash']
 
 
 def test_worker_delivers_the_least_repetitive_grounded_candidate(live, monkeypatch):

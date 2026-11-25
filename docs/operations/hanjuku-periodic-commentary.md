@@ -23,6 +23,7 @@ interval_s = 900          # 15分。300〜3600
 retry_s = 300             # 生成失敗・重複時の再試行。60〜1800
 generation_timeout_s = 90 # 1回のLLM呼出しの上限。5〜120
 max_attempts = 2          # 1回の実況で作る候補生成の試行数。1〜3
+agents = "opencode-go:deepseek-v4.1-flash,..."  # 空なら従来の共通chain
 ```
 
 `enabled=false` で新しい要求を止める。workerは生成前・配送直前に実設定を
