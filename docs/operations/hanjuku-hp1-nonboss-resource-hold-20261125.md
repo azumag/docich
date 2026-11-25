@@ -4,6 +4,13 @@
 
 > ボス戦以外では、相手のHPが１なら切り札や奥の手や卵を使わない
 
+## 再発検知（v1509）
+
+同じ違反（ボス戦以外で相手将軍HP1の `battle_card`）を `month_audit` が検知し、
+`battle_card_at_hp1` の auto-generated Issue を起票します。カードの選択・実使用
+告知を待たず、カードを開く判断が出た時点で起票します。詳細は
+[`hanjuku-card-at-hp1-audit-20261125.md`](./hanjuku-card-at-hp1-audit-20261125.md)。
+
 ## 実測（本番 g1342、2026-11-25 17:04 JST）
 
 ```

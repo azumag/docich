@@ -102,6 +102,7 @@ COMMENT_COOLDOWN_SECONDS = 3600
 COMMENT_COOLDOWN_BY_KIND = {
     'battle_loss_with_resources': 900,
     'battle_retreat_with_resources': 900,
+    'battle_card_at_hp1': 900,
 }
 MAX_ISSUES = 200
 DEFAULT_REPO = 'azumag/docich'
@@ -3520,6 +3521,142 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
     return sealed
 
 
+def _boss_battle_context(record, mem):
+    """A battle_card record belongs to a boss battle.
+
+    The bot's HP1 resource hold deliberately leaves boss battles alone, so an
+    audit alarm must not fire for a boss card opened at HP1. Match the same
+    evidence as ``judgment.battle._boss_battle``: chapter boss names, reference
+    boss generals/monsters, a boss castle, and a measured boss entry. The
+    battle_card row names the enemy; the current policy battle supplies the
+    castle/entry context only when it is the same enemy.
+    """
+    from .. import hanjuku_chart as chart, hanjuku_reference as reference
+    enemy = record.get('enemy')
+    if isinstance(enemy, str) and enemy and (enemy in chart.BOSSES.values()
+                                             or reference.is_boss_target(enemy)):
+        return True
+    battle = mem.get('battle') if isinstance(mem, dict) else None
+    battle = battle if isinstance(battle, dict) else {}
+    same = not battle.get('enemy') or battle.get('enemy') == enemy
+    if same and battle.get('entry_evidence') == 'measured_boss_entry':
+        return True
+    castle = record.get('castle')
+    if (not isinstance(castle, str) or not castle) and same:
+        castle = battle.get('castle')
+    return bool(isinstance(castle, str) and castle and chart.is_boss_castle(castle))
+
+
+def _card_at_hp1_event(record, mem):
+    """A trump card opened while a non-boss enemy general sits at HP1, or None.
+
+    Owner 2026-11-25: ボス戦以外では、相手のHPが1なら切り札や奥の手や卵を
+    使わない. This alarm exists so a regression of that rule is visible even
+    when the battle is won. `battle_card` is the earliest durable record that
+    the flow planned a card; a selection/use receipt would come later and may
+    never calibrate.
+    """
+    if not isinstance(record, dict) or record.get('decision') != 'battle_card':
+        return None
+    if _hp_value(record.get('enemy_hp')) != 1:
+        return None
+    card = record.get('card')
+    if not isinstance(card, str) or not card:
+        return None
+    mem = mem if isinstance(mem, dict) else {}
+    if _boss_battle_context(record, mem):
+        return None
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    same = not battle.get('enemy') or battle.get('enemy') == record.get('enemy')
+    context = battle if same else {}
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    damage = metric.get('card_damage_gate')
+    damage = damage if isinstance(damage, dict) else {}
+    ally_hp = record.get('ally_hp')
+    if ally_hp is None:
+        ally_hp = context.get('ally_hp')
+    at = record.get('at') if type(record.get('at')) in (int, float) else None
+    return {
+        'card': card,
+        'at': at,
+        'battle': {
+            'ally': _bounded_text(context.get('ally'), 48),
+            'enemy': _bounded_text(record.get('enemy') or context.get('enemy'), 48),
+            'castle': _bounded_text(record.get('castle') or context.get('castle'), 48),
+            'side': _bounded_text(record.get('side') or context.get('side'), 16),
+            'at': at,
+            'ally_hp': _bounded_int(ally_hp, 0, 10 ** 6),
+            'enemy_hp': 1,
+            'enemy_soldiers': _bounded_int(context.get('enemy_soldiers'), 0, 6),
+            'reason': _bounded_text(record.get('reason'), 200),
+            'resulting_event': _bounded_text(record.get('resulting_event'), 64),
+            'stage': _bounded_text(metric.get('stage'), 32),
+            'screen': _bounded_text(record.get('screen_kind'), 32),
+            'damage_role': _bounded_text(damage.get('role'), 64),
+        },
+    }
+
+
+def _track_card_at_hp1(runtime, state, after, records, now, on_sealed):
+    """Seal an incident when a card is opened at non-boss enemy HP1.
+
+    The v1506 resource hold makes this path unreachable by design. Filing the
+    earliest `battle_card` record is the regression alarm: waiting for a
+    calibrated use receipt would hide attempts that never announce.
+    """
+    if not isinstance(records, (list, tuple)):
+        return False
+    mem = after.get('policy') if isinstance(after, dict) else None
+    mem = mem if isinstance(mem, dict) else {}
+    identity = _identity(after, mem)
+    seen = state.get('card_hp1_ids')
+    seen = seen if isinstance(seen, list) else []
+    sealed = False
+    for row in records:
+        event = _card_at_hp1_event(row, mem)
+        if event is None:
+            continue
+        card = event['card']
+        battle = event['battle']
+        at = event['at'] if event['at'] is not None else now
+        raw = '|'.join(str(part) for part in (
+            identity.get('runtime_id'), mem.get('chapter'), int(float(at)), card,
+            battle.get('enemy') or '', row.get('decision_id') or ''))
+        incident_id = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+        if incident_id in seen:
+            continue
+        seen.append(incident_id)
+        state['card_hp1_ids'] = seen[-20:]
+        record = {
+            'schema': SCHEMA,
+            'kind': 'battle_card_at_hp1',
+            'confidence': 'high',
+            'confidence_reasons': ['card_opened_at_non_boss_enemy_hp1'],
+            'chapter': mem.get('chapter'),
+            'month': mem.get('month'),
+            'card': card,
+            'battle_event': battle,
+            'month_summary': {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                              'observations': (state.get('observed') or {}).get('observations'),
+                              'duration_s': None, 'max_gap_s': None},
+            'evidence': {'runtime_dir': str(Path(runtime).name),
+                         'decisions': 'hanjuku_decisions.jsonl',
+                         'bot_version': (after.get('bot_version') or mem.get('bot_version')),
+                         'identity': identity},
+            'created_at': float(at),
+        }
+        record['incident_id'] = incident_id
+        record['signature'] = 'battle_card_at_hp1'
+        record['fingerprint'] = _fingerprint(
+            mem.get('chapter'), 'battle_card_at_hp1',
+            [card, battle.get('enemy') or battle.get('castle') or ''])
+        record['auto_file'] = True
+        _append_incident(runtime, record, on_sealed)
+        sealed = True
+    return sealed
+
+
 def _append_incident(runtime, record, on_sealed=None):
     from ..hanjuku_run import append_log
     append_log(Path(runtime), LOG_NAME, record)
@@ -3763,6 +3900,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_camp(runtime, state, after, records, now, on_sealed)
     _track_sortie(runtime, state, after, records, now, on_sealed)
     _track_battle_resources(runtime, state, after, records, now, on_sealed)
+    _track_card_at_hp1(runtime, state, after, records, now, on_sealed)
     _track_camp_abandon(runtime, state, after, now, on_sealed)
     _track_chikujou(runtime, state, before, after, records, now, on_sealed)
     _track_card_miss(runtime, state, after, records, now, on_sealed)
@@ -3930,6 +4068,38 @@ def _timeline(record):
     return rows[-3:], True
 
 
+def _render_card_at_hp1(record):
+    battle = record.get('battle_event') or {}
+    evidence = record.get('evidence') or {}
+    identity = evidence.get('identity') or {}
+    ally_hp = battle.get('ally_hp') if type(battle.get('ally_hp')) is int else '不明'
+    soldiers = (battle.get('enemy_soldiers')
+                if type(battle.get('enemy_soldiers')) is int else '不明')
+    return '\n'.join([
+        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **battle_card_at_hp1** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{evidence.get('bot_version')}{BT}",
+        f"- 章: ch{record.get('chapter')} / 月: {record.get('month')}",
+        f"- 使用札: {record.get('card')}",
+        f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
+        f" / 城: {battle.get('castle') or '不明'} / side: {battle.get('side') or '不明'}",
+        f"- HP: 敵 {battle.get('enemy_hp')} / 自軍 {ally_hp} / 敵兵士 {soldiers}",
+        f"- 時刻: {_clock(battle.get('at'))}",
+        f"- 画面: {BT}{battle.get('screen') or '不明'}{BT}"
+        f" / stage: {BT}{battle.get('stage') or '不明'}{BT}"
+        f" / resulting_event: {BT}{battle.get('resulting_event') or '不明'}{BT}",
+        f"- 札の判定: {BT}{battle.get('damage_role') or '不明'}{BT}",
+        f"- 理由: {_md(battle.get('reason')) or ''}",
+        '',
+        'ボス戦以外で相手将軍HP1のときに切り札が選択されました。',
+        'v1506 の `_hp1_resource_hold` が効いていれば、このカードは開かれません。',
+        'HP読取・ボス判定・カードフローのどこで温存が外れたかを確認してください。',
+    ])
+
+
 def _render_card_miss(record):
     battle = record.get('battle_event') or {}
     evidence = record.get('evidence') or {}
@@ -3967,6 +4137,8 @@ def render(record):
         raise AuditError('invalid_incident')
     if record.get('kind') == 'card_miss':
         return _render_card_miss(record)
+    if record.get('kind') == 'battle_card_at_hp1':
+        return _render_card_at_hp1(record)
     month = record.get('month_summary') or {}
     sorties = record.get('sorties') or {}
     signals = record.get('signals') or []
@@ -4244,6 +4416,20 @@ def render(record):
 
 def render_comment(record):
     """Compact recurrence comment for an existing open issue."""
+    if record.get('kind') == 'battle_card_at_hp1':
+        battle = record.get('battle_event') or {}
+        return '\n'.join([
+            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            '### 再発: ボス戦以外の相手HP1で切り札を使用',
+            '',
+            f"- 札: {record.get('card')}",
+            f"- 章: ch{record.get('chapter')} {record.get('month')}",
+            f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
+            f" / 城: {battle.get('castle') or '不明'}",
+            f"- 時刻: {_clock(battle.get('at'))}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     if record.get('kind') == 'card_miss':
         battle = record.get('battle_event') or {}
         return '\n'.join([
@@ -4350,6 +4536,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'battle_card_at_hp1':
+        battle = record.get('battle_event') or {}
+        where = battle.get('enemy') or battle.get('castle') or '戦闘'
+        return (f"[半熟英雄] ボス戦以外の相手HP1で切り札を使用: {record.get('card')} "
+                f"(ch{record.get('chapter')} {where})")[:100]
     if kind == 'card_miss':
         battle = record.get('battle_event') or {}
         where = battle.get('castle') or battle.get('enemy') or '戦闘'

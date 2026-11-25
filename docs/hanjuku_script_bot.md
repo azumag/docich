@@ -955,6 +955,10 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
   敵一撃の `battle_one_hit_menu_close` は正当なので除外。ボス戦以外の
   相手HP1で資源を温存するcloseも同じ記録名を使い、`observed_metric` の
   `non_boss_hp1_hold` で区別する（v1506）。
+- ボス戦以外で相手将軍HP1の `battle_card` が出た場合、`battle_card_at_hp1`
+  incident を seal して auto-generated Issue を起票する（v1509）。カードの
+  選択・実使用告知は待たず、開く判断が出た時点を再発として扱う。
+  詳細は [`operations/hanjuku-card-at-hp1-audit-20261125.md`](operations/hanjuku-card-at-hp1-audit-20261125.md)。
 - `screen_stalled` / `input_stalled` でHanjukuコーナーが停止しローテーションへ
   戻る直前、`corner_stalled` を記録してissue化する。理由・無変化秒・actions・
   runtime/generation・terminal evidence・flow/計画/在城を含める。記録失敗は
