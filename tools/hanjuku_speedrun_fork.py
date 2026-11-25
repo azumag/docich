@@ -54,6 +54,7 @@ CHART_EDITION_COMMENT = '# スピードランは版を固定する。意味は�
 #: Operator-only modules that stay in the original package.  Copied code that
 #: imports one of these keeps the original absolute module name.
 EXCLUDED_MODULES = frozenset({
+    'hanjuku_family',  # the dispatcher itself is shared, never copied
     'hanjuku_corner',
     'hanjuku_admin_result',
     'hanjuku_manual_admin_release',

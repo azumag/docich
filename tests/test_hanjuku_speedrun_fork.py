@@ -934,3 +934,20 @@ def test_hotload_dynamic_names_are_patched_to_the_copy(tmp_path):
     assert "sys.modules['docich.hanjuku_speedrun']" in text
     assert "f'docich.{name}'" not in text
     assert "sys.modules['docich']" not in text
+
+
+def test_committed_copy_matches_its_recorded_source():
+    """CI gate: a hand edit or stale regeneration of the committed copy fails here."""
+    repo_root = Path(__file__).resolve().parents[1]
+    fork = json.loads((repo_root / 'src/docich/hanjuku_speedrun/FORK.json').read_text(encoding='utf-8'))
+    if fork.get('frozen'):
+        pytest.skip('copy is frozen')
+    commit = fork['source_commit']
+    resolved = subprocess.run(['git', 'cat-file', '-e', f'{commit}^{{commit}}'],
+                              cwd=repo_root, capture_output=True)
+    if resolved.returncode != 0:
+        pytest.skip('source commit is not in this clone (shallow checkout or squash merge)')
+    result = subprocess.run(
+        [sys.executable, str(repo_root / 'tools' / 'hanjuku_speedrun_fork.py'), 'check'],
+        cwd=repo_root, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
