@@ -374,11 +374,14 @@ def test_two_consecutive_aborts_disable_the_chapter():
 
 
 def test_a_zero_buy_target_survives_the_stock_limit():
-    """20 positive kinds leave four slots; ファバード/エンジェリン keep two.
+    """20 positive kinds leave four slots; the top purchase priorities keep them.
 
     S2 never buys an unknown kind, so a usable 0 dropped by the trim would
     never be bought again -- the opposite of the owner's 99-copies policy.
+    With the 16-kind 2026-11-25 priority the four kept zeros are the kinds the
+    merchant plan buys first, not the lowest card IDs.
     """
+    from docich.hanjuku.strategy.bargains import CARD_PURCHASE_PRIORITY
     positives = [card for card in ORDER
                  if card not in ('ファバード', 'エンジェリン')][:20]
     rows = [{'card': card, 'stock': 99 - i} for i, card in enumerate(positives)]
@@ -390,6 +393,8 @@ def test_a_zero_buy_target_survives_the_stock_limit():
     assert 'ファバード' in written and 'エンジェリン' in written
     assert len(mem['card_stock']) == CARD_STOCK_LIMIT
     assert dropped, 'the other proven zeros still overflow the limit'
+    kept_zeros = {name for name in mem['card_stock'] if mem['card_stock'][name] == 0}
+    assert kept_zeros == set(CARD_PURCHASE_PRIORITY[:4])
 
 
 def test_a_drifted_full_read_clears_its_own_reservation():
