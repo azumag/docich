@@ -47,49 +47,60 @@ class DiagnosticsHeadroomMonitorContractTest(unittest.TestCase):
 
 
 class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
-    def test_only_bounded_ascii_names_and_numeric_counts_are_returned(self):
+    def test_reports_ten_largest_gateway_sections_not_just_collector_top_five(self):
         bad_key = "bad" + chr(10) + "::error::inject"
-        document = {"diagnostics": {"meta": {"section_bytes": {
-            "top": {
-                "corners": 10558,
-                "workers": 4000,
-                bad_key: 999,
-                "queues": "not-a-number",
-                "ai": 1200,
-                "markets": 1000,
-                "orders": 900,
-            },
-            "others": 100,
-            "total": 20000,
-        }}}}
-        compact, lines = _HEADROOM.summarize_section_bytes(document)
-        self.assertIn("corners=10558B (52%)", compact)
-        self.assertIn("workers=4000B (20%)", compact)
-        self.assertIn("?=999B (4%)", compact)
-        self.assertIn("others=100B", compact)
-        self.assertIn("total=20000B", compact)
+        diagnostics = {
+            "corners": "c" * 10558,
+            "workers": "w" * 4000,
+            bad_key: "b" * 2000,
+            "ai": "a" * 1200,
+            "markets": "m" * 1000,
+            "orders": "o" * 900,
+            "storage_breakdown": "s" * 800,
+            "host_metrics": "h" * 700,
+            "hanjuku_tactical": "t" * 600,
+            "prediction": "p" * 500,
+            "nethack_history": "n" * 400,
+            "miscellaneous": "z" * 300,
+            # The collector's embedded map is intentionally only five entries.
+            # The monitor must inspect the sanitized gateway document itself.
+            "meta": {"section_bytes": {
+                "top": {"collector_only": 999999},
+                "others": 1,
+                "total": 2,
+            }},
+        }
+        compact, lines = _HEADROOM.summarize_section_bytes({"diagnostics": diagnostics})
+        self.assertIn("corners=", compact)
+        self.assertIn("workers=", compact)
+        self.assertIn("?=", compact)
+        self.assertIn("orders=", compact)
+        self.assertIn("prediction=", compact)
+        self.assertNotIn("nethack_history=", compact)
+        self.assertNotIn("miscellaneous=", compact)
+        self.assertNotIn("collector_only", compact)
         self.assertNotIn("inject", compact)
-        self.assertNotIn("not-a-number", compact)
-        self.assertIn("markets=1000B (5%)", compact)
-        self.assertNotIn("orders", compact)
-        section_rows = [line for line in lines if line.startswith("  - ") and not line.startswith("  - others:") and not line.startswith("  - total:")]
-        self.assertEqual(len(section_rows), 5)
+        self.assertNotIn("cccc", compact)
+        self.assertNotIn("wwww", compact)
+        self.assertIn("others=", compact)
+        self.assertIn("total=", compact)
+        section_rows = [
+            line for line in lines
+            if line.startswith("  - ")
+            and not line.startswith("  - others:")
+            and not line.startswith("  - total:")
+        ]
+        self.assertEqual(len(section_rows), 10)
 
-    def test_invalid_byte_counts_are_zeroed(self):
-        document = {"diagnostics": {"meta": {"section_bytes": {
-            "top": {"boolean": True, "negative": -1, "oversized": 10_000_001, "valid": 1},
-            "others": False,
-            "total": 100,
-        }}}}
-        compact, _ = _HEADROOM.summarize_section_bytes(document)
-        self.assertIn("boolean=0B (0%)", compact)
-        self.assertIn("negative=0B (0%)", compact)
-        self.assertIn("oversized=0B (0%)", compact)
-        self.assertIn("valid=1B (1%)", compact)
-        self.assertIn("others=0B", compact)
+    def test_unserializable_section_is_zeroed(self):
+        compact, _ = _HEADROOM.summarize_section_bytes({
+            "diagnostics": {"broken": object(), "valid": "ok"}
+        })
+        self.assertIn("broken=0B", compact)
+        self.assertIn("valid=", compact)
 
-    def test_missing_or_malformed_section_accounting_is_unavailable(self):
-        for document in ({}, {"diagnostics": {"meta": {"section_bytes": {"top": []}}}}):
+    def test_missing_or_malformed_diagnostics_are_unavailable(self):
+        for document in ({}, {"diagnostics": None}, {"diagnostics": []}):
             with self.subTest(document=document):
                 compact, lines = _HEADROOM.summarize_section_bytes(document)
                 self.assertEqual(compact, "unavailable")
