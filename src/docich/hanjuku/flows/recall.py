@@ -2482,6 +2482,13 @@ def _recall_dispatch_step(screen, mem, state):
             _record(mem, 'camp_recall_input_sent', observed_metric={'castle': state.get('goal'),
                     'request_trace': trace}, resulting_event='sent_not_yet_accepted',
                     reason='同じラン・判断ID・実画面の帰還A送信記録を確認、受理と到着は未確認')
+    # A scene can be observed before its input receipt is projected into the
+    # policy state. If the matching receipt arrives later, promote that earlier
+    # interruption to scene coverage rather than charging the destination.
+    interrupted_tick = _flow(mem).get('recall_interrupted')
+    if state.get('input_sent') and type(interrupted_tick) is int:
+        state['scene_covered'] = True
+        state.setdefault('scene_covered_tick', interrupted_tick)
     if (state.get('input_sent') and screen.kind == 'map'
             and not state.get('scene_covered')):
         state['picker_closed'] = True
