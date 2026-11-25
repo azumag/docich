@@ -1467,8 +1467,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target) or card_orders.get(target)
         cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else None)
-        if chart.is_boss_castle(target):
-            cards = []   # 波: strict kit waits for nobody — carry what is there
+        # Boss waves also carry the stock-aware fallback.  Leaving this empty
+        # lets want=[] and carried=[] pass the deploy empty-kit guard together.
+        if chart.is_boss_castle(target) and general == MOVE_ANY_GENERAL:
+            cards = []  # a source probe is not a committed sortie
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
