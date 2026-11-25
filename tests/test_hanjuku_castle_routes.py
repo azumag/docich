@@ -115,7 +115,7 @@ def test_adopted_attack_to_an_owned_target_is_rejected_outside_road_chapters():
     assert routes.order_allowed(mem, move, '任意の出撃元')
 
 
-def test_adopted_attack_is_held_if_its_target_became_owned():
+def test_adopted_attack_is_settled_done_if_its_target_became_owned():
     mem = state()
     order = {'step': 'I:attack:captured-target', 'source': 'イーピヨル',
              'target': 'ドンダム', 'general': 'ピオーネ',
@@ -125,7 +125,25 @@ def test_adopted_attack_is_held_if_its_target_became_owned():
     mem['captured'].append('ドンダム')
     assert not routes.order_allowed(mem, order, order['source'])
     assert deploy._hold_unrouted_sortie(mem, order) == [deploy.pad('b'), deploy.pad('b')]
-    assert mem['_records'][-1]['decision'] == 'sortie_route_unverified'
+    # docich#5623: an owned target settles 'done' — handing the stale attack
+    # back to pending re-armed it at every activation path forever.
+    assert mem['_records'][-1]['decision'] == 'sortie_settled_owned_target'
+    assert _plan_region(mem)['orders'][order['step']] == 'done'
+
+
+def test_a_plan_attack_on_an_owned_target_is_settled_done_not_pending():
+    mem = state()
+    order = {'step': 'A:plan:M1', 'source': 'イーピヨル',
+             'target': 'ドンダム', 'general': 'ピオーネ',
+             'cards': [], 'after': None, 'purpose': 'attack'}
+    mem['captured'].append('ドンダム')
+    assert not routes.order_allowed(mem, order, order['source'])
+    _plan_region(mem)['active'] = order['step']
+    actions = deploy._hold_unrouted_sortie(mem, order)
+    assert actions == [deploy.pad('b'), deploy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_settled_owned_target'
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders'][order['step']] == 'done'
 
 
 def test_a_relay_castle_lost_after_planning_is_not_attacked_as_an_empty_move():

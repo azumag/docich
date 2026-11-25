@@ -678,6 +678,15 @@ def plan_starved_rearm(mem, phase, kind):
                              or order_mod._source(full, mem) not in owned
                              or not order_mod._source_list_open(full, mem)
                              or order_mod._retake_reserved(full, mem)
+                             # Same stale-step gate next_order applies: an
+                             # attack whose target is already ours can never
+                             # launch, and activating it only walks into the
+                             # deploy route check every observation
+                             # (docich#5623).
+                             or (full.get('purpose') != 'move'
+                                 and not _chart.is_boss_castle(full.get('target'))
+                                 and full.get('roster_probe') is not True
+                                 and full.get('target') in owned)
                              or order_mod._source_spare_missing(full, mem, allow_probe=True))):
                     continue
                 plan['active'] = step
@@ -709,6 +718,7 @@ def plan_starved_rearm(mem, phase, kind):
         # rearm from rebuilding). Keep the plan only if some pending order
         # survives next_order's own launch gates.
         from .strategy import orders, replan
+        from .. import hanjuku_chart as _chart
         situation = replan._adjust_situation(mem)
         owned = orders._owned(mem)
         if any(replan.chart_adjust.startable(o, situation) is None
@@ -716,6 +726,10 @@ def plan_starved_rearm(mem, phase, kind):
                and orders._source(o, mem) in owned
                and orders._source_list_open(o, mem)
                and not orders._retake_reserved(o, mem)
+               and (o.get('purpose') == 'move'
+                    or _chart.is_boss_castle(o.get('target'))
+                    or o.get('roster_probe') is True
+                    or o.get('target') not in owned)
                and not orders._source_spare_missing(o, mem, allow_probe=True)
                for o in pending):
             return False

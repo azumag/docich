@@ -1865,6 +1865,28 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
     return [pad('b'), pad('b')]
 
 
+def _settle_owned_target(mem, order):
+    """Close a conquest order whose target is already ours as done.
+
+    'pending' hands the stale attack back to every activation path and the
+    deploy gate cancelled it again every observation (docich#5623: ch5 wave
+    attacks on an already-taken バスカビル kept the month at zero launches);
+    'failed' would feed the failure books and re-arm windows a conquest that
+    simply happened without this march.
+    """
+    (_plan_region(mem).setdefault('orders', {}))[order['step']] = 'done'
+    _plan_region(mem)['active'] = None
+    forget_picked(mem)
+    _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
+    _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+    drop_retired_step_context(mem)
+    _record(mem, 'sortie_settled_owned_target', chart_step=order['step'],
+            source=_source(order, mem), target=order.get('target'),
+            observed_metric={'source': _source(order, mem), 'target': order.get('target')},
+            reason='攻撃目標の城は既に自軍のため出撃せず、征服済みの指示として閉じる')
+    return [pad('b'), pad('b')]
+
+
 def _hold_locked_boss(mem, order):
     """Recheck unsent active orders too; retain already-sent reconciliation."""
     status = (_plan_region(mem).get('orders') or {}).get(order['step'])
@@ -1890,6 +1912,10 @@ def _hold_unrouted_sortie(mem, order):
         return None
     mem.pop('y_jump', None)
     _flow(mem).pop('sortie_attempt', None)
+    if order.get('purpose') == 'attack' and order.get('target') in _owned(mem):
+        # An attack on a castle already ours can never launch; handing it
+        # back to 'pending' just re-arms the same stale step (docich#5623).
+        return _settle_owned_target(mem, order)
     return _hold_guarded_sortie(mem, order, 'sortie_route_unverified',
             '第3話の既存城間ルートにない直行を取り消し、中継城経由で選び直す',
             {'source': _source(order, mem), 'target': order.get('target')})
