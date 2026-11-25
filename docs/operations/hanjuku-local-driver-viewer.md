@@ -344,3 +344,138 @@ chapter=11 month=62-5  last=None | log: Map_LoROMMap
 2 周期連続で不動なら SIGTERM する外部 watchdog をドライバの外に置く
 （ドライバは未追跡ツールなので、リポジトリ内の bot からは検出できない）。
 
+## 9. リポジトリ内ドライバへの移行（2026-11-26、段階B）
+
+オーナー決定（`docs/features/hanjuku-speedrun-corner.md` §10 確認事項13 / 付録G）に従い、
+ドライバとビューアをリポジトリへ移した。以降の正本は次のファイルで、Mac の
+`tmp/hanjuku-local/*.py` は**移行元の旧コピー**として扱う。
+
+| 役割 | リポジトリ内 | 旧（移行元） |
+|---|---|---|
+| ドライバ | `tools/hanjuku_local/core_driver.py` | `tmp/hanjuku-local/core_driver.py` |
+| libretro 呼び出し | `tools/hanjuku_local/libretro_core.py` | 旧ドライバ内に同居 |
+| ビューア | `tools/hanjuku_local/viewer.py` | `tmp/hanjuku-local/viewer.py` |
+| タイマーのプレビュー | `src/docich/hanjuku_speedrun/rta/preview.py` | なし |
+
+移行の考え方:
+
+- **コード（*.py）はリポジトリへ**。**ROM・コア・`.state`・`.srm`・スクリーンショットは
+  引き続きリポジトリ外**（`games/roms/*` は `.gitignore` 済み。`tmp/` も追跡しない）。
+- Mac の既存の `tmp/hanjuku-local/` は消さない。新しい `tools/hanjuku_local/` を同じ環境変数で
+  起動し、問題があれば旧コピーへ戻せる状態にしておく。
+- 旧コピーとリポジトリ版で同じ環境変数を使う。`HANJUKU_CODE_ROOT` を切り替えれば、
+  どちらのコピーからでも同じ worktree の bot を呼べる。
+- スピードランでは `--game hanjuku-speedrun` を付ける。記録は
+  `run-local/speedrun/hanjuku-speedrun/` に置かれ、`timer.json` / `attempts.jsonl` /
+  `manifest.json` に `env: "local"` が入る。本番の `run-soren-live/speedrun/...` とは
+  ディレクトリも env も分かれるので、ローカルの PB が本番の PB を上書きしない。
+
+### 9.1 起動例（半熟英雄）
+
+```bash
+cd /Users/azumag/work/docich
+HANJUKU_LEASE=<lease-id> \
+HANJUKU_RUNTIME=/Users/azumag/work/docich/.worktrees/hanjuku-local-main/run-local/runtimes/g1190-local \
+HANJUKU_RUNTIME_ID=g1190-67435f4d \
+HANJUKU_CODE_ROOT=/Users/azumag/work/docich/.worktrees/hanjuku-local-main \
+HANJUKU_GENERATION=1190 \
+HANJUKU_SRAM_OUT=/Users/azumag/work/docich/tmp/hanjuku-local/saves/prod1190.srm \
+HANJUKU_INPROC=1 \
+HANJUKU_CORE=/Users/azumag/work/docich/tmp/hanjuku-local/cores_arm64/snes9x_libretro.dylib \
+HANJUKU_ROM=/Users/azumag/work/docich/games/roms/hanjuku-hero.sfc \
+HANJUKU_SAVE_EVERY=10 \
+HANJUKU_STATE=/Users/azumag/work/docich/tmp/hanjuku-local/states/prod1190.state \
+nohup python3 tools/hanjuku_local/core_driver.py --fast \
+  >> tmp/hanjuku-local/prod1190.log 2>&1 &
+```
+
+### 9.2 起動例（スピードラン）
+
+```bash
+cd /Users/azumag/work/docich
+HANJUKU_CODE_ROOT="$PWD" \
+HANJUKU_RUNTIME_ID=g1300-abcdef12 \
+HANJUKU_GENERATION=1300 \
+HANJUKU_LEASE=<lease-id> \
+HANJUKU_RUNTIME="$PWD/run-local/runtimes/g1300-abcdef12" \
+HANJUKU_STATE="$PWD/tmp/hanjuku-local/states/hanjuku-speedrun.state" \
+HANJUKU_SRAM_OUT="$PWD/tmp/hanjuku-local/saves/hanjuku-speedrun.srm" \
+HANJUKU_CORE="$PWD/tmp/hanjuku-local/cores_arm64/snes9x_libretro.dylib" \
+HANJUKU_ROM="$PWD/games/roms/hanjuku-hero.sfc" \
+HANJUKU_SAVE_EVERY=10 \
+nohup python3 tools/hanjuku_local/core_driver.py --fast --game hanjuku-speedrun \
+  >> tmp/hanjuku-local/speedrun.log 2>&1 &
+```
+
+- `DOCICH_SPEEDRUN_DATA_DIR` を明示すると記録先を変えられる。省略時は
+  `$HANJUKU_CODE_ROOT/run-local/speedrun/hanjuku-speedrun`。ドライバは
+  `DOCICH_SPEEDRUN_ENV=local` を立てるので、`timer.json` / `attempts.jsonl` /
+  `manifest.json` の `env` は `local` になる（値は `soren` か `local` のみ）。
+- ドライバは子プロセス（`HANJUKU_INPROC` 無し）・同一プロセス（`HANJUKU_INPROC=1`）の
+  どちらでも bot を呼ぶ。同一プロセスは子プロセス起動コストが無い。
+- `--fast` では 1 秒を約 60.0988 フレームとして**フレーム数から時刻を作る**。
+  `hanjuku_run.observe` の `wall` と観測 meta の `observed_at_ms` がその時刻になり、
+  `rta/hook.py` はこの `observed_at_ms` をスクリーンショットの mtime より優先する。
+  したがって**ローカルのタイムは本番のタイムと比べられない**（観測間隔・入力遅れ・
+  速度が違う）。ローカルは「正しく動くか」を見るためだけに使う。
+- 名前入力で止めたい検証では `HANJUKU_STOP_AT_NAME=1`。
+  タイトル復帰の検証では `HANJUKU_LOAD_FLOW=1`（`HANJUKU_SRAM_IN` と併用）。
+  `--fresh` は state を読まずに attract → START → A → A を送る決定論的な新規ブート。
+
+### 9.3 ビューアとタイマーのプレビュー
+
+ビューア（読み取り専用、127.0.0.1 のみ）:
+
+```bash
+HANJUKU_VIEW_RUNTIME="$PWD/run-local/runtimes/g1300-abcdef12" \
+HANJUKU_VIEW_LOG="$PWD/tmp/hanjuku-local/speedrun.log" \
+HANJUKU_VIEW_PORT=8765 \
+python3 tools/hanjuku_local/viewer.py
+# http://127.0.0.1:8765/
+```
+
+タイマーのプレビュー（本物の `overlays/direct_broadcast_overlay.html` を配信）:
+
+```bash
+# driver を動かしたまま、別ターミナルで
+python3 -m docich.hanjuku_speedrun.rta.preview --root run-local --port 8780
+# http://127.0.0.1:8780/
+```
+
+- `/__soren_overlay/broadcast/state` はローカルの `timer.json` から作る。
+  node があれば `overlays/direct_broadcast_overlay_state.mjs` の
+  `buildDirectBroadcastOverlayState` をそのまま呼び、無ければ Python の同等実装で
+  `speedrunTimer` だけを返す。
+- `game_switch.json` が無いローカル用に、preview 専用の合成 `game_switch.json`
+  （active が `hanjuku-speedrun`、runtime_id は `timer.json` の値）を一時ディレクトリに書く。
+  リポジトリや `run-local` のデータは書き換えない。
+- プレビューはフレーム由来の時刻をホスト時計へ平行移動して表示する（区間の長さは変えない）。
+  本番の記録・PB には一切影響しない。
+
+### 9.4 R2（既定は送らない）
+
+ローカルでは `r2.env` が無ければアップロードしない（既存どおり）。送るはずのファイルを
+確認するだけの dry-run を用意した。何も送らず、何も消さない。
+
+```bash
+python3 -m docich.hanjuku_speedrun.rta.archive \
+  --data-dir run-local/speedrun/hanjuku-speedrun \
+  upload --attempt <attempt_id> --dry-run
+cat run-local/speedrun/hanjuku-speedrun/attempts/<attempt_id>/archive_plan.json
+```
+
+`archive_plan.json` には送信キー・バイト数・keep コピー（PB / 区間ベストの試走のみ）・
+`env` が入る。資格情報は読まない。
+
+### 9.5 未確認・注意
+
+- **実コア・実 ROM では未検証**。この開発環境には snes9x コアも ROM も無い。ドライバの
+  ロジックは Python のスタブコアでテストしているが、実 snes9x の
+  `retro_serialize` / SRAM / 映像フォーマット / 音声コールバックは未確認。
+- Mac の旧 `tmp/hanjuku-local/` とリポジトリ版の挙動差（特に `HANJUKU_LOAD_FLOW` の
+  画面判定と `--fresh` の入力列）は、実機で突き合わせる必要がある。復帰手順は §5.1 の
+  実測列が正本で、ドライバの実装はその近似。
+- `.state` のバイト列はコアの版に依存する。読めない state を上書きしないよう、
+  ロードに失敗したドライバは終了コード 4 で停止する（`.state` / `.srm` は変更しない）。
+- 停止は必ず SIGTERM。`.state` → `.state.prev` の 1 世代バックアップは停止時にだけ行う。
+  定期保存は `.state` のみを上書きし、SRAM は毎観測と停止時に書き出す。

@@ -9,7 +9,9 @@ The package is deliberately small and independent of the generated
 * :mod:`trace` writes the bounded observation trace and periodic frames,
 * :mod:`spool` collects rotated logs, compresses them off the hot path and
   keeps the per-attempt spool under a byte cap,
-* :mod:`report_segments` and :mod:`manifest` write the attempt summary.
+* :mod:`report_segments` and :mod:`manifest` write the attempt summary,
+* :mod:`archive` uploads finished attempts to R2 (unconfigured means no send),
+* :mod:`preview` serves the real broadcast overlay locally for a trial.
 
 Nothing here talks to the network or changes bot input; compression is
 detached and never awaited.
