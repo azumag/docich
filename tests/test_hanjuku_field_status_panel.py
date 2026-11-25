@@ -17,7 +17,7 @@ def _screen(text, kind='text', hand=(40, 20, 60, 34)):
 
 def test_status_panel_closes_with_b_after_bounded_holds():
     mem = {'_records': [], 'chapter': 12, 'tick': 100}
-    screen = _screen('しゅつげステータス')
+    screen = _screen('しゅつげステータス てきぜんいん')
     for _ in range(O.STATUS_PANEL_HOLD_LIMIT - 1):
         assert O.status_panel_close_step(screen, mem, 'field_menu', []) is None
     assert O.status_panel_close_step(screen, mem, 'field_menu', []) == [O.pad('b')]
@@ -35,3 +35,23 @@ def test_panel_with_an_owned_action_is_left_alone():
     mem = {'_records': [], 'chapter': 12, 'tick': 100}
     screen = _screen('しゅつげステータス')
     assert O.status_panel_close_step(screen, mem, 'field_menu', [O.pad('a')]) is None
+
+def test_dialogue_mentioning_general_is_not_closed():
+    mem = {'_records': [], 'chapter': 12, 'tick': 100}
+    screen = _screen('しょうぐんは つぎの たたかいに そなえた')
+    for _ in range(5):
+        assert O.status_panel_close_step(screen, mem, 'field_menu', []) is None
+
+
+def test_status_heading_without_roster_row_is_not_closed():
+    mem = {'_records': [], 'chapter': 12, 'tick': 100}
+    screen = _screen('しゅつげステータス')
+    for _ in range(5):
+        assert O.status_panel_close_step(screen, mem, 'field_menu', []) is None
+
+
+def test_status_panel_without_hand_cursor_is_not_closed():
+    mem = {'_records': [], 'chapter': 12, 'tick': 100}
+    screen = _screen('しゅつげステータス てきぜんいん', hand=None)
+    for _ in range(5):
+        assert O.status_panel_close_step(screen, mem, 'field_menu', []) is None
