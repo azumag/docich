@@ -8163,6 +8163,13 @@ def _project_corner_state(data):
             "hanjuku-chart-v1491-card-abandon-retreat-ban",
             "hanjuku-chart-v1492-boss-only-card-miss-eligibility",
 
+            "hanjuku-chart-v1493-card-open-bounded",
+            "hanjuku-chart-v1494-card-open-bounded-audit",
+            "hanjuku-chart-v1493-recall-scene-covered-dispatch",
+            "hanjuku-chart-v1495-recall-scene-covered-dispatch-audit",
+            "hanjuku-chart-v1496-card-open-limit",
+
+            "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1493-interim-order-purpose",
 
 
