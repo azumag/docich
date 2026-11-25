@@ -335,6 +335,8 @@ incident は runtime_id / generation / bot_version / chapter / month / tick /
 `decisions.before` と `after.rows` は直近の行だけを別途制限する。リストは20件、文字列は160字、
 1件は32KBで打ち切る。生ログ・例外文・環境変数・tokenは保存しない。
 
+旧 top-30 集計で保存済み incident の counts は自動再集計しない。決定内訳の欠落を具体的に確認した記録は [VERIFY-5206](../../VERIFY-5206.md)、[VERIFY-5276](../../VERIFY-5276.md)、[VERIFY-5507](../../VERIFY-5507.md)。同じ欠落の可能性が記録されたものは [VERIFY-5444](../../VERIFY-5444.md)、[VERIFY-5339](../../VERIFY-5339.md)、[VERIFY-5399](../../VERIFY-5399.md)、[VERIFY-5307](../../VERIFY-5307.md)。元の decisions JSONL が残っていない過去分は、この要約だけから正確な件数を復元できない。
+
 月を閉じた直後から300秒を after window として集計し、その間に出撃・奪取・
 防衛が起きたかを `after` に残す。次の月境界が先に来た場合は early seal する。
 
