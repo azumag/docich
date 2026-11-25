@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 import time
 
+from ...naming import validate_runtime_id
 from . import store, timer as timer_mod
 
 GAME = timer_mod.GAME
@@ -33,6 +35,13 @@ def observe(runtime, records, state, meta, *, screenshot):
     """
     try:
         return _observe(runtime, records, state, meta, screenshot=screenshot)
+    except OSError as exc:
+        # A transient file error (EIO/EACCES) must skip this observation, not
+        # corrupt or rebuild the records.  One bounded stderr line is the
+        # only trace; the bot's own loop labels the failed side effect.
+        line = f'rta: observation skipped: {type(exc).__name__}: {exc}'
+        print(line[:240], file=sys.stderr)
+        return None
     except Exception:
         # Recording is a side channel.  The caller's loop already labels a
         # failed effect, and no input depends on this return value.
@@ -97,29 +106,39 @@ def _chart_edition(state):
     return value if isinstance(value, str) and value else None
 
 
-def _name_screen_seen(run, state, records):
-    """The earliest reliable new-game signal available in this observation.
+def _start_screen_seen(run):
+    """True only when this observation shows the pre-gameplay name screen.
 
-    ``hanjuku_run.json`` sets ``name_entered`` on the first image classified
-    as the name-entry screen (``hanjuku_run.observe``), which is earlier than
-    the bot's ``name_confirm`` record.  The fallbacks keep the hook usable in
-    a synthetic test or after a run-state read failure.
+    ``name_entered`` stays true for the whole run, ``state['name']`` keeps
+    ``done: True`` and the bot's ``name_*`` decisions are historical once the
+    game advanced.  None of them proves *now*.  Starting from such a signal
+    would begin timing mid-game (missing timer.json, a hook inserted into a
+    running bot, a checkpoint restore) and write a too-short PB.
     """
-    if isinstance(run, dict) and run.get('name_entered') is True:
-        return True
-    if isinstance(run, dict) and run.get('phase') == 'name':
-        return True
-    if isinstance(state, dict) and isinstance(state.get('name'), dict):
-        return True
-    for record in records if isinstance(records, list) else ():
-        if not isinstance(record, dict):
-            continue
-        if record.get('chart_step') == 'name':
-            return True
-        if record.get('decision') in {
-                'name_wait', 'name_type', 'name_confirm', 'name_delete'}:
-            return True
-    return False
+    return (isinstance(run, dict)
+            and run.get('phase') == 'name'
+            and run.get('gameplay_seen') is not True)
+
+
+def _timer_runtime(runtime, timer):
+    """The directory of the runtime that owns the shared ``timer.json``."""
+    runtime_id = timer.get('runtime_id') if isinstance(timer, dict) else None
+    if not isinstance(runtime_id, str) or not runtime_id:
+        return None
+    try:
+        runtime_id = validate_runtime_id(runtime_id)
+    except (TypeError, ValueError):
+        # Synthetic ids (tests, old state) may not match the strict pattern.
+        # Accept only a single safe path component so a corrupt timer can
+        # never make the hook read outside the runtimes directory.
+        try:
+            contained = (Path(runtime_id).name == runtime_id
+                         and runtime_id not in {'.', '..'})
+        except (TypeError, ValueError):
+            contained = False
+        if not contained:
+            return None
+    return Path(runtime).parent / runtime_id
 
 
 def _chapter(record, state, *, fallback_key=None):
@@ -207,11 +226,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
     meta = meta if isinstance(meta, dict) else {}
     observations = records if isinstance(records, list) else []
 
-    run = {}
-    try:
-        run = store.load_run(runtime)
-    except Exception:
-        run = {}
+    run = store.load_run(runtime)
     meta_run = meta.get('hanjuku')
     if isinstance(meta_run, dict):
         run = {**run, **meta_run}
@@ -236,7 +251,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
     if not isinstance(terminal, str) or not terminal:
         terminal = None
     clear_ending = run.get('clear_ending_seen') is True
-    name_seen = _name_screen_seen(run, state, observations)
+    name_seen = _start_screen_seen(run)
 
     if not isinstance(timer, dict) or timer.get('game') != GAME:
         timer = timer_mod.new_timer(runtime_id, stored, observed)
@@ -244,15 +259,17 @@ def _observe(runtime, records, state, meta, *, screenshot):
 
     # A previous runtime that never got its finalize call (VM restart,
     # crash, operator stop without cleanup) is closed before a new attempt.
-    if (timer.get('status') == 'running' and not same_runtime):
+    previous_runtime = _timer_runtime(runtime, timer)
+    if timer.get('status') == 'running' and not same_runtime and previous_runtime is not None:
         # The old attempt ended at its last observation, not at the new
-        # runtime's first frame.
+        # runtime's first frame.  Finalize the runtime that owns the timer:
+        # its hanjuku_run.json is the authoritative terminal reason.
         recovery_now = timer.get('heartbeat_at_ms')
         if type(recovery_now) is not int:
             recovery_now = observed
         finalized = store.finalize_attempt(
-            runtime, terminal_reason='stopped', now_ms=recovery_now,
-            reason='recovered')
+            previous_runtime, terminal_reason='stopped',
+            now_ms=recovery_now, reason='recovered')
         if isinstance(finalized, dict):
             timer = finalized
         # The recovered attempt may have updated PB/gold records.
@@ -315,7 +332,9 @@ def _observe(runtime, records, state, meta, *, screenshot):
         or (status in {'finished', 'dnf'} and run.get('phase') == 'name')
     )
     if start_here:
-        if name_seen and not clear_ending and terminal not in _TERMINAL_REASONS:
+        if (name_seen and not clear_ending
+                and terminal not in _TERMINAL_REASONS
+                and not (status == 'running' and not same_runtime)):
             # start_attempt copies the timer, so give it the new runtime id
             # when the previous attempt belonged to an older generation.
             timer = {**timer, 'runtime_id': runtime_id}
@@ -323,13 +342,17 @@ def _observe(runtime, records, state, meta, *, screenshot):
                 timer, stored, observed,
                 attempt_no=stored.get('next_attempt_no'),
                 bot_version=_bot_version(run, state),
-                chart_edition=_chart_edition(state))
+                chart_edition=_chart_edition(state),
+                start_source='name_screen', name_seen_at_ms=observed)
             _commit(runtime, timer, stored, save_records=True)
             return timer
-        if status == 'pending':
-            if timer.get('runtime_id') != runtime_id:
-                timer = {**timer, 'runtime_id': runtime_id,
-                         'comparison': timer_mod.comparison(stored)}
+        # No pre-gameplay name screen was observed for this runtime: the hook
+        # started mid-run or lost the start.  Never invent an attempt from a
+        # later frame; record that the start was missed and leave PB alone.
+        if status == 'pending' or (
+                status in {'finished', 'dnf'} and not same_runtime):
+            timer = timer_mod.new_timer(runtime_id, stored, observed)
+            timer['reason'] = 'no_start_seen'
             timer = timer_mod.heartbeat(timer, observed)
             _commit(runtime, timer, stored, save_records=False)
             return timer

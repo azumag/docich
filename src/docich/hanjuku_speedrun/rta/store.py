@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import time
 
@@ -78,17 +79,22 @@ def _quarantine(path):
     try:
         os.replace(path, target)
     except OSError:
-        pass
+        return target
+    print(f'rta: quarantined {target}', file=sys.stderr)
     return target
 
 
 def _read_json(path, limit, *, quarantine=True):
-    """Read one JSON document with a size/regular-file gate."""
+    """Read one JSON document with a size/regular-file gate.
+
+    Only out-of-contract or unparseable content is quarantined.  An
+    ``OSError`` is a transient or permission problem, not evidence that the
+    document is bad: it propagates so the caller can skip this observation
+    instead of discarding the file and losing the records it still holds.
+    """
     try:
         meta = os.lstat(path)
     except FileNotFoundError:
-        return None
-    except OSError:
         return None
     if not os.path.isfile(path) or os.path.islink(path) or meta.st_size > limit:
         if quarantine:
@@ -96,22 +102,28 @@ def _read_json(path, limit, *, quarantine=True):
         return None
     try:
         raw = path.read_text(encoding='utf-8')
+    except UnicodeError:
+        if quarantine:
+            _quarantine(path)
+        return None
+    try:
         document = json.loads(raw)
-    except (OSError, ValueError, UnicodeError):
+    except (ValueError, UnicodeError):
         if quarantine:
             _quarantine(path)
         return None
     return document
 
 
-def _atomic_write(path, data):
+def _atomic_write(path, data, *, fsync=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}.', dir=str(path.parent))
     try:
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data)
             stream.flush()
-            os.fsync(stream.fileno())
+            if fsync:
+                os.fsync(stream.fileno())
         os.replace(temporary, path)
     except BaseException:
         try:
@@ -130,7 +142,10 @@ def save_timer(runtime, timer):
     data = _dump(timer)
     if len(data) > MAX_TIMER_BYTES:
         raise StoreError('timer_too_large')
-    _atomic_write(timer_path(runtime), data)
+    # The timer is a display cache rewritten every observation.  A crash that
+    # loses the newest copy only costs one heartbeat (the next observation
+    # rewrites it); durable PB/history records keep their fsync.
+    _atomic_write(timer_path(runtime), data, fsync=False)
 
 
 def save_records(runtime, records):
@@ -165,15 +180,37 @@ def load_timer(runtime):
 
 
 def load_records(runtime):
-    raw = _read_json(records_path(runtime), MAX_RECORDS_BYTES)
+    path = records_path(runtime)
+    existed = path.exists()
+    raw = _read_json(path, MAX_RECORDS_BYTES)
     if raw is None:
-        if records_path(runtime).exists():
-            _quarantine(records_path(runtime))
+        if path.exists():
+            # Parsed as JSON ``null``: a corrupt document the reader accepted.
+            _quarantine(path)
+            return _rebuild_records(runtime)
+        if existed:
+            # The reader quarantined a malformed/oversized file; recover what
+            # the append-only history still knows.
+            return _rebuild_records(runtime)
         return timer_mod.default_records()
     if not isinstance(raw, dict) or raw.get('game') not in (None, GAME):
-        _quarantine(records_path(runtime))
-        return timer_mod.default_records()
+        _quarantine(path)
+        return _rebuild_records(runtime)
     return timer_mod.normalize_records(raw)
+
+
+def _rebuild_records(runtime):
+    """Best-effort records recovery from ``attempts.jsonl``.
+
+    Only the append-only history survives a corrupt ``records.json``.  The
+    rebuilt document is written back with ``rebuilt: true`` so a later reader
+    can tell it apart from a normal one.
+    """
+    records = timer_mod.rebuild_records(
+        load_attempts(runtime), now_ms=int(time.time() * 1000))
+    records['rebuilt'] = True
+    save_records(runtime, records)
+    return records
 
 
 def load_run(runtime):
@@ -187,8 +224,6 @@ def load_attempts(runtime):
     try:
         meta = os.lstat(path)
     except FileNotFoundError:
-        return []
-    except OSError:
         return []
     if not os.path.isfile(path) or os.path.islink(path) or meta.st_size > MAX_ATTEMPTS_BYTES:
         _quarantine(path)
@@ -212,7 +247,7 @@ def load_attempts(runtime):
                     damaged = True
                     continue
                 rows.append(row)
-    except (OSError, UnicodeError):
+    except UnicodeError:
         _quarantine(path)
         return []
     if damaged:
@@ -318,12 +353,15 @@ def attempt_row(timer, *, at_ms=None):
         'schema': timer_mod.SCHEMA,
         'game': GAME,
         'runtime_id': timer.get('runtime_id'),
+        'generation': timer.get('generation'),
         'attempt_id': timer.get('attempt_id'),
         'attempt_no': timer.get('attempt_no'),
         'status': status,
         'result': status,
         'started_at_ms': timer.get('started_at_ms'),
         'ended_at_ms': timer.get('ended_at_ms'),
+        'start_source': timer.get('start_source'),
+        'name_seen_at_ms': timer.get('name_seen_at_ms'),
         'total_ms': timer.get('total_ms'),
         'current_index': timer.get('current_index'),
         'segments_ms': summary['segments_ms'],
@@ -332,10 +370,13 @@ def attempt_row(timer, *, at_ms=None):
         'splits': timer.get('splits') or [],
         'total_verdict': timer.get('total_verdict'),
         'pb_updated': bool(timer.get('pb_updated')),
+        'pb_attempt_id': timer.get('pb_attempt_id'),
+        'pb_eligible': timer.get('pb_eligible'),
         'dnf_reason': timer.get('dnf_reason'),
         'reason': timer.get('reason'),
         'bot_version': timer.get('bot_version'),
         'chart_edition': timer.get('chart_edition'),
+        'archived': False,
         'at_ms': at_ms if type(at_ms) is int else timer.get('ended_at_ms'),
     }
     return row
@@ -366,7 +407,12 @@ def finalize_attempt(runtime, terminal_reason=None, *, now_ms=None, reason=None)
     rewrites the timer.
     """
     timer = load_timer(runtime)
-    if not isinstance(timer, dict) or timer.get('status') != 'running':
+    if not isinstance(timer, dict) or timer.get('runtime_id') != Path(runtime).name:
+        # ``timer.json`` is shared by every runtime generation.  A timer that
+        # names another runtime is the live attempt of that runtime: never
+        # finish it from this runtime's teardown/retry path.
+        return timer
+    if timer.get('status') != 'running':
         return timer
     records = load_records(runtime)
     run = load_run(runtime)

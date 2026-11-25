@@ -1,6 +1,7 @@
 """Common-side hook and generator-patch tests for the speedrun RTA records."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import py_compile
@@ -28,6 +29,8 @@ def start(runtime, shot):
     os.utime(shot, (BASE, BASE))
     return hook.observe(runtime, [], {},
                         {'hanjuku': {'name_entered': True,
+                                     'phase': 'name',
+                                     'gameplay_seen': False,
                                      'clear_ending_seen': False,
                                      'terminal_reason': None}},
                         screenshot=shot)
@@ -75,6 +78,54 @@ def test_speedrun_module_resolution_points_at_the_rta_package():
     store_module = hanjuku_family.module(hanjuku_family.SPEEDRUN, 'rta.store')
     assert store_module is store
     assert store_module.__name__ == 'docich.hanjuku_speedrun.rta.store'
+
+
+def test_recovery_uses_the_timer_owners_run_state(tmp_path):
+    state_dir = tmp_path / 'run-soren-live'
+    runtime_a, shot_a = make_runtime(state_dir, 'g1-abc123')
+    start(runtime_a, shot_a)
+    (runtime_a / 'hanjuku_run.json').write_text(json.dumps({
+        'phase': 'title', 'name_entered': True, 'gameplay_seen': True,
+        'clear_ending_seen': False, 'terminal_reason': 'game_over',
+    }), encoding='utf-8')
+    runtime_b, shot_b = make_runtime(state_dir, 'g2-def456')
+    os.utime(shot_b, (BASE + 100, BASE + 100))
+    result = hook.observe(
+        runtime_b, [], {},
+        {'hanjuku': {'phase': 'battle', 'gameplay_seen': True,
+                     'terminal_reason': None}},
+        screenshot=shot_b)
+    rows = store.load_attempts(runtime_b)
+    assert len(rows) == 1
+    # The stale attempt of runtime A ends as A actually ended (game over),
+    # not as a generic "stopped" from runtime B's missing run state.
+    assert rows[0]['runtime_id'] == 'g1-abc123'
+    assert rows[0]['status'] == 'dnf'
+    assert rows[0]['dnf_reason'] == 'game_over'
+    # The mid-run observation in B does not invent an attempt.
+    assert result['runtime_id'] == 'g2-def456'
+    assert result['status'] == 'pending'
+    assert result['reason'] == 'no_start_seen'
+
+
+def test_recovery_of_a_deleted_owner_runtime_is_stopped(tmp_path):
+    state_dir = tmp_path / 'run-soren-live'
+    runtime_a, shot_a = make_runtime(state_dir, 'g1-abc123')
+    start(runtime_a, shot_a)
+    for path in sorted(runtime_a.rglob('*'), reverse=True):
+        path.unlink() if path.is_file() else path.rmdir()
+    runtime_a.rmdir()
+    runtime_b, shot_b = make_runtime(state_dir, 'g2-def456')
+    os.utime(shot_b, (BASE + 100, BASE + 100))
+    hook.observe(runtime_b, [], {},
+                 {'hanjuku': {'phase': 'battle', 'gameplay_seen': True,
+                              'terminal_reason': None}},
+                 screenshot=shot_b)
+    rows = store.load_attempts(runtime_b)
+    assert len(rows) == 1
+    assert rows[0]['runtime_id'] == 'g1-abc123'
+    assert rows[0]['dnf_reason'] == 'stopped'
+    assert rows[0]['reason'] == 'recovered'
 
 
 def test_generator_adds_the_rta_side_effect_and_check_passes(tmp_path):

@@ -24,7 +24,7 @@ def observe(runtime, shot, records=None, *, run_extra=None, t=BASE,
             state=None):
     os.utime(shot, (t, t))
     run = {'name_entered': False, 'clear_ending_seen': False,
-           'terminal_reason': None}
+           'terminal_reason': None, 'phase': 'title', 'gameplay_seen': False}
     run.update(run_extra or {})
     meta = {'hanjuku': run, 'terminal_reason': run.get('terminal_reason')}
     return hook.observe(runtime, records or [], state or {}, meta,
@@ -42,7 +42,9 @@ def chapter_seen(new_chapter, evidence='chapter_end_save_party'):
 
 
 def start(runtime, shot, t=BASE):
-    return observe(runtime, shot, run_extra={'name_entered': True}, t=t)
+    return observe(runtime, shot,
+                   run_extra={'name_entered': True, 'phase': 'name'},
+                   t=t)
 
 
 def full_run(runtime, shot, *, step=10, start_t=BASE):
@@ -244,8 +246,12 @@ def test_same_runtime_name_screen_closes_a_stale_attempt(tmp_path):
         run_extra={'name_entered': True, 'phase': 'name',
                    'gameplay_seen': True},
         t=BASE + 100)
-    assert restarted['status'] == 'running'
-    assert restarted['attempt_id'] == 'a0002-g1-abc'
+    # The restart closes the stale attempt, but a name screen after gameplay
+    # is not proof of a fresh start (D2): no second attempt is invented.
+    assert restarted['status'] == 'dnf'
+    assert restarted['attempt_id'] == 'a0001-g1-abc'
+    assert restarted['dnf_reason'] == 'stopped'
+    assert restarted['reason'] == 'recovered'
     rows = store.load_attempts(runtime)
     assert len(rows) == 1
     assert rows[0]['status'] == 'dnf'
@@ -285,6 +291,113 @@ def test_corrupt_records_are_quarantined_and_recording_continues(tmp_path):
     assert corrupt
     assert corrupt[0].read_text(encoding='utf-8') == '{not json'
     assert store.load_records(runtime)['pb']['total_ms'] == 120_000
+
+
+def test_mid_run_observation_records_no_start_seen_instead_of_an_attempt(tmp_path):
+    runtime, shot = make_runtime(tmp_path)
+    # name_entered alone is not proof that *this* frame is the name screen.
+    pending = observe(runtime, shot,
+                      run_extra={'name_entered': True}, t=BASE)
+    assert pending['status'] == 'pending'
+    assert pending['reason'] == 'no_start_seen'
+    assert store.load_attempts(runtime) == []
+    assert store.load_records(runtime)['pb'] is None
+
+    # Neither the bot's historical name decisions nor state['name'] may start
+    # an attempt after gameplay has begun.
+    mid_run = observe(
+        runtime, shot,
+        [{'decision': 'name_confirm', 'chart_step': 'name'},
+         {'decision': 'name_wait'}],
+        state={'name': {'done': True}},
+        run_extra={'phase': 'battle', 'gameplay_seen': True},
+        t=BASE + 1)
+    assert mid_run['status'] == 'pending'
+    assert mid_run['reason'] == 'no_start_seen'
+    assert store.load_attempts(runtime) == []
+    assert store.load_records(runtime)['pb'] is None
+
+    # A restored checkpoint also has gameplay_seen true even while the name
+    # screen is showing: still not a fresh start.
+    restored = observe(runtime, shot,
+                       run_extra={'phase': 'name', 'gameplay_seen': True},
+                       t=BASE + 2)
+    assert restored['status'] == 'pending'
+    assert restored['reason'] == 'no_start_seen'
+    assert store.load_attempts(runtime) == []
+
+
+def test_early_clear_ending_is_not_pb_eligible(tmp_path):
+    runtime_a, shot_a = make_runtime(tmp_path, 'g1-abc')
+    full_run(runtime_a, shot_a)
+    pb = store.load_records(runtime_a)['pb']
+    assert pb['total_ms'] == 120_000
+
+    runtime_b, shot_b = make_runtime(tmp_path, 'g2-def')
+    start(runtime_b, shot_b, t=BASE + 1000)
+    observe(runtime_b, shot_b, [split_record(1)], t=BASE + 1001)
+    # "めでたし" seen before chapter 11 was confirmed: almost certainly a
+    # misread.  The attempt ends, its segment best still counts, but a
+    # too-short PB is never written.
+    final = observe(runtime_b, shot_b,
+                    run_extra={'clear_ending_seen': True}, t=BASE + 1002)
+    assert final['status'] == 'finished'
+    assert final['pb_eligible'] is False
+    assert final['pb_updated'] is False
+    assert final['total_verdict'] == 'white'
+    records = store.load_records(runtime_b)
+    assert records['pb']['attempt_id'] == 'a0001-g1-abc'
+    assert records['gold_segments_ms'][0] == 1_000
+    row = store.load_attempts(runtime_b)[-1]
+    assert row['status'] == 'finished'
+    assert row['pb_eligible'] is False
+    assert row['pb_updated'] is False
+
+
+def test_equal_total_is_white_and_slower_is_red(tmp_path):
+    runtime_a, shot_a = make_runtime(tmp_path, 'g1-abc')
+    full_run(runtime_a, shot_a)
+
+    runtime_b, shot_b = make_runtime(tmp_path, 'g2-def')
+    equal = full_run(runtime_b, shot_b, start_t=BASE + 1000)
+    assert equal['total_ms'] == 120_000
+    assert equal['pb_updated'] is False
+    assert equal['total_verdict'] == 'white'
+    assert equal['pb_attempt_id'] == 'a0001-g1-abc'
+
+    runtime_c, shot_c = make_runtime(tmp_path, 'g3-ghi')
+    slower = full_run(runtime_c, shot_c, step=11, start_t=BASE + 3000)
+    assert slower['total_ms'] == 132_000
+    assert slower['pb_updated'] is False
+    assert slower['total_verdict'] == 'red'
+    assert slower['pb_attempt_id'] == 'a0001-g1-abc'
+
+
+def test_attempt_carries_the_added_schema_keys(tmp_path):
+    runtime, shot = make_runtime(tmp_path, 'g12-abcdef')
+    started = start(runtime, shot)
+    assert started['generation'] == 12
+    assert started['start_source'] == 'name_screen'
+    assert started['name_seen_at_ms'] == BASE * 1000
+    assert started['pb_attempt_id'] is None
+    assert started['pb_eligible'] is True
+
+    merged = observe(runtime, shot, [split_record(3)], t=BASE + 100)
+    split = merged['splits'][0]
+    assert split['index'] == 0
+    assert split['end_index'] == 2
+    assert split['merged'] is True
+
+    final = observe(runtime, shot, run_extra={'clear_ending_seen': True},
+                    t=BASE + 200)
+    row = store.load_attempts(runtime)[-1]
+    assert row['generation'] == 12
+    assert row['start_source'] == 'name_screen'
+    assert row['name_seen_at_ms'] == BASE * 1000
+    assert row['pb_attempt_id'] is None
+    assert row['pb_eligible'] is False  # merged past chapter 11
+    assert row['archived'] is False
+    assert final['pb_attempt_id'] is None
 
 
 def test_observe_never_raises_on_bad_input():

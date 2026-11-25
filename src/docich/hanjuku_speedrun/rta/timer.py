@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import copy
 
+from ...naming import runtime_id_generation
+
 SCHEMA = 1
 GAME = 'hanjuku-speedrun'
 SEGMENT_COUNT = 12
@@ -60,6 +62,14 @@ def _text(value, limit=160):
 
 def _copy(value):
     return copy.deepcopy(value)
+
+
+def _generation(runtime_id):
+    """The numeric generation encoded in a runtime id, or ``None``."""
+    try:
+        return runtime_id_generation(runtime_id)
+    except (TypeError, ValueError):
+        return None
 
 
 def _empty_gold():
@@ -168,6 +178,8 @@ def normalize_records(raw):
     records['gold_segments'] = gold
     records['gold_segments_ms'] = ms
     records['sum_of_best_ms'] = sum_of_best_ms(ms)
+    if raw.get('rebuilt') is True:
+        records['rebuilt'] = True
     return records
 
 
@@ -202,18 +214,24 @@ def comparison(records):
 def new_timer(runtime_id, records, now_ms):
     """A pending timer: the first observation happened, no attempt started."""
     now = _int(now_ms) or 0
+    runtime_id = _text(runtime_id) or ''
     return {
         'schema': SCHEMA,
         'game': GAME,
-        'runtime_id': _text(runtime_id) or '',
+        'runtime_id': runtime_id,
+        'generation': _generation(runtime_id),
         'attempt_id': None,
         'attempt_no': None,
         'status': 'pending',
         'started_at_ms': None,
         'ended_at_ms': None,
+        'start_source': None,
+        'name_seen_at_ms': None,
         'current_index': 0,
         'splits': [],
         'comparison': comparison(records),
+        'pb_attempt_id': None,
+        'pb_eligible': None,
         'heartbeat_at_ms': now,
     }
 
@@ -229,7 +247,9 @@ def heartbeat(timer, now_ms):
 
 
 def start_attempt(timer, records, now_ms, *, attempt_no=None,
-                  bot_version=None, chart_edition=None):
+                  bot_version=None, chart_edition=None,
+                  start_source='name_screen', name_seen_at_ms=None,
+                  generation=None):
     """Start a new attempt and reserve its number in ``records``.
 
     ``next_attempt_no`` is the durable counter.  It is advanced here, before
@@ -244,18 +264,26 @@ def start_attempt(timer, records, now_ms, *, attempt_no=None,
     number = max(number, reserved)
     runtime_id = _text(timer.get('runtime_id')) or ''
     attempt_id = f'a{number:04d}-{runtime_id}'
+    pb = _pb(source)
+    seen_at = _int(name_seen_at_ms)
     started = {
         'schema': SCHEMA,
         'game': GAME,
         'runtime_id': runtime_id,
+        'generation': (_generation(runtime_id) if generation is None
+                       else _int(generation, minimum=1)),
         'attempt_id': attempt_id,
         'attempt_no': number,
         'status': 'running',
         'started_at_ms': now,
         'ended_at_ms': None,
+        'start_source': _text(start_source, limit=32) or 'name_screen',
+        'name_seen_at_ms': now if seen_at is None else seen_at,
         'current_index': 0,
         'splits': [],
         'comparison': comparison(source),
+        'pb_attempt_id': _text(pb.get('attempt_id')) if pb else None,
+        'pb_eligible': True,
         'heartbeat_at_ms': now,
         'bot_version': _text(bot_version),
         'chart_edition': _text(chart_edition),
@@ -424,6 +452,7 @@ def confirm_split(timer, records, now_ms, end_index, source):
 
     split = {
         'index': start,
+        'end_index': end,
         'segment_ms': segment_ms,
         'cumulative_ms': cumulative,
         'verdict': verdict,
@@ -499,6 +528,10 @@ def finish(timer, records, now_ms):
     previous_heartbeat = _int(timer.get('heartbeat_at_ms')) or 0
     now = max(now, previous_heartbeat, _int(timer.get('started_at_ms')) or 0)
     current = _int(timer.get('current_index'), maximum=SEGMENT_COUNT) or 0
+    # A clear ending seen before the first 10 chapters were measured is far
+    # more likely a misread than a real clear.  The attempt still ends and its
+    # confirmed segments still count, but it cannot set a PB.
+    pb_eligible = current >= 10
     if current < SEGMENT_COUNT:
         # The clear ending also closes the final chapter when its own split
         # was not measured.  Everything since the running segment is merged.
@@ -519,10 +552,15 @@ def finish(timer, records, now_ms):
     timer['merged_ranges'] = summary['merged_ranges']
 
     pb = _pb(records)
-    if pb is not None and _text(pb.get('attempt_id')) == _text(timer.get('attempt_id')):
+    pb_attempt_id = _text(pb.get('attempt_id')) if pb is not None else None
+    pb_total = _int(pb.get('total_ms')) if pb is not None else None
+    if not pb_eligible:
+        total_verdict = 'white'
+        new_pb = False
+    elif pb is not None and pb_attempt_id == _text(timer.get('attempt_id')):
         total_verdict = 'gold'
         new_pb = False
-    elif pb is None or total < (_int(pb.get('total_ms')) or 0):
+    elif pb is None or pb_total is None or total < pb_total:
         total_verdict = 'gold'
         new_pb = True
         records = _copy(records)
@@ -538,9 +576,15 @@ def finish(timer, records, now_ms):
             'at_ms': now,
         }
         records['updated_at_ms'] = now
-    else:
+    elif total > pb_total:
         total_verdict = 'red'
         new_pb = False
+    else:
+        # Equal to the PB is not slower: white, never red.
+        total_verdict = 'white'
+        new_pb = False
+    timer['pb_attempt_id'] = pb_attempt_id
+    timer['pb_eligible'] = pb_eligible
     timer['total_verdict'] = total_verdict
     timer['pb_updated'] = new_pb
     timer['comparison'] = comparison(records)
@@ -560,6 +604,9 @@ def dnf(timer, records, now_ms, dnf_reason, *, reason=None):
     timer['ended_at_ms'] = now
     timer['dnf_reason'] = _text(dnf_reason, limit=32) or 'stopped'
     timer['reason'] = _text(reason, limit=64)
+    pb = _pb(records)
+    timer['pb_attempt_id'] = _text(pb.get('attempt_id')) if pb else None
+    timer['pb_eligible'] = False
     timer['total_verdict'] = None
     timer['pb_updated'] = False
     timer['heartbeat_at_ms'] = now
@@ -579,3 +626,78 @@ def finish_or_dnf(timer, records, now_ms, terminal_reason, *, reason=None):
     return dnf(timer, records, now_ms,
                DNF_REASONS.get(terminal_reason, 'stopped'),
                reason=reason if reason is not None else terminal_reason)
+
+
+def rebuild_records(rows, now_ms=0):
+    """Rebuild the records document from the append-only attempt history.
+
+    Used after ``records.json`` had to be quarantined.  Everything that is
+    still derivable comes back:
+
+    * ``next_attempt_no`` from the largest recorded attempt number,
+    * the PB from the fastest finished attempt,
+    * each segment best from the confirmed (non-merged) segment times.
+
+    Segment times are taken from ``segments_ms`` when present, else from the
+    attempt's non-merged ``splits``.  A finished row explicitly marked
+    ``pb_eligible: false`` never becomes the PB.
+    """
+    now = _int(now_ms) or 0
+    records = default_records(now)
+    next_no = 1
+    pb = None
+    gold = _empty_gold()
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        number = _int(row.get('attempt_no'), minimum=1)
+        if number is not None:
+            next_no = max(next_no, number + 1)
+        attempt_id = _text(row.get('attempt_id'))
+        at_ms = _int(row.get('at_ms'))
+        if at_ms is None:
+            at_ms = _int(row.get('ended_at_ms'))
+        segments = row.get('segments_ms')
+        if isinstance(segments, list):
+            values = list(segments[:SEGMENT_COUNT])
+        else:
+            values = _empty_gold()
+            splits = row.get('splits')
+            for split in splits if isinstance(splits, list) else ():
+                if not isinstance(split, dict) or split.get('merged') is True:
+                    continue
+                index = _int(split.get('index'), maximum=SEGMENT_COUNT - 1)
+                segment_ms = _int(split.get('segment_ms'))
+                if index is not None and segment_ms is not None:
+                    values[index] = segment_ms
+        for index in range(SEGMENT_COUNT):
+            segment_ms = _int(values[index]) if index < len(values) else None
+            if segment_ms is None:
+                continue
+            current = gold[index]
+            if current is None or segment_ms < current['segment_ms']:
+                gold[index] = {'segment_ms': segment_ms,
+                               'attempt_id': attempt_id, 'at_ms': at_ms}
+        status = row.get('status') or row.get('result')
+        if status != 'finished' or row.get('pb_eligible') is False:
+            continue
+        total = _int(row.get('total_ms'))
+        if total is None or not attempt_id:
+            continue
+        if pb is None or total < pb['total_ms']:
+            pb = {
+                'attempt_id': attempt_id,
+                'attempt_no': number,
+                'total_ms': total,
+                'segments_ms': list(values),
+                'cumulative_ms': row.get('cumulative_ms'),
+                'merged_ranges': row.get('merged_ranges'),
+                'bot_version': row.get('bot_version'),
+                'chart_edition': row.get('chart_edition'),
+                'at_ms': at_ms,
+            }
+    records['next_attempt_no'] = next_no
+    records['pb'] = pb
+    records['gold_segments'] = gold
+    records['updated_at_ms'] = now
+    return normalize_records(records)

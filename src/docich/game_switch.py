@@ -5519,6 +5519,7 @@ class GameSwitchCoordinator:
         cleanup_pending = False
         retiring = list(state.get("retiring") or [])
         remaining: list[Mapping[str, object]] = []
+        cleaned: list[Mapping[str, object]] = []
         for runtime in retiring:
             self._log(
                 "cleanup_started", phase=str(state.get("phase")),
@@ -5566,6 +5567,7 @@ class GameSwitchCoordinator:
                     detail=_teardown_detail(evidence, runtime),
                 )
             else:
+                cleaned.append(runtime)
                 self._log(
                     "cleaned", phase=str(state.get("phase")),
                     generation=runtime.get("generation"),
@@ -5588,7 +5590,11 @@ class GameSwitchCoordinator:
                     _retiring_label(runtime) for runtime in remaining
                 ),
             )
-        finalize_speedrun_attempts(self.store.state_dir, retiring, warnings)
+        # Only runtimes whose teardown completed (removed from ``retiring``)
+        # may be finalized: a runtime still in ``remaining`` may still have a
+        # live bot whose hook would race this writer, and DNFing it would
+        # discard an attempt that is still running.
+        finalize_speedrun_attempts(self.store.state_dir, cleaned, warnings)
         self._prune_hanjuku_logs(warnings)
         return cleanup_pending
 
@@ -6650,6 +6656,10 @@ def finalize_speedrun_attempts(state_dir, runtimes, warnings=None) -> int:
     bot does not observe (operator stop, crash, switch).  ``hanjuku-hero`` is
     filtered out *before* the module is imported, so the original corner's
     path never touches the RTA package.
+
+    ``runtimes`` must contain only entries whose teardown completed (already
+    removed from ``retiring``); a runtime whose teardown failed may still have
+    a live bot and must not be finalized.
 
     ``store.finalize_attempt`` is idempotent and reads the terminal reason
     from the runtime's own ``hanjuku_run.json``; a missing reason becomes a

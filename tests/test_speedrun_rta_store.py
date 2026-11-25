@@ -25,6 +25,8 @@ def start(runtime, shot):
     os.utime(shot, (BASE, BASE))
     return hook.observe(runtime, [], {},
                         {'hanjuku': {'name_entered': True,
+                                     'phase': 'name',
+                                     'gameplay_seen': False,
                                      'clear_ending_seen': False,
                                      'terminal_reason': None}},
                         screenshot=shot)
@@ -145,14 +147,15 @@ def test_interrupted_attempt_rewrite_keeps_the_previous_jsonl(tmp_path, monkeypa
 def test_finalize_is_idempotent_after_a_partial_write(tmp_path):
     runtime, shot = make_runtime(tmp_path)
     start(runtime, shot)
-    os.utime(shot, (BASE + 10, BASE + 10))
-    hook.observe(runtime, [{'decision': 'prompt',
-                            'strategy_variant': 'chapter_end_save',
-                            'chapter': 1}], {},
-                 {'hanjuku': {'name_entered': True,
-                              'clear_ending_seen': False,
-                              'terminal_reason': None}},
-                 screenshot=shot)
+    for chapter in range(1, 11):
+        os.utime(shot, (BASE + chapter, BASE + chapter))
+        hook.observe(runtime, [{'decision': 'prompt',
+                                'strategy_variant': 'chapter_end_save',
+                                'chapter': chapter}], {},
+                     {'hanjuku': {'name_entered': True,
+                                  'clear_ending_seen': False,
+                                  'terminal_reason': None}},
+                     screenshot=shot)
     (runtime / 'hanjuku_run.json').write_text(
         '{"terminal_reason": "game_clear", "clear_ending_seen": true}',
         encoding='utf-8')
@@ -169,6 +172,97 @@ def test_finalize_is_idempotent_after_a_partial_write(tmp_path):
     assert second == first
     assert len(store.load_attempts(runtime)) == 1
     assert store.load_records(runtime)['pb']['attempt_id'] == current['attempt_id']
+
+
+def test_finalize_does_not_touch_another_runtimes_timer(tmp_path):
+    runtime_a, shot = make_runtime(tmp_path, 'g1-abc')
+    start(runtime_a, shot)
+    before = store.load_timer(runtime_a)
+    runtime_b, _shot_b = make_runtime(tmp_path, 'g2-def')
+
+    # ``timer.json`` is shared.  runtime B's teardown/retry must not DNF the
+    # attempt that is still running in runtime A.
+    result = store.finalize_attempt(runtime_b)
+    assert result == before
+    assert store.load_timer(runtime_a)['status'] == 'running'
+    assert store.load_attempts(runtime_a) == []
+
+
+def test_transient_read_error_is_not_quarantined_and_skips_the_observation(
+        tmp_path, monkeypatch, capsys):
+    runtime, shot = make_runtime(tmp_path)
+    start(runtime, shot)
+    store.save_records(runtime, timer.default_records())
+    before = store.records_path(runtime).read_bytes()
+    original = Path.read_text
+
+    def failing_read(self, *args, **kwargs):
+        if self.name == 'records.json':
+            raise OSError(5, 'simulated EIO')
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', failing_read)
+    with pytest.raises(OSError):
+        store.load_records(runtime)
+    assert list(store.data_dir(runtime).glob('records.json.corrupt-*')) == []
+    assert store.records_path(runtime).read_bytes() == before
+
+    # The hook skips this observation with exactly one stderr line and does
+    # not finalize or restart the attempt from partial state.
+    observed = hook.observe(
+        runtime, [], {},
+        {'hanjuku': {'phase': 'name', 'gameplay_seen': True,
+                     'name_entered': True, 'terminal_reason': None}},
+        screenshot=shot)
+    assert observed is None
+    stderr = capsys.readouterr().err
+    assert stderr.count('\n') == 1
+    assert 'observation skipped' in stderr
+    assert store.load_timer(runtime)['status'] == 'running'
+    assert store.load_attempts(runtime) == []
+
+
+def test_corrupt_records_are_rebuilt_from_attempts(tmp_path, capsys):
+    runtime, _shot = make_runtime(tmp_path)
+    path = store.attempts_path(runtime)
+    path.parent.mkdir(parents=True)
+    rows = [
+        {'schema': 1, 'game': 'hanjuku-speedrun',
+         'attempt_id': 'a0001-g1-abc', 'attempt_no': 1,
+         'status': 'finished', 'result': 'finished', 'total_ms': 120_000,
+         'segments_ms': [10_000] * 12, 'cumulative_ms': [10_000] * 12,
+         'merged_ranges': [], 'at_ms': 1},
+        {'schema': 1, 'game': 'hanjuku-speedrun',
+         'attempt_id': 'a0002-g1-abc', 'attempt_no': 2,
+         'status': 'dnf', 'result': 'dnf', 'total_ms': 50_000,
+         'segments_ms': [9_000] + [None] * 11,
+         'cumulative_ms': [9_000] + [None] * 11,
+         'merged_ranges': [], 'at_ms': 2},
+        {'schema': 1, 'game': 'hanjuku-speedrun',
+         'attempt_id': 'a0003-g1-abc', 'attempt_no': 3,
+         'status': 'finished', 'result': 'finished', 'total_ms': 110_000,
+         'segments_ms': [11_000] + [None] * 11,
+         'cumulative_ms': [11_000] + [None] * 11,
+         'merged_ranges': [], 'at_ms': 3},
+    ]
+    path.write_text('\n'.join(json.dumps(row) for row in rows) + '\n',
+                    encoding='utf-8')
+    store.records_path(runtime).write_text('{broken', encoding='utf-8')
+
+    records = store.load_records(runtime)
+    assert records['rebuilt'] is True
+    assert records['next_attempt_no'] == 4
+    assert records['pb']['attempt_id'] == 'a0003-g1-abc'
+    assert records['pb']['total_ms'] == 110_000
+    assert records['gold_segments_ms'][0] == 9_000
+    assert records['gold_segments'][0]['attempt_id'] == 'a0002-g1-abc'
+    assert records['gold_segments_ms'][1] == 10_000
+    assert list(store.data_dir(runtime).glob('records.json.corrupt-*'))
+    assert 'quarantined' in capsys.readouterr().err
+    # The rebuilt document (including its marker) is what a later read sees.
+    assert json.loads(store.records_path(runtime).read_text(
+        encoding='utf-8'))['rebuilt'] is True
+    assert store.load_records(runtime)['rebuilt'] is True
 
 
 def test_bounded_rows_keeps_the_newest_that_fit(tmp_path, monkeypatch):
