@@ -2665,3 +2665,20 @@ def test_stuck_march_keeps_the_existing_age_threshold(age_ticks, expected):
 
     assert ("stuck_march" in signals) is expected
 
+def test_stock_without_an_eligible_card_is_not_a_missed_carry(runtime_dir):
+    # owner 2026-11-26: 計画が空のとき自動携行は 卵落 0 の札だけを選ぶ。
+    # 卵落 > 0 の札しか無い在庫は「携行できたのに空」ではない。
+    value = _cards_state(stock={'イッテツーン': 1, 'フットバース': 2})
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=lambda record: None)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_stock_with_a_safe_card_still_reports_the_empty_kit(runtime_dir):
+    value = _cards_state(stock={'イッテツーン': 1, 'フットバース': 2, 'デッドガン': 1})
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=lambda record: None)
+    records = audit.load_incidents(runtime_dir)
+    assert [r['kind'] for r in records] == ['sortie_without_cards']

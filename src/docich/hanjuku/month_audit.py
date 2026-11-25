@@ -2561,6 +2561,14 @@ def _sortie_cards_event(record, mem, records=None):
     if not boss_order:
         stock = {name: count for name, count in stock.items()
                  if name not in reference.BOSS_ONLY_CARDS}
+    # owner 2026-11-24 (v1448) / 2026-11-26: when the plan names no card, the
+    # kit planner only carries a card whose 卵落 is exactly 0. A stock holding
+    # nothing eligible therefore cannot be a missed carry; flagging it was a
+    # false 'sortie_without_cards' (g1190 ch2: イッテツーン/フットバース
+    # only, both 卵落 > 0, empty plan). A plan that names cards keeps them.
+    if not _card_names(order.get('cards')):
+        stock = {name: count for name, count in stock.items()
+                 if (reference.CARDS.get(name) or {}).get('egg_drop') == 0}
     if not stock:
         return None
     carried = _sortie_carried_cards(mem, step, record, records)
