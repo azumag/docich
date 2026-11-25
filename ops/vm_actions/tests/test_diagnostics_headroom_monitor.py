@@ -80,6 +80,8 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
         self.assertNotIn("miscellaneous=", compact)
         self.assertNotIn("collector_only", compact)
         self.assertNotIn("inject", compact)
+        self.assertNotIn("cccc", compact)
+        self.assertNotIn("wwww", compact)
         self.assertIn("others=", compact)
         self.assertIn("total=", compact)
         section_rows = [
