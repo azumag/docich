@@ -22,7 +22,7 @@ LONG_A = ('第8章の14年2月、この15分はエピィ将軍がミュスカデ
           'その一方でおかざき城を失い、攻めの勢いと守りの脆さが同時に見えた15分でした。'
           'それでも兵士を99人補充できたのは大きい。'
           '次はおかざき城の奪還を狙いますが、まずは守りを立て直したいところです。'
-          '将軍たちの粘りは見事で、流れはまだ十分に巻き返せます。'
+          '同志たちの粘りは見事で、流れはまだ十分に巻き返せます。'
           'この経験を次の戦いに活かせれば、きっと面白い展開になります。'
           'その判断の背景には、城を守りながら次の攻めを探る難しさがありました。'
           '将軍たちは限られた兵と札の中で、何を優先するかを毎回合わせています。'
@@ -31,7 +31,7 @@ LONG_A = ('第8章の14年2月、この15分はエピィ将軍がミュスカデ
 
 LONG_B = ('第8章の14年2月、エピィ将軍がミュスカデに勝った一方で、おかざき城は失いました。'
           'それでも兵士を99人補充し、次はおかざき城の奪還を狙います。'
-          '苦しい時間帯でも判断を止めなかった将軍たちには、思わず拍手を送りたくなります。'
+          '苦しい時間帯でも判断を止めなかった同志たちには、思わず拍手を送りたくなります。'
           '課題は城を守り切ることで、攻めと守りのバランスを見直したいところです。'
           '城の出入りは激しく、目が離せない展開でしたが、最後まで前を向いていました。'
           'この15分の経験が次の戦いできっと生きてくると信じています。'
@@ -237,6 +237,7 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '課題' in prompt and 'ユーモア' in prompt
     assert '列挙' in prompt and 'focus' in prompt
     assert '焦点' in prompt
+    assert 'ソ連' in prompt and '同志' in prompt and 'focus.humor' in prompt
     assert value['focus']['feature'] in prompt
     assert periodic.DEFAULT_PERSONA in prompt
     assert '"texts"' in prompt
@@ -248,6 +249,12 @@ def test_narrative_rejects_a_flat_fact_list():
     assert periodic.narrative_ok(fact_list) is False
     assert periodic.narrative_ok(LONG_A) is True
     assert periodic.narrative_ok(LONG_B) is True
+
+
+def test_persona_requires_one_to_four_soviet_riffs():
+    assert periodic.persona_ok('今回の焦点は同志の出撃判断です。') is True
+    assert periodic.persona_ok('今回の焦点は出撃判断です。') is False
+    assert periodic.persona_ok('同志、人民、赤旗、五カ年計画、政治局、集団農場。') is False
 
 
 def test_focus_clarity_rejects_buried_focus_and_too_many_names():

@@ -84,6 +84,10 @@ KATAKANA_ALLOWED = frozenset({
     'ポジション', 'スキル', 'ミステリー', 'サプライズ', 'メッセージ', 'エール',
     'シーズン', 'エピソード', 'クエスト', 'ミッション', 'ケア', 'フォロー', 'サポート',
     'ボット', 'リスク', 'メリット', 'デメリット', 'ロジック',
+    'ソビエト', 'ソ連', 'ペレストロイカ', 'グラスノスチ', 'コルホーズ', 'ソフホーズ',
+    'クレムリン', 'スプートニク', 'バラライカ', 'トロイカ', 'ボルシチ', 'ウォッカ',
+    'プロレタリア', 'コミンテルン', 'モスクワ', 'レニングラード', 'スターリングラード',
+    'ウラル', 'シベリア', '冬将軍',
 })
 
 FOCUS_CATEGORIES = ('card', 'sortie', 'defense', 'economy', 'chart', 'battle')
@@ -95,11 +99,26 @@ FOCUS_ROLES = {
     'inspect_live_inventory_before_selection': '使用前に実際の手持ち札を確認する判断',
 }
 DEFAULT_PERSONA = (
-    '半熟英雄を長く見守ってきた、落ち着きと熱量のある実況者。'
-    '将軍たちの判断を尊重し、小さな進展を一緒に喜び、失敗には優しくツッコミを入れる。'
-    '視聴者に語りかけるように、まず結論を明確にし、比喩は1つまで。事実と感想を織り交ぜ、'
-    '最後は前向きな余韻を残す。'
+    'ソビエト連邦の放送局から中継しているような、おおらかで少し皮肉屋の実況者。'
+    '将軍たちを「同志」、城を「人民の拠点」、兵站を「五カ年計画」、作戦を「党中央の計画」に例える。'
+    '小さな勝利は「人民の勝利」として喜び、計画が崩れたら「計画経済の誤算」と軽くツッコむ。'
+    'ただし政治的な主張ではなく、ゲーム内の冗談として楽しむ。'
+    '視聴者に語りかけるように、まず結論を明確にし、比喩は1つまで。最後は前向きな余韻を残す。'
 )
+
+PERSONA_MARKERS = re.compile(
+    r'同志|人民|ソビエト|ソ連|共産|赤旗|五カ年|計画経済|集団農場|配給|政治局|'
+    r'最高会議|コルホーズ|ソフホーズ|ペレストロイカ|グラスノスチ|プロレタリア|'
+    r'革命|党委員会|社会主義|スプートニク|バラライカ|冬将軍|クレムリン')
+
+PERSONA_HUMOR = {
+    'card': '計画経済の配分',
+    'sortie': '五カ年計画の輸送',
+    'defense': '冬将軍と赤旗',
+    'economy': '集団農場の配給',
+    'chart': 'ペレストロイカ',
+    'battle': '政治局の前線指揮',
+}
 
 
 class PeriodicError(RuntimeError):
@@ -777,6 +796,8 @@ def situation(runtime_dir, run, state, now):
                 focus['general'] = general
     if focus:
         category = focus.get('category')
+        if category in PERSONA_HUMOR:
+            focus.setdefault('humor', PERSONA_HUMOR[category])
         if category not in {'battle', 'defense'}:
             current.pop('battle', None)
         if category not in {'sortie', 'chart'}:
@@ -851,10 +872,11 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '1. 焦点の判断（何を狙ったか、なぜその判断をしたか）',
         '2. その判断の良かった点と、課題・反省・次に活かせる改善点',
         '3. 他の出来事は背景として最大2個だけ触れる（全部を列挙しない）',
-        '4. 将軍や城のドラマ。ユーモアは自然に入る場合だけ、無理に例えを入れない',
+        '4. 将軍や城のドラマ。ソ連・共産主義の軽いユーモアを1つ入れる（焦点の説明を邪魔しない）',
         '5. 視聴者への前向きな締め（心に残る一言）',
         '最初の2文で「今回の焦点は…」と、誰が・何を・どう判断したかを明言してください。'
-        '読者が最初の2文で「結局何の話か」を理解できるようにします。',
+        '読者が最初の2文で「結局何の話か」を理解できるようにします。'
+        'ソ連ネタで本題をぼかさず、最初の2文には入れないでください。',
         'focus.plain と focus.choice を言い換えて示し、focus.why を説明してください。'
         'focusにない戦略意図を創作してはいけません。',
         '焦点の判断を説明するときも、focusに書かれた材料だけを使い、実行結果と計画を混同しないでください。'
@@ -862,6 +884,10 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '名前（将軍・城・札）はfocusと背景を合わせて最大6つまで。1文に複数の将軍や城を詰め込まず、'
         '1文1話題にしてください。',
         '比喩は焦点の理解に役立つ場合だけ1つまで。日常の例えや、状況と関係の薄い比喩は使わないでください。',
+        'ソ連・共産主義ネタは、focus.humor の方向を参考に軽い比喩として1〜2回だけ。'
+        '「同志」「人民」「五カ年計画」「集団農場」「ペレストロイカ」「赤旗」「冬将軍」などを、'
+        '毎回同じ言い回しにならないように使ってください。',
+        '政治的な主張、実在の人物・民族・国への侮辱、粛清・飢餓・収容所などの暗い歴史ネタは使わないでください。',
         '結論→理由→課題→展望の順で、同じ段落に複数の話題を混ぜないでください。',
         '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
         '事実を曲げないでください。',
@@ -1065,6 +1091,9 @@ def _number_in_context(value, before, after, facts):
                                                              'focus'})
     if after.startswith(('回', '件')) and '出撃' in before:
         return any(fact.get('orders') == value for fact in facts if fact.get('kind') == 'window')
+    if after.startswith('件') and re.search(r'拠点|城|確保', before):
+        return any(fact.get('captures') == value or fact.get('castle_losses') == value
+                   for fact in facts if fact.get('kind') == 'window')
     if after.startswith('城') and re.search(r'取|獲得|占領|失|落', before):
         return any(fact.get('captures') == value or fact.get('castle_losses') == value
                    for fact in facts if fact.get('kind') == 'window')
@@ -1120,6 +1149,11 @@ def _number_in_context(value, before, after, facts):
     return False
 
 
+def persona_ok(text):
+    """One to four light Soviet/communist riffs; none or too many is off-persona."""
+    return 1 <= len(PERSONA_MARKERS.findall(text)) <= 4
+
+
 def focus_clear(text, focus, facts, max_names=6):
     """The first two sentences must name the focus; keep background names small."""
     if not isinstance(focus, dict):
@@ -1158,13 +1192,15 @@ def valid_text(text, facts):
                            'や', 'から', 'まで', 'より')):
             continue
         if token.endswith(('失った', '奪った', '取った', '落とした', '守った',
-                           '攻めた', '目指す', '戻った', '手にした', '保持する')):
+                           '攻めた', '目指す', '戻った', '手にした', '保持する',
+                           '同じ', '別の', 'この', 'その', 'あの')):
             continue
         if re.search(r'ありません|ない|なし|[0０]', normalized[match.end():match.end() + 16]):
             continue
         return False
     if re.search(r'死亡|戦死|亡くな|全滅|一撃|瞬殺|必ず|確実に|絶対|ゲームオーバー|'
-                 r'エンディング|倒した|撃破した?|ゲーム(?:を)?クリア', normalized):
+                 r'エンディング|倒した|撃破した?|ゲーム(?:を)?クリア|粛清|処刑|飢餓|'
+                 r'虐殺|グラーグ|シベリア送り|収容所', normalized):
         return False
     for match in re.finditer(r'クリア', normalized):
         if not re.search(r'[0-9]+章', normalized[max(0, match.start() - 16):match.end() + 8]):
