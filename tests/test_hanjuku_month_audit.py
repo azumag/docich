@@ -2591,3 +2591,52 @@ def test_chapter_four_season_king_battle_counts_as_boss_evidence():
     # Season kings are chapter 4 evidence only; the same name in another
     # chapter's window must not suppress its boss incident.
     assert audit._rows_boss_battle(rows, 9, 'ハデス') is False
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("en_route", True),
+        ("launched_unconfirmed", True),
+        ("arrived", False),
+        ("overdue", False),
+        ("cancelled", False),
+        ("closed", False),
+    ],
+)
+def test_stuck_march_only_counts_live_march_statuses(status, expected):
+    context = {
+        "flow": {},
+        "world": {
+            "garrison": {"S": ["G", "H"]},
+            "sorties": {"old": {"status": status, "age_ticks": 3001}},
+        },
+        "plan": {"orders": {"A:1:M1": "pending"}},
+    }
+
+    signals = audit._signals(
+        context, {}, confirmed=0, departures=0, battle_count=0,
+    )
+
+    assert ("stuck_march" in signals) is expected
+
+
+@pytest.mark.parametrize(("age_ticks", "expected"), [
+    (3000, False), (3001, True), (True, False), ("3001", False), (None, False),
+])
+def test_stuck_march_keeps_the_existing_age_threshold(age_ticks, expected):
+    context = {
+        "flow": {},
+        "world": {
+            "garrison": {"S": ["G", "H"]},
+            "sorties": {"live": {"status": "en_route", "age_ticks": age_ticks}},
+        },
+        "plan": {"orders": {"A:1:M1": "pending"}},
+    }
+
+    signals = audit._signals(
+        context, {}, confirmed=0, departures=0, battle_count=0,
+    )
+
+    assert ("stuck_march" in signals) is expected
+
