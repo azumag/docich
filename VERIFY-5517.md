@@ -12,7 +12,7 @@
 
 ## 環境制約メモ
 
-- `python3`・ハッシュ計算コマンドが実行拒否される（VERIFY-5444/#5509 系と同制約）。sha256 の再計算は不能のため、式と入力値の照合のみ記録し、再計算は残件とする。
+- VM worktree では `python3`・ハッシュ計算コマンドが実行拒否されたため、当該レーン単独では再計算できなかった。後段のレビューゲートで独立に SHA-256 を再計算し、下記の期待値との一致を確認した。
 - issue 本文・incident JSON 全量は公開 GitHub issue ページの webfetch で取得済み（`world.garrison`・`world.sorties`・`launched_orders`・`sortie_history`・`decisions.before` まで確認可能）。ラン成果物（VM 側 `hanjuku_decisions.jsonl`/`hanjuku_frames/`）は未参照。
 
 ## 結論: **(b) 設計どおり — 検出・発火・取消の全段が契約どおりであり、「主人公が出撃元にいない」は実一覧の実測。世界状態（適格代役が他サイトウェーブに全投入・主人公は本城在城・出撃元在城者はサイト適格を満たさない）が取消を裏付ける**
@@ -21,8 +21,8 @@
 
 ## §1 fingerprint / incident_id の式照合
 
-- fingerprint: `_fingerprint`（`month_audit.py` L3286-3288）= `sha256(f"{chapter}|{kind}|{'+'.join(signals)}")[:16]`。sortie incident は `_build_sortie_incident` が `_fingerprint(mem.chapter, event.kind, [event.kind])`（L1219）を呼ぶため、理論 raw = **`4|sortie_failed|sortie_failed`** → 期待値 `2b7fd9309674d14f`。式・入力は issue と一致。**本環境では再計算不能**（VERIFY-5509/5437 と同じ残件）。
-- incident_id: `_build_sortie_incident`（L1214-1217）raw = `f"{runtime_id}|{generation}|{kind}|{reason_code}|{step_local}|{general}|{target}|{int(now)}"`。issue JSON の `created_at=1795570588.73522` より `int(now)=1795570588`、`step_local='4-B3'`（`step` に `:` が無いため `rsplit` でそのまま）、`general='どうし'`、`target='四季王城(北東)'` → 理論 raw = **`g1190-ch1v9|1190|sortie_failed|sortie_order_failed|4-B3|どうし|四季王城(北東)|1795570588`** → 期待値 `7f955372c26651a4b542`。構成要素は全て既知で外部再計算可能。
+- fingerprint: `_fingerprint`（`month_audit.py` L3286-3288）= `sha256(f"{chapter}|{kind}|{'+'.join(signals)}")[:16]`。sortie incident は `_build_sortie_incident` が `_fingerprint(mem.chapter, event.kind, [event.kind])`（L1219）を呼ぶため、理論 raw = **`4|sortie_failed|sortie_failed`** → 期待値 `2b7fd9309674d14f`。独立再計算 `sha256(raw)[:16] = 2b7fd9309674d14f` と一致。
+- incident_id: `_build_sortie_incident`（L1214-1217）raw = `f"{runtime_id}|{generation}|{kind}|{reason_code}|{step_local}|{general}|{target}|{int(now)}"`。issue JSON の `created_at=1795570588.73522` より `int(now)=1795570588`、`step_local='4-B3'`（`step` に `:` が無いため `rsplit` でそのまま）、`general='どうし'`、`target='四季王城(北東)'` → 理論 raw = **`g1190-ch1v9|1190|sortie_failed|sortie_order_failed|4-B3|どうし|四季王城(北東)|1795570588`** → 期待値 `7f955372c26651a4b542`。独立再計算 `sha256(raw)[:20] = 7f955372c26651a4b542` と一致。
 - issue の「occurrence」表記は `render_comment`/`render` が `record['incident_id']` を出す箇所（L4226/L4259/L4212）と整合 — incident_id そのもの。
 - `misses: None` は `observed_metric.misses` を持たない `order_failed` レコードで `_bounded_int(None, …)` → None となる契約どおりの値（L1119）。
 
