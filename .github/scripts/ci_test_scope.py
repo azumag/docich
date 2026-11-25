@@ -49,10 +49,15 @@ TEST_RELEVANT = [
     '.node-version',
     'src/**/*.py',
     'tests/**/*.py',
+    'tests/**/*.mjs',
     'conftest.py',
     'requirements*.txt',
     'brains/**',
     'config/games/**',
+    # The shared broadcast HTML/JS is production UI with its own template and
+    # browser contracts; an overlay-only change must not skip the suite.
+    'overlays/**/*.mjs',
+    'overlays/**/*.html',
     'tools/hanjuku_speedrun_fork.py',
     '.github/workflows/ci.yml',
     '.github/scripts/ci_test_scope.py',
@@ -76,6 +81,12 @@ HANJUKU_ONLY = [
     # PR2 split-timer records: the suite name carries the corner, not the
     # generated package, so keep it on the Hanjuku-only path explicitly.
     'tests/test_speedrun_rta*.py',
+    # PR3 split-timer display: the overlay module is shared, so its code change
+    # gets the full suite; tests that only cover the speedrun timer stay here.
+    'tests/test_speedrun_timer_overlay.py',
+    'tests/test_speedrun_timer_state.mjs',
+    'tests/test_speedrun_timer_state_ownership.py',
+    'tests/test_speedrun_timer_view.mjs',
     'docs/**',
     # Hanjuku pull requests add their chart version to this file's allow-list.
     # Its own tests run in vm-operations-ci and hanjuku-predictions-ci.
