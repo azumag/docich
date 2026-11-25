@@ -10,44 +10,35 @@
 - 検証範囲: read-only。本ファイルの追加以外のコード変更なし。本番 SSH・VM 操作・ゲーム入力なし。
 - ラン成果物 (`hanjuku_decisions.jsonl` / `hanjuku_events.jsonl` / `hanjuku_frames/`) は VM 側のため直接参照せず、公開 issue ページ・git オブジェクト・現行コードを照合した。
 
-## 結論: **(b) 設計どおり — 自動携行の安全札が在庫に存在しなかったため、空 kit 出撃は方針どおり**
+## 結論: **(a) 実欠陥 — boss wave の再計画が在庫札を空 kit に上書きする**
 
-出撃は計画札が空 (wave attack / 暫定 mechanical order) で、自動携行 (`_auto_carry_safe_card`) が発火する条件
-(在庫に `egg_drop == 0` の札がある) を満たす札が在庫になかったため、携行ゼロで出撃した。
-これは自動携行機能 v1448 以降の設計 (安全札のみ自動携行・卵落とし回避) と整合する。
-監査が `sortie_without_cards` (high) を起票したのは、監査側の適格在庫判定が `egg_drop` を考慮せず
-「在庫が正数で存在する」だけで起票条件を満たすためであり、#5510 とは異なる層の起票
-(本件は hard 禁止札ではなく、自動携行の安全条件を満たさない札)。ゲーム挙動の欠陥ではない。
+本件の実測は `want=[]` / `carried=[]` の boss wave 出撃であり、在庫には5種類の札が存在する。`_auto_carry_safe_card` が `egg_drop == 0` の札だけを選ぶこと自体は安全条件どおりで、この在庫から `None` を返すのも正しい。しかし、それだけでは全体挙動を (b) と結論づけられない。
 
+現行 base の `strategy/replan.py` は、boss target の注文について `_stock_cards(...)` で在庫にある札を選んだ直後に `cards = []` で上書きしている。直前の owner コメントは「切り札は持たせたほうが良い」、同じ行の説明は「carry what is there」であり、在庫札を持たせるという方針と実装が矛盾する。追加 wave の注文も `cards: []` 固定である。
+
+さらに `_empty_kit_blocks_departure(want, carried)` は `bool(want) and carried == []` のため、計画が空の `want=[]` は確認側 guard の対象外となる。したがって、在庫札を選ぶ計画が boss wave で消されても、空 kit のまま出撃できる経路が残っている。これは単なる監査誤検知ではなく、計画層と確認側 guard の未カバーによる実欠陥である。
+
+なお、在庫5種がすべて `egg_drop != 0` なので、空計画時の安全自動携行が何も追加しないことは意図どおり。修正対象は安全条件を緩めることではなく、boss wave が既に選んだ在庫札を消さないこと、および空計画の boss sortie をどう fail-closed にするかである。
 ## 1. fingerprint / occurrence の再計算
 
-- `_fingerprint` (`month_audit.py` L3124-3127): `sha256(f"{chapter}|{kind}|{'+'.join(signals)}")[:16]`
+- `_fingerprint` (`month_audit.py` L3174-L3176): `sha256(f"{chapter}|{kind}|{'+'.join(signals)}")[:16]`
   - 本件: `6|sortie_without_cards|sortie_without_cards` → `9c33b4ec49d5cf6e` ✓ (issue と一致)
-- `incident_id` (`month_audit.py` L2499-2504): `sha256(f"{runtime_id}|{generation}|{kind}|{step}|{general}|{int(now)}")[:20]`
+- `incident_id` (`month_audit.py` L2508-L2511): `sha256(f"{runtime_id}|{generation}|{kind}|{step}|{general}|{int(now)}")[:20]`
   - 本件: `g1190-ch1v9|1190|sortie_without_cards|A:bf8c3dee:M1cfd05|ピオーネ|1795576695` → `d1eb5f32fc808d1e7305` ✓ (issue と一致)
 
 再発コメント (occurrence `e4fd944abea2bb51e2e8`) も同一 fingerprint で、在庫構成がほぼ同一
 (ミックミー 57 vs 58、追加にラズベリー) — 同一機構の再観測。
 
-## 2. 自動携行が働かなかった理由 (検証観点1)
+## 2. boss wave で在庫札が消える経路 (検証観点1)
 
-- 計画札は空 (`planned_cards: []`)。出撃は mechanical 調整チャートの wave attack (暫定) で、
-  base chart のボス注文 `6-B1` (ヴィーナス / エンジェリン・マグネガキン) とは別系統。
-- 空計画時の自動携行は `_deploy_cards` (`strategy/kit.py`) の non-strict 経路で実行される:
-  `carried` が空なら `_with_extra_card(carried, _auto_carry_safe_card(mem, order), ...)`.
-- `_auto_carry_safe_card` (`strategy/kit.py` L117-146) の条件:
-  - `mem.card_stock` から spent/dropped を除いた札を列挙
-  - `count > 0` かつ `reference.CARDS[name].egg_drop == 0` のみ対象
-  - 安全札 (卵落 0) が無ければ `None` を返し、何も携行しない
-- 本件の在庫札と egg_drop:
-  - ころぼぐんだん: 12
-  - グリンボー: 4
-  - ピッグローラー: 2
-  - フットバース: 5
-  - ミックミー: 2
-  - いずれも `egg_drop != 0`。したがって `_auto_carry_safe_card` は `None` を返し、
-    自動携行は発火しても札を追加しない。空 kit 出撃は方針どおり。
+- 計画札は空 (`planned_cards: []`)。出撃は mechanical 調整チャートの wave attack (暫定) で、base chart のボス注文とは別系統。
+- `strategy/replan.py` の通常注文生成は、`base = chart_orders.get(target) or card_orders.get(target)` の後に `_stock_cards(mem, ...)` を呼び、在庫にあるカードを計画へ入れる。
+- しかし boss target の場合、その直後の `if chart.is_boss_castle(target): cards = []` が選択結果を破棄する。追加 wave の `boss_wave_orders` も `'cards': []` 固定。
+- 同じ箇所の owner コメントは「切り札は持たせたほうが良い」、空 kit 上書きのコメントは「carry what is there」。また `_stock_cards` 自体も、在庫札を実際に持たせる方針を docstring に記録している。したがって boss wave の空上書きはこの方針と矛盾する。
+- deploy 側の `_empty_kit_blocks_departure(want, carried)` は `bool(want) and carried == []`。plan-empty (`want=[]`) では guard が false になり、空 kit 出撃を止めない。
+- 在庫5種はすべて `egg_drop != 0` のため、`_auto_carry_safe_card` が安全札を選ばないことは正しい。安全条件を緩める必要はなく、replan が既に選んだ stock-aware kit を boss 分岐で消さない修正と、plan-empty boss wave の受入条件を明示する修正が必要。
 
+`cards_autocarried ×11` は issue の120秒集計窓全体の件数であり、対象 step に帰属する証拠ではない。今回の step で auto-carry が発火したとは結論しない。
 ## 3. #5510 (ch3 タルタル) との異同 (検証観点2)
 
 - #5510: 通常城 (メガパタ) への attack、在庫はバルムンク×1 のみ。
@@ -72,32 +63,21 @@
 - 本件は #5498 と同型 (通常在庫あり・安全札なし・計画空) で、#5457 とは異なる
   (本件は carried_observed=true の実測空、receipt 曖昧ではない)。
 
-## 5. v1496 での再発か (検証観点3)
+## 5. 検証 base と観測ラン version の区別
 
-- `BOT_VERSION` v1496 (`hanjuku-chart-v1496-card-open-limit`) に自動携行機能 v1448 以降は含まれる
-  (`_auto_carry_safe_card` は現行 main に存在)。
-- 本件は v1496 のコードで発火しており、コード欠落や回帰ではない。
-  空 kit は「安全札が在庫にない」という在庫構成に起因する方針どおりの結果。
-- 同一 fingerprint の 2 件目も同一機構 (在庫構成がほぼ同一)。
-
+- 観測ランの version は `hanjuku-chart-v1496-card-open-limit`。
+- この検証記録の base は commit `6c1fd176f25a855087fcbd4b487494690605485c` で、`src/docich/hanjuku/version.py` の `BOT_VERSION` は `hanjuku-chart-v1498-recall-battle-mode-lost`。
+- v1496 は incident が発生した実行時の version、v1498 はコードを照合した PR base の version。両者を同じ検証基盤として記載しない。
+- base の `replan.py` には boss target の `cards=[]` 上書きと追加 wave の空 kit 固定が存在する。よって、v1496 の観測だけでなく、PR base の現行コードにも同じ欠陥経路が残っている。
 ## 6. 判定詳細
 
-- **(a) ではない**: ゲーム挙動 (空 plan → 自動携行 → 安全札なし → 携行ゼロ) は
-  `_auto_carry_safe_card` の設計どおり。auto-carry は発火している (records の `cards_autocarried` ×11)。
-- **(b) 設計どおり**: 空 plan の wave attack で、在庫に egg_drop==0 の札がない場合、
-  自動携行は札を追加しない。これは owner 方針「資源を使い切る・卵落としは避ける」
-  (`strategy/kit.py` L108-113 コメント) と整合。監査の起票は、監査側が egg_drop を
-  考慮しない広い stock 定義を使っていることに起因するが、#5510 のような hard 禁止札の
-  誤計上ではなく、監査が「携行可能な札が在庫にある」事実を正しく surface している。
-- **(c) ではない**: #5510 の (c) は BOSS_ONLY_CARDS (hard 禁止) の誤計上。
-  本件の stock は boss 出撃で携行可能な通常札であり、監査の stock 定義は本件では
-  事実と整合している。誤検知ではない。
-- **(d) 要素あり**: wave attack にカードを計画すべきか (非安全札を携行すべきか) は
-  戦略判断であり、read-only では判定不能。auto-carry の安全条件を緩める
-  (`_auto_carry_safe_card` の egg_drop==0 制限変更) は owner 方針の変更であり、
-  本検証のスコープ外。ラン成果物 (`dropper_card_kit` / `card_stock` / departure binding)
-  が入手できれば spent/dropped の内訳を確認できるが、結論 (b) は変わらない。
-
+- **(a) 実欠陥**: boss wave の通常注文生成で `_stock_cards` が選んだ在庫札を、boss target 分岐が `cards=[]` で破棄する。追加 wave も空 kit 固定で、owner の「切り札は持たせたほうが良い / carry what is there」というコメントと矛盾する。
+- **空 kit の確認側 guard も不足**: `_empty_kit_blocks_departure` は plan-empty (`want=[]`) を対象にしないため、空計画の boss wave は carried が空でも出撃可能。
+- **auto-carry の安全条件は変更不要**: 本件の在庫はすべて `egg_drop != 0` なので、`_auto_carry_safe_card` が追加しないのは正しい。安全条件を緩めて解決する問題ではない。
+- **#5498 と同型**: 機械 wave / plan-empty / inventory-positive / observed-empty kit という同じ boss-wave override 経路であり、両方を (a) と分類する。#5498 と異なる結論を支持する base 上の差は確認できない。
+- **#5510 とは別層**: #5510 は通常戦で BOSS_ONLY_CARDS を適格在庫から除外する監査修正。本件は boss wave の計画が在庫札を空に上書きする問題で、PR #5512 では解消しない。
+- **cards_autocarried ×11 は対象 step の証拠ではない**: issue の集計窓全体の件数であり、対象 step の自動携行発火を示さないため、本件の根拠から除外する。
+- **後続実装の受入条件**: boss wave の各注文が実測在庫・予約・ID上限を守って携行札を計画すること、同一在庫を複数 wave に過剰予約しないこと、plan-empty で札が読めない場合に誤って空 kit を承認しないことを回帰テストで固定する。
 ## 検証メモ
 
 - 実行した検証: issue 本文の公開ページ取得、fingerprint/incident_id の sha256 再計算 (一致)、
