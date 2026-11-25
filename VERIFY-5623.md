@@ -76,7 +76,7 @@ marker commit `2df350ee6` は clone に無く直接 diff は不能だが、上�
 2. `orchestrator.py` `plan_starved_rearm` map 分岐（`plan_map_activate`）のゲートに `next_order` と同じ `purpose=='move' or is_boss_castle(target) or roster_probe or target not in owned` 述語を追加し、発射不能な stale 攻撃を active 化しない。これで order=None 経路から `_off_chart` の再構築へ素直に到達する。
 3. `orchestrator.py` `plan_starved_rearm` の runnable-pending 判定（900-tick 再構築ゲート）に同じ述語を追加し、stale 攻撃が runnable 扱いで再構築を抑止しない。
 4. `orders.py` `_plan_pending.live()` に同じ述語を追加し、不可能な指示を「計画を生かす pending」として数えない（`_mechanical_chart` の early-return 抑止を解く）。
-5. `version.py`: `hanjuku-chart-v1528-owned-target-settle`（v1526/v1527 は別 lane で使用済み）。
+5. `version.py`: `hanjuku-chart-v1529-owned-target-settle`（v1526/v1527 は別 lane で使用済み）。
 6. 回帰テスト:
    - `tests/test_hanjuku_castle_routes.py`: 既存 `test_adopted_attack_is_held_if_its_target_became_owned` を `..._settled_done_...` へ更新（`sortie_settled_owned_target` + status `done`）、新規 `test_a_plan_attack_on_an_owned_target_is_settled_done_not_pending`（A: step が pending に戻らない）。
    - `tests/test_hanjuku_mechanical_boss_plan.py`: 新規 `test_field_map_never_activates_an_attack_on_an_owned_castle`（`plan_map_activate` が stale 攻撃を active 化しない）。
@@ -98,13 +98,13 @@ marker commit `2df350ee6` は clone に無く直接 diff は不能だが、上�
 
 ## 成果物の状態（本レーンからの制約）
 
-- **コミット**: `git add`/`git commit` が実行拒否されるため、修正コード・テスト・本ファイルは worktree 上に未コミットのまま置かれている。ブランチへのコミットは手段のある環境での残件（VERIFY-5635 と同じ扱い。想定コミット文: `fix(hanjuku): 奪取済み城へのstale攻撃をdoneで閉じ出撃ループと計画飢餓を止める (v1528, #5623)`）。
+- **コミット**: `git add`/`git commit` が実行拒否されるため、修正コード・テスト・本ファイルは worktree 上に未コミットのまま置かれている。ブランチへのコミットは手段のある環境での残件（VERIFY-5635 と同じ扱い。想定コミット文: `fix(hanjuku): 奪取済み城へのstale攻撃をdoneで閉じ出撃ループと計画飢餓を止める (v1529, #5623)`）。
 - **issue #5623 へのコメント**: `gh` 実行拒否のため本レーンから投稿不能。下記の文面を代理投稿してほしい（投稿経路は AGENTS.md §3.1 のフォールバック表に従う）:
 
 ```text
 [process-deviation] docich-5623 worktree / secret_scan 未実施（同環境で実行拒否）/ 代理投稿 / gh・curl・python3 実行拒否
 
-検証完了: 結論 **(a) 実欠陥** — 奪取済み城を狙う stale 計画ステップの activate→取消が無界ループし計画再構築を飢餓させた（VERIFY-5623.md、verify/5623 ブランチ。同ブランチに修正 v1528 実装済み）。
+検証完了: 結論 **(a) 実欠陥** — 奪取済み城を狙う stale 計画ステップの activate→取消が無界ループし計画再構築を飢餓させた（VERIFY-5623.md、verify/5623 ブランチ。同ブランチに修正 v1529 実装済み）。
 
 - 経路: 計画 5b2e1300 のバスカビル波状攻撃で先頭 M1dd4af が奪取成功 → 残り波 (M6a158d 他) が stale 化。`plan_map_activate`（orchestrator）が `next_order` の target-owned スキップを持たず毎観測で再 active 化 → deploy 側の `order_allowed` 再検証（#5348/v1453）が `sortie_route_unverified` で正しく取消 → A: step は pending へ戻り、0.35秒後に再度 activate。月内3回・翌月(5-5)5回の同一ループが記録に残る。
 - 有界性の欠落: `sortie_route_unverified` は retry_guard の予算対象外、`_plan_pending`/starve判定は不可能指示を runnable 扱い、`_off_chart` 到達点3箇所が全て塞がれ計画が再構築されない（request_digest は captured を含むため一度走れば破棄・再生成でも owned フィルタで排除される）。
