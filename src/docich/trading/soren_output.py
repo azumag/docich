@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -143,25 +144,27 @@ def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -
     """Drain validated terminal recaps before publishing later audio.
 
     Both corners share the Soren outbox, so a pending recap of either family
-    member must block later audio.  The speedrun package is generated in a
-    separate change; until it exists there is simply nothing to drain there.
+    member blocks later audio.  The original runs first and behaves exactly as
+    before; a speedrun failure other than "still pending" never blocks it.
     """
     from ..hanjuku_family import FAMILY, ORIGINAL, module
 
-    pending = False
-    for game in sorted(FAMILY):
-        try:
-            retry = module(game, "hanjuku_narration").retry_pending_terminal_deliveries
-        except ModuleNotFoundError:
-            if game == ORIGINAL:
-                raise
-            continue
-        if not retry(g, exclude_key=exclude_key):
-            pending = True
-    if pending:
-        raise HanjukuTerminalPendingError(
-            "A prior Hanjuku terminal recap is still pending in the audio outbox"
-        )
+    for game in (ORIGINAL, *sorted(FAMILY - {ORIGINAL})):
+        if game == ORIGINAL:
+            drained = module(game, "hanjuku_narration").retry_pending_terminal_deliveries(
+                g, exclude_key=exclude_key)
+        else:
+            try:
+                drained = module(game, "hanjuku_narration").retry_pending_terminal_deliveries(
+                    g, exclude_key=exclude_key)
+            except Exception:  # noqa: BLE001 - the original corner must keep its audio
+                logging.getLogger(__name__).warning(
+                    "%s terminal recap retry failed", game, exc_info=True)
+                continue
+        if not drained:
+            raise HanjukuTerminalPendingError(
+                "A prior Hanjuku terminal recap is still pending in the audio outbox"
+            )
 
 
 def enqueue_paper_corner_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
