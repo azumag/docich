@@ -57,6 +57,7 @@ SPOOL_DIR = spool.SPOOL_DIR
 FRAMES_DIR = spool.FRAMES_DIR
 LOCK_FILE = 'archive.lock'
 ARCHIVE_STATE_FILE = 'archive_state.json'
+ARCHIVE_PLAN_FILE = 'archive_plan.json'
 MANIFEST_FILE = 'manifest.json'
 SEGMENTS_FILE = 'segments.json'
 FRAMES_TAR = 'frames.tar'
@@ -1174,6 +1175,131 @@ def _do_upload(directory, info, config, *, now_ms, client=None,
                 pass
 
 
+def plan_attempt(runtime_data_dir, attempt_id, *, now_ms=None):
+    """Write the would-be upload list without sending or deleting anything.
+
+    This is the local ``--dry-run`` path: it never reads ``r2.env``, never
+    opens a socket and never calls ``_ensure_manifest`` (which would write
+    files).  The plan is stored next to the attempt so an operator can inspect
+    the keys and byte counts the real uploader would use.  The ``frames.tar``
+    size is the sum of the frame inputs (tar headers are not included).
+    """
+    directory = data_dir(runtime_data_dir)
+    attempt_id = spool._component(attempt_id, 'attempt_id')
+    base = attempt_dir(directory, attempt_id)
+    if not base.is_dir():
+        raise ArchiveError('missing_attempt')
+    if base.is_symlink():
+        raise ArchiveError('unsafe_directory')
+    spool_path = spool_dir(directory, attempt_id)
+    if spool_path.is_symlink():
+        raise ArchiveError('unsafe_directory')
+    info = _attempt_info(directory, attempt_id)
+    prefix = _remote_prefix(info)
+    keep_prefix = _keep_prefix(info)
+    files = []
+    notes = []
+    pending_gzip = []
+    for relative, path, size in _iter_files(spool_path):
+        if relative.startswith(f'{FRAMES_DIR}/'):
+            continue
+        name = Path(relative).name
+        if name.startswith('.') or name.endswith(spool.GZIP_LOCK_SUFFIX):
+            continue
+        if _gzip_lock_live(path):
+            # The real uploader waits for the detached gzip; list it but make
+            # clear it is not ready yet.
+            pending_gzip.append(f'{SPOOL_DIR}/{relative}')
+        files.append({
+            'key': f'{prefix}/{SPOOL_DIR}/{relative}',
+            'source': f'{SPOOL_DIR}/{relative}',
+            'bytes': size,
+            'kind': 'spool',
+        })
+
+    frames = [(relative, path, size) for relative, path, size in
+              _iter_files(spool.frames_dir_in(directory, attempt_id))
+              if not Path(relative).name.startswith('.')]
+    if frames:
+        frame_bytes = sum(size for _relative, _path, size in frames)
+        files.append({
+            'key': f'{prefix}/{SPOOL_DIR}/{FRAMES_TAR}',
+            'source': f'{SPOOL_DIR}/{FRAMES_TAR}',
+            'bytes': frame_bytes,
+            'kind': 'frames_tar',
+            'files': len(frames),
+        })
+        notes.append('frames_tar_bytes_approximate')
+
+    segments_local = segments_path(directory, attempt_id)
+    if spool._regular(segments_local) is not None:
+        size = segments_local.stat().st_size
+        files.append({
+            'key': f'{prefix}/{SEGMENTS_FILE}',
+            'source': SEGMENTS_FILE,
+            'bytes': size,
+            'kind': 'segments',
+        })
+
+    manifest_local = manifest_path(directory, attempt_id)
+    if spool._regular(manifest_local) is not None:
+        files.append({
+            'key': f'{prefix}/{MANIFEST_FILE}',
+            'source': MANIFEST_FILE,
+            'bytes': manifest_local.stat().st_size,
+            'kind': 'manifest',
+            'generated_at_upload': True,
+        })
+    else:
+        # The uploader rebuilds a missing manifest before sending it.  The
+        # dry run must not write that file, so list the key without bytes.
+        files.append({
+            'key': f'{prefix}/{MANIFEST_FILE}',
+            'source': MANIFEST_FILE,
+            'bytes': None,
+            'kind': 'manifest',
+            'generated_at_upload': True,
+        })
+        notes.append('manifest_will_be_generated')
+
+    keep = []
+    if _keep_attempt(info, _load_records(directory)):
+        for item in files:
+            keep.append({
+                'key': f'{keep_prefix}/{item["source"]}',
+                'source': item['source'],
+                'bytes': item['bytes'],
+                'kind': item['kind'],
+            })
+    else:
+        notes.append('not_keep_eligible')
+
+    if pending_gzip:
+        notes.append('gzip_pending')
+    total = sum(item['bytes'] for item in files
+                if type(item.get('bytes')) is int)
+
+    document = {
+        'schema': 1,
+        'game': GAME,
+        'env': store.environment(),
+        'attempt_id': attempt_id,
+        'attempt_no': info['attempt_no'],
+        'runtime_id': info['runtime_id'],
+        'generated_at_ms': _now_ms(now_ms),
+        'dry_run': True,
+        'prefix': prefix,
+        'keep_prefix': keep_prefix,
+        'files': files,
+        'keep': keep,
+        'pending_gzip': pending_gzip,
+        'total_bytes': total,
+        'notes': notes,
+    }
+    spool.write_json(base / ARCHIVE_PLAN_FILE, document)
+    return document
+
+
 def upload_attempt(runtime_data_dir, attempt_id, *, config=None, client=None,
                    now_ms=None, wait_gzip=False):
     """Upload one ended attempt, verify it, then delete verified local files.
@@ -1426,6 +1552,21 @@ def launch_pending(runtime_data_dir=None):
 
 def _cli_upload(args):
     directory = data_dir(args.data_dir)
+    if args.dry_run:
+        if not args.attempt or args.pending:
+            print('archive: error invalid_arguments', file=sys.stderr)
+            return 2
+        if not directory.is_dir():
+            print('archive: no_data')
+            return 0
+        try:
+            document = plan_attempt(directory, args.attempt)
+        except ArchiveError as exc:
+            print(f'archive: {exc.code}')
+            return 1
+        print(f'archive: dry_run {len(document["files"])} '
+              f'{document["total_bytes"]}')
+        return 0
     if args.pending == bool(args.attempt):
         print('archive: error invalid_arguments', file=sys.stderr)
         return 2
@@ -1463,6 +1604,7 @@ def main(argv=None):
     upload = commands.add_parser('upload')
     upload.add_argument('--attempt', default=None)
     upload.add_argument('--pending', action='store_true')
+    upload.add_argument('--dry-run', action='store_true')
     commands.add_parser('status')
     args = parser.parse_args(argv)
     try:

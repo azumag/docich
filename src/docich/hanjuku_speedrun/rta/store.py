@@ -31,6 +31,14 @@ from . import timer as timer_mod
 
 GAME = timer_mod.GAME
 DATA_PARTS = ('speedrun', 'hanjuku-speedrun')
+#: Optional overrides for a local (non-production) run.  ``DATA_DIR`` makes
+#: the bot and the archive CLI agree on one directory even when the runtime
+#: directory lives outside the production tree.  ``ENV`` labels the records so
+#: a local PB is never mistaken for a production one.
+DATA_DIR_ENV = 'DOCICH_SPEEDRUN_DATA_DIR'
+ENVIRONMENT_ENV = 'DOCICH_SPEEDRUN_ENV'
+ENVIRONMENTS = ('soren', 'local')
+DEFAULT_ENVIRONMENT = 'soren'
 TIMER_FILE = 'timer.json'
 RECORDS_FILE = 'records.json'
 ATTEMPTS_FILE = 'attempts.jsonl'
@@ -57,8 +65,28 @@ class StoreError(Exception):
     """A fixed-code storage failure; the caller must not retry blindly."""
 
 
+def environment():
+    """The record environment: ``soren`` (production) or ``local``.
+
+    The value is written into the timer, the attempt rows and the manifest so
+    a local trial can never be compared with (or mistaken for) the production
+    PB.  Unknown values fall back to the production label instead of being
+    copied into the records.
+    """
+    raw = os.environ.get(ENVIRONMENT_ENV)
+    return raw if raw in ENVIRONMENTS else DEFAULT_ENVIRONMENT
+
+
 def data_dir(runtime):
-    """``<runtime parent>/speedrun/hanjuku-speedrun`` for a runtime dir."""
+    """``<runtime parent>/speedrun/hanjuku-speedrun`` for a runtime dir.
+
+    ``DOCICH_SPEEDRUN_DATA_DIR`` overrides the location (the local driver uses
+    it to keep everything under ``run-local/speedrun``).  The default is
+    unchanged, so production records keep their existing path.
+    """
+    raw = os.environ.get(DATA_DIR_ENV)
+    if raw:
+        return Path(raw).expanduser()
     runtime = Path(runtime)
     return runtime.parent.parent.joinpath(*DATA_PARTS)
 
@@ -513,6 +541,8 @@ def attempt_row(timer, *, at_ms=None):
         'reason': timer.get('reason'),
         'bot_version': timer.get('bot_version'),
         'chart_edition': timer.get('chart_edition'),
+        'env': (timer.get('env') if timer.get('env') in ENVIRONMENTS
+                else environment()),
         'archived': False,
         'at_ms': at_ms if type(at_ms) is int else timer.get('ended_at_ms'),
     }
@@ -522,6 +552,12 @@ def attempt_row(timer, *, at_ms=None):
 def _observed_ms(run, timer, now_ms):
     if type(now_ms) is int and now_ms >= 0:
         return now_ms
+    # A local driver reports game time derived from the emulated frame count.
+    # It is the same clock the hook used for the splits, so finalizing an
+    # attempt must not replace it with the host wall clock.
+    frame_ms = run.get('observed_at_ms') if isinstance(run, dict) else None
+    if type(frame_ms) is int and frame_ms >= 0:
+        return frame_ms
     observed = run.get('observed_at') if isinstance(run, dict) else None
     if isinstance(observed, (int, float)) and observed > 0:
         candidate = int(observed * 1000)
@@ -579,6 +615,7 @@ def finalize_attempt(runtime, terminal_reason=None, *, now_ms=None, reason=None)
 
     # PB/gold first, then the append-only history, then the display state.
     # A crash between them is repaired by the next idempotent call.
+    timer = {**timer, 'env': environment()}
     save_records(runtime, records)
     append_attempt(runtime, attempt_row(timer, at_ms=now))
     save_timer(runtime, timer)

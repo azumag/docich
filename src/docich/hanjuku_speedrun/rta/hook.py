@@ -113,7 +113,24 @@ def observe(runtime, records, state, meta, *, screenshot):
 
 
 def _observation_ms(screenshot, run, meta):
-    """Epoch milliseconds for this observation, preferring the image mtime."""
+    """Epoch milliseconds for this observation.
+
+    A driver that runs the emulator faster than real time derives the clock
+    from the frame count and writes ``observed_at_ms`` into the observation
+    meta (and/or the run state).  That value must win over the screenshot
+    mtime: the mtime is host time, and with ``--fast`` the two diverge by the
+    speed-up factor.  Production observations do not set it, so the image
+    mtime remains their clock.
+    """
+    explicit = []
+    for source in (run, meta):
+        if not isinstance(source, dict):
+            continue
+        value = source.get('observed_at_ms')
+        if type(value) in (int, float) and value >= 0:
+            explicit.append(int(value))
+    if explicit:
+        return explicit[0]
     candidates = []
     try:
         stat = os.stat(screenshot)
@@ -124,13 +141,10 @@ def _observation_ms(screenshot, run, meta):
     for source in (run, meta):
         if not isinstance(source, dict):
             continue
-        for key in ('observed_at', 'observed_at_ms', 'ts'):
+        for key in ('observed_at', 'ts'):
             value = source.get(key)
             if isinstance(value, (int, float)) and value > 0:
-                if key.endswith('_ms'):
-                    candidates.append(int(value))
-                else:
-                    candidates.append(int(value * 1000))
+                candidates.append(int(value * 1000))
     if candidates:
         return candidates[0]
     return int(time.time() * 1000)
@@ -272,6 +286,9 @@ def _new_name_screen(run, timer):
 
 
 def _commit(runtime, timer, records, *, save_records, final=False):
+    # Label the record with the environment that produced it.  A local driver
+    # sets DOCICH_SPEEDRUN_ENV=local; production keeps the historical label.
+    timer = {**timer, 'env': store.environment()}
     if save_records:
         store.save_records(runtime, records)
     if final:
@@ -296,6 +313,11 @@ def _observe(runtime, records, state, meta, *, screenshot):
         run = {**run, **meta_run}
 
     timer = store.load_timer(runtime)
+    if isinstance(timer, dict):
+        # A timer written before the environment label existed (or by a
+        # caller that has not saved yet) still carries the current label in
+        # the value this observation returns and commits.
+        timer = {**timer, 'env': store.environment()}
     stored = store.load_records(runtime)
     runtime_id = _runtime_id(runtime, run, meta)
     observed = _observation_ms(screenshot, run, meta)
@@ -319,6 +341,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
 
     if not isinstance(timer, dict) or timer.get('game') != GAME:
         timer = timer_mod.new_timer(runtime_id, stored, observed)
+        timer['env'] = store.environment()
         same_runtime = True
 
     # A previous runtime that never got its finalize call (VM restart,
@@ -408,6 +431,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
                 bot_version=_bot_version(run, state),
                 chart_edition=_chart_edition(state),
                 start_source='name_screen', name_seen_at_ms=observed)
+            timer['env'] = store.environment()
             _commit(runtime, timer, stored, save_records=True)
             return timer
         # No pre-gameplay name screen was observed for this runtime: the hook
@@ -416,6 +440,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
         if status == 'pending' or (
                 status in {'finished', 'dnf'} and not same_runtime):
             timer = timer_mod.new_timer(runtime_id, stored, observed)
+            timer['env'] = store.environment()
             timer['reason'] = 'no_start_seen'
             timer = timer_mod.heartbeat(timer, observed)
             _commit(runtime, timer, stored, save_records=False)

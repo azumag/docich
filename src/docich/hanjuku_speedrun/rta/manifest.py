@@ -161,6 +161,8 @@ def build_manifest_at(directory, attempt_id):
         'reason': source.get('reason') if isinstance(source.get('reason'), str) else None,
         'bot_versions': _bot_versions(source, segments),
         'chart_editions': _chart_editions(source, segments),
+        'env': (source.get('env') if source.get('env') in store.ENVIRONMENTS
+                else store.environment()),
         'config_sha256': _config_sha256(root),
         'docich_commit': _docich_commit(root),
         'dropped': dropped if isinstance(dropped, dict) else None,
