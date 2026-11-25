@@ -3549,6 +3549,12 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 96),
             'cards_left': _names(metric.get('cards_left'), limit=8),
             'scrolls': _bounded_int(metric.get('scrolls'), 0, 10),
+            'rearms': _bounded_int(metric.get('rearms'), 0, 10),
+            'summon_card_scroll_out': (metric.get('summon_card_scroll_out')
+                                       if type(metric.get('summon_card_scroll_out')) is bool
+                                       else None),
+            'summon_card_exhausted_tick': _bounded_int(
+                metric.get('summon_card_exhausted_tick'), 0, 10 ** 9),
             'card_flow': _bounded_card_flow(metric.get('card_flow')),
             'cursor': _bounded_int(metric.get('cursor'), 0, 224),
             'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
@@ -4221,6 +4227,9 @@ def _render_card_miss(record):
         f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
         f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
         f"- card_flow: {_card_miss_flow(battle.get('card_flow'))}",
+        f"- 切り札行揭示: rearms={battle.get('rearms') if type(battle.get('rearms')) is int else '不明'}"
+        f" / scroll_out={_card_miss_bool(battle.get('summon_card_scroll_out'))}"
+        f" / exhausted_tick={battle.get('summon_card_exhausted_tick') if type(battle.get('summon_card_exhausted_tick')) is int else '不明'}",
         f"- 表示文言: {_md(battle.get('screen_text')) or '未記録'}",
         f"- 携行札候補: {', '.join(battle.get('cards_left') or []) or '未記録'}",
         f"- 理由: {battle.get('reason') or ''}",

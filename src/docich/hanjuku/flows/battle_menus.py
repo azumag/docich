@@ -3291,9 +3291,17 @@ def egg_battle_step(screen: Screen, mem):
         if _summon_card_row_hidden(screen, battle, cards_left=cards_left,
                                    empty_egg=empty_egg):
             scrolls = int(battle.get('summon_card_scroll') or 0)
-            if (scrolls >= SUMMON_CARD_SCROLL_LIMIT
-                    and _summon_card_rearm(mem, battle)):
-                scrolls = 0
+            rearm_pending = False
+            if scrolls >= SUMMON_CARD_SCROLL_LIMIT:
+                if _summon_card_rearm(mem, battle):
+                    scrolls = 0
+                elif int(battle.get('summon_card_rearms') or 0) < SUMMON_CARD_REARM_LIMIT:
+                    # docich#5632: a re-arm can still recover the row, and the
+                    # egg battle menu only waits for a command, so the owner
+                    # rule to prefer the carried card means こうげき must not
+                    # be confirmed during the re-arm grace (#5632 filed
+                    # card_miss on the same observation that armed it).
+                    rearm_pending = True
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
                 battle['summon_card_scroll'] = scrolls + 1
                 _record(mem, 'battle_summon_card_scroll', **_battle_labels(battle),
@@ -3313,12 +3321,34 @@ def egg_battle_step(screen: Screen, mem):
                 _record(mem, 'battle_summon_card_exhausted', **_battle_labels(battle),
                         observed_metric={'scrolls': scrolls,
                                          'rearms': int(battle.get('summon_card_rearms') or 0),
+                                         'rearm_pending': rearm_pending,
                                          'cards_left': list(cards_left),
                                          'cursor_y': screen.menu_cursor,
                                          'visible': sorted({w for _, _, w in _options(screen)}),
                                          'screen_kind': screen.kind,
                                          'text': (screen.text or '')[:60]},
-                        reason='有界な下方スクロールを尽きても切り札行が読めないため、実コマンドでの応戦へ戻る')
+                        reason=('有界な下方スクロールを尽きても切り札行が読めないため、再開猶予が残る間は攻撃を保留する'
+                                if rearm_pending else
+                                '有界な下方スクロールを尽きても切り札行が読めないため、実コマンドでの応戦へ戻る'))
+            if rearm_pending:
+                return []
+            if not battle.get('summon_card_reveal_failed'):
+                # The re-arm bound is spent too: the row never read, so the
+                # attack fallback below is a reveal failure, not a skipped
+                # card.  Keep it out of battle_boss_card_missed so the audit
+                # does not misread the cause (#5632 direction).
+                battle['summon_card_reveal_failed'] = True
+                _record(mem, 'battle_summon_card_reveal_failed', **_battle_labels(battle),
+                        card=cards_left[0],
+                        observed_metric={'scrolls': scrolls,
+                                         'rearms': int(battle.get('summon_card_rearms') or 0),
+                                         'limit': SUMMON_CARD_REARM_LIMIT,
+                                         'cards_left': list(cards_left),
+                                         'cursor_y': screen.menu_cursor,
+                                         'visible': sorted({w for _, _, w in _options(screen)}),
+                                         'screen_kind': screen.kind,
+                                         'text': (screen.text or '')[:60]},
+                        reason='有界スクロールと再開の上限まで切り札行が読めないため、攻撃への復帰を切り札不使用の起票ではなく行揭示失敗の証拠として記録する')
         if int(battle.get('summon_card_opens') or 0) >= SUMMON_CARD_OPEN_LIMIT:
             # Reopening the same carried card after the retreat-cancel loop only
             # churns the menu (retreat is banned); attack instead.
@@ -3344,6 +3374,7 @@ def egg_battle_step(screen: Screen, mem):
                 battle['summon_card_rearms'] = 0
                 battle.pop('summon_card_exhausted_tick', None)
                 battle.pop('summon_card_scroll_out', None)
+                battle.pop('summon_card_reveal_failed', None)
                 battle['summon_card_opens'] = int(battle.get('summon_card_opens') or 0) + 1
                 battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
@@ -3471,7 +3502,8 @@ def egg_battle_step(screen: Screen, mem):
             # the carried cards"; filing after a real use only produces
             # duplicates (live: ミックミー used, ノリウツール left, 3 issues).
             if (missed and cards_left and not battle.get('cards_used')
-                    and not battle.get('boss_card_missed_noted')):
+                    and not battle.get('boss_card_missed_noted')
+                    and not battle.get('summon_card_reveal_failed')):
                 battle['boss_card_missed_noted'] = True
                 parked_flow = battle.get('card_flow')
                 _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
@@ -3486,6 +3518,17 @@ def egg_battle_step(screen: Screen, mem):
                                          'screen': screen.kind,
                                          'text': (screen.text or '')[:80],
                                          'scrolls': battle.get('summon_card_scroll'),
+                                         # docich#5632: the audit must tell a
+                                         # first reveal exhaustion from a
+                                         # re-arm wait and a final exhaustion,
+                                         # so the re-arm state is projected.
+                                         'rearms': int(battle.get('summon_card_rearms') or 0),
+                                         'summon_card_scroll_out': bool(
+                                             battle.get('summon_card_scroll_out')),
+                                         'summon_card_exhausted_tick': (
+                                             battle.get('summon_card_exhausted_tick')
+                                             if type(battle.get('summon_card_exhausted_tick')) is int
+                                             else None),
                                          'card_flow': (
                                              {'card': parked_flow.get('card'),
                                               'stage': parked_flow.get('stage'),
