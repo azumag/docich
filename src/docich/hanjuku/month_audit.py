@@ -1270,7 +1270,12 @@ def _remaining_cards_are_unconfirmed(remaining, *evidence_groups):
 def _battle_resources(record):
     metric = record.get('observed_metric')
     metric = metric if isinstance(metric, dict) else {}
+    # docich#5542/#5551: a ledger-sourced count is the last observed value,
+    # not a battle-time remaining egg. Counting it produced repeated false
+    # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
+    if metric.get('egg_uses_source') == 'ledger':
+        egg = 0
     selected = [card for card in (metric.get('cards_selected') or [])
                 if isinstance(card, str)][:12]
     used = [card for card in (metric.get('cards_used') or [])
