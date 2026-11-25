@@ -88,6 +88,27 @@ def _record_observation(mem, probe, screen, location):
             reason='Xメニューの本人名と個別所在地の文字表示を照合し、屋根画像によらず状態を確認')
 
 
+def reads_status_panel(mem, screen):
+    """True only when ``step`` would consume this frame as the status reader.
+
+    ``status_panel.status_panel_owner_active`` stands the orphan B down on this
+    answer.  It must mirror every early ``None`` in ``step``: when a
+    foreground monthly/house/recall state is present, or the screen kind is
+    not one this probe reads, ``step`` returns before ``reads`` grows.  A
+    guard that still claimed the panel would suppress the B while the probe
+    never advanced its own limit -- the panel would then be held with no
+    input by anybody (#5407).
+    """
+    probe = mem.get('arrival_status_probe')
+    if not isinstance(probe, dict) or probe.get('phase') != 'status':
+        return False
+    if (mem.get('post_month_status') or mem.get('house')
+            or _flow(mem).get('recall')):
+        return False
+    return (screen is not None
+            and screen.kind in PICKER_KINDS | {'map', 'main_menu', 'text'})
+
+
 def step(screen, mem):
     """Prioritize the safe menu workflow, never confirm a map target."""
     probe = mem.get('arrival_status_probe')

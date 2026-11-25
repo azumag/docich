@@ -323,6 +323,16 @@ def test_boss_battle_evidence_is_not_only_battle_start():
 
 def _run_boss(runtime, count=401, *, battle_at=None, hp=False,
               live_sortie=False, sortie_age=10):
+def test_chapter_four_season_king_battle_counts_as_boss_evidence():
+    from docich.hanjuku_map_sources import SEASON_KINGS
+    king = sorted(SEASON_KINGS)[0]
+    rows = [{'decision': 'battle_start', 'enemy': king}]
+    assert audit._rows_boss_battle(rows, 4, '四季王') is True
+    # Season kings are chapter 4 evidence only; the same name in another
+    # chapter's window must not suppress its boss incident.
+    assert audit._rows_boss_battle(rows, 9, 'ハデス') is False
+
+def _run_boss(runtime, count=401, *, battle_at=None, hp=False):
     for index in range(count):
         at = 1000 + index * STEP
         value = _boss_state(month='1-1', tick=index)
@@ -826,6 +836,32 @@ def test_sortie_order_failure_skips_move_orders(runtime_dir):
                   now=1000)
     assert audit.load_incidents(runtime_dir) == []
 
+
+def test_interim_move_order_failure_is_skipped_from_record_purpose(runtime_dir):
+    # Interim orders are absent from chart_plan; the terminal record must carry
+    # the purpose so the existing non-sortie exclusion still applies.
+    value = state(3, '6-2', 0,
+                  plan={'orders': {}, 'chart_plan': {'orders': []}})
+    record = _sortie_record(
+        'order_failed', deviation='移動元に残す将軍がいない',
+        step='I:743437:328a9db8')
+    record.update(purpose='move', general='アテナ',
+                  source='パタゴーヌ', target='アルマムーン')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_interim_attack_order_failure_is_still_filed(runtime_dir):
+    value = state(3, '6-2', 0,
+                  plan={'orders': {}, 'chart_plan': {'orders': []}})
+    record = _sortie_record(
+        'order_failed', deviation='城メニューが開かない',
+        step='I:123456:abcdef')
+    record.update(purpose='attack', target='敵城')
+    audit.observe(runtime_dir, audit.capture(value), value, [record], now=1000)
+    incident = audit.load_incidents(runtime_dir)[0]
+    assert incident['sortie_event']['purpose'] == 'attack'
+
 def _battle_record(decision, *, outcome=None, metric=None, general=None,
                    choice=None, card=None, step='A:1:1'):
     return {'decision': decision, 'outcome': outcome, 'observed_metric': metric or {},
@@ -1083,6 +1119,46 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert '### 築城' in audit.render(record)
     assert len(seen) == 1
 
+
+
+def test_chikujou_month_end_uses_live_policy_gold_over_stale_outer_gold(runtime_dir):
+    # docich#5465: the last verified upgrade left 30G (the 30G reserve),
+    # while the outer state still carried the pre-payment 35G observation.
+    # The audit must not report another affordable build from that stale copy.
+    value = _chikujou_state(gold=35)
+    mem = value['policy']
+    home = chart.home_castle(10)
+    mem['gold'] = 30
+    mem['shop']['chikujou_tried'] = [home]
+    mem['shop']['chikujou_upgrades'] = [
+        {'castle': home, 'cost': 5, 'gold_before': 35, 'gold_after': 30},
+    ]
+
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_chikujou_month_end_uses_policy_gold_over_stale_transaction_metric(runtime_dir):
+    # A gold_after value belongs to its transaction and can be older than the
+    # current policy header after a later purchase.
+    value = _chikujou_state(gold=35)
+    mem = value['policy']
+    home = chart.home_castle(10)
+    mem['gold'] = 30
+    mem['shop']['chikujou_tried'] = [home]
+    mem['shop']['chikujou_upgrades'] = [
+        {'castle': home, 'cost': 5, 'gold_before': 35, 'gold_after': 30},
+    ]
+
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'observed_metric': {'gold_after': 35},
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+
+    assert audit.load_incidents(runtime_dir) == []
 
 def test_chikujou_incident_names_the_refusal_window_it_skipped_in(runtime_dir):
     # docich#5151: 月を閉じた理由が「拒否スキップ枠」なのか別経路なのかを
@@ -1716,8 +1792,18 @@ def _launch_record(purpose='attack'):
             'reason': '出撃', 'at': 1000}
 
 
+def _measured_empty_kit(value):
+    value['policy']['plan']['order_context'] = {'A:1:M1': {
+        'observed_metric': {'general': 'カシュー', 'cards': []}}}
+    value['policy']['world']['launched_orders'] = {'A:1:M1': {
+        'general': 'カシュー', 'source': 'アルマムーン', 'target': 'タタール',
+        'cards': [], 'departure_binding': {'general': 'カシュー',
+                                           'source': 'アルマムーン', 'cards': []}}}
+
+
 def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     value = _cards_state()
+    _measured_empty_kit(value)
     seen = []
     audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
                   now=1000, on_sealed=seen.append)
@@ -1726,6 +1812,9 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     record = records[0]
     assert record['kind'] == 'sortie_without_cards'
     assert record['sortie_event']['inventory'] == {'ノリウツール': 96}
+    assert record['sortie_event']['carried'] == []
+    assert record['sortie_event']['carried_observed'] is True
+    assert record['confidence'] == 'high'
     assert record['auto_file'] is True
     assert '切り札在庫があるのに非携行で出撃' in audit._issue_title(record)
     assert '### 切り札の非携行' in audit.render(record)
@@ -1736,9 +1825,10 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
 def test_sortie_without_cards_names_a_planned_kit(runtime_dir):
     # docich#5353: 計画に札があるのに携行できていない型は、計画が空の型と区別する。
     value = _cards_state(cards=['クースカン'])
+    _measured_empty_kit(value)
     audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
     records = audit.load_incidents(runtime_dir)
-    assert records and '計画はあるが携行できていない' in audit.render(records[0])
+    assert records and '計画はあるが実測kitが空' in audit.render(records[0])
 
 
 def test_sortie_with_carried_cards_is_not_recorded(runtime_dir):
@@ -1763,6 +1853,7 @@ def test_no_card_stock_is_not_recorded(runtime_dir):
 
 def test_sortie_without_cards_is_reported_once(runtime_dir):
     value = _cards_state()
+    _measured_empty_kit(value)
     for now in (1000, 1100):
         audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=now)
     assert len(audit.load_incidents(runtime_dir)) == 1
@@ -1824,9 +1915,9 @@ def test_empty_card_strings_do_not_count_as_measured_kit(runtime_dir):
     assert records[0]['kind'] == 'sortie_without_cards'
 
 
-def test_sortie_with_planned_snapshot_cards_is_recorded(runtime_dir):
-    # A snapshot without departure_binding may copy planned cards; it is not
-    # evidence that the measured sortie actually carried them.
+def test_sortie_with_unbound_snapshot_cards_is_unconfirmed(runtime_dir):
+    # A snapshot without departure_binding may copy planned cards; absence of
+    # a measured receipt must not be represented as an empty carried kit.
     value = _cards_state(cards=['クースカン'])
     value['policy']['world']['launched_orders'] = {'A:1:M1': {
         'general': 'カシュー', 'source': 'アルマムーン', 'target': 'タタール',
@@ -1834,7 +1925,26 @@ def test_sortie_with_planned_snapshot_cards_is_recorded(runtime_dir):
     audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
     records = audit.load_incidents(runtime_dir)
     assert len(records) == 1
-    assert records[0]['kind'] == 'sortie_without_cards'
+    record = records[0]
+    assert record['kind'] == 'sortie_kit_unconfirmed'
+    assert record['confidence'] == 'low'
+    assert record['confidence_reasons'] == ['carried_kit_unobserved']
+    assert record['auto_file'] is False
+    assert record['sortie_event']['carried'] is None
+    assert record['sortie_event']['carried_observed'] is False
+    assert '携行: 未確認' in audit.render(record)
+
+
+def test_unconfirmed_sortie_does_not_cool_down_later_measured_empty_kit(runtime_dir):
+    value = _cards_state(cards=['クースカン'])
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1100)
+    records = audit.load_incidents(runtime_dir)
+    assert [record['kind'] for record in records] == [
+        'sortie_kit_unconfirmed', 'sortie_without_cards']
+    assert records[0]['auto_file'] is False
+    assert records[1]['auto_file'] is True
 
 
 def test_capture_reads_unmigrated_world_fields():

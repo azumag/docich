@@ -14,7 +14,8 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     card_census as card_census_flow,
                     deploy as deploy_flow, egg_recovery as egg_recovery_flow, map as map_flow,
                     month as month_flow, name as name_flow, password as password_flow,
-                    prompts as prompts_flow, recall as recall_flow, shop as shop_flow)
+                    prompts as prompts_flow, recall as recall_flow, shop as shop_flow,
+                    status_panel)
 from .judgment import battle as battle_judgment
 from .strategy import campaign, card_census as card_census_booking, edition, goals
 from .os_layer import readers
@@ -656,12 +657,22 @@ def plan_starved_rearm(mem, phase, kind):
         status = plan.get('orders') or {}
         if chart_plan.get('source') == 'mechanical' and not plan.get('active') and not mem.get('_adjusted'):
             from .strategy import orders as order_mod
+            from .. import hanjuku_chart as _chart
             owned = order_mod._owned(mem)
+            _normal = {c for c in _chart.castles(mem.get('chapter') or 0)
+                       if not _chart.is_boss_castle(c)}
+            boss_locked = bool(_normal) and not _normal <= owned
             for order in chart_plan.get('orders') or ():
                 step = order.get('step')
                 if status.get(step) not in (None, 'pending'):
                     continue
                 full = order_mod._order_for_step(mem, step) or order
+                if (boss_locked and isinstance(full, dict)
+                        and _chart.is_boss_castle(full.get('target'))):
+                    # A boss plan built before the chapter's normal castles were
+                    # captured stays locked; activating it only walks into
+                    # boss_target_locked every observation (chapter 1 loop).
+                    continue
                 if (isinstance(full, dict) and 'source' in full and 'target' in full
                         and (not order_mod._ready(full, mem)
                              or order_mod._source(full, mem) not in owned
@@ -1127,6 +1138,7 @@ def y_jump_unknown_hold_step(screen, mem, previous_kind, generic):
         decision_log._record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
                              screen=screen.kind,
                              observed_metric={'moves': jump.get('moves'), 'unknown_holds': held},
+                             resulting_event='view_unreadable',
                              reason='全体マップのジャンプ中に読めない画面が続いたため、ジャンプを中断して既定の入力に戻す')
         return None
     jump['unknown_holds'] = held + 1
@@ -1477,6 +1489,17 @@ def _no_input_hold_max(kind, phase, screen, bounded_wait):
     return NO_INPUT_HOLD_MAX
 
 
+def _fort_picker_owns_map_target(recall, kind, phase):
+    """Only the picker opened by the fort-status A belongs to camp recall."""
+    return (
+        isinstance(recall, dict)
+        and recall.get('stage') == 'fort_status'
+        and recall.get('fort_picker_requested') is True
+        and kind == 'map_target'
+        and phase != 'concert'
+    )
+
+
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
            interim: dict | None = None, experience: dict | None = None,
            recall_inputs: dict | None = None, card_scroll_input: dict | None = None,
@@ -1532,7 +1555,7 @@ IDLE_TEXT_HEAD = 16      # leading characters of the screen text kept
 # drop log can report exactly which observations were discarded.
 IDENTITY_RESET_KEYS = (
     'house', 'post_month_status', 'post_month_status_last', 'boss_camp_exempt',
-    'boss_camp_exempt_scope', 'general_statuses', 'house_field_scan',
+    'boss_camp_exempt_scope', 'boss_camp_counted', 'general_statuses', 'house_field_scan',
     'house_scan_tick', 'house_scan_month', 'month_roster_scan',
     'country_income', 'country_wages', 'recruit_field_scan_attempts',
     'recruit_month_scan_attempts', 'recruit_roster_attempts', 'house_eggs',
@@ -1871,23 +1894,21 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         updated['policy'] = mem
         return [pad('a')], updated
     if kind == 'password_entry':
-        # Chapter clear door: sweep the word list top-down and enter every
-        # word. 実機プローブで A+down の全語掃引が扉を開くことを確認した
-        # (g1190 2026-11-19, #4564)。単に A/B/START を押しても進まない。
+        # 章クリア後のパスワード画面 (第11話オヴァリウム扉). 実機プローブ
+        # 2026-11-24: 左下は「入力済みの語が増える欄」で、右リストの白行に
+        # 手を合わせて A した語だけが受理される。語順はランごとに変わる。
+        # ディスパッチはこの 1 本だけ (旧 generic 分岐は到達不能だった)。
         if not mem.get('password_entry_seen'):
             mem['password_entry_seen'] = True
             decision_log._record(mem, 'password_entry_seen', screen=kind,
                                  observed_metric={'text': (screen.text or '')[:120]},
-                                 reason='章クリアのパスワード入力を検出。単語リストを掃引して全語入力する')
+                                 reason='章クリアのパスワード入力を検出。画面の入力済み欄と右リストから PHRASE 順に入力する')
         updated.update(screen_kind=kind, no_input_streak=0, no_input_frames=[])
         for key in ('_adjusted', '_interim', '_card_scroll_input'):
             mem.pop(key, None)
         _journal(mem).pop('_departure_input', None)
         _journal(mem).pop('_recall_inputs', None)
-        # 2026-11-22: the measured chapter-11 order (list indices
-        # 1,0,5,3,2,4,9,8,6,7) is the only one that opens the door; the old
-        # "A+down over the display order" was rejected as too long.  The flow
-        # moves one list step per observation and presses A on the target.
+        # 1 観測につき 1 入力。進捗は毎回、左下の入力済み欄から計算する。
         actions = password_flow.password_step(screen, mem)
         updated['_records'] = mem.pop('_records')
         updated['_experience'] = mem.pop('_experience', None)
@@ -1976,6 +1997,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.pop('expect_menu',None)
         mem.pop('menu_miss',None)   # a real menu proves the cell was correct
     flow=(mem.get('battle') or {}).get('card_flow')
+    # The persisted five-item scroll belongs to one battle menu only.  A stale
+    # policy.battle can outlive its battle (g1190 ch12 2026-11-24), so expiry
+    # is checked against every live frame, not only battle_end.
+    battle_menus_flow.expire_human_scroll(screen, mem)
     # A readable card name routes the open list, but a depleted list draws no
     # card name at all (g452 07:14: ヴィーナス had spent both イッテツーン, the
     # きりふだ menu showed nothing, the flow stayed on this text screen and
@@ -2095,6 +2120,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # flight'). The same jump ended on the camp menu at 77-8 (173415
     # castle_jump_failed text) and closed it before いどう could be chosen.
     recall_in_flight = _flow(mem).get('recall') or {}
+    # Snapshot the general-status panel's owner before any flow runs: a flow
+    # may pop its state mid-frame, and orphan_battle_menu_step must still know
+    # this frame's page belonged to a live reader (post_month_status failed
+    # every month with status_unreadable because the orphan B ran first).
+    status_panel_owner = status_panel.status_panel_owner_active(mem, screen)
     actions = None
     # S3: an open census owns its map/menu/list frames before every other
     # owner. It returns None on anything else (a battle, a message), so the
@@ -2107,13 +2137,17 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                           or recall_flow.is_fort_menu(screen)))
         fort_route = (recall_flow.in_fort_route(recall_in_flight)
                       and kind in ('text', 'unknown') and phase != 'concert')
+        # A fort's A on the selected general status panel opens its own
+        # map_target. Route that frame back to recall only while that exact
+        # request is pending; unrelated order pickers remain with map_flow.
+        fort_picker = _fort_picker_owns_map_target(recall_in_flight, kind, phase)
         # The menu stage also owns the field frames: when the A on the tent
         # did not open the menu, the recall has to re-centre the tent; the
         # sortie's castle jump otherwise consumed the frame (g1190 77-10
         # 178836 camp_enter -> 178838 castle_jump_confirm).
         field_picker = ((stage in ('to_camp', 'dest', 'menu')
                          and kind in ('map', 'map_target') and phase != 'concert'))
-        if camp_menu or fort_route or field_picker:
+        if camp_menu or fort_route or fort_picker or field_picker:
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:
         actions = map_flow.general_jump_step(screen, mem, frame)
@@ -2132,7 +2166,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = deploy_flow.boss_stock_restart_step(screen, mem)
         sortie_cancel_hold = actions == [] and bool(mem.get('boss_stock_restart') or mem.get('boss_stock_cancelled'))
     if actions is None:
-        actions = battle_menus_flow.orphan_battle_menu_step(screen, mem)
+        actions = battle_menus_flow.orphan_battle_menu_step(
+            screen, mem, owner_active=status_panel_owner)
     if actions is None:
         actions = battle_menus_flow.defender_egg_pending_step(screen, mem)
     if actions is None:
@@ -2309,8 +2344,6 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions=prompts_flow.summer_bonus_step(screen,mem)
     elif kind=='summer_bonus_message':
         actions=[pad('a')]
-    elif kind=='password_entry':
-        actions=prompts_flow.password_step(screen,mem)
     elif kind=='yes_no':
         actions=prompts_flow.yes_no_step(screen,mem)
     elif menu_owner_active:

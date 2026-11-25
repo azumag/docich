@@ -29,7 +29,8 @@ SYNTHETIC_SECRET = b"s" * 32  # test-only value, not a credential
 def snap(**changes):
     base = dict(
         market="stocks", source="kabu-station", source_epoch="kabu-win-01",
-        generation=1, sequence=1, status="ready", reason="ok", market_state="open",
+        generation=1, sequence=1, upstream_sequence=1, status="ready",
+        reason="ok", market_state="open",
         source_ts=NOW - 1, received_ts=NOW,
         quotes=(Quote("JP.7203", 100.0, 100.1, 10, 10, NOW - 1, NOW, 1),),
         candidates=(Candidate("JP.7203", 1, 1.0, NOW - 1),))
@@ -75,6 +76,13 @@ class SnapshotValidationTests(unittest.TestCase):
                          (False, "generation_conflict"))
         self.assertEqual(validate_snapshot(snap(source_epoch="kabu-other"), **self.kwargs()),
                          (False, "generation_conflict"))
+
+    def test_upstream_sequence_roundtrip_and_validation(self):
+        restored = decode_snapshot(encode_snapshot(snap(upstream_sequence=42)))
+        self.assertEqual(restored.upstream_sequence, 42)
+        self.assertEqual(validate_snapshot(restored, **self.kwargs()), (True, "ok"))
+        self.assertEqual(validate_snapshot(snap(upstream_sequence=-1), **self.kwargs()),
+                         (False, "invalid_sequence"))
 
     def test_stale_and_future_source_time(self):
         self.assertEqual(validate_snapshot(snap(source_ts=NOW - 60), **self.kwargs()),
@@ -142,6 +150,7 @@ class EnvelopeValidationTests(unittest.TestCase):
 
 class AuthTests(unittest.TestCase):
     def setUp(self):
+        auth.reset_replay_cache()
         self.secret = auth.parse_key(base64.urlsafe_b64encode(SYNTHETIC_SECRET).decode())
         self.headers = auth.build_headers(self.secret, ts=int(NOW), nonce="a1b2c3d4")
 
@@ -162,6 +171,63 @@ class AuthTests(unittest.TestCase):
         tampered = dict(self.headers, **{"X-Docich-Bridge": value})
         self.assertEqual(auth.verify_headers(tampered, secret=self.secret, now=NOW),
                          (False, "auth_failed"))
+
+    def test_replay_within_skew_is_rejected(self):
+        # Same nonce re-sent within the skew window is a replay.
+        self.assertEqual(auth.verify_headers(self.headers, secret=self.secret, now=NOW),
+                         (True, "ok"))
+        self.assertEqual(auth.verify_headers(self.headers, secret=self.secret, now=NOW + 30),
+                         (False, "replay_detected"))
+
+    def test_replay_allowed_after_skew_expiry(self):
+        # Same nonce with a fresh timestamp is accepted once the skew window
+        # has elapsed (the cache entry is evicted after skew).
+        self.assertEqual(auth.verify_headers(self.headers, secret=self.secret, now=NOW),
+                         (True, "ok"))
+        rotated = auth.build_headers(self.secret, ts=int(NOW + 120), nonce="a1b2c3d4")
+        self.assertEqual(auth.verify_headers(rotated, secret=self.secret, now=NOW + 120),
+                         (True, "ok"))
+
+    def test_future_timestamp_replay_is_rejected_until_signature_expires(self):
+        # A timestamp at the future edge remains valid for another full skew
+        # window; its nonce must not expire at request_time + max_skew_s.
+        future_ts = int(NOW + 60)
+        future = auth.build_headers(self.secret, ts=future_ts, nonce="a1b2c3d5")
+        self.assertEqual(auth.verify_headers(future, secret=self.secret, now=NOW),
+                         (True, "ok"))
+        self.assertEqual(auth.verify_headers(future, secret=self.secret, now=NOW + 60),
+                         (False, "replay_detected"))
+        # The skew check is inclusive, so the exact last valid instant is
+        # still protected. Once it has passed, a freshly signed request may
+        # reuse the nonce.
+        self.assertEqual(auth.verify_headers(future, secret=self.secret, now=NOW + 120),
+                         (False, "replay_detected"))
+        fresh = auth.build_headers(self.secret, ts=int(NOW + 121), nonce="a1b2c3d5")
+        self.assertEqual(auth.verify_headers(fresh, secret=self.secret, now=NOW + 121),
+                         (True, "ok"))
+
+    def test_replay_cache_is_bounded_and_fails_closed_until_expiry(self):
+        original_limit = auth.REPLAY_CACHE_LIMIT
+        auth.REPLAY_CACHE_LIMIT = 2
+        auth.reset_replay_cache()
+        try:
+            first = auth.build_headers(self.secret, ts=int(NOW), nonce="11111111")
+            second = auth.build_headers(self.secret, ts=int(NOW), nonce="22222222")
+            overflow = auth.build_headers(self.secret, ts=int(NOW), nonce="33333333")
+            self.assertEqual(auth.verify_headers(first, secret=self.secret, now=NOW), (True, "ok"))
+            self.assertEqual(auth.verify_headers(second, secret=self.secret, now=NOW), (True, "ok"))
+            self.assertEqual(auth.verify_headers(overflow, secret=self.secret, now=NOW),
+                             (False, "replay_cache_full"))
+            self.assertEqual(len(auth._REPLAY_CACHE), 2)
+            later = NOW + 61
+            after_expiry = auth.build_headers(self.secret, ts=int(later), nonce="33333333")
+            self.assertEqual(auth.verify_headers(after_expiry, secret=self.secret, now=later),
+                             (True, "ok"))
+            self.assertEqual(len(auth._REPLAY_CACHE), 1)
+        finally:
+            auth.REPLAY_CACHE_LIMIT = original_limit
+            auth.reset_replay_cache()
+
 
     def test_invalid_bridge_key_is_rejected(self):
         with self.assertRaises(ValueError):

@@ -392,6 +392,33 @@ def test_round_trips_ignore_unmatched_sells(tmp_path):
     assert build_round_trips(db) == []
 
 
+def test_round_trips_reject_oversell_fragment_and_reopen_fresh_lot(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("oversell-rt-buy", "buy", "1", "100"), timestamp=1_000.0)
+    broker.fill(_decision("oversell-rt-sell", "sell", "2", "120"), timestamp=1_100.0)
+    ledger.close()
+
+    # The matched portion of an oversell must not be presented as a valid trip.
+    assert build_round_trips(db) == []
+
+    # As in realized_pnl_for_fill(), a later buy starts a clean inventory lot.
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("fresh-rt-buy", "buy", "1", "110"), timestamp=1_200.0)
+    broker.fill(_decision("fresh-rt-sell", "sell", "1", "130"), timestamp=1_300.0)
+    ledger.close()
+
+    trips = build_round_trips(db)
+    assert len(trips) == 1
+    assert trips[0]["entry_price"] == "110"
+    assert trips[0]["exit_price"] == "130"
+    assert trips[0]["realized_jpy"] == "20"
+    assert trips[0]["entry_reason"] == "momentum_breakout"
+    assert trips[0]["exit_reason"] == "take_profit"
+
+
 def test_recent_orders_returns_allowlisted_rows(tmp_path):
     from docich.trading.performance import recent_orders
 

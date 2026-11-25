@@ -110,6 +110,9 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 
 - 将軍・出撃元・対象・目的・step・misses・理由・直前120秒の決定・
   計画/在城/flow/statsを1件32KB以内で保存する。
+- `order_failed` の終端recordには、実行stepから解決した `purpose`・`general`・`source`・`target` を補完する。
+  暫定注文（`chart_adjust.interim_order`）も対象に含め、`chart_plan` に注文が無くても
+  `move` / `house` / `repair` / `recall` / `defend` の失敗を出撃失敗Issueから除外できる。
 - 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
 - issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
@@ -189,6 +192,13 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - ボス向け出撃が1回でもあればこのissueは出さない。
 - ボス名・残りボス城・月内ボス出撃数・フェーズ開始tick・観測回数・
   計画/在城/flow/統計・決定を1件32KB以内で保存。
+- **遅いフェーズ開始のトリアージ:** `confidence=high` は月全体の観測完全性を示し、
+  ボスフェーズに十分な出撃時間があったことまでは示さない。
+  `boss_month.started_at` と `month_summary.closed_at` の差、および
+  `boss_month.observations` でフェーズの実時間・観測数を確認する。
+  月末直前に始まったフェーズは、月内ボス出撃ゼロという事実の記録として扱い、
+  出撃失敗の証拠とは断定しない。最低継続時間を設ける場合は、実測した出撃所要時間に
+  基づく別の受入条件を決めてから変更する。
 - 題名は `[半熟英雄] ボスフェーズで月内ボス出撃ゼロ: ch<章> <ボス名>`。
 - 既存の「ボスフェーズでボス戦闘ゼロ（600秒）」とは別シグネチャ。
 
@@ -286,7 +296,13 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 在庫は `card_stock` の正数。計画 `chart_plan.orders[].cards` は
   「計画」であり、実携行の証拠にはしない。`departure_binding` を持たない
   `launched_orders` snapshot の `cards` も計画値の可能性があるため証拠にしない。
-  実測kitが空または未読（blind approve等）の出撃だけをissueにする。
+  実測kitが空または未読（blind approve等）の出撃を分類する。
+- 明示的な実測レシート（`order_context.observed_metric.cards`、
+  `departure_binding.cards`、同一stepの `sortie_confirm.cards` 等）が空なら
+  `sortie_without_cards` として high confidence / auto-file する。
+- レシート自体がない（blind approve、legacy snapshot等）場合は
+  `sortie_kit_unconfirmed` として low confidence / auto-file=false で保存し、
+  携行を「なし」と断定しない。後続の実測空レシートは別cooldownで検出する。
 - 将軍・step・purpose・出撃元/対象・在庫・計画cards・flow/計画/在城/統計を
   1件32KB以内で保存。同じ章・step・将軍は900秒cooldown。
 - 題名は `[半熟英雄] 切り札在庫があるのに非携行で出撃: ch<章> <将軍>`。

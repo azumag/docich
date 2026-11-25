@@ -1,0 +1,69 @@
+"""docich: クリアエンディング（めでたし めでたし）後のタイトル復帰は corner 終了。
+
+owner 2026-11-25: この画像が一定時間表示された後タイトルに戻る。タイトルへ戻ったら
+コーナーを終える（ゲームオーバー扱いにしない）。
+"""
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from docich.hanjuku.os_layer.pixels import Frame
+from docich import hanjuku_run
+
+IDENTITY = {"game": "hanjuku-hero", "runtime_id": "g999-abcdef01",
+            "generation": 999, "lease_id": "lease-clear"}
+
+
+def _frame(seed: int) -> Frame:
+    return Frame(256, 224, bytes([seed % 251]) * (256 * 224 * 3))
+
+
+class ClearEndingTest(unittest.TestCase):
+    def _prime(self, runtime: Path, **extra) -> None:
+        state = {"game": "hanjuku-hero", "runtime_id": "g999-abcdef01",
+                 "generation": 999, "lease_id": "lease-clear",
+                 "frame_sha256": _frame(1).digest(), "phase": "title",
+                 "name_entered": True, "gameplay_seen": True, "playing": True,
+                 "terminal_candidate": True, "title_count": 2, "title_since": 990.0,
+                 "observations": 5, "observed_monotonic": 1000.0,
+                 "observed_at": 1000.0}
+        state.update(extra)
+        (runtime / "hanjuku_run.json").write_text(json.dumps(state))
+
+    def test_a_title_return_after_the_clear_ending_ends_as_clear(self):
+        with tempfile.TemporaryDirectory() as raw:
+            runtime = Path(raw)
+            self._prime(runtime, clear_ending_seen=True)
+            with mock.patch.object(hanjuku_run, "classify", return_value="title"):
+                state = hanjuku_run.observe(runtime, IDENTITY, _frame(1),
+                                            now=1001.0, wall=1001.0)
+            self.assertEqual(state.get("terminal_reason"), "game_clear")
+            self.assertEqual(state.get("terminal_evidence"),
+                             "title_return_after_clear_ending")
+
+    def test_the_ending_text_marks_the_clear_ending(self):
+        with tempfile.TemporaryDirectory() as raw:
+            runtime = Path(raw)
+            self._prime(runtime, terminal_candidate=False, title_count=0)
+            fake = mock.Mock(text="めでたし　めでたし")
+            with mock.patch.object(hanjuku_run, "classify", return_value="plain"), \
+                    mock.patch("docich.hanjuku_screen.parse", return_value=fake):
+                state = hanjuku_run.observe(runtime, IDENTITY, _frame(2),
+                                            now=1001.0, wall=1001.0)
+            self.assertTrue(state.get("clear_ending_seen"))
+            self.assertIsNone(state.get("terminal_reason"))
+
+    def test_a_normal_title_return_still_latches_game_over(self):
+        with tempfile.TemporaryDirectory() as raw:
+            runtime = Path(raw)
+            self._prime(runtime, clear_ending_seen=False)
+            with mock.patch.object(hanjuku_run, "classify", return_value="title"), \
+                    mock.patch("docich.hanjuku_screen.parse",
+                               return_value=mock.Mock(text="")):
+                state = hanjuku_run.observe(runtime, IDENTITY, _frame(1),
+                                            now=1001.0, wall=1001.0)
+            self.assertEqual(state.get("terminal_reason"), "game_over")

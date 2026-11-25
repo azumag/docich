@@ -2647,7 +2647,7 @@ def _defender_summon_preempt(mem, cur):
     guard = cur.get('okunote_summon_preempt') or {}
     # Owner 2026-11-24: 相手がゾンビなら卵を使わず白兵で対処する。ゾンビパンチ
     # は0ダメージで、自傷する抽選を0ダメージの相手へ賭ける理由がない。
-    if cur.get('zombie_melee'):
+    if cur.get('melee_only_summon'):
         return None
     # Owner 2026-11-04: 相手（召喚獣）のHPが一撃で倒せる残りなら奥の手は不要。
     enemy_hp = cur.get('summon_enemy_hp')

@@ -182,7 +182,10 @@ class BridgeServer:
             "source": getattr(self.adapter, "source", ""),
             "source_epoch": getattr(self.adapter, "source_epoch", ""),
             "generation": int(getattr(self.adapter, "generation", 0)),
-            "sequence": int(reading.sequence),
+            # ``sequence`` is the provider-issued published-envelope sequence and
+            # is reissued by the Linux publisher; the upstream bridge only
+            # identifies its reading with ``upstream_sequence``.
+            "upstream_sequence": int(reading.sequence),
             "status": reading.status, "reason": reading.reason,
             "market_state": reading.market_state,
             "source_ts": reading.source_ts, "received_ts": reading.received_ts,
