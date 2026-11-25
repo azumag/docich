@@ -9,6 +9,11 @@
 #   - upstream_sequence   : bridge-side (Windows adapter) sequence preserved
 #                           verbatim; a non-increasing value is rejected as
 #                           sequence_regressed.
+#
+# HMAC replay guard: auth.py uses a process-local nonce cache. Run exactly one
+# bridge process per market/key id (no multi-worker/replica/overlap). The cache
+# is lost on restart; rotate the key before restarting an enabled endpoint, or
+# keep the market disabled until a shared durable nonce store is implemented.
 
 [bridge]
 market = "stocks"              # stocks | fx

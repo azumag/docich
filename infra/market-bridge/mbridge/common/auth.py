@@ -3,6 +3,13 @@
 The broker password/token stays on Windows.  Linux holds only this derived
 bridge key.  Nothing here logs or returns the secret; failure reasons are
 fixed codes.  Tests must use synthetic keys only.
+
+Replay protection is process-local: threads in one bridge process share the
+locked cache, but other processes/replicas do not. A process restart clears the
+cache, so a still-valid signed request may be replayed during the remaining
+skew window. Until a shared durable nonce store exists, deployment must use one
+process per market/key id and rotate the bridge key before restarting an enabled
+endpoint. Keep markets disabled if that operational constraint cannot be met.
 """
 from __future__ import annotations
 

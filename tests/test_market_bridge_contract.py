@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import base64
 import sys
+import threading
 import tempfile
 import unittest
 from dataclasses import replace
@@ -228,6 +229,26 @@ class AuthTests(unittest.TestCase):
             auth.REPLAY_CACHE_LIMIT = original_limit
             auth.reset_replay_cache()
 
+
+    def test_concurrent_replay_is_accepted_once_within_process(self):
+        barrier = threading.Barrier(8)
+        result_lock = threading.Lock()
+        results = []
+
+        def verify():
+            barrier.wait(timeout=2)
+            result = auth.verify_headers(self.headers, secret=self.secret, now=NOW)
+            with result_lock:
+                results.append(result)
+
+        workers = [threading.Thread(target=verify) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=3)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(results.count((True, "ok")), 1)
+        self.assertEqual(results.count((False, "replay_detected")), 7)
 
     def test_invalid_bridge_key_is_rejected(self):
         with self.assertRaises(ValueError):
