@@ -98,7 +98,7 @@ docich issue #5452。検証記録 VERIFY-5452.md（PR #5462、結論 (a) 実欠�
 - `src/docich/hanjuku/month_audit.py`
   - `_camp_event` に `mode_lost`/`recent_screens` 転写を追加。
 - `src/docich/hanjuku/version.py`
-  - `hanjuku-chart-v1496-recall-battle-mode-lost`（検品ゲートで付け直し。実装時は v1492 だったが、main が v1493・PR #5508 が v1494・PR #5514 が v1495 のため、空き番号 v1496 へ変更）。
+  - `hanjuku-chart-v1498-recall-battle-mode-lost`（検品ゲートで付け直し。実装時は v1492 だったが、main が v1493・PR #5508 が v1494・PR #5514 が v1495 のため、空き番号 v1496 へ変更）。
 - `ops/vm_actions/collect_diagnostics.py`
   - allowlist へ同文字列を追加（末尾カンマ）。
 - `ops/vm_actions/tests/test_collect_diagnostics.py`
@@ -143,7 +143,7 @@ docich issue #5452。検証記録 VERIFY-5452.md（PR #5462、結論 (a) 実欠�
   - 新規テストの想定経路（battle→`battle_return`、post-battle `map`→
     `[]`+recall 破棄、`map_target`+`dest` 生存時の受領消去→`_start_y_jump`、
     `castle_menu` 終端の mode_lost 計上）を呼出経路ごと追跡済み。
-- 採番: `version.py` は `hanjuku-chart-v1496-recall-battle-mode-lost`（検品ゲートで v1492 から付け直し）。
+- 採番: `version.py` は `hanjuku-chart-v1498-recall-battle-mode-lost`（検品ゲートで v1492 から付け直し）。
   ローカル main の最新は v1491（commit 231ec8fbd）。open PR の採番は
   `gh` が拒否されるため未確認 — 検品ゲートで衝突有無を確認のこと。
 - `DOCICH_HANDOFF_PATH` 未設定のため handoff 正本は未読（AGENTS.md §1）。

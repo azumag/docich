@@ -495,7 +495,7 @@ def _recall_move_mode_lost(mem, state, screen):
     resuming the Y route there opens the whole map in *view* mode, where an
     A on an own castle opens its menu (castle_menu) instead of naming the
     destination, and the follow-up confirm A lands inside that menu so the
-    return never launches (g1190 2026-11-26). Drop the in-flight attempt
+    return never launches (g1190 2026-11-25). Drop the in-flight attempt
     like an interrupted dispatch: the next observation re-detects the camp,
     re-walks its menu and confirms いどう again from a state that can be
     verified.
