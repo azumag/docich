@@ -199,3 +199,51 @@ def test_boss_only_card_remains_eligible_after_measured_boss_entry(monkeypatch):
     rows = [r for r in mem['_records'] if r['decision'] == 'battle_boss_card_missed']
     assert len(rows) == 1
     assert rows[0]['card'] == 'バルムンク'
+
+
+def test_summon_card_open_limit_is_checked_before_scrolling(monkeypatch):
+    # A second failed open must not trigger another three-scroll cycle. Keep
+    # the remaining card explicitly unclassified instead of silently dropping
+    # it or reporting it as successfully used.
+    mem = memory()
+    battle = mem['battle']
+    battle.update(planned_cards=['エンジェリン'],
+                  summon_card_opens=B.SUMMON_CARD_OPEN_LIMIT)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('a')]
+
+    assert battle['summon_card_scroll'] == 0
+    assert battle['cards_unclassified'] == ['エンジェリン']
+    assert not any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+    abandoned = [r for r in mem['_records']
+                 if r['decision'] == 'battle_summon_card_abandoned']
+    assert len(abandoned) == 1
+    assert abandoned[0]['observed_metric'] == {
+        'opens': B.SUMMON_CARD_OPEN_LIMIT,
+        'open_limit': B.SUMMON_CARD_OPEN_LIMIT,
+        'abandoned': ['エンジェリン'],
+    }
+
+    # The unclassified receipt makes the bound idempotent on later frames.
+    B.egg_battle_step(screen(text='こうげきもうこうげき'), mem)
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'battle_summon_card_abandoned']) == 1
+
+
+def test_summon_card_open_limit_does_not_interrupt_an_active_card_flow(monkeypatch):
+    mem = memory()
+    battle = mem['battle']
+    flow = {'card': 'エンジェリン', 'stage': 'announce', 'selection_planned': True}
+    battle.update(planned_cards=['エンジェリン'], cards_selected=['エンジェリン'],
+                  summon_card_opens=B.SUMMON_CARD_OPEN_LIMIT, card_flow=flow)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem)
+
+    assert battle['card_flow'] is flow
+    assert not battle.get('cards_unclassified')
+    assert not any(r['decision'] == 'battle_summon_card_abandoned' for r in mem['_records'])
