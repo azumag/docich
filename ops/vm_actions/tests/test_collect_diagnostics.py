@@ -3226,8 +3226,35 @@ class RotationTimerUnitProjectionTests(unittest.TestCase):
         self.assertIs(timer["active"], True)
         self.assertIs(timer["enabled"], True)
         self.assertIs(timer["legacy_alias"], True)
+        self.assertEqual(
+            set(timer["system_legacy"]),
+            {"service_active", "service_enabled", "timer_active", "timer_enabled"},
+        )
+        self.assertIs(timer["duplicate_owner"], True)
         self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
         self.assertNotIn(str(self.base), json.dumps(result))
+
+    def test_system_legacy_owner_projection_exposes_only_booleans(self):
+        module = self.module
+
+        def active(unit, scope="user"):
+            if scope == "system":
+                return unit == module.SYSTEM_LEGACY_ROTATION_SERVICE
+            return True
+
+        with mock.patch.object(module, "_unit_is_active", side_effect=active), \
+             mock.patch.object(module, "_unit_is_enabled", return_value=True):
+            result = module._collect_system_legacy_rotation_owner(True)
+        self.assertIs(result["duplicate_owner"], True)
+        self.assertEqual(result["system_legacy"], {
+            "service_active": True,
+            "service_enabled": True,
+            "timer_active": False,
+            "timer_enabled": True,
+        })
+        rendered = json.dumps(result)
+        self.assertNotIn("docich", rendered)
+        self.assertNotIn(str(self.base), rendered)
 
 
 def test_rotation_latch_projects_fixed_identity_without_request_id(tmp_path):
