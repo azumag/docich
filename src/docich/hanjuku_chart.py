@@ -1297,6 +1297,42 @@ def gateway(chapter):
     return GATEWAYS.get(chapter)
 
 
+# Chapter 12 (owner 2026-11-24): a boss march straight from the home castle is
+# absorbed or camped by the terrain between, so the boss assault is staged at
+# the chart's own boss source. The chart already names it twice: the hero's
+# last relay order (12-A3 ``主人公 ディランダ城を拠点に``) and the boss order's
+# source (12-B1). The speedrun chart is abolished (``orders`` is empty), so the
+# interim planner never ran either; ``boss_staging`` reads the encoded orders.
+STAGING_CHAPTERS = frozenset({12})
+
+
+def boss_staging(chapter):
+    """``{'castle', 'path'}`` of a chapter's boss staging castle, else None.
+
+    ``castle`` is the source of the boss order that the hero's relay also
+    targets (12-B1 / 12-A3); ``path`` is the hero's relay walked back from it
+    through the encoded orders (home -> ... -> castle), so no castle name is
+    hard-coded here. A chapter without that pair of orders has no staging.
+    """
+    if chapter not in STAGING_CHAPTERS:
+        return None
+    rows = measured_orders(chapter)
+    boss = next((o for o in rows if is_boss_castle(o['target'])), None)
+    if boss is None:
+        return None
+    stage = boss['source']
+    path = [stage]
+    while True:
+        prev = next((o for o in rows if o['general'] == HERO and o['target'] == path[0]
+                     and o['source'] not in path), None)
+        if prev is None:
+            break
+        path.insert(0, prev['source'])
+    if len(path) < 2:
+        return None
+    return {'castle': stage, 'path': tuple(path)}
+
+
 GUARD_FREE_CHAPTERS = frozenset({9})
 
 

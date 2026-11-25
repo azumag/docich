@@ -21,7 +21,7 @@ from .orders import (RETIRED_ORDER_STATES,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
                                _hero_source_alternative, _orders, _plan_pending, _ready, _reserved_targets,
-                               _site_king_down, _source,
+                               _site_king_down, _source, site_companion_reserve,
                                _defense_move_pick, _defense_priority_castles, _defense_score,
                                _garrison_plan, _post_conquest_wait,
                                _source_list_open, _source_location_recheck, _source_location_recheck_due,
@@ -509,6 +509,85 @@ def _corridor_forward_moves(mem, owned, garrison, busy, road_next, nearest_first
                 'after': None, 'purpose': 'move',
                 'note': f'暫定: {road_next}への中継として{route[1]}へ{label}を移動'})
     return lead, rest, staged
+
+
+def _staged_army(mem, garrison):
+    """Generals standing on the staging relay (every path castle but the home)."""
+    spec = chart.boss_staging(mem.get('chapter') or 0)
+    if spec is None or routes.staging_phase(mem) not in routes.STAGING_PHASES:
+        return set()
+    return {g for castle in spec['path'][1:]
+            for g in (_known_residents(mem, garrison, castle) or ())
+            if isinstance(g, str)}
+
+
+def _staging_moves(mem, owned, garrison, busy):
+    """Moves that walk the hero and then the other generals to the staging castle.
+
+    Owner 2026-11-24 (chapter 12): まずボス近くの城に主人公を移動した上で、他の
+    将軍も追従する. The relay is the chart's own hero chain (home -> ... ->
+    staging castle), one hop per move, because a march aimed past a castle is
+    absorbed by it. The game never lets a castle send its last general, so the
+    hero leaves a relay castle only while somebody else stays with him, and
+    followers leave only while the castle (and a waiting hero's companion)
+    keeps its people. Returns the hero's move first.
+    """
+    chapter = mem.get('chapter') or 0
+    spec = chart.boss_staging(chapter)
+    if spec is None or routes.staging_phase(mem) not in routes.STAGING_PHASES:
+        return []
+    stage, path = spec['castle'], spec['path']
+    unknown = set(_world(mem).get('general_location_unknown') or ())
+    here = routes.hero_castle(mem, path)
+    moves = []
+    sent = set()
+    hero_leaving = False
+    if (here is not None and here != stage and NAME not in busy and NAME not in unknown
+            and here in owned):
+        nxt = path[path.index(here) + 1]
+        roster = [g for g in (_known_residents(mem, garrison, here) or ())
+                  if g not in busy and g not in unknown]
+        if nxt in owned and len(set(roster)) >= 2 and NAME in roster:
+            moves.append({
+                'general': NAME, 'source': here, 'target': nxt, 'cards': [], 'after': None,
+                'purpose': 'move', 'hero_hub_move': True, 'stage_first': True,
+                'note': f'暫定: ボス出撃の拠点{stage}へ主人公を{here}から{nxt}へ進める'})
+            sent.add(NAME)
+            hero_leaving = True
+    # Followers: everything already standing at or marching to the chain counts.
+    in_pipe = {g for g in busy}
+    at_stage = [g for g in (_known_residents(mem, garrison, stage) or ()) if g != NAME]
+    inbound = sum(1 for _, sortie in _sorties(mem).items()
+                  if isinstance(sortie, dict) and sortie.get('target') in path[1:]
+                  and sortie.get('general') != NAME
+                  and sortie.get('status') == 'en_route')
+    want = routes.STAGING_FOLLOWERS - len(at_stage) - inbound
+    for idx in range(len(path) - 2, -1, -1):          # nearest to the staging castle first
+        if want <= 0:
+            break
+        donor, nxt = path[idx], path[idx + 1]
+        if donor not in owned or nxt not in owned:
+            continue
+        names = _known_residents(mem, garrison, donor)
+        if not names:
+            continue
+        hero_stays = NAME in names and not hero_leaving
+        keep = 2 if hero_stays and here == donor else 1
+        roster = [g for g in names if g not in busy and g not in unknown and g not in sent
+                  and not (g == NAME and hero_leaving)]
+        spares = [g for g in roster if g != NAME and not _boss_eggless(mem, g)]
+        spares.sort(key=lambda g: (_boss_egg_rank(mem, g), g))
+        room = len(set(names)) - (1 if hero_leaving and donor == here else 0) - keep
+        for general in spares[:max(0, min(room, want))]:
+            moves.append({'general': general, 'source': donor, 'target': nxt, 'cards': [],
+                          'after': None, 'purpose': 'move',
+                          'note': f'暫定: ボス出撃の拠点{stage}へ{_general_label(general)}を'
+                                  f'{donor}から{nxt}へ追従させる'})
+            sent.add(general)
+            want -= 1
+    if moves and not any(o.get('stage_first') for o in moves):
+        moves[0]['stage_first'] = True
+    return moves
 
 
 def routes_len(mem, donor, target, owned):
@@ -1132,6 +1211,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                      and (chain_held or retakes_stalled or _whitehouse_open(mem))
                      and not (mem.get('boss_victories') or {}))
     if boss_open:
+        routes.staging_arm(mem)
+        routes.staging_update(mem)
+    if boss_open:
         # Owner 2026-11-21: そもそもボス攻撃を最優先に. The boss used to sit
         # last in the candidate list, so every retake/staffing order ran first
         # and the boss waves only started once the rest was done. Put the boss
@@ -1192,6 +1274,15 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         road = chart.corridor(chapter) or ()
         if road and chart.corridor_next(chapter, owned) is None:
             owned = [c for c in owned if c == road[-1]]
+        # Owner 2026-11-24 (chapter 12): a wave from the home castle is absorbed
+        # or camped on the way. While the staging gathers nothing leaves for the
+        # boss; once the hero stands at the chart's boss source only it sends.
+        stage_phase = routes.staging_phase(mem)
+        if stage_phase == 'gathering':
+            return None
+        if stage_phase == 'ready':
+            staging = chart.boss_staging(chapter)['castle']
+            owned = [c for c in owned if c == staging]
         boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
         garrison = _world(mem).get('garrison') or {}
         unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ()) | {NAME}
@@ -1376,8 +1467,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target) or card_orders.get(target)
         cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else None)
-        if chart.is_boss_castle(target):
-            cards = []   # 波: strict kit waits for nobody — carry what is there
+        # Boss waves carry the stock-aware fallback. A source/roster probe
+        # is not a committed sortie and remains cardless.
+        if chart.is_boss_castle(target) and general == MOVE_ANY_GENERAL:
+            cards = []
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
@@ -1416,7 +1509,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 except Exception:
                     roster_probe = False
             boss_wave_orders.append({
-                'general': general2, 'target': boss, 'cards': [], 'source': source2,
+                'general': general2, 'target': boss,
+                'cards': [] if probe else _stock_cards(mem, None), 'source': source2,
                 'after': None, 'purpose': 'attack',
                 'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
                           else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
@@ -1444,6 +1538,15 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     garrison = _world(mem).get('garrison') or {}
     moves = []
     stage_more = []
+    # Owner 2026-11-24 (chapter 12): the hero walks to the boss staging castle
+    # and the other generals follow before any boss wave leaves.
+    staging_moves = _staging_moves(mem, owned, garrison, busy)
+    moves.extend(staging_moves)
+    busy = busy | {o['general'] for o in staging_moves if isinstance(o.get('general'), str)}
+    # The army standing on the relay is the staged army: no other generator
+    # (defence refill, front thickening) may pull it away again (e2e 2026-11-25:
+    # ペコリーノ was sent from ディランダ to ファンゴル while the hero walked).
+    busy = busy | _staged_army(mem, garrison)
     road_next = chart.corridor_next(chapter, owned) if chart.corridor(chapter) else None
     if road_next is not None:
         lead_moves, stage_more, staged = _corridor_forward_moves(mem, owned, garrison, busy, road_next)
@@ -1680,7 +1783,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # covered by an ordinary move above are not duplicated.
     if _post_conquest_wait(mem):
         moved = {o['target'] for o in moves}
-        moves.extend(o for o in _defense_rebalance(mem, owned, busy, heading)
+        moves.extend(o for o in _defense_rebalance(
+                         mem, owned, busy | site_companion_reserve(mem), heading)
                      if o['target'] not in moved)
     # Owner 2026-11-04: 人数に余裕があるときは一つの城へ波状攻撃.
     # Generate the first attempt for every target (and the moves that staff
@@ -1722,7 +1826,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # 後ろに置く。
     committed = {o['general'] for o in (*moves, *sorties['retake'], *sorties['attack'])}
     rotation = _garrison_rotation(
-        mem, owned, busy | planned_busy | wave_committed
+        mem, owned, busy | planned_busy | wave_committed | site_companion_reserve(mem)
         | (committed - {MOVE_ANY_GENERAL}), heading,
         taken={o['target'] for o in (*sorties['retake'], *sorties['attack'], *moves)})
     # An owned castle recorded empty loses itself to the next enemy stack, and
@@ -1757,6 +1861,37 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                              'garrison_rotate': True,
                              'note': f'暫定: 空の{castle}へ{_general_label(general)}を{source}から移動'})
             covered.add(castle)
+    # docich#5127: the recall flow registers ``roster_read_due`` in any
+    # chapter, but only chapter 9's corridor probe consumed it — and the boss
+    # wave only for a blind/kept launch_probe's own source. In every other
+    # chapter the due expired unread and the recalled general stayed
+    # unaccounted. Mint one read-only roster probe for the least-read due
+    # castle: the sortie menu's list read is the arrival receipt. The due is
+    # popped by the complete read (deploy._observe_garrison), never by the
+    # mint, so a rebuilt plan keeps offering the same step until the roster
+    # is actually read.
+    # Any order out of the due castle already opens its list, which consumes
+    # the due at the read — a second probe for the same source is noise.
+    opened = {o.get('source') for o in (*sorties['retake'], *sorties['attack'],
+                                      *moves, *staffing, *rotation,
+                                      *boss_wave_orders, *wave_orders)}
+    due_orders = []
+    due_sources = sorted((c for c in routes.roster_read_due(mem)
+                          if c in owned and c not in opened),
+                         key=lambda c: ((mem.get('route_probe_read_tick') or {}).get(c, 0), c))
+    if due_sources:
+        source = due_sources[0]
+        # The probe never launches: the boss castle label is legal from every
+        # chapter's own castle (``order_allowed``), and 'move' keeps the read
+        # out of the thin-army attack gate.
+        target = chart.boss_castle(chapter)
+        if target == source or target not in castles:
+            target = next((c for c in castles if c != source), source)
+        due_orders.append({
+            'general': MOVE_ANY_GENERAL, 'source': source, 'target': target,
+            'cards': [], 'after': None, 'purpose': 'move',
+            'source_probe': True, 'roster_probe': True,
+            'note': f'暫定: 帰還の到着確認として{source}の将軍一覧を読む'})
     # Every candidate must be startable from the recorded garrisons, so a
     # chart general named in another castle never reaches the castle menu.
     situation = _adjust_situation(mem)
@@ -1799,8 +1934,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         front, tail = [], lead
     else:
         front, tail = lead[:1], lead[1:]
-    for order in (*front, *staffing, *waves, *boss_wave_orders, *tail,
-                  *attacks, *stage_more, *rotation, *wave_orders):
+    for order in (*due_orders, *front, *staffing, *waves, *boss_wave_orders,
+                  *tail, *attacks, *stage_more, *rotation, *wave_orders):
         if order.get('purpose') == 'move':
             leg = (order.get('source'), order.get('target'))
             if (leg[1], leg[0]) in pairs:
@@ -2240,6 +2375,18 @@ def _mechanical_interim(mem, state, rid, digest, allow_sole=False):
     def stable_step(order):
         identity = '|'.join(str(order.get(k) or '')
                             for k in ('purpose', 'source', 'target', 'general'))
+        if order.get('roster_probe') is True:
+            # A finished read settles the step 'done'; the same stamp rule as
+            # ``_mechanical_step`` keeps a later request for the same castle —
+            # a retained due after a partial read, or the next dispatch into
+            # it — from inheriting that finished status (docich#5127).
+            ticks = [s.get('tick') for _, s in routes.unread_dispatches(mem, order.get('source'))
+                     if isinstance(s, dict)]
+            stamp = max((t for t in ticks if type(t) is int), default=None)
+            if stamp is None:
+                read_tick = (_world(mem).get('garrison_tick') or {}).get(order.get('source'))
+                stamp = read_tick if type(read_tick) is int else 0
+            identity += '|probe:' + str(stamp)
         stable = steps.get(identity)
         if not stable:
             state['interim_count'] = state.get('interim_count', 0) + 1
@@ -2934,9 +3081,21 @@ def _supersede_unstarted_steps(mem, new_orders):
 
 def _adopt_plan(mem, doc, rid):
     """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
-    orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
-               'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
-              for o in doc['orders']]
+    orders = []
+    for o in doc['orders']:
+        cards = list(o['cards'])
+        # Adjusted charts validate card names, not the live inventory. Mirror
+        # the interim planner's stock fallback before adoption; otherwise all
+        # suggested cards can be dropped at the menu and the sortie still
+        # launches empty (#5282). Explicitly cardless orders, staging moves,
+        # and boss kits retain their dedicated behavior.
+        if (cards and o.get('purpose') != 'move'
+                and not o.get('source_probe') and not o.get('roster_probe')
+                and not chart.is_boss_castle(o['target'])):
+            cards = _stock_cards(mem, cards)
+        orders.append({**o, 'step': chart_adjust.execution_step(rid, o['step']),
+                       'local_step': o['step'], 'cards': cards,
+                       'after': list(o['after']) if o['after'] else None})
     garrison = _world(mem).get('garrison') or {}
     for order in orders:
         present = garrison.get(order['source'])

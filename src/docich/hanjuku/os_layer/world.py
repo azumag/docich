@@ -6,13 +6,13 @@ castles, marching generals, the hero's castle). These are observations, not
 plans: the strategy layer reads them to choose orders.
 """
 from __future__ import annotations
-from ..state.regions import world as _world, sorties as _sorties
+from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
 from .screen import Screen, castle_roofs
 from .pixels import Frame
 from ... import hanjuku_chart as chart
 from ..decision_log import _record, _tally
-from .readers import STATUS_NAMES, _cursor
+from .readers import SEASON_CAMP_MIN, STATUS_NAMES, _cursor
 
 
 NAME = chart.HERO
@@ -626,6 +626,17 @@ def _apply_world_flags(mem, flags):
 
 
 SEASON_SITE_CONFIRM = 2        # consecutive Y-view readings before a site state changes
+SEASON_SITE_HIDDEN_CONFIRM = 3 # a no-skull/covered site needs one more reading
+
+
+def _season_site_readings(sites):
+    """Normalise a legacy ``{site: state}`` or a ``season_site_readings`` payload."""
+    if isinstance(sites, dict) and isinstance(sites.get('readings'), dict):
+        return sites['readings'], bool(sites.get('healthy'))
+    out = {}
+    for name, kind in (sites or {}).items():
+        out[name] = {'kind': 'skull' if kind == 'open' else 'closed'}
+    return out, True
 
 
 def _apply_season_sites(mem, sites):
@@ -639,35 +650,103 @@ def _apply_season_sites(mem, sites):
     an unreadable marker keeps the previous state, and the impossible
     "all four closed while the chapter is not over" reading is refused so a
     misread can never park the whole chapter.
+
+    g1342 2026-11-24: a defeated king stops drawing its skull while our camp
+    stays on the site, which is the owner's only in-game defeat evidence. A
+    site whose skull is absent but whose box is not clean terrain is therefore
+    ``hidden``, not unreadable: three consecutive healthy readings close it.
+    The frame must still read at least two other sites definitively, so a
+    dimmed/transitional frame never closes anything. A skull reading reopens a
+    site, which keeps a wrong closure bounded and reversible.
     """
     chapter = mem.get('chapter') or 0
     if chapter != 4 or not sites:
         return
+    readings, healthy = _season_site_readings(sites)
+    if not readings:
+        return
     sites_all = set(chart.boss_sites(4))
-    if (set(sites) >= sites_all and all(kind == 'closed' for kind in sites.values())
-            and (mem.get('boss_defeated') or 0) != 4):
+    closed_now = {name for name, row in readings.items()
+                  if isinstance(row, dict) and row.get('kind') == 'closed'}
+    if (closed_now >= sites_all and (mem.get('boss_defeated') or 0) != 4):
         # The chapter cannot still be running with every site cleared: this is
         # a misread (gold frame/cursor pixels), never a reason to park the
         # whole chapter. One record per reading signature.
-        digest = [list(item) for item in sorted(sites.items())]
+        digest = [list(item) for item in sorted((name, 'closed') for name in closed_now)]
         if mem.get('season_sites_refused') != digest:
             mem['season_sites_refused'] = digest
             _record(mem, 'season_sites_all_closed_refused',
-                    observed_metric={'sites': sorted(sites), 'marker': 'closed'},
+                    observed_metric={'sites': sorted(closed_now), 'marker': 'closed'},
                     reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
         return
     seen = mem.setdefault('season_sites', {})
     streak = mem.setdefault('season_site_streak', {})
-    for name, kind in sorted(sites.items()):
+    tick = int(mem.get('tick') or 0)
+    for name, reading in sorted(readings.items()):
+        if not isinstance(reading, dict):
+            continue
+        kind = reading.get('kind')
+        if kind not in ('skull', 'closed', 'hidden', 'ambiguous', 'cursor'):
+            kind = 'unreadable'
+        if kind == 'cursor':
+            # The Y view's own cursor sits on this box: nothing can be read, so
+            # neither the state, the marker nor the streaks change (g1342
+            # 2026-11-25 00:24: its outline once read as a live skull).
+            held = seen.get(name)
+            if isinstance(held, dict):
+                held['cursor_tick'] = tick
+                held['cursor_streak'] = int(held.get('cursor_streak') or 0) + 1
+            continue
+        if kind == 'hidden' and not healthy:
+            # A dimmed/transitional frame has no reliable skull read anywhere;
+            # it is not evidence that this particular king disappeared.
+            kind = 'unreadable'
+        streak_kind = 'open' if kind == 'skull' else kind
         previous = streak.get(name) or {}
-        count = previous.get('count', 0) + 1 if previous.get('kind') == kind else 1
-        streak[name] = {'kind': kind, 'count': count, 'chapter': chapter}
-        if count < SEASON_SITE_CONFIRM:
+        count = previous.get('count', 0) + 1 if previous.get('kind') == streak_kind else 1
+        streak[name] = {'kind': streak_kind, 'count': count,
+                        'chapter': chapter, 'tick': tick}
+        row = seen.get(name)
+        if not isinstance(row, dict):
+            row = seen[name] = {'state': None, 'chapter': chapter, 'tick': tick,
+                                'readings': 0}
+        was = row.get('marker')
+        row.update({'marker': kind, 'marker_tick': tick, 'last_read_tick': tick,
+                    'light': reading.get('light'), 'terrain': reading.get('terrain'),
+                    'camp': reading.get('camp'), 'cursor_streak': 0,
+                    'shape': reading.get('shape'),
+                    # Why the skull is missing: our own flag sits on the box. An
+                    # abandoned camp hides a live king's skull too, so this is
+                    # recorded evidence only and never changes the rule.
+                    'hidden_with_camp': (kind == 'hidden'
+                                         and (reading.get('camp') or 0) >= SEASON_CAMP_MIN),
+                    'hidden_streak': count if kind == 'hidden' else 0,
+                    'ambiguous_streak': count if kind == 'ambiguous' else 0,
+                    'unreadable_streak': count if kind == 'unreadable' else 0,
+                    'frame_healthy': healthy, 'chapter': chapter})
+        if was != kind:
+            # Keep the transition (hidden/ambiguous/unreadable included) in the
+            # decision log; the site's counters above are the cadence evidence.
+            _record(mem, 'season_site_marker', castle=name,
+                    observed_metric={'marker': kind, 'previous': was,
+                                     'camp': reading.get('camp'),
+                                     'hidden_with_camp': row['hidden_with_camp'],
+                                     'light': reading.get('light'),
+                                     'terrain': reading.get('terrain'),
+                                     'healthy': healthy, 'streak': count},
+                    reason='全体マップの四季王マスを再読し、ドクロ可視/曖昧/隠れ/読めないの別を記録する')
+        if kind in ('ambiguous', 'unreadable'):
+            # A partial skull, or a skull-less box in a frame that is not
+            # trustworthy, is neither a live-king confirmation nor a defeat;
+            # leave the state alone and let the order priority use the marker.
             continue
-        row = seen.get(name) or {}
-        if row.get('state') == kind and row.get('chapter') == chapter:
+        target_state = 'open' if kind == 'skull' else 'closed'
+        need = SEASON_SITE_HIDDEN_CONFIRM if kind == 'hidden' else SEASON_SITE_CONFIRM
+        if count < need:
             continue
-        if kind == 'closed' and (mem.get('boss_defeated') or 0) != 4:
+        if row.get('state') == target_state and row.get('chapter') == chapter:
+            continue
+        if target_state == 'closed' and (mem.get('boss_defeated') or 0) != 4:
             closed = {other for other, value in seen.items()
                       if isinstance(value, dict) and value.get('state') == 'closed'
                       and value.get('chapter') == chapter}
@@ -675,18 +754,54 @@ def _apply_season_sites(mem, sites):
             if len(closed) >= len(chart.boss_sites(4)):
                 _record(mem, 'season_sites_all_closed_refused', castle=name,
                         observed_metric={'closed': sorted(closed),
-                                         'readings': count, 'marker': kind},
+                                         'readings': count, 'marker': kind,
+                                         'healthy': healthy},
                         reason='全4地点が撃破済みの印でも章が終わっていないため、読み違いとして記録しない')
                 continue
-        seen[name] = {'state': kind, 'chapter': chapter, 'tick': int(mem.get('tick') or 0),
-                      'readings': count}
-        _record(mem, 'season_site_closed' if kind == 'closed' else 'season_site_open',
+        was_closed = row.get('state') == 'closed'
+        row.update({'state': target_state, 'chapter': chapter, 'tick': tick,
+                    'readings': count, 'marker': kind})
+        if target_state == 'open' and was_closed:
+            _restore_site_step(mem, name)
+        _record(mem, 'season_site_closed' if target_state == 'closed' else 'season_site_open',
                 castle=name,
-                observed_metric={'site': name, 'marker': kind, 'readings': count},
-                resulting_event=f'{kind}:{name}',
-                reason=('全体マップの四季王の印が旗に変わったため、この地点は撃破済みとして出撃しない'
-                        if kind == 'closed' else
+                observed_metric={'site': name, 'marker': kind, 'readings': count,
+                                 'camp': reading.get('camp'),
+                                 'hidden_with_camp': row['hidden_with_camp'],
+                                 'light': reading.get('light'),
+                                 'terrain': reading.get('terrain'),
+                                 'healthy': healthy},
+                resulting_event=f'{target_state}:{name}',
+                reason=('全体マップの四季王のドクロが連続して消えていたため、この地点は撃破済みとして出撃しない'
+                        if target_state == 'closed' and kind == 'hidden' else
+                        '全体マップの四季王の印が旗に変わったため、この地点は撃破済みとして出撃しない'
+                        if target_state == 'closed' else
                         '全体マップの四季王の印がドクロのため、撃破済みの記録を取り消して出撃対象へ戻す'))
+
+
+def _restore_site_step(mem, site):
+    """A reopened site returns to an adopted mechanical boss plan.
+
+    The mechanical plan is rebuilt without closed sites, so a wrongly closed
+    site would otherwise wait until that plan is exhausted. Only the plan's
+    order list and a never-run step's status are touched; the closure itself
+    stored nothing else (no done/dropped step, no victory, no boss_defeated).
+    """
+    region = _plan_region(mem)
+    stored = region.get('chart_plan')
+    orders = stored.get('orders') if isinstance(stored, dict) else None
+    if not isinstance(orders, list) or stored.get('source') != 'mechanical':
+        return
+    base = next((o for o in chart.orders(4) if o.get('target') == site), None)
+    if base is None or any(isinstance(o, dict) and o.get('step') == base['step'] for o in orders):
+        return
+    orders.append({**base, 'cards': list(base.get('cards') or ()), 'after': base.get('after')})
+    status = region.setdefault('orders', {})
+    if status.get(base['step']) in (None, 'failed'):
+        status[base['step']] = 'pending'
+    _record(mem, 'season_site_step_restored', chart_step=base['step'],
+            observed_metric={'site': site},
+            reason='ドクロが再び読めて地点が open に戻ったため、機械ボス計画へその地点のstepを戻す')
 
 
 BOSS_SKULL_READINGS = 2      # equal Y-view skull readings before the cell is used

@@ -42,6 +42,29 @@ def test_finish_order_drops_the_settled_steps_context():
     assert all(key not in plan for key in MAPS)
 
 
+def test_finish_order_records_interim_order_identity_on_failure(monkeypatch):
+    from docich.hanjuku.strategy import goals
+
+    monkeypatch.setattr(goals, 'note_attempt', lambda *args, **kwargs: None)
+    mem = memory()
+    mem['chapter'] = 3
+    step = 'I:743437:328a9db8'
+    plan = _plan_region(mem)
+    plan['active'] = step
+    mem['chart_adjust'] = {'interim_order': {
+        'step': step, 'purpose': 'move', 'general': 'アテナ',
+        'source': 'パタゴーヌ', 'target': 'アルマムーン', 'cards': [],
+    }}
+
+    O._finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない')
+    record = mem['_records'][-1]
+    assert record['decision'] == 'order_failed'
+    assert record['purpose'] == 'move'
+    assert record['general'] == 'アテナ'
+    assert record['source'] == 'パタゴーヌ'
+    assert record['target'] == 'アルマムーン'
+
+
 def test_finish_order_done_drops_context_too():
     mem = memory()
     plan = seed(mem, 'A:r1:M2', 'pending')

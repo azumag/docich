@@ -1,0 +1,116 @@
+"""Why chapter 4 sent no boss sortie on g1342 (2026-11-25 00:48-01:22).
+
+Live state at tick 64041 (4-B1 南西 'failed', 4-B2 南東 'pending', 北東/北西
+read closed, the only eligible companion ポセイドン marching to ネクスドリア):
+
+* 4-B1 stayed 'failed' across every chart_history entry while its skull was
+  visible; nothing re-armed a failed base site step.
+* At 01:12:59 the garrison rotation moved the sole companion ポセイドン out of
+  アルマムーン while 4-B2 waited out a cancelled-departure gate.
+
+The fixture is the sanitised live ``hanjuku_bot.json``. Memory is round-tripped
+through JSON before every call, as the runtime does between observations.
+"""
+import copy
+import json
+from pathlib import Path
+
+from docich import hanjuku_chart as chart
+from docich.hanjuku.state.regions import plan as _plan_region
+from docich.hanjuku.strategy import orders, replan
+
+FIXTURE = (Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
+           / 'g1342-ch4-bot-state-20261125-0117-no-companion.json')
+SW, SE, NE, NW = ('四季王城(南西)', '四季王城(南東)', '四季王城(北東)', '四季王城(北西)')
+
+
+def live():
+    return json.loads(json.dumps(json.loads(FIXTURE.read_text())['policy']))
+
+
+def status(mem):
+    return {k: v for k, v in _plan_region(mem)['orders'].items() if k.startswith('4-B')}
+
+
+def with_companion_at_home(mem):
+    """ポセイドン back at アルマムーン (constructed: the pre-01:12:59 state)."""
+    world = mem['world']
+    world['garrison']['アルマムーン'].insert(1, 'ポセイドン')
+    world['sorties'].pop('I:d1b35d:4b0345d7', None)
+    return mem
+
+
+def test_live_snapshot_has_the_reported_shape():
+    mem = live()
+    assert status(mem) == {'4-B1': 'failed', '4-B2': 'pending', '4-B3': 'pending', '4-B4': 'failed'}
+    assert {s for s in chart.boss_sites(4) if orders._site_king_down(mem, s)} == {NE, NW}
+    assert [o for o in chart.orders(4) if o['target'] == SW][0]['step'] == '4-B1'
+
+
+def test_a_failed_site_step_with_a_live_king_is_rearmed_and_a_defeated_one_is_not():
+    mem = live()
+    orders.next_order(mem)
+    assert status(mem)['4-B1'] == 'pending'
+    assert status(mem)['4-B4'] == 'failed'          # 北西's king is down
+    assert [r for r in mem['_records'] if r['decision'] == 'site_failed_step_rearmed'
+            and r['chart_step'] == '4-B1']
+
+
+def fresh_skull(mem):
+    mem['season_sites'][SW].update({'marker_tick': mem['tick'], 'last_read_tick': mem['tick']})
+
+
+def test_the_rearm_is_bounded_per_month_and_spaced_by_a_cooldown():
+    mem = live()
+    for _ in range(orders.SITE_FAILED_REARM_LIMIT):
+        _plan_region(mem)['orders']['4-B1'] = 'failed'
+        mem['tick'] += orders.SITE_FAILED_REARM_COOLDOWN
+        fresh_skull(mem)
+        orders.next_order(mem)
+        assert status(mem)['4-B1'] == 'pending'
+    _plan_region(mem)['orders']['4-B1'] = 'failed'
+    mem['tick'] += orders.SITE_FAILED_REARM_COOLDOWN
+    fresh_skull(mem)
+    orders.next_order(mem)
+    assert status(mem)['4-B1'] == 'failed'
+    mem['month'] = '9-1'
+    orders.next_order(mem)
+    assert status(mem)['4-B1'] == 'pending'
+    _plan_region(mem)['orders']['4-B1'] = 'failed'
+    mem['tick'] += 1
+    orders.next_order(mem)
+    assert status(mem)['4-B1'] == 'failed'          # inside the cooldown
+
+
+def test_a_site_whose_skull_is_gone_is_not_rearmed():
+    mem = live()
+    mem['season_sites'][SW].update({'state': 'closed', 'marker': 'hidden'})
+    orders.next_order(mem)
+    assert status(mem)['4-B1'] == 'failed'
+
+
+def test_a_revived_site_step_launches_once_a_companion_is_present():
+    mem = live()
+    assert orders.next_order(mem) is None           # nobody eligible: a bounded wait, not a sortie
+    mem = live()
+    mem['world']['garrison']['アルマムーン'].append('ヘーゼル')
+    order = orders.next_order(json.loads(json.dumps(mem)))
+    assert order is not None and order['target'] in (SW, SE)
+    mem2 = json.loads(json.dumps(mem))
+    orders.next_order(mem2)
+    assert status(mem2)['4-B1'] == 'pending'
+
+
+def test_the_pending_site_companion_is_reserved_from_interim_moves():
+    mem = with_companion_at_home(live())
+    assert orders.site_companion_reserve(mem) == {'ポセイドン'}
+    moves = replan.interim_candidates(copy.deepcopy(mem))
+    assert moves, 'the rotation still has a move to make'
+    assert all(o.get('general') != 'ポセイドン' for o in moves.values())
+
+
+def test_without_a_pending_site_nothing_is_reserved():
+    mem = with_companion_at_home(live())
+    for step in ('4-B1', '4-B2', '4-B3', '4-B4'):
+        _plan_region(mem)['orders'][step] = 'done'
+    assert orders.site_companion_reserve(mem) == set()

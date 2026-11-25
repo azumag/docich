@@ -2983,7 +2983,7 @@ class RetroCornerManager:
                     latest['game_audio'] = None
                 latest['hotload'] = hotload_status
                 self._write_state(latest)
-                if run.get('terminal_reason') in {'game_over', 'screen_stalled', 'input_stalled'}:
+                if run.get('terminal_reason') in {'game_over', 'screen_stalled', 'input_stalled', 'game_clear'}:
                     # Re-verify durable evidence bound to this runtime,
                     # generation and lease before any teardown; a mismatch
                     # or invalid record raises and fails closed.
@@ -3062,7 +3062,7 @@ class RetroCornerManager:
             raise RetroCornerError("Hanjuku runtime identity is unverified before restore")
 
         reason = state.get("end_reason")
-        if reason not in {"game_over", "screen_stalled", "input_stalled"}:
+        if reason not in {"game_over", "screen_stalled", "input_stalled", "game_clear"}:
             # Explicit stop paths can enter restoring without a terminal frame.
             # Their source runtime is still fenced by verify_runtime and the
             # coordinator's expected_source check in _finish_locked.

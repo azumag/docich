@@ -4,6 +4,22 @@ A single envelope carries readiness and quotes under one generation, so a
 consumer can never combine a fresh readiness with stale quotes (or vice
 versa).  Every field crossing the Windows -> Linux boundary is validated here
 before anything is published.  There is deliberately no order/execution type.
+
+Sequence spaces
+---------------
+The wire carries two independent sequence spaces:
+
+* ``Snapshot.sequence`` -- the monotonic sequence of the *published envelope*.
+  It is issued by the Linux publisher (``MarketBridgeProvider``) at publish
+  time and is never derived from the upstream bridge.  Consumers order
+  published envelopes by this field.
+* ``Snapshot.upstream_sequence`` -- the bridge-side (upstream, Windows adapter)
+  sequence number of the reading, preserved verbatim from the upstream.  It is
+  not part of the published ordering and is never reissued by the provider.
+
+A reading replayed from the bridge is rejected by a non-increasing
+``upstream_sequence`` (``sequence_regressed``).  The provider's own
+``sequence`` can only move forward, so a published envelope never regresses.
 """
 from __future__ import annotations
 
@@ -35,6 +51,8 @@ REASON_CODES = frozenset({
     "unknown_route",
     "method_not_allowed",
     "invalid_request",
+    "replay_detected",
+    "replay_cache_full",
     "wrong_market",
     "wrong_source",
     "wrong_symbol",
@@ -91,7 +109,8 @@ class Snapshot:
     source: str
     source_epoch: str      # Windows terminal/session epoch; changes on reconnect
     generation: int        # provider/bridge instance generation
-    sequence: int          # monotonically increasing within a generation
+    sequence: int          # provider-issued monotonic sequence of the published envelope
+    upstream_sequence: int  # bridge-side (upstream) sequence of the reading
     status: str            # ready | warming_up | unavailable
     reason: str
     market_state: str      # preopen | open | closed | unknown
@@ -165,6 +184,8 @@ def validate_snapshot(snap: Any, *, expected_market: str, expected_source: str,
     if not _positive_int(snap.generation) or snap.generation != generation:
         return False, "generation_conflict"
     if not _positive_int(snap.sequence):
+        return False, "invalid_sequence"
+    if not _positive_int(snap.upstream_sequence):
         return False, "invalid_sequence"
     if snap.status not in STATUSES:
         return False, "invalid_status"
@@ -281,7 +302,8 @@ def decode_candidate(data: Any) -> Candidate:
 def encode_snapshot(snap: Snapshot) -> dict:
     return {
         "market": snap.market, "source": snap.source, "source_epoch": snap.source_epoch,
-        "generation": snap.generation, "sequence": snap.sequence, "status": snap.status,
+        "generation": snap.generation, "sequence": snap.sequence,
+        "upstream_sequence": snap.upstream_sequence, "status": snap.status,
         "reason": snap.reason, "market_state": snap.market_state,
         "source_ts": snap.source_ts, "received_ts": snap.received_ts,
         "quotes": [encode_quote(q) for q in snap.quotes],
@@ -290,7 +312,9 @@ def encode_snapshot(snap: Snapshot) -> dict:
 
 
 def decode_snapshot(data: Any) -> Snapshot:
-    required = {"market", "source", "generation", "sequence", "status", "reason",
+    # ``sequence`` is provider-issued and reissued at publish time, so the
+    # upstream bridge is not required to send it; it defaults to a placeholder.
+    required = {"market", "source", "generation", "status", "reason",
                 "market_state", "source_ts", "received_ts"}
     if not isinstance(data, dict) or not required <= data.keys():
         raise ValueError("invalid_schema")
@@ -302,7 +326,9 @@ def decode_snapshot(data: Any) -> Snapshot:
         return Snapshot(
             market=data.get("market"), source=data.get("source"),
             source_epoch=data.get("source_epoch", ""), generation=data.get("generation", 0),
-            sequence=data.get("sequence", 0), status=data.get("status", "unavailable"),
+            sequence=data.get("sequence", 0),
+            upstream_sequence=data.get("upstream_sequence", data.get("sequence", 0)),
+            status=data.get("status", "unavailable"),
             reason=data.get("reason", "upstream_error"),
             market_state=data.get("market_state", "unknown"),
             source_ts=data.get("source_ts", 0.0), received_ts=data.get("received_ts", 0.0),

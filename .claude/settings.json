@@ -1,0 +1,8 @@
+{
+  "env": {
+    "CODE_MODERNIZATION_TELEMETRY": "0"
+  },
+  "enabledPlugins": {
+    "code-modernization@claude-plugins-official": true
+  }
+}

@@ -172,7 +172,8 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
                         {"unchanged_since": proof["since"] + 1}, {"unchanged_seconds": 999},
                         {"observed_monotonic": 381}):
             malformed.append({**loop, **changes})
-        for index, state in enumerate([run_state(), run_state(terminal_reason="screen_stalled", unchanged_seconds=300),
+        for index, state in enumerate([run_state(), run_state(terminal_reason="game_clear"),
+                      run_state(terminal_reason="screen_stalled", unchanged_seconds=300),
                       input_stalled, loop, *malformed,
                       *(run_state(**v) for v in INVALID_TERMINAL)]):
             (self.run / "hanjuku_run.json").write_text(json.dumps(state))
@@ -187,9 +188,9 @@ class EvidenceTests(EvidenceFixture, unittest.TestCase):
             with self.subTest(state=state):
                 # Export is intentionally stricter for legacy schema/no lease.
                 self.assertFalse(exported and not native_ok)
-                if index < 4:
+                if index < 5:
                     self.assertTrue(exported and native_ok)
-                elif index < 10:
+                elif index < 11:
                     self.assertFalse(exported or native_ok)
 
     def test_repetition_archive_roundtrip_and_missing_validator_fail_closed(self):
