@@ -3149,7 +3149,14 @@ def egg_battle_step(screen: Screen, mem):
         battle = (mem.get('battle') if isinstance(mem.get('battle'), dict)
                   else mem.setdefault('egg_retreat_flow', {}))
         interrupted_flow = battle.get('card_flow')
-        if (isinstance(interrupted_flow, dict)
+        if isinstance(interrupted_flow, dict) and interrupted_flow.get('read_kit'):
+            # The read-only defense kit probe exists to prepare a pre-summon
+            # egg drop.  Once the enemy summon menu owns the turn that window
+            # has passed, and this flow cannot advance here; close it instead
+            # of letting its truthy value suppress the carried-card reveal.
+            _defense_kit_read_unread(
+                mem, battle, '敵召喚メニューへ置き換わり実切り札一覧の読み取りを継続できない')
+        elif (isinstance(interrupted_flow, dict)
                 and interrupted_flow.get('stage') in ('menu', 'down', 'list')
                 and not interrupted_flow.get('selection_planned')
                 and not interrupted_flow.get('read_kit')):
@@ -3164,6 +3171,31 @@ def egg_battle_step(screen: Screen, mem):
                     'tactic_id': interrupted_flow.get('tactic_id'),
                 }
             battle['card_flow'] = None
+        elif (isinstance(interrupted_flow, dict)
+                and (interrupted_flow.get('stage') == 'announce'
+                     or interrupted_flow.get('selection_planned'))):
+            # docich#5538/#5612: the announce wait only advances on the
+            # card_list screen.  Once the enemy summon menu replaces it the
+            # flow is frozen, but its truthy value also suppresses the reveal
+            # scroll and reopen gate.  Hold the attack while we bound out a
+            # possible misread; never spend a melee turn with that blocker
+            # still unresolved, then release it as unclassified.
+            scope = [interrupted_flow.get('card'), interrupted_flow.get('stage')]
+            stall = battle.get('summon_card_flow_stall')
+            observations = (int(stall.get('observations') or 0) + 1
+                            if isinstance(stall, dict)
+                            and stall.get('scope') == scope else 1)
+            battle['summon_card_flow_stall'] = {'scope': scope,
+                                                'observations': observations}
+            if observations >= SUMMON_CARD_FLOW_STALL_LIMIT:
+                battle.pop('summon_card_flow_stall', None)
+                _card_use_unclassified(
+                    mem, battle,
+                    '選択済み・消費未確定の切り札告知待ちが召喚画面で進行不能のまま滞留したため、未分類として保持して解放する')
+            else:
+                return []
+        else:
+            battle.pop('summon_card_flow_stall', None)
         if int(battle.get('card_retreat_cancels') or 0) >= CARD_RETREAT_CANCEL_LIMIT:
             abandoned = [c for c in (battle.get('planned_cards') or [])
                          if c not in (battle.get('cards_unclassified') or [])]
@@ -3352,6 +3384,7 @@ def egg_battle_step(screen: Screen, mem):
             if (missed and cards_left and not battle.get('cards_used')
                     and not battle.get('boss_card_missed_noted')):
                 battle['boss_card_missed_noted'] = True
+                parked_flow = battle.get('card_flow')
                 _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
                         # The month audit projects the battle identity from
                         # these top-level fields (#5398 was filed as
@@ -3364,6 +3397,12 @@ def egg_battle_step(screen: Screen, mem):
                                          'screen': screen.kind,
                                          'text': (screen.text or '')[:80],
                                          'scrolls': battle.get('summon_card_scroll'),
+                                         'card_flow': (
+                                             {'card': parked_flow.get('card'),
+                                              'stage': parked_flow.get('stage'),
+                                              'selection_planned': bool(
+                                                  parked_flow.get('selection_planned'))}
+                                             if isinstance(parked_flow, dict) else None),
                                          'summon_egg_unavailable': bool(
                                              battle.get('summon_egg_unavailable')),
                                          'empty_egg': bool(empty_egg),
@@ -3433,6 +3472,12 @@ MONSTER_STALL_RETURN_TURNS = 6
 SUMMON_CARD_SCROLL_LIMIT = 3
 CARD_RETREAT_CANCEL_LIMIT = 2
 SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   # cancels before the carried card is abandoned
+# egg_battle_menu observations a selected-but-unconfirmed card flow may sit
+# frozen before it is booked unclassified and released.  The flow can only
+# advance on a card_list screen, so attacking while it is parked would skip
+# the remaining carried cards (card_miss #5612).  The bound only rides out a
+# misread frame; the attack is held rather than confirmed during the look.
+SUMMON_CARD_FLOW_STALL_LIMIT = 3
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
 # enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
 # even at enemy HP 27 with the summon at 515, which looked like throwing a

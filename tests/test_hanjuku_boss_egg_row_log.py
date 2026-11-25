@@ -158,6 +158,60 @@ def test_selected_or_announcement_card_flow_is_not_reopened():
     assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
 
 
+def test_an_interrupted_defense_kit_read_is_closed_before_reveal():
+    # A read-only kit probe cannot advance on the summon menu either.  Its
+    # pre-summon purpose is already gone, so close it fail-closed and let the
+    # real carried card reveal instead of attacking past it.
+    mem = memory()
+    battle = mem['battle']
+    battle.update(planned_cards=['エンジェリン'],
+                  card_flow={'card': None, 'stage': 'menu', 'read_kit': True})
+    assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('down')]
+    assert battle['card_flow'] is None
+    assert battle['defense_egg_kit_read']['read_done'] is True
+    assert any(r['decision'] == 'battle_defense_kit_read_unread' for r in mem['_records'])
+    assert any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
+
+
+def test_a_frozen_announce_flow_holds_attack_then_releases(monkeypatch):
+    # docich#5612: after one summon-menu card open (scroll counter reset to
+    # 0), a selected-but-unconfirmed card flow can be left frozen when the
+    # card list is replaced.  The remaining carried card must not be skipped
+    # by a melee confirmation during the bounded misread grace.
+    mem = memory()
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ミックミー', 'ノリウツール'],
+        'cards_selected': ['ミックミー'],
+        'summon_card_scroll': 0,
+        'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                      'selection_planned': True},
+    })
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    for _ in range(B.SUMMON_CARD_FLOW_STALL_LIMIT - 1):
+        assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == []
+        assert battle['card_flow']['stage'] == 'announce'
+        assert not any(r['decision'] == 'battle_egg_general_attack'
+                       for r in mem['_records'])
+        assert not any(r['decision'] == 'battle_boss_card_missed'
+                       for r in mem['_records'])
+
+    assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('down')]
+    assert battle['card_flow'] is None
+    assert battle['cards_unclassified'] == ['ミックミー']
+    assert not battle.get('summon_card_flow_stall')
+    assert any(r['decision'] == 'battle_card_unclassified'
+               and r.get('card') == 'ミックミー' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_boss_card_missed'
+                   for r in mem['_records'])
+
+    assert B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem) == [B.pad('a')]
+    assert battle['card_flow']['card'] == 'ノリウツール'
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
 def test_boss_only_card_is_not_reported_as_missed_before_boss_entry(monkeypatch):
     # VERIFY-5458 path 2: a carried Balmung is intentionally unavailable
     # during an ordinary battle launched from a boss sortie.

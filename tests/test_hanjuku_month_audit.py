@@ -2390,6 +2390,8 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
                 'cards_left': ['ノリウツール'], 'scrolls': 3, 'cursor': 192,
                 'text': 'こうげきたいきゃく', 'empty_egg': False,
                 'summon_egg_unavailable': False, 'enemy_summon_observed': True,
+                'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                              'selection_planned': True},
             }, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
@@ -2406,10 +2408,14 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert battle['enemy_summon_observed'] is True
     assert battle['screen_text'] == 'こうげきたいきゃく'
     assert battle['cards_left'] == ['ノリウツール']
+    assert battle['card_flow'] == {'card': 'ミックミー', 'stage': 'announce',
+                                   'selection_planned': True}
     assert '切り札未使用' in audit._issue_title(incident)
     body = audit.render(incident)
     assert 'ノリウツール' in body and 'card_miss' in body
     assert 'scrolls: 3' in body and 'cursorY: 192' in body
+    assert 'card=ミックミー' in body and 'stage=announce' in body
+    assert 'selection_planned=true' in body
     assert 'こうげきたいきゃく' in body and 'side: attack' in body
     comment = audit.render_comment(incident)
     assert '再発' in comment
@@ -2433,6 +2439,7 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
             'cards_left': 'not-a-list', 'scrolls': True, 'cursor': 225,
             'text': 'x' * 200, 'empty_egg': 'false',
             'summon_egg_unavailable': 1, 'enemy_summon_observed': None,
+            'card_flow': 'not-a-dict',
         },
         **IDENTITY,
     }
@@ -2446,6 +2453,7 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     assert battle['empty_egg'] is None
     assert battle['summon_egg_unavailable'] is None
     assert battle['enemy_summon_observed'] is None
+    assert battle['card_flow'] is None
     assert battle['screen_text'] == 'x' * 96
 
 
