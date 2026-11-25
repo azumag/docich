@@ -17,6 +17,7 @@ from docich.trading.events import append_public_event  # noqa: E402
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 from docich.trading.notifications import (  # noqa: E402
     NotificationError,
+    _safe_status,
     deliver_pending_notifications,
 )
 
@@ -235,6 +236,43 @@ class TestNotificationDelivery(unittest.TestCase):
             self.assertFalse(thread.is_alive())
             self.assertEqual(errors, [])
             self.assertEqual(len(calls), 1)
+
+    def test_safe_status_shares_only_the_matching_snapshot_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = global_config(root, speech=False)
+            status_path = g.state_dir / "trading" / "status.json"
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot_id = "paper:7:1800000000000000"
+            status_path.write_text(json.dumps({
+                "schema_version": 1,
+                "mode": "paper",
+                "snapshot_id": snapshot_id,
+                "performance_summary": {
+                    "as_of": 1_800_000_000.0,
+                    "snapshot_id": snapshot_id,
+                    "complete": True,
+                    "equity_jpy": "10100",
+                },
+            }), encoding="utf-8")
+            safe = _safe_status(g, now=1_800_000_000.0)
+            self.assertEqual(safe["snapshot_id"], snapshot_id)
+            self.assertEqual(safe["performance_summary"]["snapshot_id"], snapshot_id)
+
+            status_path.write_text(json.dumps({
+                "schema_version": 1,
+                "mode": "paper",
+                "snapshot_id": "paper:8:1800000000000000",
+                "performance_summary": {
+                    "as_of": 1_800_000_000.0,
+                    "snapshot_id": snapshot_id,
+                    "complete": True,
+                    "equity_jpy": "10100",
+                },
+            }), encoding="utf-8")
+            mismatched = _safe_status(g, now=1_800_000_000.0)
+            self.assertNotIn("snapshot_id", mismatched)
+            self.assertNotIn("snapshot_id", mismatched.get("performance_summary", {}))
 
     def test_delayed_overlay_delivery_uses_delivery_time_for_visibility(self):
         with tempfile.TemporaryDirectory() as tmp:
