@@ -25,6 +25,60 @@ _TERMINAL_REASONS = frozenset({
 })
 
 
+def _launch_archive_once(runtime):
+    """Ask for the detached pending uploader once per runtime generation.
+
+    The send is deliberately started from the *first* observation of a new
+    corner, before the attempt becomes ``running``.  Once ``timer.json`` says
+    a run is in progress this function records the decision but does not start
+    a new uploader ("do not send during a trial"); an uploader that is already
+    running is never stopped.  The marker is created before launching so a
+    failure to start (R2 not configured, missing module) is not retried on
+    every observation.  The next corner start is a new runtime and tries
+    again.  Never raises.
+    """
+    try:
+        runtime = Path(runtime)
+        if runtime.parent.name != 'runtimes':
+            return False
+        if not runtime.is_dir() or not runtime.parent.parent.is_dir():
+            # Never create the runtimes tree for an arbitrary path; the same
+            # gate as _observe() must hold before a marker is written.
+            return False
+        marker = runtime / '.archive-launched'
+        if marker.exists():
+            return False
+        timer = store.load_timer(runtime)
+        if isinstance(timer, dict) and timer.get('status') == 'running':
+            # A trial is already in progress: do not start a new send during
+            # it.  Record the decision so later observations in this runtime
+            # generation stay quiet; the next corner tries again.  An
+            # uploader that is already running is never stopped here.
+            try:
+                fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                             0o600)
+                os.close(fd)
+            except OSError:
+                pass
+            return False
+        try:
+            fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        else:
+            os.close(fd)
+        try:
+            from . import archive
+            archive.launch_pending(runtime)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def observe(runtime, records, state, meta, *, screenshot):
     """Record one observation.  Returns the resulting timer or ``None``.
 
@@ -33,6 +87,7 @@ def observe(runtime, records, state, meta, *, screenshot):
     ``meta`` is the observation meta JSON.  ``screenshot`` is the image path
     whose mtime is the observation time when available.
     """
+    _launch_archive_once(runtime)
     try:
         timer = _observe(runtime, records, state, meta, screenshot=screenshot)
     except OSError as exc:

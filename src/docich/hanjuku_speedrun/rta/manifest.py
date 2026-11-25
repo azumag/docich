@@ -86,18 +86,19 @@ def _docich_commit(root):
     return sha
 
 
-def _attempt_source(runtime, attempt_id):
-    timer = store.load_timer(runtime)
+def _attempt_source(directory, attempt_id):
+    timer = spool.read_json(Path(directory) / store.TIMER_FILE,
+                            limit=store.MAX_TIMER_BYTES)
     if isinstance(timer, dict) and timer.get('attempt_id') == attempt_id:
         return timer
-    for row in reversed(store.load_attempts(runtime)):
+    for row in reversed(store.load_attempts_in(directory)):
         if isinstance(row, dict) and row.get('attempt_id') == attempt_id:
             return row
     return {}
 
 
-def _segments(runtime, attempt_id):
-    path = spool.attempt_dir(runtime, attempt_id) / 'segments.json'
+def _segments(directory, attempt_id):
+    path = spool.attempt_dir_in(directory, attempt_id) / 'segments.json'
     document = spool.read_json(path)
     return document if isinstance(document, dict) else {}
 
@@ -126,13 +127,23 @@ def _chart_editions(source, segments):
 
 def build_manifest(runtime, attempt_id):
     """Build and atomically write ``manifest.json``; returns the document."""
-    runtime = Path(runtime)
+    return build_manifest_at(store.data_dir(runtime), attempt_id)
+
+
+def build_manifest_at(directory, attempt_id):
+    """Build the manifest from a speedrun data directory.
+
+    Used by the archive job when the attempt's runtime directory no longer
+    exists; the manifest input (timer, attempts history, spool) all lives
+    under the data directory.
+    """
+    directory = Path(directory)
     attempt_id = spool._component(attempt_id, 'attempt_id')
-    source = _attempt_source(runtime, attempt_id)
-    segments = _segments(runtime, attempt_id)
+    source = _attempt_source(directory, attempt_id)
+    segments = _segments(directory, attempt_id)
     root = _repo_root()
-    files, total = spool.spool_files(runtime, attempt_id)
-    dropped = spool.read_json(spool.dropped_path(runtime, attempt_id))
+    files, total = spool.spool_files_in(directory, attempt_id)
+    dropped = spool.read_json(spool.dropped_path_in(directory, attempt_id))
     document = {
         'schema': SCHEMA,
         'game': store.GAME,
@@ -159,5 +170,6 @@ def build_manifest(runtime, attempt_id):
         'archived': False,
         'built_at_ms': int(time.time() * 1000),
     }
-    spool.write_json(manifest_path(runtime, attempt_id), document)
+    spool.write_json(
+        spool.attempt_dir_in(directory, attempt_id) / 'manifest.json', document)
     return document

@@ -6733,6 +6733,15 @@ def finalize_speedrun_attempts(state_dir, runtimes, warnings=None) -> int:
                     if warnings is not None:
                         warnings.append(
                             f"speedrun RTA spool failed: {_safe_detail(exc)}")
+            # Hand the ended attempts to the detached R2 archiver.  It is a
+            # side channel: never wait for it and never fail the teardown.
+            try:
+                archive = importlib.import_module(f"{rta.__name__}.archive")
+                archive.launch_pending(runtime_dir)
+            except Exception as exc:
+                if warnings is not None:
+                    warnings.append(
+                        f"speedrun RTA archive launch failed: {_safe_detail(exc)}")
         except Exception as exc:
             if warnings is not None:
                 warnings.append(

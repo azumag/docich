@@ -29,12 +29,13 @@ def segments_path(runtime, attempt_id):
     return spool.attempt_dir(runtime, attempt_id) / 'segments.json'
 
 
-def _attempt_source(runtime, attempt_id):
+def _attempt_source(directory, attempt_id):
     """The timer document for the attempt, or the JSONL row as a fallback."""
-    timer = store.load_timer(runtime)
+    timer = spool.read_json(Path(directory) / store.TIMER_FILE,
+                            limit=store.MAX_TIMER_BYTES)
     if isinstance(timer, dict) and timer.get('attempt_id') == attempt_id:
         return timer
-    for row in reversed(store.load_attempts(runtime)):
+    for row in reversed(store.load_attempts_in(directory)):
         if isinstance(row, dict) and row.get('attempt_id') == attempt_id:
             return row
     return {}
@@ -213,13 +214,22 @@ def _finish(skeletons):
 
 def build_segments(runtime, attempt_id):
     """Build and atomically write ``segments.json``; returns the document."""
-    runtime = Path(runtime)
+    return build_segments_at(store.data_dir(runtime), attempt_id)
+
+
+def build_segments_at(directory, attempt_id):
+    """Build the segment summary from a speedrun data directory.
+
+    The archive job uses this when the attempt's runtime directory is gone;
+    the timer, attempts history and spool are all under ``directory``.
+    """
+    directory = Path(directory)
     attempt_id = spool._component(attempt_id, 'attempt_id')
-    source = _attempt_source(runtime, attempt_id)
+    source = _attempt_source(directory, attempt_id)
     skeletons = _segment_skeletons(_splits(source))
-    directory = spool.spool_dir(runtime, attempt_id)
-    if directory.is_dir():
-        observations, trace_bots, trace_charts = _scan_trace(directory, skeletons)
+    spool_path = spool.spool_dir_in(directory, attempt_id)
+    if spool_path.is_dir():
+        observations, trace_bots, trace_charts = _scan_trace(spool_path, skeletons)
     else:
         observations, trace_bots, trace_charts = 0, [], []
     _finish(skeletons)
@@ -234,7 +244,7 @@ def build_segments(runtime, attempt_id):
     for value in [source.get('chart_edition')] + trace_charts:
         if isinstance(value, str) and value and value not in chart_editions:
             chart_editions.append(value)
-    dropped = spool.read_json(spool.dropped_path(runtime, attempt_id))
+    dropped = spool.read_json(spool.dropped_path_in(directory, attempt_id))
     document = {
         'schema': SCHEMA,
         'game': store.GAME,
@@ -256,5 +266,6 @@ def build_segments(runtime, attempt_id):
         'dropped': dropped if isinstance(dropped, dict) else None,
         'built_at_ms': int(time.time() * 1000),
     }
-    spool.write_json(segments_path(runtime, attempt_id), document)
+    spool.write_json(
+        spool.attempt_dir_in(directory, attempt_id) / 'segments.json', document)
     return document

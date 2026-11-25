@@ -110,22 +110,42 @@ def _component(value, label):
 
 def attempt_dir(runtime, attempt_id):
     """``<data_dir>/attempts/<attempt_id>`` for a runtime directory."""
-    runtime = Path(runtime)
+    return attempt_dir_in(store.data_dir(runtime), attempt_id)
+
+
+def attempt_dir_in(directory, attempt_id):
+    """``<speedrun data dir>/attempts/<attempt_id>``.
+
+    The archive job addresses the attempt tree through the data directory so
+    it can still work after the runtime directory is gone.
+    """
     attempt_id = _component(attempt_id, 'attempt_id')
-    return store.data_dir(runtime) / ATTEMPTS_DIR / attempt_id
+    return Path(directory) / ATTEMPTS_DIR / attempt_id
 
 
 def spool_dir(runtime, attempt_id):
     """The per-attempt spool directory."""
-    return attempt_dir(runtime, attempt_id) / SPOOL_DIR
+    return spool_dir_in(store.data_dir(runtime), attempt_id)
+
+
+def spool_dir_in(directory, attempt_id):
+    return attempt_dir_in(directory, attempt_id) / SPOOL_DIR
 
 
 def frames_dir(runtime, attempt_id):
-    return spool_dir(runtime, attempt_id) / FRAMES_DIR
+    return frames_dir_in(store.data_dir(runtime), attempt_id)
+
+
+def frames_dir_in(directory, attempt_id):
+    return spool_dir_in(directory, attempt_id) / FRAMES_DIR
 
 
 def dropped_path(runtime, attempt_id):
-    return spool_dir(runtime, attempt_id) / DROPPED_FILE
+    return dropped_path_in(store.data_dir(runtime), attempt_id)
+
+
+def dropped_path_in(directory, attempt_id):
+    return spool_dir_in(directory, attempt_id) / DROPPED_FILE
 
 
 def _ensure_dir(path):
@@ -297,6 +317,27 @@ def _read_lock_pid(lock):
         return None
 
 
+def _pid_is_zombie(pid):
+    """True when ``/proc/<pid>/stat`` reports a zombie/dead process.
+
+    A detached ``gzip`` is often reaped only when its Python parent gets
+    around to it, so ``kill(pid, 0)`` succeeds for a zombie.  Treating that
+    as alive makes a stale lock wait forever; ``Z`` means the work is over.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        raw = Path(f'/proc/{pid}/stat').read_text(
+            encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    try:
+        state = raw.rsplit(')', 1)[1].strip()[:1]
+    except IndexError:
+        return False
+    return state in {'Z', 'X', 'x'}
+
+
 def _pid_alive(pid):
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -305,10 +346,10 @@ def _pid_alive(pid):
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return not _pid_is_zombie(pid)
     except OSError:
         return False
-    return True
+    return not _pid_is_zombie(pid)
 
 
 def _release_lock(lock):
@@ -817,12 +858,17 @@ def _collect_frames(runtime, attempt_id, directory):
 
 def spool_files(runtime, attempt_id):
     """Relative path/size inventory of the spool (manifest input)."""
-    directory = spool_dir(runtime, attempt_id)
-    if directory.is_symlink() or not directory.is_dir():
+    return spool_files_in(store.data_dir(runtime), attempt_id)
+
+
+def spool_files_in(directory, attempt_id):
+    """Relative path/size inventory of a spool addressed by data directory."""
+    path = spool_dir_in(directory, attempt_id)
+    if path.is_symlink() or not path.is_dir():
         return [], 0
     files = []
     total = 0
-    for relative, _path, size in _spool_entries(directory):
+    for relative, _path, size in _spool_entries(path):
         files.append({'path': relative, 'bytes': size})
         total += size
     files.sort(key=lambda item: item['path'])

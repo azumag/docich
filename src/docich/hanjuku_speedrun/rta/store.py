@@ -22,6 +22,11 @@ import sys
 import tempfile
 import time
 
+try:  # pragma: no cover - Windows has no fcntl; the VM (Linux) does.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 from . import timer as timer_mod
 
 GAME = timer_mod.GAME
@@ -29,7 +34,14 @@ DATA_PARTS = ('speedrun', 'hanjuku-speedrun')
 TIMER_FILE = 'timer.json'
 RECORDS_FILE = 'records.json'
 ATTEMPTS_FILE = 'attempts.jsonl'
+ATTEMPTS_LOCK_FILE = 'attempts.jsonl.lock'
 RUN_FILE = 'hanjuku_run.json'
+
+#: The attempts history is read-modify-written by two processes (the bot and
+#: the detached archiver).  The lock wait is deliberately short: a contended
+#: write is skipped, never allowed to stall the bot's observation loop.
+LOCK_WAIT_SECONDS = 5.0
+LOCK_POLL_SECONDS = 0.02
 
 #: Every file has a hard read/write bound.  The timer is rewritten on every
 #: observation (about 1.5 s) and must stay a few hundred bytes.
@@ -220,14 +232,59 @@ def load_run(runtime):
 
 
 def load_attempts(runtime):
-    path = attempts_path(runtime)
+    return load_attempts_in(data_dir(runtime))
+
+
+def _attempts_lock_path(directory):
+    return Path(directory) / ATTEMPTS_LOCK_FILE
+
+
+def _acquire_attempts_lock(directory):
+    """Short, bounded ``flock`` for one attempts-history read-modify-write."""
+    if fcntl is None:  # pragma: no cover - the VM is Linux
+        return 0
+    path = _attempts_lock_path(directory)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return None
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                return None
+            time.sleep(LOCK_POLL_SECONDS)
+
+
+def _release_attempts_lock(fd):
+    if fcntl is None:  # pragma: no cover
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _read_attempts(path):
+    """Return ``(rows, needs_repair)`` without modifying the file."""
     try:
         meta = os.lstat(path)
     except FileNotFoundError:
-        return []
+        return [], False
     if not os.path.isfile(path) or os.path.islink(path) or meta.st_size > MAX_ATTEMPTS_BYTES:
-        _quarantine(path)
-        return []
+        return [], True
     rows = []
     damaged = False
     try:
@@ -248,13 +305,46 @@ def load_attempts(runtime):
                     continue
                 rows.append(row)
     except UnicodeError:
-        _quarantine(path)
-        return []
-    if damaged:
+        return [], True
+    return rows, damaged
+
+
+def _load_attempts_locked(directory):
+    """Read (and, if needed, repair) the history while the lock is held."""
+    path = Path(directory) / ATTEMPTS_FILE
+    rows, needs_repair = _read_attempts(path)
+    if needs_repair:
         # Keep the original bytes and rewrite only the readable rows.
         _quarantine(path)
         _write_attempts(path, rows)
     return rows
+
+
+def load_attempts_in(directory):
+    """Read ``attempts.jsonl`` from a speedrun data directory.
+
+    ``directory`` is the ``speedrun/hanjuku-speedrun`` directory (the same
+    directory :func:`data_dir` returns for a runtime).  The archive job runs
+    from a detached process which may not know a runtime directory (or whose
+    runtime directory was already removed), so it addresses the history file
+    directly rather than through a synthetic runtime.
+
+    A normal read needs no lock: writes replace the file atomically, so a
+    reader always sees a complete generation.  A damaged file is repaired
+    under the same lock writers use, and is left untouched (readable rows are
+    still returned) when the lock cannot be taken in time.
+    """
+    path = Path(directory) / ATTEMPTS_FILE
+    rows, needs_repair = _read_attempts(path)
+    if not needs_repair:
+        return rows
+    fd = _acquire_attempts_lock(directory)
+    if fd is None:
+        return rows
+    try:
+        return _load_attempts_locked(directory)
+    finally:
+        _release_attempts_lock(fd)
 
 
 def _row_line(row):
@@ -321,21 +411,68 @@ def append_attempt(runtime, row):
     """Append one attempt row; a repeated ``attempt_id`` is a no-op.
 
     The whole (bounded) JSONL file is rewritten through a temporary file, so
-    an interrupted write leaves the previous complete file.  The newest rows
-    win when the byte bound is reached.
+    an interrupted write leaves the previous complete file.  The read and the
+    rewrite happen under ``attempts.jsonl.lock``; a lock that cannot be taken
+    within :data:`LOCK_WAIT_SECONDS` skips this write instead of blocking the
+    bot.  The newest rows win when the byte bound is reached.
     """
     if not isinstance(row, dict):
         raise StoreError('invalid_attempt')
     attempt_id = row.get('attempt_id')
     if not isinstance(attempt_id, str) or not attempt_id:
         raise StoreError('invalid_attempt_id')
-    path = attempts_path(runtime)
-    rows = [existing for existing in load_attempts(runtime)
-            if isinstance(existing, dict)
-            and existing.get('attempt_id') != attempt_id]
-    rows.append(row)
-    _write_attempts(path, rows)
+    directory = data_dir(runtime)
+    fd = _acquire_attempts_lock(directory)
+    if fd is None:
+        print('rta: attempts lock timeout', file=sys.stderr)
+        return False
+    try:
+        path = Path(directory) / ATTEMPTS_FILE
+        rows = [existing for existing in _load_attempts_locked(directory)
+                if isinstance(existing, dict)
+                and existing.get('attempt_id') != attempt_id]
+        rows.append(row)
+        _write_attempts(path, rows)
+    finally:
+        _release_attempts_lock(fd)
     return True
+
+
+def update_attempt_in(directory, attempt_id, updates):
+    """Merge ``updates`` into the row named by ``attempt_id``.
+
+    The whole bounded JSONL file is rewritten atomically, exactly like
+    :func:`append_attempt`; row order is preserved.  Returns ``True`` when a
+    row changed.  A missing attempt id is a no-op.  The read-modify-write is
+    serialised with :func:`append_attempt` through ``attempts.jsonl.lock``;
+    a lock timeout skips the update and returns ``False``.
+    """
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise StoreError('invalid_attempt_id')
+    if not isinstance(updates, dict):
+        raise StoreError('invalid_attempt')
+    fd = _acquire_attempts_lock(directory)
+    if fd is None:
+        print('rta: attempts lock timeout', file=sys.stderr)
+        return False
+    try:
+        path = Path(directory) / ATTEMPTS_FILE
+        rows = _load_attempts_locked(directory)
+        changed = False
+        updated_rows = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get('attempt_id') != attempt_id:
+                updated_rows.append(row)
+                continue
+            merged = {**row, **updates}
+            if merged != row:
+                changed = True
+            updated_rows.append(merged)
+        if changed:
+            _write_attempts(path, updated_rows)
+        return changed
+    finally:
+        _release_attempts_lock(fd)
 
 
 # ---------------------------------------------------------------------------

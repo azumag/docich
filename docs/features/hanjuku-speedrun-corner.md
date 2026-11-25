@@ -610,3 +610,85 @@ PR 1 の範囲は実装済み。確認済みの内容と、元コーナー側に
 - ミリ秒は `requestAnimationFrame`（約30fps）で合計と走行中セルの2か所だけ更新。上部レールが見えない領域（`full` / `top` 以外）、非表示の iframe、stale、タイマー無しでは回さない。判定と書式の純関数は `speedrun-timer-pure` のマーカーで囲み、`node --test` から評価する。
 - CI: `overlays/**/*.html` / `*.mjs` と `tests/**/*.mjs` を `ci_test_scope` の対象に追加（共有 UI なので変更は full）。Playwright のテストは CI に Chromium が無いため skip される。色・書式の判定は `tests/test_speedrun_timer_view.mjs`（node）で CI でも検証される。
 - 残り: 反映は共有オーバーレイの再読込経路で行う。`direct_broadcast_overlay_state.mjs` だけを変える PR は、`vm-operations` の自動再読込の対象にならない（`.html` の差分だけを見ている）。実際の配信画面での見え方（色・文字の切れ）は実機で確かめて調整する。
+
+## 付録F. PR 4 の実装状況（R2 退避、2026-11-26）
+
+根拠は実際のコード（`src/docich/hanjuku_speedrun/rta/`）と `tests/test_speedrun_rta*.py`。
+**実 R2・実ネットワーク・VM・ROM では未確認**。確認はローカルのダミー S3 サーバーと
+合成データだけで行っている。
+
+### PR 4a（spool・trace・manifest・segments）
+
+- `rta/spool.py`: `hanjuku_decisions` / `hanjuku_events` の `.previous` を試走の `spool/` へ移し、
+  切り離した `nice 19 gzip` で圧縮する。spool の上限（既定 1 GiB、
+  `DOCICH_SPEEDRUN_SPOOL_MAX_BYTES`）を超えたら定期画像 → 画像 → トレース → 古いログの順に捨てる。
+- `rta/trace.py`: 観測 1 回につき 1 行（400B 以内）。8 MiB で回転。定期画像（既定 10 分）と
+  区間確定時の画像を `spool/frames/` にコピーする。
+- `rta/manifest.py` / `rta/report_segments.py`: 試走終了時に `manifest.json` と
+  `segments.json` を書く。manifest の `spool_files_at_build` は圧縮前のスナップショット
+  （`inventory: "pre-compression snapshot"`）であり、送信時の一覧としては使わない。
+- `rta/store.py`: `timer.json` / `records.json` / `attempts.jsonl`。原子的書き込み。
+  `attempts.jsonl` が壊れたら退避して読み直す。
+- `game_switch.finalize_speedrun_attempts`: teardown が完了した speedrun runtime だけを対象に
+  `store.finalize_attempt` → `spool.finalize_logs` を呼ぶ。`hanjuku-hero` では rta を import しない。
+- `rta/hook.py`: ボットの `persist` 直後に呼ばれ、タイマー・トレース・画像を記録する。
+  失敗は外へ出さない。
+
+### PR 4b（R2 への退避）
+
+- `rta/sigv4.py`: S3 互換（R2、リージョン `auto`、サービス `s3`、path-style）の SigV4
+  ヘッダ署名。ペイロードはファイルをストリーミングして SHA-256 を計算し、
+  `x-amz-content-sha256` に入れる。PUT / HEAD / CopyObject のみ。
+  AWS 公式ドキュメントの IAM `ListUsers` と S3 `GET` の既知ベクタで署名を検証している。
+- `rta/archive.py`:
+  - 設定は `~/.config/docich/r2.env`（`DOCICH_R2_ENV_FILE` で上書き）。`KEY=VALUE` だけを読み、
+    シェル評価はしない。未設定なら `status: unconfigured` で何も送らない。権限が 600 より
+    緩いファイルは拒否する（`insecure_permissions`）。
+  - `upload_attempt`: spool の実ファイルを再走査し、1 ファイルずつ PUT → HEAD でサイズ照合。
+    全一致でだけ、**実際に送ったファイルと tar に入れたフレーム**をローカルから削除する
+    （送っていないファイルは残す）。manifest と `attempts.jsonl` に `archived` を記録する。
+    画像は `spool/frames.tar` に 1 つにまとめる。圧縮中のファイル（`.gz.lock` が生きている）
+    は切り離し送信内で最大 10 分・数秒間隔で待ち、死んだロック（`/proc/<pid>/stat` が
+    `Z` のゾンビを含む）は引き取って未圧縮のまま送る。待っても解けなければ
+    `gzip_pending` として次回に回し、失敗回数・バックオフには数えない。
+  - `sigv4.py` の canonical URI は生パスから 1 回だけエンコードする（送信 URL と署名で
+    同じ規則）。キーに日本語・空白・`+`・`:` を含む PUT / HEAD / Copy を、ダミー
+    サーバーが独立に署名を再計算して検証する（不一致は 403）。
+  - 送信本文はハッシュと同じ fd から `Content-Length` の `size` バイトで打ち切り、
+    送信中に伸びたら `local_changed` としてローカルを残す。
+  - 失敗時はローカルを残し、`attempts/<id>/archive_state.json` に回数・固定コード・次回時刻を
+    書く（指数バックオフ）。同じキーへの再 PUT で冪等。
+  - `fcntl.flock`（`<data_dir>/archive.lock`）で同時実行を防ぐ。取れなければ即終了。
+  - `attempts.jsonl` の読み書きは `attempts.jsonl.lock` の `fcntl.flock` でプロセス間
+    直列化する（最大 5 秒待ち、取れなければその更新をスキップしてボットを止めない）。
+  - PB と区間ベストの試走は `hanjuku-speedrun/keep/` にもコピーする（失敗は本体の成功を
+    取り消さない。`keep_copied` / `keep_failed` に残す。manifest 再 PUT の失敗も同様）。
+  - `upload --pending` の先頭で試走全体の上限 `DOCICH_SPEEDRUN_ATTEMPTS_MAX_BYTES`
+    （既定 4 GiB）を守る。超えたら未送信の古い試走の spool を捨て、`dropped_for_cap` を
+    `archive_state.json` と `manifest.json` に記録する。`running` の試走は消さない。
+    `attempt_no` 不明の試走を先に消さず、`attempts/<id>` の mtime が古い順に処理する。
+    行も manifest も無い孤児の `attempts/<id>/` も合計と削除対象に含める。
+    この上限処理は `launch_pending` から分離して呼び、R2 未設定でも送信せずに適用する。
+  - 送信済みで直近 3 試走より古いものは、ローカルの manifest / segments も整理する。
+    archived でない古い試走は、この整理では消さない（再送の状態を残す）。
+  - `launch_pending`: 切り離した `python -m ...archive upload --pending` を起動する。
+    `.env` が無ければ起動しない（中身は読まない）。例外は外へ出さない。
+    起動元は `game_switch.finalize_speedrun_attempts` の `finalize_logs` 後と、
+    `hook.observe` の runtime ごとの最初の観測（マーカーファイルで 1 回）。最初の観測で
+    `timer.json` が `running` なら新たな送信は始めない（走行中の試走中は送らない。
+    すでに走っている送信は止めない）。
+  - CLI: `upload --attempt <id>` / `upload --pending` / `status`。終了コード 0/1/2、
+    出力は固定コードと数値だけ。資格情報はログ・例外・manifest・archive_state に出さない。
+    アカウント ID も `R2Config` の repr・エラー・CLI・`archive_state.json` に出さない
+    （bucket 名だけ）。
+- 手順書: `docs/hanjuku-speedrun-r2.md`（バケット・トークン・`r2.env`・ライフサイクル・
+  料金・固定コードの意味）。
+- R2 側の保持はライフサイクル規則（`attempts/` を 90 日で削除）だけ。**「直近 20 試走」の
+  ような R2 側の件数整理は実装していない。** `keep/` は削除対象にしない。
+- テスト: `tests/test_speedrun_rta_sigv4.py`（公式ベクタ・段階ごとの署名）、
+  `tests/test_speedrun_rta_archive.py`（ダミー S3 サーバーが受け取ったリクエストの署名を
+  独立に再計算して検証。PUT/HEAD/COPY、特殊文字キー、サイズ不一致・500・HEAD 失敗・
+  接続拒否・タイムアウト・冪等再送・gzip 待機/ゾンビロック・tar・keep・直近 3 保持・
+  全体上限・ロック・launcher・資格情報とアカウント ID の非漏えい）、
+  `tests/test_speedrun_rta_store_lock.py`（attempts.jsonl のプロセス間直列化）。
+  実 R2 は使っていない。
