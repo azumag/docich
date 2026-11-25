@@ -919,7 +919,10 @@ def tick(g, game, runtime_dir, run, identity, *, now=None):
     now = time.time() if now is None else now
     state = _state(runtime_dir, ident)
     changed = False
-    cfg = config(game)
+    try:
+        cfg = config(game)
+    except Exception:
+        return None
     if not state['run_started_at']:
         # The first observation initializes the schedule from the live game
         # config, so enabling the section does not require a corner restart
