@@ -149,10 +149,11 @@ def _migrate_card_evidence(mem):
             reason='旧戦闘の選択済みリストは実使用証拠でないためafter_cardを解禁しない')
 
 
-def _card_use_unclassified(mem, cur, reason):
+def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
     flow = cur.get('card_flow') or {}
     card = flow.get('card')
-    selected = (flow.get('selection_planned') is True
+    selected = (selected_interrupted
+                or flow.get('selection_planned') is True
                 or (flow.get('stage') == 'announce'
                     and card in cur.get('cards_selected', [])))
     if not selected:
@@ -199,7 +200,10 @@ def _card_use_unclassified(mem, cur, reason):
         cur['deviation_reason'] = reason
     _record(mem, 'battle_card_unclassified', **_battle_labels(cur), card=card,
             expected_metric='選択した切り札の実使用告知',
-            observed_metric={'confirmation': 'unclassified'}, reason=reason)
+            observed_metric={'confirmation': 'unclassified',
+                             **({'selected_interrupted': True,
+                                 'stage': flow.get('stage')} if selected_interrupted else {})},
+            reason=reason)
     if flow.get('egg_drop_only'):
         _egg_drop_trace(mem, cur, 'unclassified', card=card,
                         tactic_id=flow.get('tactic_id'), reason=reason)

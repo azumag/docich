@@ -1424,6 +1424,8 @@ def _battle_resource_event(record):
         'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
             resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
             resources['cards_unclassified'], resources['cards_attempted']),
+        'cards_unclassified': resources['cards_unclassified'],
+        'cards_attempted': resources['cards_attempted'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -4362,6 +4364,8 @@ def render(record):
               if battle.get('cards_unconfirmed_egg_drop') else []),
             *([f"- 使用未分類（告知未校正）: {battle.get('cards_unclassified')}"]
               if battle.get('cards_unclassified') else []),
+            *([f"- 消費未確認の使用試行: {battle.get('cards_attempted')}"]
+              if battle.get('cards_attempted') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]
