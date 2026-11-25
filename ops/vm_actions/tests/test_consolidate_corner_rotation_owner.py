@@ -144,7 +144,18 @@ if rest[:1] == ["start"]:
     if entry is None:
         sys.exit(1)
     entry["active"] = True
-    entry["main_pid"] = int(entry.get("main_pid") or 0) + 1 or 5000
+    if rest[-1] == legacy_service:
+        entry["main_pid"] = 5000 + int(os.getpid())
+        state_dir = Path(os.environ["FAKE_STATE_DIR"])
+        rotation = json.loads((state_dir / "corner_rotation.json").read_text())
+        pending = rotation.get("pending") or {}
+        (state_dir / "corner_rotation_heartbeat.json").write_text(json.dumps({
+            "schema": 1,
+            "corner": pending.get("corner", "hanjuku-hero"),
+            "request_id": pending.get("request_id"),
+            "pid": entry["main_pid"],
+            "at": time.time(),
+        }))
     save()
     sys.exit(0)
 

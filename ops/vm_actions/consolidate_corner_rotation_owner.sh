@@ -348,12 +348,15 @@ rollback_legacy_owner() {
   sudo -n systemctl start --no-block "$legacy_service" >/dev/null 2>&1 || true
   sudo -n systemctl daemon-reload >/dev/null 2>&1 || true
   local restored=""
-  local i age
+  local i age pid main_now
   for i in $(seq 1 12); do
     sleep 5
     rotation="$(rotation_projection)" || true
     age="$(projection_field heartbeat_age_sec)"
-    if [[ "$age" =~ ^[0-9]+$ ]] && (( age <= 60 )); then
+    pid="$(projection_field heartbeat_pid)"
+    main_now="$(legacy_main_pid)"
+    if [[ "$age" =~ ^[0-9]+$ ]] && (( age <= 60 )) \
+        && [[ "$pid" =~ ^[0-9]+$ && "$main_now" =~ ^[0-9]+$ && "$pid" == "$main_now" ]]; then
       restored=true
       break
     fi
