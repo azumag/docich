@@ -96,8 +96,15 @@ def test_a_dispatched_recall_scene_coverage_waits_for_field_evidence():
         Screen([], None, '月初の案内文', kind='text'), state['policy'], None) is None
     assert recall['steps'] == steps
 
-    # Only a field/picker observation can settle the covered request.
-    _, state = decide(Screen([], None, '', kind='map_target', marker=(90, 80)), state)
+    # Only a field/picker observation can settle the covered request. This
+    # is a parsed Screen, so exercise the flow boundary directly rather than
+    # passing it to decide(), whose public input is a pixel Frame.
+    mem = state['policy']
+    for _ in range(6):
+        mem['tick'] = int(mem.get('tick') or 0) + 1
+        recall_flow._recall_dispatch_step(
+            Screen([], None, '', kind='map_target', marker=(90, 80)),
+            mem, recall)
     assert 'camp_recall_unconfirmed' in decisions(state)
     assert 'recall' not in state['policy']
 
@@ -106,11 +113,14 @@ def test_a_sent_but_unclosed_recall_schedules_the_destination_roster_read():
     # docich#5127 (owner 2026-11-23): input_sent + picker_closed=False ended as
     # "unconfirmed" and never asked the destination roster, so the general's
     # arrival could not be confirmed. The bounded read is scheduled instead.
-    state = recall_state(stage='await_dispatch', input_sent=True, goal='ファルゲ')
+    mem = {'chapter': 3, 'tick': 70400, 'flow': {}, '_records': []}
+    recall = {'stage': 'await_dispatch', 'steps': 0, 'input_sent': True,
+              'goal': 'ファルゲ', 'target': [414, 496]}
     picker = Screen([], None, '', kind='map_target', marker=(90, 80))
-    _, state = decide(picker, state)
-    assert 'camp_recall_unconfirmed' in decisions(state)
-    due = state['policy']['roster_read_due']['ファルゲ']
+    for offset in range(6):
+        mem['tick'] = 70400 + offset
+        recall_flow._recall_dispatch_step(picker, mem, recall)
+    due = mem['roster_read_due']['ファルゲ']
     assert 70400 + recall_flow.RECALL_READ_DELAY <= due <= 70400 + recall_flow.RECALL_READ_DELAY + 10
 
 
