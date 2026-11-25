@@ -281,6 +281,14 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
         )
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="recover-runtime",GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="recover-runtime;id").returncode, 0)
+        for operation in ("check-rotation-owner", "consolidate-rotation-owner"):
+            with self.subTest(operation=operation):
+                allowed = self.run_auth(INPUT_OPERATION=operation)
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                self.assertEqual(json.loads(allowed.stdout), {
+                    "operation": operation, "target": "production", "ref": "main"})
+                self.assertNotEqual(self.run_auth(
+                    INPUT_OPERATION=operation, GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
         for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id", "rollback-timer;id", "recover-runtime;id"):
             with self.subTest(operation=operation):
                 self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation).returncode, 0)
@@ -487,7 +495,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-cancel-queued-hanjuku, cancel-queued-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-cancel-queued-hanjuku, cancel-queued-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner, check-rotation-owner, consolidate-rotation-owner]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -504,6 +512,10 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
             "control/ops/vm_actions/control_hanjuku_prediction.sh",
             "control/ops/vm_actions/release_stale_failed_owner.sh",
+            "control/ops/vm_actions/consolidate_corner_rotation_owner.sh",
+            "Check or consolidate the corner rotation owner",
+            "if: steps.auth.outputs.operation == 'check-rotation-owner' || steps.auth.outputs.operation == 'consolidate-rotation-owner'",
+            "ROTATION_OWNER_MODE=",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",

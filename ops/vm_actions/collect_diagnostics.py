@@ -6421,6 +6421,11 @@ def _collect_rotation_evidence(state_dir):
 # the legacy name currently is that alias.
 CANONICAL_ROTATION_TIMER = "docich-corner-rotation.timer"
 LEGACY_ROTATION_TIMER = "docich-retro-corner.timer"
+# Hand-installed system-scope legacy rotation owner. The canonical user timer
+# and this unit take the same corner-rotation lock, so at most one can own the
+# rolling rotation. Diagnostics reports both without paths or unit bodies.
+SYSTEM_LEGACY_ROTATION_SERVICE = "docich-soren91-corner.service"
+SYSTEM_LEGACY_ROTATION_TIMER = "docich-soren91-corner.timer"
 
 
 def _rotation_timer_selection(unit_dir=None):
@@ -10408,14 +10413,18 @@ def _collect_programs(state_dir, soren, now):
     """
     state_dir = Path(state_dir)
     timer_unit, legacy_alias = _rotation_timer_selection()
+    canonical_timer_active = _unit_is_active(timer_unit)
+    system_legacy = _collect_system_legacy_rotation_owner(canonical_timer_active)
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "corner_rotation": {"present": False, "readable": False},
         "corner_rotation_timer": {
             "unit": timer_unit,
-            "active": _unit_is_active(timer_unit),
+            "active": canonical_timer_active,
             "enabled": _unit_is_enabled(timer_unit),
             "legacy_alias": legacy_alias,
+            "system_legacy": system_legacy["system_legacy"],
+            "duplicate_owner": system_legacy["duplicate_owner"],
         },
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
@@ -11534,6 +11543,32 @@ CORNER_ROTATION_LEGACY_SERVICE = "docich-retro-corner.service"
 CORNER_ROTATION_LEGACY_TIMER = "docich-retro-corner.timer"
 CORNER_ROTATION_CANONICAL_SERVICE = "docich-corner-rotation.service"
 CORNER_ROTATION_CANONICAL_TIMER = "docich-corner-rotation.timer"
+
+
+def _collect_system_legacy_rotation_owner(canonical_timer_active):
+    """Sanitized projection of the hand-installed system-scope rotation owner.
+
+    The canonical user timer and the system-scope ``docich-soren91-corner``
+    unit compete for the same rotation lock, so a host that has both can show a
+    healthy user timer while the legacy unit owns every tick. Only booleans and
+    the duplicate-owner verdict leave this collector; unit paths, unit bodies
+    and command lines never do.
+    """
+    service_active = _unit_is_active(SYSTEM_LEGACY_ROTATION_SERVICE, scope="system")
+    timer_active = _unit_is_active(SYSTEM_LEGACY_ROTATION_TIMER, scope="system")
+    projected = {
+        "service_active": service_active,
+        "service_enabled": _unit_is_enabled(SYSTEM_LEGACY_ROTATION_SERVICE, scope="system"),
+        "timer_active": timer_active,
+        "timer_enabled": _unit_is_enabled(SYSTEM_LEGACY_ROTATION_TIMER, scope="system"),
+    }
+    duplicate = None
+    if canonical_timer_active is not None:
+        duplicate = bool(
+            canonical_timer_active is True
+            and (service_active is True or timer_active is True)
+        )
+    return {"system_legacy": projected, "duplicate_owner": duplicate}
 
 
 def _collect_corner_rotation_timer_alias():

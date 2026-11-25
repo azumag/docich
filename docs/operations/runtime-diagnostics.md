@@ -508,6 +508,11 @@ cooldown付き guard と、ownerが管理する systemd timer の導入・実機
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  さらに system scope の手置き legacy owner（`docich-soren91-corner.service` /
+  `docich-soren91-corner.timer`）の active/enabled を `system_legacy` として投影し、
+  canonical timer と legacy が同時に active な場合だけ `duplicate_owner` を true にする。
+  unit path・unit 本文・command line は出さない。corner health は同じ条件を
+  `rotation_owner_duplicate` 行として報告する。
   alias pair投影も支配timer選択と同じ`PROD_ROOT.parent`のuser unit rootを使う。
   gatewayのscrubbed `HOME=/tmp` をunit欠損の判定元にしない。
   時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに

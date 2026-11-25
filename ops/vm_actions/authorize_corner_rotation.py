@@ -34,6 +34,7 @@ ALLOWED_OPERATIONS = {
     "check-cancel-prediction", "cancel-prediction",
     "check-sync-prediction", "sync-prediction",
     "check-release-stale-failed-owner", "release-stale-failed-owner",
+    "check-rotation-owner", "consolidate-rotation-owner",
 }
 CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "clear-hanjuku-clock-quarantine",
                              "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
@@ -43,7 +44,8 @@ CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "clear-ha
                              "check-cancel-prediction", "cancel-prediction",
                              "check-sync-prediction", "sync-prediction",
                              "check-release-stale-failed-owner",
-                             "release-stale-failed-owner"}
+                             "release-stale-failed-owner",
+                             "check-rotation-owner", "consolidate-rotation-owner"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
