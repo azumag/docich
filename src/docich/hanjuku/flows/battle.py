@@ -1641,10 +1641,23 @@ def _boss_card_left_unused(mem, cur):
         return None
     if cur.get('cards_used'):
         return None
+    # The boss identity can be lost in the final frame (OCR reads 不明), so the
+    # boss castle and the battle's own boss latch also count. Live ノブナーガ:
+    # the fight ended with the enemy unread and the carried card never used,
+    # which stayed invisible while only cur['enemy'] was trusted.
     enemy = cur.get('enemy')
-    boss = (enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS)
+    boss = (enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS
+            or bool(cur.get('boss_battle')) or bool(cur.get('boss'))
+            or chart.is_boss_castle(cur.get('castle')))
     if not boss:
         return None
+    # The carried kit can come from the sortie plan, a confirmed panel kit or
+    # the rare/strong/dropper ledgers; battle_menus owns that union, so reuse
+    # it instead of looking only at planned_cards.
+    from .battle_menus import _carried_card_left
+    leftover = _carried_card_left(mem, cur)
+    if leftover:
+        return leftover
     attempted = {*(cur.get('cards_selected') or ()), *(cur.get('cards_used') or ()),
                  *(cur.get('cards_unclassified') or ()), *(cur.get('cards_missing') or ())}
     carried = [card for card in (cur.get('planned_cards') or ())
