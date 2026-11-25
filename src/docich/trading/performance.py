@@ -663,7 +663,13 @@ def build_round_trips(db_path: Path, *, limit: int = 8) -> list[dict[str, object
             continue
         if side != "sell" or held <= 0:
             continue
-        sold = min(amount, held)
+        if amount > held:
+            # Match the aggregate performance contract: an oversell is an
+            # unpaired ledger event, not a valid partial round trip. Retire
+            # the tainted lot so later buys start with a fresh cost basis.
+            lots[symbol] = [ZERO, ZERO, None, None, None]
+            continue
+        sold = amount
         average = cost / held
         realized = sold * (price - average)
         trips.append(

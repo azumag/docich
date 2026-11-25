@@ -1,0 +1,79 @@
+"""Unclassified battles can still rescue a losing general with おくのて.
+
+2026-11-24 13:10-13:22 JST (g1342 ch3): battles that interrupted a sortie
+had no attack context, so ``side`` and ``castle`` were unknown. The low HP
+gate required ``side == 'defense'`` and protected on the mere visible
+たまごをつかう/きりふだ rows, so it declined the lottery at HP 34/21/8/22
+while パプリカ had no egg and an empty carried list; the generals fell in
+melee. Synthetic memory only.
+"""
+from docich import hanjuku_policy as p
+from docich.hanjuku_screen import Screen
+from docich.hanjuku_font import TextLine
+
+
+def row(y, text):
+    return TextLine(y, tuple((176 + 8 * i, ch) for i, ch in enumerate(text)))
+
+
+def command_menu():
+    """The real command box: おくのて sits below the visible three rows."""
+    return Screen([row(176, 'たまごをつかう'), row(184, 'きりふだ'), row(192, 'たいきゃく')],
+                  None, 'たまごをつかう', kind='battle_menu', menu_cursor=176,
+                  hidden_battle_commands=True)
+
+
+def memory(**changes):
+    battle = {'ally': 'パプリカ', 'enemy': 'リーキ', 'side': None, 'castle': None,
+              'start_ally_hp': 34, 'ally_hp': 34, 'start_enemy_hp': 30, 'enemy_hp': 30,
+              'cards_used': [], 'card_evidence_version': 1, 'planned_cards': [],
+              'step': None, 'card_soldiers_current': True,
+              'egg_plan': {'ally_profile': {'has_egg': False}, 'cards': []}}
+    battle.update(changes)
+    return {'chapter': 3, 'battle': battle}
+
+
+def decisions(mem):
+    return [r['decision'] for r in mem.get('_records', [])]
+
+
+def test_unclassified_losing_general_without_egg_or_cards_opens_the_lottery():
+    mem = memory()
+    assert p.okunote_step(command_menu(), mem) == [p.pad('down')]
+    assert 'battle_okunote_risk_accepted' in decisions(mem)
+    assert 'battle_okunote_risk_declined' not in decisions(mem)
+
+
+def test_confirmed_attack_keeps_the_old_policy():
+    mem = memory(side='attack')
+    assert p.okunote_step(command_menu(), mem) == [p.pad('b')]
+    assert 'battle_okunote_risk_declined' in decisions(mem)
+
+
+def test_a_measured_usable_card_still_protects():
+    mem = memory(egg_plan={'ally_profile': {'has_egg': False},
+                           'cards': [{'name': 'バグストーム', 'usable': True}]})
+    assert p.okunote_step(command_menu(), mem) == [p.pad('b')]
+    assert 'battle_okunote_risk_declined' in decisions(mem)
+
+
+def test_a_measured_egg_still_protects():
+    mem = memory(egg_plan={'ally_profile': {'has_egg': True}, 'cards': []})
+    assert p.okunote_step(command_menu(), mem) == [p.pad('b')]
+    assert 'battle_okunote_risk_declined' in decisions(mem)
+
+
+def test_the_hero_at_low_hp_stays_protected():
+    mem = memory(ally='どうし')
+    assert p.okunote_step(command_menu(), mem) == [p.pad('b')]
+    assert 'battle_okunote_risk_declined' in decisions(mem)
+
+
+def test_menu_rows_alone_are_not_a_usable_rescue():
+    mem = memory()
+    cur = mem['battle']
+    assert p._safer_rescue_available(mem, cur) is False
+    cur['egg_plan'] = {'cards': [{'name': 'バグストーム', 'usable': False}]}
+    assert p._safer_rescue_available(mem, cur) is False
+    cur['egg_plan'] = {'cards': [{'name': 'バグストーム', 'usable': True}]}
+    assert p._safer_rescue_available(mem, cur) is True

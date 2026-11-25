@@ -9,6 +9,7 @@ from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_sortie_evidence import selected_list, actor_panel, measured_card_select, measured_loaded_sortie
 from test_hanjuku_survival import menu
 from docich.hanjuku.state.regions import world as _world, flow as _flow, journal as _journal, plan as _plan_region
+from docich.hanjuku.strategy import orders as strategy_orders
 
 F = Path(__file__).parent / 'fixtures' / 'hanjuku'
 
@@ -21,13 +22,78 @@ def boss_memory(chapter=2):
 
 
 @pytest.mark.parametrize('names', [[p.NAME]])
-def test_readable_boss_list_without_any_companion_never_selects_hero(names):
-    order, mem = boss_memory(); _plan_region(mem)['orders'][order['step']] = 'pending'
+def test_readable_boss_list_without_companion_waits_then_uses_hero_at_bound(names):
+    order, mem = boss_memory(); step = order['step']
+    _plan_region(mem)['orders'][step] = 'pending'
     actions = p.deploy_step(selected_list(names), mem)
     assert actions == [p.pad('b'), p.pad('b')]
-    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders'][order['step']] == 'pending'
+    assert _plan_region(mem)['active'] is None and _plan_region(mem)['orders'][step] == 'pending'
     assert not _plan_region(mem).get('sortie_general') and not _plan_region(mem).get('order_context')
     assert mem['_records'][-1]['decision'] == 'boss_companion_required'
+
+    mem['tick'] += strategy_orders.BOSS_COMPANION_WAIT_TICKS
+    _plan_region(mem)['active'] = step
+    actions = p.deploy_step(selected_list(names), mem)
+    assert p.pad('b') not in actions
+    assert _plan_region(mem)['sortie_general'][step] == p.NAME
+    assert [r['decision'] for r in mem['_records']].count('boss_companion_timeout') == 1
+
+
+def test_non_site_boss_without_companion_reaches_bounded_deploy_wait():
+    order, mem = boss_memory(chapter=10)
+    _plan_region(mem)['orders'][order['step']] = 'pending'
+    _world(mem)['garrison'] = {order['source']: [p.NAME]}
+    assert strategy_orders._ready(order, mem) is False
+    mem['tick'] += strategy_orders.BOSS_COMPANION_WAIT_TICKS
+    assert strategy_orders._ready(order, mem) is True
+
+
+def test_chapter_four_boss_site_wait_is_bounded_and_recorded():
+    order = next(o for o in chart.orders(4) if o['target'] in chart.boss_sites(4))
+    mem = {'chapter': 4, 'tick': 100, 'captured': list(chart.castles(4)),
+           'orders': {o['step']: 'launched' for o in chart.orders(4)}, 'picked': []}
+    _world(mem)['garrison'] = {castle: ([] if castle != order['source'] else [p.NAME])
+                               for castle in chart.castles(4)}
+
+    # The source roster is known but has no eligible companion. The old
+    # chapter-4 site gate short-circuited before arming the timer, so the
+    # order never became ready and never reached deploy's bounded fallback
+    # (docich#5397). The first check now arms one visible, finite wait.
+    assert strategy_orders._ready(order, mem) is False
+    waits = [r for r in mem['_records']
+             if r['decision'] == 'boss_companion_source_wait']
+    assert len(waits) == 1
+    assert waits[0]['observed_metric'] == {'waited_ticks': 0}
+
+    mem['tick'] += strategy_orders.BOSS_COMPANION_SOURCE_WAIT_TICKS - 1
+    assert strategy_orders._ready(order, mem) is False
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_wait']) == 1
+
+    mem['tick'] += 1
+    assert strategy_orders._ready(order, mem) is True
+    timeouts = [r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_timeout']
+    assert len(timeouts) == 1
+    assert timeouts[0]['observed_metric']['waited_ticks'] == strategy_orders.BOSS_COMPANION_SOURCE_WAIT_TICKS
+
+    # The expiry receipt is reused: a second readiness check neither waits
+    # again nor emits a duplicate timeout.
+    assert strategy_orders._ready(order, mem) is True
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'boss_companion_source_timeout']) == 1
+
+
+def test_boss_companion_timeout_does_not_send_a_broken_hero():
+    order, mem = boss_memory(); step = order['step']
+    _plan_region(mem)['orders'][step] = 'pending'
+    mem['house_eggs'] = {p.NAME: {'broken': True}}
+    assert p.deploy_step(selected_list([p.NAME]), mem) == [p.pad('b'), p.pad('b')]
+    mem['tick'] += strategy_orders.BOSS_COMPANION_WAIT_TICKS
+    _plan_region(mem)['active'] = step
+    assert p.deploy_step(selected_list([p.NAME]), mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders'][step] == 'failed'
+    assert not _plan_region(mem).get('sortie_general') and not mem.get('sorties')
 
 
 @pytest.mark.parametrize('names', [[p.NAME, 'シェーブル'], ['シェーブル']])
@@ -71,6 +137,10 @@ def test_companion_preparation_waits_for_known_injury_or_egg_failure(status):
     mem['house_eggs'] = {'ゼウス': status}
     assert p.next_order(mem) is None
     assert not _plan_region(mem).get('sortie_general')
+    # The known injury/egg blocker is respected initially, but it cannot
+    # keep a non-chapter-4 boss order hidden beyond the shared deadline.
+    mem['tick'] += strategy_orders.BOSS_COMPANION_WAIT_TICKS
+    assert p.next_order(mem) is not None
 
 
 def test_busy_unknown_location_and_duplicate_names_cannot_license_substitute():

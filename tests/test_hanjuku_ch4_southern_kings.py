@@ -1,0 +1,181 @@
+"""Chapter 4's remaining 四季王 sorties: bounded re-arms and closed sites.
+
+Live g1342 2026-11-25 (v1483, tick 67064):
+
+* 02:08:31 / 02:11:17 4-B1 (南西) started, but the first attempt's target
+  picker was cut by a defence battle (02:09:34) and the second one spent its
+  three verification reads on the *castle menu* (02:11:27: しゅつげき/
+  ステータス + four resident rows), then left the step ``launched_unconfirmed``
+  until the Y-view reconciliation at 02:31:43.
+* 02:15:49 4-B2 (南東) launched エシャロット; the march was measured again at
+  02:17:21, then his individual status read 在城 (ネクスドリア) at 02:26:12
+  without an attack. The order stayed ``launched`` until the reconciliation
+  re-armed it at 02:31:43.
+* The monthly camp exemption still aimed a boss_move at the already killed
+  北西 (01:12), because ``_boss_move_goal`` only checked for a chapter-4 cell.
+
+The fixture is the sanitised live ``hanjuku_bot.json`` of the same runtime
+(02:37, tick 67292). Every observation is round-tripped through JSON, and the
+behavioural checks run through ``docich.hanjuku_bot.decide()``.
+"""
+import json
+from pathlib import Path
+
+from docich import hanjuku_chart as chart
+from docich.hanjuku.flows import post_month_status as post, recall
+from docich.hanjuku.strategy import orders
+from docich.hanjuku_bot import decide
+from docich.hanjuku_pixels import read_png
+from test_hanjuku_chart_bot import Canvas
+
+FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'hanjuku'
+STATE = json.loads((FIXTURES / 'g1342-ch4-bot-state-20261125-0237.json').read_text())
+IDENTITY = STATE['policy']['_run_identity']
+FIELD = read_png(FIXTURES / 'g1075-ch4-snow-field.png').resized(256, 224)
+SW, SE, NE, NW = ('四季王城(南西)', '四季王城(南東)',
+                  '四季王城(北東)', '四季王城(北西)')
+
+
+def seed():
+    return json.loads(json.dumps(STATE))
+
+
+def observe(frame, state, times=1):
+    for _ in range(times):
+        _, state = decide(frame, json.loads(json.dumps(state)),
+                          run_identity=IDENTITY)
+    return state
+
+
+def decisions(state):
+    return [r.get('decision') for r in state.get('_records') or []]
+
+
+def castle_menu(hand=(122, 33)):
+    """The 02:11:27 castle menu read as a sortie general list."""
+    canvas = Canvas()
+    canvas.text(64, 31, 'しゅつげき')
+    canvas.text(64, 47, 'ステータス')
+    for y, name in ((39, 'どうし'), (55, 'クランベリー'),
+                    (71, 'キール'), (87, 'ピスタチオ')):
+        canvas.text(144, y, name)
+    canvas.hand(*hand)
+    return canvas.frame()
+
+
+def site_launch(state, *, status, target, general='アルテミス',
+                source='アルマムーン', location, castle_candidate, row_tick=67497):
+    """The live 4-B1 launch record plus the general's measured location."""
+    mem = state['policy']
+    mem['month'] = '9-4'
+    mem['tick'] = 67500
+    mem['select_focus_tick'] = mem['tick']
+    mem['plan']['active'] = ('4-B1' if status == 'launched_unconfirmed' else None)
+    mem['plan']['orders']['4-B1'] = ('launched_unconfirmed'
+                                     if status == 'launched_unconfirmed' else 'launched')
+    mem['world']['sorties']['4-B1'] = {
+        'general': general, 'source': source,
+        'target': target if status != 'launched_unconfirmed' else None,
+        'planned_target': SW if target is None else None,
+        'status': status, 'tick': mem['tick'] - 60,
+        'aimed_cell': list(chart.castles(4)[SW]),
+    }
+    mem['world']['launched_orders']['4-B1'] = {
+        'step': '4-B1', 'general': general, 'source': source,
+        'target': target or SW,
+    }
+    mem['general_statuses']['statuses'][general] = {
+        'general': general, 'location': location, 'castle': None,
+        'location_observed': True, 'tick': row_tick,
+        'hp': 49, 'max_hp': 49, 'broken': False,
+        'marker': {'castle_candidate': castle_candidate},
+    }
+    return state
+
+
+def test_a_site_march_that_ends_in_another_castle_reopens_the_step():
+    state = site_launch(seed(), status='en_route', target=SW,
+                        location='castle', castle_candidate='ミヒラギアン')
+    for _ in range(3):
+        state = observe(FIELD, state)
+        if 'site_step_ended_rearmed' in decisions(state):
+            break
+    assert 'site_step_ended_rearmed' in decisions(state)
+    mem = state['policy']
+    assert '4-B1' not in mem['world']['sorties']
+    assert '4-B1' not in mem['world']['launched_orders']
+    # The step is offered again; the rearm itself never keeps it 'launched'.
+    assert mem['plan']['orders']['4-B1'] != 'launched'
+
+
+def test_a_site_camp_on_the_target_is_left_to_the_boss_flow():
+    state = site_launch(seed(), status='en_route', target=SW,
+                        location='camp', castle_candidate=SW)
+    state = observe(FIELD, state, times=3)
+    assert 'site_step_ended_rearmed' not in decisions(state)
+    assert state['policy']['plan']['orders']['4-B1'] == 'launched'
+
+
+def test_an_interrupted_site_launch_is_reopened_after_bounded_reads():
+    state = site_launch(seed(), status='launched_unconfirmed', target=None,
+                        location='march', castle_candidate=None)
+    # The castle menu frame never moves its hand in this fixture, so this is
+    # the worst case: open the list, spend the reads, then re-arm.
+    for _ in range(10):
+        state = observe(castle_menu(), state)
+        if 'site_unconfirmed_rearmed' in decisions(state):
+            break
+    assert 'site_unconfirmed_rearmed' in decisions(state)
+    mem = state['policy']
+    assert mem['plan']['orders']['4-B1'] == 'pending'
+    assert '4-B1' not in mem['world']['sorties']
+    assert '4-B1' not in mem['world']['launched_orders']
+    assert mem['site_unconfirmed_rearm']['4-B1']['count'] == 1
+
+
+def test_the_list_open_route_is_bounded_before_the_reads():
+    state = site_launch(seed(), status='launched_unconfirmed', target=None,
+                        location='march', castle_candidate=None)
+    observed = []
+    for _ in range(10):
+        state = observe(castle_menu(), state)
+        observed.append(decisions(state))
+        if 'site_unconfirmed_rearmed' in decisions(state):
+            break
+    # The list-opening presses never spend a verification read; only the
+    # fall-through past VERIFY_LIST_OPEN_LIMIT does, and it ends the hold.
+    assert observed[0] and 'sortie_input' in observed[0]
+    assert all('sortie_verification_held' not in row for row in observed[:-1])
+    assert 'site_unconfirmed_rearmed' in decisions(state)
+
+
+def _camper(site):
+    return {'location': 'camp', 'hp': 30, 'max_hp': 30, 'broken': False,
+            'marker': {'castle_candidate': site}}
+
+
+def _mem_with_open_site(site):
+    mem = json.loads(json.dumps(STATE['policy']))
+    mem['season_sites'][site].update({
+        'chapter': 4, 'state': 'open', 'marker': 'skull',
+        'marker_tick': mem['tick'], 'last_read_tick': mem['tick']})
+    return mem
+
+
+def test_the_monthly_task_recalls_a_camper_from_a_closed_site():
+    mem = json.loads(json.dumps(STATE['policy']))       # live: 北西 closed
+    assert orders._site_king_down(mem, NW)
+    assert post._tasks({'x': _camper(NW)}, ['x'], chapter=4, mem=mem) == [
+        {'kind': 'recall', 'name': 'x'}]
+
+
+def test_an_open_site_still_gets_its_boss_move():
+    mem = _mem_with_open_site(NW)
+    assert post._tasks({'x': _camper(NW)}, ['x'], chapter=4, mem=mem) == [
+        {'kind': 'boss_move', 'name': 'x', 'goal': NW}]
+
+
+def test_a_closed_site_is_not_a_recall_redirect_goal():
+    mem = json.loads(json.dumps(STATE['policy']))       # live: 北西 closed
+    assert recall._boss_move_goal(mem, {'goal': NW}) is None
+    assert recall._boss_move_goal(mem, {'camp_world': [240, 216]}) == SW

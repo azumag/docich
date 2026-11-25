@@ -32,10 +32,11 @@ from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_U
                             _sortie_defender, _strict_boss_cards)
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_OBSERVED_LIMIT,
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
+                               _boss_companion_wait_expired,
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
                                _continue_transit_sorties, _defense_move_pick, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
-                               drop_retired_step_context,
+                               _site_king_down, drop_retired_step_context,
                                _order_hero_alternatives, _record_source_defender_cancel,
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
                                _sortie_general, _source, _source_location_recheck, _source_spare_missing,
@@ -72,6 +73,57 @@ def _cancel_broken_hero_sortie(mem, order):
     return [pad('b')]
 
 
+SITE_UNCONFIRMED_REARM_LIMIT = 2   # site steps reopened from an unreadable launch per month
+VERIFY_LIST_OPEN_LIMIT = 6         # presses that may open the sortie list from the castle menu
+
+
+def _rearm_unconfirmed_site_step(mem, order, sortie):
+    """Reopen a site step whose interrupted launch cannot be verified.
+
+    The destination was never confirmed (the sortie has no target), so the
+    army cannot be marching to this site: keeping the step ``launched_
+    unconfirmed`` only blocks it until the next Y-view reconciliation. Live
+    g1342 2026-11-25 02:11:27-02:11:30 read the castle menu as the sortie
+    list, gave up after three reads and left 4-B1 untouched for 20 minutes.
+    Bounded per step per month; the site's closed marker still wins.
+    """
+    step, target = order['step'], order.get('target')
+    if (mem.get('chapter') or 0) != 4 or target not in chart.boss_sites(4):
+        return False
+    if _site_king_down(mem, target) or sortie.get('target') is not None:
+        return False
+    month = mem.get('month')
+    book = mem.setdefault('site_unconfirmed_rearm', {})
+    entry = book.get(step)
+    if not isinstance(entry, dict) or entry.get('month') != month:
+        entry = {'month': month, 'count': 0}
+    if entry['count'] >= SITE_UNCONFIRMED_REARM_LIMIT:
+        return False
+    entry['count'] += 1
+    book[step] = entry
+    _sorties(mem).pop(step, None)
+    (_world(mem).get('launched_orders') or {}).pop(step, None)
+    for name, launch in list((_world(mem).get('launched') or {}).items()):
+        if isinstance(launch, dict) and launch.get('step') == step:
+            _world(mem)['launched'].pop(name, None)
+    for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
+        (mem.get(key) or {}).pop(step, None)
+    for key in ('general_override', 'source_override', 'card_override'):
+        (_plan_region(mem).get(key) or {}).pop(step, None)
+    (_plan_region(mem).get('order_context') or {}).pop(step, None)
+    (_plan_region(mem).get('sortie_general') or {}).pop(step, None)
+    (_flow(mem).get('launch_probe') or {}).pop(step, None)
+    (_plan_region(mem).setdefault('orders', {}))[step] = 'pending'
+    (mem.get('sortie_verify_open') or {}).pop(step, None)
+    forget_picked(mem)
+    _record(mem, 'site_unconfirmed_rearmed', chart_step=step,
+            general=sortie.get('general'),
+            observed_metric={'target': target, 'count': entry['count'], 'month': month},
+            resulting_event=f'rearm:{step}',
+            reason='出撃先の決定前に割り込まれ、在城確認が上限まで読めないため指示待ちへ戻す')
+    return True
+
+
 def _verify_sortie_source(screen, mem, order):
     """Never select a replacement while checking an interrupted departure.
 
@@ -86,6 +138,22 @@ def _verify_sortie_source(screen, mem, order):
                 reason='出撃記録または将軍名が欠損しているため在城・不在を推定せず検証を保留する')
         _plan_region(mem)['active'] = None
         return [pad('b'), pad('b')]
+    listed = menu_to(screen, 'しゅつげき')
+    if listed is not None:
+        # The castle menu's left column plus the resident rows read as a
+        # general list (live g1342 2026-11-25 02:11:27: candidates しゅつげき/
+        # ステータス + どうし…). Its four rows are not the sortie roster, so a
+        # missing name here proves nothing and must not spend the reads.
+        # Opening the list is bounded: if the press never lands, the ordinary
+        # read budget below still gives up and re-arms the site step.
+        opens = mem.setdefault('sortie_verify_open', {})
+        opens[step] = int(opens.get(step) or 0) + 1
+        if opens[step] <= VERIFY_LIST_OPEN_LIMIT:
+            return _deploy_input(screen, mem, order,
+                                 [pad('a')] if listed == 'here' else [listed],
+                                 '出撃メニューのしゅつげきを開いて出撃元の将軍一覧を確認する')
+        # Past the bound the counter stays over the limit: the ordinary read
+        # budget below resolves the launch instead of restarting this route.
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None
@@ -96,10 +164,12 @@ def _verify_sortie_source(screen, mem, order):
             _plan_region(mem)['active'] = None
             _record(mem, 'sortie_verification_held', chart_step=step,
                     reason='一覧で在城・不在を確定できないため出撃未確定を維持して別の指示へ進む')
+            _rearm_unconfirmed_site_step(mem, order, sortie)
             return [pad('b'), pad('b')]
         return _hold_deploy(screen, mem, order, '出撃未確定の将軍の在城・不在を一覧で確定できないため保留')
     cancelled = sortie['general'] in present
     sortie['status'] = 'cancelled' if cancelled else 'en_route'
+    (mem.get('sortie_verify_open') or {}).pop(step, None)
     if cancelled:
         from .house import _sortie_state_sig, _tally_sortie_attempt
         # Issue #3326 (34): roster presence proves the unit stayed behind.
@@ -837,6 +907,17 @@ def _deploy_input(screen, mem, order, actions, reason):
 
 
 DEPLOY_HOLD_LIMIT = 12   # consecutive unclassified sortie screens before cancelling
+
+
+def _empty_kit_blocks_departure(want, carried):
+    """Whether a readable confirm must not approve this departure.
+
+    docich#5353: the plan names cards but the measured panel shows none. The
+    owner wants resources spent before losses, so the sortie is cancelled and
+    retried later rather than departing unarmed. A partial mismatch (some
+    cards carried) keeps the existing approve path.
+    """
+    return bool(want) and carried == []
 
 
 def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
@@ -2377,16 +2458,37 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             candidates = (_order_hero_alternatives(order, mem, present)
                           if order['general'] == NAME or _is_boss_order(order, mem)
                           or order.get('source_probe') is True else [])
+            fallback_hero = False
             if _is_boss_order(order, mem) and not candidates:
-                return _hold_guarded_sortie(mem, order, 'boss_companion_required',
-                    '十分な能力の代役を実一覧で確認できないため主人公を出撃させず準備を待つ',
-                    {'present': present[:8], 'hero_forbidden': True})
-            general = candidates[0] if candidates else order['general']
+                if not _boss_companion_wait_expired(mem, order):
+                    return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+                        '十分な能力の代役を実一覧で確認できないため、上限までは準備を待つ',
+                        {'present': present[:8], 'hero_forbidden': True})
+                if NAME not in present:
+                    _finish_order(mem, 'failed',
+                                  deviation_reason='代役待ち上限後も主人公が出撃元にいない',
+                                  observed_metric={'present': present[:8], 'hero_present': False},
+                                  source=_source(order, mem),
+                                  reason='代役待ち上限に達したが主人公を実一覧で確認できないため出撃を取り消す')
+                    return [pad('b'), pad('b')]
+                fallback_hero = True
+            general = candidates[0] if candidates else (NAME if fallback_hero else order['general'])
             # A stale override is not a receipt, and a companion selected in
             # this list must not inherit the hero's depleted-egg guard.
             _plan_region(mem).setdefault('general_override', {}).pop(order['step'], None)
             if general != order['general']:
                 _plan_region(mem)['general_override'][order['step']] = general
+            bound_general = _sortie_general(order, mem)
+            if fallback_hero and ((order.get('_execution_bound') is True and bound_general != NAME)
+                                  or _broken_hero_order(order, mem) or _boss_egg_depleted(order, mem)):
+                _finish_order(mem, 'failed',
+                              deviation_reason='代役待ち上限後も主人公の卵・修復状態が出撃条件を満たさない',
+                              observed_metric={'general': NAME, 'bound_general': bound_general,
+                                               'egg_uses': egg_memory.current_uses(mem, NAME),
+                                               'broken': (mem.get('house_eggs') or {}).get(NAME, {}).get('broken') is True},
+                              source=_source(order, mem),
+                              reason='主人公単独出撃の安全条件を満たさないため、代役不在のボス注文を終了する')
+                return [pad('b'), pad('b')]
             if general not in present or general in _en_route(mem)[0]:
                 holds = mem.setdefault('boss_absent', {})
                 holds[order['step']] = holds.get(order['step'], 0) + 1
@@ -2412,10 +2514,14 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             (mem.get('general_list_hold') or {}).pop(order['step'], None)
             if move == 'here':
                 _plan_region(mem).setdefault('sortie_general', {})[order['step']] = general
-                if general != order['general']:
+                if general != order['general'] and general != NAME:
                     _record(mem, 'hero_priority_selected', **_deploy_context(order, mem),
                             observed_metric={'present': present[:8], 'selected': general},
                             reason='主人公の敗北でゲームオーバーになる危険を避け、実在する待機将軍を先発にする')
+                elif fallback_hero:
+                    _record(mem, 'boss_companion_hero_fallback', **_deploy_context(order, mem),
+                            observed_metric={'present': present[:8], 'selected': general},
+                            reason='代役待ち上限後、出撃元の実一覧で主人公を確認したため単独でボスへ出撃する')
                 return _deploy_input(screen, mem, order, [pad('a')], '実一覧の出撃本人を選択')
             return _deploy_input(screen, mem, order, _general_selection_actions(screen, general, move),
                                  '主人公以外の待機将軍を優先して選択カーソルを移動')
@@ -2475,7 +2581,8 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                              '出撃将軍を選択')
     if kind in {'card_select', 'sortie_confirm'}:
         if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
-                and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+                and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'
+                and not _boss_companion_wait_expired(mem, order)):
             return _hold_guarded_sortie(mem, order, 'boss_companion_required',
                 '主人公のボス出撃を取り消し、十分な戦力の代役を待つ',
                 {'general': NAME, 'screen': kind, 'hero_forbidden': True})
@@ -2740,6 +2847,21 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                                   reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
                 if misses[order['step']] == limit:
+                    # docich#5353 (owner 2026-11-24: resources before losses):
+                    # a readable panel with no cards while the plan names some
+                    # is not a departure to approve. Cancelling keeps the kit
+                    # for a later sortie instead of leaving unarmed.
+                    if _empty_kit_blocks_departure(want, carried):
+                        misses.pop(order['step'], None)
+                        _record(mem, 'sortie_kit_empty_cancel',
+                                **_deploy_context(order, mem, expected_metric=want),
+                                carried=carried,
+                                observed_metric={'carried': carried, 'planned': want},
+                                reason='計画の切り札が携行されていないため出撃を取り消し、次回に持ち越す')
+                        _finish_order(mem, 'failed', deviation_reason='carried_kit_empty',
+                                      observed_metric={'carried': [], 'planned': want},
+                                      reason='携行札なしの出撃を避けるため取り消して次の指示へ進む')
+                        return [pad('b'), pad('b')]
                     # A readable panel is the truth: approve the shown kit.
                     _record(mem, 'sortie_kit_mismatch',
                             **_deploy_context(order, mem, expected_metric=want),

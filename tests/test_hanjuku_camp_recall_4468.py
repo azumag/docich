@@ -201,7 +201,8 @@ def test_fort_opened_picker_on_own_camp_under_red_carpet_is_confirmed():
     mem = {'chapter': 10, 'tick': 893733, 'captured': ['トルストリア'],
            'boss_cell': {'chapter': 10, 'cell': [482, 365]}, '_records': []}
     _flow(mem)['recall'] = {'stage': 'fort_status', 'steps': 0, 'target': [138, 114],
-                            'general': 'グレナデン', 'fort_members': ['グレナデン', 'ベーグル']}
+                            'general': 'グレナデン', 'fort_members': ['グレナデン', 'ベーグル'],
+                            'fort_picker_requested': True}
     recall_flow.camp_recall_step(screen, mem, frame)
     assert 'recall' in _flow(mem)
     assert _flow(mem)['recall'].get('fort') is True
@@ -218,7 +219,8 @@ def test_fort_opened_picker_on_own_camp_under_red_carpet_is_confirmed():
     frame2 = Frame(256, 224, bytes(rgb2))
     mem2 = {'chapter': 10, 'tick': 893733, 'captured': ['トルストリア'], '_records': []}
     _flow(mem2)['recall'] = {'stage': 'fort_status', 'steps': 0, 'target': [138, 114],
-                             'general': 'グレナデン', 'fort_members': ['グレナデン', 'ベーグル']}
+                             'general': 'グレナデン', 'fort_members': ['グレナデン', 'ベーグル'],
+                             'fort_picker_requested': True}
     recall_flow.camp_recall_step(distant, mem2, frame2)
     assert 'recall' not in _flow(mem2)
     assert any(r.get('decision') == 'camp_recall_picker_not_open' for r in mem2['_records'])

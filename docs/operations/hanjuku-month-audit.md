@@ -47,7 +47,10 @@ issue化の既定は `high` のみ。
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
 ボスフェーズが600秒以上連続して観測され、その間にボス戦闘の証拠が一度も
-出なかった場合に `boss_phase_no_battle` を1回記録する。
+出なかった場合に `boss_phase_no_battle` を1回記録する。ただし、ボスサイトを対象とする
+`en_route` / `launched` / `launched_unconfirmed` の出撃が残っている間は判定を延期する。
+年齢が不明な出撃も保守的に延期し、3000 tickを超えた行軍は既存のstuck-march境界に
+従って再評価する。出撃が到着・終了した後、次の観測で判定を再開する。
 
 ボス戦闘の証拠（いずれか1つ）:
 
@@ -107,6 +110,9 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 
 - 将軍・出撃元・対象・目的・step・misses・理由・直前120秒の決定・
   計画/在城/flow/statsを1件32KB以内で保存する。
+- `order_failed` の終端recordには、実行stepから解決した `purpose`・`general`・`source`・`target` を補完する。
+  暫定注文（`chart_adjust.interim_order`）も対象に含め、`chart_plan` に注文が無くても
+  `move` / `house` / `repair` / `recall` / `defend` の失敗を出撃失敗Issueから除外できる。
 - 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
 - issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
@@ -186,6 +192,13 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - ボス向け出撃が1回でもあればこのissueは出さない。
 - ボス名・残りボス城・月内ボス出撃数・フェーズ開始tick・観測回数・
   計画/在城/flow/統計・決定を1件32KB以内で保存。
+- **遅いフェーズ開始のトリアージ:** `confidence=high` は月全体の観測完全性を示し、
+  ボスフェーズに十分な出撃時間があったことまでは示さない。
+  `boss_month.started_at` と `month_summary.closed_at` の差、および
+  `boss_month.observations` でフェーズの実時間・観測数を確認する。
+  月末直前に始まったフェーズは、月内ボス出撃ゼロという事実の記録として扱い、
+  出撃失敗の証拠とは断定しない。最低継続時間を設ける場合は、実測した出撃所要時間に
+  基づく別の受入条件を決めてから変更する。
 - 題名は `[半熟英雄] ボスフェーズで月内ボス出撃ゼロ: ch<章> <ボス名>`。
 - 既存の「ボスフェーズでボス戦闘ゼロ（600秒）」とは別シグネチャ。
 
@@ -283,7 +296,13 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 在庫は `card_stock` の正数。計画 `chart_plan.orders[].cards` は
   「計画」であり、実携行の証拠にはしない。`departure_binding` を持たない
   `launched_orders` snapshot の `cards` も計画値の可能性があるため証拠にしない。
-  実測kitが空または未読（blind approve等）の出撃だけをissueにする。
+  実測kitが空または未読（blind approve等）の出撃を分類する。
+- 明示的な実測レシート（`order_context.observed_metric.cards`、
+  `departure_binding.cards`、同一stepの `sortie_confirm.cards` 等）が空なら
+  `sortie_without_cards` として high confidence / auto-file する。
+- レシート自体がない（blind approve、legacy snapshot等）場合は
+  `sortie_kit_unconfirmed` として low confidence / auto-file=false で保存し、
+  携行を「なし」と断定しない。後続の実測空レシートは別cooldownで検出する。
 - 将軍・step・purpose・出撃元/対象・在庫・計画cards・flow/計画/在城/統計を
   1件32KB以内で保存。同じ章・step・将軍は900秒cooldown。
 - 題名は `[半熟英雄] 切り札在庫があるのに非携行で出撃: ch<章> <将軍>`。
@@ -312,8 +331,11 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 `hanjuku_bot.json` には監査状態を追加しない（256KB制限とstate budgetに影響させない）。
 incident は runtime_id / generation / bot_version / chapter / month / tick /
 観測数 / max gap / 出撃内訳 / 計画 / 在城 / 行軍 / flow / stats / 決定内訳 /
-前後30件 / signals / 証拠ファイル名を持つ。リストは20件、文字列は160字、
+前後30件 / signals / 証拠ファイル名を持つ。`decisions.counts` は観測窓内の全 decision 種を件数順で保持し、
+`decisions.before` と `after.rows` は直近の行だけを別途制限する。リストは20件、文字列は160字、
 1件は32KBで打ち切る。生ログ・例外文・環境変数・tokenは保存しない。
+
+旧 top-30 集計で保存済み incident の counts は自動再集計しない。決定内訳の欠落を具体的に確認した記録は [VERIFY-5206](../../VERIFY-5206.md)、[VERIFY-5276](../../VERIFY-5276.md)、[VERIFY-5507](../../VERIFY-5507.md)。同じ欠落の可能性が記録されたものは [VERIFY-5444](../../VERIFY-5444.md)、[VERIFY-5339](../../VERIFY-5339.md)、[VERIFY-5399](../../VERIFY-5399.md)、[VERIFY-5307](../../VERIFY-5307.md)。元の decisions JSONL が残っていない過去分は、この要約だけから正確な件数を復元できない。
 
 月を閉じた直後から300秒を after window として集計し、その間に出撃・奪取・
 防衛が起きたかを `after` に残す。次の月境界が先に来た場合は early seal する。
