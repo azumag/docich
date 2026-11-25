@@ -105,8 +105,13 @@ def test_a_dispatched_recall_scene_coverage_waits_for_field_evidence():
         recall_flow._recall_dispatch_step(
             Screen([], None, '', kind='map_target', marker=(90, 80)),
             mem, recall)
-    assert 'camp_recall_unconfirmed' in decisions(state)
-    assert 'recall' not in state['policy']
+    flow_records = mem.get('_records', [])
+    assert 'camp_recall_unconfirmed' in [row.get('decision') for row in flow_records]
+    assert 'recall' not in (mem.get('flow') or {})
+    verification = mem['flow']['recall_verification']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert verification['picker_closed'] is False
+    assert verification['scene_covered'] is True
 
 
 def test_a_sent_but_unclosed_recall_schedules_the_destination_roster_read():
