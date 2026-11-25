@@ -8211,6 +8211,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1524-defense-cards-unusable",
             "hanjuku-chart-v1525-sortie-cards-eligible",
             "hanjuku-chart-v1527-audit-card-drop",
+            "hanjuku-chart-v1528-card-list-unconfirmed-evidence",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
