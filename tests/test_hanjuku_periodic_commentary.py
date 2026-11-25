@@ -124,6 +124,9 @@ def test_event_fact_reads_battle_hp_from_the_observed_metric():
         'observed_metric': {'ally_hp': 57, 'enemy_hp': 0}})
     assert fact == {'kind': 'battle_result', 'outcome': 'win', 'ally': 'エピィ',
                     'enemy': 'ミュスカデ', 'ally_hp': 57, 'enemy_hp': 0}
+    assert periodic._event_fact({
+        'decision': 'order_start', 'general': 'コリアンダー', 'target': 'ながはま',
+        'roster_probe': True}) is None
 
 
 def test_situation_is_whitelisted_and_counts_the_window(live):

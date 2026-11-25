@@ -242,6 +242,8 @@ def _event_fact(record):
         castle = _name(record.get('castle'))
         return {'kind': kind, 'castle': castle} if castle else None
     if kind in {'order_launched', 'order_start'}:
+        if kind == 'order_start' and record.get('roster_probe') is True:
+            return None  # a list check is not a sortie plan
         general, target = _name(record.get('general')), _name(record.get('target'))
         if not general or not target:
             return None
@@ -295,7 +297,7 @@ def _event_fact(record):
         digest = record.get('order_digest')
         if isinstance(digest, list):
             for order in digest:
-                if not isinstance(order, dict):
+                if not isinstance(order, dict) or order.get('roster_probe') is True:
                     continue
                 general, target = _name(order.get('general')), _name(order.get('target'))
                 if general and target:
