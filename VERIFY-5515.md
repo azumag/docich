@@ -97,13 +97,17 @@ sha256[:20] であり、`now` は起票時刻依存のため後追い再計算�
      なく、**場面・月次画面をまたいだまま中断刻印や budget 保護なしに
      検証 window を消費し得る**ことである。v1493 の回帰テスト
      `tests/test_hanjuku_recall_month_scene.py`
+     `test_a_dispatched_recall_waits_out_the_scene_and_ends_on_the_month_screen`
+     （v1493 `425f1c38a` L79-89）がまさにこの契約を検証している:
+     await_dispatch の recall は concert 場面を `[a]`・無刻印・状態保持で
+     通過し、次の月次側画面（MONTH_MENU）の decide で finite に
+     `camp_recall_unconfirmed` へ終端する（検証 window は凍結されず
+     消費される設計）。訂正 PR #5552 で引用した
      `test_a_dispatched_recall_scene_coverage_waits_for_field_evidence`
-     がまさにこの契約を検証している: await_dispatch の recall は
-     concert 場面を `[a]`・無刻印・状態保持で通過し、6 回の dispatch
-     step で finite に `camp_recall_unconfirmed` へ終端する（検証
-     window は凍結されず消費される設計。ただし同テストは
-     input_sent=True の到達未確認（`arrival_unconfirmed`）側で、
-     本件の送信未確認（`dispatch_unconfirmed`）側とは終端が異なる）。本件の終端画面は月次終了直後に
+     は v1495（PR #5514）で旧テストを置き換えて導入されたもので、v1493
+     の証拠ではない（同テストは text frame が dispatch receipt window
+     を消費しないことを明示し、終端も field/picker 直呼び出し経由で、
+     本件の構造とは契約が異なる）ため、ここでは引用しない。本件の終端画面は月次終了直後に
      再露出した `world_map` ピッカーで、終端時刻 01:22:14.6Z は
      month_confirm（01:22:10Z）直後と時系列が一致する。要求時点からの
      6 ステップがどの画面（要求直後のピッカー / 月次処理中の所有画面 /
