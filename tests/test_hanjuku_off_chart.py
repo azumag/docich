@@ -231,6 +231,38 @@ def test_the_surplus_joins_the_boss_waves_instead_of_a_staging_move():
     assert all(c['source'] != 'アルマムーン' for c in moves)
 
 
+def test_boss_waves_carry_stock_cards_but_never_invent_empty_stock():
+    targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
+    stock = {
+        'ころぼぐんだん': 45, 'グリンボー': 45, 'ピッグローラー': 33,
+        'フットバース': 30, 'ミックミー': 57,
+    }
+
+    def memory(card_stock):
+        return {
+            'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
+            'card_stock': dict(card_stock),
+            'garrison': {
+                'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン', 'ポセイドン'],
+                'キカンドン': [], 'ゴーメン': ['ココット'],
+            },
+        }
+
+    candidates = policy.interim_candidates(memory(stock))
+    boss_orders = [c for c in candidates.values()
+                   if c.get('target') == 'けっかい' and not c.get('source_probe')]
+    assert len(boss_orders) >= 2  # the initial order and a later wave
+    assert all(c['cards'] for c in boss_orders)
+    assert all(card in stock for c in boss_orders for card in c['cards'])
+
+    empty_stock = {name: 0 for name in stock}
+    empty = policy.interim_candidates(memory(empty_stock))
+    empty_boss_orders = [c for c in empty.values()
+                         if c.get('target') == 'けっかい' and not c.get('source_probe')]
+    assert empty_boss_orders
+    assert all(c['cards'] == [] for c in empty_boss_orders)
+
+
 def test_a_lone_general_is_never_pulled_out_of_the_home_castle():
     # A normal castle still missing keeps the boss closed, so the garrison
     # fill still runs and keeps its donor rule (v305).
