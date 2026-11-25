@@ -34,7 +34,7 @@ def observe(runtime, records, state, meta, *, screenshot):
     whose mtime is the observation time when available.
     """
     try:
-        return _observe(runtime, records, state, meta, screenshot=screenshot)
+        timer = _observe(runtime, records, state, meta, screenshot=screenshot)
     except OSError as exc:
         # A transient file error (EIO/EACCES) must skip this observation, not
         # corrupt or rebuild the records.  One bounded stderr line is the
@@ -46,6 +46,15 @@ def observe(runtime, records, state, meta, *, screenshot):
         # Recording is a side channel.  The caller's loop already labels a
         # failed effect, and no input depends on this return value.
         return None
+    # The trace is written after the timer commit and through its own guard:
+    # a trace failure never undoes or blocks the split-timer update.
+    try:
+        from . import trace as trace_mod
+        trace_mod.append(runtime, timer, records=records, state=state,
+                         meta=meta, screenshot=screenshot)
+    except Exception:
+        pass
+    return timer
 
 
 def _observation_ms(screenshot, run, meta):

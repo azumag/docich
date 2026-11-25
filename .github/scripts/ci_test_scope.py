@@ -81,6 +81,7 @@ HANJUKU_ONLY = [
     # PR2 split-timer records: the suite name carries the corner, not the
     # generated package, so keep it on the Hanjuku-only path explicitly.
     'tests/test_speedrun_rta*.py',
+    'tests/test_speedrun_fork_guards.py',
     # PR3 split-timer display: the overlay module is shared, so its code change
     # gets the full suite; tests that only cover the speedrun timer stay here.
     'tests/test_speedrun_timer_overlay.py',

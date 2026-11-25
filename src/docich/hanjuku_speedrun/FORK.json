@@ -116,7 +116,7 @@
     "src/docich/hanjuku_speedrun/hanjuku_resume_recovery.py": "a5fcd6578e1ed581db087e52a6f99a7f3073a3501a4422538d0ca1fffbaf1f76",
     "src/docich/hanjuku_speedrun/hanjuku_review_evidence.py": "7c482bedf82e8143053048541e8825e9ddd6a3d418f4ecf2afa52af360f3002d",
     "src/docich/hanjuku_speedrun/hanjuku_roster.py": "7c1679b64b2117dec62dfba90518bf876abe27bbca2042f7a448e64c0adde648",
-    "src/docich/hanjuku_speedrun/hanjuku_run.py": "75bf1c7f362f947a9c7752b34337599de9004d36b7b01a11cab22758be104752",
+    "src/docich/hanjuku_speedrun/hanjuku_run.py": "289ef6f5f893b05858583033e933dedf7cdc1b12c9e0c66173dd267ec2e397c8",
     "src/docich/hanjuku_speedrun/hanjuku_scene.py": "019442eae743e628bd1a9b32f9b3609069ba28306b223315641b3a736f943552",
     "src/docich/hanjuku_speedrun/hanjuku_scene_grounding.py": "fb5827e4744a633744d2c964599a8a2736c052cd7362848e5f376e7dfb85e72b",
     "src/docich/hanjuku_speedrun/hanjuku_scene_process.py": "bf6acb96335a7c21e61fb09191e0c908186c4b1dcd70a6c8d617da862585714e",

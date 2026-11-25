@@ -6663,7 +6663,12 @@ def finalize_speedrun_attempts(state_dir, runtimes, warnings=None) -> int:
 
     ``store.finalize_attempt`` is idempotent and reads the terminal reason
     from the runtime's own ``hanjuku_run.json``; a missing reason becomes a
-    ``stopped`` DNF.  Failures are warnings, never rollback reasons.
+    ``stopped`` DNF.  Failures are warnings, never rollback reasons.  After a
+    successful finalize, the attempt's spool is collected and summarized by
+    ``rta.spool.finalize_logs``; ended attempts of the same runtime whose
+    manifest is still missing (a previous teardown stopped between the two
+    steps) are collected too.  That is a side channel too, so a failure is
+    reported as a warning and never stops the teardown.
     """
     targets = [
         runtime for runtime in (runtimes or ())
@@ -6684,10 +6689,50 @@ def finalize_speedrun_attempts(state_dir, runtimes, warnings=None) -> int:
             runtime_id = runtime.get("runtime_id")
             if not isinstance(runtime_id, str) or not runtime_id:
                 raise ValueError("invalid runtime_id")
-            result = store.finalize_attempt(
-                runtime_directory(Path(state_dir), runtime_id))
+            runtime_dir = runtime_directory(Path(state_dir), runtime_id)
+            result = store.finalize_attempt(runtime_dir)
             if result is not None:
                 finalized += 1
+            spool = importlib.import_module(f"{rta.__name__}.spool")
+            # The spool collection runs after the attempt is durable.  It is a
+            # side channel: a failure is a warning, never a rollback reason.
+            attempts = []
+            attempt_id = (result.get("attempt_id")
+                          if isinstance(result, Mapping) else None)
+            if (isinstance(attempt_id, str) and attempt_id
+                    and result.get("runtime_id") == runtime_id
+                    and result.get("status") in {"finished", "dnf"}):
+                attempts.append(attempt_id)
+            # A previous teardown may have finalized an attempt but died
+            # before writing its manifest.  Collect only this runtime's
+            # attempts; another runtime's logs are never touched.
+            for row in store.load_attempts(runtime_dir):
+                if not isinstance(row, Mapping):
+                    continue
+                if row.get("runtime_id") != runtime_id:
+                    continue
+                if row.get("status") not in {"finished", "dnf"}:
+                    continue
+                recovered_id = row.get("attempt_id")
+                if not isinstance(recovered_id, str) or not recovered_id:
+                    continue
+                if recovered_id in attempts:
+                    continue
+                manifest_path = spool.attempt_dir(runtime_dir, recovered_id) / "manifest.json"
+                if manifest_path.exists():
+                    continue
+                attempts.append(recovered_id)
+            for target_attempt in attempts:
+                try:
+                    finalized_logs = spool.finalize_logs(runtime_dir, target_attempt)
+                    if finalized_logs is False and warnings is not None:
+                        warnings.append(
+                            "speedrun RTA spool finalize returned False: "
+                            f"{runtime_id} {target_attempt}")
+                except Exception as exc:
+                    if warnings is not None:
+                        warnings.append(
+                            f"speedrun RTA spool failed: {_safe_detail(exc)}")
         except Exception as exc:
             if warnings is not None:
                 warnings.append(

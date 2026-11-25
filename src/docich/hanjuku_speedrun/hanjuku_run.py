@@ -89,6 +89,11 @@ def append_log(runtime_dir: Path, name: str, payload: dict):
         previous=runtime_dir/f'{name}.previous.jsonl'
         if previous.is_symlink():
             raise AdapterError('Hanjuku rotated log may not be a symlink')
+        try:
+            from docich.hanjuku_speedrun.rta import spool as _rta_spool
+            _rta_spool.before_rotate(runtime_dir, name, previous)
+        except Exception:
+            pass
         os.replace(path,previous)
     with path.open('a',encoding='utf-8') as stream:
         stream.write(json.dumps(payload,ensure_ascii=False,separators=(',',':'),sort_keys=True)+'\n')

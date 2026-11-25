@@ -5,7 +5,12 @@ The package is deliberately small and independent of the generated
 
 * :mod:`timer` is a pure state machine (no file or clock access),
 * :mod:`store` owns atomic files, bounds and corrupt-file recovery,
-* :mod:`hook` is the only entry point the bot calls.
+* :mod:`hook` is the only entry point the bot calls,
+* :mod:`trace` writes the bounded observation trace and periodic frames,
+* :mod:`spool` collects rotated logs, compresses them off the hot path and
+  keeps the per-attempt spool under a byte cap,
+* :mod:`report_segments` and :mod:`manifest` write the attempt summary.
 
-Nothing here talks to the network, starts a process, or changes bot input.
+Nothing here talks to the network or changes bot input; compression is
+detached and never awaited.
 """

@@ -1239,6 +1239,19 @@ SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
          "                    ('rta_failed', lambda: rta_hook.observe(runtime, records, state, meta, "
          "screenshot=Path(obs['screenshot']))),\n", 1),
     ),
+    # Rotating the decision/event logs overwrites ``.previous``.  The speedrun
+    # copy hands the outgoing generation to its attempt spool first; the
+    # original source is not changed.  The anchor is the exact line in the
+    # transformed copy, and the count catches an upstream change.
+    'src/docich/hanjuku_run.py': (
+        ("        os.replace(path,previous)\n",
+         "        try:\n"
+         "            from docich.hanjuku_speedrun.rta import spool as _rta_spool\n"
+         "            _rta_spool.before_rotate(runtime_dir, name, previous)\n"
+         "        except Exception:\n"
+         "            pass\n"
+         "        os.replace(path,previous)\n", 1),
+    ),
     'src/docich/hanjuku_hotload.py': (
         ("importlib.import_module(f'docich.{name}')",
          "importlib.import_module(f'docich.hanjuku_speedrun.{name}')", 1),
@@ -1250,7 +1263,57 @@ SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
 }
 
 
+#: Files whose patches only make sense when the file really implements the
+#: writer being hooked.  Synthetic fixture repositories replace modules with
+#: one-line stubs; they are left untouched instead of failing the exact-count
+#: check (the real module always has ``append_log`` and is checked normally).
+SOURCE_PATCH_GUARDS = {
+    'src/docich/hanjuku_run.py': lambda text: 'def append_log(' in text,
+}
+
+
+#: Generated files that must show a patch in the real checkout.  A synthetic
+#: fixture repository is allowed to lack them (it has no writer to hook), but
+#: the checkout that owns this tool must never ship a copy without it.
+REQUIRED_SOURCE_PATCH_MARKERS = {
+    'src/docich/hanjuku_speedrun/hanjuku_run.py': 'before_rotate',
+}
+
+
+def _is_real_repository(repo: Path) -> bool:
+    """True when ``repo`` is the checkout that contains this tool."""
+    try:
+        return ((Path(repo) / 'tools' / Path(__file__).name).resolve()
+                == Path(__file__).resolve())
+    except (OSError, RuntimeError):
+        return False
+
+
+def _verify_required_source_patches(files: dict[str, bytes], *,
+                                    require_real: bool) -> None:
+    """Fail when the real checkout generated a copy without its patch."""
+    if not require_real:
+        return
+    for path, marker in REQUIRED_SOURCE_PATCH_MARKERS.items():
+        data = files.get(path)
+        if data is None:
+            raise ToolError(
+                f'{path}: generated copy is missing; '
+                f'the source patch for {marker!r} was not applied')
+        if marker not in data.decode('utf-8', 'replace'):
+            raise ToolError(
+                f'{path}: generated copy is missing {marker!r}; '
+                'a source patch was skipped (upstream writer shape changed?)')
+
+
 def _apply_source_patches(path: str, text: str) -> str:
+    guard = SOURCE_PATCH_GUARDS.get(path)
+    if guard is not None and not guard(text):
+        # The generator's synthetic repositories replace source modules with
+        # stubs.  A file that does not own the log writer has no rotation to
+        # hook; the real module always does, and then the exact anchors below
+        # are enforced.
+        return text
     for old, new, count in SOURCE_PATCHES.get(path, ()):
         found = text.count(old)
         if found != count:
@@ -1636,6 +1699,8 @@ def command_generate(args: argparse.Namespace) -> int:
             )
 
     generated, sha = _build(args.source, repo, include_tests=not args.no_tests)
+    _verify_required_source_patches(
+        generated.files, require_real=_is_real_repository(repo))
     _report_diagnostics(generated.diagnostics, allow=args.allow_unresolved)
     for review in generated.reviews:
         print(f'review: {review.path}:{review.lineno}: {review.reason}', file=sys.stderr)
@@ -1666,6 +1731,8 @@ def command_check(args: argparse.Namespace) -> int:
         raise ToolError('FORK.json has no source_commit and --source was not given')
 
     generated, sha = _build(source_ref, repo, include_tests=not args.no_tests)
+    _verify_required_source_patches(
+        generated.files, require_real=_is_real_repository(repo))
     _report_diagnostics(generated.diagnostics, allow=args.allow_unresolved)
 
     expected = generated.all_files()
