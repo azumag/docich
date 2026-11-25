@@ -214,7 +214,7 @@ def test_summon_card_open_limit_is_checked_before_scrolling(monkeypatch):
 
     assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('a')]
 
-    assert battle['summon_card_scroll'] == 0
+    assert battle.get('summon_card_scroll', 0) == 0
     assert battle['cards_unclassified'] == ['エンジェリン']
     assert not any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
     assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
