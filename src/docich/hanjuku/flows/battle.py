@@ -1629,6 +1629,29 @@ def _defense_summon_without_okunote(mem, cur):
     return not (guard.get('selected') or cur.get('okunote_draws'))
 
 
+def _boss_card_left_unused(mem, cur):
+    """owner 2026-11-26: ボス戦で携行切り札を使わずに戦闘が終わったか。
+
+    The summon-battle menu files its own ``battle_boss_card_missed``; a boss
+    fight that never opened that menu (normal melee) had no such evidence,
+    so a carried card was silently unused. This is the same signal, filed
+    once per battle.
+    """
+    if not isinstance(cur, dict) or cur.get('boss_card_missed_noted'):
+        return None
+    if cur.get('cards_used'):
+        return None
+    enemy = cur.get('enemy')
+    boss = (enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS)
+    if not boss:
+        return None
+    attempted = {*(cur.get('cards_selected') or ()), *(cur.get('cards_used') or ()),
+                 *(cur.get('cards_unclassified') or ()), *(cur.get('cards_missing') or ())}
+    carried = [card for card in (cur.get('planned_cards') or ())
+               if isinstance(card, str) and card not in attempted]
+    return carried[0] if carried else None
+
+
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
                attack_continues=False, panel_changed=False):
     _hold_general_loss_metric(mem)
@@ -1893,6 +1916,18 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         resulting = f'attack_continues:{castle}'
     elif defense_retained:
         resulting = f'defense_retained:{castle}'
+    # owner 2026-11-26: ボス戦で携行切り札を使わずに終わった戦闘は issue にする
+    # （召喚獣戦メニューを通らない白兵のボス戦でも同じ証拠を残す）。
+    _boss_card = _boss_card_left_unused(mem, cur)
+    if _boss_card:
+        cur['boss_card_missed_noted'] = True
+        _record(mem, 'battle_boss_card_missed', **_battle_labels(cur), card=_boss_card,
+                ally=cur.get('ally'), enemy=cur.get('enemy'), castle=castle,
+                side=cur.get('side'), screen_kind='battle_end',
+                observed_metric={'cards_left': [card for card in (cur.get('planned_cards') or ())
+                                               if isinstance(card, str)],
+                                 'screen': 'battle_end'},
+                reason='ボス戦で携行切り札を使わないまま戦闘が終了した')
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
