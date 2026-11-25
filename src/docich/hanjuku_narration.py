@@ -125,6 +125,15 @@ def deliver_periodic(g, game, runtime_dir, identity, text, *, at, max_age, seq=0
     """
     from .trading.soren_output import enqueue_audio_text
 
+    # Soren's fence rejects a lifetime above 120 seconds and an already
+    # expired one.  Generation may legitimately take minutes, so the fence is
+    # anchored at delivery time rather than the original observation time; the
+    # worker already re-proved the runtime and request before calling us.
+    now = time.time()
+    at = float(at)
+    if not 0 <= now - at <= 5:
+        at = now
+    max_age = min(float(max_age), 120.0)
     item = {**identity, 'seq': seq, 'key': f'periodic:{int(at)}', 'text': text,
             'at': at, 'evidence_kind': 'periodic'}
     return _deliver(g, runtime_dir, item, settings(game)['speaker'], enqueue_audio_text,

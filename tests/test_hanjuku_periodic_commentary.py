@@ -374,6 +374,24 @@ def test_worker_retries_an_invalid_answer_then_delivers(live, monkeypatch):
     assert text == '第8章の14年2月、所持金は732ゴールドです。'
 
 
+def test_periodic_delivery_keeps_the_soren_fence_within_120_seconds(live, monkeypatch):
+    queued = []
+    monkeypatch.setattr('docich.agent.fence.read_canonical',
+                        lambda _: {'phase': 'ready', 'active': IDENTITY})
+    monkeypatch.setattr('docich.agent.fence.shared_section', lambda _path, fn, **kw: fn())
+    monkeypatch.setattr('docich.trading.soren_output.enqueue_audio_text',
+                        lambda *args, **kwargs: queued.append((args, kwargs)))
+    _write(live.runtime / 'hanjuku_bot.json', {'decision_trace': dict(IDENTITY)})
+    status = hanjuku_narration.deliver_periodic(
+        SimpleNamespace(state_dir=live.root, repo_root=live.root), live.game,
+        live.runtime, IDENTITY, '第8章の14年2月、所持金は732ゴールドです。',
+        at=live.now - 200, max_age=240, seq=4)
+    assert status == 'enqueued' and len(queued) == 1
+    fence = queued[0][1]['runtime_fence']
+    now = time.time()
+    assert now <= fence['expires_at'] <= now + 120.0
+
+
 def test_delivery_uses_the_fenced_audio_queue_and_posts_no_chat(live, monkeypatch):
     queued = []
     monkeypatch.setattr('docich.agent.fence.read_canonical',
