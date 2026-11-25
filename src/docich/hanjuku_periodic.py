@@ -626,7 +626,9 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
 EVAL_MARKERS = re.compile(
     r'見事|課題|反省|良かった|成長|手応え|悔し|もったい|頼もしい|面白|ユーモア|'
     r'ドラマ|思い|感じ|でしょう|見えます|かもしれません|願い|楽しみ|応援|拍手|'
-    r'心配|不安|希望|粘り|踏ん張り|教訓|改善|魅力|見どころ|印象|評価')
+    r'心配|不安|希望|粘り|踏ん張り|教訓|改善|魅力|見どころ|印象|評価|'
+    r'上々|順調|難しさ|難しい|苦しい|厳しい|頼もしく|無駄|白星|黒星|滑り出し|'
+    r'見え|いい|よい|惡い|惜しい|立派|素晴らしい|たい|ですね')
 
 
 def narrative_ok(text):
@@ -724,7 +726,7 @@ def _number_in_context(value, before, after, facts):
     if after.startswith('分'):
         return any(fact.get('minutes') == value for fact in facts
                    if fact.get('kind') == 'window')
-    if after.startswith('戦'):
+    if after.startswith('戦') or (after.startswith('つ') and '戦' in before + after):
         return any(fact.get('battles') == value for fact in facts
                    if fact.get('kind') in {'window', 'current_totals'})
     if after.startswith('勝'):
@@ -733,18 +735,22 @@ def _number_in_context(value, before, after, facts):
     if after.startswith('敗'):
         return any(fact.get('losses') == value for fact in facts
                    if fact.get('kind') in {'window', 'current_totals'})
-    if re.match(r'(ゴールド|G|円)', after):
+    if re.match(r'(ゴールド|G|円)', after) or re.search(
+            r'(?:金|所持金|軍資金|資金)(?:は|が|も|を)?$', before):
         return any(fact.get('gold') == value for fact in facts
                    if fact.get('kind') in {'current_economy', 'month_plan'}) or \
             any(fact.get('price') == value for fact in facts if fact.get('kind') == 'gift') or \
             any(fact.get('price') == value for fact in facts if fact.get('kind') == 'buy')
     if after.startswith('人'):
-        if '兵士' in before:
+        if '兵士' in before or re.search(r'兵(?:士)?(?:が|は|も|を)?(?:いま|現在)?$', before):
             return any(fact.get('soldiers') == value for fact in facts
                        if fact.get('kind') in {'current_economy', 'month_plan'}) or \
                 any(fact.get('soldiers_after') == value or fact.get('qty') == value
-                    for fact in facts if fact.get('kind') == 'soldier_refill_receipt')
-        if '将軍' in before:
+                    for fact in facts if fact.get('kind') == 'soldier_refill_receipt') or \
+                (after.startswith('まで') and '補充' in before and any(
+                    fact.get('soldiers_after') == value for fact in facts
+                    if fact.get('kind') == 'soldier_refill_receipt'))
+        if '将軍' in before or '将軍' in after[:8]:
             return any(fact.get('generals') == value for fact in facts
                        if fact.get('kind') == 'current_economy')
         if '補充' in before or '購入' in before:
@@ -752,15 +758,42 @@ def _number_in_context(value, before, after, facts):
                        if fact.get('kind') == 'soldier_refill_receipt')
         return False
     if after.startswith(('個', '枚')):
-        return any(fact.get('qty') == value for fact in facts if fact.get('kind') == 'buy')
+        if any(fact.get('qty') == value for fact in facts if fact.get('kind') == 'buy'):
+            return True
+        return any(isinstance(fact.get('cards'), list) and len(fact['cards']) == value
+                   for fact in facts if fact.get('kind') in {'order_start', 'order_launched'})
     if after.startswith(('回', '件')) and '出撃' in before:
         return any(fact.get('orders') == value for fact in facts if fact.get('kind') == 'window')
     if after.startswith('城') and re.search(r'取|獲得|占領|失|落', before):
         return any(fact.get('captures') == value or fact.get('castle_losses') == value
                    for fact in facts if fact.get('kind') == 'window')
-    if re.search(r'兵(?:士)?(?:が|は|も|を)?$', before):
+    if re.search(r'兵(?:士)?(?:が|は|も|を)?(?:いま|現在)?$', before):
         return any(fact.get('soldiers') == value for fact in facts
                    if fact.get('kind') in {'current_economy', 'month_plan'})
+    if value == 0 and re.search(r'(?:城の出入り|奪った城|失った城|城)(?:は|も|が)?(?:まだ)?$', before):
+        return any((fact.get('captures') == 0 or fact.get('castle_losses') == 0)
+                   for fact in facts if fact.get('kind') == 'window')
+    if '補充' in before and after.startswith(('まで', 'に戻')):
+        return any(fact.get('soldiers_after') == value for fact in facts
+                   if fact.get('kind') == 'soldier_refill_receipt')
+    if re.search(r'兵(?:士)?を$', before) and after.startswith(('補充', '購入')):
+        return any(fact.get('qty') == value for fact in facts
+                   if fact.get('kind') == 'soldier_refill_receipt')
+    if value == 0 and ('終了時' in before or '開戦時' in before) and '敗れ' in before:
+        return any(fact.get('outcome') == 'loss' and fact.get('ally_hp') == 0
+                   for fact in facts if fact.get('kind') == 'battle_result')
+    pair = re.match(r'対([0-9]+)', after)
+    if pair:
+        other = int(pair.group(1))
+        if any((fact.get('ally_hp'), fact.get('enemy_hp')) in {(value, other), (other, value)}
+               for fact in facts if fact.get('kind') in {'battle_start', 'battle_result', 'current_battle'}):
+            return True
+    previous = re.search(r'([0-9]+)対$', before)
+    if previous:
+        other = int(previous.group(1))
+        if any((fact.get('ally_hp'), fact.get('enemy_hp')) in {(value, other), (other, value)}
+               for fact in facts if fact.get('kind') in {'battle_start', 'battle_result', 'current_battle'}):
+            return True
     if 'HP' in before or '体力' in before:
         present = [name for name in _fact_names(facts) if name in before]
         if not present:
@@ -813,6 +846,11 @@ def valid_text(text, facts):
     # Aggregate window counts ("3勝1敗") are already number-checked against the
     # window fact; they are not a claim about a named battle.
     outcome_text = re.sub(r'[0-9]+勝(?:[0-9]+敗)?|[0-9]+敗', '', normalized)
+    # Nominal/summary uses are not result claims: "勝ち方", "勝つ形", "連勝で",
+    # "勝ち切れない" and similar. They are handled by the surrounding evaluation.
+    outcome_text = re.sub(
+        r'勝(?:ち方|ち筋|ちパターン|つ形|負|率|利数|利へ|因|敗|ち切れ)|'
+        r'連勝(?:で|の|は|が|を)|勝って負けて|勝ったり負けたり|勝ち負け|勝ちを重ね', '', outcome_text)
     if (re.search(r'勝|負け|敗[れ北戦]', outcome_text)
             and not outcomes_match(outcome_text, battle_results)):
         return False
@@ -821,6 +859,12 @@ def valid_text(text, facts):
         castle_text = re.sub(
             r'(?:占領|奪取|奪還|制圧)(?:を)?(?:狙(?:う|い|います)|目指(?:す|し|します)|'
             r'する予定|の予定|です|だ)', '', castle_text)
+        castle_text = re.sub(
+            r'(?:占領|奪取|奪還|制圧)(?:を)?(?:へ|に)(?:向け|向か|進|動|挑)', '', castle_text)
+        castle_text = re.sub(
+            r'(?:占領|奪取|奪還|制圧)(?:を)?(?:です|だ)?(?=[。、]|$)', '', castle_text)
+        castle_text = re.sub(
+            r'(?:占領|奪取|奪還|制圧)(?:を)?へ(?!成功|失敗|至|到達)', '', castle_text)
     if not castle_results_match(castle_text, facts, allow_unnamed=True):
         return False
     if re.search(r'出撃(?:した|しました|完了)', normalized) and not any(

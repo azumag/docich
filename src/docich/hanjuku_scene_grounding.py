@@ -23,9 +23,9 @@ def _outcomes_match(text, facts):
     names = {fact[key] for fact in results for key in ('ally', 'enemy')}
     # These formulations can mean death, planned damage or a result. Do not
     # promote them to an observed win merely because an HP value is known.
-    if re.search(r'倒し(?:た|ました)|撃破(?:した|しました)|打ち負か|退け(?:た|ました)', text):
+    if re.search(r'倒し(?:た|ました)|撃破(?:した|しました)|打ち負か', text):
         return False
-    verbs = re.compile(r'勝|制し|撃退(?:した|しました)|負け|敗[れ北戦]')
+    verbs = re.compile(r'勝|制し|撃退(?:した|しました)|退け(?:て|た|ました)|負け|敗[れ北戦]')
     for match in verbs.finditer(text):
         if not results:
             return False
@@ -39,10 +39,18 @@ def _outcomes_match(text, facts):
             subject = max(direct, key=len)
             end = len(before) - (3 if before.endswith(subject + '将軍の') else 1)
             subjects = [(end - len(subject), len(before), subject)]
-        if not subjects:
-            return False
-        subject = subjects[-1][2]
         win = not re.match(r'負け|敗', match.group())
+        if not subjects:
+            # Elliptical Japanese: "ミュスカデには敗れ" names only the opponent.
+            opponents = [name for name in names
+                         if re.search(re.escape(name) + 'に', before)]
+            inferred = [fact for fact in results
+                        if fact.get('outcome') == ('win' if win else 'loss')
+                        and fact.get('enemy') in opponents]
+            if len(inferred) != 1:
+                return False
+            subjects = [(0, 0, inferred[0]['ally'])]
+        subject = subjects[-1][2]
         candidates = [fact for fact in results
                       if subject == fact['ally' if (fact['outcome'] == 'win') == win else 'enemy']]
         if not candidates:
@@ -55,8 +63,8 @@ def _outcomes_match(text, facts):
         after = re.split(r'[、,。！？]', text[match.start():])[0]
         # Accept a positive result formulation, not arbitrary conjugations of
         # 勝. A win fact cannot license "勝てません" or "勝たなかった".
-        if (not re.match(r'勝(?:ち|った|利|てた|し|して|ち返し|ち越し)|連勝|制し|'
-                         r'撃退(?:した|しました)|負け|敗[れ北戦]', after)
+        if (not re.match(r'勝(?:ち|って|った|利|てた|し|して|ち返し|ち越し)|連勝|制し|'
+                         r'撃退(?:した|しました)|退け(?:て|た|ました)|負け|敗[れ北戦]', after)
                 or re.search(r'ない|なかった|ません|ず|ぬ|なさそう', after)):
             return False
     return True
@@ -124,6 +132,9 @@ def _castle_results_match(text, facts, *, allow_unnamed=False):
         kind = ('castle_lost_observed' if re.match(r'奪われ|失|陥落|落城', match.group())
                 else 'castle_owned_observed')
         before = re.split(r'[、,。！？]', text[:match.start()])[-1]
+        after = text[match.end():match.end() + 6]
+        if re.match(r'(?:た|て|い)?城[もはが]?[0０]', after):
+            continue  # "失った城も0" is a count, not an observed loss
         names = _mentions(before, castles)
         if not names:
             # A long narrative may say "城を失って" without repeating the name.
