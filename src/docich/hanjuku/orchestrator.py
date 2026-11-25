@@ -949,6 +949,15 @@ def _recall_after_scene(mem, recall, kind, phase):
     really closed cannot be confirmed by a stale marker.
     """
     from .state.regions import flow as _flow
+    if recall.get('stage') == 'await_dispatch':
+        # The A already has a receipt (or is still awaiting one). A concert
+        # scene may cover the picker, but it must not erase the request and
+        # make a later field map look like picker acceptance.
+        from .flows import recall as recall_flow
+        if not recall.get('scene_pending'):
+            recall_flow._mark_recall_interrupted(mem)
+            recall['scene_pending'] = True
+        return recall
     _flow(mem).pop('recall_interrupted', None)
     for key in ('dest', 'dest_target', 'marker', 'picker_closed', 'input_sent',
                 'request_trace', 'a_inputs', 'requested_tick'):
@@ -2066,16 +2075,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     month_dialog = ((sub.get('kind') == 'recruit' and not readers.month_menu_ready(screen))
                     or (bool(sub) and bool(month_confirmation_positions(screen))))
     recall = _flow(mem).get('recall') or {}
-    if (recall and phase == 'concert' and recall.get('stage') != 'await_dispatch'
+    if (recall and phase == 'concert'
             and not recall.get('retreat_recheck') and not recall.get('anonymous_recheck')
             and not recall.get('scene_pending')):
         # g1075 2026-10-29 13:02: the month rolled over while the camp recall
-        # was choosing its destination. The month-start scene (「こんげつは……」,
-        # phase 'concert') was handed to the recall, which waits on text, so
-        # nothing was pressed for 91 observations until the recall gave up;
-        # meanwhile ポセイドン (HP 1, no soldiers) marched back into リグア and
-        # fell. The scene closes the picker anyway: drop the recall and let the
-        # scene advance. The camp is found again on the map afterwards.
+        # was choosing its destination. A scene still owns its text frames.
+        # For a pre-dispatch recall, keep the existing bounded resume path.
+        # For await_dispatch, preserve the sent request and mark the scene as
+        # covering its receipt window; a later map cannot prove picker closure.
         # #3544: the interruption marker belongs to this recall; sweep it too
         # so a later unrelated recall cannot inherit the short retry hold.
         usable = [int(d) for d in (mem.get('month_durations') or [])[-3:] if type(d) is int]
