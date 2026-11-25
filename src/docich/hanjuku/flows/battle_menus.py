@@ -2864,6 +2864,39 @@ def _summon_card_row_hidden(screen, battle, *, cards_left, empty_egg):
     return screen.kind == 'egg_battle_menu' and ('こうげき' in text or 'もうこうげき' in text)
 
 
+def _summon_card_rearm(mem, battle):
+    """Re-open the bounded card-reveal scroll after it ran out.
+
+    The reveal budget is only just deep enough to reach the きりふだ row, so
+    a single press eaten by a redraw -- or a frame that read the top page
+    while the box was mid-scroll -- forfeit the carried card for the rest of
+    the battle (card_miss #5600: scrolls=3 with the row never readable).  As
+    long as the carry ledger still lists a card, the hidden gate keeps
+    proving the same evidence; give the box another bounded look after a
+    gap, mirroring the おくのて scroll re-arm.  A truly dead row just
+    re-exhausts and the turn goes back to attacking.
+    """
+    rearms = int(battle.get('summon_card_rearms') or 0)
+    if rearms >= SUMMON_CARD_REARM_LIMIT:
+        return False
+    now = int(mem.get('tick') or 0)
+    since = battle.get('summon_card_exhausted_tick')
+    if type(since) is not int:
+        battle['summon_card_exhausted_tick'] = now
+        return False
+    if now - since < SUMMON_CARD_REARM_TICKS:
+        return False
+    battle['summon_card_rearms'] = rearms + 1
+    battle['summon_card_scroll'] = 0
+    battle['summon_card_exhausted_tick'] = now
+    battle.pop('summon_card_scroll_out', None)
+    _record(mem, 'battle_summon_card_rearm', **_battle_labels(battle),
+            observed_metric={'rearms': rearms + 1, 'limit': SUMMON_CARD_REARM_LIMIT,
+                             'waited_ticks': now - since},
+            reason='有界スクロールが尽きても携行札が残るため、描画途中・入力抜けの可能性を残して有界で揭示をやり直す')
+    return True
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
@@ -3192,15 +3225,34 @@ def egg_battle_step(screen: Screen, mem):
         if _summon_card_row_hidden(screen, battle, cards_left=cards_left,
                                    empty_egg=empty_egg):
             scrolls = int(battle.get('summon_card_scroll') or 0)
+            if (scrolls >= SUMMON_CARD_SCROLL_LIMIT
+                    and _summon_card_rearm(mem, battle)):
+                scrolls = 0
             if scrolls < SUMMON_CARD_SCROLL_LIMIT:
                 battle['summon_card_scroll'] = scrolls + 1
                 _record(mem, 'battle_summon_card_scroll', **_battle_labels(battle),
                         observed_metric={'scrolls': scrolls + 1, 'cards_left': list(cards_left),
                                          'text': (screen.text or '')[:60],
+                                         'cursor_y': screen.menu_cursor,
+                                         'visible': sorted({w for _, _, w in _options(screen)}),
                                          'screen_kind': screen.kind,
                                          'empty_egg': bool(empty_egg)},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
+            if not battle.get('summon_card_scroll_out'):
+                # The reveal scroll spent its whole budget and re-arms; the
+                # audit needs this marker to tell a tried-and-failed open
+                # from a gate that never scrolled (#5600 was scrolls=3).
+                battle['summon_card_scroll_out'] = True
+                _record(mem, 'battle_summon_card_exhausted', **_battle_labels(battle),
+                        observed_metric={'scrolls': scrolls,
+                                         'rearms': int(battle.get('summon_card_rearms') or 0),
+                                         'cards_left': list(cards_left),
+                                         'cursor_y': screen.menu_cursor,
+                                         'visible': sorted({w for _, _, w in _options(screen)}),
+                                         'screen_kind': screen.kind,
+                                         'text': (screen.text or '')[:60]},
+                        reason='有界な下方スクロールを尽きても切り札行が読めないため、実コマンドでの応戦へ戻る')
         if int(battle.get('summon_card_opens') or 0) >= SUMMON_CARD_OPEN_LIMIT:
             # Reopening the same carried card after the retreat-cancel loop only
             # churns the menu (retreat is banned); attack instead.
@@ -3223,6 +3275,9 @@ def egg_battle_step(screen: Screen, mem):
                 # the box, which returns to the top page after the list closes
                 # (owner 2026-11-24: 2枚目以降の切り札も開く).
                 battle['summon_card_scroll'] = 0
+                battle['summon_card_rearms'] = 0
+                battle.pop('summon_card_exhausted_tick', None)
+                battle.pop('summon_card_scroll_out', None)
                 battle['summon_card_opens'] = int(battle.get('summon_card_opens') or 0) + 1
                 battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
@@ -3431,6 +3486,14 @@ MONSTER_STALL_RETURN_TURNS = 6
 # A summon fight's command box hides きりふだ below たまごをつかう; one or two
 # downs reveal it.  Bound the scroll so an unreadable box cannot loop.
 SUMMON_CARD_SCROLL_LIMIT = 3
+# The reveal scroll is exactly deep enough to reach the row, so one press
+# lost to a half-drawn frame forfeits a carried card for the whole battle
+# (card_miss #5600: scrolls=3, the row never read).  The same failure class
+# already re-arms the おくのて scroll; give the box a bounded second look
+# after a gap.  A genuinely dead (grey) row simply re-exhausts and the turn
+# goes back to attacking -- the looks are bounded either way.
+SUMMON_CARD_REARM_TICKS = 8       # observations (~12 s) before one more look
+SUMMON_CARD_REARM_LIMIT = 2       # extra bounded looks per battle
 CARD_RETREAT_CANCEL_LIMIT = 2
 SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   # cancels before the carried card is abandoned
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
