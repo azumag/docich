@@ -3177,6 +3177,10 @@ def egg_battle_step(screen: Screen, mem):
                                          'empty_egg': bool(empty_egg)},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
+        if int(battle.get('summon_card_opens') or 0) >= SUMMON_CARD_OPEN_LIMIT:
+            # Reopening the same carried card after the retreat-cancel loop only
+            # churns the menu (retreat is banned); attack instead.
+            cards_left = []
         resume = battle.get('summon_card_resume')
         if not isinstance(resume, dict) or resume.get('card') not in cards_left:
             resume = None
@@ -3195,6 +3199,7 @@ def egg_battle_step(screen: Screen, mem):
                 # the box, which returns to the top page after the list closes
                 # (owner 2026-11-24: 2枚目以降の切り札も開く).
                 battle['summon_card_scroll'] = 0
+                battle['summon_card_opens'] = int(battle.get('summon_card_opens') or 0) + 1
                 battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
                         card=card,
@@ -3400,7 +3405,8 @@ MONSTER_STALL_RETURN_TURNS = 6
 # A summon fight's command box hides きりふだ below たまごをつかう; one or two
 # downs reveal it.  Bound the scroll so an unreadable box cannot loop.
 SUMMON_CARD_SCROLL_LIMIT = 3
-CARD_RETREAT_CANCEL_LIMIT = 2   # cancels before the carried card is abandoned
+CARD_RETREAT_CANCEL_LIMIT = 2
+SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   # cancels before the carried card is abandoned
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
 # enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
 # even at enemy HP 27 with the summon at 515, which looked like throwing a
