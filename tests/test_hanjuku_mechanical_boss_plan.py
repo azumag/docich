@@ -101,6 +101,21 @@ def test_field_map_activates_only_ready_mechanical_plan_steps():
     assert ready_mem['plan']['active'] is None
 
 
+def test_field_map_never_activates_an_attack_on_an_owned_castle():
+    # docich#5623: a stale plan step attacking an already-owned castle can
+    # never launch; activating it walked into the deploy route check every
+    # observation and the cancel handed it back to pending forever.
+    mem = _memory()
+    mem['world']['garrison'] = {'アルマムーン': ['どうし', 'ピオーネ']}
+    stale = {'step': 'A:plan:M1', 'source': 'アルマムーン', 'target': 'ミヒラギアン',
+             'general': 'ピオーネ', 'cards': [], 'after': None, 'purpose': 'attack'}
+    mem['plan']['orders'] = {stale['step']: 'pending'}
+    mem['plan']['chart_plan'] = {'source': 'mechanical', 'orders': [stale]}
+    assert O.plan_starved_rearm(mem, 'field', 'map') is False
+    assert mem['plan'].get('active') is None
+    assert not any(r['decision'] == 'plan_map_activate' for r in mem['_records'])
+
+
 def test_stale_garrison_emits_roster_probe_and_activates_on_field_map():
     mem = _memory()
     mem['country_general_count'] = {'count': 32}
