@@ -114,7 +114,7 @@ SPEEDRUN_RULES_JA = (
     "\t- ソ連ゲームの国・併合・得点のルールで説明しないこと。ルールを聞かれても、メモにないことは推測で答えず、分からないと伝えること"
 )
 SPEEDRUN_OPS_LINE = (
-    "- このコーナーは元の半熟BOTを複製し、クリアタイムを縮めるために改善していく計測コーナー"
+    "- このコーナーは、BOTがクリアタイムを縮めるために改善を重ねていく計測コーナー"
 )
 
 # Same liveness bound as the overlay's ``speedrunTimerState``: a running timer
