@@ -8,12 +8,16 @@ game names and shared file names, and writes the copy.
 
 Usage::
 
-    python3 tools/hanjuku_speedrun_fork.py generate [--source REF]
-    python3 tools/hanjuku_speedrun_fork.py check    [--source REF]
+    python3 tools/hanjuku_speedrun_fork.py generate [--source REF] [--no-tests]
+    python3 tools/hanjuku_speedrun_fork.py check    [--source REF] [--no-tests]
 
 ``generate`` writes the copy (temporary file + rename).  ``check`` rebuilds the
 copy in memory and compares it with the files on disk.  The same ref always
 produces byte-identical output, and the original files are only ever read.
+
+The original corner's tests are copied too (``tests/test_hanjuku*.py`` ->
+``tests/hanjuku_speedrun/``) so the speedrun copy is exercised by the same
+checks.  ``--no-tests`` keeps the source-only copy for quick tool runs.
 
 The source is read from the current git worktree by default (falling back to
 the repository containing this tool).  For tests, ``--repo`` and
@@ -80,7 +84,310 @@ SHARED_FILE_RENAMES = {
     'hanjuku-resume': 'hanjuku-speedrun-resume',
 }
 
-_GAME_RE = re.compile(r'hanjuku-hero(?!\.sfc)')
+#: Test files that must not be copied.  Each reason is reported by the tool
+#: and in the pull request so a reader can see why the copy is smaller.
+EXCLUDED_TESTS = {
+    'tests/test_hanjuku_speedrun_fork.py': (
+        'tests the generator itself, not the copied corner logic'
+    ),
+    'tests/test_hanjuku_family.py': (
+        'tests the shared hanjuku_family module selection (common side), '
+        'not the copied logic'
+    ),
+    'tests/test_hanjuku_speedrun_corner_cli.py': (
+        'tests the shared startup CLI/registration (common side), '
+        'not the copied logic'
+    ),
+    # Operator-only modules stay in the original package (EXCLUDED_MODULES).
+    # Their tests assert the original target and therefore never describe the
+    # copy; copying them would only produce false failures.
+    'tests/test_hanjuku_corner.py': (
+        'tests hanjuku_corner, an operator-only module that is not copied'
+    ),
+    'tests/test_hanjuku_corner_resume_cli.py': (
+        'tests hanjuku_corner / hanjuku_manual_cancel, operator-only modules '
+        'that are not copied'
+    ),
+    'tests/test_hanjuku_improve.py': (
+        'tests hanjuku_improve, an operator-only module that is not copied'
+    ),
+    'tests/test_hanjuku_manual_admin_release.py': (
+        'tests hanjuku_manual_admin_release / hanjuku_admin_result / '
+        'hanjuku_manual_cancel, operator-only modules that are not copied'
+    ),
+    'tests/test_hanjuku_manual_cancel.py': (
+        'tests hanjuku_manual_cancel, an operator-only module that is not copied'
+    ),
+    'tests/test_hanjuku_prediction_control.py': (
+        'tests hanjuku_prediction_control / _check, operator-only modules '
+        'that are not copied'
+    ),
+    'tests/test_hanjuku_diagnostics.py': (
+        'tests the shared ops diagnostics collector, which is pinned to the '
+        'original corner'
+    ),
+}
+
+#: Files copied next to the tests.  They are the ``tests/`` helpers that the
+#: copied tests import as siblings.  ``tests/fixtures/`` and
+#: ``tests/conftest.py`` are deliberately not copied: they are read-only shared
+#: data / configuration and the copy reaches them through ``parents[1]``.
+TEST_AUX_SOURCES = (
+    'tests/hanjuku_frame_read_cache.py',
+)
+
+TEST_TARGET_DIR = 'tests/hanjuku_speedrun'
+TEST_CONFTEST_REL = f'{TEST_TARGET_DIR}/conftest.py'
+TEST_SUPPORT_REL = f'{TEST_TARGET_DIR}/hanjuku_speedrun_test_support.py'
+TEST_SUPPORT_BODY = '''"""Helpers for copied tests that read the shared original-corner fixtures."""
+from __future__ import annotations
+
+
+def speedrun_game(value):
+    """Return a copy of fixture data with ``game`` names moved to the copy.
+
+    The shared ``tests/fixtures/`` snapshots were captured from the original
+    corner.  The copy's identity checks must reject a *foreign* game, so a
+    test that replays such a snapshot first rewrites its own run identity.
+    """
+    if isinstance(value, dict):
+        return {
+            key: ('hanjuku-speedrun' if key == 'game' and item == 'hanjuku-hero'
+                  else speedrun_game(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [speedrun_game(item) for item in value]
+    return value
+'''
+
+#: Copied tests that cannot pass unchanged because they assert behaviour of
+#: the original corner's common-side integration.  Keys are node ids relative
+#: to ``tests/hanjuku_speedrun/`` so they survive changes in pytest's rootdir.
+#: (a) rewrite misses must be fixed in the tool, never listed here.
+TEST_SKIPS: dict[str, str] = {
+    'test_hanjuku_resume.py::test_failed_publication_retries_same_request_and_sealed_selection[inbox]': (
+        'queue_manual(resume_latest=True) is an original-corner-only feature; '
+        'the speedrun corner never transfers a checkpoint through it'
+    ),
+    'test_hanjuku_resume.py::test_failed_publication_retries_same_request_and_sealed_selection[publication]': (
+        'queue_manual(resume_latest=True) is an original-corner-only feature; '
+        'the speedrun corner never transfers a checkpoint through it'
+    ),
+    'test_hanjuku_predictions.py::test_diagnostics_is_allowlisted_and_contains_no_titles_or_tokens': (
+        'the shared ops diagnostics collector reads the original '
+        'hanjuku_predictions.json; the speedrun copy writes its own file'
+    ),
+    'test_hanjuku_new_game.py::test_new_game_queue_survives_restart_and_refuses_other_start_modes': (
+        'new-game is an original-corner-only start mode; the shared rotation '
+        'manager rejects it for the speedrun corner'
+    ),
+    'test_hanjuku_new_game.py::test_new_game_button_confirmation_cancel_and_success': (
+        'new-game is an original-corner-only start mode; the shared WebUI '
+        'path rejects it for the speedrun corner'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_recovery_never_releases_source_lease_or_relaunches_finished_game': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_unproved_terminal_release_keeps_source_and_does_not_start_background[terminal_invalid]': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_unproved_terminal_release_keeps_source_and_does_not_start_background[cleanup_failure]': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_unproved_terminal_release_keeps_source_and_does_not_start_background[still_alive]': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_crash_after_release_resumes_from_durable_release_proof': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_prepared_record_survives_a_crash_before_admission': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_failed_background_start_is_not_allocated_again': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_terminal_previous_recovery.py::test_provably_dead_requires_no_window_agent_or_command_port': (
+        'the shared RetroCornerManager recovery harness is original-corner-specific'
+    ),
+    'test_hanjuku_retro_registration.py::test_live_registration_is_enabled_but_keeps_vm_prerequisites_separate': (
+        'tests the shared retro-corner catalog, which lists both corners; '
+        'this assertion is not copy-specific'
+    ),
+    'test_hanjuku_retro_registration.py::test_vm_only_rom_gate_keeps_local_checkout_out_of_candidates': (
+        'tests the shared retro-corner catalog, which lists both corners; '
+        'this assertion is not copy-specific'
+    ),
+    'test_hanjuku_scene_process.py::test_unusable_pidfd_syscalls_reject_before_subreaper_or_launch[signal]': (
+        'requires the dedicated single-thread worker; an xdist worker cannot '
+        'provide it, so this is an environment-only failure'
+    ),
+    'test_hanjuku_scene_process.py::test_unusable_pidfd_syscalls_reject_before_subreaper_or_launch[waitid]': (
+        'requires the dedicated single-thread worker; an xdist worker cannot '
+        'provide it, so this is an environment-only failure'
+    ),
+}
+
+#: Source patches for dynamic names that no AST rule can resolve.  Same
+#: contract as :data:`SOURCE_PATCHES`: the exact count is checked so an
+#: upstream change is an error instead of a silent miss.
+TEST_SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
+    # The speedrun config intentionally disables [hanjuku.predictions] (§2.5),
+    # but the prediction module is part of the copied logic.  Enable it only
+    # inside these test fixtures so the copy's logic is still exercised.
+    'tests/test_hanjuku_predictions.py': (
+        ("def env(tmp_path):\n"
+         "    g = replace(load_global(ROOT, ROOT / 'config/docich.soren-live.toml'), "
+         "state_dir=tmp_path / 'run')",
+         "def env(tmp_path, monkeypatch):\n"
+         "    monkeypatch.setattr(p, 'load_game', lambda *_: SimpleNamespace(raw={"
+         "'hanjuku': {'predictions': {'enabled': True, 'seed_best_cleared': 1, "
+         "'ending_window_seconds': 1800}}}))\n"
+         "    g = replace(load_global(ROOT, ROOT / 'config/docich.soren-live.toml'), "
+         "state_dir=tmp_path / 'run')", 1),
+    ),
+    'tests/test_hanjuku_resume_predictions.py': (
+        ("def env(tmp_path):\n"
+         "    g = replace(load_global(ROOT, ROOT / 'config/docich.soren-live.toml'), "
+         "state_dir=tmp_path / 'run')",
+         "def env(tmp_path, monkeypatch):\n"
+         "    monkeypatch.setattr(p, 'load_game', lambda *_: SimpleNamespace(raw={"
+         "'hanjuku': {'predictions': {'enabled': True, 'seed_best_cleared': 1, "
+         "'ending_window_seconds': 1800}}}))\n"
+         "    g = replace(load_global(ROOT, ROOT / 'config/docich.soren-live.toml'), "
+         "state_dir=tmp_path / 'run')", 1),
+    ),
+    # Shared snapshots carry the original corner's run identity.  Normalise
+    # just those fixtures so the copy's identity checks are still exercised.
+    'tests/test_hanjuku_current_roster_budget.py': (
+        ('from copy import deepcopy\n',
+         'from copy import deepcopy\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("E = json.loads((ROOT / 'g747-month-refill-evidence.json').read_text())",
+         "E = speedrun_game(json.loads("
+         "(ROOT / 'g747-month-refill-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_recall_arrival_status.py': (
+        ('from copy import deepcopy\n',
+         'from copy import deepcopy\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("EVIDENCE=json.loads((ROOT/'g749-cinnamon-recall-evidence.json').read_text())",
+         "EVIDENCE=speedrun_game(json.loads("
+         "(ROOT/'g749-cinnamon-recall-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_conserved_army_reobserve.py': (
+        ('from copy import deepcopy\n',
+         'from copy import deepcopy\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("EVIDENCE = json.loads((ROOT / 'g745-coco-semillon-evidence.json').read_text())",
+         "EVIDENCE = speedrun_game(json.loads("
+         "(ROOT / 'g745-coco-semillon-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_army_count_check.py': (
+        ('from copy import deepcopy\n',
+         'from copy import deepcopy\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("d=json.loads((Path(__file__).parent.parent/'fixtures/hanjuku/"
+         "g745-unread-army-plan.json').read_text())",
+         "d=speedrun_game(json.loads((Path(__file__).parent.parent/'fixtures/hanjuku/"
+         "g745-unread-army-plan.json').read_text()))", 1),
+        ("d=json.loads((root/'g741-army-count-evidence.json').read_text())",
+         "d=speedrun_game(json.loads("
+         "(root/'g741-army-count-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_script.py': (
+        ("Path(__file__).resolve().parents[2]/'brains'/'hanjuku'/'bot.py'",
+         "Path(__file__).resolve().parents[2]/'brains'/'hanjuku_speedrun'/'bot.py'", 2),
+    ),
+    'tests/test_hanjuku_live_summon_shield.py': (
+        ('from copy import deepcopy\n',
+         'from copy import deepcopy\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("EVIDENCE = json.loads((ROOT / 'g747-live-shield-evidence.json').read_text())",
+         "EVIDENCE = speedrun_game(json.loads("
+         "(ROOT / 'g747-live-shield-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_wounded_summoner.py': (
+        ('from copy import deepcopy\n',
+         'from copy import deepcopy\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("EVIDENCE = json.loads((ROOT / 'g745-emergency-egg-evidence.json').read_text())",
+         "EVIDENCE = speedrun_game(json.loads("
+         "(ROOT / 'g745-emergency-egg-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_naruto_damage.py': (
+        ('from dataclasses import replace\n',
+         'from dataclasses import replace\n'
+         'from hanjuku_speedrun_test_support import speedrun_game\n', 1),
+        ("EVIDENCE = json.loads((ROOT / 'g749-naruto-evidence.json').read_text())",
+         "EVIDENCE = speedrun_game(json.loads("
+         "(ROOT / 'g749-naruto-evidence.json').read_text()))", 1),
+    ),
+    'tests/test_hanjuku_bot_exit_diagnostic.py': (
+        ('BOT_PATH = REPO_ROOT / "brains" / "hanjuku" / "bot.py"',
+         'BOT_PATH = REPO_ROOT / "brains" / "hanjuku_speedrun" / "bot.py"', 1),
+    ),
+    'tests/test_hanjuku_key_inventory.py': (
+        ('_SRC = pathlib.Path(docich.hanjuku.__file__).parent',
+         '_SRC = pathlib.Path(docich.hanjuku_speedrun.hanjuku.__file__).parent', 1),
+    ),
+    'tests/test_hanjuku_castle_recognizer.py': (
+        ('from docich.hanjuku.os_layer.pixels import read_png',
+         'from docich.hanjuku_speedrun.hanjuku.os_layer.pixels import read_png', 1),
+        ('from docich.hanjuku.os_layer.screen import castle_roofs',
+         'from docich.hanjuku_speedrun.hanjuku.os_layer.screen import castle_roofs', 1),
+    ),
+    'tests/test_hanjuku_scene_process.py': (
+        ('from docich.hanjuku_scene_process import enable_subreaper, '
+         'OwnedSceneProcess, SceneProcessUnavailable',
+         'from docich.hanjuku_speedrun.hanjuku_scene_process import enable_subreaper, '
+         'OwnedSceneProcess, SceneProcessUnavailable', 1),
+        ('from docich import hanjuku_scene_process as implementation',
+         'from docich.hanjuku_speedrun import hanjuku_scene_process as implementation', 1),
+    ),
+    'tests/test_hanjuku_scene_commentary.py': (
+        ('from docich.hanjuku_scene_process import enable_subreaper',
+         'from docich.hanjuku_speedrun.hanjuku_scene_process import enable_subreaper', 1),
+        ('from docich import hanjuku_scene_worker as worker',
+         'from docich.hanjuku_speedrun import hanjuku_scene_worker as worker', 1),
+    ),
+    # These dynamic module names are known at generation time; the general
+    # rewriter cannot resolve f-strings, so patch the two exact cases.
+    'tests/test_hanjuku_layers.py': (
+        ("import_module(f'docich.{old}')",
+         "import_module(f'docich.hanjuku_speedrun.{old}')", 1),
+        ("PACKAGE = ROOT / 'src' / 'docich' / 'hanjuku'",
+         "PACKAGE = ROOT / 'src' / 'docich' / 'hanjuku_speedrun' / 'hanjuku'", 1),
+        ("here = ['docich', 'hanjuku', *name.split('.')] "
+         "if name else ['docich', 'hanjuku']",
+         "here = ['docich', 'hanjuku_speedrun', 'hanjuku', *name.split('.')] "
+         "if name else ['docich', 'hanjuku_speedrun', 'hanjuku']", 2),
+        ("elif target.startswith('docich.hanjuku_'):\n"
+         "                found.add(target.split('.')[1])",
+         "elif target.startswith('docich.hanjuku_speedrun.hanjuku_'):\n"
+         "                found.add(target.split('.')[2])", 1),
+    ),
+    # RetroArch reports the loaded ROM's stem, not the docich game name.  The
+    # copied restore loop compares the reply with resolve_rom(...).stem, so the
+    # fake reply must keep ``hanjuku-hero``.
+    'tests/test_hanjuku_resume.py': (
+        ('Snes9x,hanjuku-speedrun', 'Snes9x,hanjuku-hero', 2),
+    ),
+    # The copy must ignore a newer runtime that belongs to the *original*
+    # corner.  The original test only knows "a newer foreign corner runtime",
+    # so swap the foreign game name and keep the same scenario.
+    'tests/test_hanjuku_runtime_isolation.py': (
+        ('_speedrun_runtime', '_original_runtime', 6),
+        ('"""A newer copied-corner runtime with the same ROM stem and filenames."""',
+         '"""A newer original-corner runtime; the copy must ignore it."""', 1),
+        ("'hanjuku-speedrun'", "'hanjuku-hero'", 2),
+    ),
+}
+
+#: ROM-derived names stay tied to the ROM file: the copy reads the same
+#: ``hanjuku-hero.sfc``, so RetroArch's saved states and battery saves keep the
+#: original stem.  ``.toml`` is a docich config name and is renamed.
+_GAME_RE = re.compile(r'hanjuku-hero(?!\.(?:sfc|srm|state))')
 _ENCODING_RE = re.compile(r'^[ \t\f]*#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+')
 _MARKER_PREFIX = '# GENERATED by tools/hanjuku_speedrun_fork.py from '
 
@@ -99,8 +406,12 @@ class Diagnostic:
 @dataclass
 class Generated:
     files: dict[str, bytes]
+    test_files: dict[str, bytes] = field(default_factory=dict)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     reviews: list[Diagnostic] = field(default_factory=list)
+
+    def all_files(self) -> dict[str, bytes]:
+        return {**self.files, **self.test_files}
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +510,22 @@ def _is_brains_hanjuku(path: str) -> bool:
     return pure.parent == PurePosixPath('brains/hanjuku') and pure.suffix == '.py'
 
 
+def _is_hanjuku_test(path: str) -> bool:
+    pure = PurePosixPath(path)
+    return (
+        pure.parent == PurePosixPath('tests')
+        and pure.name.startswith('test_hanjuku')
+        and pure.suffix == '.py'
+    )
+
+
+def _target_test_path(path: str) -> str:
+    pure = PurePosixPath(path)
+    if pure.parent not in {PurePosixPath('tests'), PurePosixPath('tests/helpers')}:
+        raise ToolError(f'not a copyable test path: {path}')
+    return f'{TEST_TARGET_DIR}/{pure.name}'
+
+
 def _select_source_paths(paths: list[str]) -> list[str]:
     selected = []
     for path in paths:
@@ -212,6 +539,100 @@ def _select_source_paths(paths: list[str]) -> list[str]:
         elif _is_brains_hanjuku(path):
             selected.append(path)
     return sorted(set(selected))
+
+
+def _imported_module_names(tree: ast.AST) -> list[str]:
+    """Module names a test may need from the ``tests/`` tree."""
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.append(node.module)
+            if node.module in {'tests', 'tests.helpers', 'helpers'}:
+                names.extend(f'{node.module}.{alias.name}' for alias in node.names)
+    return names
+
+
+def _local_test_path(module: str, available: set[str]) -> str | None:
+    """Resolve a test-local import to a path under ``tests/`` if it exists."""
+    if module.startswith('src.'):
+        return None
+    if module.startswith('tests.'):
+        rest = module[len('tests.'):]
+    elif module.startswith('tests'):
+        return None
+    else:
+        rest = module
+    parts = rest.split('.')
+    if len(parts) == 1:
+        candidate = f'tests/{parts[0]}.py'
+    elif len(parts) == 2 and parts[0] == 'helpers':
+        candidate = f'tests/helpers/{parts[1]}.py'
+    else:
+        return None
+    return candidate if candidate in available else None
+
+
+def _select_test_paths(paths: list[str], sha: str, repo: Path) -> list[str]:
+    """Return the original tests and test-local helpers to copy.
+
+    Tests import a handful of siblings.  Test modules are selected from the
+    ``test_hanjuku*`` family; non-test helper modules reachable from them are
+    copied as siblings too.  ``tests/fixtures/`` and ``tests/conftest.py`` are
+    never selected.
+    """
+    available = set(paths)
+    test_paths = [
+        path for path in paths
+        if _is_hanjuku_test(path) and path not in EXCLUDED_TESTS
+    ]
+    selected = set(test_paths)
+    queue = list(test_paths)
+    seen: set[str] = set()
+    while queue:
+        path = queue.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            tree = ast.parse(_read_blob(sha, path, repo).decode('utf-8'))
+        except (UnicodeDecodeError, SyntaxError):
+            # _transform_python reports the real error later.
+            continue
+        for module in _imported_module_names(tree):
+            candidate = _local_test_path(module, available)
+            if candidate is None or candidate in selected:
+                continue
+            if PurePosixPath(candidate).name.startswith('test_'):
+                # Another test module (excluded family/CLI tests or one of the
+                # common tests used as a fixture).  It stays in tests/ and is
+                # importable from there; only non-test helpers move with the
+                # copied tests.
+                continue
+            selected.add(candidate)
+            queue.append(candidate)
+
+    for path in TEST_AUX_SOURCES:
+        if path in available and path not in EXCLUDED_TESTS:
+            selected.add(path)
+    return sorted(selected)
+
+
+def _build_test_module_map(test_paths: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for path in test_paths:
+        stem = PurePosixPath(path).stem
+        pure = PurePosixPath(path)
+        if pure.parent == PurePosixPath('tests'):
+            sources = (f'tests.{stem}',)
+        elif pure.parent == PurePosixPath('tests/helpers'):
+            sources = (f'tests.helpers.{stem}', f'helpers.{stem}')
+        else:  # pragma: no cover - selection only returns known paths
+            continue
+        for source in sources:
+            mapping[source] = stem
+    return mapping
 
 
 def _target_path(path: str) -> str:
@@ -252,6 +673,10 @@ def _source_module(path: str) -> str:
 
 
 def _source_package(path: str) -> str:
+    if path.startswith('tests/'):
+        # Copied tests use absolute imports only; relative imports would be
+        # resolved from this shared test package.
+        return 'tests'
     module = _source_module(path)
     if path.endswith('/__init__.py'):
         return module
@@ -341,16 +766,43 @@ def _apply_edits(source: str, edits: list[_Edit]) -> str:
     return result
 
 
-def _apply_name_rules(value: str) -> str:
+def _apply_name_rules(value: str, *, test_mode: bool = False) -> str:
     value = _GAME_RE.sub(GAME_SPEEDRUN, value)
     for old, new in SHARED_FILE_RENAMES.items():
         value = value.replace(old, new)
+    if test_mode:
+        # Copied tests load the copied command brain, not the original one.
+        value = value.replace('brains/hanjuku/', 'brains/hanjuku_speedrun/')
     return value
 
 
-def _module_literal_target(value: str, module_map: dict[str, str]) -> str | None:
-    """Exact module-name literal replacement (rule 2; never a prefix match)."""
-    return module_map.get(value)
+def _module_lookup(module: str, module_map: dict[str, str]) -> str | None:
+    """Resolve a module name, accepting the ``src.``-prefixed spelling too."""
+    target = module_map.get(module)
+    if target is not None:
+        return target
+    if module.startswith('src.'):
+        target = module_map.get(module[len('src.'):])
+        if target is not None:
+            return 'src.' + target
+    return None
+
+
+def _module_reference_target(value: str, module_map: dict[str, str]) -> str | None:
+    """Rewrite a module reference at a module boundary.
+
+    ``docich.hanjuku_run.event`` becomes
+    ``docich.hanjuku_speedrun.hanjuku_run.event`` while
+    ``docich.hanjuku_runner`` is not touched.  Longest source module wins.
+    """
+    best: str | None = None
+    for source in module_map:
+        if value == source or value.startswith(source + '.'):
+            if best is None or len(source) > len(best):
+                best = source
+    if best is None:
+        return None
+    return module_map[best] + value[len(best):]
 
 
 def _docstring_ids(tree: ast.AST) -> set[int]:
@@ -404,6 +856,8 @@ def _rewrite_strings(
     edits: list[_Edit],
     diagnostics: list[Diagnostic],
     module_map: dict[str, str],
+    *,
+    is_test: bool = False,
 ) -> None:
     docstrings = _docstring_ids(tree)
     fstring_constants = _fstring_constant_ids(tree)
@@ -413,7 +867,7 @@ def _rewrite_strings(
         if id(node) in docstrings:
             continue
 
-        module_target = _module_literal_target(node.value, module_map)
+        module_target = _module_reference_target(node.value, module_map)
         if module_target is not None:
             segment = view.segment(node)
             replacement = (module_target if id(node) in fstring_constants
@@ -425,11 +879,11 @@ def _rewrite_strings(
             ))
             continue
 
-        new_value = _apply_name_rules(node.value)
+        new_value = _apply_name_rules(node.value, test_mode=is_test)
         if new_value == node.value:
             continue
         segment = view.segment(node)
-        new_segment = _apply_name_rules(segment)
+        new_segment = _apply_name_rules(segment, test_mode=is_test)
         if new_segment != segment:
             edits.append(_Edit(
                 view.pos(node.lineno, node.col_offset),
@@ -566,6 +1020,8 @@ def _rewrite_paths(
     path: str,
     edits: list[_Edit],
     diagnostics: list[Diagnostic],
+    *,
+    is_test: bool = False,
 ) -> None:
     parent_map: dict[int, ast.AST] = {}
     for parent in ast.walk(tree):
@@ -594,7 +1050,11 @@ def _rewrite_paths(
 
         if isinstance(node, ast.Attribute) and node.attr == 'parent' and _is_file_path(node):
             count = _parent_count(node)
-            if count < 2:
+            # Copied tests sit one directory deeper, so even a single
+            # ``Path(__file__).parent`` (tests/) has to gain a level.  Source
+            # files keep the existing rule: a lone ``.parent`` may be the
+            # module's own directory and must not move.
+            if count < (1 if is_test else 2):
                 continue
             parent = parent_map.get(id(node))
             if isinstance(parent, ast.Attribute) and parent.attr == 'parent':
@@ -651,7 +1111,7 @@ def _rewrite_import(
         names = []
         changed = False
         for alias in node.names:
-            target = module_map.get(alias.name, alias.name)
+            target = _module_lookup(alias.name, module_map) or alias.name
             if target != alias.name:
                 changed = True
             names.append((target, alias.asname))
@@ -666,9 +1126,10 @@ def _rewrite_import(
         )
 
     # When the module itself is copied, every imported name lives in the copy.
-    if absolute in module_map:
+    absolute_target = _module_lookup(absolute, module_map)
+    if absolute_target is not None:
         names = [(alias.name, alias.asname) for alias in node.names]
-        return [_format_import_from(module_map[absolute], names)], None
+        return [_format_import_from(absolute_target, names)], None
 
     # Otherwise a name may itself be a copied module (``from docich import
     # hanjuku_run``).  Split only when the target module really differs, and
@@ -677,10 +1138,13 @@ def _rewrite_import(
     changed = node.level != 0
     for alias in node.names:
         candidate = f'{absolute}.{alias.name}' if absolute else alias.name
-        if candidate in module_map:
-            target = module_map[candidate]
+        target = _module_lookup(candidate, module_map)
+        if target is not None:
             target_module, _, target_name = target.rpartition('.')
-            entry = (target_module, [(target_name, alias.asname)])
+            if target_module:
+                entry = (target_module, [(target_name, alias.asname)])
+            else:
+                entry = ('', [(target, alias.asname)])
             changed = True
         else:
             entry = (absolute, [(alias.name, alias.asname)])
@@ -691,7 +1155,15 @@ def _rewrite_import(
 
     if not changed:
         return None, None
-    return [_format_import_from(module, names) for module, names in groups], None
+    lines = []
+    for module, names in groups:
+        if module:
+            lines.append(_format_import_from(module, names))
+        else:
+            # ``from tests import test_x`` on a package-less tree: bind the
+            # module directly instead of producing ``from  import``.
+            lines.append('import ' + ', '.join(_format_alias(*name) for name in names))
+    return lines, None
 
 
 # Source patches for dynamic module names that no AST rule can resolve.
@@ -718,6 +1190,46 @@ def _apply_source_patches(path: str, text: str) -> str:
                 f'{old!r}, found {found}')
         text = text.replace(old, new)
     return text
+
+
+def _apply_test_source_patches(path: str, text: str) -> str:
+    for old, new, count in TEST_SOURCE_PATCHES.get(path, ()):
+        found = text.count(old)
+        if found != count:
+            raise ToolError(
+                f'{path}: test source patch expected {count} occurrence(s) of '
+                f'{old!r}, found {found}')
+        text = text.replace(old, new)
+    return text
+
+
+def _conftest_body() -> str:
+    """The copied suite's conftest: skip only the documented exceptions."""
+    lines = [
+        '"""Generated skips for the copied hanjuku-speedrun tests."""',
+        'from __future__ import annotations',
+        '',
+        'import pytest',
+        '',
+        '',
+        'TEST_SKIPS = {',
+    ]
+    for nodeid in sorted(TEST_SKIPS):
+        lines.append(f'    {nodeid!r}: {TEST_SKIPS[nodeid]!r},')
+    lines.extend([
+        '}',
+        '',
+        '',
+        'def pytest_collection_modifyitems(config, items):',
+        '    for item in items:',
+        '        nodeid = item.nodeid.replace("\\\\", "/")',
+        '        for key, reason in TEST_SKIPS.items():',
+        '            if nodeid == key or nodeid.endswith("/" + key):',
+        '                item.add_marker(pytest.mark.skip(reason=reason))',
+        '                break',
+        '',
+    ])
+    return '\n'.join(lines)
 
 
 def _dynamic_module_reviews(tree: ast.AST, path: str) -> list[Diagnostic]:
@@ -759,8 +1271,9 @@ def _insert_header(text: str, sha: str) -> str:
 
 
 def _transform_python(path: str, data: bytes, sha: str,
-                      module_map: dict[str, str]) -> tuple[str, list[Diagnostic],
-                                                          list[Diagnostic]]:
+                      module_map: dict[str, str], *,
+                      is_test: bool = False) -> tuple[str, list[Diagnostic],
+                                                      list[Diagnostic]]:
     try:
         source = data.decode('utf-8')
     except UnicodeDecodeError as exc:
@@ -799,10 +1312,10 @@ def _transform_python(path: str, data: bytes, sha: str,
             text,
         ))
 
-    _rewrite_strings(tree, view, path, edits, diagnostics, module_map)
+    _rewrite_strings(tree, view, path, edits, diagnostics, module_map, is_test=is_test)
     _rewrite_brain_state_dir(tree, view, path, edits)
     if not path.startswith('brains/'):
-        _rewrite_paths(tree, view, path, edits, diagnostics)
+        _rewrite_paths(tree, view, path, edits, diagnostics, is_test=is_test)
 
     result = _apply_edits(source, edits)
     result = _insert_header(result, sha)
@@ -893,15 +1406,19 @@ def _transform_config(data: bytes, sha: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def _build(source_ref: str, repo: Path) -> tuple[Generated, str]:
+def _build(source_ref: str, repo: Path, *, include_tests: bool = True
+           ) -> tuple[Generated, str]:
     sha = _resolve_commit(source_ref, repo)
     paths = _list_tree(sha, repo)
     source_paths = _select_source_paths(paths)
     if not source_paths:
         raise ToolError(f'no Hanjuku sources found at {sha}')
+    test_paths = _select_test_paths(paths, sha, repo) if include_tests else []
 
     module_map = _build_module_map(source_paths)
+    module_map.update(_build_test_module_map(test_paths))
     files: dict[str, bytes] = {}
+    test_files: dict[str, bytes] = {}
     diagnostics: list[Diagnostic] = []
     reviews: list[Diagnostic] = []
 
@@ -925,6 +1442,30 @@ def _build(source_ref: str, repo: Path) -> tuple[Generated, str]:
         else:  # pragma: no cover - selection only returns known paths
             raise ToolError(f'unhandled source path: {path}')
 
+    for path in test_paths:
+        data = _read_blob(sha, path, repo)
+        target = _target_test_path(path)
+        text, file_diagnostics, file_reviews = _transform_python(
+            path, data, sha, module_map, is_test=True,
+        )
+        diagnostics.extend(file_diagnostics)
+        if path in TEST_SOURCE_PATCHES:
+            text = _apply_test_source_patches(path, text)
+        else:
+            # A dynamic module name in a copied test would load the original
+            # package, so it is an unresolved rewrite just like a missing path.
+            diagnostics.extend(file_reviews)
+        test_files[target] = text.encode('utf-8')
+
+    if test_files and TEST_CONFTEST_REL not in test_files:
+        test_files[TEST_CONFTEST_REL] = _insert_header(
+            _conftest_body(), sha,
+        ).encode('utf-8')
+    if test_files and TEST_SUPPORT_REL not in test_files:
+        test_files[TEST_SUPPORT_REL] = _insert_header(
+            TEST_SUPPORT_BODY, sha,
+        ).encode('utf-8')
+
     if SPEEDRUN_INIT_REL not in files:
         files[SPEEDRUN_INIT_REL] = _insert_header(
             SPEEDRUN_INIT_BODY, sha,
@@ -934,16 +1475,25 @@ def _build(source_ref: str, repo: Path) -> tuple[Generated, str]:
         relative: hashlib.sha256(files[relative]).hexdigest()
         for relative in sorted(files)
     }
+    test_hashes = {
+        relative: hashlib.sha256(test_files[relative]).hexdigest()
+        for relative in sorted(test_files)
+    }
     fork = {
         'schema': 1,
         'source_commit': sha,
         'frozen': False,
         'files': file_hashes,
     }
+    if test_hashes:
+        fork['test_files'] = test_hashes
     files[FORK_REL] = (json.dumps(
         fork, ensure_ascii=False, indent=2, sort_keys=True,
     ) + '\n').encode('utf-8')
-    return Generated(files=files, diagnostics=diagnostics, reviews=reviews), sha
+    return Generated(
+        files=files, test_files=test_files,
+        diagnostics=diagnostics, reviews=reviews,
+    ), sha
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -1000,18 +1550,19 @@ def command_generate(args: argparse.Namespace) -> int:
                 'use --force-unfreeze to regenerate',
             )
 
-    generated, sha = _build(args.source, repo)
+    generated, sha = _build(args.source, repo, include_tests=not args.no_tests)
     _report_diagnostics(generated.diagnostics, allow=args.allow_unresolved)
     for review in generated.reviews:
         print(f'review: {review.path}:{review.lineno}: {review.reason}', file=sys.stderr)
 
-    for relative in sorted(generated.files):
+    all_files = generated.all_files()
+    for relative in sorted(all_files):
         if relative == FORK_REL:
             continue
-        _atomic_write(output_root / relative, generated.files[relative])
+        _atomic_write(output_root / relative, all_files[relative])
     # The manifest is the commit point: write it only after every source file.
     _atomic_write(output_root / FORK_REL, generated.files[FORK_REL])
-    print(f'generated {len(generated.files)} files from {sha}')
+    print(f'generated {len(all_files)} files from {sha}')
     return 0
 
 
@@ -1029,25 +1580,26 @@ def command_check(args: argparse.Namespace) -> int:
     if not isinstance(source_ref, str) or not source_ref:
         raise ToolError('FORK.json has no source_commit and --source was not given')
 
-    generated, sha = _build(source_ref, repo)
+    generated, sha = _build(source_ref, repo, include_tests=not args.no_tests)
     _report_diagnostics(generated.diagnostics, allow=args.allow_unresolved)
 
+    expected = generated.all_files()
     differences = []
-    for relative in sorted(generated.files):
+    for relative in sorted(expected):
         path = output_root / relative
         try:
             actual = path.read_bytes()
         except OSError:
             differences.append(relative)
             continue
-        if actual != generated.files[relative]:
+        if actual != expected[relative]:
             differences.append(relative)
     if differences:
         print(f'check: generated copy differs from {sha}:', file=sys.stderr)
         for relative in differences:
             print(f'  {relative}', file=sys.stderr)
         return 1
-    print(f'check: OK ({len(generated.files)} files from {sha})')
+    print(f'check: OK ({len(expected)} files from {sha})')
     return 0
 
 
@@ -1065,6 +1617,8 @@ def _parser() -> argparse.ArgumentParser:
                           help='regenerate even when FORK.json is frozen')
     generate.add_argument('--allow-unresolved', action='store_true',
                           help='keep unresolved rewrites as warnings')
+    generate.add_argument('--no-tests', action='store_true',
+                          help='do not copy tests/ (source-only, for quick tool runs)')
     generate.set_defaults(func=command_generate)
 
     check = subparsers.add_parser('check', help='compare the copy with a fresh build')
@@ -1074,6 +1628,8 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument('--output-root', help='read the copy under this root (default: repository)')
     check.add_argument('--allow-unresolved', action='store_true',
                        help='keep unresolved rewrites as warnings')
+    check.add_argument('--no-tests', action='store_true',
+                       help='compare only the source copy, ignoring tests')
     check.set_defaults(func=command_check)
     return parser
 
