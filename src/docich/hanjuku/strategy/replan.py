@@ -1509,7 +1509,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 except Exception:
                     roster_probe = False
             boss_wave_orders.append({
-                'general': general2, 'target': boss, 'cards': [], 'source': source2,
+                'general': general2, 'target': boss,
+                'cards': [] if probe else _stock_cards(mem, None), 'source': source2,
                 'after': None, 'purpose': 'attack',
                 'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
                           else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe
