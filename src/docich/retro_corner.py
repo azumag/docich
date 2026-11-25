@@ -165,7 +165,11 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
     rotation_has_nethack = False
     if rotation_enabled(g):
         raw = dict(raw)
-        raw["games"] = [c.game for c in load_catalog(g) if c.adapter == "game"] or ["gnurobots"]
+        # manual_only rows (hanjuku-speedrun) are started per corner by GameCornerAdapter,
+        # which narrows ``games`` to the corner's own game; they must not join the
+        # shared lottery list or change its slot interval.
+        raw["games"] = [c.game for c in load_catalog(g)
+                        if c.adapter == "game" and not c.manual_only] or ["gnurobots"]
         rotation_has_nethack = any(c.game == "nethack" for c in load_catalog(g))
 
     cfg = RetroCornerConfig(
