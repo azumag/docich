@@ -8174,7 +8174,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1494-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1498-recall-battle-mode-lost",
-            "hanjuku-chart-v1499-boss-wave-stock-cards",
+            "hanjuku-chart-v1500-boss-wave-stock-cards",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
             "hanjuku-chart-v1482-departure-request-ownership",
