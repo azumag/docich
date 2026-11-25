@@ -1,0 +1,43 @@
+"""docich#5592: 召喚獣メニューの選択回数に上限を設けて月の占有を防ぐ。"""
+from types import SimpleNamespace
+
+from docich.hanjuku.flows import battle_menus as menus
+
+
+def _screen():
+    ally = SimpleNamespace(name='バルーンフィンチ', hp=1000, side='ally')
+    enemy = SimpleNamespace(name='ヒュドラ', hp=1000, side='enemy')
+    return SimpleNamespace(
+        menu_rows=[SimpleNamespace(known=s, y=160 + i * 16)
+                   for i, s in enumerate(['ふくらむ', 'シャウト', 'たまごに もどれ'])],
+        egg_rows=[ally, enemy], menu_cursor=160,
+    )
+
+
+def _mem(choices):
+    return {'battle': {'ally': 'ヴィーナス', 'enemy': 'クイーン',
+                       'monster_menu_choices': choices}}
+
+
+def test_the_total_choice_cap_closes_the_menu(monkeypatch):
+    events = []
+    monkeypatch.setattr(menus, '_record', lambda mem, event, **kw: events.append((event, kw)))
+    mem = _mem(menus.MONSTER_MENU_TOTAL_CHOICES + 1)
+    assert menus.monster_menu_step(_screen(), mem) == [menus.pad('b')]
+    assert any(name == 'monster_menu_total_cap' for name, _ in events)
+
+
+def test_below_the_cap_keeps_the_normal_choice(monkeypatch):
+    monkeypatch.setattr(menus, '_record', lambda mem, event, **kw: None)
+    mem = _mem(menus.MONSTER_MENU_TOTAL_CHOICES)
+    actions = menus.monster_menu_step(_screen(), mem)
+    assert actions == [menus.pad('a')]
+
+
+def test_the_cap_logs_once(monkeypatch):
+    events = []
+    monkeypatch.setattr(menus, '_record', lambda mem, event, **kw: events.append((event, kw)))
+    mem = _mem(menus.MONSTER_MENU_TOTAL_CHOICES + 1)
+    menus.monster_menu_step(_screen(), mem)
+    menus.monster_menu_step(_screen(), mem)
+    assert sum(1 for name, _ in events if name == 'monster_menu_total_cap') == 1
