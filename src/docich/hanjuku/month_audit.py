@@ -49,7 +49,7 @@ LOG_NAME = 'hanjuku_month_audit'
 TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
-# A measured boss-entry message precedes the battle panel; allow the panel a bounded transition window.
+# The measured #5500 entry-to-incident gap was 53s; allow a bounded panel transition.
 BOSS_ENTRY_BATTLE_GRACE_SECONDS = 120
 # An active boss-targeted march is not evidence that the bot has failed to
 # start the battle yet. Match the existing stuck-march expiry boundary.
@@ -2828,15 +2828,15 @@ def _track_boss(runtime, state, after, records, now, on_sealed=None):
         return
     if float(now) - float(current.get('started_at') or now) < BOSS_NO_BATTLE_SECONDS:
         return
+    if _has_live_boss_attack_sortie(mem, phase):
+        current['live_boss_sortie_deferred'] = True
+        return
+    current.pop('live_boss_sortie_deferred', None)
     rows = _read_decisions(runtime, current.get('started_at') or now, now,
                            state.get('identity'))
     _remember_boss_entry(
         current, _boss_entry_evidence(mem, [*(rows or ()), *(records or ())],
                                      phase['chapter'], now), now)
-    if _has_live_boss_attack_sortie(mem, phase):
-        current['live_boss_sortie_deferred'] = True
-        return
-    current.pop('live_boss_sortie_deferred', None)
     if _boss_entry_grace_active(current, now):
         current['boss_entry_deferred'] = True
         return
