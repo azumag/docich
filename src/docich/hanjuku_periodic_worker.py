@@ -135,6 +135,10 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
                       None, 0, None)
         return exc.reason, None, 0, None
     facts = periodic.flatten(request['situation'])
+    focus = request['situation'].get('focus') if isinstance(request['situation'], dict) else None
+    focus = focus.get('category') if isinstance(focus, dict) else None
+    if focus not in periodic.FOCUS_CATEGORIES:
+        focus = None
     recent = list(request['recent_texts'])
     avoid = []
     attempts = 0
@@ -207,7 +211,8 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
         delivered = 'delivery_failed'
     status = _delivery_status(delivered)
     if status == 'enqueued':
-        _write_result(runtime, identity, request['seq'], status, chosen, attempts, role)
+        _write_result(runtime, identity, request['seq'], status, chosen, attempts, role,
+                      focus=focus)
         _log(runtime, {'event': 'deliver_enqueued', 'seq': request['seq'],
                        'attempts': attempts, 'chars': len(chosen),
                        **({'role': role} if role else {})})
@@ -218,13 +223,15 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
     return status, None, attempts, role
 
 
-def _write_result(runtime, identity, seq, status, text, attempts, role):
+def _write_result(runtime, identity, seq, status, text, attempts, role, focus=None):
     value = {'schema': 1, **identity, 'seq': seq, 'at': time.time(), 'status': status,
              'attempts': attempts}
     if isinstance(text, str):
         value['text'] = text
     if role in ROLES:
         value['role'] = role
+    if focus in periodic.FOCUS_CATEGORIES:
+        value['focus'] = focus
     try:
         atomic_write_json(Path(runtime) / periodic.RESULT, value)
     except Exception:

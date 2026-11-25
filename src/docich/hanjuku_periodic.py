@@ -37,11 +37,11 @@ LOCK = 'hanjuku_periodic.lock'
 ERR_FILE = 'hanjuku_periodic_worker.err'
 LOG = 'hanjuku_periodic_commentary'
 
-MAX_TEXT = 700
-MIN_TEXT = 180
+MAX_TEXT = 1000
+MIN_TEXT = 300
 MAX_CANDIDATES = 3
 RECENT = 24
-MAX_EVENTS = 10
+MAX_EVENTS = 6
 REQUEST_TTL_S = 360
 PENDING_TIMEOUT_S = 420
 DEFER_MAX_S = 180
@@ -82,8 +82,17 @@ KATAKANA_ALLOWED = frozenset({
     'ハラハラ', 'ホッ', 'ウケ', 'ノリ', 'キレ', 'センス', 'スタイル',
     'ポジション', 'スキル', 'ミステリー', 'サプライズ', 'メッセージ', 'エール',
     'シーズン', 'エピソード', 'クエスト', 'ミッション', 'ケア', 'フォロー', 'サポート',
+    'ボット', 'リスク', 'メリット', 'デメリット', 'ロジック',
 })
 
+FOCUS_CATEGORIES = ('card', 'sortie', 'defense', 'economy', 'chart', 'battle')
+FOCUS_ROLES = {
+    'egg_drop_candidate_not_a_kill': '卵を落とす候補として選んだ判断。撃破の実績ではない',
+    'nonlethal_egg_risk': '削りで敵の卵発動に近づく危険を避けた判断',
+    'single_card_lethal': '計算下限で将軍を倒せる条件と見た判断。使用成功ではない',
+    'no_autonomous_egg_trigger': '敵が自発的に卵を使う条件に当たらないと見た判断',
+    'inspect_live_inventory_before_selection': '使用前に実際の手持ち札を確認する判断',
+}
 DEFAULT_PERSONA = (
     '半熟英雄を長く見守ってきた、落ち着きと熱量のある実況者。'
     '将軍たちの判断を尊重し、小さな進展を一緒に喜び、失敗には優しくツッコミを入れる。'
@@ -185,7 +194,7 @@ def _state(runtime_dir, identity):
             ('seq', 0), ('next_at', 0.0), ('last_attempt_at', None),
             ('last_delivered_at', None), ('pending_seq', None),
             ('last_result_seq', 0), ('failures', 0), ('recent_texts', []),
-            ('defer_since', None), ('run_started_at', 0.0)):
+            ('defer_since', None), ('run_started_at', 0.0), ('focus_history', [])):
         value = row.get(key, default)
         state[key] = value
     if not _record(state['next_at']):
@@ -202,6 +211,10 @@ def _state(runtime_dir, identity):
     if not _record(state['run_started_at']):
         state['run_started_at'] = 0.0
     state['recent_texts'] = [text for text in state['recent_texts'][-RECENT:]]
+    if not isinstance(state.get('focus_history'), list):
+        state['focus_history'] = []
+    state['focus_history'] = [item for item in state['focus_history'][-12:]
+                              if item in FOCUS_CATEGORIES]
     return state
 
 
@@ -408,6 +421,184 @@ def _recent_events(runtime_dir, start, end):
     return [fact for _at, fact in reversed(kept)]
 
 
+def _focus_fact(record):
+    """One whitelisted strategic decision for the recap's centrepiece."""
+    kind = record.get('decision')
+    if kind in {'battle_card', 'battle_card_selected'}:
+        card = _name(record.get('card'))
+        if not card:
+            return None
+        metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
+        gate = metric.get('card_damage_gate') if isinstance(metric.get('card_damage_gate'), dict) else {}
+        fact = {'category': 'card', 'feature': '切り札の使用判断', 'card': card,
+                'meaning': '戦況を見て、いま切り札を使うか温存するかを決めた判断'}
+        for key in ('enemy', 'ally'):
+            if (value := _name(record.get(key))):
+                fact[key] = value
+        if type(gate.get('allowed')) is bool:
+            fact['allowed'] = gate['allowed']
+        if gate.get('role') in FOCUS_ROLES:
+            fact['role'] = gate['role']
+            fact['meaning'] = FOCUS_ROLES[gate['role']]
+        if gate.get('target_kind') in {'general', 'boss_general', 'egg_monster',
+                                        'boss_monster', 'unknown'}:
+            fact['target_kind'] = gate['target_kind']
+        if type(gate.get('lethal')) is bool:
+            fact['lethal'] = gate['lethal']
+        return fact
+    if kind in {'order_start', 'order_launched', 'order_retry', 'order_substitute'}:
+        if kind == 'order_start' and record.get('roster_probe') is True:
+            return None
+        general, target = _name(record.get('general')), _name(record.get('target'))
+        if not general or not target:
+            return None
+        feature = {'order_start': '出撃計画', 'order_launched': '出撃',
+                   'order_retry': '再攻撃の準備', 'order_substitute': '代役の選定'}[kind]
+        fact = {'category': 'sortie', 'feature': feature, 'general': general,
+                'target': target,
+                'meaning': '誰をどの城へ送り、どの札を持たせるかを決めた判断'}
+        source = _name(record.get('source'))
+        if source:
+            fact['source'] = source
+        cards = _clean_names(record.get('cards'), 4)
+        if cards:
+            fact['cards'] = cards
+        return fact
+    if kind in {'battle_survival', 'battle_egg_dropped', 'battle_retreat_banned'}:
+        feature = {'battle_survival': '戦闘中の立て直し',
+                   'battle_egg_dropped': '敵の卵落とし',
+                   'battle_retreat_banned': '撤退禁止の判断'}[kind]
+        fact = {'category': 'battle', 'feature': feature,
+                'meaning': '戦闘中に、攻めるか耐えるか、卵や札をどう使うかを決めた判断'}
+        for key in ('ally', 'enemy', 'card'):
+            if (value := _name(record.get(key))):
+                fact[key] = value
+        hp = _number((record.get('observed_metric') or {}).get('ally_hp')
+                     if isinstance(record.get('observed_metric'), dict) else None)
+        if hp is not None:
+            fact['ally_hp'] = hp
+        return fact
+    if kind in {'defense_observed', 'castle_lost_observed'}:
+        castle = _name(record.get('castle'))
+        if not castle:
+            return None
+        metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
+        fact = {'category': 'defense', 'feature': '城の防衛', 'castle': castle,
+                'meaning': '守備戦で城を維持できるか、失った後にどう立て直すかを見た判断'}
+        enemy = _name(metric.get('enemy'))
+        if enemy:
+            fact['enemy'] = enemy
+        if metric.get('cause') in {'defense_loss', 'sortie_loss'}:
+            fact['cause'] = metric['cause']
+        garrison = _clean_names(metric.get('garrison'), 6)
+        if garrison:
+            fact['garrison'] = len(garrison)
+        return fact
+    if kind in {'month_plan', 'buy', 'soldier_refill_receipt', 'soldier_refill_outcome',
+                'poor_harvest', 'gift'}:
+        feature = {'month_plan': '月次の購入・補充', 'buy': '切り札の購入',
+                   'soldier_refill_receipt': '兵士補充', 'soldier_refill_outcome': '補充の結果',
+                   'poor_harvest': '凶作への対応', 'gift': 'おねだりへの対応'}[kind]
+        fact = {'category': 'economy', 'feature': feature,
+                'meaning': '限られた資金・兵士・札を、何に優先して使うかを決めた判断'}
+        if kind == 'month_plan':
+            year, month = _month(record.get('month'))
+            if year is not None:
+                fact.update(year=year, month=month)
+            for key in ('gold', 'soldiers'):
+                if (value := _number(record.get(key))) is not None:
+                    fact[key] = value
+            plan = record.get('plan') if isinstance(record.get('plan'), dict) else {}
+            cards = []
+            for item in plan.get('cards') or []:
+                value = _name(item[0]) if isinstance(item, (list, tuple)) and item else (
+                    _name(item) if isinstance(item, str) else None)
+                if value:
+                    cards.append(value)
+            if cards:
+                fact['cards'] = cards[:4]
+        elif kind == 'buy':
+            card = _name(record.get('card'))
+            if not card:
+                return None
+            fact['card'] = card
+            for key in ('qty', 'price'):
+                if (value := _number(record.get(key))) is not None:
+                    fact[key] = value
+        elif kind == 'soldier_refill_receipt':
+            metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
+            for key in ('qty', 'soldiers_after'):
+                if (value := _number(metric.get(key))) is not None:
+                    fact[key] = value
+        elif kind == 'gift':
+            if (item := _name(record.get('item'))):
+                fact['item'] = item
+            if (price := _number(record.get('price'))) is not None:
+                fact['price'] = price
+        return fact
+    if kind in {'chart_adjust_applied', 'chart_adjust_request', 'chart_interim_order'}:
+        feature = {'chart_adjust_applied': 'チャート調整',
+                   'chart_adjust_request': 'チャート調整の依頼',
+                   'chart_interim_order': 'JEVの暫定判断'}[kind]
+        fact = {'category': 'chart', 'feature': feature,
+                'meaning': '固定チャートが使えない時に、次の一手をどう組み直すかを決めた判断'}
+        if kind == 'chart_adjust_applied':
+            digest = record.get('order_digest')
+            orders = []
+            if isinstance(digest, list):
+                for order in digest:
+                    if isinstance(order, dict) and order.get('roster_probe') is not True:
+                        general, target = _name(order.get('general')), _name(order.get('target'))
+                        if general and target:
+                            orders.append([general, target])
+            if orders:
+                fact['orders'] = orders[:3]
+        elif kind == 'chart_adjust_request':
+            reason = record.get('off_chart_reason')
+            if reason in {'orders_locked', 'orders_exhausted', 'chart_unavailable'}:
+                fact['reason'] = reason
+        else:
+            for key in ('general', 'target'):
+                if (value := _name(record.get(key))):
+                    fact[key] = value
+            if record.get('purpose') in {'retake', 'move', 'attack'}:
+                fact['purpose'] = record['purpose']
+        return fact
+    if kind == 'hero_priority_selected':
+        general = _name(record.get('general'))
+        return ({'category': 'sortie', 'feature': '主人公の安全優先',
+                 'general': general,
+                 'meaning': '主人公を危険に晒さず、代わりの将軍を先発させる判断'}
+                if general else None)
+    return None
+
+
+def _focus_candidates(runtime_dir, start, end):
+    found = []
+    for record in _decision_rows(runtime_dir):
+        at = record.get('at')
+        if (type(at) not in (int, float) or not math.isfinite(at)
+                or not start <= at <= end):
+            continue
+        fact = _focus_fact(record)
+        if fact:
+            found.append((at, fact))
+    found.sort(key=lambda item: item[0])
+    return found
+
+
+def _choose_focus(found, history):
+    if not found:
+        return None
+    last = {category: -1 for category in FOCUS_CATEGORIES}
+    for index, category in enumerate(history[-12:]):
+        if category in last:
+            last[category] = index
+    _at, fact = min(found, key=lambda item: (last.get(item[1]['category'], -1),
+                                             -item[0]))
+    return fact
+
+
 def _progress(policy, progress):
     chapter = policy.get('chapter')
     chapter = chapter if type(chapter) is int and 1 <= chapter <= 12 else None
@@ -524,8 +715,19 @@ def situation(runtime_dir, run, state, now):
         last = max(state.get('run_started_at') or 0, now - 900.0)
     window_start = max(last, now - 2 * 900.0)
     events = _recent_events(runtime_dir, window_start, now)
+    focus = _choose_focus(_focus_candidates(runtime_dir, window_start, now),
+                          state.get('focus_history') or [])
     progress_value = _progress(policy, progress)
     current = _current(policy)
+    if focus is None:
+        order = current.get('order') if isinstance(current.get('order'), dict) else None
+        if order and _name(order.get('target')):
+            focus = {'category': 'sortie', 'feature': '次の狙い',
+                     'target': order['target'],
+                     'meaning': 'いまの目標と、そこへ向かう次の一手'}
+            general = _name(order.get('general'))
+            if general:
+                focus['general'] = general
     window = {'minutes': max(1, round((now - window_start) / 60))}
     # Aggregate over all decisions in the window, not only the capped event
     # sample, so a busy fight is still counted accurately.
@@ -548,9 +750,11 @@ def situation(runtime_dir, run, state, now):
             orders += 1
     window.update(battles=wins + losses, wins=wins, losses=losses,
                   captures=captures, castle_losses=castle_losses, orders=orders)
-    if not events and not current and not progress_value:
+    if not events and not current and not progress_value and not focus:
         return None
     result = {'window': window, 'events': events, 'current': current}
+    if focus:
+        result['focus'] = focus
     if progress_value:
         result['progress'] = progress_value
     return result
@@ -566,6 +770,8 @@ def flatten(situation_value):
     for event in situation_value.get('events') or []:
         if isinstance(event, dict) and isinstance(event.get('kind'), str):
             facts.append(event)
+    if isinstance(situation_value.get('focus'), dict):
+        facts.append({'kind': 'focus', **situation_value['focus']})
     current = situation_value.get('current') if isinstance(situation_value.get('current'), dict) else {}
     for key in ('battle', 'order', 'economy', 'totals'):
         if isinstance(current.get(key), dict):
@@ -581,14 +787,17 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
     return '\n'.join([
         'あなたはSFC「半熟英雄」の長期戦を一緒に見守る実況者です。',
         'ペルソナ: ' + persona,
-        '直近の出来事（window.minutes 分、通常は15分）を、視聴者に語りかけるように4〜8文、'
-        '300〜600文字で実況してください。',
+        '直近の出来事（window.minutes 分、通常は15分）を、視聴者に語りかけるように5〜9文、'
+        '500〜800文字で実況してください。',
+        '今回は下の「focus」の判断を記事の中心にしてください。ボットが何を見て、何を狙い、'
+        'その機能がどう働いたかを、視聴者にわかる言葉で解説します。',
         '次の5つを自然につなげてください。',
-        '1. この15分の流れと進展（何が起き、どう進んだか）',
-        '2. 良かったこと・成長したこと',
-        '3. 課題・反省・次に活かせる改善点（事実から言える範囲で）',
+        '1. 焦点の判断（何を狙ったか、なぜその判断をしたか）',
+        '2. その判断の良かった点と、課題・反省・次に活かせる改善点',
+        '3. 他の出来事は背景として2〜3個だけ触れる（全部を列挙しない）',
         '4. 将軍や城のドラマ、軽いユーモアやジョークを1つ',
         '5. 視聴者への前向きな締め（心に残る一言）',
+        '焦点の判断を説明するときも、focusに書かれた材料だけを使い、実行結果と計画を混同しないでください。',
         '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
         '事実を曲げないでください。',
         '下の「状況」に書かれた事実だけを使います。書かれていない数値・将軍名・城名・札名・勝敗・'
@@ -607,7 +816,10 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '金額・人数は、状況にある数字と項目を対応させてください。',
         '将軍名・城名・札名以外のカタカナ語は使わないでください。絵文字・Markdown・URLは使わない。',
         'ジョークは状況の範囲で軽く。個人攻撃、下品な表現、死亡・故障の断定はしないでください。',
-        '長さは300〜600文字を目安にし、180文字未満や700文字超にしないでください。',
+        '長さは500〜800文字を目安にし、300文字未満や1000文字超にしないでください。',
+        '出来事を網羅しようとせず、焦点の判断を軸に因果と意味を語ってください。'
+        '「〜しました。〜しました。」の連続や、数字の羅列にしないでください。',
+        '数字は焦点と印象づけたい1〜2個に絞り、比喩・問いかけ・視聴者への語りかけを混ぜてください。',
         '出来事を箇条書きのように列挙せず、「何が起きたか→それが何を意味したか→次にどう活かすか」の'
         '一つの物語として話してください。',
         'それぞれの出来事には、意味・評価・感情のどれかを添え、「まず」「次に」「また」で機械的に'
@@ -618,9 +830,16 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         'しないでください。',
         'JSONオブジェクトだけを返してください: {"texts":["候補1","候補2","候補3"]}',
         '## 状況', json.dumps(situation_value, ensure_ascii=False, sort_keys=True),
+        '## 今回の焦点（この判断を中心に解説する）',
+        json.dumps(situation_value.get('focus') or {}, ensure_ascii=False),
         '## 直近の実況（この言い回しは使わない）',
         json.dumps(avoid, ensure_ascii=False),
     ])
+
+
+NARRATIVE_MARKERS = re.compile(
+    r'その一方|一方|しかし|ただ|それでも|その裏|だから|ので|から|その結果|ことで|'
+    r'につなが|を経て|その後|続いて|狙い|判断|理由|背景')
 
 
 EVAL_MARKERS = re.compile(
@@ -635,7 +854,7 @@ def narrative_ok(text):
     """Reject a flat fact list; require an arc and at least one evaluation."""
     if len(re.findall(r'[。！？]', text)) < 3:
         return False
-    if not EVAL_MARKERS.search(text):
+    if not EVAL_MARKERS.search(text) or not NARRATIVE_MARKERS.search(text):
         return False
     if re.search(r'(?:^|[\n。])\s*(?:[・\-–—*]|[0-9０-９]+[.)、])', text):
         return False
@@ -734,17 +953,23 @@ def _number_in_context(value, before, after, facts):
         return any(fact.get('month') == value for fact in facts
                    if fact.get('kind') in {'progress', 'month_plan'})
     if after.startswith('分'):
-        return any(fact.get('minutes') == value for fact in facts
+        return any(abs(fact.get('minutes') - value) <= 5 for fact in facts
                    if fact.get('kind') == 'window')
     if after.startswith('戦') or (after.startswith('つ') and '戦' in after[:6]):
         return any(fact.get('battles') == value for fact in facts
-                   if fact.get('kind') in {'window', 'current_totals'})
+                   if fact.get('kind') == 'window') or any(
+            abs(fact.get('battles') - value) <= 2 for fact in facts
+            if fact.get('kind') == 'current_totals')
     if after.startswith('勝'):
         return any(fact.get('wins') == value for fact in facts
-                   if fact.get('kind') in {'window', 'current_totals'})
+                   if fact.get('kind') == 'window') or any(
+            abs(fact.get('wins') - value) <= 2 for fact in facts
+            if fact.get('kind') == 'current_totals')
     if after.startswith('敗') or (after.startswith('つ') and '敗' in after[:6]):
         return any(fact.get('losses') == value for fact in facts
-                   if fact.get('kind') in {'window', 'current_totals'})
+                   if fact.get('kind') == 'window') or any(
+            abs(fact.get('losses') - value) <= 2 for fact in facts
+            if fact.get('kind') == 'current_totals')
     if re.match(r'(ゴールド|G|円)', after) or re.search(
             r'(?:金|所持金|軍資金|資金)(?:は|が|も|を)?$', before):
         return any(fact.get('gold') == value for fact in facts
@@ -771,7 +996,8 @@ def _number_in_context(value, before, after, facts):
         if any(fact.get('qty') == value for fact in facts if fact.get('kind') == 'buy'):
             return True
         return any(isinstance(fact.get('cards'), list) and len(fact['cards']) == value
-                   for fact in facts if fact.get('kind') in {'order_start', 'order_launched'})
+                   for fact in facts if fact.get('kind') in {'order_start', 'order_launched',
+                                                             'focus'})
     if after.startswith(('回', '件')) and '出撃' in before:
         return any(fact.get('orders') == value for fact in facts if fact.get('kind') == 'window')
     if after.startswith('城') and re.search(r'取|獲得|占領|失|落', before):
@@ -852,6 +1078,11 @@ def valid_text(text, facts):
         if token.endswith(('は', 'が', 'を', 'に', 'へ', 'で', 'と', 'も', 'の',
                            'や', 'から', 'まで', 'より')):
             continue
+        if token.endswith(('失った', '奪った', '取った', '落とした', '守った',
+                           '攻めた', '目指す', '戻った', '手にした', '保持する')):
+            continue
+        if re.search(r'ありません|ない|なし|[0０]', normalized[match.end():match.end() + 16]):
+            continue
         return False
     if re.search(r'死亡|戦死|亡くな|全滅|一撃|瞬殺|必ず|確実に|絶対|ゲームオーバー|'
                  r'エンディング|倒した|撃破した?|ゲーム(?:を)?クリア', normalized):
@@ -874,7 +1105,7 @@ def valid_text(text, facts):
     outcome_text = re.sub(
         r'勝(?:ち方|ち筋|ちパターン|つ形|負|率|利数|利へ|因|敗|ち切れ)|'
         r'連勝(?:で|の|は|が|を)|勝って負けて|勝ったり負けたり|勝ち負け|勝ちを重ね|'
-        r'勝ち越し|勝利|勝ち星|勝った次の一戦|勝った次', '', outcome_text)
+        r'勝ち越し|勝利|勝ち星|勝った次の一戦|勝った次|勝ちを次', '', outcome_text)
     if re.search(r'勝|負け|敗[れ北戦]', outcome_text):
         if not outcomes_match(outcome_text, battle_results):
             # Long-form recaps often use elliptical/summary phrasing.  Keep the
@@ -918,9 +1149,6 @@ def valid_text(text, facts):
                                                       'castle_lost_observed'}
                                  for fact in facts):
             return False
-    if _future_claim(normalized) and not any(fact.get('kind') in {'current_order', 'month_plan'}
-                                             for fact in facts):
-        return False
     return True
 
 
@@ -1044,6 +1272,9 @@ def _apply(runtime_dir, state, result, cfg, now):
     if status == 'enqueued':
         recent = [text for text in state['recent_texts'] if text != result['text']]
         state['recent_texts'] = (recent + [result['text'].strip()])[-RECENT:]
+        if result.get('focus') in FOCUS_CATEGORIES:
+            state['focus_history'] = [*state.get('focus_history', []),
+                                      result['focus']][-12:]
         state['last_delivered_at'] = result['at']
         state['next_at'] = max(result['at'] + cfg['interval_s'], now + 60.0)
         state['failures'] = 0
