@@ -102,7 +102,8 @@ def test_the_missed_card_record_carries_the_battle_identity(monkeypatch):
     # #5398 was filed as 戦闘: 不明 / 城: 不明 / 画面: None because the emit
     # omitted the battle identity the month audit projects.
     mem = memory()
-    mem['battle'].update(planned_cards=['ノリウツール'], summon_card_scroll=3)
+    mem['battle'].update(planned_cards=['ノリウツール'],
+                         summon_card_scroll=B.SUMMON_CARD_SCROLL_LIMIT)
     monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
     monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
     B.egg_battle_step(screen(text='こうげき'), mem)
@@ -212,6 +213,13 @@ def test_scroll_exhaustion_gets_one_extra_bounded_reveal_attempt(monkeypatch):
     # available, the initial summon policy may legitimately choose the egg.
     mem['egg_battle'] = True
     mem['egg_action'] = 'attack'
+    mem['egg_needed'] = True
+    # Keep the already-selected melee path while isolating the scroll budget.
+    # Unknown combat strength would correctly promote this to egg use.
+    monkeypatch.setattr(B, '_own_egg_needed', lambda *a, **k: (True, {
+        'ally_combat': 10, 'enemy_combat': 10,
+        'ally_melee_score': 100, 'enemy_melee_score': 50,
+    }))
 
     assert B.egg_battle_step(
         screen(text='こうげきもうこうげきたまごをつかう'), mem) == [B.pad('down')]
