@@ -4649,3 +4649,40 @@ def test_summon_menu_does_not_file_card_miss_before_attack_cursor_is_read():
     assert not state['policy']['battle'].get('boss_card_missed_noted')
     assert not any(row.get('decision') == 'battle_boss_card_missed'
                    for row in state.get('_records', []))
+
+
+def test_funded_duel_is_declined_with_ikan():
+    # Owner 2026-11-25: with 500G+ the 果し合い is declined (いかんッ!) to lower
+    # the danger; below the floor the duel is accepted as before.
+    c = Canvas()
+    c.text(48, 15, '3ねん 5のつき 600G')
+    c.text(24, 183, 'いって ごあいて ねがえぬか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 193)
+    mem = {}
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_duel_funded'
+
+    c2 = Canvas()
+    c2.text(48, 15, '3ねん 5のつき 100G')
+    c2.text(24, 183, 'いって ごあいて ねがえぬか?')
+    c2.text(184, 183, 'うむッ!')
+    c2.text(184, 199, 'いかんッ!')
+    c2.hand(162, 177)
+    mem2 = {}
+    assert policy.yes_no_step(parse(c2.frame()), mem2)[0]['buttons'] == ['a']
+    assert mem2['_records'][-1]['strategy_variant'] == 'accept_duel'
+
+
+def test_ample_army_duel_is_declined_with_ikan():
+    # Owner 2026-11-25: with 20+ generals the 果し合い is avoided as well.
+    c = Canvas()
+    c.text(48, 15, '3ねん 5のつき 100G')
+    c.text(24, 183, 'いって ごあいて ねがえぬか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 193)
+    mem = {'country_general_count': {'count': 20}}
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_duel_army'
