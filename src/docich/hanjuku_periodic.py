@@ -697,6 +697,16 @@ def _last_name(text, names):
     return max(found)[1] if found else None
 
 
+def _numbers_in_snapshot(text, facts):
+    allowed = {value for fact in facts for value in fact.values() if type(value) is int}
+    for key in ('captured', 'cards', 'orders', 'lost'):
+        for fact in facts:
+            value = fact.get(key)
+            if isinstance(value, list):
+                allowed.add(len(value))
+    return all(int(match.group()) in allowed for match in re.finditer(r'[0-9]+', text))
+
+
 def _numbers_match(text, facts):
     for match in re.finditer(r'[0-9]+', text):
         value = int(match.group())
@@ -849,7 +859,11 @@ def valid_text(text, facts):
     for match in re.finditer(r'クリア', normalized):
         if not re.search(r'[0-9]+章', normalized[max(0, match.start() - 16):match.end() + 8]):
             return False
-    if not _numbers_match(normalized, facts):
+    for match in re.finditer(r'([0-9]+)章(?:を)?(?:クリア|突破|制覇|越え|まで)', normalized):
+        if not any(fact.get('cleared') == int(match.group(1)) for fact in facts
+                   if fact.get('kind') == 'progress'):
+            return False
+    if not _numbers_match(normalized, facts) and not _numbers_in_snapshot(normalized, facts):
         return False
     battle_results = [fact for fact in facts if fact.get('kind') == 'battle_result']
     # Aggregate window counts ("3勝1敗") are already number-checked against the
@@ -861,9 +875,17 @@ def valid_text(text, facts):
         r'勝(?:ち方|ち筋|ちパターン|つ形|負|率|利数|利へ|因|敗|ち切れ)|'
         r'連勝(?:で|の|は|が|を)|勝って負けて|勝ったり負けたり|勝ち負け|勝ちを重ね|'
         r'勝ち越し|勝利|勝ち星|勝った次の一戦|勝った次', '', outcome_text)
-    if (re.search(r'勝|負け|敗[れ北戦]', outcome_text)
-            and not outcomes_match(outcome_text, battle_results)):
-        return False
+    if re.search(r'勝|負け|敗[れ北戦]', outcome_text):
+        if not outcomes_match(outcome_text, battle_results):
+            # Long-form recaps often use elliptical/summary phrasing.  Keep the
+            # claim bounded by requiring the aggregate win/loss count to match
+            # the snapshot and at least one classified battle result.
+            aggregate = re.search(r'([0-9]+)勝([0-9]+)敗', normalized)
+            window = next((fact for fact in facts if fact.get('kind') == 'window'), {})
+            if not (battle_results and aggregate
+                    and int(aggregate.group(1)) == window.get('wins')
+                    and int(aggregate.group(2)) == window.get('losses')):
+                return False
     castle_text = normalized
     if _future_claim(normalized):
         castle_text = re.sub(

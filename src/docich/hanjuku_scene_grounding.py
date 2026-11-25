@@ -132,9 +132,11 @@ def _castle_results_match(text, facts, *, allow_unnamed=False):
         kind = ('castle_lost_observed' if re.match(r'奪われ|失|陥落|落城', match.group())
                 else 'castle_owned_observed')
         before = re.split(r'[、,。！？]', text[:match.start()])[-1]
-        after = text[match.end():match.end() + 6]
+        after = text[match.end():match.end() + 16]
         if re.match(r'(?:た|て|い)?城[もはが]?[0０]', after):
             continue  # "失った城も0" is a count, not an observed loss
+        if re.search(r'ありません|ない|なし', after[:12]):
+            continue  # "占領も喪失もありません" is a zero claim
         names = _mentions(before, castles)
         if not names:
             # A long narrative may say "城を失って" without repeating the name.
