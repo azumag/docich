@@ -368,6 +368,7 @@ KEY_OWNERSHIP = {
     'general_list_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 将軍リスト画面ホールド
     'general_list_scan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 将軍リスト走査手順状態
     'held_phase': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 保留フェーズ記録の自己消去型
+    'status_panel_holds': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城メニューのステータスパネル連続保留数
     'hero_broken_sortie_cancel': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 主人公破損出撃キャンセル手順状態
     'hero_broken_sortie_gates': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上ゲート
     'hero_select_miss': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 主人公選択ミス
