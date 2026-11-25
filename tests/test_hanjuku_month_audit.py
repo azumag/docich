@@ -2682,3 +2682,24 @@ def test_stock_with_a_safe_card_still_reports_the_empty_kit(runtime_dir):
                   now=1000, on_sealed=lambda record: None)
     records = audit.load_incidents(runtime_dir)
     assert [r['kind'] for r in records] == ['sortie_without_cards']
+
+def test_a_kit_dropped_by_the_screen_is_not_a_missed_carry(runtime_dir):
+    # owner 2026-11-26 (#5510): 選択画面が札の不在を証明して card_dropped で
+    # 落とした空キットは「機会損失」ではない。
+    value = _cards_state(stock={'ノリウツール': 96}, cards=['ノリウツール'])
+    _measured_empty_kit(value)
+    dropped = {'decision': 'card_dropped', 'chart_step': 'A:1:M1',
+               'dropped': ['ノリウツール'], 'at': 999}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_launch_record(), dropped], now=1000,
+                  on_sealed=lambda record: None)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_an_unexplained_empty_kit_is_still_reported(runtime_dir):
+    value = _cards_state(stock={'ノリウツール': 96}, cards=['ノリウツール'])
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=lambda record: None)
+    assert [r['kind'] for r in audit.load_incidents(runtime_dir)] == ['sortie_without_cards']
+

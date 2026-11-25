@@ -2536,6 +2536,17 @@ def _sortie_carried_cards(mem, step, record, records=None):
     # Preserve None (unobserved) separately from [] (measured empty).
     return carried if measured or carried else None
 
+def _dropped_cards_for_step(records, step):
+    """Cards the selection screen proved absent and the sortie dropped."""
+    dropped = []
+    for row in records or ():
+        if (not isinstance(row, dict) or row.get('decision') != 'card_dropped'
+                or row.get('chart_step') != step):
+            continue
+        dropped.extend(_card_names(row.get('dropped')))
+    return dropped
+
+
 def _sortie_cards_event(record, mem, records=None):
     if not isinstance(record, dict) or record.get('decision') not in LAUNCH_DECISIONS:
         return None
@@ -2574,6 +2585,19 @@ def _sortie_cards_event(record, mem, records=None):
     carried = _sortie_carried_cards(mem, step, record, records)
     if carried:
         return None
+    # owner 2026-11-26 (#5510): a card the selection screen proved absent is
+    # dropped by design (bounded readings -> card_dropped) and the sortie
+    # leaves without it. That is not a missed opportunity, so an empty kit
+    # fully explained by those drops is not filed.
+    planned = _card_names(order.get('cards'))
+    dropped = _dropped_cards_for_step(records, step) if planned else []
+    if planned and dropped:
+        remaining = list(planned)
+        for name in dropped:
+            if name in remaining:
+                remaining.remove(name)
+        if not remaining:
+            return None
     carried_observed = carried is not None
     kind = 'sortie_without_cards' if carried_observed else 'sortie_kit_unconfirmed'
     return {
