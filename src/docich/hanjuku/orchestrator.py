@@ -1257,6 +1257,33 @@ def y_jump_close_settle_step(screen, mem, generic):
 BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
 
 
+EMPTY_DIALOGUE_HOLD_LIMIT = 6
+
+
+def empty_dialogue_advance(screen, mem, phase, actions):
+    """Advance a dialogue/event beat whose text box has not rendered yet.
+
+    Measured chapter 1: after a battle the dialogue opened with an empty box
+    (only a quote glyph); the parser saw `unknown`, legacy planned no input and
+    the bot held until the screen watchdog. Six consecutive empty-box frames
+    get a single A, bounded so a real choice screen is untouched.
+    """
+    if (actions or phase not in ('dialogue', 'event', 'concert')
+            or screen.kind not in ('unknown', 'text')
+            or screen.hand is not None):
+        mem.pop('empty_dialogue_holds', None)
+        return None
+    n = int(mem.get('empty_dialogue_holds') or 0) + 1
+    if n < EMPTY_DIALOGUE_HOLD_LIMIT:
+        mem['empty_dialogue_holds'] = n
+        return None
+    mem['empty_dialogue_holds'] = 0
+    decision_log._record(mem, 'empty_dialogue_advance', screen=screen.kind, phase=phase,
+                         observed_metric={'holds': n},
+                         reason='会話/イベントのテキストが未描画のまま無入力が続くため、Aで1回だけ進める')
+    return [pad('a')]
+
+
 STATUS_PANEL_LABELS = ('ステータス', 'てきぜんいん', 'ぜんいん', 'しょうぐん')
 STATUS_PANEL_HOLD_LIMIT = 3
 
@@ -2437,6 +2464,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         actions = menu_escape
     if actions is None:
         actions=legacy_actions(frame,phase,updated,mem)
+        empty_adv = empty_dialogue_advance(screen, mem, phase, actions)
+        if empty_adv is not None:
+            actions = empty_adv
         a_escape = phase_a_escape_step(mem, phase, kind, screen.text, actions, step=step)
         if a_escape is not None:
             actions = a_escape

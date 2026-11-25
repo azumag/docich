@@ -1312,8 +1312,14 @@ def _melee_step(mem, cur):
     # lower HP is only a candidate, including True flags saved by older bots.
     # The existing HP/count budgets still end a passive hold boundedly.
     duel = cur.get('event_duel') is True
+    # The ally clash gauge's dim window is the game's own "press now" signal
+    # (the duel path already uses it). Holding through it spends HP while the
+    # egg-risk flag waits for a front calibration that never arrives.
+    ally_gauge_now = (cur.get('clash_gauge') or {}).get('ally')
+    dim_window = (isinstance(ally_gauge_now, dict)
+                  and ally_gauge_now.get('state') == 'dim')
     safe = (triggers.has_egg is False or triggers.clash_position is False
-            or charted or forced or probe or duel)
+            or charted or forced or probe or duel or dim_window)
     cur['melee_forced'] = forced
     # A probe is in `safe`, so melee_holds stays zero.  Only probe_ticks is
     # incremented below; inventory rechecks are not copied into either count.
