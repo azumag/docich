@@ -98,6 +98,61 @@ def test_a_message_panel_does_not_spend_the_card_scroll_budget():
     assert not any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
 
 
+def test_an_exhausted_card_scroll_re_arms_after_a_gap():
+    # card_miss #5600: the bounded reveal ran its three downs and the row
+    # never read -- one eaten press or a half-drawn frame is not proof the
+    # row is absent, so a carried card earns another bounded look.
+    mem = memory()
+    mem['battle'].update(planned_cards=['エンジェリン'], summon_card_scroll=3,
+                         summon_card_exhausted_tick=0)
+    acts = B.egg_battle_step(screen(text='こうげきもうこうげき'), mem)
+    assert acts == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    assert mem['battle']['summon_card_rearms'] == 1
+    assert any(r['decision'] == 'battle_summon_card_rearm' for r in mem['_records'])
+
+
+def test_a_fresh_scroll_exhaustion_marks_evidence_before_attacking(monkeypatch):
+    mem = memory()
+    mem['battle'].update(planned_cards=['エンジェリン'], summon_card_scroll=3)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    acts = B.egg_battle_step(screen(text='こうげきもうこうげき'), mem)
+    assert acts == [B.pad('a')]
+    # The first exhaustion only arms the re-arm gap; the turn still attacks.
+    assert mem['battle']['summon_card_exhausted_tick'] == 100
+    assert not mem['battle'].get('summon_card_rearms')
+    assert mem['battle']['summon_card_scroll_out'] is True
+    assert any(r['decision'] == 'battle_summon_card_exhausted' for r in mem['_records'])
+    assert any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+
+
+def test_the_card_rearm_stops_at_its_limit(monkeypatch):
+    mem = memory()
+    mem['battle'].update(planned_cards=['エンジェリン'], summon_card_scroll=3,
+                         summon_card_rearms=B.SUMMON_CARD_REARM_LIMIT,
+                         summon_card_exhausted_tick=0)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    acts = B.egg_battle_step(screen(text='こうげきもうこうげき'), mem)
+    assert acts == [B.pad('a')]
+    assert not any(r['decision'] == 'battle_summon_card_rearm' for r in mem['_records'])
+
+
+def test_an_opened_card_resets_the_scroll_and_rearm_budget(monkeypatch):
+    mem = memory()
+    mem['battle'].update(planned_cards=['エンジェリン'], summon_card_scroll=2,
+                         summon_card_rearms=2, summon_card_exhausted_tick=50)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
+    battle = mem['battle']
+    assert battle['summon_card_scroll'] == 0
+    assert battle['summon_card_rearms'] == 0
+    assert 'summon_card_exhausted_tick' not in battle
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
 def test_the_missed_card_record_carries_the_battle_identity(monkeypatch):
     # #5398 was filed as 戦闘: 不明 / 城: 不明 / 画面: None because the emit
     # omitted the battle identity the month audit projects.
@@ -156,6 +211,60 @@ def test_selected_or_announcement_card_flow_is_not_reopened():
     B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem)
     assert battle['card_flow']['stage'] == 'announce'
     assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
+def test_an_interrupted_defense_kit_read_is_closed_before_reveal():
+    # A read-only kit probe cannot advance on the summon menu either.  Its
+    # pre-summon purpose is already gone, so close it fail-closed and let the
+    # real carried card reveal instead of attacking past it.
+    mem = memory()
+    battle = mem['battle']
+    battle.update(planned_cards=['エンジェリン'],
+                  card_flow={'card': None, 'stage': 'menu', 'read_kit': True})
+    assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('down')]
+    assert battle['card_flow'] is None
+    assert battle['defense_egg_kit_read']['read_done'] is True
+    assert any(r['decision'] == 'battle_defense_kit_read_unread' for r in mem['_records'])
+    assert any(r['decision'] == 'battle_summon_card_scroll' for r in mem['_records'])
+
+
+def test_a_frozen_announce_flow_holds_attack_then_releases(monkeypatch):
+    # docich#5612: after one summon-menu card open (scroll counter reset to
+    # 0), a selected-but-unconfirmed card flow can be left frozen when the
+    # card list is replaced.  The remaining carried card must not be skipped
+    # by a melee confirmation during the bounded misread grace.
+    mem = memory()
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ミックミー', 'ノリウツール'],
+        'cards_selected': ['ミックミー'],
+        'summon_card_scroll': 0,
+        'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                      'selection_planned': True},
+    })
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    for _ in range(B.SUMMON_CARD_FLOW_STALL_LIMIT - 1):
+        assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == []
+        assert battle['card_flow']['stage'] == 'announce'
+        assert not any(r['decision'] == 'battle_egg_general_attack'
+                       for r in mem['_records'])
+        assert not any(r['decision'] == 'battle_boss_card_missed'
+                       for r in mem['_records'])
+
+    assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('down')]
+    assert battle['card_flow'] is None
+    assert battle['cards_unclassified'] == ['ミックミー']
+    assert not battle.get('summon_card_flow_stall')
+    assert any(r['decision'] == 'battle_card_unclassified'
+               and r.get('card') == 'ミックミー' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_boss_card_missed'
+                   for r in mem['_records'])
+
+    assert B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem) == [B.pad('a')]
+    assert battle['card_flow']['card'] == 'ノリウツール'
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
 
 
 def test_boss_only_card_is_not_reported_as_missed_before_boss_entry(monkeypatch):
