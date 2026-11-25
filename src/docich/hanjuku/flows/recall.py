@@ -2531,6 +2531,9 @@ def _recall_dispatch_step(screen, mem, state):
         # exists (docich#5250).
         verification = {
             **state, 'status': status, 'interrupted': interrupted,
+            'input_sent': bool(state.get('input_sent')),
+            'picker_closed': bool(state.get('picker_closed')),
+            'scene_covered': bool(state.get('scene_covered')),
             **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
         }
         # A cliff escape uses the same bounded dispatch receipt, but it must
