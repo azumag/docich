@@ -26,7 +26,7 @@ class TitleContextTests(unittest.TestCase):
 
     def test_hanjuku_clear_and_next_goal_are_distinct(self):
         (self.root / 'hanjuku_predictions.json').write_text(json.dumps({'schema':1,'best_cleared':1,'secret':'not-public'}))
-        self.assertEqual(self.phrase('hanjuku-hero'),'第1話突破の記録から、第2話クリアへ再挑戦')
+        self.assertEqual(self.phrase('hanjuku-hero'),'第1話突破の記録から、第2話へ再挑戦。私に計画あり')
 
     def test_invalid_counts_and_schema(self):
         for data in ({'schema':True,'best_cleared':2},{'schema':1,'best_cleared':True},{'schema':1,'best_cleared':13},{'schema':1,'best_cleared':'2'}):
@@ -65,7 +65,7 @@ class IntegratedTitleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);g=SimpleNamespace(state_dir=root)
             with patch('docich.trading.soren_output.resolve_soren_root',return_value=root):
-                self.assertEqual(viewer_title_args('hanjuku-hero',g),['--activity','半熟英雄','--strategy','AIが城を攻略！ 将軍とエッグモンスターで物語の先へ'])
+                self.assertEqual(viewer_title_args('hanjuku-hero',g),['--activity','半熟英雄','--strategy','私が将軍と卵で城を攻略。次はどの城に赤い旗を立てるか'])
 
     def test_verified_generation_varies_same_record_without_cross_game_state(self):
         from docich.stream_title_context import progress_phrase
@@ -116,6 +116,18 @@ class LiveProgressTests(TitleContextTests):
         self.assertIn('記録',self.phrase('hanjuku-hero'))
         self.assertNotIn('この冒険',self.phrase('hanjuku-hero'))
 
+    def test_live_phrases_keep_the_persona_and_the_budget(self):
+        runtime = self.live()
+        progress = runtime/'hanjuku_progress.json'
+        for cleared in range(0, 13):
+            data = json.loads(progress.read_text()); data['cleared'] = cleared
+            progress.write_text(json.dumps(data))
+            phrase = self.phrase('hanjuku-hero')
+            with self.subTest(cleared=cleared):
+                self.assertIn('私', phrase)
+                self.assertNotIn('僕', phrase)
+                self.assertLessEqual(len(phrase), 40)
+
     def test_switch_and_redirected_runtime_reject_live_facts(self):
         runtime=self.live()
         moved=runtime.with_name('other');runtime.rename(moved);runtime.symlink_to(moved)
@@ -134,3 +146,45 @@ class LiveProgressTests(TitleContextTests):
         run['observed_at'] = 1
         (runtime/'hanjuku_run.json').write_text(json.dumps(run))
         self.assertIsNone(hanjuku_progress_marker(self.root))
+
+
+class PersonaVoiceTests(unittest.TestCase):
+    """Viewer titles speak in the on-screen persona, within title budgets."""
+
+    def test_challenge_phrases_follow_the_on_screen_persona(self):
+        from docich.stream_title_context import CHALLENGES, challenge_phrase
+        for game, phrase in CHALLENGES.items():
+            with self.subTest(game=game):
+                self.assertEqual(phrase, phrase.strip())
+                self.assertNotIn('\n', phrase)
+                self.assertLessEqual(len(phrase), 40)
+                if game == 'soren91':
+                    self.assertIn('僕', phrase)
+                    self.assertNotIn('私', phrase)
+                else:
+                    self.assertIn('私', phrase)
+                    self.assertNotIn('僕', phrase)
+        fallback = challenge_phrase('unknown-game')
+        self.assertIn('私', fallback)
+        self.assertLessEqual(len(fallback), 40)
+
+    def test_record_phrases_keep_the_persona_and_the_budget(self):
+        from docich.stream_title_context import progress_phrase
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'best_score.txt').write_text('999999')
+            for generation in (0, 1, 2):
+                (root / 'game_switch.json').write_text(json.dumps(
+                    {'phase': 'ready', 'active': {'game': 'sorengame', 'generation': generation}}))
+                phrase = progress_phrase('sorengame', root, root)
+                with self.subTest(game='sorengame', generation=generation):
+                    self.assertIn('私', phrase)
+                    self.assertNotIn('僕', phrase)
+                    self.assertLessEqual(len(phrase), 40)
+            for best in range(1, 13):
+                (root / 'hanjuku_predictions.json').write_text(
+                    json.dumps({'schema': 1, 'best_cleared': best}))
+                phrase = progress_phrase('hanjuku-hero', root, root)
+                with self.subTest(game='hanjuku-hero', best=best):
+                    self.assertIn('私', phrase)
+                    self.assertLessEqual(len(phrase), 40)
