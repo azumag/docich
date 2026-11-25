@@ -1632,10 +1632,49 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1434-camp-dispatch-evidence'
     state['bot_version']='hanjuku-chart-v1435-recall-dispatch-unattributed'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1435-recall-dispatch-unattributed'
+    state['bot_version']='hanjuku-chart-v1442-adjusted-plan-stock-cards'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1442-adjusted-plan-stock-cards'
     state['bot_version']='hanjuku-chart-v1438-chikujou-castle-width-fold'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    for marker in (
+        'hanjuku-chart-v1460-password-entered-field',
+        'hanjuku-chart-v1461-melee-only-ugokazaru',
+        'hanjuku-chart-v1462-status-panel-owner-guard',
+        'hanjuku-chart-v1463-battle-menu-scrolled-bottom',
+        'hanjuku-chart-v1464-status-panel-owner-followups',
+        'hanjuku-chart-v1465-unowned-screen-review-guards',
+        'hanjuku-chart-v1466-status-panel-owner-name',
+        'hanjuku-chart-v1467-status-panel-owner-unreadable-egg',
+        'hanjuku-chart-v1469-recall-yjump-goal',
+        'hanjuku-chart-v1470-ch4-site-bounded-wait',
+        'hanjuku-chart-v1473-hidden-season-site-priority',
+        'hanjuku-chart-v1474-departure-request-ownership',
+        'hanjuku-chart-v1476-site-cursor-shape',
+        'hanjuku-chart-v1480-ch4-boss-dispatch',
+        'hanjuku-chart-v1478-site-nearest-source',
+        'hanjuku-chart-v1472-status-panel-owner-unreadable-skip',
+        'hanjuku-chart-v1477-boss-camp-recall',
+        'hanjuku-chart-v1483-ch12-boss-staging',
+        'hanjuku-chart-v1486-ch4-southern-kings',
+        'hanjuku-chart-v1487-ch4-southern-kings',
+        'hanjuku-chart-v1478-departure-request-ownership',
+        'hanjuku-chart-v1481-boss-camp-recall-followup',
+        'hanjuku-chart-v1482-departure-request-ownership',
+        'hanjuku-chart-v1484-sortie-kit-evidence-confidence',
+        'hanjuku-chart-v1490-fort-recall-picker-owner-bounded',
+        'hanjuku-chart-v1491-card-abandon-retreat-ban',
+        'hanjuku-chart-v1492-boss-only-card-miss-eligibility',
+        'hanjuku-chart-v1493-card-open-bounded',
+        'hanjuku-chart-v1494-card-open-bounded-audit',
+        'hanjuku-chart-v1493-recall-scene-covered-dispatch',
+        'hanjuku-chart-v1495-recall-scene-covered-dispatch-audit',
+        'hanjuku-chart-v1498-recall-battle-mode-lost',
+        'hanjuku-chart-v1500-boss-wave-stock-cards',
+    ):
+        state['bot_version'] = marker
+        assert module._project_corner_state(state)['bot_version'] == marker
     assert 'SECRET' not in json.dumps(output)
     state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
                               wins=True,gold='12')
@@ -1860,6 +1899,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1373-egg-receipt-settle",
                  "hanjuku-chart-v1375-boss-dispatch-guarantee",
                  "hanjuku-chart-v1392-dispatch-starve-measure",
+                 "hanjuku-chart-v1393-roster-due-consume",
                  "hanjuku-chart-v1397-recall-map-hold",
                  "hanjuku-chart-v1398-egg-retry-on-hp-loss",
                  "hanjuku-chart-v1399-recall-map-hold",
@@ -1874,6 +1914,8 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1451-defense-wait-probe",
                  "hanjuku-chart-v1452-battle-card-row-evidence",
                  "hanjuku-chart-v1453-attack-route-revalidation",
+                 "hanjuku-chart-v1464-verified-month-blind-nav",
+                 "hanjuku-chart-v1456-live-boss-sortie-audit",
                  "hanjuku-chart-v1402-sortie-audit-confidence",
                  "hanjuku-chart-v1415-merchant-strong-first",
                  "hanjuku-chart-v1416-card-miss-after-use",
@@ -1882,7 +1924,9 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1419-hero-move-backoff",
                  "hanjuku-chart-v1420-chikujou-reserve-check",
                  "hanjuku-chart-v1424-sortie-measured-kit",
+                 "hanjuku-chart-v1442-adjusted-plan-stock-cards",
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
+                 "hanjuku-chart-v1485-camp-watch-identity-subset",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
@@ -3189,8 +3233,35 @@ class RotationTimerUnitProjectionTests(unittest.TestCase):
         self.assertIs(timer["active"], True)
         self.assertIs(timer["enabled"], True)
         self.assertIs(timer["legacy_alias"], True)
+        self.assertEqual(
+            set(timer["system_legacy"]),
+            {"service_active", "service_enabled", "timer_active", "timer_enabled"},
+        )
+        self.assertIs(timer["duplicate_owner"], True)
         self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
         self.assertNotIn(str(self.base), json.dumps(result))
+
+    def test_system_legacy_owner_projection_exposes_only_booleans(self):
+        module = self.module
+
+        def active(unit, scope="user"):
+            if scope == "system":
+                return unit == module.SYSTEM_LEGACY_ROTATION_SERVICE
+            return True
+
+        with mock.patch.object(module, "_unit_is_active", side_effect=active), \
+             mock.patch.object(module, "_unit_is_enabled", return_value=True):
+            result = module._collect_system_legacy_rotation_owner(True)
+        self.assertIs(result["duplicate_owner"], True)
+        self.assertEqual(result["system_legacy"], {
+            "service_active": True,
+            "service_enabled": True,
+            "timer_active": False,
+            "timer_enabled": True,
+        })
+        rendered = json.dumps(result)
+        self.assertNotIn("docich", rendered)
+        self.assertNotIn(str(self.base), rendered)
 
 
 def test_rotation_latch_projects_fixed_identity_without_request_id(tmp_path):

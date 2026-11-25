@@ -557,7 +557,8 @@ def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
     assert record['general'] == general
     assert record['enemy'] == 'タピオカ'
     assert record['observed_metric'] == {
-        'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
+        'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified',
+        'cards_unclassified': ['グリンボー']}
 
 
 def test_pending_card_is_preserved_above_critical_general_hp():
@@ -785,8 +786,11 @@ def test_fierce_preserves_available_egg_cards_and_requires_known_cursor():
     assert p.egg_battle_step(sc, mem) == [p.pad('down')]
     assert 'egg_attack_label' not in mem['battle']
     mem = wounded_egg_memory();mem['battle']['planned_cards'] = ['キャトルミュー']
-    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('a')]
-    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # Owner 2026-11-25: 卵行が灰色/OCR欠落で使えず切り札を持っているときは、
+    # もうこうげきではなく切り札行を出して札を開く。
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    assert 'egg_attack_label' not in mem['battle']
     mem = wounded_egg_memory();sc = wounded_egg_screen();sc.menu_cursor = None
     assert p.egg_battle_step(sc, mem) == []
     assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
@@ -957,6 +961,42 @@ def test_legacy_attempt_without_count_does_not_allow_duplicate_reselection():
     assert p.card_list_step(one, mem) == [p.pad('b')]
     assert not cur.get('cards_selected')
     assert cur['survival']['cards_uncertain']
+
+
+def test_uncertain_settle_books_the_attempted_card_unclassified():
+    # docich#5198: battle_card_remaining_unconfirmed で保留される試行済みの
+    # 同名札は「選択済み・消費未確認」の fail-closed と同じなので
+    # cards_unclassified に積算する。積まないと敗北時の監査 metric が空のまま
+    # になり、消費確定不能の残存として medium 降格できず high で起票される。
+    mem = basil_rescue_memory()
+    cur = mem['battle']
+    cur['survival'] = {'cards_attempted': ['イッテツーン'], 'opens': 1,
+                       'cards_checked': 1, 'menu_ticks': 0, 'egg_attempted': False}
+    cur['card_flow'] = {'survival': True, 'card': None, 'stage': 'list', 'list_ticks': 0}
+    one = menu(('イッテツーン',), kind='text')
+    assert p.card_list_step(one, mem) == []
+    assert p.card_list_step(one, mem) == [p.pad('b')]
+    assert cur['survival']['cards_uncertain']
+    assert cur['cards_unclassified'] == ['イッテツーン']
+    assert cur['card_consumption_complete'] is False
+    assert not cur.get('card_flow')
+    settle = [r for r in mem['_records']
+              if r['decision'] == 'battle_card_remaining_unconfirmed']
+    assert settle
+    assert settle[-1]['observed_metric']['cards_unclassified'] == ['イッテツーン']
+
+
+def test_uncertain_settle_does_not_duplicate_an_unclassified_card():
+    # 告知待ちで既に cards_unclassified へ積まれた同名札を、実一覧の未確認
+    # settle が重複して帳簿へ積まない。
+    mem = basil_rescue_memory()
+    first_basil_card(mem)
+    open_rescue_list(mem)
+    two = menu(('イッテツーン', 'イッテツーン'), kind='text')
+    assert p.card_list_step(two, mem) == []
+    assert p.card_list_step(two, mem) == [p.pad('b')]
+    assert mem['battle']['survival']['cards_uncertain']
+    assert mem['battle']['cards_unclassified'] == ['イッテツーン']
 
 
 def test_visible_copy_with_missing_cursor_times_out_without_false_resource_exhaustion():

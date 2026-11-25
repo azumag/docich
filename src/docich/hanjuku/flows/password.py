@@ -1,17 +1,34 @@
 """手順層: 章クリア後のパスワード入力画面 (オヴァリウム等の扉).
 
-画面構成 (g1190 2026-11-19, #4564 を実機プローブで解明):
-- 右上: 収集したパスワード語のスクロール可能リスト + 語を指す手カーソル。
-- 左下: 未入力の残り語を並べた 3×3 グリッド。
-- up/down = 手カーソル移動、A = 手が指す語を入力。
-- 全語を **決められた順** で入力すると扉が開く。リスト表示順ではない。
+画面構成 (2026-11-24 第11話ボス前の実機プローブで確定):
+- 右上: 収集語のスクロールリスト。表示窓は 7 行 (y=23,39,55,71,87,103,119)、
+  オレンジの手カーソルが 1 行を指す。語順はランごとに変わる。
+- 左下: **入力済み**の語が入力順に増える欄。3 列 (x=24,96,168) ×
+  4 行 (y=151,167,183,199)。未入力語は右リストに白で残り、入力した語の
+  行が灰色になる (行は消えない)。行優先 (y -> x) で読むと入力順になる。
+- 白行で A = 入力。灰色行で A は完全な無反応。1 語目は順序を見られない
+  (誤入力を即拒否しない) ので、正しい語だけを押すことが唯一の防波堤。
+- プロンプトだけの画面は時間経過ではリストが出ない。A を 1 回でリストが出る。
 
-2026-11-24: リストの語順は**収集順でランごとに変わる**ことが判明した
-(前回プローブでは われらが=row2 / エッグママの=row4、今回の実測では
-われらが=row0 / エッグママの=row2)。固定 index 列
-`_TARGET_ORDER` はそのランでは必ず外れるため、画面の灰色リストを
-読み、正しい語順 (PHRASE) の次の語へ手を送って A する方式に変えた。
-灰色リストが読めない配色のときだけ従来の固定 index にフォールバックする。
+v1456 は左下を「未入力の残り語グリッド」、右リストを「残り語」と誤解し、
+入力済み語を残りと読み違えて灰色行の前で up/down を往復し、A を押さない
+デッドロックになった。この版は毎観測、画面から進捗を計算する:
+
+1. 左下欄を行優先 (y -> x) で読み、``entered`` とする。
+2. ``entered == PHRASE[:len(entered)]`` を完全一致で検証する。
+3. ``PHRASE[len(entered)]`` の行が白く、手がその行にあるときだけ A。
+4. 目的語が窓外なら、まず up でリスト先頭へ戻し、次に down を 1 回ずつ
+   送って行を手の下へ通す閉ループ (実測: 先頭では up が止まる)。
+5. 10 語入力後もパスワード画面のままなら何も送らず hold (遷移待ち)。
+
+mem に残すのは往復回数などの上限カウンタとナビゲーションの向きだけで、
+語数・入力順は持たない。途中の語数から再開しても続きを入力できる。
+
+mem は毎観測 ``hanjuku_bot.json`` へ保存され ``json.load`` で復元される。
+そのため保存する値はすべて JSON ネイティブ型 (int/str/list/dict/None) に
+正規化し、比較も同じ正規化を通す。タプルのまま保存すると復元後は list に
+なり、同じ画面なのに「変わった」と誤判定して端判定・hold が壊れる
+(v1458 の実機 E2E: リスト先頭で up を 40 回送って nav_exhausted)。
 """
 from __future__ import annotations
 
@@ -19,175 +36,237 @@ from ..decision_log import _record
 from ..os_layer.commands import pad
 
 
-# 扉の正しい語順 (第11話オヴァリウム).
+# 扉の正しい語順 (第11話オヴァリウム). 完全一致・順序固定。
 PHRASE = ('われらが', 'かんじゅく', 'せいめいたいの', 'いだいなる', 'はは',
           'エッグママの', 'きゅうでん', 'オヴァリウムよ', 'われを', 'みちびけ')
 
-# 灰色リストが読めない配色のときの従来順 (リスト先頭を 0 とする).
-_TARGET_ORDER = (1, 0, 5, 3, 2, 4, 9, 8, 6, 7)
-_TOP_PRESSES = 15          # どの位置からでも先頭へ届く (実測 up×15)
-_MAX_CYCLES = 2            # 扉が開かない場合のやり直し上限
-_ADVANCE_PRESSES = 2       # 扉演出を進める A の上限
+# 左下の入力済み欄 (実測: 3 列 × 4 行). 読みは行優先 (y -> x)。
+_GRID_ROWS = (151, 167, 183, 199)
+_GRID_COLS = (24, 96, 168)
+
+_NAV_MAX = 40              # 1 語あたりの up/down 往復の上限 (10 行の探索に十分)
+_NAV_IDLE = 2              # 同じ画面が2回続いたら端とみなす (入力遅延を1回許す)
+_PROMPT_A_MAX = 3          # リスト未表示のプロンプトで送る A の上限
+_A_FRAMES = 10             # 実測: 押下10フレームで受理
+_NAV_FRAMES = 8            # 実測: 押下8フレームで 1 行動く
+
+# 実測済みの遷移では受け付けられない旧実装の state。持ち越さない。
+_LEGACY_STATE_KEYS = ('dyn_step', 'dyn_search', 'grid_len', 'cycles', 'tops',
+                      'idx', 'step', 'advance', 'a_repeat', 'reset_index',
+                      'probe_total', 'sweep')
+
+
+def _json_native(value):
+    """Return *value* in the shape it has after a JSON round trip.
+
+    ``mem`` is persisted to ``hanjuku_bot.json`` between observations and
+    restored with ``json.load``: tuples come back as lists. Build every mem
+    key through this function and compare reads through it as well, so the
+    live and restored shapes are identical. Dict keys are stringified because
+    JSON would do the same.
+    """
+    if isinstance(value, dict):
+        return {str(key): _json_native(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_native(item) for item in value]
+    return value
 
 
 def _rows(screen):
+    """Right-hand list rows as (y, word), top to bottom."""
     return [(y, w) for y, w in (getattr(screen, 'password_list', None) or ()) if w]
 
 
+def _entered(screen, *, strict):
+    """Words in the bottom-left field, row-major (y then x).
+
+    Only the measured 3x4 slots are read and only exact PHRASE words count:
+    ``われらが``/``われを`` や ``はは`` の部分一致は決して作らない。
+    ``strict`` (list visible) では、実測スロット上の PHRASE 外の読みを
+    読み取り失敗として返す。プロンプトだけの画面は y=151 にプロンプト文が
+    乗るため、非 strict では PHRASE の完全一致だけを拾う。
+    """
+    cells = []
+    unreadable = False
+    for line in getattr(screen, 'lines', None) or ():
+        if line.y not in _GRID_ROWS:
+            continue
+        for x, chunk in line.spans():
+            word = (chunk or '').strip()
+            if not word:
+                continue
+            if x not in _GRID_COLS or word not in PHRASE:
+                unreadable = True
+                continue
+            cells.append((line.y, x, word))
+    cells.sort()
+    return [word for _, _, word in cells], (strict and unreadable)
+
+
 def _selected(screen, rows):
-    hand = screen.hand
+    """The row the hand points at, or None when there is no hand."""
+    hand = getattr(screen, 'hand', None)
     if not hand or not rows:
         return None
     center = (hand[1] + hand[3]) / 2.0
-    return min(rows, key=lambda row: abs((row[0] + 4) - center))
+    return min(rows, key=lambda row: abs(row[0] - center))
 
 
-def _grid_words(screen):
-    """Words still shown in the remaining grid (already-entered ones are gone).
+def _list_words_readable(screen):
+    """False when any visible row is a word the door's phrase cannot contain."""
+    return all(word in PHRASE for _, word in _rows(screen))
 
-    Only the bottom grid (y >= 140) counts: the right-hand list is also in
-    `screen.text` now, and including it made the flow re-enter a word that
-    the list still shows forever.
+
+def _screen_key(screen, st):
+    """What the flow saw: a changed picture may release a previous hold."""
+    grey = sorted(getattr(screen, 'password_list_grey', ()) or ())
+    return _json_native((st.get('entered'), _rows(screen), grey))
+
+
+def _hold(mem, screen, st, event, reason, metric=None):
+    """Record the first observation of a hold, then stay silent.
+
+    The hold is keyed to the exact picture; the transient frame right after
+    the tenth A (still the password screen) must hold without restarting
+    anything, and a genuinely changed screen may resume the flow.
     """
-    words = set()
-    for line in screen.lines or ():
-        if line.y < 140:
-            continue
-        for _, chunk in line.spans():
-            for word in PHRASE:
-                if word in chunk:
-                    words.add(word)
-    if words:
-        return words
-    # No parsed grid rows (synthetic screen/tests): derive from the text.
-    text = (screen.text or '').replace(' ', '').replace('\u3000', '')
-    if 'パスワード' not in text:
-        return set(PHRASE)
-    for marker in ('パスワードヲジュンバンニイレテクダサイ。', 'パスワードヲ'):
-        if marker in text:
-            text = text.split(marker, 1)[-1]
-            break
-    found = {word for word in PHRASE if word in text}
-    return found or set(PHRASE)
+    st['held_key'] = _screen_key(screen, st)
+    if st.get('noted') != event:
+        st['noted'] = event
+        _record(mem, event, screen=getattr(screen, 'kind', None),
+                observed_metric=metric or {}, reason=reason)
+    return []
 
 
-def _dynamic_step(screen, mem, st):
-    """Enter the phrase words in order, using the measured on-screen list.
+def _reset_nav(st):
+    st['nav_phase'] = 'top'
+    st['nav_sig'] = None
+    st['nav_idle'] = 0
+    st.pop('nav_pending', None)
 
-    A partial attempt (some words already consumed from the grid by the old
-    fixed-index entry) is finished in phrase order first; that completes a
-    wrong sequence, the door asks to retry, and the next attempt starts from
-    the full grid and enters the correct order.
+
+def _navigate(screen, mem, st, rows, sel, target):
+    """One bounded step of the measured closed loop.
+
+    Phase ``top`` sends up until the list stops at the first row (measured:
+    up past the top scrolls nothing), then phase ``scan`` sends down once per
+    observation so every row passes under the hand in order. Two unchanged
+    observations are required at an edge so one frame of input latency does
+    not look like the end of the list.
     """
-    rows = _rows(screen)
-    remaining = _grid_words(screen)
-    step = int(st.get('dyn_step') or 0)
-    if not remaining:
-        advance = int(st.get('dyn_advance') or 0)
-        if advance < _ADVANCE_PRESSES:
-            st['dyn_advance'] = advance + 1
-            return [pad('a', 10)]
-        cycles = int(st.get('cycles') or 0) + 1
-        _record(mem, 'password_entry_resweep', screen=screen.kind,
-                observed_metric={'cycles': cycles, 'order': 'measured_list'},
-                reason='実測リスト順の入力後もパスワード画面のため先頭から再試行')
-        st.clear()
-        st['cycles'] = cycles
-        return [pad('up')]
-    if len(remaining) < len(PHRASE):
-        # Partial attempt: consume the remaining words in phrase order.
-        want = next((w for w in PHRASE if w in remaining), None)
-    else:
-        want = PHRASE[step] if step < len(PHRASE) else None
-    if want is None:
-        st['dyn_advance'] = int(st.get('dyn_advance') or 0) + 1
-        return [pad('a', 10)]
-    sel = _selected(screen, rows)
-    if sel is None:
-        return [pad('down')]
-    search = st.setdefault('dyn_search', {})
-    # Row y-coordinates are fixed; include the words so a real scroll is
-    # progress rather than a false 'stuck' observation.
-    sign = tuple((y, word) for y, word in rows)
-    if search.get('sign') == sign:
-        search['stuck'] = int(search.get('stuck') or 0) + 1
-    else:
-        search['sign'] = sign
-        search['stuck'] = 0
-    if sel[1] == want:
-        st['dyn_step'] = PHRASE.index(want) + 1
-        st.pop('dyn_search', None)
-        return [pad('a', 10)]
-    wanted = [y for y, w in rows if w == want]
-    if wanted:
-        search['dir'] = 'down' if wanted[0] > sel[0] else 'up'
-        return [pad(search['dir'])]
-    if int(search.get('stuck') or 0) >= 2:
-        search['dir'] = 'up' if search.get('dir') == 'down' else 'down'
-        search['stuck'] = 0
-        search['sign'] = None
-    direction = search.get('dir') or 'down'
-    search['dir'] = direction
-    search['presses'] = int(search.get('presses') or 0) + 1
-    if search['presses'] % 20 == 0:
-        search.update(dir='down', stuck=0, sign=None)
-    return [pad(direction)]
-
-
-def _legacy_step(screen, mem, st):
-    tops = st.get('tops', 0)
-    if tops < _TOP_PRESSES:
-        st['tops'] = tops + 1
-        return [pad('up')]
-    idx = st.get('idx', 0)
-    step = st.get('step', 0)
-    if step < len(_TARGET_ORDER):
-        target = _TARGET_ORDER[step]
-        if idx < target:
-            st['idx'] = idx + 1
-            return [pad('down')]
-        if idx > target:
-            st['idx'] = idx - 1
-            return [pad('up')]
-        st['step'] = step + 1
-        return [pad('a', 10)]
-    advance = st.get('advance', 0)
-    if advance < _ADVANCE_PRESSES:
-        st['advance'] = advance + 1
-        return [pad('a', 10)]
-    cycles = st.get('cycles', 0) + 1
-    _record(mem, 'password_entry_resweep', screen=screen.kind,
-            observed_metric={'cycles': cycles, 'target_order': list(_TARGET_ORDER)},
-            reason='実測順の入力後もパスワード画面のため先頭から再試行')
-    st.clear()
-    st['cycles'] = cycles
-    st['tops'] = 1
-    return [pad('up')]
+    sig = _json_native((sel[0], rows,
+                        sorted(getattr(screen, 'password_list_grey', ()) or ())))
+    phase = st.get('nav_phase') or 'top'
+    if st.get('nav_pending') is not None:
+        if _json_native(st.get('nav_sig')) == sig:
+            st['nav_idle'] = int(st.get('nav_idle') or 0) + 1
+        else:
+            st['nav_idle'] = 0
+    if int(st.get('nav_idle') or 0) >= _NAV_IDLE:
+        st['nav_idle'] = 0
+        if phase == 'top':
+            phase = 'scan'
+        else:
+            return _hold(mem, screen, st, 'password_entry_nav_exhausted',
+                         '先頭から1行ずつ下げても目的語が窓内に出ないため保留',
+                         {'presses': st.get('nav_presses'), 'target': target})
+    presses = int(st.get('nav_presses') or 0) + 1
+    if presses > _NAV_MAX:
+        return _hold(mem, screen, st, 'password_entry_nav_exhausted',
+                     '目的語が窓内に出ないまま往復上限に達したため保留',
+                     {'presses': presses, 'target': target})
+    direction = 'up' if phase == 'top' else 'down'
+    st['nav_presses'] = presses
+    st['nav_phase'] = phase
+    st['nav_sig'] = sig
+    st['nav_pending'] = direction
+    return [pad(direction, _NAV_FRAMES)]
 
 
 def password_step(screen, mem):
-    """Enter the phrase in order; read the list when the grey rows are usable."""
+    """Enter ``PHRASE`` in order using the measured list and entered field."""
     st = mem.setdefault('password_entry', {})
-    digest = getattr(screen, 'frame_sha256', None)
-    if digest and st.get('digest') == digest:
-        st['static'] = int(st.get('static') or 0) + 1
-    else:
-        st['digest'] = digest
-        st['static'] = 0
-    if int(st.get('static') or 0) >= 12:
-        # The screen accepted no input for 12 observations: the game ignored
-        # the entry (a wrong-order sequence soft-locks it). One B asks the
-        # password screen to reset instead of pressing A forever.
-        st['static'] = 0
-        st.pop('dyn_search', None)
-        _record(mem, 'password_entry_static_b', screen=screen.kind,
-                observed_metric={'digest': digest},
-                reason='パスワード画面が入力を12観測受け付けないため、Bで入力をやり直す')
-        return [pad('b')]
-    if _rows(screen):
-        if int(st.get('cycles') or 0) >= 6:
-            return []
-        return _dynamic_step(screen, mem, st)
-    if st.get('cycles', 0) >= _MAX_CYCLES:
+    for key in _LEGACY_STATE_KEYS:
+        st.pop(key, None)
+    rows = _rows(screen)
+    entered, unreadable = _entered(screen, strict=bool(rows))
+    k = len(entered)
+    st['entered'] = k
+
+    if st.get('last_k') != k:
+        # A fresh observation of a different word count: the only memory that
+        # may survive is nothing (progress itself is recomputed every frame).
+        st['last_k'] = k
+        st.pop('noted', None)
+        st.pop('held_key', None)
+        st['prompt_presses'] = 0
+        st['done_frames'] = 0
+        _reset_nav(st)
+        st.pop('nav_presses', None)
+
+    # A held screen stays silent while the picture is identical; a changed
+    # screen (a delayed input landing, the list opening) releases the hold.
+    # Compare through _json_native because held_key was restored from JSON.
+    if _json_native(st.get('held_key')) == _screen_key(screen, st):
         return []
-    return _legacy_step(screen, mem, st)
+    st.pop('held_key', None)
+
+    # The door's answer is a prefix of the phrase, always. Any other read
+    # means the bot saw a sequence it must never continue (wrong word,
+    # mostly-unreadable field): hold; the measured screen has no reset input.
+    if entered != list(PHRASE[:k]):
+        return _hold(mem, screen, st, 'password_entry_prefix_mismatch',
+                     '左下の入力済み欄が語順の先頭一致にならないため保留',
+                     {'entered': entered[:10], 'expected': list(PHRASE[:k])})
+
+    if k >= len(PHRASE):
+        # Measured: the frame right after the 10th A can still be the
+        # password screen for a few frames. Never reset; just wait.
+        st['done_frames'] = int(st.get('done_frames') or 0) + 1
+        if st['done_frames'] >= 3:
+            return _hold(mem, screen, st, 'password_entry_done_wait',
+                         '10語入力後もパスワード画面のため、リセットせず遷移を待つ',
+                         {'frames': st['done_frames']})
+        return []
+
+    if not rows:
+        # Prompt-only screen: one A opens the list (time alone never does).
+        # A hand or an entered word means a list screen whose rows failed to
+        # read: pressing A there could enter an unverified word, so hold.
+        if getattr(screen, 'hand', None) or entered:
+            return _hold(mem, screen, st, 'password_entry_list_unreadable',
+                         '入力済み欄か手はあるが右リストが読めないため保留',
+                         {'entered': entered[:10], 'hand': getattr(screen, 'hand', None)})
+        presses = int(st.get('prompt_presses') or 0)
+        if presses >= _PROMPT_A_MAX:
+            return _hold(mem, screen, st, 'password_entry_list_missing',
+                         'Aを送ってもリストが表示されないため保留',
+                         {'presses': presses})
+        st['prompt_presses'] = presses + 1
+        return [pad('a', _A_FRAMES)]
+
+    if unreadable or not _list_words_readable(screen):
+        return _hold(mem, screen, st, 'password_entry_list_unreadable',
+                     '右リストに入力対象外の語・読み取り失敗があるため保留',
+                     {'rows': rows[:7]})
+    sel = _selected(screen, rows)
+    if sel is None:
+        return _hold(mem, screen, st, 'password_entry_no_hand',
+                     '手カーソルを読めないため入力せず保留', {'rows': rows[:7]})
+
+    target = PHRASE[k]
+    matches = [y for y, word in rows if word == target]
+    if len(matches) > 1:
+        return _hold(mem, screen, st, 'password_entry_duplicate_target',
+                     '入力対象語がリストに重複しているため保留',
+                     {'target': target, 'rows': rows[:7]})
+    if matches:
+        y = matches[0]
+        if y in (getattr(screen, 'password_list_grey', None) or set()):
+            return _hold(mem, screen, st, 'password_entry_target_grey',
+                         '入力対象語の行が入力済み色なのに左下欄に無いため保留',
+                         {'target': target, 'y': y})
+        if sel[0] == y:
+            return [pad('a', _A_FRAMES)]
+        return [pad('down' if y > sel[0] else 'up', _NAV_FRAMES)]
+    return _navigate(screen, mem, st, rows, sel, target)

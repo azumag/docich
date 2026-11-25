@@ -19,6 +19,11 @@ def refused_card(monkeypatch):
     # in test_hanjuku_card_wear_down.py.
     monkeypatch.setattr('docich.hanjuku.judgment.battle._boss_card_wears_down_enemy',
                         lambda estimate, cur: False)
+    # owner 2026-11-25: 総合スコア劣勢・敵卵ありの押し込みは
+    # tests/test_hanjuku_score_pressure.py / test_hanjuku_egg_race_cards.py が持つ。
+    # ここでは通常のカードゲート判定だけを固定する。
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._score_pressure', lambda *a: False)
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._egg_race_pressure', lambda *a: False)
 
 
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',

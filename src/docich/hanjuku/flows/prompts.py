@@ -1090,19 +1090,3 @@ def gift_step(screen: Screen, mem):
                 reason='リセットできないため最安の品を選ぶ')
         return [pad('a')]
     return [move] if move else []
-
-
-PASSWORD_UP_FIRST = 15          # proven: up×15 reaches the list top
-PASSWORD_SWEEP_MAX = 40         # bounded A/down pairs; ten words is typical
-
-
-def password_step(screen: Screen, mem):
-    """#4564/#5325: オヴァリウム入城パスワード。
-
-    The measured list order decides the entry order, so both dispatch paths
-    (the early chapter-clear branch and the generic prompt dispatch) must use
-    the same flow. The old "A+down over the display order" sweep is rejected
-    by the door and soft-locks on a wrong partial sequence.
-    """
-    from . import password as password_flow
-    return password_flow.password_step(screen, mem)

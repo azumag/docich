@@ -294,6 +294,11 @@ g747の2年4月は実兵0、70G、完全名簿の賃金6Gに対し、一覧に�
   （卵も札も無い局面だけ先に退却を試す）は開かない。低HPの救済は次の追加ルールで扱う。
 - 原典は「白兵で勝てそうなら白兵、不足なら切り札、それでも足りなければ卵」と優先順位を明記する。
   通常の独自既定はこの優先順位に従う。瀕死ではHP差だけで勝てると決めつけず、以下の救済を優先する。
+- 敵の召喚獣戦・ボス戦で卵が使えず（卵行が灰色/OCR欠落、または残数0を実測）、切り札を
+  携行しているときは、`こうげき` より先に `きりふだ` を開く（オーナー指示 2026-11-25）。
+  召喚獣戦の `きりふだ` 行は `たまごをつかう` の下にあり、卵行がOCRから落ちる画面でも
+  有界スクロールで行を出してから、実表示の行だけを確定する
+  （[詳細](operations/hanjuku-summon-card-20261125.md)）。
 - 具体的な切り札名・タイミング（ファバード多投、クースカン→ブラッキー等）は原典チャートの
   各話手順（`games/hanjuku-sfc-speedrun/charts/*.md`）が正本。2話以降の指示も同チャートから
   エンコードするが、各章の`CASTLES`座標が計測済みでなければ`orders()`が空を返し
@@ -947,7 +952,13 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
   move/house/repair/defend/recallは対象外。同じ章・step・将軍は900秒cooldown。
 - 戦闘のBメニューを開いた後、卵・切り札・退却・奥の手を一度も実行せず
   閉じた場合 `battle_menu_wasted` を記録する。攻撃コマンドなしのcloseと
-  敵一撃の `battle_one_hit_menu_close` は正当なので除外。
+  敵一撃の `battle_one_hit_menu_close` は正当なので除外。ボス戦以外の
+  相手HP1で資源を温存するcloseも同じ記録名を使い、`observed_metric` の
+  `non_boss_hp1_hold` で区別する（v1506）。
+- ボス戦以外で相手将軍HP1の `battle_card` が出た場合、`battle_card_at_hp1`
+  incident を seal して auto-generated Issue を起票する（v1509）。カードの
+  選択・実使用告知は待たず、開く判断が出た時点を再発として扱う。
+  詳細は [`operations/hanjuku-card-at-hp1-audit-20261125.md`](operations/hanjuku-card-at-hp1-audit-20261125.md)。
 - `screen_stalled` / `input_stalled` でHanjukuコーナーが停止しローテーションへ
   戻る直前、`corner_stalled` を記録してissue化する。理由・無変化秒・actions・
   runtime/generation・terminal evidence・flow/計画/在城を含める。記録失敗は

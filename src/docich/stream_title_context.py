@@ -2,6 +2,17 @@
 
 The output vocabulary is reviewed code. Runtime input contributes validated
 counts only. No strategy code is imported or executed to describe a stream.
+
+The wording follows the channel's canonical persona
+(``src/docich/comment/prompts/comment_persona_main.md``): a Soviet-loving AI
+that plays the game itself, first person 「私」, with one short piece of wit and
+no preaching. ``soren91`` is the one game whose on-screen personality is the
+American AI (``comment_persona_soren91.md``), so its title keeps 「僕」 instead
+of putting the main persona's voice on top of a different character.
+Facts stay exact: a cleared chapter, a durable record and the next goal are
+never merged, and no phrase claims an unobserved result.  Each phrase is kept
+inside the 40-character strategy budget and the 100-character cross-platform
+title budget.
 """
 from __future__ import annotations
 
@@ -45,26 +56,28 @@ def _variant(game: str, state_dir: Path, choices: tuple[str, ...]) -> str:
         pass
     return choices[0]
 
-# Describe the game's objective, never an unobserved success or improvement.
+# Describe the game's objective in the on-screen persona's voice, never an
+# unobserved success or improvement.  The wit stays to one short aside so the
+# title still reads as the current game and goal.
 CHALLENGES = {
-    'hanjuku-hero': 'AIが城を攻略！ 将軍とエッグモンスターで物語の先へ',
-    'sorengame': '小さな国から大きな合体へ！ AIは建国にたどり着けるか',
-    'soren91': '合体の連鎖で建国へ！ AIが落とす場所を考えて挑戦',
-    'nethack': 'AIが迷宮を探索！ 道具と知恵で生き延びられるか',
-    'bastet': '不利なブロックにも挑戦！ AIは何列消せるか',
-    'gnurobots': 'AIロボットがマップを探索！ 障害を越えて進めるか',
-    'moon-buggy': '月面の穴を飛び越えろ！ AIの走行チャレンジ',
-    'ninvaders': '迫る敵を撃退！ AIが狙うシューティング攻略',
-    'nsnake': '長くなる体を避けて進め！ AIのスネーク挑戦',
-    'pacman4console': '迷路を駆け抜けろ！ AIが追手をかわして攻略',
-    'robots': '追いかけるロボットをかわす！ AIの生き残り挑戦',
-    'paper-view': 'AIの売買判断を観察！ 仮想資金で成績を検証',
-    'mystery-view': '視聴者参加型の推理ゲーム！ みんなで犯人の謎を解き明かそう',
+    'hanjuku-hero': '私が将軍と卵で城を攻略。次はどの城に赤い旗を立てるか',
+    'sorengame': '私の合体計画、小さな国からソ連へ。建国は私の手で',
+    'soren91': '僕の合体計画、落とす場所は計算済み。建国まで一直線',
+    'nethack': '私が迷宮を探索。罠も空腹も、ソ連式の粘りで突破する',
+    'bastet': '不利なブロックでも挑戦。私の計画に無駄な一手はない',
+    'gnurobots': '私のロボットがマップを探索。障害物は西側より素直だ',
+    'moon-buggy': '月面の穴を飛び越える。私の走り、西側の月面車より上手い',
+    'ninvaders': '迫る敵を撃退する。私の狙撃、同志諸君も見ていて',
+    'nsnake': '長くなる体を避けて進む。私のスネーク、計画経済のように',
+    'pacman4console': '迷路を駆け抜ける。私が追手をかわす、ソ連式逃走術',
+    'robots': '追うロボットをかわす。私の生き残り、包囲網を突破できるか',
+    'paper-view': '私の売買判断を観察。仮想資金で資本主義の綻びを検証',
+    'mystery-view': '視聴者参加の推理ゲーム。私と同志諸君で犯人を暴こう',
 }
 
 
 def challenge_phrase(game: str) -> str:
-    return CHALLENGES.get(game, 'AIはどこまで進めるか？ 試行錯誤のゲーム挑戦')
+    return CHALLENGES.get(game, '私がどこまで進めるか。試行錯誤も計画のうちだ')
 
 
 def _live_hanjuku_progress(state_dir: Path) -> tuple[str, str] | None:
@@ -120,11 +133,11 @@ def _live_hanjuku_progress(state_dir: Path) -> tuple[str, str] | None:
         return None
     marker = f'{generation}:{cleared}'
     if cleared == 12:
-        return 'この冒険で全12話突破！ AIと将軍たちの冒険を見届けよう', marker
+        return '全12話突破。私の冒険はここで終わらない', marker
     if cleared == 0:
-        return '第1話の突破を目指す！ AIが将軍と卵で城を攻略', marker
-    return (f'この冒険で第{cleared}話まで突破！ '
-            f'AIと将軍たちは第{cleared + 1}話の先へ進めるか', marker)
+        return '第1話突破へ。私が将軍と卵で城を攻略する', marker
+    return (f'この冒険で第{cleared}話まで突破。'
+            f'同志諸君、私は第{cleared + 1}話の先へ', marker)
 
 
 def _active_hanjuku_progress(state_dir: Path) -> str | None:
@@ -163,9 +176,9 @@ def progress_phrase(game: str, state_dir: Path, soren_root: Path) -> str | None:
             if best <= 0:
                 return None
             return _variant(game, state_dir, (
-                f'最高{best:,}点を超えられるか？ 合体をつないで建国へ',
-                f'合体の先に建国はあるか？ 最高記録{best:,}点に挑む',
-                f'次の一手で連鎖を狙う！ 目指すは{best:,}点の先',
+                f'最高{best:,}点を超える。私の合体計画に無駄はない',
+                f'合体の先に建国あり。最高{best:,}点、私が塗り替える',
+                f'次の一手で連鎖を狙う。私が{best:,}点の先をひらく',
             ))
         if game == 'hanjuku-hero':
             try:
@@ -181,11 +194,11 @@ def progress_phrase(game: str, state_dir: Path, soren_root: Path) -> str | None:
             if type(best) is not int or not 1 <= best <= 12:
                 return None
             if best == 12:
-                return '全12話突破の記録から、もう一度冒険へ'
+                return '全12話突破の記録がある。もう一度、私の冒険を始めよう'
             return _variant(game, state_dir, (
-                f'第{best}話突破の記録から、第{best + 1}話クリアへ再挑戦',
-                f'過去最高は第{best}話突破！ 将軍と卵で第{best + 1}話クリアを目指す',
-                f'第{best}話突破の記録を越えたい！ AIが将軍と卵で城を攻略',
+                f'第{best}話突破の記録から、第{best + 1}話へ再挑戦。私に計画あり',
+                f'過去最高は第{best}話突破。私と将軍と卵で第{best + 1}話を目指す',
+                f'第{best}話突破の記録を越える。次は私が城を落とす番だ',
             ))
     except (OSError, ValueError, UnicodeError, RecursionError):
         return None

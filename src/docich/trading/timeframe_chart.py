@@ -21,8 +21,14 @@ usually refreshes only the fast ones.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import hashlib
 import importlib
+import json
 import math
+import os
+import re
+import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -76,6 +82,13 @@ STRATEGY_BARS = 24
 # one-shot corner narration.
 _FETCH_PRIORITY = {"1m": 0, "5m": 1, "15m": 2, "1h": 3, "1d": 4}
 _FETCH_RETRY_DELAY_S = 0.5
+
+# Public chart data is presentation-only. Keep a small durable cache so a
+# dashboard restart does not force a full multi-day public API refresh.
+CHART_CACHE_RETENTION_S = 7 * 24 * 60 * 60
+CHART_CACHE_MAX_BYTES = 100 * 1024 * 1024
+CHART_CACHE_SCHEMA_VERSION = 1
+_CHART_CACHE_FILE_RE = re.compile(r"^[0-9a-f]{24}-(?:1d|1h|15m|5m|1m)[.]json$")
 
 
 class TimeframeDataError(RuntimeError):
@@ -397,6 +410,209 @@ class TimeframeChartReader:
         return build_timeframe_view(selected, timeframe, rows, now=now, limit=limit)
 
 
+class TimeframeChartCache:
+    """Small durable cache for normalized public OHLC views.
+
+    Files contain only bounded, credential-free presentation records. The
+    cache is never read by trading decisions. Writes use replace-in-place so
+    a process interruption cannot leave a partially written record.
+    """
+
+    def __init__(
+        self,
+        trading_dir: Path,
+        *,
+        retention_s: float = CHART_CACHE_RETENTION_S,
+        max_bytes: int = CHART_CACHE_MAX_BYTES,
+    ):
+        self.directory = Path(trading_dir) / "timeframe_chart_cache"
+        self.retention_s = max(1.0, float(retention_s))
+        self.max_bytes = max(1, int(max_bytes))
+
+    @staticmethod
+    def _path(symbol: str, timeframe: str, directory: Path) -> Path | None:
+        if timeframe not in TIMEFRAME_LABELS or not isinstance(symbol, str) or not symbol:
+            return None
+        digest = hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:24]
+        return directory / f"{digest}-{timeframe}.json"
+
+    @staticmethod
+    def _valid_record(record: object, symbol: str, timeframe: str) -> bool:
+        if not isinstance(record, Mapping):
+            return False
+        if (record.get("available") is not True
+                or record.get("symbol") != symbol
+                or record.get("timeframe") != timeframe):
+            return False
+        bars = record.get("bars")
+        if (not isinstance(bars, list) or not 2 <= len(bars) <= MAX_BARS
+                or record.get("bar_count") != len(bars)):
+            return False
+        previous_timestamp = None
+        for bar in bars:
+            if not isinstance(bar, Mapping):
+                return False
+            timestamp = _positive(bar.get("t"))
+            open_ = _positive(bar.get("o"))
+            high = _positive(bar.get("h"))
+            low = _positive(bar.get("l"))
+            close = _positive(bar.get("c"))
+            if None in (timestamp, open_, high, low, close):
+                return False
+            if high < max(open_, close) or low > min(open_, close) or high < low:
+                return False
+            if previous_timestamp is not None and timestamp <= previous_timestamp:
+                return False
+            previous_timestamp = timestamp
+            if _nonnegative(bar.get("v")) is None:
+                return False
+            if (not isinstance(bar.get("closed"), bool)
+                    or not isinstance(bar.get("gap_before"), bool)):
+                return False
+        return True
+
+    def prune(self, *, now: float) -> None:
+        """Remove expired/corrupt cache files, then evict oldest to the byte cap."""
+        moment = _finite(now)
+        if (moment is None or self.directory.is_symlink()
+                or not self.directory.is_dir()):
+            return
+        try:
+            paths = tuple(self.directory.iterdir())
+        except OSError:
+            return
+        entries: list[tuple[float, int, Path]] = []
+        for path in paths:
+            if not _CHART_CACHE_FILE_RE.fullmatch(path.name) or path.is_symlink():
+                continue
+            try:
+                metadata = os.stat(path, follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode):
+                    continue
+                if metadata.st_size > self.max_bytes:
+                    path.unlink()
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                symbol = payload.get("symbol") if isinstance(payload, Mapping) else None
+                timeframe = payload.get("timeframe") if isinstance(payload, Mapping) else None
+                fetched_at = (
+                    _finite(payload.get("fetched_at"))
+                    if isinstance(payload, Mapping)
+                    and payload.get("schema_version") == CHART_CACHE_SCHEMA_VERSION
+                    and self._path(symbol, timeframe, self.directory) == path
+                    and self._valid_record(payload.get("record"), symbol, timeframe)
+                    else None
+                )
+                if (fetched_at is None or fetched_at > moment
+                        or moment - fetched_at > self.retention_s):
+                    path.unlink()
+                    continue
+                entries.append((fetched_at, metadata.st_size, path))
+            except (OSError, ValueError, TypeError):
+                try:
+                    metadata = os.stat(path, follow_symlinks=False)
+                    if stat.S_ISREG(metadata.st_mode):
+                        path.unlink()
+                except OSError:
+                    pass
+
+        total_bytes = sum(size for _, size, _ in entries)
+        for _, size, path in sorted(entries, key=lambda item: item[0]):
+            if total_bytes <= self.max_bytes:
+                break
+            try:
+                path.unlink()
+                total_bytes -= size
+            except OSError:
+                continue
+
+    def load(self, symbol: str, timeframe: str, *, now: float) -> dict[str, object] | None:
+        path = self._path(symbol, timeframe, self.directory)
+        moment = _finite(now)
+        if (path is None or moment is None
+                or self.directory.is_symlink() or path.is_symlink()):
+            return None
+        try:
+            metadata = os.stat(path, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > self.max_bytes:
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(payload, Mapping)
+                    or payload.get("schema_version") != CHART_CACHE_SCHEMA_VERSION
+                    or payload.get("symbol") != symbol
+                    or payload.get("timeframe") != timeframe):
+                return None
+            fetched_at = _finite(payload.get("fetched_at"))
+            if (fetched_at is None or fetched_at > moment
+                    or moment - fetched_at > self.retention_s):
+                return None
+            record = payload.get("record")
+            if not self._valid_record(record, symbol, timeframe):
+                return None
+            result = dict(record)
+            result["_fetched_at"] = fetched_at
+            return result
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def save(
+        self,
+        symbol: str,
+        timeframe: str,
+        record: Mapping[str, object],
+        *,
+        now: float,
+    ) -> bool:
+        path = self._path(symbol, timeframe, self.directory)
+        moment = _finite(now)
+        if (path is None or moment is None
+                or not self._valid_record(record, symbol, timeframe)):
+            return False
+        public = {
+            key: value for key, value in record.items()
+            if not str(key).startswith("_")
+        }
+        payload = {
+            "schema_version": CHART_CACHE_SCHEMA_VERSION,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "fetched_at": moment,
+            "record": public,
+        }
+        try:
+            encoded = json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return False
+        if len(encoded) > self.max_bytes:
+            return False
+        temporary = None
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if self.directory.is_symlink():
+                return False
+            fd, temporary = tempfile.mkstemp(
+                prefix=".chart-cache-", suffix=".tmp", dir=str(self.directory)
+            )
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            self.prune(now=moment)
+            return True
+        except OSError:
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
+
 class TimeframeChartSampler:
     """Resolve the dashboard focus symbol and cache its timeframe views.
 
@@ -423,6 +639,7 @@ class TimeframeChartSampler:
                 self.ttl[key] = max(1.0, min(3600.0, float(value)))
         self._reader: TimeframeChartReader | None = None
         self._cache: dict[tuple[str, str], dict[str, object]] = {}
+        self._disk_cache = TimeframeChartCache(self.trading_dir)
         self._lock = threading.Lock()
 
     def _symbol(self) -> str | None:
@@ -432,9 +649,19 @@ class TimeframeChartSampler:
     def _view(self, symbol: str, timeframe: str, moment: float) -> dict[str, object]:
         key = (symbol, timeframe)
         cached = self._cache.get(key)
+        if not isinstance(cached, dict):
+            cached = self._disk_cache.load(symbol, timeframe, now=moment)
+            if isinstance(cached, dict):
+                self._cache[key] = cached
         ttl = self.ttl.get(timeframe, 30.0)
-        if isinstance(cached, dict) and moment - float(cached.get("_fetched_at") or 0) < ttl:
-            return self._public(cached)
+        fetched_at = _finite(cached.get("_fetched_at")) if isinstance(cached, dict) else None
+        age = moment - fetched_at if fetched_at is not None else None
+        if isinstance(cached, dict) and age is not None and 0 <= age <= self._disk_cache.retention_s:
+            if age < ttl:
+                return self._public(cached)
+        elif isinstance(cached, dict):
+            self._cache.pop(key, None)
+            cached = None
         fresh: dict[str, object] | None = None
         for attempt in range(2):
             try:
@@ -451,6 +678,7 @@ class TimeframeChartSampler:
             record = dict(fresh)
             record["_fetched_at"] = moment
             self._cache[key] = record
+            self._disk_cache.save(symbol, timeframe, record, now=moment)
             return self._public(record)
         if isinstance(cached, dict):
             stale = dict(cached)
@@ -481,6 +709,7 @@ class TimeframeChartSampler:
         requested = [str(timeframe) for timeframe in timeframes]
         ordered = sorted(requested, key=lambda timeframe: _FETCH_PRIORITY.get(timeframe, 99))
         with self._lock:
+            self._disk_cache.prune(now=moment)
             fetched = {timeframe: self._view(str(symbol), timeframe, moment) for timeframe in ordered}
         return [fetched[timeframe] for timeframe in requested]
 

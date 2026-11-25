@@ -1,4 +1,4 @@
-# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1410）
+# 半熟英雄: 月内出撃ゼロ・ボスフェーズ無戦闘監査（v1381）
 
 ## 目的
 
@@ -42,7 +42,7 @@ JSONLで保存し、必要なときに `gh` で修正用 issue を発行する�
 `decision_log_coverage` だけのときは `medium`、それ以外の理由が付くと `low`。
 issue化の既定は `high` のみ。
 
-## ボスフェーズ無戦闘（v1410）
+## ボスフェーズ無戦闘（v1381）
 
 通常城をすべて確保し、ボスの城（第4話は四季王サイト）だけが残った状態を
 **ボスフェーズ**とする。第9話の移動ボスは街道の全城が自軍になった時点。
@@ -61,7 +61,7 @@ issue化の既定は `high` のみ。
 （confidence high）。issue題名は
 `[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch<章> <ボス名>`。
 
-## キャンプ帰還の失敗・キャンセル（v1410 / v1434）
+## キャンプ帰還の失敗・キャンセル（v1381）
 
 キャンプ（野営）からの帰還が terminal に失敗/取消/未確認になった観測で、
 `camp_*` のrecordを1件保存する。対象decision:
@@ -72,20 +72,10 @@ issue化の既定は `high` のみ。
 | `camp_boss_redirect_aborted` | `camp_recall_failed` | ボス再出撃の帰還失敗 |
 | `camp_recall_skipped` | `camp_recall_cancelled` | 自軍城の屋根が見えず帰還先を選べず取消 |
 | `camp_group_screen`（`unclassified_screen_closed`） | `camp_recall_cancelled` | 未分類画面で帰還を閉じる |
-| `camp_recall_unconfirmed` | `camp_recall_unconfirmed` | `dispatch_unconfirmed`（A送信receipt未確認）と `arrival_unconfirmed`（A送信済み・受理/到着未確認）を区別 |
-| `camp_escape_move_requested` / `camp_escape_move_dispatched` | camp recall incident対象外 | 崖離脱のフィールドカーソル移動の要求/受理。帰還先の到着証拠には使わない |
-| `camp_escape_move_unconfirmed` | `camp_escape_move_unconfirmed` | 崖離脱のフィールド移動を確認できない専用incident。キャンプ帰還とは分けて記録 |
+| `camp_recall_unconfirmed` | `camp_recall_unconfirmed` | A送信後の本人・到着を確認できない |
 
-- 将軍・野営位置・帰還先・崖離脱target_cell・stage/steps・status・
-  input_receipt_confirmed/picker_closed/escape_move/interrupted・理由・直前120秒の決定・計画/在城/flowを1件に保存する。
-- 旧 `input_sent` はreceipt確認フラグとして後方互換で保持するが、Issue本文では
-  物理入力の送信有無と断定せず `input_receipt_confirmed` として表示する。
-- `resulting_event` を理由文より優先して分類する。`dispatch_unconfirmed` は
-  送信段階、`arrival_unconfirmed` は送信後の受理/到着段階であり、共通の
-  日本語理由文に「到着」が含まれるかどうかでは分類しない。
-- `escape_move=true` は帰還Aではなく崖離脱のフィールド移動A。`camp_escape_move_requested/dispatched`
-  は通常記録、`camp_escape_move_unconfirmed` は専用incidentとし、帰還先の拒否回数・
-  到着確認・camp recall issueへ混入させない。
+- 将軍・野営位置・帰還先・stage/steps・input_sent/interrupted・理由・
+  直前120秒の決定・計画/在城/flowを1件に保存する。
 - 同じ `(chapter, kind, reason_code, camp, general, castle)` は900秒cooldown。
   連続する同一事象でissueを乱発しない。
 - issue題名は `[半熟英雄] キャンプ帰還失敗/キャンセル/未確認: ch<章> <将軍または城>`。
@@ -94,7 +84,7 @@ issue化の既定は `high` のみ。
   は通常経路なので対象外。
 - 保存後のissue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 出撃失敗・キャンセル（v1410）
+## 出撃失敗・キャンセル（v1381）
 
 terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保存する。
 
@@ -114,7 +104,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 - **v1402**: `order_failed` のうち、理由文が明示的に「出撃要求が送信・受理されない」を示すものだけ `sortie_order_unaccepted` と分類する。`month_sorties.scope` が現在の章・月と一致し、同月の確定発射が1件以上ある場合は confidence を `medium` にして台帳へ残し、既定の high-confidence filer では起票しない。scope不明・不一致は `high` のまま。発射後の未確認、戦闘retry上限、出撃元メニュー不成立、未知理由は従来どおり `high`。
 
-## 卵・切り札を残した退却/敗北（v1410）
+## 卵・切り札を残した退却/敗北（v1381）
 
 戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
 残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
@@ -134,7 +124,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
 - 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
 
-## 野営放置（3ヶ月以上連続）（v1410）
+## 野営放置（3ヶ月以上連続）（v1381）
 
 `general_statuses.statuses` で `location=camp` の将軍を月ごとに追跡し、
 同じ将軍が**3ヶ月以上連続**で野営のままなら `camp_abandoned` を1回保存する。
@@ -152,7 +142,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 野営放置: ch<章> <将軍> (<n>ヶ月)`。
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 
-## 築城可能なのにキャンセル/月一終了（v1410）
+## 築城可能なのにキャンセル/月一終了（v1381）
 
 月一メニューの `month_done` / `month_confirm`、または terminal な
 `chikujou_declined` / `chikujou_leftover` の時点で、**資金・将軍・未試行の
@@ -172,7 +162,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 築城可能なまま月一終了: ch<章> <月>` または
   `築城可能なのにキャンセル: ...`。
 
-## ボスフェーズで月内ボス出撃ゼロ（v1410）
+## ボスフェーズで月内ボス出撃ゼロ（v1381）
 
 月を閉じた時点で `_boss_phase` が成立している（通常城をすべて確保し、ボス城が
 残っている）のに、その月の **ボス向け出撃が0** の場合、
@@ -216,7 +206,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   届かなかった」のか「全注文が開始不能で弾かれ続けた」のかを、次回以降の
   監査レコードで切り分けるための観測点。
 
-## 帰還で「きかん」を選択（v1410）
+## 帰還で「きかん」を選択（v1381）
 
 野営からの帰還は owner 指示（2026-11-19）で **きかんを使わず、全体マップ（Y）で
 自軍城へ直接戻る**。`camp_recall_cursor` の実カーソルが `choice='きかん'` かつ
@@ -229,7 +219,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 題名は `[半熟英雄] 帰還で「きかん」を選択: ch<章> <将軍または帰還先>`。
 - 期待する帰還手段（Yジャンプ）を本文に明記する。
 
-## 画面停滞でコーナー停止（v1410）
+## 画面停滞でコーナー停止（v1381）
 
 `screen_stalled` / `input_stalled` でHanjukuコーナーが終了し、スロットが
 ローテーションへ戻る直前に、`corner_stalled` のrecordを1件保存する。
@@ -244,7 +234,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 記録・issue発行の失敗はteardownを止めず、stderrへ固定コードを出す。
 - 既存の「ボス戦闘ゼロ」「月内出撃ゼロ」などとは別シグネチャ。
 
-## 戦闘Bメニューの無駄な開閉（v1410）
+## 戦闘Bメニューの無駄な開閉（v1381）
 
 戦闘中に `battle_menu` が開いた後、`卵`・`切り札`・`退却`・`奥の手` を
 一度も実行せずにBで閉じた場合、`battle_menu_wasted` を保存する。
@@ -265,7 +255,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   決定を1件32KB以内で保存。同じ章・将軍・stepは900秒cooldown。
 - 題名は `[半熟英雄] 戦闘Bメニューを無駄に開閉: ch<章> <将軍>`。
 
-## 切り札在庫があるのに非携行で出撃（v1410）
+## 切り札在庫があるのに非携行で出撃（v1381）
 
 フィールド在庫 `card_stock` に正数の切り札があるのに、attack/retake/bossの
 出撃が切り札を1枚も携行せずに成立した場合、`sortie_without_cards` を保存する。
@@ -273,32 +263,14 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - `order_launched` / `sortie_departed_observed` / `sortie_launch_confirmed` /
   `sortie_launch_unconfirmed_kept` を対象。
 - move / house / repair / defend / recall は対象外。
-- 携行ありは実測kitで判定する。証拠は `rare_card_kit` / `strong_card_kit` /
-  `dropper_card_kit` の補助キット、発射recordの `cards` / `card` /
-  `cards_selected` に加え、出撃確認が保存した `order_context[step]` の
-  `observed_metric.cards`、確定出撃スナップショット
-  `world.launched_orders[step]` の `departure_binding.cards`
-  （binding付きsnapshotの `cards` も同じ実測値）、および同一stepの
-  `sortie_confirm` decision の `cards`（#5118/#5249）。
+- 携行ありは `rare_card_kit` / `strong_card_kit` / `dropper_card_kit`、
+  recordの `cards` / `card` / `cards_selected` で判定。
 - 在庫は `card_stock` の正数。計画 `chart_plan.orders[].cards` は
-  「計画」であり、実携行の証拠にはしない。`departure_binding` を持たない
-  `launched_orders` snapshot の `cards` も計画値の可能性があるため証拠にしない。
-  実測kitが空または未読（blind approve等）の出撃だけをissueにする。
+  「計画」であり、実携行の証拠にはしない（計画だけあってkitが無ければissue）。
 - 将軍・step・purpose・出撃元/対象・在庫・計画cards・flow/計画/在城/統計を
   1件32KB以内で保存。同じ章・step・将軍は900秒cooldown。
 - 題名は `[半熟英雄] 切り札在庫があるのに非携行で出撃: ch<章> <将軍>`。
 - 既存の手動issue #2829 と同じ問題領域だが、自動検知用の別シグネチャ。
-
-## 敗北/退却issueの再発コメント間隔（v1410）
-
-`battle_loss_with_resources` / `battle_retreat_with_resources` は、
-同一issueへの再発コメントのcooldownを汎用1時間から**15分**へ短縮する。
-敗北・退却は同一ランで短時間に繰り返すことがあり、1時間のcooldownでは
-直近の敗北がissueに反映されないため。
-
-- 既存のoccurrence重複防止（同じincident_idはコメントしない）は維持。
-- 汎用のzero_sortie等は従来どおり1時間。
-- 変更は `COMMENT_COOLDOWN_BY_KIND` のkind別設定。
 
 ## 保存先
 
@@ -357,6 +329,9 @@ PYTHONPATH=src python3 -m docich.hanjuku.month_audit watch \
   plan_starved / departure_failure / monthly_scan / camp_recall / battle / unread /
   no_source / stuck_march / ledger_unknown の優先順で1つ選ぶ（全signalsは本文に残す）
   （同じ incident の重複コメントはしない。コメントは1時間に1回まで）。
+- `stuck_march` は `world.sorties` の status が `en_route` / `launched_unconfirmed` で、
+  `age_ticks > 3000` の場合だけ付与する。`arrived` / `overdue` / `cancelled` / `closed` は
+  行軍中として扱わない。
 - 既知の追跡issueへ寄せたい場合は、本文の `fingerprint` を確認して手動で
   コメントする。自動closeはしない。回復は次の完全な月の `confirmed > 0` で
   確認する。
@@ -371,7 +346,7 @@ production checkout 上の `gh` 実行はしない。
 2. そのディレクトリを `HANJUKU_RUNTIME` にして `render` / `file --dry-run` で本文を確認する。
 3. `secret_scan` の clean を確認して `file` を実行する。
 
-## botからの自動発行（v1410）
+## botからの自動発行（v1381）
 
 月内出撃ゼロ・ボスフェーズ無戦闘のsealed recordを保存した直後、**その観測を
 実行しているbotプロセス**が、detachedの子プロセスで

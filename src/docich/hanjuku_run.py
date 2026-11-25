@@ -42,7 +42,11 @@ def _bot_version():
     return current or BOT_VERSION
 
 RUN_FILE='hanjuku_run.json'
-TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
+TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled','game_clear'})
+# Owner 2026-11-25: the clear ending (めでたし めでたし) returns to the title
+# after a while. Seeing the ending and then the title must finish the corner,
+# not be read as a game over.
+CLEAR_ENDING_TEXT = 'めでたし'
 # A released game_over cannot re-latch for this long (the title stays up while
 # the first inputs are delivered).
 GAME_OVER_CLEAR_GRACE_S = 120
@@ -303,7 +307,15 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     candidate=phase=='title' and started and played and playing
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
-    reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
+    clear_ending = old.get('clear_ending_seen') is True
+    if not clear_ending and phase in ('title', 'plain', 'unknown', 'title_or_intro'):
+        try:
+            from .hanjuku_screen import parse as _parse
+            clear_ending = CLEAR_ENDING_TEXT in ((_parse(frame).text or ''))
+        except Exception:
+            clear_ending = False
+    terminal = 'game_clear' if clear_ending else 'game_over'
+    reason=terminal if candidate and title_count>=3 and now-title_since>=2 else None
     # A manual "this was not a game over" release earns a grace window: the
     # game sits on its title while the first inputs land, and without it the
     # same observation latched game_over again immediately (g1163 2026-11-10
@@ -402,10 +414,11 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,
-           'name_entered':named,'gameplay_seen':played,
+           'name_entered':named,'gameplay_seen':played,'clear_ending_seen':clear_ending,
            'checkpoint_started':restored,'checkpoint_start_request':checkpoint_bound,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
-           'terminal_evidence':'title_return_after_gameplay' if reason=='game_over'
+           'terminal_evidence':'title_return_after_clear_ending' if reason=='game_clear'
+                             else 'title_return_after_gameplay' if reason=='game_over'
                              else 'no_input_sent_while_observing' if reason=='input_stalled'
                              else hanjuku_repetition.EVIDENCE if loop_proof else None,
            'battle_active':battle_active,'battle_streak':battle_streak,

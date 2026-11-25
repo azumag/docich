@@ -208,6 +208,29 @@ def probe_due(mem, castle):
             and (last is None or now - int(last) >= PROBE_INTERVAL))
 
 
+# A recall's destination read is due only this long; an old entry must not
+# keep minting an unbudgeted probe (the read pops only a complete roster).
+ROSTER_READ_DUE_TTL = 900
+
+
+def roster_read_due(mem):
+    """Castles whose roster read has come due, keyed by their due tick.
+
+    ``roster_read_due[castle]`` stores the read's *due time* — a recall lands
+    after its walking delay — not the request tick, so an entry counts only
+    once ``tick <= now``. An entry past ``ROSTER_READ_DUE_TTL`` is stale: the
+    read pops a due only on a complete roster, so an old one would keep an
+    unbudgeted probe in front of every plan. It is dropped here for every
+    chapter, not just chapter 9's corridor (docich#5127).
+    """
+    now = int(mem.get('tick') or 0)
+    raw = mem.get('roster_read_due') or {}
+    for castle, tick in list(raw.items()):
+        if type(tick) is not int or now - tick > ROSTER_READ_DUE_TTL:
+            raw.pop(castle, None)          # stale past due: drop, never re-read
+    return {castle: tick for castle, tick in raw.items() if tick <= now}
+
+
 def _remember_residents(mem, castle, names):
     """Mark the generals standing in a read roster as resident in that castle.
 
@@ -254,3 +277,192 @@ def observed_roster(mem, castle, names):
                     general=sortie['general'], castle=castle,
                     reason='中継城の実一覧で移動した本人を確認し、次の出撃の前提を更新')
     _remember_residents(mem, castle, names)
+
+
+# ---------------------------------------------------------------------------
+# Chapter 12 boss staging (owner 2026-11-24).
+#
+# A boss march straight from the home castle is absorbed by the castle on the
+# line (measured: the hero sent home -> ディランダ stopped inside ヘリオポリス)
+# or camps on the way, and every wave from home ended ``boss_sortie_overdue``.
+# The chart's own boss source (12-B1, also the target of the hero's last relay
+# 12-A3) is where the assault starts: the hero walks the chart's relay first
+# (a castle never sends its last general, so each hop needs a companion), the
+# other generals follow, and only then do boss waves leave from that castle.
+# Every phase is bounded: a staging that makes no progress for
+# ``STAGING_MAX_TICKS`` is abandoned and the old behaviour returns.
+# ---------------------------------------------------------------------------
+STAGING_MAX_TICKS = 6000             # one relay hop measured 560..5000 ticks launch->roster (battles on the road)
+STAGING_MAX_TOTAL = 24000            # hard cap from the start, whatever progress is claimed
+STAGING_FOLLOWERS = 3          # generals besides the hero to gather at the staging castle
+STAGING_MAX_REVERTS = 3
+STAGING_PHASES = ('gathering', 'ready')
+
+
+def _staging_book(mem, chapter):
+    book = mem.get('boss_staging')
+    if not isinstance(book, dict) or book.get('chapter') != chapter:
+        book = mem['boss_staging'] = {'chapter': chapter, 'phase': 'idle', 'since': None,
+                                      'reverts': 0}
+    return book
+
+
+def staging_phase(mem):
+    """'gathering' | 'ready' while a chapter's boss staging governs boss sorties."""
+    chapter = mem.get('chapter') or 0
+    if chart.boss_staging(chapter) is None:
+        return None
+    book = mem.get('boss_staging')
+    if not isinstance(book, dict) or book.get('chapter') != chapter:
+        return None
+    return book.get('phase') if book.get('phase') in STAGING_PHASES else None
+
+
+def _staging_note(mem, kind, reason, **observed):
+    from ..decision_log import _record
+    _record(mem, kind, chart_step=None, strategy_variant='boss_staging',
+            observed_metric=observed or None, reason=reason)
+
+
+def staging_arm(mem):
+    """Start the staging once the boss is open and the relay castles are ours."""
+    chapter = mem.get('chapter') or 0
+    spec = chart.boss_staging(chapter)
+    if spec is None:
+        return None
+    book = _staging_book(mem, chapter)
+    if book['phase'] != 'idle':
+        return book['phase']
+    owned = _owned(mem)
+    if any(c not in owned for c in spec['path']):
+        return 'idle'
+    now = int(mem.get('tick') or 0)
+    book.update(phase='gathering', since=now, started=now)
+    _staging_note(mem, 'boss_staging_started',
+                  'ボス出撃を拠点へ集結してから出す（主人公が先に中継城を進み、他の将軍が追従する）',
+                  castle=spec['castle'], path=list(spec['path']))
+    return 'gathering'
+
+
+def _staging_abandon(mem, book, reason, **observed):
+    book['phase'] = 'abandoned'
+    _staging_note(mem, 'boss_staging_abandoned',
+                  f'{reason}。従来のボス出撃に戻す', **observed)
+    return 'abandoned'
+
+
+def staging_update(mem):
+    """Advance gathering -> ready, revert, or abandon; returns the phase."""
+    chapter = mem.get('chapter') or 0
+    spec = chart.boss_staging(chapter)
+    if spec is None or staging_phase(mem) is None:
+        return staging_phase(mem)
+    book = _staging_book(mem, chapter)
+    now = int(mem.get('tick') or 0)
+    owned = _owned(mem)
+    stage = spec['castle']
+    lost = [c for c in spec['path'] if c not in owned]
+    if lost:
+        return _staging_abandon(mem, book, '拠点または中継城を失った', lost=lost)
+    roster = (_world(mem).get('garrison') or {}).get(stage)
+    from ..os_layer.world import NAME
+    ready = isinstance(roster, list) and NAME in roster
+    if ready and book['phase'] == 'gathering':
+        book.update(phase='ready', since=now)
+        _staging_note(mem, 'boss_staging_ready',
+                      '拠点の将軍一覧に主人公を確認したため、拠点からボス出撃を始める（追従の将軍は拠点へ集め続ける）',
+                      castle=stage, roster=list(roster)[:10])
+    elif not ready and book['phase'] == 'ready':
+        book['reverts'] = int(book.get('reverts') or 0) + 1
+        if book['reverts'] > STAGING_MAX_REVERTS:
+            return _staging_abandon(mem, book, '拠点の将軍一覧に主人公が繰り返し確認できない',
+                                    reverts=book['reverts'])
+        book.update(phase='gathering', since=now)
+    progress = int(book.get('since') or now)
+    # Each hop of the hero along the relay is progress (a march takes ~1000
+    # ticks and its arrival is only read from the destination's list).
+    here = hero_castle(mem, spec['path'])
+    if here is not None and here != book.get('hero_at'):
+        book.update(hero_at=here, hero_tick=now)
+    progress = max(progress, int(book.get('hero_tick') or 0))
+    # A march along the relay that left after the last progress counts too:
+    # the hero's (or a follower's) launch is the staging working, even while
+    # its arrival is still unread.
+    for sortie in (_sorties(mem) or {}).values():
+        if (isinstance(sortie, dict) and sortie.get('source') in spec['path']
+                and sortie.get('target') in spec['path'][1:]
+                and type(sortie.get('tick')) is int and sortie['tick'] <= now):
+            progress = max(progress, sortie['tick'])
+    if now - int(book.get('started') or now) > STAGING_MAX_TOTAL:
+        return _staging_abandon(mem, book, f'開始から{STAGING_MAX_TOTAL}tick以内に拠点へ集結できない',
+                                phase=book['phase'], waited=now - int(book.get('started') or now))
+    if book['phase'] == 'ready':
+        for sortie in (_sorties(mem) or {}).values():
+            if (isinstance(sortie, dict) and sortie.get('source') == stage
+                    and chart.is_boss_castle(sortie.get('target') or sortie.get('planned_target'))
+                    and type(sortie.get('tick')) is int):
+                progress = max(progress, sortie['tick'])
+    if now - progress > STAGING_MAX_TICKS:
+        return _staging_abandon(mem, book, f'{book["phase"]}のまま{STAGING_MAX_TICKS}tick進まない',
+                                phase=book['phase'], waited=now - progress)
+    return book['phase']
+
+
+def staging_blocks(mem, order, source):
+    """True when the staging forbids this boss sortie from ``source``.
+
+    While gathering no boss wave leaves anywhere; once ready only the staging
+    castle sends. A read-only roster probe never marches, so it is not blocked.
+    """
+    if not chart.is_boss_castle(order.get('target')) or order.get('purpose') == 'move':
+        return False
+    phase = staging_phase(mem)
+    if phase is None or order.get('roster_probe') is True:
+        return False
+    if phase == 'gathering':
+        return True
+    return source != chart.boss_staging(mem.get('chapter') or 0)['castle']
+
+
+def hero_castle(mem, path):
+    """The relay castle the newest evidence puts the hero in, else None.
+
+    A launched move's target counts as his castle once it is no longer
+    marching (arrival is confirmed by the next list read, which replaces this
+    estimate); a roster or the monthly status that is newer wins.
+    """
+    from ..os_layer.world import NAME
+    world = _world(mem)
+    evidence = []
+    garrison = world.get('garrison') or {}
+    post = mem.get('hero_post')
+    if isinstance(post, dict) and post.get('castle') in path and type(post.get('tick')) is int:
+        # The monthly status names his castle as of its own tick; a roster
+        # that no longer lists him there supersedes it (e2e 2026-11-25: the
+        # arrival was booked in the destination's list while the post still
+        # said アルマムーン, so the next hop was never planned).
+        listed = garrison.get(post['castle'])
+        if not (isinstance(listed, list) and NAME not in listed):
+            evidence.append((post['tick'], 1, post['castle']))
+    ticks = world.get('garrison_tick') or {}
+    for castle in path:
+        names = garrison.get(castle)
+        if isinstance(names, list) and NAME in names:
+            # A list booked without a read has no tick of its own; rank it by
+            # the current tick so it competes with the other evidence.
+            evidence.append((ticks[castle] if type(ticks.get(castle)) is int
+                             else int(mem.get('tick') or 0), 2, castle))
+    for sortie in (_sorties(mem) or {}).values():
+        if (isinstance(sortie, dict) and sortie.get('general') == NAME
+                and sortie.get('target') in path and type(sortie.get('tick')) is int
+                and sortie.get('status') in ('arrived', 'overdue')):
+            evidence.append((sortie['tick'], 0, sortie['target']))
+    best = max(evidence)[2] if evidence else None
+    # The staging only ever walks him forward: a partial roster that does not
+    # list him, or a stale status post, must not send the plan back (e2e
+    # 2026-11-25: hero_at fell from ブラックランド to アルマムーン mid-march).
+    book = mem.get('boss_staging')
+    prior = book.get('hero_at') if isinstance(book, dict) and book.get('chapter') == mem.get('chapter') else None
+    if prior in path and (best is None or path.index(prior) > path.index(best)):
+        return prior
+    return best

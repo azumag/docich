@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v14";
+export const BRAIN_VERSION = "tsuitate-brain-v15";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -506,6 +506,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
       .map((candidate) => ({ candidate, exposure: escapeExposure(observation, checkedKing.square, candidate.usi.slice(2, 4)) }))
       .sort((a, b) => a.exposure - b.exposure || b.candidate.score - a.candidate.score)
       .forEach((entry, index) => { entry.candidate.priority = -index; });
+  }
+  // When the visible escapes are exhausted we are guessing at the hidden
+  // checker. A non-king move can capture it or block the line; a drop can only
+  // block. The 51-game replay A/B preferred those moves over drops in the
+  // response pool: fouls 298→284, captured value 1273→1311, foul-limit ends
+  // 20→14 versus v14. King moves keep their existing order (the final attempt
+  // must not spend itself on a king probe). Ordering only: no legality claim.
+  if (observation.inCheck === true && !prioritizeEscapes) {
+    for (const candidate of scored) {
+      if (candidate.priority === 0 && candidate.role !== "K" && candidate.usi[1] !== "*") {
+        candidate.priority = 1;
+      }
+    }
   }
   const topPriority = Math.max(...scored.map((candidate) => candidate.priority));
   const pool = scored.filter((candidate) => candidate.priority === topPriority);
