@@ -168,8 +168,9 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'egg_battle':
         metric = rec.get('observed_metric') or {}
         egg_need = metric.get('egg_need')
-        if isinstance(egg_need, dict) and egg_need.get('rule') == 'zombie_melee':
-            return 'egg', '敵の召喚獣はゾンビなので、たまごを使わず白兵で対処します。'
+        if isinstance(egg_need, dict) and egg_need.get('rule') == 'melee_only_summon':
+            monster = egg_need.get('enemy_monster') or 'ゾンビ'
+            return 'egg', f'敵の召喚獣は{monster}なので、たまごを使わず白兵で対処します。'
         if rec.get('strategy_variant') == 'egg_battle_use_egg':
             return 'egg', '敵が卵で召喚獣を呼び出しました。こちらもたまごで応戦します。'
         return 'egg', '敵が卵で召喚獣を呼び出しました。コマンドはこうげきで応戦します。'
@@ -354,6 +355,7 @@ def recap_body(runtime_dir, run_state) -> str:
     if not records:
         outcome = {
             'game_over': '今回はゲームオーバーとなりました。',
+            'game_clear': '今回はクリアエンディングまで到達しました。',
             'screen_stalled': '今回は画面停止で終了しました。',
             'input_stalled': '今回は入力停滞で終了しました。',
             'manual_saved_stop': '今回はセーブして終了しました。',
@@ -393,7 +395,7 @@ def recap_body(runtime_dir, run_state) -> str:
     }.get(terminal_reason, '今回の挑戦は、')
     if progress:
         story = [f"{lead}記録上は{'・'.join(progress)}まで進みました。"]
-    elif terminal_reason in {'game_over', 'screen_stalled', 'input_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
+    elif terminal_reason in {'game_over', 'game_clear', 'screen_stalled', 'input_stalled', 'manual_saved_stop', 'manual_forced_stop'}:
         story = [f'{lead.rstrip("、")}ました。確認できた戦況から振り返ります。']
     else:
         story = ['今回の挑戦を、確認できた戦況から振り返ります。']

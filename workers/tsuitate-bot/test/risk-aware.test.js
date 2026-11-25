@@ -29,8 +29,8 @@ test("invalid and exhausted budgets fail closed", () => {
   assert.equal(chooseRiskAwareMove(view(undefined, { attemptBudget: 0 })), null);
 });
 
-test("candidate policy remains opt-in; v14 and profile contract are unchanged", () => {
-  assert.equal(BRAIN_VERSION, "tsuitate-brain-v14");
+test("candidate policy remains opt-in; v15 and profile contract are unchanged", () => {
+  assert.equal(BRAIN_VERSION, "tsuitate-brain-v15");
   assert.equal(chooseMove(view()).brainVersion, BRAIN_VERSION);
   assert.equal(chooseRiskAwareMove(view()).brainVersion, RISK_BRAIN_VERSION);
   assert.equal(chooseRiskAwareMove(view(), { profile: LEGACY_PROFILE }), null);
@@ -222,7 +222,7 @@ test("decisions are deterministic, finite, non-mutating and contain no fictitiou
   assert.ok(!JSON.stringify(decision).includes("probability"));
 });
 
-test("baseline golden digest: 2400 decisions from v14 blob", () => {
+test("baseline golden digest: 2400 decisions from v15 blob", () => {
   let randomState = 123456789;
   const rand = (n) => { randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0; return randomState % n; };
   const roles = ["P", "L", "N", "S", "G", "B", "R", "+P", "+B", "+R"];
@@ -246,5 +246,5 @@ test("baseline golden digest: 2400 decisions from v14 blob", () => {
   }
   const digest = createHash("sha256").update(JSON.stringify(output)).digest("hex");
   assert.equal(output.length, 2400);
-  assert.equal(digest, "966303b3b792e861f0a76ae40b1dac23eb64515fa8ab972fa1da6184e405c6d8");
+  assert.equal(digest, "f53ffc0d6b75662dc2de1021e7096f907fd35963631cfa4b2d26e288316dfbeb");
 });

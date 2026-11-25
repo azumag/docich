@@ -79,6 +79,13 @@ def test_dominant_category(case):
     assert prompt.dominant_category(case["classification"]) == expected
 
 
+def test_sanitize_context_preserves_display_names_ending_in_429():
+    line = "的中率トップは同志Alice429（1回中1回）。"
+    assert prompt.sanitize_context(line) == line
+    assert prompt.sanitize_context("HTTP 429 Too Many Requests") == prompt.NONE
+    assert prompt.sanitize_context("API error: 429") == prompt.NONE
+
+
 def test_dominant_category_rejects_malformed_rows_like_the_legacy_exit_1():
     assert prompt.dominant_category(["not-a-dict"]) is None
     assert prompt.dominant_category("[]") is None

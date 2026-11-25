@@ -378,6 +378,7 @@ def _drop_stale_y_jump(screen, mem):
         _note_failed_jump(mem, jump, 'view_closed')
         _record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
                 screen=screen.kind, observed_metric={'moves': jump.get('moves')},
+                resulting_event='view_closed',
                 reason='全体マップが決定前に閉じたためジャンプを中断として扱う')
     return False
 
@@ -604,6 +605,30 @@ def _start_y_jump(mem, order, name, mode, goal_cell=None):
     return [pad('y')]
 
 
+def _cell_pair(value):
+    """A (world x, world y) pair of ints, never a marker/None lookalike."""
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(item) is int for item in value))
+
+
+def _jump_goal_cell(mem, jump, chapter):
+    """The measured world cell this jump aims at, or None when unresolvable.
+
+    ``chart.boss_castle`` names a boss that chapter 4 spreads over four sites;
+    that label ('ボス') has no cell there. Callers must treat a missing cell as
+    a closed jump, never unpack it.
+    """
+    if chapter not in Y_JUMP_OFFSET:
+        return None
+    try:
+        cell = boss_probe_cell(mem, jump.get('goal'), jump.get('step'))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if _cell_pair(cell):
+        return (cell[0], cell[1])
+    return None
+
+
 def _y_jump_step(mem, frame):
     jump = mem['y_jump']
     jump['seen'] = True
@@ -627,6 +652,7 @@ def _y_jump_step(mem, frame):
         mem.pop('y_jump', None)
         _note_failed_jump(mem, jump, 'cursor_unreadable')
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
+                resulting_event='cursor_unreadable',
                 reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
         return _close_target_jump(mem, jump)
     # The world-map cursor starts on the field view's centre, i.e. the unit
@@ -639,7 +665,23 @@ def _y_jump_step(mem, frame):
         probe = mem.get('boss_pursuit')
         if isinstance(probe, dict) and 'origin_cursor' not in probe:
             probe['origin_cursor'] = list(jump['origin_cursor'])
-    gx, gy = boss_probe_cell(mem, jump['goal'], jump.get('step'))
+    goal_cell = _jump_goal_cell(mem, jump, chapter)
+    if goal_cell is None:
+        # docich#5421 (live g1342 2026-11-24 22:14): a chapter-4 boss_move
+        # recall aimed the Y jump at chart.boss_castle(4) == 'ボス', a name
+        # that chapter's CASTLES does not contain. boss_probe_cell returned
+        # None and the unpack raised TypeError on every observation, so the
+        # brain exited code 2 and sent no input: the whole-map G cursor looked
+        # stopped while the run silently held for the whole transition.
+        # An unresolved goal is never decided; close the view and report it.
+        mem.pop('y_jump', None)
+        _note_failed_jump(mem, jump, 'goal_unresolved')
+        _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
+                observed_metric={'chapter': chapter, 'goal': jump.get('goal')},
+                resulting_event='goal_unresolved',
+                reason='全体マップの目的セルを解決できないため決定せず閉じる')
+        return _close_target_jump(mem, jump)
+    gx, gy = goal_cell
     # A route can aim at a measured cell that is not the castle's own cell
     # (chapter 9's サヌト→オシロガ steps one tile north of the cliff). The
     # caller freezes that planned cell when it opens the jump, so the jump
@@ -647,9 +689,7 @@ def _y_jump_step(mem, frame):
     # forces a fresh jump would quietly restore the bare castle cell and
     # shift the planned sortie.
     planned = jump.get('goal_cell')
-    if (not chart.is_boss_castle(jump.get('goal') or '')
-            and isinstance(planned, (list, tuple)) and len(planned) == 2
-            and all(type(value) is int for value in planned)):
+    if not chart.is_boss_castle(jump.get('goal') or '') and _cell_pair(planned):
         gx, gy = planned
     ox, oy = Y_JUMP_OFFSET[chapter]
     # A moving-boss goal is re-measured while this jump is open (the pursuit
@@ -660,7 +700,7 @@ def _y_jump_step(mem, frame):
     # the jump's lifetime; the redirect order is issued at that cell and the
     # next pursuit cycle re-aims, which still beats never issuing the order.
     if chart.is_boss_castle(jump.get('goal') or ''):
-        if 'goal_cell' not in jump:
+        if not _cell_pair(jump.get('goal_cell')):
             if (jump.get('step') == 'RECALL'
                     and isinstance(gx, int) and isinstance(gy, int)):
                 origin = (int(round((cursor[0] - ox) * 8)),
@@ -684,7 +724,7 @@ def _y_jump_step(mem, frame):
         gx, gy = jump['goal_cell']
     elif (chapter == 10 and jump.get('step') == 'RECALL'
             and isinstance(gx, int) and isinstance(gy, int)):
-        if 'goal_cell' not in jump:
+        if not _cell_pair(jump.get('goal_cell')):
             origin = (int(round((cursor[0] - ox) * 8)),
                       int(round((cursor[1] - oy) * 8)))
             leg = chart.ch10_whitehouse_recall_leg(origin, (gx, gy))
@@ -719,6 +759,7 @@ def _y_jump_step(mem, frame):
         mem.setdefault('y_jumps', {})[f"{jump['step']}:{jump['mode']}"] = Y_JUMP_LIMIT
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 observed_metric={'moves': jump['moves'], 'stationary_reads': jump['still']},
+                resulting_event='cursor_stationary',
                 reason='移動入力後も検出カーソルが動かないため決定せず閉じて通常の移動に戻る')
         return _close_target_jump(mem, jump)
     scales = jump.get('axis_scale')
@@ -757,6 +798,7 @@ def _y_jump_step(mem, frame):
         _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
                 observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
                                  'moves': jump['moves']},
+                resulting_event='residual',
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
         _note_unreachable_goal(mem, jump['goal'], (dx, dy), step=jump.get('step'))
         return _close_target_jump(mem, jump)

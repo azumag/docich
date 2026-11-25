@@ -786,8 +786,11 @@ def test_fierce_preserves_available_egg_cards_and_requires_known_cursor():
     assert p.egg_battle_step(sc, mem) == [p.pad('down')]
     assert 'egg_attack_label' not in mem['battle']
     mem = wounded_egg_memory();mem['battle']['planned_cards'] = ['キャトルミュー']
-    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('a')]
-    assert mem['battle']['egg_attack_label'] == 'こうげき'
+    # Owner 2026-11-25: 卵行が灰色/OCR欠落で使えず切り札を持っているときは、
+    # もうこうげきではなく切り札行を出して札を開く。
+    assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    assert 'egg_attack_label' not in mem['battle']
     mem = wounded_egg_memory();sc = wounded_egg_screen();sc.menu_cursor = None
     assert p.egg_battle_step(sc, mem) == []
     assert p.egg_battle_step(wounded_egg_screen(), mem) == [p.pad('down')]

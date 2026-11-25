@@ -424,6 +424,26 @@ def capture(mem, battle):
             reason='生存する本人の退却選択を記録し、野営化や帰還を断定せず所在を再確認する')
 
 
+def release_for_task(mem, actor):
+    """An explicit monthly task owns this actor; drop a stale recheck row.
+
+    The recheck queue exists for a retreat whose location was never confirmed.
+    A monthly recall/boss_move is a stronger, explicit instruction for the same
+    general, so its camp menu must not be converted into another bounded
+    re-observation (live g1342 2026-11-24 23:41: キッシュ's boss_move was
+    consumed with B because the queue row had already spent all three
+    attempts). Returns whether a row was removed.
+    """
+    queue = _flow(mem).get('retreat_rechecks')
+    if not isinstance(queue, dict) or actor not in queue:
+        return False
+    queue.pop(actor, None)
+    if not queue:
+        _flow(mem).pop('retreat_rechecks', None)
+        _flow(mem).pop('retreat_anonymous_budget', None)
+    return True
+
+
 def _defer(mem, state, reason, *, status='needs_observation'):
     from ..decision_log import _record
     actor = state.get('general') if isinstance(state, dict) and _clean_name(state.get('general')) else None
@@ -1001,7 +1021,8 @@ def _step_flow(screen, mem, frame, existing):
         # recheck therefore fails on the receipt and closes the menu, so the
         # recall keeps the 砦 route (which also tolerates a menu still fading in).
         if (state and queue and state['stage'] == 'menu' and not state.get('named_status')
-                and state.get('camp_kind') != 'dome'):
+                and state.get('camp_kind') != 'dome'
+                and not state.get('task_recall')):
             if budget['reads'] >= roster_receipts.MAX_GENERALS:
                 _defer(mem, state, '未知の匿名camp追加観測の有限予算に達したため帰還を確定しない',
                        status='anonymous_recheck_exhausted')

@@ -1,10 +1,12 @@
-"""The strongest general with an egg goes to a 四季王 site (#3048, owner 2026-10-30).
+"""The nearest eligible egg-holder goes to a 四季王 site.
 
 g1075 08:20-08:27 (v328): each site order went from its chart source because
 that castle held one fit companion, so the lone アルテミス (HP 49 / combat 7),
 カペリーニ (63/7, no egg) and ミュスカデ (57/9, no egg) were sent. The 四季王
 fights as a summoned monster from the first turn with no きりふだ row
 (08:27:56 サマカンテ), and ミュスカデ lost a field summon battle with neither.
+Owner 2026-11-05 established that an egg, not strength, decides a boss fight,
+so among eligible egg-holders the shortest march now wins.
 """
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import orders
@@ -43,11 +45,48 @@ def test_the_strongest_companion_of_every_read_list_goes():
     assert orders._order_hero_alternatives(site_order(), mem, _world(mem)['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
 
 
+def test_the_nearest_comparable_source_beats_a_farther_stronger_one():
+    """g1342 2026-11-24: ポセイドン went from アルカ to 南東 (1159 cells)
+    while ネクスドリア (343) held a comparable アポロン."""
+    mem = memory(アルカ=['ヴィーナス', 'ブカティーニ'],
+                 ミヒラギアン=['アポロン', 'ブカティーニ'])
+    target = '四季王城(南西)'
+    assert orders._distance(4, 'ミヒラギアン', target) < orders._distance(4, 'アルカ', target)
+    assert orders._boss_companion_source(site_order(target), mem) == 'ミヒラギアン'
+
+
+def test_the_nearest_fit_source_is_used_when_none_is_comparable():
+    """A far weak stack is not worth the march over a near fit one."""
+    mem = memory(フヌイヌム=['ブカティーニ', 'ココット'],
+                 ミヒラギアン=['リーキ', 'カシュー'])
+    _world(mem)['garrison'][HOME] = [chart.HERO]  # mark home read, no companion there
+    target = '四季王城(南西)'
+    assert orders._distance(4, 'ミヒラギアン', target) < orders._distance(4, 'フヌイヌム', target)
+    assert orders._boss_companion_source(site_order(target), mem) == 'ミヒラギアン'
+
+
+def test_a_far_planned_source_is_redirected_to_the_nearest_eligible_castle():
+    """The plan may pin the castle where its named general stands; a site is
+    not tied to that general, so the source follows the nearest egg-holder."""
+    mem = memory(アルカ=['ポセイドン', 'ブカティーニ'],
+                 ネクスドリア=['アポロン', 'ブカティーニ'])
+    order = dict(site_order('四季王城(南東)'))
+    order['source'] = 'アルカ'
+    order['general'] = 'ポセイドン'
+    orders._follow_general(mem, order, _world(mem)['garrison'], set(chart.castles(4)))
+    assert _plan_region(mem)['source_override'][order['step']] == 'ネクスドリア'
+    record = [r for r in mem['_records'] if r.get('decision') == 'boss_companion_source'][-1]
+    assert record['observed_metric']['companion_at'] == 'ネクスドリア'
+    assert record['observed_metric']['distance'] == orders._distance(4, 'ネクスドリア', order['target'])
+
+
 def test_a_read_heros_castle_may_send_a_spare_leaving_the_hero_alone():
     mem = memory(ミヒラギアン=['アルテミス', 'ブカティーニ'])
     _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
     # Owner 2026-11-17: the hero alone satisfies the guard, so ゼウス goes.
-    assert orders._boss_companion_source(site_order(), mem) == HOME
+    # 北西 is used here because アルマムーン is the nearest eligible source
+    # for it; 南西 has a nearer ミヒラギアン under the 2026-11-05 rule.
+    assert orders._boss_companion_source(site_order('四季王城(北西)'), mem) == HOME
 
 
 def test_a_lone_general_never_leaves_its_castle_for_a_site():
