@@ -8200,6 +8200,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1512-attack-route-revalidation",
             "hanjuku-chart-v1513-duel-decline-funded",
             "hanjuku-chart-v1514-ch4-site-orders-steady",
+            "hanjuku-chart-v1515-monster-menu-total-cap",
+            "hanjuku-chart-v1517-ch4-site-orders-steady",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
