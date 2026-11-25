@@ -8127,6 +8127,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1457-empty-kit-cancel",
             "hanjuku-chart-v1458-merchant-mickey-priority",
             "hanjuku-chart-v1459-merchant-listed-unknown",
+            "hanjuku-chart-v1461-survival-unconfirmed-ledger",
             "hanjuku-chart-v1460-retreat-unclassified-export",
             "hanjuku-chart-v1460-password-entered-field",
             "hanjuku-chart-v1461-melee-only-ugokazaru",
@@ -8177,6 +8178,8 @@ def _project_corner_state(data):
 
             "hanjuku-chart-v1500-retreat-cards-unclassified",
             "hanjuku-chart-v1500-boss-wave-stock-cards",
+            "hanjuku-chart-v1502-battle-loss-unclassified",
+            "hanjuku-chart-v1503-battle-loss-unclassified",
 
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
