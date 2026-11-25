@@ -416,6 +416,12 @@ class ConsolidateOwnerSourceTests(unittest.TestCase):
         self.assertNotIn("eval ", text)
         self.assertNotIn("bash -c", text)
 
+    def test_helper_fits_the_gateway_stdin_limit(self):
+        # ops/vm_actions/gateway.py execute() refuses stdin > 16 KiB; the
+        # workflow prefixes the mode line before piping the helper.
+        payload = b"ROTATION_OWNER_MODE=apply\n" + SCRIPT.read_bytes()
+        self.assertLessEqual(len(payload), 16384)
+
     def test_script_parses(self):
         result = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -3,30 +3,18 @@ set -euo pipefail
 
 # Fixed, owner-reviewed consolidation of the corner-rotation owner.
 #
-# The production host can end up with two rotation workers: the canonical
-# user timer (docich-corner-rotation.timer) and a hand-installed system-scope
-# legacy unit (docich-soren91-corner.timer/.service) that starts
-# `soren91-corner tick`. Both take the same corner-rotation lock, so only the
-# first one to start owns the rolling rotation and the canonical timer exits
-# with `already-running` forever. This helper makes the canonical user timer
-# the only owner.
+# A hand-installed system-scope docich-soren91-corner.timer/.service competes
+# with the canonical user timer for the same rotation lock: the first one to
+# start owns the rolling rotation and the other waits with already-running
+# forever. This helper makes the user timer the only owner: disable/stop/mask
+# the legacy system units, start the canonical user service, and prove the
+# heartbeat handover inside the 180s park window (parked, not quarantined).
 #
-# It never accepts a unit name or a command as input. It stops the legacy
-# system timer first, then the running legacy worker, masks both legacy units
-# (reversible with unmask), and proves that the canonical user worker took the
-# rotation lock and the heartbeat inside the fresh-heartbeat window
-# (HEARTBEAT_FRESH_S = 180s in src/docich/corner_rotation.py). A running corner
-# is parked rather than quarantined: the heartbeat written by the legacy
-# process is still fresh when the canonical tick starts.
+# No unit name or command is accepted as input. It does not touch the display,
+# audio, stream, encoder or game, the rotation ledger, the locks or the
+# game-switch receipts. Mask is reversible with unmask; unit files stay.
 #
-# It never touches the display/audio/stream/encoder services, the game
-# runtime, the rotation ledger, the locks or the game-switch receipts.
-#
-# ROTATION_OWNER_MODE:
-#   check (default) - read-only projection; no systemctl mutation
-#   apply           - disable/stop/mask the legacy system units, then verify
-#
-# The workflow layer prefixes this variable on stdin; no other input is read.
+# ROTATION_OWNER_MODE (prefixed on stdin): check (default) or apply.
 
 if (( $# != 0 )); then
   printf '%s\n' 'consolidate corner rotation owner accepts no arguments' >&2
@@ -41,10 +29,8 @@ esac
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 DOCICH_PROD_ROOT="${DOCICH_PROD_ROOT:-/home/ubuntu/docich}"
-# The gateway can run with a scrubbed HOME. Resolve the deployed user's unit
-# root from the reviewed production checkout, exactly like the read-only
-# diagnostics collector does, so a scrubbed HOME cannot look like a missing
-# canonical timer.
+# Resolve the deployed user's unit root from the production checkout, like the
+# diagnostics collector, so a scrubbed gateway HOME cannot hide the timer.
 unit_dir="$(dirname "$DOCICH_PROD_ROOT")/.config/systemd/user"
 
 canonical_service="docich-corner-rotation.service"
@@ -103,9 +89,8 @@ user_unit_enabled() {
   esac
 }
 
-# One bounded, sanitized projection of the rotation ledger, the heartbeat and
-# the current lock holder. Only fixed enums, booleans, ids and ages leave the
-# collector; the seed, request payload, paths and unit bodies never do.
+# Bounded projection of the ledger, heartbeat and lock holder. Only fixed
+# enums, booleans, ids and ages leave the collector.
 rotation_projection() {
   python3 - "$DOCICH_PROD_ROOT" <<'PY'
 import json
