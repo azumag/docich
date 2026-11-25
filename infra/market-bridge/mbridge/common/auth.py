@@ -3,6 +3,13 @@
 The broker password/token stays on Windows.  Linux holds only this derived
 bridge key.  Nothing here logs or returns the secret; failure reasons are
 fixed codes.  Tests must use synthetic keys only.
+
+Replay protection is process-local: threads in one bridge process share the
+locked cache, but other processes/replicas do not. A process restart clears the
+cache, so a still-valid signed request may be replayed during the remaining
+skew window. Until a shared durable nonce store exists, deployment must use one
+process per market/key id and rotate the bridge key before restarting an enabled
+endpoint. Keep markets disabled if that operational constraint cannot be met.
 """
 from __future__ import annotations
 
@@ -10,12 +17,51 @@ import base64
 import hashlib
 import hmac
 import re
+import threading
 from typing import Mapping
 
 TS_RE = re.compile(r"\d{10,12}\Z")
 NONCE_RE = re.compile(r"[0-9a-f]{8,64}\Z")
+REPLAY_CACHE_LIMIT = 4096  # fail closed rather than grow without bound under authenticated floods
 HEADER = "X-Docich-Bridge"
 KEY_ID_HEADER = "X-Docich-Key-Id"
+
+# Server-side replay cache: (key_id, nonce) -> expiry timestamp.
+# An accepted nonce is remembered through ``signed_ts + max_skew_s`` (the last
+# instant its signature can still pass the skew check). Entries are lazily evicted after expiry
+# and the cache has a hard cardinality limit; once full, new nonces fail closed
+# until expired entries are removed. Guarded by a lock for concurrent handlers.
+_REPLAY_LOCK = threading.Lock()
+_REPLAY_CACHE: dict[tuple[str, str], float] = {}
+
+
+def reset_replay_cache() -> None:
+    """Test-only: forget every remembered nonce."""
+    with _REPLAY_LOCK:
+        _REPLAY_CACHE.clear()
+
+
+def _record_nonce(key_id: str, nonce: str, signed_ts: int, max_skew_s: float, now: float) -> str:
+    """Return a fixed reason code; capacity exhaustion fails closed.
+
+    Only called after the HMAC signature has been verified, so unauthenticated
+    attempts never pollute the cache.  The entry expires at ``signed_ts +
+    max_skew_s`` and is lazily evicted, so a nonce may legitimately be reused
+    once the skew window has elapsed.
+    """
+    with _REPLAY_LOCK:
+        expiry = signed_ts + max_skew_s
+        # verify_headers accepts the exact skew boundary, so keep the nonce at
+        # e == now and evict only once its signature has become invalid.
+        stale = [k for k, e in _REPLAY_CACHE.items() if e < now]
+        for k in stale:
+            del _REPLAY_CACHE[k]
+        if (key_id, nonce) in _REPLAY_CACHE:
+            return "replay_detected"
+        if len(_REPLAY_CACHE) >= REPLAY_CACHE_LIMIT:
+            return "replay_cache_full"
+        _REPLAY_CACHE[(key_id, nonce)] = expiry
+        return "ok"
 
 
 def key_id_for(secret: bytes) -> str:
@@ -72,4 +118,9 @@ def verify_headers(headers: Mapping[str, str], *, secret: bytes, now: float,
     expected = signature(secret, ts, parts[1])
     if not hmac.compare_digest(parts[2], expected):
         return False, "auth_failed"
+    # Replay guard: reject a nonce already used within the skew window.  Checked
+    # only after a valid signature so invalid attempts never occupy the cache.
+    replay_reason = _record_nonce(key_id, parts[1], ts, max_skew_s, now)
+    if replay_reason != "ok":
+        return False, replay_reason
     return True, "ok"

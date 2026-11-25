@@ -1,6 +1,19 @@
 # Non-secret structure only. Real URLs/FQDNs, key ids and epochs come from the
 # owner-private config. No broker password/token or bridge key value goes here.
 # Placeholders must be replaced before a real (future, separately approved) run.
+#
+# Sequence contract (see mbridge.common.contract):
+#   - snapshot.sequence   : published-envelope sequence issued by the Linux
+#                           provider (monotonic counter, never derived from the
+#                           Windows bridge).
+#   - upstream_sequence   : bridge-side (Windows adapter) sequence preserved
+#                           verbatim; a non-increasing value is rejected as
+#                           sequence_regressed.
+#
+# HMAC replay guard: auth.py uses a process-local nonce cache. Run exactly one
+# bridge process per market/key id (no multi-worker/replica/overlap). The cache
+# is lost on restart; rotate the key before restarting an enabled endpoint, or
+# keep the market disabled until a shared durable nonce store is implemented.
 
 [bridge]
 market = "stocks"              # stocks | fx

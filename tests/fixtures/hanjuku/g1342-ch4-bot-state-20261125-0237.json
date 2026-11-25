@@ -1,0 +1,5864 @@
+{
+ "bot_version": "hanjuku-chart-v1483-ch12-boss-staging",
+ "map_cursor_feedback": null,
+ "menu_navigation_reading": null,
+ "nav_hold_feedback": null,
+ "no_input_streak": 0,
+ "phase": "field",
+ "phase_step": 1,
+ "policy": {
+  "_run_identity": {
+   "game": "hanjuku-hero",
+   "generation": 1342,
+   "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+   "runtime_id": "g1342-1fe0734c"
+  },
+  "_world_units_prev": [
+   [
+    133,
+    86,
+    137,
+    91
+   ]
+  ],
+  "align_offset": {},
+  "align_stall": {},
+  "align_steps": {},
+  "approx_fallback": true,
+  "approx_map": true,
+  "army_count_check": {
+   "observations": 1,
+   "result": "unverified",
+   "scope": [
+    {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    4,
+    "9-4"
+   ],
+   "stage": "unverified"
+  },
+  "arrival_probe_tick": {
+   "アルカ": 48573,
+   "アルマムーン": 67011,
+   "ネクスドリア": 61272,
+   "ビクトリア": 48559,
+   "フヌイヌム": 66619,
+   "マラコビア": 67028,
+   "ミヒラギアン": 48587
+  },
+  "battle_seen": null,
+  "boss_camp_exempt_scope": [
+   4,
+   "9-4"
+  ],
+  "boss_companion_source_wait": {
+   "A:d1b35dd2:J3": 64023
+  },
+  "boss_companion_source_wait_expired": {},
+  "boss_hp_history": [
+   {
+    "castle": "四季王城(北東)",
+    "general": "デュオニソス",
+    "hp": 281,
+    "monster": "ウイナッツォ",
+    "tick": 54292
+   },
+   {
+    "castle": "四季王城(北東)",
+    "general": "デュオニソス",
+    "hp": 260,
+    "monster": "ウイナッツォ",
+    "tick": 54309
+   },
+   {
+    "castle": "四季王城(南西)",
+    "general": "ポセイドン",
+    "hp": 614,
+    "monster": "サマカンテ",
+    "tick": 65749
+   },
+   {
+    "castle": "四季王城(南西)",
+    "general": "ポセイドン",
+    "hp": 570,
+    "monster": "サマカンテ",
+    "tick": 65847
+   }
+  ],
+  "boss_hp_seen": {
+   "castle": "四季王城(南西)",
+   "general": "ポセイドン",
+   "hp": 570,
+   "monster": "サマカンテ",
+   "tick": 65847
+  },
+  "boss_relaunch": {
+   "4-B2": 1,
+   "4-B3": 2,
+   "A:5b6a4de2:N4": 1
+  },
+  "boss_step_probe": {},
+  "boss_step_rearm": {},
+  "camp_hunt_tick": 49402,
+  "camp_status_seen": {
+   "actors": {
+    "ブカティーニ": {
+     "signature": [
+      42,
+      42,
+      "ワンダーエッグ",
+      4,
+      false
+     ],
+     "tick": 66452
+    }
+   },
+   "scope": {
+    "chapter": 4,
+    "identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    }
+   }
+  },
+  "cancelled_sortie_counts": {
+   "4-B2": 1
+  },
+  "cancelled_sortie_gates": {
+   "4-B2": {
+    "count": 1,
+    "general": "ポセイドン",
+    "month": "8-11",
+    "source": "アルマムーン",
+    "target": null,
+    "tick": 63868
+   }
+  },
+  "captured": [
+   "ミヒラギアン",
+   "アルカ",
+   "ビクトリア",
+   "マラコビア",
+   "フヌイヌム",
+   "ネクスドリア"
+  ],
+  "card_census_abort": {
+   "chapter": 4,
+   "month": "6-7",
+   "reason": "observation_limit"
+  },
+  "card_census_abort_prev": {
+   "chapter": 4,
+   "reason": "observation_limit",
+   "streak": 2
+  },
+  "card_census_disabled": {
+   "chapter": 4,
+   "reason": "observation_limit",
+   "streak": 2
+  },
+  "card_census_due": {
+   "month": "6-7",
+   "overdue": true,
+   "reason": "ledger_drift",
+   "reasons": [
+    "ledger_drift",
+    "holding_limit_refusal"
+   ],
+   "tick": 41334,
+   "wait_key": null
+  },
+  "card_drop": {
+   "4-A1": [
+    "ブラッキー",
+    "クースカン"
+   ],
+   "4-A2": [
+    "エンジェリン",
+    "マグネガキン"
+   ],
+   "4-C1": [
+    "グリンボー",
+    "グリンボー",
+    "ファバード"
+   ]
+  },
+  "card_ledger_v": 3,
+  "card_miss": {},
+  "card_skip_departure": {
+   "A:da7eed9c:Me7e7db": 1,
+   "I:604494:fb19120a": 1
+  },
+  "card_stock": {
+   "エンジェリン": 0,
+   "クースカン": 99,
+   "グリンボー": 98,
+   "バグストーム": 10,
+   "バルムンク": 0,
+   "ファバード": 0,
+   "ブラッキー": 99,
+   "マグネガキン": 0
+  },
+  "card_unreadable": {},
+  "card_zero_at_start": {
+   "cards": [
+    "エンジェリン",
+    "バルムンク",
+    "ファバード",
+    "マグネガキン"
+   ],
+   "step": "A:1752affd:K3"
+  },
+  "cards_capped": {
+   "4-A2": [
+    "エンジェリン"
+   ],
+   "4-B4": [
+    "エンジェリン"
+   ]
+  },
+  "castle_defenders": {},
+  "castle_income": {
+   "アルマムーン": {
+    "chapter": 4,
+    "income": 60,
+    "month": "9-4",
+    "tick": 66989
+   },
+   "ネクスドリア": {
+    "chapter": 4,
+    "income": 55,
+    "month": "9-4",
+    "tick": 66891
+   },
+   "フヌイヌム": {
+    "chapter": 4,
+    "income": 58,
+    "month": "8-7",
+    "tick": 60507
+   },
+   "ミヒラギアン": {
+    "chapter": 4,
+    "income": 56,
+    "month": "8-10",
+    "tick": 63324
+   }
+  },
+  "castle_jump_menu_failures": {
+   "4-A2": 1,
+   "4-B2": 3,
+   "4-B4": 1,
+   "A:9a554cd3:S1": 1,
+   "I:33fca5:20cf06c1": 2,
+   "I:7f0ae6:e6f4d000": 1,
+   "I:9a554c:e6f4d000": 1,
+   "I:e738ce:d2f1d4db": 1
+  },
+  "castle_ownership": {
+   "アルカ": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67057
+   },
+   "アルマムーン": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67057
+   },
+   "ネクスドリア": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67015
+   },
+   "ビクトリア": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67057
+   },
+   "フヌイヌム": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67057
+   },
+   "マラコビア": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67057
+   },
+   "ミヒラギアン": {
+    "chapter": 4,
+    "owner": "own",
+    "tick": 67057
+   }
+  },
+  "castle_verified": "A:1752affd:K3",
+  "chapter": 4,
+  "chapter_evidence": "chapter_end_save_party",
+  "chapter_transition_pending": true,
+  "chart_adjust": {
+   "interim_count": 4,
+   "interim_steps": {
+    "move|アルマムーン|マラコビア|—|probe:66780": "I:1752af:53f27ed5",
+    "move|フヌイヌム|アルマムーン|—|probe:65898": "I:1752af:31ad6fdb",
+    "move|マラコビア|アルマムーン|—|probe:66632": "I:1752af:1c0d7e8c",
+    "move|マラコビア|アルマムーン|ヴィーナス": "I:1752af:b9343a14"
+   },
+   "request_digest": "204fcca272943c803c66dd08ebfb00d48d6243b19133c1becb31bd64e6844dd4",
+   "request_id": "1752affdf995d5ce"
+  },
+  "chart_adjust_signature": [
+   "1752affdf995d5ce",
+   [
+    "A:1752affd:K3",
+    "A:1752affd:K4"
+   ]
+  ],
+  "chart_edition": "steady",
+  "chart_plan_tick": 67030,
+  "country_general_count": {
+   "count": 32,
+   "identity": {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   "joined": [],
+   "scope": [
+    4,
+    "9-4"
+   ],
+   "tick": 66700
+  },
+  "country_income": {
+   "income": 405,
+   "scope": [
+    4,
+    "9-4"
+   ],
+   "tick": 66700
+  },
+  "country_soldier_count": {
+   "count": 40,
+   "identity": {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   "scope": [
+    4,
+    "9-4"
+   ],
+   "tick": 66700
+  },
+  "country_wages": {
+   "scope": [
+    4,
+    "9-4"
+   ],
+   "tick": 66700,
+   "wages": 191
+  },
+  "cursor": [
+   898,
+   909
+  ],
+  "defense_seen": {
+   "アルカ": 60836,
+   "アルマムーン": 46422,
+   "ネクスドリア": 66907,
+   "ビクトリア": 45076,
+   "フヌイヌム": 51978,
+   "マラコビア": 47616,
+   "ミヒラギアン": 66644
+  },
+  "dropper_card_kit": {},
+  "duel_event": {
+   "text": "8ねん4のつき3088Gしんらいしていたパプリカにうらぎられたどうし……",
+   "tick": 58925
+  },
+  "egg_battle": false,
+  "egg_memory": {
+   "どうし": {
+    "broken": false,
+    "egg": "エラベルエッグ",
+    "observed_tick": 59973,
+    "present": true,
+    "source": "status",
+    "uses": null
+   },
+   "アテナ": {
+    "broken": false,
+    "egg": "スーパーエッグ",
+    "observed_tick": 44591,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "アマンディーヌ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60132,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "アルテミス": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 66835,
+    "present": true,
+    "source": "status",
+    "uses": 4
+   },
+   "エシャロット": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 67054,
+    "present": true,
+    "source": "sortie",
+    "uses": 4
+   },
+   "エピィ": {
+    "broken": false,
+    "egg": "スロットエッグ",
+    "observed_tick": 38488,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "カシュー": {
+    "broken": false,
+    "egg": "イビルエッグ",
+    "observed_tick": 60528,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "ガスパチョ": {
+    "broken": false,
+    "egg": "スーパーエッグ",
+    "observed_tick": 51839,
+    "present": true,
+    "source": "status",
+    "uses": null
+   },
+   "ガルバンゾー": {
+    "broken": false,
+    "egg": "イビルエッグ",
+    "observed_tick": 46638,
+    "present": true,
+    "source": "recovery",
+    "uses": null
+   },
+   "キッシュ": {
+    "broken": false,
+    "egg": "スーパーエッグ",
+    "observed_tick": 66440,
+    "present": true,
+    "source": "status",
+    "uses": null
+   },
+   "キャンディー": {
+    "broken": false,
+    "egg": "いっぱつエッグ",
+    "observed_tick": 34108,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "キール": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 59998,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "クミン": {
+    "broken": false,
+    "egg": "カラフルエッグ",
+    "observed_tick": 16424,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "クランベリー": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 59991,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ココット": {
+    "broken": true,
+    "egg": null,
+    "observed_tick": 60049,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "シェーブル": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 60042,
+    "present": true,
+    "source": "status",
+    "uses": null
+   },
+   "シャルドネ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60020,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ジェラート": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 31367,
+    "present": true,
+    "source": "recovery",
+    "uses": null
+   },
+   "セミヨン": {
+    "broken": false,
+    "egg": "カラフルエッグ",
+    "observed_tick": 47469,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "セルリアク": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 66788,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ゼウス": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 29552,
+    "present": true,
+    "source": "recovery",
+    "uses": null
+   },
+   "ソーピニヨン": {
+    "broken": false,
+    "egg": "イビルエッグ",
+    "observed_tick": 42119,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "タピオカ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60107,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "チコリ": {
+    "broken": false,
+    "egg": "イビルエッグ",
+    "observed_tick": 42601,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "デュオニソス": {
+    "broken": true,
+    "egg": null,
+    "observed_tick": 60077,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "デーメーテール": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60066,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "トレビス": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60058,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "パプリカ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 54049,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ビーツ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60030,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ピオーネ": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 39052,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "ピスタチオ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60014,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ブカティーニ": {
+    "broken": false,
+    "egg": "ワンダーエッグ",
+    "observed_tick": 66815,
+    "present": true,
+    "source": "status",
+    "uses": 4
+   },
+   "ヘスティア": {
+    "broken": false,
+    "egg": "イビルエッグ",
+    "observed_tick": 45011,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "ヘパイストス": {
+    "broken": false,
+    "egg": "スーパーエッグ",
+    "observed_tick": 50081,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   },
+   "ヘラ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60118,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ヘーゼル": {
+    "broken": false,
+    "egg": "イビルエッグ",
+    "observed_tick": 66827,
+    "present": true,
+    "source": "status",
+    "uses": 4
+   },
+   "ポワソン": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60005,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "マカデミア": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60073,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ミュスカデ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60084,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ミルフィーユ": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60034,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ユイートル": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60090,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ライム": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60150,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ラズベリー": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60126,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "リーキ": {
+    "broken": false,
+    "egg": "カラフルエッグ",
+    "observed_tick": 62483,
+    "present": true,
+    "source": "status",
+    "uses": null
+   },
+   "レモン": {
+    "broken": true,
+    "egg": null,
+    "observed_tick": 63209,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ロックフォール": {
+    "broken": false,
+    "egg": null,
+    "observed_tick": 60097,
+    "present": false,
+    "source": "status",
+    "uses": null
+   },
+   "ヴィーナス": {
+    "broken": false,
+    "egg": "スーパーエッグ",
+    "observed_tick": 66637,
+    "present": true,
+    "source": "sortie",
+    "uses": null
+   }
+  },
+  "egg_recheck": [
+   "ヘーゼル"
+  ],
+  "egg_row_unavailable_logged": "デュオニソス",
+  "egg_types": {
+   "どうし": "エラベルエッグ",
+   "アテナ": "スーパーエッグ",
+   "アルテミス": "ワンダーエッグ",
+   "エシャロット": "ワンダーエッグ",
+   "エピィ": "スロットエッグ",
+   "カシュー": "イビルエッグ",
+   "ガスパチョ": "スーパーエッグ",
+   "ガルバンゾー": "イビルエッグ",
+   "キッシュ": "スーパーエッグ",
+   "キャンディー": "いっぱつエッグ",
+   "クミン": "カラフルエッグ",
+   "ココット": "カラフルエッグ",
+   "シェーブル": "ワンダーエッグ",
+   "ジェラート": "ワンダーエッグ",
+   "セミヨン": "カラフルエッグ",
+   "セルリアク": "いっぱつエッグ",
+   "ゼウス": "ワンダーエッグ",
+   "ソーピニヨン": "イビルエッグ",
+   "チコリ": "イビルエッグ",
+   "デュオニソス": "カラフルエッグ",
+   "ピオーネ": "ワンダーエッグ",
+   "ブカティーニ": "ワンダーエッグ",
+   "ヘスティア": "イビルエッグ",
+   "ヘパイストス": "スーパーエッグ",
+   "ヘーゼル": "イビルエッグ",
+   "リーキ": "カラフルエッグ",
+   "レモン": "ワンダーエッグ",
+   "ヴィーナス": "スーパーエッグ"
+  },
+  "egg_uses": {
+   "アルテミス": 4,
+   "エシャロット": 4,
+   "ブカティーニ": 4,
+   "ヘーゼル": 4
+  },
+  "egg_zero_owners": [],
+  "equivalent_launch_miss": {
+   "4|アルカ|フヌイヌム|move": {
+    "count": 1,
+    "fingerprint": {
+     "chapter": 4,
+     "month": "8-5",
+     "purpose": "move",
+     "source": "アルカ",
+     "source_owned": true,
+     "target": "フヌイヌム",
+     "target_lost": false,
+     "target_owned": true
+    },
+    "step": "I:e738ce:b3c60958"
+   },
+   "4|アルマムーン|マラコビア|retake": {
+    "count": 1,
+    "fingerprint": {
+     "chapter": 4,
+     "month": "7-5",
+     "purpose": "retake",
+     "source": "アルマムーン",
+     "source_owned": true,
+     "target": "マラコビア",
+     "target_lost": false,
+     "target_owned": true
+    },
+    "step": "I:b76cae:4896dceb"
+   }
+  },
+  "equivalent_sortie_cancels": {
+   "4|ミヒラギアン|ネクスドリア|attack": {
+    "count": 1,
+    "decision": "sortie_held_source_defender",
+    "fingerprint": {
+     "available": [
+      "ヘスティア"
+     ],
+     "chapter": 4,
+     "hero_broken": false,
+     "month": "6-7",
+     "present": [
+      "ヘスティア"
+     ],
+     "purpose": "attack",
+     "source": "ミヒラギアン",
+     "source_owned": true,
+     "target": "ネクスドリア",
+     "target_lost": false,
+     "target_owned": false,
+     "unplaced": []
+    },
+    "step": "A:da7eed9c:M72961b",
+    "suppressed_steps": [
+     "A:da7eed9c:M72961b"
+    ]
+   }
+  },
+  "failed_local_step": {
+   "4-A2": 42743,
+   "4-B1": 47610,
+   "4-B4": 61719,
+   "H3": 63651,
+   "S1": 54989,
+   "S3": 55308,
+   "S4": 55899
+  },
+  "flow": {
+   "boss_companion_wait": {
+    "A:0cb2c8e8:J1": 52236,
+    "A:76adc17c:F1": 52085
+   },
+   "boss_companion_wait_expired": {},
+   "camp_detours": {},
+   "deploy_holds": {
+    "4-A1": 7,
+    "4-A2": 11,
+    "4-B1": 2,
+    "4-B2": 4,
+    "4-B3": 8,
+    "4-B4": 3,
+    "4-C1": 8,
+    "A:5b6a4de2:N4": 4,
+    "A:da7eed9c:Me7e7db": 9,
+    "I:33fca5:14090456": 1,
+    "I:3ffead:19e83355": 2,
+    "I:3ffead:3aa25aa0": 3,
+    "I:5f319b:9f4d0dad": 2,
+    "I:604494:fb19120a": 4,
+    "I:6658e4:56aef184": 1,
+    "I:81e158:04114122": 2,
+    "I:9a554c:21859796": 1,
+    "I:a9a238:dbb2de12": 1,
+    "I:d1b35d:4b0345d7": 1,
+    "I:e738ce:9f4d0dad": 1
+   },
+   "launch_miss": {
+    "I:66aa80:12afbf77": 1,
+    "I:b76cae:4896dceb": 1,
+    "I:e738ce:ab71eb97": 2,
+    "I:e738ce:b3c60958": 1,
+    "I:e86bd3:8c522e97": 1
+   },
+   "recall_goal_failures": {
+    "127,124": {
+     "アルマムーン": 1
+    },
+    "130,124": {
+     "アルマムーン": 1
+    },
+    "141,120": {
+     "アルマムーン": 1
+    }
+   },
+   "recall_skip": {
+    "tick": 66601
+   },
+   "recall_skip_target": {
+    "chapter": 4,
+    "target": [
+     140,
+     120
+    ]
+   },
+   "recall_verification": {
+    "a_inputs": 1,
+    "camp_body": [
+     149,
+     130
+    ],
+    "general": "ブカティーニ",
+    "goal": "アルマムーン",
+    "input_sent": true,
+    "interrupted": false,
+    "last_seen": [
+     140,
+     120
+    ],
+    "menu_reopens": 2,
+    "picker_closed": true,
+    "picker_confirmed": true,
+    "request_trace": {
+     "decision_id": "g1342-1fe0734c:1342:66600",
+     "frame_sha256": "b79a3507938f7e3bac7ca2e0f578aedf0c326e9b5b1e39e08a52bccf766704f6",
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "planned_at": 1795540827.792234,
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "requested_tick": 66600,
+    "stage": "await_dispatch",
+    "status": "dispatched",
+    "steps": 1,
+    "target": [
+     140,
+     120
+    ],
+    "target_cell": [
+     144,
+     127
+    ],
+    "task_recall": true
+   },
+   "retreat_camp_episode": {
+    "chapter": 4,
+    "identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "serial": 38,
+    "started_tick": 65590
+   },
+   "sortie_attempt": {
+    "confirmation_tick": 67054,
+    "step": "A:1752affd:K3",
+    "target_seen": true
+   }
+  },
+  "general_statuses": {
+   "complete": true,
+   "dirty": {
+    "ヘーゼル": [
+     "egg",
+     "hp",
+     "location"
+    ]
+   },
+   "identity": {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   "pending_joins": [],
+   "scope": [
+    4,
+    "9-4"
+   ],
+   "statuses": {
+    "どうし": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": "エラベルエッグ",
+     "general": "どうし",
+     "hp": 90,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 90,
+     "status_text": "しろのなかにいます",
+     "tick": 59973,
+     "uses": 4,
+     "wage": 0
+    },
+    "アマンディーヌ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "アマンディーヌ",
+     "hp": 59,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 59,
+     "status_text": "しろのなかにいます",
+     "tick": 60132,
+     "uses": null,
+     "wage": 10
+    },
+    "アルテミス": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ミヒラギアン",
+     "castle_evidence": "roster_triangle",
+     "egg": "ワンダーエッグ",
+     "general": "アルテミス",
+     "hp": 49,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       51,
+       113,
+       57,
+       119
+      ],
+      "castle_candidate": "ミヒラギアン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "ミヒラギアン",
+       "distance": 5.7,
+       "field": [
+        316,
+        756
+       ],
+       "icons": 8,
+       "marker": [
+        51,
+        113,
+        57,
+        119
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        56.5,
+        124.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 49,
+     "status_text": "しろのなかにいます",
+     "tick": 66835,
+     "uses": 4,
+     "wage": 4
+    },
+    "エシャロット": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ネクスドリア",
+     "egg": "ワンダーエッグ",
+     "general": "エシャロット",
+     "hp": 46,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       83,
+       69,
+       89,
+       74
+      ],
+      "marker_reason": "army_marker_fallback",
+      "source": "roster_triangle_candidate"
+     },
+     "max_hp": 46,
+     "status_text": "しろのなかにいます",
+     "tick": 67040,
+     "uses": 4,
+     "wage": 7
+    },
+    "カシュー": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "フヌイヌム",
+     "castle_evidence": "roster_triangle",
+     "egg": "イビルエッグ",
+     "general": "カシュー",
+     "hp": 39,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       103,
+       61,
+       109,
+       67
+      ],
+      "castle_candidate": "フヌイヌム",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "フヌイヌム",
+       "distance": 8.9,
+       "field": [
+        736,
+        340
+       ],
+       "icons": 8,
+       "marker": [
+        103,
+        61,
+        109,
+        67
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        109.0,
+        72.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 39,
+     "status_text": "しろのなかにいます",
+     "tick": 60144,
+     "uses": 4,
+     "wage": 5
+    },
+    "キッシュ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "マラコビア",
+     "castle_evidence": "roster_triangle",
+     "egg": "スーパーエッグ",
+     "general": "キッシュ",
+     "hp": 26,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       43,
+       83,
+       49
+      ],
+      "castle_candidate": "マラコビア",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "マラコビア",
+       "distance": 5.7,
+       "field": [
+        524,
+        196
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        43,
+        83,
+        49
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        54.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 26,
+     "status_text": "しろのなかにいます",
+     "tick": 66440,
+     "uses": 4,
+     "wage": 9
+    },
+    "キール": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "キール",
+     "hp": 65,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 65,
+     "status_text": "しろのなかにいます",
+     "tick": 59998,
+     "uses": null,
+     "wage": 14
+    },
+    "クランベリー": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "クランベリー",
+     "hp": 51,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 51,
+     "status_text": "しろのなかにいます",
+     "tick": 59991,
+     "uses": null,
+     "wage": 6
+    },
+    "ココット": {
+     "broken": true,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "previous_named_roster",
+     "egg": null,
+     "general": "ココット",
+     "hp": 24,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       192,
+       161,
+       198,
+       167
+      ],
+      "icons_seen": 8,
+      "marker_reason": "scroll_arrow",
+      "source": "selection_marker"
+     },
+     "max_hp": 24,
+     "status_text": "しろのなかにいます",
+     "tick": 67011,
+     "uses": null,
+     "wage": 1
+    },
+    "シェーブル": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "マラコビア",
+     "castle_evidence": "roster_triangle",
+     "egg": "ワンダーエッグ",
+     "general": "シェーブル",
+     "hp": 27,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       43,
+       83,
+       49
+      ],
+      "castle_candidate": "マラコビア",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "マラコビア",
+       "distance": 5.7,
+       "field": [
+        524,
+        196
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        43,
+        83,
+        49
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        54.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 27,
+     "status_text": "しろのなかにいます",
+     "tick": 60042,
+     "uses": 4,
+     "wage": 8
+    },
+    "シャルドネ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "シャルドネ",
+     "hp": 56,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 56,
+     "status_text": "しろのなかにいます",
+     "tick": 60020,
+     "uses": null,
+     "wage": 7
+    },
+    "セルリアク": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ミヒラギアン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "セルリアク",
+     "hp": 32,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       51,
+       113,
+       57,
+       119
+      ],
+      "castle_candidate": "ミヒラギアン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "ミヒラギアン",
+       "distance": 5.7,
+       "field": [
+        316,
+        756
+       ],
+       "icons": 8,
+       "marker": [
+        51,
+        113,
+        57,
+        119
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        56.5,
+        124.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 32,
+     "status_text": "しろのなかにいます",
+     "tick": 66788,
+     "uses": null,
+     "wage": 3
+    },
+    "タピオカ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "タピオカ",
+     "hp": 50,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 50,
+     "status_text": "しろのなかにいます",
+     "tick": 60107,
+     "uses": null,
+     "wage": 3
+    },
+    "デュオニソス": {
+     "broken": true,
+     "carry_waiting": false,
+     "castle": "フヌイヌム",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "デュオニソス",
+     "hp": 54,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       103,
+       61,
+       109,
+       67
+      ],
+      "castle_candidate": "フヌイヌム",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "フヌイヌム",
+       "distance": 8.9,
+       "field": [
+        736,
+        340
+       ],
+       "icons": 8,
+       "marker": [
+        103,
+        61,
+        109,
+        67
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        109.0,
+        72.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 54,
+     "status_text": "しろのなかにいます",
+     "tick": 60077,
+     "uses": null,
+     "wage": 8
+    },
+    "デーメーテール": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "デーメーテール",
+     "hp": 49,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 49,
+     "status_text": "しろのなかにいます",
+     "tick": 60066,
+     "uses": null,
+     "wage": 5
+    },
+    "トレビス": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "トレビス",
+     "hp": 66,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 66,
+     "status_text": "しろのなかにいます",
+     "tick": 60058,
+     "uses": null,
+     "wage": 4
+    },
+    "ビーツ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ミヒラギアン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ビーツ",
+     "hp": 29,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       51,
+       113,
+       57,
+       119
+      ],
+      "castle_candidate": "ミヒラギアン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "ミヒラギアン",
+       "distance": 5.7,
+       "field": [
+        316,
+        756
+       ],
+       "icons": 8,
+       "marker": [
+        51,
+        113,
+        57,
+        119
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        56.5,
+        124.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 29,
+     "status_text": "しろのなかにいます",
+     "tick": 60030,
+     "uses": null,
+     "wage": 4
+    },
+    "ピスタチオ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ピスタチオ",
+     "hp": 49,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 49,
+     "status_text": "しろのなかにいます",
+     "tick": 60014,
+     "uses": null,
+     "wage": 9
+    },
+    "ブカティーニ": {
+     "broken": false,
+     "carry_waiting": false,
+     "egg": "ワンダーエッグ",
+     "general": "ブカティーニ",
+     "hp": 42,
+     "location": "march",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       44,
+       51,
+       50,
+       57
+      ],
+      "icons_seen": 8,
+      "marker_distance": 130.8,
+      "marker_field": [
+       240,
+       216
+      ],
+      "marker_nearest": "四季王城(北西)",
+      "marker_reason": "out_of_tolerance",
+      "source": "selection_marker"
+     },
+     "max_hp": 42,
+     "status_text": "しんぐんちゅうです",
+     "tick": 66815,
+     "uses": 4,
+     "wage": 11
+    },
+    "ヘラ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ヘラ",
+     "hp": 59,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 59,
+     "status_text": "しろのなかにいます",
+     "tick": 60118,
+     "uses": null,
+     "wage": 6
+    },
+    "ヘーゼル": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ネクスドリア",
+     "castle_evidence": "roster_triangle",
+     "egg": "イビルエッグ",
+     "general": "ヘーゼル",
+     "hp": 33,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       101,
+       113,
+       107,
+       119
+      ],
+      "castle_candidate": "ネクスドリア",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "ネクスドリア",
+       "distance": 5.7,
+       "field": [
+        716,
+        756
+       ],
+       "icons": 8,
+       "marker": [
+        101,
+        113,
+        107,
+        119
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        106.5,
+        124.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 33,
+     "status_text": "しろのなかにいます",
+     "tick": 66827,
+     "uses": 4,
+     "wage": 3
+    },
+    "ポワソン": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ミヒラギアン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ポワソン",
+     "hp": 80,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       51,
+       113,
+       57,
+       119
+      ],
+      "castle_candidate": "ミヒラギアン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "ミヒラギアン",
+       "distance": 5.7,
+       "field": [
+        316,
+        756
+       ],
+       "icons": 8,
+       "marker": [
+        51,
+        113,
+        57,
+        119
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        56.5,
+        124.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 80,
+     "status_text": "しろのなかにいます",
+     "tick": 60005,
+     "uses": null,
+     "wage": 4
+    },
+    "マカデミア": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "マカデミア",
+     "hp": 34,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 34,
+     "status_text": "しろのなかにいます",
+     "tick": 60073,
+     "uses": null,
+     "wage": 6
+    },
+    "ミュスカデ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ミュスカデ",
+     "hp": 57,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 57,
+     "status_text": "しろのなかにいます",
+     "tick": 60084,
+     "uses": null,
+     "wage": 5
+    },
+    "ミルフィーユ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "ビクトリア",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ミルフィーユ",
+     "hp": 39,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       129,
+       83,
+       135
+      ],
+      "castle_candidate": "ビクトリア",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "ビクトリア",
+       "distance": 5.7,
+       "field": [
+        524,
+        884
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        129,
+        83,
+        135
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        140.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 39,
+     "status_text": "しろのなかにいます",
+     "tick": 60034,
+     "uses": null,
+     "wage": 2
+    },
+    "ユイートル": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ユイートル",
+     "hp": 57,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 57,
+     "status_text": "しろのなかにいます",
+     "tick": 60090,
+     "uses": null,
+     "wage": 9
+    },
+    "ライム": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ライム",
+     "hp": 69,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 69,
+     "status_text": "しろのなかにいます",
+     "tick": 60150,
+     "uses": null,
+     "wage": 10
+    },
+    "ラズベリー": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ラズベリー",
+     "hp": 45,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 45,
+     "status_text": "しろのなかにいます",
+     "tick": 60126,
+     "uses": null,
+     "wage": 7
+    },
+    "リーキ": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルカ",
+     "castle_evidence": "roster_triangle",
+     "egg": "カラフルエッグ",
+     "general": "リーキ",
+     "hp": 30,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       51,
+       61,
+       57,
+       67
+      ],
+      "castle_candidate": "アルカ",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルカ",
+       "distance": 5.7,
+       "field": [
+        316,
+        340
+       ],
+       "icons": 8,
+       "marker": [
+        51,
+        61,
+        57,
+        67
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        56.5,
+        72.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 30,
+     "status_text": "しろのなかにいます",
+     "tick": 62483,
+     "uses": 4,
+     "wage": 5
+    },
+    "レモン": {
+     "broken": true,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "レモン",
+     "hp": 27,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 9,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 44.2,
+       "field": [
+        564,
+        524
+       ],
+       "icons": 9,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        12,
+        30
+       ],
+       "point": [
+        82.5,
+        95.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 27,
+     "status_text": "しろのなかにいます",
+     "tick": 63209,
+     "uses": null,
+     "wage": 9
+    },
+    "ロックフォール": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "アルマムーン",
+     "castle_evidence": "roster_triangle",
+     "egg": null,
+     "general": "ロックフォール",
+     "hp": 57,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       85,
+       83,
+       91
+      ],
+      "castle_candidate": "アルマムーン",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "アルマムーン",
+       "distance": 5.7,
+       "field": [
+        524,
+        532
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        85,
+        83,
+        91
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        96.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 57,
+     "status_text": "しろのなかにいます",
+     "tick": 60097,
+     "uses": null,
+     "wage": 4
+    },
+    "ヴィーナス": {
+     "broken": false,
+     "carry_waiting": false,
+     "castle": "マラコビア",
+     "castle_evidence": "roster_triangle",
+     "egg": "スーパーエッグ",
+     "general": "ヴィーナス",
+     "hp": 82,
+     "location": "castle",
+     "location_observed": true,
+     "marker": {
+      "box": [
+       77,
+       43,
+       83,
+       49
+      ],
+      "castle_candidate": "マラコビア",
+      "icons_seen": 8,
+      "mapping": {
+       "castle": "マラコビア",
+       "distance": 5.7,
+       "field": [
+        524,
+        196
+       ],
+       "icons": 8,
+       "marker": [
+        77,
+        43,
+        83,
+        49
+       ],
+       "offset": [
+        17,
+        30
+       ],
+       "point": [
+        82.5,
+        54.5
+       ]
+      },
+      "marker_reason": "mapped",
+      "source": "selection_marker"
+     },
+     "max_hp": 82,
+     "status_text": "しろのなかにいます",
+     "tick": 66431,
+     "uses": 4,
+     "wage": 3
+    }
+   },
+   "suspected_departures": [],
+   "tick": 66843
+  },
+  "goals": [
+   {
+    "actor": null,
+    "attempts": 0,
+    "kind": "egg_recover",
+    "queued": 66910,
+    "target": null,
+    "targets": [
+     "ヘーゼル"
+    ]
+   }
+  ],
+  "gold": 2322,
+  "hanjuku_level": 13,
+  "hanjuku_level_seen": {
+   "scope": [
+    4,
+    "9-4"
+   ],
+   "tick": 66701
+  },
+  "hanjuku_value": 2496,
+  "held_phase": null,
+  "hero_max_hp": 90,
+  "hero_post": {
+   "castle": "アルマムーン",
+   "tick": 67011
+  },
+  "hero_select_miss": {
+   "4-A2": 41282,
+   "4-B4": 53341,
+   "I:604494:fb19120a": 40503,
+   "I:ba17ac:fb1fe449": 47297,
+   "I:e738ce:ab71eb97": 59557
+  },
+  "home_alias_repaired": true,
+  "house_eggs": {
+   "どうし": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "エラベルエッグ",
+    "general": "どうし",
+    "hp": 90,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 90,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 59973,
+    "uses": 4,
+    "wage": 0
+   },
+   "アマンディーヌ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "アマンディーヌ",
+    "hp": 59,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 59,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60132,
+    "uses": null,
+    "wage": 10
+   },
+   "アルテミス": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "ワンダーエッグ",
+    "general": "アルテミス",
+    "hp": 49,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 49,
+    "month": "9-4",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66835,
+    "uses": 4,
+    "wage": 4
+   },
+   "エシャロット": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "ワンダーエッグ",
+    "general": "エシャロット",
+    "hp": 46,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 46,
+    "month": "9-4",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66841,
+    "uses": 4,
+    "wage": 7
+   },
+   "カシュー": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "イビルエッグ",
+    "general": "カシュー",
+    "hp": 39,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 39,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60144,
+    "uses": 4,
+    "wage": 5
+   },
+   "ガスパチョ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "スーパーエッグ",
+    "general": "ガスパチョ",
+    "hp": 37,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 37,
+    "month": "7-8",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 51839,
+    "uses": 4,
+    "wage": 10
+   },
+   "キッシュ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "スーパーエッグ",
+    "general": "キッシュ",
+    "hp": 26,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 26,
+    "month": "9-3",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66440,
+    "uses": 4,
+    "wage": 9
+   },
+   "キール": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "キール",
+    "hp": 65,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 65,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 59998,
+    "uses": null,
+    "wage": 14
+   },
+   "クランベリー": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "クランベリー",
+    "hp": 51,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 51,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 59991,
+    "uses": null,
+    "wage": 6
+   },
+   "ココット": {
+    "broken": true,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ココット",
+    "hp": 24,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 24,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60049,
+    "uses": null,
+    "wage": 1
+   },
+   "シェーブル": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "ワンダーエッグ",
+    "general": "シェーブル",
+    "hp": 27,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 27,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60042,
+    "uses": 4,
+    "wage": 8
+   },
+   "シャルドネ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "シャルドネ",
+    "hp": 56,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 56,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60020,
+    "uses": null,
+    "wage": 7
+   },
+   "セルリアク": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "セルリアク",
+    "hp": 32,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 32,
+    "month": "9-4",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66788,
+    "uses": null,
+    "wage": 3
+   },
+   "タピオカ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "タピオカ",
+    "hp": 50,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 50,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60107,
+    "uses": null,
+    "wage": 3
+   },
+   "デュオニソス": {
+    "broken": true,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "デュオニソス",
+    "hp": 54,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 54,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60077,
+    "uses": null,
+    "wage": 8
+   },
+   "デーメーテール": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "デーメーテール",
+    "hp": 49,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 49,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60066,
+    "uses": null,
+    "wage": 5
+   },
+   "トレビス": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "トレビス",
+    "hp": 66,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 66,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60058,
+    "uses": null,
+    "wage": 4
+   },
+   "パプリカ": {
+    "broken": false,
+    "carried_from": "8-3",
+    "carry_depth": 6,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "パプリカ",
+    "hp": 34,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 34,
+    "month": "8-4",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 58402,
+    "uses": null,
+    "wage": 5
+   },
+   "ビーツ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ビーツ",
+    "hp": 29,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 29,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60030,
+    "uses": null,
+    "wage": 4
+   },
+   "ピスタチオ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ピスタチオ",
+    "hp": 49,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 49,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60014,
+    "uses": null,
+    "wage": 9
+   },
+   "ブカティーニ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "ワンダーエッグ",
+    "general": "ブカティーニ",
+    "hp": 42,
+    "location": "field",
+    "location_observed": true,
+    "max_hp": 42,
+    "month": "9-4",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66815,
+    "uses": 4,
+    "wage": 11
+   },
+   "ヘラ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ヘラ",
+    "hp": 59,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 59,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60118,
+    "uses": null,
+    "wage": 6
+   },
+   "ヘーゼル": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "イビルエッグ",
+    "general": "ヘーゼル",
+    "hp": 33,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 33,
+    "month": "9-4",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66827,
+    "uses": 4,
+    "wage": 3
+   },
+   "ポワソン": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ポワソン",
+    "hp": 80,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 80,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60005,
+    "uses": null,
+    "wage": 4
+   },
+   "マカデミア": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "マカデミア",
+    "hp": 34,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 34,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60073,
+    "uses": null,
+    "wage": 6
+   },
+   "ミュスカデ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ミュスカデ",
+    "hp": 57,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 57,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60084,
+    "uses": null,
+    "wage": 5
+   },
+   "ミルフィーユ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ミルフィーユ",
+    "hp": 39,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 39,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60034,
+    "uses": null,
+    "wage": 2
+   },
+   "ユイートル": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ユイートル",
+    "hp": 57,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 57,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60090,
+    "uses": null,
+    "wage": 9
+   },
+   "ライム": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ライム",
+    "hp": 69,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 69,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60150,
+    "uses": null,
+    "wage": 10
+   },
+   "ラズベリー": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ラズベリー",
+    "hp": 45,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 45,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60126,
+    "uses": null,
+    "wage": 7
+   },
+   "リーキ": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "カラフルエッグ",
+    "general": "リーキ",
+    "hp": 30,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 30,
+    "month": "8-9",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 62483,
+    "uses": 4,
+    "wage": 5
+   },
+   "レモン": {
+    "broken": true,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "レモン",
+    "hp": 27,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 27,
+    "month": "8-10",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 63209,
+    "uses": null,
+    "wage": 9
+   },
+   "ロックフォール": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": null,
+    "general": "ロックフォール",
+    "hp": 57,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 57,
+    "month": "8-6",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 60097,
+    "uses": null,
+    "wage": 4
+   },
+   "ヴィーナス": {
+    "broken": false,
+    "carry_waiting": false,
+    "egg": "スーパーエッグ",
+    "general": "ヴィーナス",
+    "hp": 82,
+    "location": "castle",
+    "location_observed": true,
+    "max_hp": 82,
+    "month": "9-3",
+    "observed_chapter": 4,
+    "observed_run_identity": {
+     "game": "hanjuku-hero",
+     "generation": 1342,
+     "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+     "runtime_id": "g1342-1fe0734c"
+    },
+    "observed_tick": 66431,
+    "uses": 4,
+    "wage": 3
+   }
+  },
+  "house_field_scan": {
+   "scope": [
+    4,
+    "7-3"
+   ],
+   "tick": 47029
+  },
+  "house_scan_month": "7-3",
+  "house_scan_tick": 47029,
+  "kit_spent": {
+   "4-A2": [
+    "クースカン"
+   ],
+   "4-C2": [
+    "クースカン"
+   ],
+   "A:6044949b:Me7e7db": [
+    "クースカン"
+   ],
+   "A:da7eed9c:Me7e7db": [
+    "クースカン"
+   ],
+   "I:33fca5:14090456": [
+    "クースカン"
+   ],
+   "I:3ffead:19e83355": [
+    "クースカン"
+   ],
+   "I:3ffead:b0d887d8": [
+    "クースカン"
+   ],
+   "I:a9a238:dbac7235": [
+    "クースカン"
+   ],
+   "I:a9a238:dbb2de12": [
+    "クースカン"
+   ],
+   "I:b76cae:4896dceb": [
+    "クースカン"
+   ]
+  },
+  "last_card_assessment": {
+   "allowed": false,
+   "ally_soldiers": 5,
+   "card": "クースカン",
+   "damage_lower_bound": 33,
+   "egg_drop_fit": false,
+   "enemy_hp": 66,
+   "enemy_soldier_hp_upper": 60,
+   "enemy_soldiers": 6,
+   "lethal": false,
+   "raw_damage_min": null,
+   "reason": "control_has_no_observed_followup",
+   "remaining_hp_upper": 33,
+   "target_kind": "general",
+   "tick": 54082
+  },
+  "last_house_deferral": {
+   "chapter": 4,
+   "code": "other",
+   "identity": {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   "month": "7-3",
+   "phase": "open_roster",
+   "tick": 46966
+  },
+  "launch_unverified": {
+   "4-B1": 2,
+   "4-B2": 2
+  },
+  "lost": [],
+  "map_idle_tick": 64023,
+  "monster_menu_choice_hp": [
+   954,
+   7
+  ],
+  "monster_menu_choice_policy_epoch": null,
+  "monster_no_damage": {},
+  "monster_stall": {
+   "enemy_hp": 7,
+   "last": "skill1",
+   "scope": [
+    "バブリー",
+    "ヘルメス"
+   ],
+   "tick": 66968,
+   "turns": {
+    "skill1": 1
+   }
+  },
+  "month": "9-4",
+  "month_chapter": 4,
+  "month_durations": [
+   533,
+   539,
+   530,
+   574,
+   718,
+   765
+  ],
+  "month_exit": false,
+  "month_merchant_confirm": true,
+  "month_sorties": {
+   "launches": 0,
+   "scope": [
+    4,
+    "9-4"
+   ]
+  },
+  "month_start_tick": 66691,
+  "name": {
+   "done": true,
+   "inputs": 0,
+   "target": "どうし",
+   "typed": "どうし"
+  },
+  "nav_prev": [
+   [
+    140,
+    127
+   ],
+   [
+    516,
+    528
+   ]
+  ],
+  "nav_recovers": {
+   "4-A2": 4,
+   "4-B1": 4,
+   "4-B2": 3,
+   "4-B3": 4,
+   "4-B4": 1,
+   "4-C1": 1,
+   "A:5b6a4de2:N4": 1,
+   "I:33fca5:20cf06c1": 1,
+   "I:3ffead:753b248d": 2,
+   "I:604494:3a83dffe": 1,
+   "I:76adc1:8dadc02a": 2,
+   "I:9a554c:e6f4d000": 1,
+   "I:a5c02f:1cbde1ef": 1,
+   "I:a9a238:a3b494c7": 1,
+   "I:ba17ac:bc0cf944": 3,
+   "I:ba17ac:fb1fe449": 3,
+   "I:e738ce:ab71eb97": 1,
+   "I:e738ce:d2f1d4db": 2
+  },
+  "order_dispatch_noted_at": 48326,
+  "order_dispatch_starved_at": 66900,
+  "order_start_tick": {
+   "A:1752affd:K3": 67030,
+   "I:3ffead:b0d887d8": 43284,
+   "I:3ffead:ba9bb050": 43582,
+   "I:3ffead:d0195098": 43619,
+   "I:4e4494:59dfce32": 51902,
+   "I:5f319b:9f4d0dad": 63154,
+   "I:604494:3a83dffe": 40475,
+   "I:604494:fb19120a": 40497,
+   "I:6658e4:56aef184": 65153,
+   "I:66aa80:12afbf77": 60893,
+   "I:76adc1:8dadc02a": 51989,
+   "I:7dc58c:9847745f": 65887,
+   "I:7f0ae6:a12a09c7": 61262,
+   "I:7f0ae6:a14ac455": 61414,
+   "I:7f0ae6:e6f4d000": 61274,
+   "I:81e158:04114122": 55905,
+   "I:863d73:40e875dc": 62694,
+   "I:95dfa4:9f4d0dad": 50874,
+   "I:9a554c:21859796": 54637,
+   "I:9a554c:e6f4d000": 54636,
+   "I:a5c02f:1cbde1ef": 64080,
+   "I:a9a238:a3b494c7": 45537,
+   "I:a9a238:dbac7235": 45563,
+   "I:a9a238:dbb2de12": 44997,
+   "I:b76cae:4896dceb": 47848,
+   "I:ba17ac:bc0cf944": 44580,
+   "I:ba17ac:fb1fe449": 47317,
+   "I:d1b35d:4b0345d7": 63882,
+   "I:da7eed:a25c59ed": 41414,
+   "I:e738ce:9f4d0dad": 57433,
+   "I:e738ce:ab71eb97": 59551,
+   "I:e738ce:b3c60958": 58804,
+   "I:e738ce:d2f1d4db": 58896,
+   "I:e86bd3:0df342f3": 48531,
+   "I:e86bd3:2855c0ad": 48561,
+   "I:e86bd3:3d5571fe": 48413,
+   "I:e86bd3:7d0d45dd": 48426,
+   "I:e86bd3:8c522e97": 49418,
+   "I:e86bd3:9bece7a3": 48548,
+   "I:e86bd3:a035f559": 48575
+  },
+  "picked": [
+   "クースカン",
+   "クースカン",
+   "グリンボー"
+  ],
+  "plan": {
+   "active": "A:1752affd:K3",
+   "attack": null,
+   "chart_plan": {
+    "orders": [
+     {
+      "after": null,
+      "cards": [
+       "クースカン",
+       "クースカン",
+       "グリンボー"
+      ],
+      "general": "エシャロット",
+      "local_step": "K3",
+      "note": "南東の四季王城をネクスドリア駐留のエシャロットで攻略",
+      "source": "ネクスドリア",
+      "step": "A:1752affd:K3",
+      "target": "四季王城(南東)"
+     },
+     {
+      "after": null,
+      "cards": [
+       "クースカン",
+       "クースカン",
+       "グリンボー"
+      ],
+      "general": "アルテミス",
+      "local_step": "K4",
+      "note": "南西の四季王城をミヒラギアン駐留のアルテミスで攻略",
+      "source": "ミヒラギアン",
+      "step": "A:1752affd:K4",
+      "target": "四季王城(南西)"
+     }
+    ],
+    "purchases": null,
+    "recruitment": null,
+    "request_id": "1752affdf995d5ce",
+    "source": "llm:opencode-go:deepseek-v4.1-flash"
+   },
+   "general_override": {
+    "4-A2": "アンディーブ",
+    "4-B1": "アルテミス",
+    "4-B2": "エシャロット",
+    "4-B3": "ヴィーナス",
+    "A:5b6a4de2:N4": "キッシュ",
+    "I:1752af:b9343a14": "ヴィーナス",
+    "I:5f319b:9f4d0dad": "レモン",
+    "I:6658e4:56aef184": "ヴィーナス",
+    "I:7dc58c:9847745f": "ココット",
+    "I:7f0ae6:a14ac455": "リーキ",
+    "I:81e158:04114122": "アポロン",
+    "I:9a554c:21859796": "アポロン",
+    "I:d1b35d:4b0345d7": "ポセイドン",
+    "I:e738ce:9f4d0dad": "ヴィーナス"
+   },
+   "order_context": {
+    "4-A2": {
+     "actual_general": "アンディーブ",
+     "deviation_reason": "チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃",
+     "expected_metric": {
+      "enemy_hp_after_open": null
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "アンディーブ"
+     },
+     "planned_general": "どうし",
+     "strategy_variant": "retry_with_opening_cards"
+    },
+    "4-B1": {
+     "actual_general": "アルテミス",
+     "departure_order": {
+      "after": [
+       "all_captured"
+      ],
+      "cards": [
+       "クースカン"
+      ],
+      "departure_binding": {
+       "cards": [
+        "クースカン"
+       ],
+       "chapter": 4,
+       "confirm_tick": 66129,
+       "general": "アルテミス",
+       "identity": {
+        "game": "hanjuku-hero",
+        "generation": 1342,
+        "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+        "runtime_id": "g1342-1fe0734c"
+       },
+       "roles": {
+        "override": [],
+        "rare": null,
+        "strong": null
+       },
+       "source": "アルマムーン",
+       "step": "4-B1"
+      },
+      "general": "アルテミス",
+      "note": "四季王（南西）へ 乗り込み前にセーブ前提はbot対象外",
+      "source": "アルマムーン",
+      "step": "4-B1",
+      "target": "四季王城(南西)"
+     },
+     "deviation_reason": "ボス戦が決着HPなしに終わり撃破の実測がないため、出撃将軍と既定切り札を再確認して再試行",
+     "expected_metric": {
+      "cards": [
+       "バルムンク",
+       "クースカン"
+      ],
+      "general": "ポセイドン",
+      "goal": "四季王戦勝利"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "アルテミス"
+     },
+     "planned_general": "どうし",
+     "strategy_variant": "retry_chart_boss_kit"
+    },
+    "4-B2": {
+     "actual_general": "エシャロット",
+     "deviation_reason": "計画のどうしに代わりエシャロットを出撃させる",
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "どうし"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "エシャロット"
+     },
+     "planned_general": "どうし",
+     "strategy_variant": "substitute_general"
+    },
+    "4-B3": {
+     "actual_general": "ヴィーナス",
+     "deviation_reason": "計画のどうしに代わりヴィーナスを出撃させる",
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "どうし"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "planned_general": "どうし",
+     "strategy_variant": "substitute_general"
+    },
+    "4-C2": {
+     "actual_general": "ココット",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ココット"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ココット"
+     },
+     "planned_general": "ココット",
+     "strategy_variant": "chart_adjusted"
+    },
+    "A:1752affd:K3": {
+     "actual_general": "エシャロット",
+     "departure_order": {
+      "after": null,
+      "cards": [
+       "クースカン",
+       "クースカン",
+       "グリンボー"
+      ],
+      "departure_binding": {
+       "cards": [
+        "クースカン",
+        "クースカン",
+        "グリンボー"
+       ],
+       "chapter": 4,
+       "confirm_tick": 67054,
+       "general": "エシャロット",
+       "identity": {
+        "game": "hanjuku-hero",
+        "generation": 1342,
+        "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+        "runtime_id": "g1342-1fe0734c"
+       },
+       "roles": {
+        "override": [],
+        "rare": null,
+        "strong": null
+       },
+       "source": "ネクスドリア",
+       "step": "A:1752affd:K3"
+      },
+      "general": "エシャロット",
+      "local_step": "K3",
+      "note": "南東の四季王城をネクスドリア駐留のエシャロットで攻略",
+      "source": "ネクスドリア",
+      "step": "A:1752affd:K3",
+      "target": "四季王城(南東)"
+     },
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン",
+       "クースカン",
+       "グリンボー"
+      ],
+      "general": "エシャロット"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン",
+       "クースカン",
+       "グリンボー"
+      ],
+      "general": "エシャロット"
+     },
+     "planned_general": "エシャロット",
+     "strategy_variant": "chart_adjusted"
+    },
+    "A:5b6a4de2:N4": {
+     "actual_general": "キッシュ",
+     "departure_order": {
+      "after": null,
+      "cards": [
+       "グリンボー",
+       "グリンボー",
+       "ブラッキー"
+      ],
+      "departure_binding": {
+       "cards": [
+        "グリンボー",
+        "グリンボー",
+        "ブラッキー"
+       ],
+       "chapter": 4,
+       "confirm_tick": 53536,
+       "general": "キッシュ",
+       "identity": {
+        "game": "hanjuku-hero",
+        "generation": 1342,
+        "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+        "runtime_id": "g1342-1fe0734c"
+       },
+       "roles": {
+        "override": [],
+        "rare": null,
+        "strong": null
+       },
+       "source": "アルマムーン",
+       "step": "A:5b6a4de2:N4"
+      },
+      "general": "キッシュ",
+      "local_step": "N4",
+      "note": "在庫札のみで北東へ",
+      "source": "アルマムーン",
+      "step": "A:5b6a4de2:N4",
+      "target": "四季王城(北東)"
+     },
+     "deviation_reason": "計画のガスパチョに代わりキッシュを出撃させる",
+     "expected_metric": {
+      "cards": [
+       "グリンボー",
+       "グリンボー",
+       "ブラッキー"
+      ],
+      "general": "ガスパチョ"
+     },
+     "observed_metric": {
+      "cards": [
+       "グリンボー",
+       "グリンボー",
+       "ブラッキー"
+      ],
+      "general": "キッシュ"
+     },
+     "planned_general": "ガスパチョ",
+     "strategy_variant": "substitute_general"
+    },
+    "A:da7eed9c:Me7e7db": {
+     "actual_general": "ミルフィーユ",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [],
+      "general": "ミルフィーユ"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ミルフィーユ"
+     },
+     "planned_general": "ミルフィーユ",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:1752af:b9343a14": {
+     "actual_general": "ヴィーナス",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "planned_general": "ヴィーナス",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:33fca5:14090456": {
+     "actual_general": "ソーピニヨン",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ソーピニヨン"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ソーピニヨン"
+     },
+     "planned_general": "ソーピニヨン",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:33fca5:3242026b": {
+     "actual_general": "チコリ",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "チコリ"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "チコリ"
+     },
+     "planned_general": "チコリ",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:3ffead:b0d887d8": {
+     "actual_general": "ガルバンゾー",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ガルバンゾー"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ガルバンゾー"
+     },
+     "planned_general": "ガルバンゾー",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:5f319b:9f4d0dad": {
+     "actual_general": "レモン",
+     "departure_order": {
+      "after": null,
+      "cards": [
+       "クースカン"
+      ],
+      "defense_rebalance": true,
+      "departure_binding": {
+       "cards": [
+        "クースカン"
+       ],
+       "chapter": 4,
+       "confirm_tick": 62019,
+       "general": "レモン",
+       "identity": {
+        "game": "hanjuku-hero",
+        "generation": 1342,
+        "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+        "runtime_id": "g1342-1fe0734c"
+       },
+       "roles": {
+        "override": [],
+        "rare": null,
+        "strong": null
+       },
+       "source": "ネクスドリア",
+       "step": "I:5f319b:9f4d0dad"
+      },
+      "general": "レモン",
+      "note": "暫定: ボス出撃待ちの防衛優先としてヴィーナスをネクスドリアからアルマムーンへ移動",
+      "purpose": "move",
+      "source": "ネクスドリア",
+      "step": "I:5f319b:9f4d0dad",
+      "target": "アルマムーン"
+     },
+     "deviation_reason": "計画のヴィーナスに代わりレモンを出撃させる",
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "レモン"
+     },
+     "planned_general": "ヴィーナス",
+     "strategy_variant": "substitute_general"
+    },
+    "I:604494:fb19120a": {
+     "actual_general": "ポセイドン",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "バグストーム"
+      ],
+      "general": "ポセイドン"
+     },
+     "observed_metric": {
+      "cards": [
+       "バグストーム"
+      ],
+      "general": "ポセイドン"
+     },
+     "planned_general": "ポセイドン",
+     "strategy_variant": "chart"
+    },
+    "I:6658e4:56aef184": {
+     "actual_general": "ヴィーナス",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "planned_general": "ヴィーナス",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:7dc58c:9847745f": {
+     "actual_general": "ココット",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ココット"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ココット"
+     },
+     "planned_general": "ココット",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:7f0ae6:a14ac455": {
+     "actual_general": "リーキ",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "リーキ"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "リーキ"
+     },
+     "planned_general": "リーキ",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:81e158:04114122": {
+     "actual_general": "アポロン",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "アポロン"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "アポロン"
+     },
+     "planned_general": "アポロン",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:9a554c:21859796": {
+     "actual_general": "アポロン",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "アポロン"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "アポロン"
+     },
+     "planned_general": "アポロン",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:a9a238:dbac7235": {
+     "actual_general": "ヴィーナス",
+     "departure_order": {
+      "after": null,
+      "cards": [
+       "クースカン"
+      ],
+      "departure_binding": {
+       "cards": [
+        "クースカン"
+       ],
+       "chapter": 4,
+       "confirm_tick": 45581,
+       "general": "ヴィーナス",
+       "identity": {
+        "game": "hanjuku-hero",
+        "generation": 1342,
+        "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+        "runtime_id": "g1342-1fe0734c"
+       },
+       "roles": {
+        "override": [],
+        "rare": null,
+        "strong": "クースカン"
+       },
+       "source": "アルマムーン",
+       "step": "I:a9a238:dbac7235"
+      },
+      "general": "ヴィーナス",
+      "note": "暫定: ヴィーナスで奪われたネクスドリアを奪還",
+      "purpose": "retake",
+      "source": "アルマムーン",
+      "step": "I:a9a238:dbac7235",
+      "target": "ネクスドリア"
+     },
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "planned_general": "ヴィーナス",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:a9a238:dbb2de12": {
+     "actual_general": "ヘスティア",
+     "departure_order": {
+      "after": null,
+      "cards": [
+       "クースカン"
+      ],
+      "departure_binding": {
+       "cards": [
+        "クースカン"
+       ],
+       "chapter": 4,
+       "confirm_tick": 45011,
+       "general": "ヘスティア",
+       "identity": {
+        "game": "hanjuku-hero",
+        "generation": 1342,
+        "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+        "runtime_id": "g1342-1fe0734c"
+       },
+       "roles": {
+        "override": [],
+        "rare": null,
+        "strong": null
+       },
+       "source": "ミヒラギアン",
+       "step": "I:a9a238:dbb2de12"
+      },
+      "general": "ヘスティア",
+      "note": "暫定: ヘスティアで奪われたネクスドリアを奪還",
+      "purpose": "retake",
+      "source": "ミヒラギアン",
+      "step": "I:a9a238:dbb2de12",
+      "target": "ネクスドリア"
+     },
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヘスティア"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヘスティア"
+     },
+     "planned_general": "ヘスティア",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:ba17ac:fb1fe449": {
+     "actual_general": "セミヨン",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "セミヨン"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "セミヨン"
+     },
+     "planned_general": "セミヨン",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:d1b35d:4b0345d7": {
+     "actual_general": "ポセイドン",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ポセイドン"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ポセイドン"
+     },
+     "planned_general": "ポセイドン",
+     "strategy_variant": "chart_adjusted"
+    },
+    "I:e738ce:9f4d0dad": {
+     "actual_general": "ヴィーナス",
+     "deviation_reason": null,
+     "expected_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "observed_metric": {
+      "cards": [
+       "クースカン"
+      ],
+      "general": "ヴィーナス"
+     },
+     "planned_general": "ヴィーナス",
+     "strategy_variant": "chart_adjusted"
+    }
+   },
+   "orders": {
+    "4-A1": "pending",
+    "4-A2": "failed",
+    "4-B1": "launched_unconfirmed",
+    "4-B2": "launched",
+    "4-B3": "pending",
+    "4-B4": "failed",
+    "4-C1": "pending",
+    "4-C2": "pending",
+    "A:0cb2c8e8:J1": "superseded",
+    "A:0cb2c8e8:J2": "superseded",
+    "A:0cb2c8e8:J4": "superseded",
+    "A:196c20de:H1": "superseded",
+    "A:196c20de:H3": "failed",
+    "A:5b6a4de2:N4": "pending",
+    "A:6044949b:Md6de1c": "done",
+    "A:6044949b:Me7e7db": "failed",
+    "A:76adc17c:F1": "superseded",
+    "A:76adc17c:F2": "superseded",
+    "A:76adc17c:F4": "superseded",
+    "A:863d7387:J1": "superseded",
+    "A:863d7387:J2": "superseded",
+    "A:9a554cd3:S1": "failed",
+    "A:9a554cd3:S3": "failed",
+    "A:9a554cd3:S4": "failed",
+    "A:a5c02fe4:Q1": "superseded",
+    "A:d1b35dd2:J2": "superseded",
+    "A:d1b35dd2:J3": "superseded",
+    "A:da7eed9c:J1": "superseded",
+    "A:da7eed9c:M72961b": "pending",
+    "A:da7eed9c:Me7e7db": "pending",
+    "I:1752af:1c0d7e8c": "done",
+    "I:1752af:31ad6fdb": "done",
+    "I:1752af:53f27ed5": "done",
+    "I:1752af:b9343a14": "launched",
+    "I:1c12af:1cbde1ef": "done",
+    "I:33fca5:14090456": "pending",
+    "I:33fca5:20cf06c1": "done",
+    "I:33fca5:3242026b": "pending",
+    "I:33fca5:90c31fbb": "done",
+    "I:33fca5:e84f2f91": "done",
+    "I:3ffead:19e83355": "pending",
+    "I:3ffead:20cf06c1": "done",
+    "I:3ffead:3aa25aa0": "pending",
+    "I:3ffead:90c31fbb": "done",
+    "I:3ffead:b0d887d8": "pending",
+    "I:3ffead:ba9bb050": "done",
+    "I:3ffead:d0195098": "done",
+    "I:5f319b:9f4d0dad": "pending",
+    "I:604494:fb19120a": "pending",
+    "I:6658e4:56aef184": "pending",
+    "I:66aa80:12afbf77": "pending",
+    "I:7dc58c:9847745f": "launched",
+    "I:7f0ae6:a12a09c7": "done",
+    "I:7f0ae6:a14ac455": "pending",
+    "I:81e158:04114122": "pending",
+    "I:95dfa4:9f4d0dad": "pending",
+    "I:9a554c:21859796": "pending",
+    "I:a9a238:dbac7235": "pending",
+    "I:a9a238:dbb2de12": "pending",
+    "I:b76cae:4896dceb": "failed",
+    "I:ba17ac:bc0cf944": "failed",
+    "I:ba17ac:fb1fe449": "pending",
+    "I:d1b35d:4b0345d7": "pending",
+    "I:da7eed:a25c59ed": "done",
+    "I:e738ce:9f4d0dad": "pending",
+    "I:e738ce:ab71eb97": "failed",
+    "I:e738ce:b3c60958": "pending",
+    "I:e86bd3:0df342f3": "done",
+    "I:e86bd3:2855c0ad": "done",
+    "I:e86bd3:3d5571fe": "done",
+    "I:e86bd3:7d0d45dd": "done",
+    "I:e86bd3:8c522e97": "failed",
+    "I:e86bd3:9bece7a3": "done",
+    "I:e86bd3:a035f559": "done"
+   },
+   "plan_step_rearm": {},
+   "sortie_general": {
+    "4-A2": "アンディーブ",
+    "4-B1": "アルテミス",
+    "4-B2": "エシャロット",
+    "4-B3": "ヴィーナス",
+    "A:1752affd:K3": "エシャロット",
+    "A:5b6a4de2:N4": "キッシュ"
+   },
+   "source_override": {
+    "4-A2": "アルマムーン",
+    "4-B1": "アルマムーン",
+    "4-B2": "アルマムーン",
+    "4-B3": "ネクスドリア",
+    "4-B4": "フヌイヌム",
+    "4-C2": "アルマムーン",
+    "A:5b6a4de2:N4": "アルマムーン"
+   }
+  },
+  "poor_harvest_1-11": true,
+  "poor_harvest_1-6": true,
+  "poor_harvest_1-7": true,
+  "poor_harvest_2-8": true,
+  "poor_harvest_3-8": true,
+  "poor_harvest_4-11": true,
+  "poor_harvest_6-7": true,
+  "poor_harvest_9-1": true,
+  "rare_card_kit": {},
+  "rare_scan_month": "9-4",
+  "recruit_field_scan_attempts": {
+   "count": 0,
+   "scope": [
+    4,
+    "9-4"
+   ]
+  },
+  "recruit_hold": {
+   "chapter": 4,
+   "month": "9-4",
+   "reason": "enough_observed",
+   "status": "not_needed"
+  },
+  "recruit_month_scan_attempts": {
+   "count": 1,
+   "scope": [
+    4,
+    "9-4"
+   ]
+  },
+  "recruit_roster": {
+   "chapter": 4,
+   "complete": false,
+   "identity": {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   "month": "9-4",
+   "names": [
+    "ヘラ",
+    "ラズベリー",
+    "アマンディーヌ",
+    "カシュー",
+    "ライム",
+    "ヘーゼル",
+    "アルテミス",
+    "エシャロット"
+   ],
+   "tick": 66883
+  },
+  "recruit_roster_recheck": false,
+  "retake_failures": {
+   "castles": {},
+   "chapter": 4
+  },
+  "retries": {
+   "4-A2": 2,
+   "4-B1": 1,
+   "4-B4": 1,
+   "4-C1": 1,
+   "I:33fca5:3242026b": 1,
+   "I:a9a238:dbb2de12": 1
+  },
+  "retries_retired": [
+   "I:a9a238:dbb2de12"
+  ],
+  "retry_context": {
+   "4-A2": {
+    "deviation_reason": "チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃",
+    "expected_metric": {
+     "enemy_hp_after_open": null
+    }
+   },
+   "4-B1": {
+    "deviation_reason": "ボス戦が決着HPなしに終わり撃破の実測がないため、出撃将軍と既定切り札を再確認して再試行",
+    "expected_metric": {
+     "cards": [
+      "バルムンク",
+      "クースカン"
+     ],
+     "general": "ポセイドン",
+     "goal": "四季王戦勝利"
+    },
+    "strategy_variant": "retry_chart_boss_kit"
+   },
+   "4-B4": {
+    "deviation_reason": "ボス戦が決着HPなしに終わり撃破の実測がないため、出撃将軍と既定切り札を再確認して再試行",
+    "expected_metric": {
+     "cards": [
+      "クースカン"
+     ],
+     "general": "ブカティーニ",
+     "goal": "四季王戦勝利"
+    },
+    "strategy_variant": "retry_chart_boss_kit"
+   },
+   "4-C1": {
+    "deviation_reason": "チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃",
+    "expected_metric": {
+     "enemy_hp_after_open": null
+    }
+   },
+   "I:33fca5:3242026b": {
+    "deviation_reason": "チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃",
+    "expected_metric": {
+     "enemy_hp_after_open": null
+    }
+   },
+   "I:a9a238:dbb2de12": {
+    "deviation_reason": "チャートの白兵で敗北したため、実在庫の切り札なしでチャート装備のまま再攻撃",
+    "expected_metric": {
+     "enemy_hp_after_open": null
+    }
+   }
+  },
+  "roofs_seen": 1,
+  "roster_last_complete": {
+   "chapter": 4,
+   "complete": true,
+   "identity": {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   "month": "9-4",
+   "names": [
+    "どうし",
+    "セルリアク",
+    "クランベリー",
+    "キール",
+    "ポワソン",
+    "リーキ",
+    "ピスタチオ",
+    "シャルドネ",
+    "ヴィーナス",
+    "ビーツ",
+    "ミルフィーユ",
+    "シェーブル",
+    "ココット",
+    "トレビス",
+    "キッシュ",
+    "デーメーテール",
+    "マカデミア",
+    "デュオニソス",
+    "ミュスカデ",
+    "ユイートル",
+    "ロックフォール",
+    "レモン",
+    "タピオカ",
+    "ブカティーニ",
+    "ヘラ",
+    "ラズベリー",
+    "アマンディーヌ",
+    "カシュー",
+    "ライム",
+    "ヘーゼル",
+    "アルテミス",
+    "エシャロット"
+   ],
+   "schema": 1,
+   "tick": 66769
+  },
+  "roster_read_due": {},
+  "roster_survey_scope": [
+   4,
+   "9-4"
+  ],
+  "route_probe_read_tick": {
+   "アルカ": 62921,
+   "アルマムーン": 67011,
+   "ネクスドリア": 67041,
+   "ビクトリア": 48559,
+   "フヌイヌム": 66619,
+   "マラコビア": 67028,
+   "ミヒラギアン": 63651
+  },
+  "season_site_streak": {
+   "四季王城(北東)": {
+    "chapter": 4,
+    "count": 8,
+    "kind": "closed",
+    "tick": 67015
+   },
+   "四季王城(北西)": {
+    "chapter": 4,
+    "count": 2,
+    "kind": "closed",
+    "tick": 67015
+   },
+   "四季王城(南東)": {
+    "chapter": 4,
+    "count": 5,
+    "kind": "open",
+    "tick": 67015
+   },
+   "四季王城(南西)": {
+    "chapter": 4,
+    "count": 138,
+    "kind": "open",
+    "tick": 67015
+   }
+  },
+  "season_sites": {
+   "四季王城(北東)": {
+    "ambiguous_streak": 0,
+    "camp": 0,
+    "chapter": 4,
+    "cursor_streak": 0,
+    "frame_healthy": true,
+    "hidden_streak": 0,
+    "hidden_with_camp": false,
+    "last_read_tick": 67015,
+    "light": 0,
+    "marker": "closed",
+    "marker_tick": 67015,
+    "readings": 3,
+    "shape": [
+     0,
+     0
+    ],
+    "state": "closed",
+    "terrain": 208,
+    "tick": 62907,
+    "unreadable_streak": 0
+   },
+   "四季王城(北西)": {
+    "ambiguous_streak": 0,
+    "camp": 0,
+    "chapter": 4,
+    "cursor_streak": 0,
+    "frame_healthy": true,
+    "hidden_streak": 0,
+    "hidden_with_camp": false,
+    "last_read_tick": 67015,
+    "light": 0,
+    "marker": "closed",
+    "marker_tick": 67015,
+    "readings": 3,
+    "shape": [
+     0,
+     0
+    ],
+    "state": "closed",
+    "terrain": 210,
+    "tick": 62907,
+    "unreadable_streak": 0
+   },
+   "四季王城(南東)": {
+    "ambiguous_streak": 0,
+    "camp": 0,
+    "chapter": 4,
+    "cursor_streak": 0,
+    "frame_healthy": true,
+    "hidden_streak": 0,
+    "hidden_with_camp": false,
+    "last_read_tick": 67015,
+    "light": 25,
+    "marker": "skull",
+    "marker_tick": 67015,
+    "readings": 2,
+    "shape": [
+     25,
+     23
+    ],
+    "state": "open",
+    "terrain": 160,
+    "tick": 40259,
+    "unreadable_streak": 0
+   },
+   "四季王城(南西)": {
+    "ambiguous_streak": 0,
+    "camp": 0,
+    "chapter": 4,
+    "cursor_streak": 0,
+    "frame_healthy": true,
+    "hidden_streak": 0,
+    "hidden_with_camp": false,
+    "last_read_tick": 67015,
+    "light": 25,
+    "marker": "skull",
+    "marker_tick": 67015,
+    "readings": 2,
+    "shape": [
+     25,
+     23
+    ],
+    "state": "open",
+    "terrain": 160,
+    "tick": 40259,
+    "unreadable_streak": 0
+   }
+  },
+  "select_focus_tick": 66894,
+  "select_tick": 64080,
+  "shop": {
+   "bargain_cards": [
+    "クースカン"
+   ],
+   "bargain_listing_planned": true,
+   "bargain_planned": true,
+   "bought": [
+    [
+     "クースカン",
+     1,
+     24
+    ]
+   ],
+   "chikujou": "skipped",
+   "chikujou_last_eval": {
+    "affordable": true,
+    "gold": 2322,
+    "month": "9-4",
+    "reserve": 30
+   },
+   "chikujou_skip_logged": "9-4",
+   "chikujou_tried": [
+    "アルマムーン",
+    "マラコビア",
+    "フヌイヌム",
+    "ネクスドリア",
+    "ビクトリア",
+    "ミヒラギアン",
+    "アルカ"
+   ],
+   "closed": true,
+   "egg": "done",
+   "egg_cost": 50,
+   "egg_priority": true,
+   "general_repair_reserve": 0,
+   "general_repair_targets": [],
+   "gold_start": 2396,
+   "items": [],
+   "key": "9-4",
+   "last_buy": {
+    "gold": 2346,
+    "row": [
+     "クースカン",
+     1,
+     24
+    ]
+   },
+   "merchant_done": true,
+   "recruit": "not_needed",
+   "recruit_priority": false,
+   "recruit_reserve": 0,
+   "refill_outcome": "cancelled",
+   "reserve": 0,
+   "rich_merchant": true,
+   "rich_random_cards": [],
+   "soldier_total_target": 100,
+   "soldiers": 99,
+   "soldiers_done": true,
+   "variant": "soldier_refill_only",
+   "want": null
+  },
+  "site_failed_rearm": {
+   "4-B1": {
+    "count": 1,
+    "month": "9-1",
+    "tick": 65009
+   }
+  },
+  "site_step_rearm": {},
+  "soldiers_seen": 40,
+  "soldiers_seen_basis": "screen_total",
+  "soldiers_seen_key": "9-4",
+  "soldiers_seen_scope": [
+   {
+    "game": "hanjuku-hero",
+    "generation": 1342,
+    "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+    "runtime_id": "g1342-1fe0734c"
+   },
+   4,
+   "9-4"
+  ],
+  "sortie_actor_miss": {},
+  "sortie_cancel": {
+   "4-B2": 1
+  },
+  "sortie_cancel_counts": {
+   "4-B2": 1
+  },
+  "sortie_cancel_gates": {
+   "4-B2": {
+    "count": 1,
+    "general": "ポセイドン",
+    "month": "8-11",
+    "source": "アルマムーン",
+    "target": null,
+    "tick": 63868
+   }
+  },
+  "sortie_cancel_observed_counts": {
+   "4-B2": 1
+  },
+  "sortie_cancel_observed_gates": {
+   "4-B2": {
+    "count": 1,
+    "general": "ポセイドン",
+    "month": "8-11",
+    "source": "アルマムーン",
+    "target": null,
+    "tick": 63868
+   }
+  },
+  "sortie_cancelled_counts": {
+   "4-B2": 1
+  },
+  "sortie_cancelled_gates": {
+   "4-B2": {
+    "count": 1,
+    "general": "ポセイドン",
+    "month": "8-11",
+    "source": "アルマムーン",
+    "target": null,
+    "tick": 63868
+   }
+  },
+  "sortie_cancelled_observed_counts": {
+   "4-B2": 1
+  },
+  "sortie_cancelled_observed_gates": {},
+  "sortie_confirm_miss": {},
+  "sortie_held_source_defender_cancel_counts": {
+   "A:da7eed9c:M72961b": 1
+  },
+  "sortie_held_source_defender_cancel_gates": {
+   "A:da7eed9c:M72961b": {
+    "available": [
+     "ヘスティア"
+    ],
+    "count": 1,
+    "month": "6-7",
+    "present": [
+     "ヘスティア"
+    ],
+    "source": "ミヒラギアン"
+   }
+  },
+  "sortie_held_source_defender_counts": {
+   "A:da7eed9c:M72961b": 1
+  },
+  "sortie_held_source_defender_gates": {
+   "A:da7eed9c:M72961b": {
+    "available": [
+     "ヘスティア"
+    ],
+    "count": 1,
+    "month": "6-7",
+    "present": [
+     "ヘスティア"
+    ],
+    "source": "ミヒラギアン"
+   }
+  },
+  "sortie_history": [
+   {
+    "ally_hp": 0,
+    "castle": "アルカ",
+    "enemy_hp": 8,
+    "general": "アルファルファ",
+    "outcome": "lost",
+    "source": "アルマムーン",
+    "step": "4-C1",
+    "target": "アルカ",
+    "tick": 40498
+   },
+   {
+    "ally_hp": 43,
+    "castle": "アルカ",
+    "enemy_hp": 0,
+    "general": "ポセイドン",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "I:604494:fb19120a",
+    "target": "アルカ",
+    "tick": 41106
+   },
+   {
+    "ally_hp": 0,
+    "castle": null,
+    "enemy_hp": 5,
+    "general": "アマンディーヌ",
+    "outcome": "lost",
+    "road": true,
+    "source": "アルマムーン",
+    "step": "A:6044949b:Me7e7db",
+    "target": "ビクトリア",
+    "tick": 41203
+   },
+   {
+    "ally_hp": 0,
+    "castle": "マラコビア",
+    "enemy_hp": 67,
+    "general": "キッシュ",
+    "outcome": "lost",
+    "source": "アルマムーン",
+    "step": "4-A2",
+    "target": "マラコビア",
+    "tick": 41581
+   },
+   {
+    "ally_hp": 3,
+    "castle": "ビクトリア",
+    "enemy_hp": 0,
+    "general": "ミルフィーユ",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "A:da7eed9c:Me7e7db",
+    "target": "ビクトリア",
+    "tick": 41833
+   },
+   {
+    "ally_hp": 0,
+    "castle": "マラコビア",
+    "enemy_hp": 67,
+    "general": "アンディーブ",
+    "outcome": "lost",
+    "source": "アルマムーン",
+    "step": "4-A2",
+    "target": "マラコビア",
+    "tick": 42591
+   },
+   {
+    "ally_hp": 43,
+    "castle": "ネクスドリア",
+    "enemy_hp": 0,
+    "general": "ソーピニヨン",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "I:33fca5:14090456",
+    "target": "ネクスドリア",
+    "tick": 42638
+   },
+   {
+    "ally_hp": 18,
+    "castle": "フヌイヌム",
+    "enemy_hp": 0,
+    "general": "チコリ",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "I:33fca5:3242026b",
+    "target": "フヌイヌム",
+    "tick": 43053
+   },
+   {
+    "ally_hp": 21,
+    "castle": "マラコビア",
+    "enemy_hp": 0,
+    "general": "ガルバンゾー",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "I:3ffead:b0d887d8",
+    "target": "マラコビア",
+    "tick": 43857
+   },
+   {
+    "ally_hp": 0,
+    "castle": null,
+    "enemy_hp": 42,
+    "general": "アテナ",
+    "outcome": "lost",
+    "road": true,
+    "source": "アルマムーン",
+    "step": "I:ba17ac:bc0cf944",
+    "target": "フヌイヌム",
+    "tick": 45034
+   },
+   {
+    "ally_hp": 0,
+    "castle": "ネクスドリア",
+    "enemy_hp": 28,
+    "general": "ヘスティア",
+    "outcome": "lost",
+    "source": "ミヒラギアン",
+    "step": "I:a9a238:dbb2de12",
+    "target": "ネクスドリア",
+    "tick": 45564
+   },
+   {
+    "ally_hp": 82,
+    "castle": "ネクスドリア",
+    "enemy_hp": 0,
+    "general": "ヴィーナス",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "I:a9a238:dbac7235",
+    "target": "ネクスドリア",
+    "tick": 46163
+   },
+   {
+    "ally_hp": 36,
+    "castle": "フヌイヌム",
+    "enemy_hp": 0,
+    "general": "セミヨン",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "I:ba17ac:fb1fe449",
+    "target": "フヌイヌム",
+    "tick": 47833
+   },
+   {
+    "ally_hp": 24,
+    "castle": "フヌイヌム",
+    "enemy_hp": 0,
+    "general": "ココット",
+    "outcome": "won",
+    "source": "アルマムーン",
+    "step": "4-C2",
+    "target": "フヌイヌム",
+    "tick": 51570
+   }
+  ],
+  "sortie_relaunch": {
+   "4-A1": 1,
+   "4-C1": 1,
+   "I:3ffead:19e83355": 1,
+   "I:3ffead:3aa25aa0": 1,
+   "I:95dfa4:9f4d0dad": 1
+  },
+  "sortie_source_defender_cancel_counts": {
+   "A:da7eed9c:M72961b": 1
+  },
+  "sortie_source_defender_cancel_gates": {
+   "A:da7eed9c:M72961b": {
+    "available": [
+     "ヘスティア"
+    ],
+    "count": 1,
+    "month": "6-7",
+    "present": [
+     "ヘスティア"
+    ],
+    "source": "ミヒラギアン"
+   }
+  },
+  "source_defender_cancel_counts": {
+   "A:da7eed9c:M72961b": 1
+  },
+  "source_defender_cancel_gates": {
+   "A:da7eed9c:M72961b": {
+    "available": [
+     "ヘスティア"
+    ],
+    "count": 1,
+    "month": "6-7",
+    "present": [
+     "ヘスティア"
+    ],
+    "source": "ミヒラギアン"
+   }
+  },
+  "source_mismatch_castle": {
+   "4-B2": "アルマムーン",
+   "A:196c20de:H3": "アルマムーン",
+   "A:9a554cd3:S3": "アルマムーン"
+  },
+  "source_miss": {},
+  "strong_card_kit": {
+   "4-B2": "クースカン",
+   "I:3ffead:b0d887d8": "クースカン",
+   "I:6658e4:56aef184": "クースカン",
+   "I:7dc58c:9847745f": "クースカン",
+   "I:9a554c:21859796": "クースカン",
+   "I:a9a238:dbac7235": "クースカン",
+   "I:ba17ac:bc0cf944": "クースカン",
+   "I:ba17ac:fb1fe449": "クースカン"
+  },
+  "survey_run_identity": {
+   "game": "hanjuku-hero",
+   "generation": 1342,
+   "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+   "runtime_id": "g1342-1fe0734c"
+  },
+  "tick": 67064,
+  "uncertain": false,
+  "unplaced_refuted": {
+   "castle": "マラコビア",
+   "month": "9-4",
+   "names": [
+    "カシュー"
+   ]
+  },
+  "unplaced_refuted_castles": {
+   "アルカ": {
+    "castle": "アルカ",
+    "month": "7-5",
+    "names": [
+     "キール",
+     "クランベリー",
+     "セルリアク",
+     "ピスタチオ",
+     "ポワソン",
+     "リーキ"
+    ]
+   },
+   "アルマムーン": {
+    "castle": "アルマムーン",
+    "month": "9-4",
+    "names": [
+     "カシュー"
+    ]
+   },
+   "ネクスドリア": {
+    "castle": "ネクスドリア",
+    "month": "8-7",
+    "names": [
+     "キッシュ"
+    ]
+   },
+   "ビクトリア": {
+    "castle": "ビクトリア",
+    "month": "7-5",
+    "names": [
+     "キール",
+     "クランベリー",
+     "セルリアク",
+     "ピスタチオ",
+     "ポワソン",
+     "リーキ"
+    ]
+   },
+   "フヌイヌム": {
+    "castle": "フヌイヌム",
+    "month": "9-3",
+    "names": [
+     "ブカティーニ"
+    ]
+   },
+   "マラコビア": {
+    "castle": "マラコビア",
+    "month": "9-4",
+    "names": [
+     "カシュー"
+    ]
+   },
+   "ミヒラギアン": {
+    "castle": "ミヒラギアン",
+    "month": "7-5",
+    "names": [
+     "キール",
+     "クランベリー",
+     "セルリアク",
+     "ピスタチオ",
+     "ポワソン",
+     "リーキ"
+    ]
+   }
+  },
+  "variant": "chart_adjusted",
+  "world": {
+   "garrison": {
+    "アルカ": [
+     "リーキ"
+    ],
+    "アルマムーン": [
+     "どうし",
+     "クランベリー",
+     "キール",
+     "ピスタチオ",
+     "シャルドネ",
+     "ココット",
+     "トレビス",
+     "デーメーテール",
+     "マカデミア",
+     "ミュスカデ",
+     "ユイートル",
+     "ロックフォール",
+     "レモン",
+     "タピオカ",
+     "ヘラ",
+     "ラズベリー",
+     "アマンディーヌ",
+     "ライム"
+    ],
+    "ネクスドリア": [
+     "ヘーゼル",
+     "エシャロット"
+    ],
+    "ビクトリア": [
+     "ミルフィーユ"
+    ],
+    "フヌイヌム": [
+     "デュオニソス"
+    ],
+    "マラコビア": [
+     "シェーブル",
+     "キッシュ"
+    ],
+    "ミヒラギアン": [
+     "ポワソン",
+     "ビーツ",
+     "セルリアク",
+     "アルテミス"
+    ]
+   },
+   "garrison_observed_at": {
+    "アルマムーン": 1795541408.2265494,
+    "ネクスドリア": 1795541454.9593847,
+    "フヌイヌム": 1795540864.256847,
+    "マラコビア": 1795541436.0212507
+   },
+   "garrison_partial": {
+    "アルマムーン": [
+     "どうし",
+     "クランベリー",
+     "キール"
+    ]
+   },
+   "garrison_partial_tick": {
+    "アルマムーン": 63889
+   },
+   "garrison_tick": {
+    "アルカ": 62921,
+    "アルマムーン": 67011,
+    "ネクスドリア": 67041,
+    "ビクトリア": 48559,
+    "フヌイヌム": 66619,
+    "マラコビア": 67028,
+    "ミヒラギアン": 63651
+   },
+   "general_hp": {
+    "どうし": {
+     "hp": 90,
+     "max": 90,
+     "tick": 58915
+    },
+    "アテナ": {
+     "hp": 36,
+     "max": 66,
+     "tick": 45019
+    },
+    "アポロン": {
+     "hp": 74,
+     "max": 74,
+     "tick": 65178
+    },
+    "アマンディーヌ": {
+     "hp": 59,
+     "max": 59,
+     "tick": 41116
+    },
+    "アルファルファ": {
+     "hp": 38,
+     "max": 38,
+     "tick": 62026
+    },
+    "アンディーブ": {
+     "hp": 2,
+     "max": 36,
+     "tick": 42582
+    },
+    "カシュー": {
+     "hp": 0,
+     "max": 39,
+     "tick": 44937
+    },
+    "ガスパチョ": {
+     "hp": 37,
+     "max": 37,
+     "tick": 52899
+    },
+    "ガルバンゾー": {
+     "hp": 30,
+     "max": 30,
+     "tick": 46882
+    },
+    "キッシュ": {
+     "hp": 26,
+     "max": 26,
+     "tick": 41445
+    },
+    "ココット": {
+     "hp": 24,
+     "max": 24,
+     "tick": 52317
+    },
+    "シェーブル": {
+     "hp": 27,
+     "max": 27,
+     "tick": 48354
+    },
+    "セミヨン": {
+     "hp": 36,
+     "max": 36,
+     "tick": 50383
+    },
+    "セルリアク": {
+     "hp": 32,
+     "max": 32,
+     "tick": 66644
+    },
+    "ソーピニヨン": {
+     "hp": 48,
+     "max": 48,
+     "tick": 44876
+    },
+    "チコリ": {
+     "hp": 18,
+     "max": 18,
+     "tick": 43053
+    },
+    "デュオニソス": {
+     "hp": 54,
+     "max": 54,
+     "tick": 51234
+    },
+    "トレビス": {
+     "hp": 66,
+     "max": 66,
+     "tick": 41720
+    },
+    "フェデリーニ": {
+     "hp": 8,
+     "max": 8,
+     "tick": 50744
+    },
+    "ブカティーニ": {
+     "hp": 42,
+     "max": 42,
+     "tick": 58786
+    },
+    "ヘスティア": {
+     "hp": 25,
+     "max": 25,
+     "tick": 45541
+    },
+    "ヘパイストス": {
+     "hp": 49,
+     "max": 49,
+     "tick": 50453
+    },
+    "ヘーゼル": {
+     "hp": 33,
+     "max": 33,
+     "tick": 66907
+    },
+    "ポセイドン": {
+     "hp": 85,
+     "max": 85,
+     "tick": 65599
+    },
+    "ミルフィーユ": {
+     "hp": 39,
+     "max": 39,
+     "tick": 45082
+    },
+    "リーキ": {
+     "hp": 30,
+     "max": 30,
+     "tick": 54080
+    },
+    "レモン": {
+     "hp": 27,
+     "max": 27,
+     "tick": 61959
+    },
+    "ヴィーナス": {
+     "hp": 82,
+     "max": 82,
+     "tick": 59491
+    }
+   },
+   "general_location_unknown": [],
+   "general_location_unknown_at": {
+    "アポロン": 66210,
+    "アルファルファ": 44330,
+    "ブカティーニ": 51570,
+    "ヘパイストス": 51371
+   },
+   "launched": {
+    "アルカ": {
+     "general": "リーキ",
+     "step": "I:7f0ae6:a14ac455"
+    },
+    "アルマムーン": {
+     "general": "ヴィーナス",
+     "step": "I:1752af:b9343a14"
+    },
+    "ネクスドリア": {
+     "general": "ポセイドン",
+     "step": "I:d1b35d:4b0345d7"
+    },
+    "ビクトリア": {
+     "general": "ミルフィーユ",
+     "step": "A:da7eed9c:Me7e7db"
+    },
+    "マラコビア": {
+     "general": "ヴィーナス",
+     "step": "I:6658e4:56aef184"
+    },
+    "四季王城(北東)": {
+     "general": "ヴィーナス",
+     "step": "4-B3"
+    },
+    "四季王城(北西)": {
+     "general": "ブカティーニ",
+     "step": "4-B4"
+    },
+    "四季王城(南東)": {
+     "general": "エシャロット",
+     "step": "4-B2"
+    },
+    "四季王城(南西)": {
+     "general": "ポセイドン",
+     "step": "4-B1"
+    }
+   },
+   "launched_orders": {
+    "4-B1": {
+     "after": [
+      "all_captured"
+     ],
+     "cards": [
+      "クースカン"
+     ],
+     "departure_binding": {
+      "cards": [
+       "クースカン"
+      ],
+      "chapter": 4,
+      "confirm_tick": 66129,
+      "general": "アルテミス",
+      "identity": {
+       "game": "hanjuku-hero",
+       "generation": 1342,
+       "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+       "runtime_id": "g1342-1fe0734c"
+      },
+      "roles": {
+       "override": [],
+       "rare": null,
+       "strong": null
+      },
+      "source": "アルマムーン",
+      "step": "4-B1"
+     },
+     "general": "アルテミス",
+     "note": "四季王（南西）へ 乗り込み前にセーブ前提はbot対象外",
+     "source": "アルマムーン",
+     "step": "4-B1",
+     "target": "四季王城(南西)"
+    },
+    "4-B2": {
+     "after": [
+      "all_captured"
+     ],
+     "cards": [
+      "クースカン"
+     ],
+     "departure_binding": {
+      "cards": [
+       "クースカン"
+      ],
+      "chapter": 4,
+      "confirm_tick": 66398,
+      "general": "エシャロット",
+      "identity": {
+       "game": "hanjuku-hero",
+       "generation": 1342,
+       "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+       "runtime_id": "g1342-1fe0734c"
+      },
+      "roles": {
+       "override": [],
+       "rare": null,
+       "strong": "クースカン"
+      },
+      "source": "アルマムーン",
+      "step": "4-B2"
+     },
+     "general": "エシャロット",
+     "note": "四季王（南東）へ",
+     "source": "アルマムーン",
+     "step": "4-B2",
+     "target": "四季王城(南東)"
+    },
+    "4-B4": {
+     "after": [
+      "all_captured"
+     ],
+     "cards": [
+      "クースカン"
+     ],
+     "departure_binding": {
+      "cards": [
+       "クースカン"
+      ],
+      "chapter": 4,
+      "confirm_tick": 59845,
+      "general": "ブカティーニ",
+      "identity": {
+       "game": "hanjuku-hero",
+       "generation": 1342,
+       "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+       "runtime_id": "g1342-1fe0734c"
+      },
+      "roles": {
+       "override": [],
+       "rare": null,
+       "strong": null
+      },
+      "source": "フヌイヌム",
+      "step": "4-B4"
+     },
+     "general": "ブカティーニ",
+     "note": "四季王（北西）へ",
+     "source": "フヌイヌム",
+     "step": "4-B4",
+     "target": "四季王城(北西)"
+    },
+    "I:1752af:b9343a14": {
+     "after": null,
+     "cards": [
+      "クースカン"
+     ],
+     "defense_rebalance": true,
+     "departure_binding": {
+      "cards": [
+       "クースカン"
+      ],
+      "chapter": 4,
+      "confirm_tick": 66637,
+      "general": "ヴィーナス",
+      "identity": {
+       "game": "hanjuku-hero",
+       "generation": 1342,
+       "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+       "runtime_id": "g1342-1fe0734c"
+      },
+      "roles": {
+       "override": [],
+       "rare": null,
+       "strong": null
+      },
+      "source": "マラコビア",
+      "step": "I:1752af:b9343a14"
+     },
+     "general": "ヴィーナス",
+     "note": "暫定: ボス出撃待ちの防衛優先としてヴィーナスをマラコビアからアルマムーンへ移動",
+     "purpose": "move",
+     "source": "マラコビア",
+     "step": "I:1752af:b9343a14",
+     "target": "アルマムーン"
+    },
+    "I:7dc58c:9847745f": {
+     "after": null,
+     "cards": [
+      "クースカン"
+     ],
+     "departure_binding": {
+      "cards": [
+       "クースカン"
+      ],
+      "chapter": 4,
+      "confirm_tick": 65905,
+      "general": "ココット",
+      "identity": {
+       "game": "hanjuku-hero",
+       "generation": 1342,
+       "lease_id": "44340cc8-0810-4303-9f2b-45b24cd28ec3",
+       "runtime_id": "g1342-1fe0734c"
+      },
+      "roles": {
+       "override": [],
+       "rare": null,
+       "strong": "クースカン"
+      },
+      "source": "フヌイヌム",
+      "step": "I:7dc58c:9847745f"
+     },
+     "general": "ココット",
+     "note": "暫定: ココットをフヌイヌムからアルマムーンへ移動しボス出撃の同伴者を揃える",
+     "purpose": "move",
+     "source": "フヌイヌム",
+     "step": "I:7dc58c:9847745f",
+     "target": "アルマムーン"
+    }
+   },
+   "retired_sorties": {
+    "4-B2": [
+     {
+      "aimed_cell": [
+       898,
+       909
+      ],
+      "confirmation_tick": 49724,
+      "evidence": {
+       "actual_general": "デュオニソス",
+       "deviation_reason": "計画のどうしに代わりデュオニソスを出撃させる",
+       "expected_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "どうし"
+       },
+       "observed_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "デュオニソス"
+       },
+       "planned_general": "どうし",
+       "strategy_variant": "substitute_general"
+      },
+      "general": "デュオニソス",
+      "launch_confirmed": true,
+      "purpose": null,
+      "source": "アルマムーン",
+      "status": "overdue",
+      "target": "四季王城(南東)",
+      "tick": 49756
+     },
+     {
+      "aimed_cell": [
+       898,
+       909
+      ],
+      "evidence": {
+       "actual_general": "ポセイドン",
+       "deviation_reason": "計画のどうしに代わりポセイドンを出撃させる",
+       "expected_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "どうし"
+       },
+       "observed_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "ポセイドン"
+       },
+       "planned_general": "どうし",
+       "strategy_variant": "substitute_general"
+      },
+      "general": "ポセイドン",
+      "planned_target": "四季王城(南東)",
+      "source": "アルマムーン",
+      "status": "cancelled",
+      "target": null,
+      "tick": 63658
+     },
+     {
+      "aimed_cell": [
+       898,
+       909
+      ],
+      "confirmation_tick": 65080,
+      "evidence": {
+       "actual_general": "アポロン",
+       "deviation_reason": "計画のどうしに代わりアポロンを出撃させる",
+       "expected_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "どうし"
+       },
+       "observed_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "アポロン"
+       },
+       "planned_general": "どうし",
+       "strategy_variant": "substitute_general"
+      },
+      "general": "アポロン",
+      "purpose": null,
+      "source": "ネクスドリア",
+      "status": "overdue",
+      "target": "四季王城(南東)",
+      "tick": 65340
+     }
+    ],
+    "4-B3": [
+     {
+      "aimed_cell": [
+       882,
+       125
+      ],
+      "confirmation_tick": 52659,
+      "evidence": {
+       "actual_general": "リーキ",
+       "deviation_reason": "計画のどうしに代わりリーキを出撃させる",
+       "expected_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "どうし"
+       },
+       "observed_metric": {
+        "cards": [
+         "クースカン"
+        ],
+        "general": "リーキ"
+       },
+       "planned_general": "どうし",
+       "strategy_variant": "substitute_general"
+      },
+      "general": "リーキ",
+      "launch_confirmed": true,
+      "purpose": null,
+      "source": "アルマムーン",
+      "status": "overdue",
+      "target": "四季王城(北東)",
+      "tick": 53255
+     }
+    ],
+    "A:5b6a4de2:N4": [
+     {
+      "aimed_cell": [
+       882,
+       125
+      ],
+      "confirmation_tick": 52421,
+      "evidence": {
+       "actual_general": "デュオニソス",
+       "deviation_reason": "計画のガスパチョに代わりデュオニソスを出撃させる",
+       "expected_metric": {
+        "cards": [
+         "グリンボー",
+         "グリンボー",
+         "ブラッキー"
+        ],
+        "general": "ガスパチョ"
+       },
+       "observed_metric": {
+        "cards": [
+         "グリンボー",
+         "グリンボー",
+         "ブラッキー"
+        ],
+        "general": "デュオニソス"
+       },
+       "planned_general": "ガスパチョ",
+       "strategy_variant": "substitute_general"
+      },
+      "general": "デュオニソス",
+      "purpose": null,
+      "source": "ネクスドリア",
+      "status": "overdue",
+      "target": "四季王城(北東)",
+      "tick": 52565
+     }
+    ]
+   },
+   "sorties": {
+    "4-B4": {
+     "aimed_cell": [
+      146,
+      125
+     ],
+     "confirmation_tick": 59845,
+     "evidence": {
+      "actual_general": "ブカティーニ",
+      "deviation_reason": "計画のどうしに代わりブカティーニを出撃させる",
+      "expected_metric": {
+       "cards": [
+        "クースカン"
+       ],
+       "general": "どうし"
+      },
+      "observed_metric": {
+       "cards": [
+        "クースカン"
+       ],
+       "general": "ブカティーニ"
+      },
+      "planned_general": "どうし",
+      "strategy_variant": "substitute_general"
+     },
+     "general": "ブカティーニ",
+     "launch_confirmed": true,
+     "purpose": null,
+     "source": "フヌイヌム",
+     "status": "arrived",
+     "target": "四季王城(北西)",
+     "tick": 60685
+    },
+    "I:1752af:b9343a14": {
+     "aimed_cell": [
+      520,
+      528
+     ],
+     "confirmation_tick": 66637,
+     "evidence": {
+      "actual_general": "ヴィーナス",
+      "deviation_reason": null,
+      "expected_metric": {
+       "cards": [
+        "クースカン"
+       ],
+       "general": "ヴィーナス"
+      },
+      "observed_metric": {
+       "cards": [
+        "クースカン"
+       ],
+       "general": "ヴィーナス"
+      },
+      "planned_general": "ヴィーナス",
+      "strategy_variant": "chart_adjusted"
+     },
+     "general": "ヴィーナス",
+     "launch_confirmed": true,
+     "purpose": "move",
+     "source": "マラコビア",
+     "status": "en_route",
+     "target": "アルマムーン",
+     "tick": 66780
+    },
+    "I:7dc58c:9847745f": {
+     "aimed_cell": [
+      520,
+      528
+     ],
+     "confirmation_tick": 65905,
+     "evidence": {
+      "actual_general": "ココット",
+      "deviation_reason": null,
+      "expected_metric": {
+       "cards": [
+        "クースカン"
+       ],
+       "general": "ココット"
+      },
+      "observed_metric": {
+       "cards": [
+        "クースカン"
+       ],
+       "general": "ココット"
+      },
+      "planned_general": "ココット",
+      "strategy_variant": "chart_adjusted"
+     },
+     "general": "ココット",
+     "purpose": "move",
+     "source": "フヌイヌム",
+     "status": "arrived",
+     "target": "アルマムーン",
+     "tick": 66087
+    }
+   }
+  },
+  "world_flags": {
+   "アルカ": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67057
+   },
+   "アルマムーン": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67057
+   },
+   "ネクスドリア": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67015
+   },
+   "ビクトリア": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67057
+   },
+   "フヌイヌム": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67057
+   },
+   "マラコビア": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67057
+   },
+   "ミヒラギアン": {
+    "chapter": 4,
+    "kind": "own",
+    "tick": 67057
+   }
+  },
+  "world_map_close": {
+   "count": 1,
+   "tick": 67015
+  },
+  "world_map_flags": {
+   "アルカ": "own",
+   "アルマムーン": "own",
+   "ネクスドリア": "own",
+   "ビクトリア": "own",
+   "フヌイヌム": "own",
+   "マラコビア": "own",
+   "ミヒラギアン": "own"
+  },
+  "world_map_pending": {},
+  "world_map_signature": [
+   [
+    "アルカ",
+    "own"
+   ],
+   [
+    "アルマムーン",
+    "own"
+   ],
+   [
+    "ネクスドリア",
+    "own"
+   ],
+   [
+    "ビクトリア",
+    "own"
+   ],
+   [
+    "フヌイヌム",
+    "own"
+   ],
+   [
+    "マラコビア",
+    "own"
+   ],
+   [
+    "ミヒラギアン",
+    "own"
+   ]
+  ],
+  "world_map_tick": 67015,
+  "y_jump_target_confirmed": {
+   "step": "A:1752affd:K3",
+   "tick": 67062
+  }
+ },
+ "screen_kind": "map_target",
+ "status_panel_feedback": null,
+ "step": 67064
+}

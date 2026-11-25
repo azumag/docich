@@ -1180,7 +1180,7 @@ def month_confirmation_positions(screen):
     return [(x, y) for x, y, _ in choices]
 
 
-_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *(\d+)G')
+_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *[+＋]?(\d+)G')
 _KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu', 'monster_menu_pending',
                               'egg_battle_menu', 'okunote_menu', 'egg_choice_menu', 'card_select'})
 

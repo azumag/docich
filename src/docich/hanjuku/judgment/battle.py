@@ -598,8 +598,18 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
                 result.update(allowed=True, role='control_then_melee_not_a_kill', melee_followup=melee)
             elif card == 'クースカン' and _card_halving_leads(cur, estimate):
                 result.update(allowed=True, role='halving_not_a_kill')
+            elif _egg_race_pressure(mem, cur) and _egg_race_card_advances(estimate):
+                # Owner 2026-11-25: 卵なし・敵卵ありでは、ピンチでなくても
+                # 切り札で押し切り、卵を使わせる前に倒す。追撃の保証が無い
+                # 制御札も、確実に敵将軍を半減できるなら選択する。
+                result.update(allowed=True, role='egg_race_not_a_kill')
             else:
                 result['role'] = 'control_has_no_observed_followup'
+    elif _egg_race_pressure(mem, cur) and _egg_race_card_advances(estimate):
+        # Owner 2026-11-25: 卵なし・敵卵ありでは、致死・卵落・兵士消耗の
+        # 従来根拠に当たらない札でも、確実に敵将軍へ効いて戦闘を前へ進める
+        # 効果なら選択する（回復・退却・自傷は除外）。
+        result.update(allowed=True, role='egg_race_not_a_kill')
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
     # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
@@ -1264,7 +1274,7 @@ def _defense_kit_read_window(mem, cur):
             or cur.get('card_summon_observed') or cur.get('enemy_summon_observed')
             or cur.get('card_damage_list_blocked') or cur.get('cards_unclassified')
             or (cur.get('survival') or {}).get('exhausted')
-            or _one_hit_lethal(cur)):
+            or _one_hit_lethal(cur) or _hp1_resource_hold(cur)):
         return None
     return {'reason': 'egg_drop_kit_unread', 'due': True,
             'max_hp_sum': plan['max_hp_sum'], 'remainder': plan.get('remainder'),
@@ -1537,6 +1547,70 @@ def _unarmed_wall_risk(cur):
     triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=False)
     return (triggers.has_egg is True and triggers.clash_position is False
             and (triggers.wall_critical is True or triggers.wall_mod4 is True))
+
+
+# Owner 2026-11-25: こっちが卵を持っていなくて相手が卵を持っていて、切り札を
+# こっちが持っている時、ピンチでなくても切り札を積極的に使い、卵を使わせない
+# うちに倒す。対象にできる条件だけを使う: 卵の有無は静的能力であり、
+# 実際に使える/使った卵の証拠ではない。ボスは専用キット、召喚後は召喚獣戦の
+# 既存判断、判定不能は従来の安全側へ戻す (fail-closed)。
+EGG_RACE_EFFECTS = frozenset({'fixed', 'hp_scaled', 'soldier_clear', 'damage_and_stun',
+                              'half_enemy_hp'})
+
+
+def _egg_race_pressure(mem, cur):
+    """Our egg is gone and the enemy can still use its egg: press with cards.
+
+    根拠は現在の戦闘の同一性（将軍名・side）と、名前付きで観測した本人の卵0、
+    または初期データの卵なし（名前付きの正数観測があれば解除）だけ。敵は静的
+    な卵所持 (``has_egg``) と使用判定能力 (``_egg_threat``) が真で、この戦闘で
+    召喚・変身・卵落ち未確認をまだ観測していない場合に限る。
+    """
+    if not isinstance(mem, dict) or not isinstance(cur, dict):
+        return False
+    ally, enemy = cur.get('ally'), cur.get('enemy')
+    if not isinstance(ally, str) or not isinstance(enemy, str) or not ally or not enemy:
+        return False
+    if cur.get('side') not in ('attack', 'defense'):
+        return False
+    if (enemy in reference.BOSS_GENERALS or enemy in chart.BOSSES.values()
+            or cur.get('event_duel')):
+        return False
+    if (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('enemy_summon_observed') or cur.get('enemy_transform_observed')
+            or cur.get('enemy_egg_drop_expected') is True):
+        return False                     # 卵の競争は既に決着している
+    hp = cur.get('enemy_hp')
+    if type(hp) is not int or hp <= 0 or cur.get('card_hp_unread'):
+        return False                     # 部分パネルの古いHPでは押し込まない
+    if ally in (mem.get('egg_recheck') or []):
+        return False                     # 選択で古い残数は汚れている
+    if not _own_egg_empty(mem, cur):
+        meta = GENERAL_EGGS.get('しゅじんこう' if ally == NAME else ally)
+        if not (meta is not None and meta[0] is False) or _own_egg_positive(mem, cur):
+            return False
+    triggers = enemy_egg_triggers(enemy, player_castle_defense=(
+        True if cur.get('side') == 'defense' else False))
+    return triggers.has_egg is True and _egg_threat(triggers) is True
+
+
+def _egg_race_card_advances(estimate):
+    """A guaranteed positive effect that shortens the fight toward the enemy.
+
+    Healing, retreat and self-harm do not finish the enemy before its egg and
+    keep their existing gates. ``half_enemy_hp`` (クースカン) is included: the
+    halved HP is the follow-up the race needs, and the melee that precedes the
+    egg still decides the battle afterwards.
+    """
+    if not isinstance(estimate, dict) or estimate.get('self_harm'):
+        return False
+    kind = estimate.get('effect_kind')
+    if kind not in EGG_RACE_EFFECTS:
+        return False
+    if kind == 'half_enemy_hp':
+        return estimate.get('target_kind') in ('general', 'egg_monster')
+    raw = estimate.get('raw_damage_min')
+    return type(raw) is int and raw > 0
 
 
 def _survival_state(mem, cur):
@@ -2506,6 +2580,28 @@ EGG_WALL_DAMAGE = 4          # gcgx battle.html: a hit against the edge costs 4 
 DEFENDER_EGG_OPEN_LIMIT = 3
 
 
+def _boss_battle(cur):
+    """The current panel is a chapter boss, boss general/monster, or boss entry.
+
+    Owner 2026-11-25: ボス戦以外では、相手のHPが1なら資源を使わない. Boss
+    battles keep their own tactics, so the HP1 conservation rule must not
+    capture them. This mirrors ``judgment.events``/``_note_boss_panel_hp``:
+    every name in ``chart.BOSSES``, every reference boss form, a boss castle,
+    and a measured boss entry. A renamed or unlisted later form is covered by
+    the entry receipt even when its name is not in the tables.
+    """
+    if not isinstance(cur, dict):
+        return False
+    if cur.get('entry_evidence') == 'measured_boss_entry':
+        return True
+    enemy = cur.get('enemy')
+    if isinstance(enemy, str) and (enemy in chart.BOSSES.values()
+                                   or reference.is_boss_target(enemy)):
+        return True
+    castle = cur.get('castle')
+    return bool(isinstance(castle, str) and castle and chart.is_boss_castle(castle))
+
+
 def _one_hit_lethal(cur):
     """The next push already wins: no okunote, egg or card is worth spending.
 
@@ -2515,6 +2611,9 @@ def _one_hit_lethal(cur):
     Only a complete, current battle panel counts (``_card_battle_reading``
     clears the unread flags on one): a stale HP, a summon or an egg battle
     is not evidence that the enemy general is one hit from defeat.
+    This is the *safe finish* claim. ``_hp1_resource_hold`` separately
+    suppresses resources at HP1 with soldiers still standing; it does not
+    imply the next push is the last one.
     """
     if not isinstance(cur, dict):
         return False
@@ -2526,6 +2625,27 @@ def _one_hit_lethal(cur):
     return (type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE
             and type(hp) is int and hp > EGG_WALL_DAMAGE
             and cur.get('enemy_soldiers') == 0
+            and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+                     or cur.get('egg_battle') or cur.get('card_summon_observed')))
+
+
+def _hp1_resource_hold(cur):
+    """Owner 2026-11-25: ボス戦以外では、相手のHPが1なら資源を使わない.
+
+    A non-boss enemy at exactly 1 HP is effectively decided: a trump card,
+    okunote or egg spent here is waste. This is a conservation rule, not the
+    safe-melee-finish claim of ``_one_hit_lethal``. Enemy soldiers may still
+    stand (the owner's 2026-11-22 correction), so the zero-soldier condition
+    deliberately does not apply. Boss battles keep their tactics. Like the
+    one-hit rule, only a complete current panel counts: a stale HP, a summon
+    or an egg battle is not evidence, and the panel's own ally HP must be
+    known.
+    """
+    if not isinstance(cur, dict) or _boss_battle(cur):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    return (type(enemy) is int and enemy == 1
+            and type(hp) is int and hp > 0
             and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
                      or cur.get('egg_battle') or cur.get('card_summon_observed')))
 
@@ -2700,7 +2820,7 @@ def _defender_last_resort(mem, cur):
             or cur.get('planned_cards') or cur.get('card_flow') or cur.get('egg_battle')
             or cur.get('okunote_last_resort_selected')
             or (cur.get('okunote_egg_preempt') or {}).get('selected')
-            or _one_hit_lethal(cur)
+            or _one_hit_lethal(cur) or _hp1_resource_hold(cur)
             or not cur.get('okunote_only_observed')):
         return False
     hp, enemy, start, enemy_start = (cur.get(k) for k in

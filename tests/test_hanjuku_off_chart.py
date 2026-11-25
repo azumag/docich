@@ -231,6 +231,38 @@ def test_the_surplus_joins_the_boss_waves_instead_of_a_staging_move():
     assert all(c['source'] != 'アルマムーン' for c in moves)
 
 
+def test_boss_waves_carry_stock_cards_but_never_invent_empty_stock():
+    targets = set(CASTLES) - {'アルマムーン', 'けっかい'}
+    stock = {
+        'ころぼぐんだん': 45, 'グリンボー': 45, 'ピッグローラー': 33,
+        'フットバース': 30, 'ミックミー': 57,
+    }
+
+    def memory(card_stock):
+        return {
+            'chapter': 1, 'captured': sorted(targets), 'orders': {}, '_records': [],
+            'card_stock': dict(card_stock),
+            'garrison': {
+                'アルマムーン': ['どうし', 'ゼウス', 'アルテミス', 'クミン', 'ポセイドン'],
+                'キカンドン': [], 'ゴーメン': ['ココット'],
+            },
+        }
+
+    candidates = policy.interim_candidates(memory(stock))
+    boss_orders = [c for c in candidates.values()
+                   if c.get('target') == 'けっかい' and not c.get('source_probe')]
+    assert len(boss_orders) >= 2  # the initial order and a later wave
+    assert all(c['cards'] for c in boss_orders)
+    assert all(card in stock for c in boss_orders for card in c['cards'])
+
+    empty_stock = {name: 0 for name in stock}
+    empty = policy.interim_candidates(memory(empty_stock))
+    empty_boss_orders = [c for c in empty.values()
+                         if c.get('target') == 'けっかい' and not c.get('source_probe')]
+    assert empty_boss_orders
+    assert all(c['cards'] == [] for c in empty_boss_orders)
+
+
 def test_a_lone_general_is_never_pulled_out_of_the_home_castle():
     # A normal castle still missing keeps the boss closed, so the garrison
     # fill still runs and keeps its donor rule (v305).
@@ -1851,3 +1883,31 @@ def test_a_map_that_plans_nothing_resumes_within_a_minute():
     assert not any(actions[:-1])
     assert actions[-1] == [pad('b')]
     assert state['no_input_streak'] == 0
+
+
+from docich.hanjuku.strategy import replan
+
+
+def test_ch10_juam_targets_only_the_measured_approaches():
+    # Owner 2026-11-25: ジュアム is reachable only from ケントルム/カロナック
+    # (the north-west cliffs stop every other march; アルマムーン→ジュアム
+    # walked into the obstacles every month).
+    mem = {'chapter': 10, 'tick': 100, 'picked': [], '_records': [],
+           'world': {'garrison': {'アルマムーン': ['どうし', 'A', 'B'],
+                                  'ケントルム': ['C', 'D'],
+                                  'カロナック': ['E', 'F']}}}
+    source, _ = replan._interim_source(
+        mem, 'ジュアム', None, {'アルマムーン', 'ケントルム', 'カロナック'}, set())
+    assert source in ('ケントルム', 'カロナック')
+
+
+def test_ch10_boss_is_not_planned_from_juam():
+    mem = {'chapter': 10, 'tick': 100, 'picked': [], '_records': [],
+           'world': {'garrison': {'ジュアム': ['どうし', 'A', 'B']}}}
+    assert replan._interim_source(mem, 'ボス', None, {'ジュアム'}, set()) is None
+
+
+def test_ch10_chart_captures_juam_from_kentorum():
+    order = next(o for o in chart.all_orders(10) if o.get('target') == 'ジュアム')
+    assert order['source'] == 'ケントルム'
+    assert order['after'] == ('captured', 'ケントルム')
