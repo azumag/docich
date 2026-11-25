@@ -18,7 +18,8 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "infra" / "market-bridge"))
 
-from mbridge.common.auth import build_headers  # noqa: E402
+import secrets
+from mbridge.common.auth import build_headers, reset_replay_cache  # noqa: E402
 from mbridge.common.contract import (Candidate, Quote, Snapshot,  # noqa: E402
                                      validate_envelope)
 from mbridge.common.timeutil import Caller, DeadlineExceeded  # noqa: E402
@@ -298,7 +299,9 @@ class BridgeServerTests(unittest.TestCase):
         self.server.stop()
 
     def _request(self, method, path, *, body=None, auth=True):
-        headers = build_headers(SECRET, ts=int(NOW), nonce="a1b2c3d4") if auth else {}
+        reset_replay_cache()
+        headers = (build_headers(SECRET, ts=int(NOW), nonce=secrets.token_hex(8))
+                   if auth else {})
         data = json.dumps(body).encode() if body is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json"
