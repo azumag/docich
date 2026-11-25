@@ -40,7 +40,11 @@ from ci_trigger_paths import path_selected  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = 'src/docich'
-HANJUKU_MODULES = [f'{PACKAGE}/hanjuku*.py', f'{PACKAGE}/hanjuku/**']
+HANJUKU_MODULES = [
+    f'{PACKAGE}/hanjuku*.py',
+    f'{PACKAGE}/hanjuku/**',
+    f'{PACKAGE}/hanjuku_speedrun/**',
+]
 TEST_RELEVANT = [
     '.node-version',
     'src/**/*.py',
@@ -49,6 +53,7 @@ TEST_RELEVANT = [
     'requirements*.txt',
     'brains/**',
     'config/games/**',
+    'tools/hanjuku_speedrun_fork.py',
     '.github/workflows/ci.yml',
     '.github/scripts/ci_test_scope.py',
     '.github/scripts/ci_trigger_paths.py',
@@ -60,6 +65,14 @@ HANJUKU_ONLY = [
     'tests/fixtures/hanjuku/**',
     'brains/hanjuku/**',
     'config/games/hanjuku-hero.toml',
+    # The speedrun copy is a generated Hanjuku copy, so its own source, brain,
+    # generated game config, tests and generator stay on the Hanjuku suite.
+    'brains/hanjuku_speedrun/**',
+    'config/games/hanjuku-speedrun.toml',
+    'tests/hanjuku_speedrun/**',
+    'tools/hanjuku_speedrun_fork.py',
+    'tests/test_hanjuku_speedrun_fork.py',
+    'tests/test_hanjuku_family.py',
     'docs/**',
     # Hanjuku pull requests add their chart version to this file's allow-list.
     # Its own tests run in vm-operations-ci and hanjuku-predictions-ci.
@@ -178,7 +191,14 @@ def hanjuku_targets(root: Path = ROOT) -> list[str]:
         if relative != SERIAL_TEST and (path.name.startswith('test_hanjuku')
                                         or 'hanjuku' in path.read_text(encoding='utf-8')):
             targets.append(relative)
-    return targets
+    # The generated speedrun copy keeps its tests in a package directory so the
+    # two copies stay diffable.  They are Hanjuku tests even when a file does
+    # not repeat "hanjuku" in its name.
+    for path in sorted((root / 'tests/hanjuku_speedrun').rglob('test_*.py')):
+        relative = path.relative_to(root).as_posix()
+        if relative != SERIAL_TEST:
+            targets.append(relative)
+    return sorted(set(targets))
 
 
 def main(argv: list[str] | None = None) -> int:

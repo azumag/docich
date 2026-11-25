@@ -29,6 +29,13 @@ def seams():
     [STRATEGY, 'ops/vm_actions/collect_diagnostics.py', 'ops/vm_actions/tests/test_collect_diagnostics.py'],
     ['brains/hanjuku/bot.py', 'config/games/hanjuku-hero.toml'],
     ['tests/test_hanjuku_goals.py'],
+    # The generated speedrun copy belongs to the Hanjuku suite too.
+    ['src/docich/hanjuku_speedrun/hanjuku_run.py'],
+    ['src/docich/hanjuku_speedrun/rta/timer.py', 'tests/hanjuku_speedrun/test_timer.py'],
+    ['brains/hanjuku_speedrun/bot.py', 'config/games/hanjuku-speedrun.toml'],
+    ['tools/hanjuku_speedrun_fork.py', 'tests/test_hanjuku_speedrun_fork.py'],
+    ['tools/hanjuku_speedrun_fork.py'],
+    ['tests/test_hanjuku_family.py'],
 ])
 def test_hanjuku_only_changes_get_the_hanjuku_suite(changed, seams):
     assert scope.choose_suite(changed, seams)[0] == 'hanjuku'
@@ -148,9 +155,21 @@ def test_hanjuku_suite_keeps_every_hanjuku_test_and_every_test_naming_hanjuku():
     assert targets == sorted(set(targets))
     expected = {path.relative_to(ROOT).as_posix() for path in (ROOT / 'tests').glob('test_*.py')
                 if path.name.startswith('test_hanjuku') or 'hanjuku' in path.read_text(encoding='utf-8')}
+    expected |= {path.relative_to(ROOT).as_posix()
+                 for path in (ROOT / 'tests/hanjuku_speedrun').rglob('test_*.py')}
     assert set(targets) == expected - {scope.SERIAL_TEST}
     assert {'tests/test_retro_corner.py', 'tests/test_webui.py', 'tests/test_corner_rotation.py'} <= set(targets)
     assert 'tests/test_nethack_policy.py' not in targets
+
+
+def test_hanjuku_suite_includes_the_generated_speedrun_test_package(tmp_path):
+    package = tmp_path / 'tests/hanjuku_speedrun'
+    package.mkdir(parents=True)
+    (package / 'test_timer.py').write_text('def test_timer():\n    assert True\n', encoding='utf-8')
+    (tmp_path / 'tests/test_hanjuku_goals.py').write_text('def test_goal():\n    assert True\n',
+                                                          encoding='utf-8')
+    assert scope.hanjuku_targets(tmp_path) == [
+        'tests/hanjuku_speedrun/test_timer.py', 'tests/test_hanjuku_goals.py']
 
 
 def test_targets_command_prints_pytest_arguments():
