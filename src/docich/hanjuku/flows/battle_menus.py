@@ -3413,9 +3413,9 @@ MONSTER_STALL_SAME_TURN_TICKS = 3
 # keeping the choice forever only delays the general's exposure that a lost
 # summon forces anyway, so the stall returns once ``return_risk`` allows it.
 MONSTER_STALL_RETURN_TURNS = 6
-# A summon fight's command box hides きりふだ below たまごをつかう; one or two
-# downs reveal it.  Bound the scroll so an unreadable box cannot loop.
-SUMMON_CARD_SCROLL_LIMIT = 3
+# Some summon layouts still hide きりふだ after three downs. Allow one more
+# bounded reveal attempt; selection still requires the row to be read visibly.
+SUMMON_CARD_SCROLL_LIMIT = 4
 CARD_RETREAT_CANCEL_LIMIT = 2
 SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   # cancels before the carried card is abandoned
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
