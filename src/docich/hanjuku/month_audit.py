@@ -3231,8 +3231,15 @@ def _signals(context, counts, confirmed, departures, battle_count):
     if not staffed or max(staffed) <= 1:
         out.append('no_source')
     sorties = world.get('sorties') if isinstance(world.get('sorties'), dict) else {}
-    if any(isinstance(row, dict) and (row.get('age_ticks') or 0) > 3000
-           for row in sorties.values()):
+    # Match the world layer's live-march contract: an old arrival/overdue
+    # receipt is historical evidence, not a unit that is still on the road.
+    if any(
+        isinstance(row, dict)
+        and row.get('status') in ('en_route', 'launched_unconfirmed')
+        and type(row.get('age_ticks')) is int
+        and row['age_ticks'] > 3000
+        for row in sorties.values()
+    ):
         out.append('stuck_march')
     if confirmed is None:
         out.append('ledger_unknown')
