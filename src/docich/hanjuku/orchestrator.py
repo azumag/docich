@@ -1257,7 +1257,8 @@ def y_jump_close_settle_step(screen, mem, generic):
 BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
 
 
-STATUS_PANEL_LABELS = ('ステータス', 'てきぜんいん', 'ぜんいん', 'しょうぐん')
+STATUS_PANEL_HEADERS = ('しゅつげステータス', '出撃ステータス')
+STATUS_PANEL_ROWS = ('てきぜんいん', 'ぜんいん', 'しょうぐん')
 STATUS_PANEL_HOLD_LIMIT = 3
 
 
@@ -1273,7 +1274,11 @@ def status_panel_close_step(screen, mem, phase, actions):
         mem.pop('status_panel_holds', None)
         return None
     text = ''.join((screen.text or '').split())
-    if not any(label in text for label in STATUS_PANEL_LABELS):
+    # Avoid closing ordinary dialogue that merely mentions a general or roster.
+    # The measured panel has a status heading, a roster row, and a hand cursor.
+    if (getattr(screen, 'hand', None) is None
+            or not any(header in text for header in STATUS_PANEL_HEADERS)
+            or not any(row in text for row in STATUS_PANEL_ROWS)):
         mem.pop('status_panel_holds', None)
         return None
     n = int(mem.get('status_panel_holds') or 0) + 1
