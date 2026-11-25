@@ -3949,6 +3949,7 @@ def render(record):
     chikujou = record.get('chikujou_event') or {}
     boss_month = record.get('boss_month') or {}
     boss = record.get('boss_phase') or {}
+    boss_entry = boss.get('boss_entry') if isinstance(boss.get('boss_entry'), dict) else None
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
     battle_menu = record.get('battle_menu') or {}
@@ -4139,6 +4140,11 @@ def render(record):
             f"- ボス戦闘: {boss.get('battle_count')} / battle_start 全体: {boss.get('battle_starts')}",
             f"- ボスHP観測: {bool(boss.get('boss_hp_seen') or boss.get('boss_hp_history_count'))}"
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
+            *([f"- 実測突入: {boss_entry.get('general') or '不明'} / {boss_entry.get('castle') or '不明'}"
+                f" / 経過 {round(float(boss_entry.get('age_s') or 0), 1)}秒"
+                f" / 待機上限 {boss_entry.get('grace_s')}秒"
+                f" / source {boss_entry.get('source') or '不明'}"]
+               if boss_entry else []),
             '',
         ]
     body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall
