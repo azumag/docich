@@ -32,7 +32,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _defender_summon_preempt, _defense_kit_read_unread, _defense_kit_read_window,
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics,
                                _egg_drop_trace, _egg_plan, _hero_marching,
-                               _egg_race_pressure,
+                               _egg_race_pressure, _score_pressure,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
                                _hp1_resource_hold,
@@ -558,17 +558,18 @@ def _drop_defender_record(mem, castles):
         defenders.pop(castle, None)
 
 
-def _carried_opening_tactics(mem, cur, existing, *, pressure=False):
+def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_reason=None):
     """Spend otherwise-unused, *confirmed carried* cards at the fight opening.
 
     The battle chart still owns the timings of its named cards. An observed
     sortie kit may contain additional cards that otherwise sit unused until
     retreat. Never invent cards from the shop stock or an unconfirmed plan.
 
-    Under ``pressure`` (own egg gone, enemy egg still usable, owner
-    2026-11-25), the chart's later timing does not hold a carried card back:
-    a card whose charted tactic names another enemy is added here, and the
-    caller opens any charted tactic that has not come due yet.
+    Under ``pressure`` (own egg gone / enemy egg still usable, or the
+    戦闘力×残HP×残兵士 score is behind; owner 2026-11-25), the chart's later
+    timing does not hold a carried card back: a card whose charted tactic
+    names another enemy is added here, and the caller opens any charted
+    tactic that has not come due yet.
     """
     step = cur.get('step')
     if _dying_with_egg(mem, cur):
@@ -647,7 +648,8 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False):
             added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
                           'step': step, 'egg_race': True,
                           'tactic_id': f'pressure:{step}:{card}:{slot}',
-                          'note': '卵なし・敵に卵ありのため、チャートの対象外でも携行札を開幕に使用'})
+                          'note': f'{pressure_reason or "切り札の押し込み"}のため、'
+                                  'チャートの対象外でも携行札を開幕に使用'})
             continue
         added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
                       'step': step, 'tactic_id': f'carried:{step}:{card}:{slot}',
@@ -1038,13 +1040,21 @@ def battle_step(screen: Screen, mem):
     # 元の並びはtactic ID用に保ち、実行順は成立する開幕卵落→
     # 再攻撃extra→チャート/強敵札（2026-11-06オーナー指定）。
     egg_plan = _egg_plan(mem, cur)
-    # Owner 2026-11-25: 卵なし・敵卵ありでは、ピンチでなくても切り札で押し切る。
-    # 卵落が成立する札は従来どおり最優先（この圧力より前）。
-    pressure = _egg_race_pressure(mem, cur)
+    # Owner 2026-11-25: 卵なし・敵卵あり、または戦闘力×残HP×残兵士の総合
+    # スコアで劣勢なら、ピンチでなくても切り札で押し切る。卵落が成立する札は
+    # 従来どおり最優先（この圧力より前）。
+    if _egg_race_pressure(mem, cur):
+        pressure_reason = '卵なし・敵に卵あり'
+    elif _score_pressure(mem, cur):
+        pressure_reason = '総合戦力で劣勢'
+    else:
+        pressure_reason = None
+    pressure = pressure_reason is not None
     tactics = [*extra, *_tactics(mem, cur.get('step')),
                *_egg_drop_tactics(mem, cur, b.enemy, egg_plan),
                *_strong_card_tactics(mem, cur, b.enemy)]
-    tactics.extend(_carried_opening_tactics(mem, cur, tactics, pressure=pressure))
+    tactics.extend(_carried_opening_tactics(mem, cur, tactics, pressure=pressure,
+                                            pressure_reason=pressure_reason))
     # Even old chart/override tactics cannot spend a boss-only card on an ordinary foe.
     if not _boss_tactics_allowed(mem, cur):
         tactics = [t for t in tactics if t['card'] not in reference.BOSS_ONLY_CARDS]
@@ -1103,8 +1113,9 @@ def battle_step(screen: Screen, mem):
                    and b.enemy_hp <= tactic['when_hp_at_most'])
                or (tactic.get('after_clash') and cur.get('clashed'))
                or (tactic.get('after_card') and tactic['after_card'] in attempted))
-        # Owner 2026-11-25: 卵なし・敵卵ありなら、チャートのHP/激突の時期を
-        # 待たずに携行札を開く。連鎖の後続 (after_card) は前札の実行を待つ。
+        # Owner 2026-11-25: 卵なし・敵卵あり、または総合スコアで劣勢なら、
+        # チャートのHP/激突の時期を待たずに携行札を開く。連鎖の後続
+        # (after_card) は前札の実行を待つ。
         forced = bool(pressure and not due and not tactic.get('after_card')
                       and egg_plan.get('kit_known') and inventory is not None
                       and type(inventory.get('available')) is int
@@ -1128,7 +1139,7 @@ def battle_step(screen: Screen, mem):
                                    and tactic['after_card'] in (cur.get('cards_unclassified') or []))
             note = tactic['note']
             if forced:
-                note = f"{note}（卵なし・敵に卵ありのため、チャートの時期を待たず使用）"
+                note = f"{note}（{pressure_reason}のため、チャートの時期を待たず使用）"
             if chained_unconfirmed:
                 note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
                 if not cur.get('deviation_reason'):
@@ -1150,7 +1161,9 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp,
                                      'card_damage_gate': damage_gate},
                     **({'strong_enemy': strong_evidence} if strong_evidence is not None else {}),
-                    **({'egg_race_pressure': True} if (forced or tactic.get('egg_race')) else {}),
+                    **({'egg_race_pressure': True}
+                       if (forced or tactic.get('egg_race')) and pressure_reason == '卵なし・敵に卵あり' else {}),
+                    **({'card_pressure': pressure_reason} if pressure else {}),
                     **({'egg_drop': drop_evidence,
                         'egg_plan': {key: egg_plan.get(key) for key in
                                      ('threat', 'deny_opening_egg', 'id_sum', 'droppers',
