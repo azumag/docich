@@ -51,6 +51,8 @@ REASON_CODES = frozenset({
     "unknown_route",
     "method_not_allowed",
     "invalid_request",
+    "replay_detected",
+    "replay_cache_full",
     "wrong_market",
     "wrong_source",
     "wrong_symbol",
