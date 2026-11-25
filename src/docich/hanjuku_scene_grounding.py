@@ -12,7 +12,8 @@ import unicodedata
 def _mentions(text, names, *, subject=False):
     found = []
     for name in names:
-        suffix = r'(?:が|は)' if subject else ''
+        # "エピィ将軍が勝ちました" is the same subject as "エピィが…".
+        suffix = r'(?:将軍)?(?:が|は)' if subject else ''
         found += [(m.start(), m.end(), name) for m in re.finditer(re.escape(name) + suffix, text)]
     return sorted(found)
 
@@ -32,10 +33,12 @@ def _outcomes_match(text, facts):
         subjects = _mentions(before, names, subject=True)
         # Xの攻撃 is an object/modifier, not the subject of a following loss.
         # Only the direct nominal predicate Xの勝利/敗北 binds X via の.
-        direct = [name for name in names if before.endswith(name + 'の')]
+        direct = [name for name in names
+                  if before.endswith(name + 'の') or before.endswith(name + '将軍の')]
         if direct:
             subject = max(direct, key=len)
-            subjects = [(len(before) - len(subject) - 1, len(before), subject)]
+            end = len(before) - (3 if before.endswith(subject + '将軍の') else 1)
+            subjects = [(end - len(subject), len(before), subject)]
         if not subjects:
             return False
         subject = subjects[-1][2]
@@ -127,6 +130,16 @@ def _castle_results_match(text, facts):
         if re.search(r'ない|なかった|ません|ず|ぬ', after):
             return False
     return True
+
+
+def outcomes_match(text, facts):
+    """Public battle-result claim check shared with periodic commentary."""
+    return _outcomes_match(text, facts)
+
+
+def castle_results_match(text, facts):
+    """Public castle-ownership claim check shared with periodic commentary."""
+    return _castle_results_match(text, facts)
 
 
 def claims_match(text, facts):

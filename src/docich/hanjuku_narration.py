@@ -117,6 +117,20 @@ def deliver_scene(g, game, runtime_dir, snapshot, text):
                     min(cfg['max_age_s'], request['expires_at'] - request['at']))
 
 
+def deliver_periodic(g, game, runtime_dir, identity, text, *, at, max_age, seq=0):
+    """Speak one periodic recap through the same fenced audio sink as scenes.
+
+    This is a delivery-only entry: the caller has already grounded the text and
+    owns the schedule.  No chat or Soren comment is posted.
+    """
+    from .trading.soren_output import enqueue_audio_text
+
+    item = {**identity, 'seq': seq, 'key': f'periodic:{int(at)}', 'text': text,
+            'at': at, 'evidence_kind': 'periodic'}
+    return _deliver(g, runtime_dir, item, settings(game)['speaker'], enqueue_audio_text,
+                    max_age, manage_busy=False)
+
+
 def _terminal_delivery_key(identity: dict) -> str:
     canonical = json.dumps(
         {key: identity.get(key) for key in ('game', 'runtime_id', 'generation', 'lease_id')},
@@ -126,7 +140,7 @@ def _terminal_delivery_key(identity: dict) -> str:
 
 
 def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *,
-             terminal=False, before_publish=None):
+             terminal=False, before_publish=None, manage_busy=True):
     from .agent.fence import AgentFence, FenceLost, check_fence, read_canonical, shared_section
     from .hanjuku_run import load
     from .game_switch import GameSwitchBusyError
@@ -226,7 +240,7 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age, *
         # No exception text: queue errors can carry private payloads.
         status = 'delivery_failed'
     finally:
-        if not terminal:
+        if not terminal and manage_busy:
             _busy.clear()
     try:
         append_log(runtime_dir, 'hanjuku_narration', {

@@ -1164,6 +1164,13 @@ queue lane は lock dir スキャンで自動検出されるため登録不要�
 診断key・既存radio laneを登録する。確認済みfactがある時だけ最大1件を処理するゲーム所属の
 短命processなので `start_all.sh` の常駐worker表へは追加しない。待機中にPIDが無いことは正常。
 healthは同じruntime/世代の `scene_narration` の鮮度と `generate_*` / `deliver_*` の進行で判断する。
+半熟の15分定期実況は `HANJUKU_PERIODIC_ONESHOT` に request/state/result/lock/log と
+既存radio laneを登録する。cornerが起動するゲーム所属の短命workerであり、待機中に
+PIDが無いことは正常。同じruntime identityの `hanjuku_periodic.json` の
+`next_at` / `pending_seq` / `last_result_seq` / `recent_texts` 件数と、
+`hanjuku_periodic_result.json` のstatusを読む。本文・prompt・provider出力は出さない。
+詳細は [hanjuku-periodic-commentary.md](hanjuku-periodic-commentary.md)。
+
 初回のlauncher receiptだけでworker journalが未完成の間は、workerのstatusは `unavailable` になる。
 
 CI は以下を検査する（`ops/vm_actions/tests/test_runtime_registry.py`）：
