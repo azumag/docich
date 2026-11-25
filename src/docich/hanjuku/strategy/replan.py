@@ -63,6 +63,18 @@ def _too_hurt_to_attack(mem, general):
     return hp < max(1, int(maximum * ATTACK_MIN_HP_RATIO))
 
 
+# Chapter 10 (owner 2026-11-25): the map's cliffs only allow these approaches.
+# ジュアム is reachable only from ケントルム/カロナック, ケントルム only from
+# ファルゲ/コッカーニュ, カロナック only from カルカル/トルストリア, and the
+# boss may only be entered from トルストリア/ファルゲ/アルマムーン (never ジュアム).
+CH10_APPROACH = {
+    'ジュアム': ('ケントルム', 'カロナック'),
+    'ケントルム': ('ファルゲ', 'コッカーニュ'),
+    'カロナック': ('カルカル', 'トルストリア'),
+    'ボス': ('トルストリア', 'ファルゲ', 'アルマムーン'),
+}
+
+
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -78,6 +90,11 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
     garrison = _world(mem).get('garrison') or {}
+    approach = CH10_APPROACH.get(target) if chapter == 10 else None
+    if approach:
+        # Only the measured approaches are reachable; any other source walks
+        # into the cliffs (owner 2026-11-25: アルマムーン→ジュアム で障害物).
+        owned = {c for c in owned if c in approach}
     gate = chart.gateway(chapter)
     if gate and target in gate['back']:
         # The map's halves are joined only through the hub (owner 2026-11-17,

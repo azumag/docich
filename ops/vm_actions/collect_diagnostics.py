@@ -8177,6 +8177,7 @@ def _project_corner_state(data):
 
             "hanjuku-chart-v1499-adjusted-stock-fallback",
             "hanjuku-chart-v1500-boss-wave-stock-cards",
+            "hanjuku-chart-v1501-ch10-approach",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
             "hanjuku-chart-v1482-departure-request-ownership",

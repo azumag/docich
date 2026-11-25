@@ -989,6 +989,14 @@ CHAPTER_10_ORDERS = (
      'cards': ('グリンボー', 'クースカン', 'エンジェリン'),
      'target': 'ケントルム', 'after': ('captured', 'ファルゲ'),
      'note': '主人公 右上方面へ 対敵将軍迎撃'},
+    # Owner 2026-11-25: ジュアム is reachable only from ケントルム or カロナック
+    # (the north-west cliffs stop every other march). The chart had no order
+    # for it, so the mechanical planner invented アルマムーン→ジュアム and
+    # walked into the obstacles every month.
+    {'step': '10-A3', 'general': HERO, 'source': 'ケントルム',
+     'cards': (),
+     'target': 'ジュアム', 'after': ('captured', 'ケントルム'),
+     'note': '主人公 ジュアム城へ（ケントルムからのみ到達可能）'},
     # #4922: ケントルム sits behind the White House's north-east wall, so a
     # boss march from it camps against the ring forever; トルストリア is the
     # southern castle with a straight field to the south gate

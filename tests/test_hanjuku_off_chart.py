@@ -1883,3 +1883,31 @@ def test_a_map_that_plans_nothing_resumes_within_a_minute():
     assert not any(actions[:-1])
     assert actions[-1] == [pad('b')]
     assert state['no_input_streak'] == 0
+
+
+from docich.hanjuku.strategy import replan
+
+
+def test_ch10_juam_targets_only_the_measured_approaches():
+    # Owner 2026-11-25: ジュアム is reachable only from ケントルム/カロナック
+    # (the north-west cliffs stop every other march; アルマムーン→ジュアム
+    # walked into the obstacles every month).
+    mem = {'chapter': 10, 'tick': 100, 'picked': [], '_records': [],
+           'world': {'garrison': {'アルマムーン': ['どうし', 'A', 'B'],
+                                  'ケントルム': ['C', 'D'],
+                                  'カロナック': ['E', 'F']}}}
+    source, _ = replan._interim_source(
+        mem, 'ジュアム', None, {'アルマムーン', 'ケントルム', 'カロナック'}, set())
+    assert source in ('ケントルム', 'カロナック')
+
+
+def test_ch10_boss_is_not_planned_from_juam():
+    mem = {'chapter': 10, 'tick': 100, 'picked': [], '_records': [],
+           'world': {'garrison': {'ジュアム': ['どうし', 'A', 'B']}}}
+    assert replan._interim_source(mem, 'ボス', None, {'ジュアム'}, set()) is None
+
+
+def test_ch10_chart_captures_juam_from_kentorum():
+    order = next(o for o in chart.all_orders(10) if o.get('target') == 'ジュアム')
+    assert order['source'] == 'ケントルム'
+    assert order['after'] == ('captured', 'ケントルム')
