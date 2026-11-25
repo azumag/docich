@@ -2354,6 +2354,13 @@ def step(screen, mem, frame):
                          reason='ピッカーを閉じた直後のrelay帰還フローが残っているため、別将軍の帰還でflow.recallを上書きしない')
                 return []
             state.pop('relay_hold_logged', None)
+            # A named monthly recall needs time for the camp menu, destination
+            # picker and arrival check. If the month-end scene is inside the
+            # existing safety margin, finish this task without sending input;
+            # the next monthly roster scan will queue the still-camped general.
+            if job['kind'] == 'recall' and recall_flow._month_end_soon(mem):
+                _task_complete(mem, state, result='recall_deferred_month_end')
+                return []
             # The monthly task is an explicit return instruction for this
             # general. A stale retreat-recheck row (often from months ago,
             # attempts already spent) must not adopt this camp menu and close
