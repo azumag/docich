@@ -73,6 +73,9 @@ HANJUKU_ONLY = [
     'tools/hanjuku_speedrun_fork.py',
     'tests/test_hanjuku_speedrun_fork.py',
     'tests/test_hanjuku_family.py',
+    # PR2 split-timer records: the suite name carries the corner, not the
+    # generated package, so keep it on the Hanjuku-only path explicitly.
+    'tests/test_speedrun_rta*.py',
     'docs/**',
     # Hanjuku pull requests add their chart version to this file's allow-list.
     # Its own tests run in vm-operations-ci and hanjuku-predictions-ci.

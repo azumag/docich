@@ -1226,6 +1226,19 @@ def _rewrite_import(
 # Each entry is (exact source text, replacement, expected occurrences); a
 # mismatch is an error, so a change in the original is noticed, not skipped.
 SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
+    # The speedrun bot records a split-timer side effect after ``persist``.
+    # Both anchors are matched against the *transformed* copy, so the import
+    # already names ``docich.hanjuku_speedrun``.  A missing anchor is an error:
+    # a silent skip would ship a bot that never records an attempt.
+    'brains/hanjuku/bot.py': (
+        ("from docich.hanjuku_speedrun.hanjuku import fault_issue, month_audit, state_budget\n",
+         "from docich.hanjuku_speedrun.hanjuku import fault_issue, month_audit, state_budget\n"
+         "from docich.hanjuku_speedrun.rta import hook as rta_hook\n", 1),
+        ("                        frame_sha256=frame.digest(), frame=frame)),\n",
+         "                        frame_sha256=frame.digest(), frame=frame)),\n"
+         "                    ('rta_failed', lambda: rta_hook.observe(runtime, records, state, meta, "
+         "screenshot=Path(obs['screenshot']))),\n", 1),
+    ),
     'src/docich/hanjuku_hotload.py': (
         ("importlib.import_module(f'docich.{name}')",
          "importlib.import_module(f'docich.hanjuku_speedrun.{name}')", 1),

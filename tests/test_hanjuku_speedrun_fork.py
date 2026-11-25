@@ -96,9 +96,19 @@ BRAIN_BOT_PY = textwrap.dedent('''\
     from pathlib import Path
 
     from docich import hanjuku_run
+    from docich.hanjuku import fault_issue, month_audit, state_budget
 
     ROOT = Path(__file__).resolve().parents[2]
     GAME = 'hanjuku-hero'
+
+
+    def side_effects(runtime, records, state, meta, obs, frame):
+        for label, effect in (
+                ('persist_failed', lambda: persist(
+                    runtime, records, state, meta,
+                            frame_sha256=frame.digest(), frame=frame)),
+                ('state_write_failed', lambda: None)):
+            pass
     ''')
 
 BRAIN_PY = textwrap.dedent('''\

@@ -36,6 +36,9 @@ def seams():
     ['tools/hanjuku_speedrun_fork.py', 'tests/test_hanjuku_speedrun_fork.py'],
     ['tools/hanjuku_speedrun_fork.py'],
     ['tests/test_hanjuku_family.py'],
+    # PR2 split-timer recordings (Hanjuku suite name outside the package).
+    ['tests/test_speedrun_rta_timer.py', 'src/docich/hanjuku_speedrun/rta/timer.py'],
+    ['tests/test_speedrun_rta_store.py'],
 ])
 def test_hanjuku_only_changes_get_the_hanjuku_suite(changed, seams):
     assert scope.choose_suite(changed, seams)[0] == 'hanjuku'

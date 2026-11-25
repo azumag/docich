@@ -19,6 +19,7 @@ import contextvars
 import datetime as dt
 import fcntl
 import hashlib
+import importlib
 import inspect
 import json
 import os
@@ -44,7 +45,7 @@ from .naming import (
     validate_runtime_id,
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
-from .hanjuku_family import is_hanjuku, module
+from .hanjuku_family import SPEEDRUN, is_hanjuku, module
 from .hanjuku_log_retention import prune_completed  # family: original-only
 from .retire_marker import RetireMarkerError, write_retire_marker
 from .log_redaction import redact_log_detail
@@ -5587,6 +5588,7 @@ class GameSwitchCoordinator:
                     _retiring_label(runtime) for runtime in remaining
                 ),
             )
+        finalize_speedrun_attempts(self.store.state_dir, retiring, warnings)
         self._prune_hanjuku_logs(warnings)
         return cleanup_pending
 
@@ -6638,6 +6640,49 @@ def _retiring_targets_detail(runtime: Mapping[str, object]) -> str:
         if isinstance(value, str) and value:
             parts.append(f"{key}={value}")
     return " ".join(parts)
+
+
+def finalize_speedrun_attempts(state_dir, runtimes, warnings=None) -> int:
+    """Finalize RTA attempts for retiring hanjuku-speedrun runtimes only.
+
+    The speedrun copy writes its split timer from a bot side effect; the
+    common teardown closes the attempt when the corner ends for a reason the
+    bot does not observe (operator stop, crash, switch).  ``hanjuku-hero`` is
+    filtered out *before* the module is imported, so the original corner's
+    path never touches the RTA package.
+
+    ``store.finalize_attempt`` is idempotent and reads the terminal reason
+    from the runtime's own ``hanjuku_run.json``; a missing reason becomes a
+    ``stopped`` DNF.  Failures are warnings, never rollback reasons.
+    """
+    targets = [
+        runtime for runtime in (runtimes or ())
+        if isinstance(runtime, Mapping) and runtime.get("game") == SPEEDRUN
+    ]
+    if not targets:
+        return 0
+    try:
+        rta = module(SPEEDRUN, "rta")
+        store = importlib.import_module(f"{rta.__name__}.store")
+    except Exception as exc:  # pragma: no cover - packaging failure
+        if warnings is not None:
+            warnings.append(f"speedrun RTA store import failed: {_safe_detail(exc)}")
+        return 0
+    finalized = 0
+    for runtime in targets:
+        try:
+            runtime_id = runtime.get("runtime_id")
+            if not isinstance(runtime_id, str) or not runtime_id:
+                raise ValueError("invalid runtime_id")
+            result = store.finalize_attempt(
+                runtime_directory(Path(state_dir), runtime_id))
+            if result is not None:
+                finalized += 1
+        except Exception as exc:
+            if warnings is not None:
+                warnings.append(
+                    f"speedrun RTA finalize failed: {_safe_detail(exc)}")
+    return finalized
 
 
 def _evidence_from_exception(exc: BaseException) -> TeardownEvidence:
