@@ -98,7 +98,7 @@ docich issue #5452。検証記録 VERIFY-5452.md（PR #5462、結論 (a) 実欠�
 - `src/docich/hanjuku/month_audit.py`
   - `_camp_event` に `mode_lost`/`recent_screens` 転写を追加。
 - `src/docich/hanjuku/version.py`
-  - `hanjuku-chart-v1498-recall-battle-mode-lost`（検品ゲートで付け直し。実装時は v1492 だったが、main が v1493・PR #5508 が v1494・PR #5514 が v1495 のため、空き番号 v1496 へ変更）。
+  - `hanjuku-chart-v1498-recall-battle-mode-lost`。現在の main の marker は `hanjuku-chart-v1497-boss-audit-live-sortie-defer` で、この PR は次の v1498 を使用する。
 - `ops/vm_actions/collect_diagnostics.py`
   - allowlist へ同文字列を追加（末尾カンマ）。
 - `ops/vm_actions/tests/test_collect_diagnostics.py`
@@ -116,47 +116,15 @@ docich issue #5452。検証記録 VERIFY-5452.md（PR #5462、結論 (a) 実欠�
 
 ## テスト結果
 
-- ローカル実行は行えていない。2 セッション連続で `python3 -m pytest`
-  `pytest` `gh` を含む exec 呼び出しが環境の承認で拒否された
-  （2026-11-25）。変更は読み返しによる静的レビューのみで確認済み。
-- 静的検証で確認した対応:
-  - `MOVE_MODE_STAGES` = `('dest','y_route','relay','hero_focus','hero_open')`
-    は recall.py L60 に存在し、`_mark_recall_battle`（L477-480）の
-    `battle_return` 付与対象へ追加済み。
-  - `is_camp_menu`/`is_fort_menu`/`_reset_boss_jump`/`_arm_recall_skip`/
-    `BOSS_RETRY_TICKS`/`FORT_RETRY_TICKS` はすべて recall.py 内で
-    import または定義済み。`map.py` の `_flow` は L37 で import 済み。
-  - `_y_route_step` の確定 A 画面制限（L1153-1164）と
-    `_finish_hero_recall`→`_request_recall`（`camp_recall_requested`）
-    の呼出関係を確認。
-  - `_camp_recall_step` の `battle_return` 消費（L1553-1592）、
-    move-mode 中メニューガード（L1593-1606）、`_recall_dispatch_step`
-    の `dispatch_screens`/`mode_lost`/ペア計上抑止（L2562-2738）を確認。
-  - `world_map_step` の post-battle ガード（map.py L569-583）、
-    `_recall_dialog_wanted` の castle_menu 系回送（orchestrator.py
-    L934-940）、`month_audit._camp_event` の `mode_lost`/`recent_screens`
-    転写（L845-850）を確認。
-  - `recall_verification` の消費側（post_month_status.py L1563/L2500、
-    camp_recheck.py）は `.get()` 参照のみのため `dispatch_screens` 追加で
-    形状検証を壊さない。`_REGION_KEY['flow']='flow'` とテストの
-    `mem['flow']` 構築は整合。
-  - 新規テストの想定経路（battle→`battle_return`、post-battle `map`→
-    `[]`+recall 破棄、`map_target`+`dest` 生存時の受領消去→`_start_y_jump`、
-    `castle_menu` 終端の mode_lost 計上）を呼出経路ごと追跡済み。
-- 採番: `version.py` は `hanjuku-chart-v1498-recall-battle-mode-lost`（検品ゲートで v1492 から付け直し）。
-  ローカル main の最新は v1491（commit 231ec8fbd）。open PR の採番は
-  `gh` が拒否されるため未確認 — 検品ゲートで衝突有無を確認のこと。
+- ローカル実行は未実施（2026-11-25、実行環境の承認で `python3 -m pytest` / `gh` が拒否されたため）。代わりに最新HEAD `05ec82824455cef76e63e6abbaa9e8b3fbadcd7b` の GitHub Actions exact-HEAD 結果を確認した。
+- CI [45537408899](https://github.com/azumag/docich/actions/runs/45537408899): `test-scope`、`python-syntax`、Full-suite shard 1/3・2/3・3/3、`ci-required` がすべて success。
+- Prediction [45537408732](https://github.com/azumag/docich/actions/runs/45537408732): success。
+- Recovered egg [45537408838](https://github.com/azumag/docich/actions/runs/45537408838): success。
+- Retro [45537408741](https://github.com/azumag/docich/actions/runs/45537408741): Soren gitlink gate / retro regressions ともに success。
+- VM operations [45537408806](https://github.com/azumag/docich/actions/runs/45537408806): security-regressions success。診断collector allowlistの回帰テスト、py_compile、shell syntaxを含む。
+- Devin Review status: success。CI failureはなく、再実行を要する失敗もなかった。
+- 採番: `version.py` は `hanjuku-chart-v1498-recall-battle-mode-lost`。現在の main commit `2fe1b66f8e0025533a13e1c5c454ce65950a3f98` は v1497、PR branch は main から ahead 2 / behind 0。現行 main との marker 衝突はない。別の behavior PR が先に main へ入った場合は merge 前に marker を再確認する。
 - `DOCICH_HANDOFF_PATH` 未設定のため handoff 正本は未読（AGENTS.md §1）。
-- 実行すべき対象（CI または検品側で実施のこと）:
-
-```
-python3 -m pytest tests/test_hanjuku_recall_battle_mode_loss.py \
-  tests/test_hanjuku_recall_hold.py tests/test_hanjuku_recall_interrupt.py \
-  tests/test_hanjuku_recall_dest_jump.py tests/test_hanjuku_camp_observation.py \
-  tests/test_hanjuku_camp_recheck*.py tests/test_hanjuku_camp_*.py \
-  tests/test_hanjuku_map_*.py tests/test_hanjuku_month_audit*.py \
-  ops/vm_actions/tests/test_collect_diagnostics.py -x -q
-```
 
 ## 残件・既知の注意点
 
