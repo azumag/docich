@@ -94,6 +94,13 @@ def _deploy_cards(order, mem):
         zero_cards = {c for c in (zero.get('cards') or ())
                       if int(live_stock.get(c) or 0) <= 0}
         cards = [card for card in cards if card not in zero_cards]
+    # owner 2026-11-26 (#5510): 計画が在庫に無い札を名指ししていた場合、その札は
+    # 携行できない（探しても見つからず出撃が空になる）。実測在庫が明示的に 0 の
+    # 札だけを落とす（未読 = キー無し は 0 ではないので残す）。
+    live_stock = mem.get('card_stock') if isinstance(mem.get('card_stock'), dict) else None
+    if live_stock:
+        cards = [card for card in cards
+                 if not (type(live_stock.get(card)) is int and live_stock.get(card) <= 0)]
     capped = _cap_card_ids(cards)
     if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
         mem.setdefault('cards_capped', {})[order['step']] = capped
