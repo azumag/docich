@@ -8213,6 +8213,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1527-audit-card-drop",
             "hanjuku-chart-v1528-card-list-unconfirmed-evidence",
             "hanjuku-chart-v1530-boss-card-unused-issue",
+            "hanjuku-chart-v1531-boss-card-detect",
             "hanjuku-chart-v1529-owned-target-settle",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",

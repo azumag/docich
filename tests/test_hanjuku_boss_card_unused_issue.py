@@ -19,7 +19,7 @@ def test_a_used_card_is_not_a_miss():
 
 
 def test_a_non_boss_battle_is_not_flagged():
-    cur = _battle(enemy='エシャロット')
+    cur = _battle(enemy='エシャロット', castle='ウラノポリス')
     assert battle_flow._boss_card_left_unused({}, cur) is None
 
 
@@ -31,3 +31,7 @@ def test_the_miss_is_noted_once():
 def test_no_carried_card_is_not_a_miss():
     cur = _battle(planned_cards=[])
     assert battle_flow._boss_card_left_unused({}, cur) is None
+
+def test_an_unread_boss_name_is_still_a_boss_by_castle():
+    cur = _battle(enemy=None)
+    assert battle_flow._boss_card_left_unused({}, cur) == 'ミックミー'
