@@ -2406,9 +2406,11 @@ def egg_choice_step(screen: Screen, mem):
                 resulting_event='slot_stop_requested_not_yet_confirmed',
                 reason='スロット卵種またはハズレ表示で回転中と確認し、上下で候補を追わずAで停止を要求。停止結果は次画面で確認')
         return [pad('a')]
-    # The first actual candidate is a valid summon. No unverified power ranking
-    # or arbitrary entry is introduced; later skill/HP policy handles its fight.
-    choice = names[0]
+    # owner 2026-11-26: 三択は「強いモンスター」を選ぶ。強さは素の5能力
+    # (HP/攻撃/防御/命中/速さ) の合計で決める。既知の名前が無ければ従来どおり
+    # 先頭候補（未検証の並べ替えはしない）。
+    from ...hanjuku_reference import strongest_egg_candidate
+    choice = strongest_egg_candidate(names) or names[0]
     move = _menu_move_batch(screen, choice, _battle_menu_to(screen, choice))
     if move != 'here':
         return _emit_moves(move)
@@ -2416,7 +2418,7 @@ def egg_choice_step(screen: Screen, mem):
     flow['wait'] = 0
     _record(mem, 'egg_choice_select', observed_metric={'candidates': names, 'choice': choice},
             resulting_event='summon_selected_not_yet_confirmed',
-            reason='実表示の三候補と騎士カーソルを確認し、先頭の召喚獣を選択')
+            reason='実表示の三候補と騎士カーソルを確認し、素の5能力の合計が最大の召喚獣を選択')
     return [pad('a')]
 
 
