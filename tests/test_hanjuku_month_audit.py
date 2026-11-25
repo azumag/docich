@@ -941,6 +941,10 @@ def test_all_survival_attempted_duplicate_cards_are_unconfirmed(runtime_dir):
     incident = audit.load_incidents(runtime_dir)[0]
     assert incident['confidence'] == 'medium'
     assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    battle = incident['battle_event']
+    assert battle['cards_attempted'] == ['ノリウツール'] * 5
+    assert battle['cards_unclassified'] == ['ノリウツール']
+    assert '消費未確認の使用試行' in audit.render(incident)
 
 
 def test_survival_attempted_card_beside_a_plain_card_stays_high(runtime_dir):

@@ -2178,12 +2178,26 @@ def card_list_step(screen: Screen, mem):
                 if (flow['list_observations'] < 4
                         and int(flow.get('list_same_observations', 0)) < CARD_LIST_SAME_FRAME_LIMIT):
                     return []
+                selected_interrupted = bool(
+                    flow.get('announce_retried')
+                    or flow.get('card') in (cur.get('cards_selected') or []))
                 _record(mem, 'battle_card_list_unclassified', **_battle_labels(cur),
                         card=flow['card'], observed_metric={'listed_cards': names,
-                                                           'observations': flow['list_observations']},
+                                                           'observations': flow['list_observations'],
+                                                           'selected_interrupted': selected_interrupted},
                         expected_metric='読める切り札一覧または明示的な切り札なし表示',
                         reason='札一覧を確定できないため、携行不足と断定せず入力を戻す')
-                cur['card_flow'] = None
+                if selected_interrupted:
+                    # After an announce retry the card is already a bounded
+                    # selection.  Dropping only the flow would erase the
+                    # consumption-unconfirmed evidence the month audit needs;
+                    # a pre-selection open failure must still keep the kit clean.
+                    _card_use_unclassified(
+                        mem, cur,
+                        '選択済み・消費未確認のまま札一覧を確定できないため中断',
+                        selected_interrupted=True)
+                else:
+                    cur['card_flow'] = None
                 return [pad('b'), pad('b')]
             cur.setdefault('cards_missing', []).append(flow['card'])
             cur.pop('card_damage_list_blocked', None)
