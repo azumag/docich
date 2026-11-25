@@ -16,7 +16,7 @@ import sys
 import time
 
 from ...naming import validate_runtime_id
-from . import store, timer as timer_mod
+from . import announce, store, timer as timer_mod
 
 GAME = timer_mod.GAME
 
@@ -107,6 +107,10 @@ def observe(runtime, records, state, meta, *, screenshot):
         from . import trace as trace_mod
         trace_mod.append(runtime, timer, records=records, state=state,
                          meta=meta, screenshot=screenshot)
+    except Exception:
+        pass
+    try:
+        announce.launch_pending(runtime)
     except Exception:
         pass
     return timer
@@ -271,6 +275,40 @@ def _new_name_screen(run, timer):
     return type(current) is int and current > 0
 
 
+def _announce_identity(run):
+    """The four measured run-identity fields, or ``None`` when incomplete."""
+    if not isinstance(run, dict):
+        return None
+    identity = {key: run.get(key) for key in announce.IDENTITY_KEYS}
+    return identity if announce.valid_identity(identity) is not None else None
+
+
+def _announce_changes(runtime, timer, before_splits, run, *, finished=False,
+                      dnf=False):
+    """Queue the measured sentences for this observation; never raises."""
+    try:
+        identity = _announce_identity(run)
+        if identity is None:
+            return
+        # The terminal sentence goes first: the corner may tear down before a
+        # second 25 s narration slot, and the run result matters more than the
+        # final segment detail.
+        if finished:
+            announce.finish_event(runtime, timer, identity=identity)
+        elif dnf:
+            announce.dnf_event(runtime, timer, identity=identity)
+        splits = (timer.get('splits')
+                  if isinstance(timer.get('splits'), list) else [])
+        for split in splits[before_splits:]:
+            announce.split_event(
+                runtime, split, attempt_id=timer.get('attempt_id'),
+                identity=identity,
+                at_ms=timer.get('heartbeat_at_ms'), terminal=finished or dnf)
+    except Exception:
+        # Announcements are a side channel; a timer record must still commit.
+        return
+
+
 def _commit(runtime, timer, records, *, save_records, final=False):
     if save_records:
         store.save_records(runtime, records)
@@ -360,6 +398,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
             recovered_same = True
 
     if status == 'running':
+        before_splits = len(timer.get('splits') or [])
         changed_records = False
         for end_index, source in _signals(observations, state):
             before = len(timer.get('splits') or [])
@@ -375,6 +414,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
             timer, updated = timer_mod.finish(timer, stored, observed)
             stored = updated
             _commit(runtime, timer, stored, save_records=True, final=True)
+            _announce_changes(runtime, timer, before_splits, run, finished=True)
             return timer
         if terminal in _TERMINAL_REASONS:
             timer, updated = timer_mod.finish_or_dnf(
@@ -383,12 +423,14 @@ def _observe(runtime, records, state, meta, *, screenshot):
             # segment best; save it before the attempt row is written.
             _commit(runtime, timer, updated, save_records=changed_records,
                     final=True)
+            _announce_changes(runtime, timer, before_splits, run, dnf=True)
             return timer
         if not changed_records:
             timer = timer_mod.heartbeat(timer, observed)
             _commit(runtime, timer, stored, save_records=False)
         else:
             _commit(runtime, timer, stored, save_records=True)
+        _announce_changes(runtime, timer, before_splits, run)
         return timer
 
     start_here = (
