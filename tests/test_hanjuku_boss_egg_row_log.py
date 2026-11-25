@@ -83,6 +83,7 @@ def test_a_missing_egg_row_reveals_then_opens_the_carried_card(monkeypatch):
     monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
     assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
     assert mem['battle']['card_flow']['card'] == 'エンジェリン'
+    assert mem['battle']['summon_card_opens'] == 1
     # The next card in the same fight gets its own bounded look at the box.
     assert mem['battle']['summon_card_scroll'] == 0
     assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
@@ -247,3 +248,17 @@ def test_summon_card_open_limit_does_not_interrupt_an_active_card_flow(monkeypat
     assert battle['card_flow'] is flow
     assert not battle.get('cards_unclassified')
     assert not any(r['decision'] == 'battle_summon_card_abandoned' for r in mem['_records'])
+
+
+def test_second_summon_card_open_is_allowed_before_the_limit(monkeypatch):
+    mem = memory()
+    battle = mem['battle']
+    battle.update(planned_cards=['エンジェリン', 'ノリウツール'],
+                  cards_selected=['エンジェリン'], cards_used=['エンジェリン'],
+                  summon_card_opens=1)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    assert B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem) == [B.pad('a')]
+    assert battle['card_flow']['card'] == 'ノリウツール'
+    assert battle['summon_card_opens'] == B.SUMMON_CARD_OPEN_LIMIT
