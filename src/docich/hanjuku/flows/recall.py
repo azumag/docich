@@ -51,6 +51,14 @@ RECALL_HOLD_TICK_LIMIT = 600   # ticks a non-operable screen may hold one recall
 RECALL_BATTLE_RESET_LIMIT = 3    # budget restarts battle returns may grant one recall
 RECALL_BATTLE_RESET_TICKS = 1800 # ticks those restarts may stretch one recall
 
+# docich#5452: the stages that steer the いどう move mode — the destination
+# picker/walk, its whole-map Y route, the relay leg and the hero's own unit
+# focus. Combat kills that mode along with the foreground, so a battle that
+# interrupted one of them needs the mode-loss handling in
+# ``_recall_move_mode_lost`` rather than the cursor-budget restart the
+# field-navigation stages ('to_camp'/'menu') get.
+MOVE_MODE_STAGES = ('dest', 'y_route', 'relay', 'hero_focus', 'hero_open')
+
 # #4468: a field general's blue G badge is the very same square as the real
 # いどう destination marker. On g1190 2026-11-17 the recall read a bare field
 # as 'map_target' (the G on an army sprite) and sent its A with no picker open;
@@ -466,10 +474,57 @@ def _mark_recall_battle(mem):
     field cursor — or wait on the camp menu it opened — take the flag; a
     pending dispatch already has ``recall_interrupted`` and a text-hold is
     not a cursor repositioning.
+
+    docich#5452: the destination-steering stages take the flag too, but for
+    a different reason — combat also kills the いどう move mode, so the
+    first 'map' after it must not be resumed as the いどう field cursor
+    (see ``_recall_move_mode_lost``).
     """
     state = _flow(mem).get('recall')
-    if isinstance(state, dict) and state.get('stage') in ('to_camp', 'menu'):
+    if isinstance(state, dict) and state.get('stage') in (
+            'to_camp', 'menu') + MOVE_MODE_STAGES:
         state['battle_return'] = True
+
+
+def _recall_move_mode_lost(mem, state, screen):
+    """Combat killed the いどう move mode; restart the recall from scratch.
+
+    docich#5452: a battle that interrupts the destination steering
+    (``MOVE_MODE_STAGES``) leaves the flow believing the field cursor is
+    still the いどう one. The first post-battle 'map' is a plain field —
+    resuming the Y route there opens the whole map in *view* mode, where an
+    A on an own castle opens its menu (castle_menu) instead of naming the
+    destination, and the follow-up confirm A lands inside that menu so the
+    return never launches (g1190 2026-11-26). Drop the in-flight attempt
+    like an interrupted dispatch: the next observation re-detects the camp,
+    re-walks its menu and confirms いどう again from a state that can be
+    verified.
+    """
+    if (mem.get('y_jump') or {}).get('step') == 'RECALL':
+        mem.pop('y_jump', None)          # the jump belonged to the dead mode
+    _reset_boss_jump(mem)                # drop the stale RECALL jump receipt/count
+    (mem.get('y_jumped_res') or {}).pop('RECALL', None)
+    stage = state.get('stage')
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    if not state.get('hero'):
+        # Same short recovery hold an interrupted dispatch takes — the camp
+        # is still there, only its move mode died. A boss redirect keeps its
+        # own pacing.
+        _arm_recall_skip(mem, state,
+                         BOSS_RETRY_TICKS if (state.get('boss') or state.get('boss_move'))
+                         else FORT_RETRY_TICKS)
+    _record(mem, 'camp_recall_interrupted',
+            observed_metric={'stage': stage, 'screen': screen.kind,
+                             'goal': state.get('goal'),
+                             'camp': list(state.get('target') or ())},
+            resulting_event='move_mode_lost',
+            reason='戦闘が目的地操舵中のいどうモードを切ったため、viewモードの全体マップや城メニューへ入力せず帰還をやり直す')
+    if (is_camp_menu(screen) or is_fort_menu(screen)
+            or screen.kind in ('map_target', 'world_map', 'castle_menu',
+                               'general_list', 'castle_info', 'main_menu')):
+        return [pad('b')]
+    return []
 
 
 MONTH_END_MARGIN = 200         # ticks before the estimated month end: no new recall
@@ -1102,6 +1157,17 @@ def _y_route_step(screen, mem, state):
     if not goal:
         return []
     if (mem.get('y_jumped') or {}).get('RECALL') == goal:
+        if screen.kind not in ('map', 'map_target', 'world_map'):
+            # docich#5452: the jump receipt licenses the confirm A only on the
+            # field, its picker or the live move-mode world map. Any other
+            # screen means the mode was lost — a view-mode world map's A
+            # already opened castle_menu — so the confirm A must never land
+            # there. Close the stray menu and restart the recall.
+            if (is_camp_menu(screen) or is_fort_menu(screen)
+                    or screen.kind in ('castle_menu', 'general_list',
+                                       'castle_info', 'main_menu')):
+                return _recall_move_mode_lost(mem, state, screen)
+            return []
         return _finish_hero_recall(mem, state, goal)
     state['steps'] = int(state.get('steps') or 0) + 1
     if not mem.get('y_jump') and state['steps'] > Y_ROUTE_RETRIES:
@@ -1495,15 +1561,59 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         return []
     state.pop('hold_since', None)
     if state.get('battle_return'):
-        if state.get('stage') in ('to_camp', 'menu') and screen.kind == 'map':
+        stage = state.get('stage')
+        if stage in ('to_camp', 'menu') and screen.kind == 'map':
             # Keep the marker through resumable non-map frames; only the first
             # map after combat establishes the new cursor baseline.
             state.pop('battle_return', None)
             _battle_return_reset(mem, state)
-        elif state.get('stage') not in ('to_camp', 'menu'):
+        elif stage in MOVE_MODE_STAGES:
+            if screen.kind == 'map':
+                # docich#5452: a post-battle 'map' is a plain field — the
+                # いどう move mode died with the battle and cannot be
+                # re-confirmed from this screen. Never resume the Y route
+                # here: the map it opens is a view, and its A opens the
+                # castle menu instead of dispatching the return.
+                state.pop('battle_return', None)
+                return _recall_move_mode_lost(mem, state, screen)
+            if screen.kind == 'map_target' and stage == 'dest':
+                # The destination picker may have survived combat — the game
+                # restores it — but every jump receipt names the pre-battle
+                # marker. Drop them like observe_sortie_transition does so a
+                # fresh jump re-places the marker before any confirm; the
+                # stage body below re-drives from this cleared state.
+                state.pop('battle_return', None)
+                _reset_boss_jump(mem)
+                (mem.get('y_jumped_res') or {}).pop('RECALL', None)
+                state.pop('picker_confirmed', None)
+                state.pop('picker_from_menu', None)
+            elif screen.kind in ('map_target', 'world_map'):
+                # A whole map after combat is indistinguishable from the
+                # view a dead いどう mode would leave, and a picker screen
+                # belongs to no other move-mode stage: restart the recall
+                # instead of steering or confirming it blind.
+                state.pop('battle_return', None)
+                return _recall_move_mode_lost(mem, state, screen)
+            # Other kinds (menus, panels, fades) keep the marker until a
+            # decidable screen appears.
+        elif stage not in ('to_camp', 'menu'):
             # The recall left the field-navigation/menu stages before a map
             # returned, so this reset no longer applies to the active route.
             state.pop('battle_return', None)
+    if state.get('stage') in MOVE_MODE_STAGES:
+        castle_menu_open = screen.kind in ('castle_menu', 'general_list',
+                                           'castle_info', 'main_menu')
+        # A camp menu can still be fading out for a frame or two right after
+        # the いどう select that entered 'dest'; only a persistent one means
+        # the move mode never took. A castle menu is never a fade — only the
+        # recall's own mis-fired input could open it (a view-mode world
+        # map's A on an own castle).
+        camp_menu_open = ((is_camp_menu(screen) or is_fort_menu(screen))
+                          and int(state.get('steps') or 0) > 2)
+        if castle_menu_open or camp_menu_open:
+            # docich#5452: mode-loss evidence — never steer or confirm inside
+            # these menus; close the stray menu and restart the recall.
+            return _recall_move_mode_lost(mem, state, screen)
     if state.get('stage') == 'await_dispatch':
         return _recall_dispatch_step(screen, mem, state)
     _observe_fort_frame(screen, state)
@@ -2486,6 +2596,15 @@ def _recall_dispatch_step(screen, mem, state):
         return None
     state['last_dispatch_screen_kind'] = screen.kind
     state['steps'] = int(state.get('steps') or 0) + 1
+    # docich#5452: keep the screens this wait actually saw. A terminal that
+    # ends on a menu the recall's own inputs opened by mistake (a view-mode
+    # world map's A opens castle_menu) is mode-loss evidence, not a
+    # (camp, castle) refusal.
+    recent = state.get('dispatch_screens')
+    if not isinstance(recent, list):
+        recent = []
+    recent.append(screen.kind)
+    state['dispatch_screens'] = recent[-6:]
     receipt = _journal(mem).get('_recall_inputs') or {}
     trace = state.get('request_trace') or {}
     if (trace and receipt.get('request_trace') == trace
@@ -2525,12 +2644,19 @@ def _recall_dispatch_step(screen, mem, state):
                   else 'dispatch_unconfirmed')
         goal = state.get('goal')
         escape_move = state.get('escape_move') is True
+        # docich#5452: screens like castle_menu during this wait mean the
+        # recall's own inputs left the picker mode — a mode loss, so it gets
+        # the same short recovery hold an interruption does, and its terminal
+        # must not poison the (camp, castle) ranking below.
+        foreign_screens = list(state.get('dispatch_screens') or ())
+        mode_lost = any(kind in ('castle_menu', 'general_list', 'castle_info',
+                                 'main_menu') for kind in foreign_screens)
         # A missing input receipt is a source/transport/receipt-path uncertainty,
         # not evidence that the selected destination refused this camp. Keep
         # castle ranking unchanged until destination-specific refusal evidence
         # exists (docich#5250).
         verification = {
-            **state, 'status': status, 'interrupted': interrupted,
+            **state, 'status': status, 'interrupted': interrupted or mode_lost,
             'input_sent': bool(state.get('input_sent')),
             'picker_closed': bool(state.get('picker_closed')),
             'scene_covered': bool(state.get('scene_covered')),
@@ -2541,7 +2667,7 @@ def _recall_dispatch_step(screen, mem, state):
         # recall_verification for named arrival reads.
         if escape_move:
             _flow(mem)['escape_move_verification'] = {
-                'status': status, 'interrupted': interrupted,
+                'status': status, 'interrupted': interrupted or mode_lost,
                 **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
                 'escape_move': True, 'target': state.get('target'),
                 'target_cell': state.get('target_cell'),
@@ -2558,7 +2684,8 @@ def _recall_dispatch_step(screen, mem, state):
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
                          else FORT_RETRY_TICKS if (state.get('fort') or interrupted
-                                                   or state.get('scene_covered')) else None)
+                                                   or state.get('scene_covered')
+                                                   or mode_lost) else None)
         camp_target = state.get('target')
         if isinstance(camp_target, tuple):
             camp_target = list(camp_target)
@@ -2580,6 +2707,8 @@ def _recall_dispatch_step(screen, mem, state):
             'scene_covered': bool(state.get('scene_covered')),
             'scene_covered_tick': state.get('scene_covered_tick'),
             'last_screen_kind': state.get('last_dispatch_screen_kind'),
+            'mode_lost': mode_lost,
+            'recent_screens': foreign_screens,
             'general': state.get('general') if state.get('fort') else None,
         }
         if accepted:
@@ -2623,7 +2752,19 @@ def _recall_dispatch_step(screen, mem, state):
             # and leaving the general unknown.
             mem.setdefault('roster_read_due', {})[goal] = (
                 int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-        if (not escape_move and status == 'arrival_unconfirmed'
+        if (mode_lost and not escape_move and status == 'arrival_unconfirmed'
+                and not state.get('picker_closed')):
+            # docich#5452: the terminal screens are menus the recall's own
+            # inputs opened after the いどう mode was lost (a view-mode world
+            # map's A opens castle_menu). Nothing here says the (camp,
+            # castle) pair refused the dispatch, so it must not be counted as
+            # a refusal — the recall retries this camp and castle.
+            _record(mem, 'camp_recall_mode_lost', chart_step=None,
+                    observed_metric={'camp': camp_target, 'goal': goal,
+                                     'recent_screens': foreign_screens},
+                    resulting_event='move_mode_lost',
+                    reason='帰還確定の入力が城メニュー系画面へ入った未受理終端のため、目的地拒否としては計上しない')
+        elif (not escape_move and status == 'arrival_unconfirmed'
                 and not state.get('picker_closed') and not state.get('scene_covered')):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
@@ -2646,5 +2787,6 @@ def _recall_dispatch_step(screen, mem, state):
                 _record(mem, 'camp_recall_goal_failed', observed_metric={
                     'camp': list(camp), 'goal': goal, 'count': pair[goal]},
                     reason='同じ野営から同じ城への帰還が未確認のまま繰り返されるため、次回は別の城を試す')
-        return [pad('b')] if screen.kind in ('world_map', 'map_target') else []
+        return [pad('b')] if screen.kind in ('world_map', 'map_target', 'castle_menu',
+                                             'general_list', 'castle_info', 'main_menu') else []
     return []

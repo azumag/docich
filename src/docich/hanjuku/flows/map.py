@@ -17,7 +17,7 @@ from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from ..strategy.bargains import forget_picked
-from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
+from .recall import (MENU_HOLD_LIMIT, MOVE_MODE_STAGES, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                     RELAY_MENU_WAIT, _relay_target, _y_route_step,
                     relay_from_picker,
                             camp_recall_step)
@@ -566,6 +566,21 @@ def world_map_step(screen, mem, frame):
                 observe_chapter_castle(mem, name)
                 if mem.get('chapter'):
                     break
+    recall = _flow(mem).get('recall')
+    if (isinstance(recall, dict) and recall.get('battle_return')
+            and recall.get('stage') in MOVE_MODE_STAGES):
+        # docich#5452: a whole map after combat cannot be told apart from the
+        # view a dead いどう mode would leave — an A there opens the castle
+        # menu instead of confirming the destination. Drop the recall's own
+        # jump and restart the return from the camp.
+        from .recall import _recall_move_mode_lost
+        own_jump = (mem.get('y_jump') or {}).get('step') == 'RECALL'
+        if own_jump:
+            mem.pop('y_jump', None)
+        actions = _recall_move_mode_lost(mem, recall, screen)
+        # The closing B only belongs on a view the recall itself could own;
+        # a foreign flow's jump keeps its screen.
+        return actions if own_jump or not mem.get('y_jump') else []
     if mem.get('y_jump'):
         order = _order(mem)
         if order is not None and mem['y_jump'].get('step') == order['step']:
