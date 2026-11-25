@@ -433,20 +433,26 @@ def camp_recall_step(screen: Screen, mem, frame):
 
 
 def _mark_recall_interrupted(mem):
-    """Remember that a battle/event scene took the foreground from a recall.
+    """Record a foreground scene that covers a pending recall dispatch.
 
-    The recall is planned one observation and sent on the next. When a
-    defense/attack message starts in between (g1139 2026-11-06 15:18:18 JST:
-    カルーン じょうが てきに せめこまれました right after the recall plan), the
-    A advances that scene instead of confirming the destination. The pending
-    recall state stays untouched (a combat foreground must not rewrite it),
-    but the dispatch step uses this marker to retry soon after the battle
-    instead of serving the long failed-camp skip.
+    Before an input receipt exists, the scene is an ordinary interruption and
+    can use the existing free retry marker. After a receipt exists, retrying A
+    could duplicate an accepted return. Preserve that case separately as
+    scene_covered so a later field map is not mistaken for picker closure and
+    the destination is not penalized for a scene-owned frame.
     """
     state = _flow(mem).get('recall')
-    if not isinstance(state, dict):
+    if not isinstance(state, dict) or state.get('stage') != 'await_dispatch':
         return
-    if state.get('stage') != 'await_dispatch' or state.get('input_sent'):
+    receipt = _journal(mem).get('_recall_inputs') or {}
+    trace = state.get('request_trace') or {}
+    receipt_sent = bool(
+        trace and receipt.get('request_trace') == trace
+        and receipt.get('a_inputs', 0) >= state.get('a_inputs', 1)
+    )
+    if state.get('input_sent') or receipt_sent:
+        state['scene_covered'] = True
+        state.setdefault('scene_covered_tick', int(mem.get('tick') or 0))
         return
     _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
 
@@ -1454,10 +1460,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     # and the frame returns to its real owner so the message can advance.
     # A partial camp menu (only one menu word visible, e.g. 'いどう' while the
     # window is still fading in) is operable: the menu stage reads it. The
-    # 'await_dispatch' stage is exempt — the dispatch wait settles on the
-    # next screen, which can be a text/month screen. A dome camp is exempt
-    # too — the menu stage's own DOME_SCREEN_WAIT owns its non-menu screens.
-    # The hold is for stages that need a field/map view to operate (e.g. 'dest').
+    # A sent dispatch is not verified by a text/month scene. Keep the scene
+    # with its normal owner and do not spend the six-observation receipt window.
+    if screen.kind == 'text' and state.get('stage') == 'await_dispatch':
+        _mark_recall_interrupted(mem)
+        return None
+    # A dome camp is exempt too — the menu stage's own DOME_SCREEN_WAIT owns
+    # its non-menu screens. Other text frames are held without spending the
+    # field-navigation budget.
     if (screen.kind == 'text' and state.get('stage') != 'await_dispatch'
             and state.get('camp_kind') != 'dome' and not (
             is_camp_menu(screen) or is_fort_menu(screen)
@@ -2307,6 +2317,22 @@ def _fort_step(screen, mem, state):
     """
     from . import house
     stage = state['stage']
+    # A fort sortie takes longer than the remaining month-end margin. Do not
+    # begin a new sortie (or send the status-panel A) when the concert scene
+    # is close enough to cover its destination picker. A picker already
+    # requested remains owned by its existing bounded wait.
+    if _month_end_soon(mem) and not state.get('fort_picker_requested'):
+        ready_to_defer = False
+        if stage in ('fort_menu', 'fort_list'):
+            ready_to_defer = is_fort_menu(screen) or fort_list_open(screen)
+        elif stage == 'fort_status':
+            info = house.general_status(screen)
+            ready_to_defer = bool(info and info.get('general') == state.get('general'))
+        if ready_to_defer:
+            return _leave_fort(
+                mem, state,
+                '月末場面までの猶予が短いため、砦しゅつげきを次月へ延期',
+                [pad('b')])
     if stage != 'fort_status' and screen.kind == 'map':
         return _leave_fort(mem, state, '砦のメニューが閉じてマップへ戻ったためこのしゅつげきを見送る', [])
     if stage == 'fort_menu':
@@ -2422,6 +2448,9 @@ def _request_recall(mem, state, goal, actions, **fields):
     state.pop('request_trace', None)
     state.pop('input_sent', None)
     state.pop('picker_closed', None)
+    state.pop('scene_covered', None)
+    state.pop('scene_covered_tick', None)
+    state.pop('scene_pending', None)
     escape_move = fields.get('escape_move') is True
     if goal and not escape_move:
         # The destination's own list is the arrival receipt for a recalled
@@ -2450,6 +2479,12 @@ def _request_recall(mem, state, goal, actions, **fields):
 
 
 def _recall_dispatch_step(screen, mem, state):
+    # Once a scene covered the sent A, only field/picker observations can
+    # advance the bounded check. Text and transition frames belong to their
+    # normal owner and cannot prove that the destination picker closed.
+    if state.get('scene_covered') and screen.kind not in ('map', 'map_target', 'world_map'):
+        return None
+    state['last_dispatch_screen_kind'] = screen.kind
     state['steps'] = int(state.get('steps') or 0) + 1
     receipt = _journal(mem).get('_recall_inputs') or {}
     trace = state.get('request_trace') or {}
@@ -2463,7 +2498,15 @@ def _recall_dispatch_step(screen, mem, state):
             _record(mem, 'camp_recall_input_sent', observed_metric={'castle': state.get('goal'),
                     'request_trace': trace}, resulting_event='sent_not_yet_accepted',
                     reason='同じラン・判断ID・実画面の帰還A送信記録を確認、受理と到着は未確認')
-    if state.get('input_sent') and screen.kind == 'map':
+    # A scene can be observed before its input receipt is projected into the
+    # policy state. If the matching receipt arrives later, promote that earlier
+    # interruption to scene coverage rather than charging the destination.
+    interrupted_tick = _flow(mem).get('recall_interrupted')
+    if state.get('input_sent') and type(interrupted_tick) is int:
+        state['scene_covered'] = True
+        state.setdefault('scene_covered_tick', interrupted_tick)
+    if (state.get('input_sent') and screen.kind == 'map'
+            and not state.get('scene_covered')):
         state['picker_closed'] = True
     if state.get('picker_closed') or state['steps'] >= 6:
         interrupted_at = _flow(mem).pop('recall_interrupted', None)
@@ -2475,7 +2518,8 @@ def _recall_dispatch_step(screen, mem, state):
         # incident per recall (g1190 2026-11-21 16:59:45: input_sent and
         # unconfirmed in one second) while also forcing a map re-anchor
         # (mem['uncertain']) that the accepted dispatch never needed.
-        accepted = bool(state.get('input_sent')) and bool(state.get('picker_closed')) and not interrupted
+        accepted = (bool(state.get('input_sent')) and bool(state.get('picker_closed'))
+                    and not interrupted and not state.get('scene_covered'))
         status = ('dispatched' if accepted
                   else 'arrival_unconfirmed' if state.get('input_sent')
                   else 'dispatch_unconfirmed')
@@ -2487,6 +2531,9 @@ def _recall_dispatch_step(screen, mem, state):
         # exists (docich#5250).
         verification = {
             **state, 'status': status, 'interrupted': interrupted,
+            'input_sent': bool(state.get('input_sent')),
+            'picker_closed': bool(state.get('picker_closed')),
+            'scene_covered': bool(state.get('scene_covered')),
             **({'interrupted_tick': interrupted_at} if type(interrupted_at) is int else {}),
         }
         # A cliff escape uses the same bounded dispatch receipt, but it must
@@ -2502,13 +2549,16 @@ def _recall_dispatch_step(screen, mem, state):
                 'steps': state.get('steps'),
                 'input_sent': bool(state.get('input_sent')),
                 'picker_closed': bool(state.get('picker_closed')),
+                'scene_covered': bool(state.get('scene_covered')),
+                'scene_covered_tick': state.get('scene_covered_tick'),
             }
         else:
             _flow(mem)['recall_verification'] = verification
         _flow(mem).pop('recall', None)
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
-                         else FORT_RETRY_TICKS if (state.get('fort') or interrupted) else None)
+                         else FORT_RETRY_TICKS if (state.get('fort') or interrupted
+                                                   or state.get('scene_covered')) else None)
         camp_target = state.get('target')
         if isinstance(camp_target, tuple):
             camp_target = list(camp_target)
@@ -2527,6 +2577,9 @@ def _recall_dispatch_step(screen, mem, state):
             'input_sent': bool(state.get('input_sent')),
             'picker_closed': bool(state.get('picker_closed')),
             'interrupted': interrupted,
+            'scene_covered': bool(state.get('scene_covered')),
+            'scene_covered_tick': state.get('scene_covered_tick'),
+            'last_screen_kind': state.get('last_dispatch_screen_kind'),
             'general': state.get('general') if state.get('fort') else None,
         }
         if accepted:
@@ -2570,7 +2623,8 @@ def _recall_dispatch_step(screen, mem, state):
             # and leaving the general unknown.
             mem.setdefault('roster_read_due', {})[goal] = (
                 int(mem.get('tick') or 0) + RECALL_READ_DELAY)
-        if not escape_move and status == 'arrival_unconfirmed' and not state.get('picker_closed'):
+        if (not escape_move and status == 'arrival_unconfirmed'
+                and not state.get('picker_closed') and not state.get('scene_covered')):
             # The same camp was sent at the same castle month after month
             # (g1190 2026-11-17 21:1x: リーキ -> アルマムーン three times) and the
             # general never moved. Remember the pair so the next attempt picks
