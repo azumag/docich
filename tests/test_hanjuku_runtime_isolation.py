@@ -1,0 +1,97 @@
+"""The original corner and its copy must never read each other's runtimes."""
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import uuid
+
+import pytest
+
+from docich import hanjuku_narration as narration
+from docich import hanjuku_resume as resume
+from docich import hanjuku_resume_recovery as recovery
+from docich.game_switch import atomic_write_json
+from docich.retroarch_boundary import BOUNDARY_FILE
+from test_hanjuku_resume import setup, state_bytes
+
+
+def _runtime(state_dir, generation):
+    runtime = Path(state_dir) / 'runtimes' / f'g{generation}-5eed1234'
+    (runtime / 'states').mkdir(parents=True)
+    return runtime
+
+
+def _identity(runtime, game):
+    return dict(game=game, runtime_id=runtime.name,
+                generation=int(runtime.name.split('-')[0][1:]),
+                lease_id=str(uuid.uuid4()))
+
+
+def _speedrun_runtime(state_dir, generation=900):
+    """A newer copied-corner runtime with the same ROM stem and filenames."""
+    runtime = _runtime(state_dir, generation)
+    identity = _identity(runtime, 'hanjuku-speedrun')
+    atomic_write_json(runtime / 'hanjuku_run.json', dict(
+        identity, schema=1, terminal_reason='game_over', frame_sha256='b' * 64))
+    atomic_write_json(runtime / BOUNDARY_FILE, dict(
+        identity, schema=1, request_id=str(uuid.uuid4()), status='reached',
+        outcome='game_over', frame_sha256='b' * 64))
+    (runtime / 'states' / 'hanjuku-hero.state').write_bytes(state_bytes(b'speedrun'))
+    return runtime
+
+
+def _snapshot(runtime):
+    return {path.relative_to(runtime): path.read_bytes()
+            for path in runtime.rglob('*') if path.is_file()}
+
+
+def test_resume_ignores_newer_speedrun_runtime(setup):
+    s = setup
+    baseline = resume._latest_boundary(s.g, s.game, explicit_resume=True)
+    assert baseline is not None
+    assert baseline['source_boundary']['runtime_id'] == s.source.parent.parent.name
+
+    _speedrun_runtime(s.g.state_dir)
+
+    assert resume._latest_boundary(s.g, s.game, explicit_resume=True) == baseline
+    resume.prepare(s.g, s.game, s.queue)
+    receipt = json.loads((Path(s.g.state_dir) / 'hanjuku-resume' /
+                          resume.REQUEST_FILE).read_text(encoding='utf-8'))
+    assert receipt['selected_source'].startswith('runtimes/g514-')
+    assert receipt['source_boundary'] == baseline['source_boundary']
+
+
+def test_recovery_ignores_newer_speedrun_runtime(setup):
+    s = setup
+    _speedrun_runtime(s.g.state_dir)
+    store = SimpleNamespace(receipts=SimpleNamespace(receipts=lambda: []))
+    assert recovery._no_newer_hanjuku_progress(
+        Path(s.g.state_dir), store, 514) is True
+
+
+def _narration_candidate(runtime, game):
+    identity = _identity(runtime, game)
+    item = dict(identity, seq=1, at=1000.0, key='game_over_recap',
+                terminal_recap=True, text='別ゲームの振り返りです。')
+    (runtime / 'hanjuku_commentary.jsonl').write_text(
+        json.dumps(item) + '\n', encoding='utf-8')
+    atomic_write_json(runtime / 'hanjuku_run.json', dict(
+        identity, schema=1, terminal_reason='game_over', frame_sha256='b' * 64))
+    return identity
+
+
+def test_narration_never_writes_to_speedrun_runtime(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path, 900)
+    identity = _narration_candidate(runtime, 'hanjuku-speedrun')
+    atomic_write_json(runtime / narration.STATE, {
+        narration.TERMINAL_DELIVERIES_KEY: {
+            narration._terminal_delivery_key(identity): 'pending'}})
+    before = _snapshot(runtime)
+
+    monkeypatch.setattr('docich.config.load_game', lambda *a: SimpleNamespace(
+        raw={'hanjuku': {'narration': {'enabled': True}}}))
+    monkeypatch.setattr('docich.webui._enqueue_audio_text',
+                        lambda *a, **k: pytest.fail('foreign recap enqueued'))
+    assert narration.retry_pending_terminal_deliveries(
+        SimpleNamespace(state_dir=tmp_path)) is True
+
+    assert _snapshot(runtime) == before

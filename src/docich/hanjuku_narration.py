@@ -24,9 +24,10 @@ import time
 from .game_switch import atomic_write_json
 from .hanjuku_run import append_log
 from .adapters.base import AdapterError
-from .retroarch_boundary import read_record
+from .retroarch_boundary import read_record, runtime_game as _runtime_game
 
 STATE = 'hanjuku_narration.json'
+GAME = 'hanjuku-hero'
 TAIL_BYTES = 65536
 MAX_TEXT = 120
 TERMINAL_MAX_TEXT = 1000
@@ -562,6 +563,10 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
     orphaned = []
     for runtime_dir in sorted(runtime_root.iterdir()):
         if runtime_dir.is_symlink() or not runtime_dir.is_dir():
+            continue
+        # A copied corner's runtime shares this narration layout. Never write
+        # this game's delivery outcomes into another game's runtime.
+        if _runtime_game(runtime_dir) not in (None, GAME):
             continue
         state_path = runtime_dir / STATE
         try:

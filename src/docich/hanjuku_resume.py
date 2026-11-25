@@ -20,8 +20,9 @@ from .game_switch import atomic_write_json
 from .naming import runtime_id_generation
 from .hanjuku.strategy import card_census as _card_census
 from .retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,
-                                identity, matches, read_record)
+                                identity, matches, read_record, runtime_game as _runtime_game)
 
+GAME = 'hanjuku-hero'
 REQUEST_FILE = 'hanjuku_resume.json'
 RECEIPT_FILE = 'hanjuku_resume.json'
 MAX_BYTES = 64 * 1024 * 1024
@@ -82,7 +83,7 @@ def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
     runtimes = Path(g.state_dir) / 'runtimes'
     if runtimes.is_symlink():
         raise AdapterError('runtime storage may not be a symlink')
-    stems = {'hanjuku-hero', resolve_rom(g, game).stem}
+    stems = {GAME, resolve_rom(g, game).stem}
     # A committed newer run still counts when its runtime evidence was lost.
     # Otherwise deleting a game-over run's files could resurrect an old stall.
     # Leases are compared between run/boundary below; rollback may re-lease a
@@ -108,6 +109,10 @@ def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
                 continue
             choices[runtimes / receipt['runtime_id']] = receipt['generation']
     for runtime in runtimes.glob('g*'):
+        # A copied corner's runtime shares this generation space and these
+        # filenames. Never let its evidence select or block this game's start.
+        if _runtime_game(runtime) not in (None, GAME):
+            continue
         # RUN_FILE is Hanjuku-specific. Saved states alone also constitute
         # progress, but cannot prove a safe start without the run/boundary.
         relevant = (any((runtime / name).exists() or (runtime / name).is_symlink()
@@ -115,7 +120,7 @@ def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
                     or any(any((runtime / 'states').glob(stem + '.state*')) for stem in stems))
         if not relevant:
             boundary = read_record(runtime / BOUNDARY_FILE)
-            relevant = boundary.get('game') == 'hanjuku-hero'
+            relevant = boundary.get('game') == GAME
         if not relevant:
             continue
         if runtime.is_symlink() or not runtime.is_dir():
@@ -140,7 +145,7 @@ def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
     runtime = newest[0]
     record = read_record(runtime / BOUNDARY_FILE)
     run = read_record(runtime / hanjuku_run.RUN_FILE)
-    expected = dict(game='hanjuku-hero', runtime_id=runtime.name, generation=latest,
+    expected = dict(game=GAME, runtime_id=runtime.name, generation=latest,
                     lease_id=record.get('lease_id'))
     try:
         uuid.UUID(record['request_id'])
