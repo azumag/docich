@@ -6,7 +6,7 @@ No section values or arbitrary diagnostics text cross into GitHub issue bodies.
 import json
 import re
 
-_SECTION_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\\Z")
+_SECTION_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
 _MAX_REPORTED_BYTES = 10_000_000
 _MAX_TOP_SECTIONS = 10
 
