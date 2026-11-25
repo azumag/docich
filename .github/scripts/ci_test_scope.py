@@ -114,7 +114,25 @@ def _imported_modules(path: Path, package: str) -> set[str]:
                 base = '.'.join(parts + ([node.module] if node.module else []))
             names.add(base)
             names.update(f'{base}.{alias.name}' for alias in node.names)
+        elif isinstance(node, ast.Call):
+            names.update(_dispatched_modules(node))
     return names
+
+
+def _dispatched_modules(call: ast.Call) -> set[str]:
+    """Modules named through ``hanjuku_family`` dispatch (``module(game, 'name')``, ``hotload(game)``).
+
+    The dispatcher picks the package at run time, so the original package's module is the
+    one a static check can name; the copy is covered by the same Hanjuku-only rules.
+    """
+    func = call.func
+    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ''
+    if name == 'hotload':
+        return {'docich.hanjuku_hotload'}
+    if (name == 'module' and len(call.args) >= 2
+            and isinstance(call.args[1], ast.Constant) and isinstance(call.args[1].value, str)):
+        return {f'docich.{call.args[1].value}'}
+    return set()
 
 
 def _package_of(root: Path, path: Path) -> str:
