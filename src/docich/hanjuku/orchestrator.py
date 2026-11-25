@@ -2091,9 +2091,17 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                   **({'month_estimate': max(usable)} if usable else {})}
         recall = _recall_after_scene(mem, recall, kind, phase) or {}
         mem['uncertain'] = True
-        decision_log._record(mem, 'camp_recall_interrupted', screen=kind, phase=phase,
-                             observed_metric=stages,
-                             reason='舞台の場面（月初など）が始まり帰還先の選択が閉じたため、帰還指示を中断して場面を進める')
+        scene_covered = bool(recall.get('scene_covered'))
+        if scene_covered:
+            stages.update(scene_covered=True,
+                          scene_covered_tick=recall.get('scene_covered_tick'))
+            decision = 'camp_recall_scene_covered'
+            reason = '送信済み帰還のピッカーが月初場面に覆われたため、再送も受理も推測せず未確認のまま場面を進める'
+        else:
+            decision = 'camp_recall_interrupted'
+            reason = '舞台の場面（月初など）が始まり帰還先の選択が閉じたため、帰還指示を中断して場面を進める'
+        decision_log._record(mem, decision, screen=kind, phase=phase,
+                             observed_metric=stages, reason=reason)
     if isinstance(recall, dict) and recall.get('scene_pending') and phase != 'concert':
         # One interruption per scene: the scene can stay on screen for many
         # frames, and counting each of them would abandon the camp at once.
