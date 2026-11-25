@@ -588,3 +588,14 @@ PR 1 の範囲は実装済み。確認済みの内容と、元コーナー側に
   - `retro_corner.py`: `manual_only` の game 行を共通の抽選リストと周期から外す。
   - `hanjuku_hotload.py` は元のまま。コピー側の動的モジュール名は生成ツールの完全一致パッチで直す。
 - 残り（後続 PR / 凍結時に扱う）: `check` は FORK.json の `source_commit` から作り直して比べるため、squash merge するとコミットが無くなる。マージ後に main のコミットから再生成すること。生成対象外の余分なファイルは検出しない。スピードランのログは R2 退避まで prune しない。`cancel-hanjuku` などの運用者向け操作はスピードラン未対応（停止は WebUI）。コメント用プロフィールは PR 5。
+
+## 付録D. PR 2 の実装状況（2026-11-25）
+
+スプリットタイマーの**記録**（画面表示は PR 3）。実機（ROM）では未確認で、合成データのテストで確かめている。
+
+- `src/docich/hanjuku_speedrun/rta/`（手書き。生成ツールは触らない）: `timer.py`（純粋な状態機械）、`store.py`（`timer.json` / `records.json` / `attempts.jsonl`。原子的書き込み、壊れたら退避して `attempts.jsonl` から再構築）、`hook.py`（ボットから呼ぶ入口。例外を外へ出さない）。
+- ボットへのフックは `tools/hanjuku_speedrun_fork.py` の `SOURCE_PATCHES` で `brains/hanjuku_speedrun/bot.py` にだけ当てる（`persist` の直後）。元の `brains/hanjuku/bot.py` は変えない。
+- 試走の終了（完走・DNF）は `game_switch._finalize_locked` のコーナー終了処理で確定する（`finalize_speedrun_attempts`。`hanjuku-hero` では rta を import しない）。teardown に成功した runtime だけが対象。
+- 計測開始は「今の画面が名前入力画面で、ゲームプレイ前」。取り逃した runtime は試走を作らず `pending / no_start_seen`。完走の合計は、第10話までの区間が揃っていないとPBにしない（`pb_eligible`）。
+- 独立レビューの指摘（別 runtime の試走の誤終了、途中開始、一時的な読み込みエラーでの PB 消失、teardown 失敗 runtime の誤終了、再起動後の回収先の取り違え）は修正済み。
+- **PR 3 への申し送り**: ボットは終端フレームでは動かないので、ゲームオーバー・停滞の DNF はコーナー終了時まで確定しない（それまで `timer.json` は `running`）。表示側は `heartbeat_at_ms` の古さと `hanjuku_run.json` の終端状態を見て止める。完走の時刻は `clear_ending_seen` が初めて立った観測の画像時刻（誤読は `pb_eligible` で防ぐ）。
