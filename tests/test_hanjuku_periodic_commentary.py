@@ -171,6 +171,7 @@ def _facts(live):
     ('クーモンを倒しました。', False),
     ('おかざき城を占領しました。', False),
     ('ゲームオーバーになりました。', False),
+    ('コリアンダー将軍が出撃しました。', False),
     ('次はえど城へ向かいます。', False),
 ])
 def test_valid_text_grounds_names_numbers_and_claims(live, text, expected):

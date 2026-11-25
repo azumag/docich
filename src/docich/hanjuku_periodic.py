@@ -741,6 +741,15 @@ def valid_text(text, facts):
             r'する予定|の予定|です|だ)', '', castle_text)
     if not castle_results_match(castle_text, facts):
         return False
+    if re.search(r'出撃(?:した|しました|完了)', normalized) and not any(
+            fact.get('kind') == 'order_launched' for fact in facts):
+        return False
+    if re.search(r'(?:購入|買(?:った|いました))(?:した|しました|済み)?', normalized) and not any(
+            fact.get('kind') == 'buy' for fact in facts):
+        return False
+    if re.search(r'補充(?:した|しました|済み|完了)', normalized) and not any(
+            fact.get('kind') == 'soldier_refill_receipt' for fact in facts):
+        return False
     if re.search(r'城を(?:取|手に入|落と)', normalized):
         before = normalized[:normalized.find('城を')]
         castle = _last_name(before, {fact.get('castle') for fact in facts
@@ -977,7 +986,9 @@ def tick(g, game, runtime_dir, run, identity, *, now=None):
                      next_at=now + cfg['interval_s'], defer_since=None)
         _save_state(runtime_dir, state)
         try:
-            _spawn(g.repo_root, runtime_dir, fd, g.config_path)
+            config_path = getattr(g, 'config_path', None) or (
+                Path(g.repo_root) / 'config/docich.toml')
+            _spawn(g.repo_root, runtime_dir, fd, config_path)
         except Exception:
             state.update(pending_seq=None, failures=min(9, state['failures'] + 1),
                          next_at=now + cfg['retry_s'])
