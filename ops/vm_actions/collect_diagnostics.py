@@ -8122,6 +8122,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1453-okunote-unclassified",
             "hanjuku-chart-v1454-sortie-card-type",
             "hanjuku-chart-v1455-password-in-game-retry",
+            "hanjuku-chart-v1456-live-boss-sortie-audit",
             "hanjuku-chart-v1456-password-phrase-ocr",
             "hanjuku-chart-v1457-empty-kit-cancel",
             "hanjuku-chart-v1458-merchant-mickey-priority",
@@ -8167,10 +8168,14 @@ def _project_corner_state(data):
             "hanjuku-chart-v1493-recall-scene-covered-dispatch",
             "hanjuku-chart-v1495-recall-scene-covered-dispatch-audit",
             "hanjuku-chart-v1496-card-open-limit",
+
+            "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1493-interim-order-purpose",
+
+
+            "hanjuku-chart-v1494-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
-
             "hanjuku-chart-v1482-departure-request-ownership",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
