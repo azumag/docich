@@ -941,12 +941,10 @@ def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
 def _recall_after_scene(mem, recall, kind, phase):
     """Keep a scene-cut recall pending instead of starting it over.
 
-    The scene closes the destination picker but not the intent: the camped
-    general still stands where he was. Dropping the recall made every attempt
-    begin from finding the camp again, and the retry landed near the next
-    month's end just as often (g1163 2026-11-12 03:5x-04:1x: six attempts an
-    hour, none completed). The destination is chosen again, so a picker that
-    really closed cannot be confirmed by a stale marker.
+    A pre-dispatch scene resumes the field route because the old picker is
+    gone. A scene over await_dispatch is different: retain its request/receipt
+    and mark the evidence window as covered, since the later field map cannot
+    distinguish scene closure from destination-picker acceptance.
     """
     from .state.regions import flow as _flow
     if recall.get('stage') == 'await_dispatch':
@@ -2083,8 +2081,9 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # For a pre-dispatch recall, keep the existing bounded resume path.
         # For await_dispatch, preserve the sent request and mark the scene as
         # covering its receipt window; a later map cannot prove picker closure.
-        # #3544: the interruption marker belongs to this recall; sweep it too
-        # so a later unrelated recall cannot inherit the short retry hold.
+        # A pre-dispatch resume clears stale interruption state; an
+        # await_dispatch scene keeps a fresh marker only when no input receipt
+        # exists, so it cannot be inherited by an unrelated recall.
         usable = [int(d) for d in (mem.get('month_durations') or [])[-3:] if type(d) is int]
         stages = {'stage': recall.get('stage'), 'steps': recall.get('steps'),
                   'goal': recall.get('goal'), 'target': recall.get('target'),
