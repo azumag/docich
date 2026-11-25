@@ -112,14 +112,16 @@ def test_partial_chapter_three_registration_only_releases_three_initial_orders(m
     assert not policy._all_normal_captured({'chapter': 3, 'captured': names})
 
 
-def test_measured_juaam_remains_an_interim_target_without_a_chart_order(monkeypatch):
+def test_measured_juaam_has_a_chart_order_and_needs_an_allowed_approach(monkeypatch):
+    # Owner 2026-11-25: ジュアム is reachable only from ケントルム/カロナック,
+    # so the chart now carries the missing 10-A3 (ケントルム→ジュアム).
+    assert any(o['target'] == 'ジュアム' for o in chart.all_orders(10))
     home = chart.home_castle(10)
     monkeypatch.setitem(chart.CASTLES, 10, {home: (0, 0), 'ジュアム': (64, 0)})
-    # Owner 2026-11-06: the hero's castle keeps two others beside him.
-    mem = {'chapter': 10, 'orders': {}, 'garrison': {home: ['どうし', 'ゼウス', 'アルテミス', 'クミン']}}
-    assert not any(o['target'] == 'ジュアム' for o in chart.orders(10))
-    assert any(o['target'] == 'ジュアム' for o in policy.interim_candidates(mem).values())
-    monkeypatch.setitem(chart.CASTLES, 10, {home: (0, 0)})
+    mem = {'chapter': 10, 'orders': {},
+           'garrison': {home: ['どうし', 'ゼウス', 'アルテミス', 'クミン']}}
+    # Without an allowed approach (no ケントルム/カロナック) no interim ジュアム
+    # sortie is planned: the cliffs would stop it.
     assert not any(o['target'] == 'ジュアム' for o in policy.interim_candidates(mem).values())
 
 
