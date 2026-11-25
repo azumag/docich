@@ -527,3 +527,36 @@ VMは2 OCPUで配信と取り合うこと、RetroArch の操作ポートが固�
 3. ネットワークシークレットを保存する: Workerのホスト、LLMの各プロバイダのホスト、JEVのホスト。
 4. オーナーがROMを一度だけバケットへ置く。セッションの開始後に取得する（セットアップスクリプトは秘密を読めないため）。
 5. 高速ドライバをリポジトリに入れる（Macのものを持ってくるか、新しく書く）。
+
+## 付録B. 開発の進め方（2026-11-25 オーナー指示）
+
+### B.1 役割
+
+| 役割 | 担当 | 中身 |
+|---|---|---|
+| オーケストレーション | Claude（開発セッション） | 作業を分けて指示を書く、dshとadvisorを呼ぶ、結果を自分で確かめる、コミット・push・PR、オーナーへの報告 |
+| 調査・実装（重い処理） | dsh（DeepSeek Harness。OpenCode Go の `deepseek-v4.1-flash`） | コードの調査、実装、テストの実行、指摘の修正 |
+| 設計・レビュー | advisor（Opus のサブエージェント） | 設計判断の検討、差分のレビュー（独立レビュー） |
+
+### B.2 1つの作業の流れ
+
+1. Claude が作業指示を書く（目的、対象ファイル、守ること、完了条件、流すテスト）。
+2. 設計判断を含む作業は、advisor が指示と設計を確かめる。
+3. dsh が作業ごとの git worktree で調査・実装する。調査は `read-only`、実装は `workspace-write`。
+4. Claude が差分を読み、テストを自分で流し直す。dsh の報告をそのまま信じない。
+5. advisor が差分をレビューする。指摘は dsh が直し、4に戻る。
+6. Claude がコミット・push・PRを作る。PR本文に「実装: dsh／レビュー: advisor（独立レビュー）／検証: Claude」を分けて書く（AGENTS.md の、独立レビューを自己レビュー・CIと区別する規則）。
+
+### B.3 dsh の呼び方と制約
+
+```bash
+git worktree add /home/user/wt/<作業名> -b dsh/<作業名> <基点>
+cd /home/user/wt/<作業名>
+OPENCODE_API_KEY=proxy-injected dsh --profile headless --approval-policy never --json "<作業指示>" > <ログ>.jsonl
+# 続きの指示: --session-id <id>。調査だけなら --permission-mode read-only
+```
+
+- 鍵: opencode.ai への通信に、環境のネットワークシークレットが自動で付く。`OPENCODE_API_KEY` はダミー値でよい。
+- 設定: `~/.dsh/profiles/headless/cordis.patch.yml`（既定モデル、送信テレメトリ無効、コマンド上限10分）。環境 `full` のセットアップスクリプトが新しいセッションで同じものを作る。
+- Git: worktree の中では、dsh はファイルを書けるが、Gitの記録（add/commit）には書き込めない（実測）。コミットは Claude が行う。
+- 作業が終わった worktree は `git worktree remove` で片付ける。
