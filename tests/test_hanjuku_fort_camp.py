@@ -558,3 +558,34 @@ def test_a_fort_menu_seen_mid_recheck_is_handed_over_before_the_receipt_check():
     assert recall.camp_recall_step(screen('g1097-fort-menu-over-dome.png'), mem, fort) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'fort_list'
     assert decisions(mem, 'retreat_recheck_fort')
+
+
+
+@pytest.mark.parametrize('stage,observed', [
+    ('fort_menu', lambda: screen('g1097-fort-menu-over-dome.png')),
+    ('fort_list', lambda: screen('g1097-probe-fort-list.png')),
+    ('fort_status', lambda: status_panel('ヴィーナス')),
+])
+def test_a_new_fort_sortie_is_deferred_inside_the_month_end_margin(stage, observed):
+    state = fort_recall(stage=stage, fort=True, general='ヴィーナス')
+    mem = memory(month_start_tick=0, month_durations=[300], tick=150, recall=state)
+    assert recall._month_end_soon(mem) is True
+    actions = recall._camp_recall_step(observed(), mem, object())
+    assert actions == [p.pad('b')]
+    assert 'recall' not in _flow(mem)
+    assert not decisions(mem, 'camp_fort_sortie')
+    deferred = decisions(mem, 'camp_group_screen')[-1]
+    assert deferred['resulting_event'] == 'fort_route_left'
+    assert '月末' in deferred['reason']
+
+
+def test_a_fort_picker_already_requested_is_not_cancelled_by_the_month_end_gate(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
+    state = fort_recall(stage='fort_status', fort=True, general='ヴィーナス',
+                        fort_picker_requested=True)
+    mem = memory(month_start_tick=0, month_durations=[300], tick=150, recall=state)
+    assert recall._month_end_soon(mem) is True
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert not decisions(mem, 'camp_recall_aborted')
