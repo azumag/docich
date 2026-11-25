@@ -3403,6 +3403,8 @@ def egg_battle_step(screen: Screen, mem):
 # window (g344 kept the same menu for 31 s) and far below the 300 s stasis
 # limit, yet bounded so a stuck screen cannot freeze the corner.
 MONSTER_MENU_HOLD_LIMIT = 30
+# docich#5592: total skill choices per battle before closing the menu.
+MONSTER_MENU_TOTAL_CHOICES = 40
 # Own turns one skill may spend while the enemy panel HP never moves. g1075
 # 2026-10-29 13:37-13:57: a defending おめでとり used ミカンをおす 30 times,
 # its HP 1000 -> 603, while ラズベリー stayed at 45 HP; あたためる was never tried.
@@ -3571,6 +3573,27 @@ def monster_menu_step(screen: Screen, mem):
     rows = screen.menu_rows
     if not rows:
         return []
+    # docich#5592 (owner 2026-11-25): a whole month was spent re-choosing in
+    # this menu (903 choices / 180 s, zero sorties). Keep the per-skill gates,
+    # but also cap the total choices per battle: past the cap, close the menu
+    # (もどれ) so the battle and the month can progress. Bounded safety valve.
+    cur_battle = mem.get('battle')
+    if not isinstance(cur_battle, dict):
+        cur_battle = None
+    choices = 0
+    if cur_battle is not None:
+        try:
+            choices = int(cur_battle.get('monster_menu_choices') or 0)
+        except (TypeError, ValueError):
+            choices = 0
+    if choices > MONSTER_MENU_TOTAL_CHOICES:
+        if not cur_battle.get('monster_menu_total_cap_logged'):
+            cur_battle['monster_menu_total_cap_logged'] = True
+            _record(mem, 'monster_menu_total_cap',
+                    observed_metric={'choices': choices,
+                                     'limit': MONSTER_MENU_TOTAL_CHOICES},
+                    reason='召喚獣メニューの選択回数が上限を超えたため、メニューを閉じて戦闘を進める')
+        return [pad('b')]
     row_texts = [''.join(line.known.split()) for line in rows]
     menu_key = tuple(row_texts)
     had_cursor_context = (mem.get('monster_menu_choice_scope') is not None
@@ -3877,6 +3900,10 @@ def monster_menu_step(screen: Screen, mem):
         mem['monster_menu_choice_policy_epoch'] = special_epoch if special_cycle else None
         battle = mem.get('battle')
         if isinstance(battle, dict):
+            try:
+                battle['monster_menu_choices'] = int(battle.get('monster_menu_choices') or 0) + 1
+            except (TypeError, ValueError):
+                battle['monster_menu_choices'] = 1
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
         if action == 'retreat' and lampkin_return:
             label = 'たまごに もどれ'
