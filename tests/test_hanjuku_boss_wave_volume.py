@@ -27,7 +27,10 @@ def boss_waves(mem):
 def test_every_known_spare_joins_the_boss_in_one_plan():
     waves = boss_waves(memory())
     assert len(waves) >= 3
-    assert all(o['cards'] == [] for o in waves)
+    # A concrete wave carries the stock-aware kit (or the generic opener
+    # when inventory is unread); a read-only source probe remains cardless.
+    assert all(o['cards'] for o in waves if not o.get('source_probe'))
+    assert all(o['cards'] == [] for o in waves if o.get('source_probe'))
 
 
 def test_the_waves_come_from_different_castles():
