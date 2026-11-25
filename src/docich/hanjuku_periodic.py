@@ -81,7 +81,7 @@ KATAKANA_ALLOWED = frozenset({
     'テンション', 'ムード', 'エモ', 'ロマン', 'ドキドキ', 'ワクワク',
     'ハラハラ', 'ホッ', 'ウケ', 'ノリ', 'キレ', 'センス', 'スタイル',
     'ポジション', 'スキル', 'ミステリー', 'サプライズ', 'メッセージ', 'エール',
-    'シーズン', 'エピソード', 'クエスト', 'ミッション',
+    'シーズン', 'エピソード', 'クエスト', 'ミッション', 'ケア', 'フォロー', 'サポート',
 })
 
 DEFAULT_PERSONA = (
@@ -726,13 +726,13 @@ def _number_in_context(value, before, after, facts):
     if after.startswith('分'):
         return any(fact.get('minutes') == value for fact in facts
                    if fact.get('kind') == 'window')
-    if after.startswith('戦') or (after.startswith('つ') and '戦' in before + after):
+    if after.startswith('戦') or (after.startswith('つ') and '戦' in after[:6]):
         return any(fact.get('battles') == value for fact in facts
                    if fact.get('kind') in {'window', 'current_totals'})
     if after.startswith('勝'):
         return any(fact.get('wins') == value for fact in facts
                    if fact.get('kind') in {'window', 'current_totals'})
-    if after.startswith('敗'):
+    if after.startswith('敗') or (after.startswith('つ') and '敗' in after[:6]):
         return any(fact.get('losses') == value for fact in facts
                    if fact.get('kind') in {'window', 'current_totals'})
     if re.match(r'(ゴールド|G|円)', after) or re.search(
@@ -773,7 +773,7 @@ def _number_in_context(value, before, after, facts):
     if value == 0 and re.search(r'(?:城の出入り|奪った城|失った城|城)(?:は|も|が)?(?:まだ)?$', before):
         return any((fact.get('captures') == 0 or fact.get('castle_losses') == 0)
                    for fact in facts if fact.get('kind') == 'window')
-    if '補充' in before and after.startswith(('まで', 'に戻')):
+    if '補充' in before and after.startswith(('まで', 'に戻', 'になり', 'に届', 'となり')):
         return any(fact.get('soldiers_after') == value for fact in facts
                    if fact.get('kind') == 'soldier_refill_receipt')
     if re.search(r'兵(?:士)?を$', before) and after.startswith(('補充', '購入')):
@@ -794,6 +794,15 @@ def _number_in_context(value, before, after, facts):
         if any((fact.get('ally_hp'), fact.get('enemy_hp')) in {(value, other), (other, value)}
                for fact in facts if fact.get('kind') in {'battle_start', 'battle_result', 'current_battle'}):
             return True
+    if after.startswith('を残') and any(name in before for name in _fact_names(facts)):
+        present = [name for name in _fact_names(facts) if name in before]
+        for fact in facts:
+            if fact.get('kind') not in {'battle_start', 'battle_result', 'current_battle'}:
+                continue
+            if fact.get('ally') in present and fact.get('ally_hp') == value:
+                return True
+            if fact.get('enemy') in present and fact.get('enemy_hp') == value:
+                return True
     if 'HP' in before or '体力' in before:
         present = [name for name in _fact_names(facts) if name in before]
         if not present:
@@ -811,7 +820,7 @@ def _number_in_context(value, before, after, facts):
 
 
 def _future_claim(text):
-    return bool(re.search(r'次(?:は|の)|これから|今後|狙(?:う|い)|目指(?:す|し)|予定', text))
+    return bool(re.search(r'次は|これから|狙(?:う|い)|目指(?:す|し)|予定', text))
 
 
 def valid_text(text, facts):
@@ -845,12 +854,13 @@ def valid_text(text, facts):
     battle_results = [fact for fact in facts if fact.get('kind') == 'battle_result']
     # Aggregate window counts ("3勝1敗") are already number-checked against the
     # window fact; they are not a claim about a named battle.
-    outcome_text = re.sub(r'[0-9]+勝(?:[0-9]+敗)?|[0-9]+敗', '', normalized)
+    outcome_text = re.sub(r'[0-9]+勝(?:[0-9]+敗)?|[0-9]+敗|[0-9]+つの敗(?:北)?', '', normalized)
     # Nominal/summary uses are not result claims: "勝ち方", "勝つ形", "連勝で",
     # "勝ち切れない" and similar. They are handled by the surrounding evaluation.
     outcome_text = re.sub(
         r'勝(?:ち方|ち筋|ちパターン|つ形|負|率|利数|利へ|因|敗|ち切れ)|'
-        r'連勝(?:で|の|は|が|を)|勝って負けて|勝ったり負けたり|勝ち負け|勝ちを重ね', '', outcome_text)
+        r'連勝(?:で|の|は|が|を)|勝って負けて|勝ったり負けたり|勝ち負け|勝ちを重ね|'
+        r'勝ち越し|勝利|勝ち星|勝った次の一戦|勝った次', '', outcome_text)
     if (re.search(r'勝|負け|敗[れ北戦]', outcome_text)
             and not outcomes_match(outcome_text, battle_results)):
         return False
