@@ -41,13 +41,14 @@ MAX_TEXT = 1000
 MIN_TEXT = 300
 MAX_CANDIDATES = 3
 RECENT = 24
-MAX_EVENTS = 6
+MAX_EVENTS = 3
 REQUEST_TTL_S = 360
 PENDING_TIMEOUT_S = 420
 DEFER_MAX_S = 180
 DEFER_STEP_S = 30
 RETRY_LIMIT = 2
 NO_MATERIAL_RETRY_S = 60
+MIN_WINDOW_S = 600
 
 RETRY_STATUSES = frozenset({'duplicate', 'invalid_output', 'generation_failed',
                             'timeout', 'unavailable', 'worker_error',
@@ -96,7 +97,8 @@ FOCUS_ROLES = {
 DEFAULT_PERSONA = (
     '半熟英雄を長く見守ってきた、落ち着きと熱量のある実況者。'
     '将軍たちの判断を尊重し、小さな進展を一緒に喜び、失敗には優しくツッコミを入れる。'
-    '視聴者に語りかけるように、事実と感想を織り交ぜ、最後は前向きな余韻を残す。'
+    '視聴者に語りかけるように、まず結論を明確にし、比喩は1つまで。事実と感想を織り交ぜ、'
+    '最後は前向きな余韻を残す。'
 )
 
 
@@ -292,6 +294,10 @@ def _event_fact(record):
         cards = _clean_names(record.get('cards'), 4)
         if cards:
             fact['cards'] = cards
+        fact['plain'] = f'{general}を{source + "から" if source else ""}{target}へ送る'
+        fact['choice'] = '送る'
+        fact['why'] = '行き先と持ち札を先に決めてから動かす'
+        fact['not_result'] = kind == 'order_start'
         return fact
     if kind == 'month_plan':
         plan = record.get('plan') if isinstance(record.get('plan'), dict) else {}
@@ -445,6 +451,12 @@ def _focus_fact(record):
             fact['target_kind'] = gate['target_kind']
         if type(gate.get('lethal')) is bool:
             fact['lethal'] = gate['lethal']
+        fact['plain'] = f'{card}を{fact.get("enemy", "相手")}に使うかどうか'
+        if type(gate.get('allowed')) is bool:
+            fact['choice'] = '使う候補として選ぶ' if gate['allowed'] else '使用を見送る'
+        else:
+            fact['choice'] = '使うか見送るか'
+        fact['not_result'] = True
         return fact
     if kind in {'order_start', 'order_launched', 'order_retry', 'order_substitute'}:
         if kind == 'order_start' and record.get('roster_probe') is True:
@@ -463,6 +475,10 @@ def _focus_fact(record):
         cards = _clean_names(record.get('cards'), 4)
         if cards:
             fact['cards'] = cards
+        fact['plain'] = f'{general}を{source + "から" if source else ""}{target}へ送る'
+        fact['choice'] = '送る'
+        fact['why'] = '行き先と持ち札を先に決めてから動かす'
+        fact['not_result'] = kind == 'order_start'
         return fact
     if kind in {'battle_survival', 'battle_egg_dropped', 'battle_retreat_banned'}:
         feature = {'battle_survival': '戦闘中の立て直し',
@@ -477,6 +493,12 @@ def _focus_fact(record):
                      if isinstance(record.get('observed_metric'), dict) else None)
         if hp is not None:
             fact['ally_hp'] = hp
+        fact['plain'] = f'{fact.get("ally", "こちら")}が{fact.get("enemy", "相手")}と戦う'
+        fact['choice'] = {'battle_survival': '立て直す',
+                          'battle_egg_dropped': '卵を落とす',
+                          'battle_retreat_banned': '退かずに戦う'}[kind]
+        fact['why'] = '攻めるか耐えるか、卵や札をどう使うかを決める'
+        fact['not_result'] = False
         return fact
     if kind in {'defense_observed', 'castle_lost_observed'}:
         castle = _name(record.get('castle'))
@@ -493,6 +515,10 @@ def _focus_fact(record):
         garrison = _clean_names(metric.get('garrison'), 6)
         if garrison:
             fact['garrison'] = len(garrison)
+        fact['plain'] = f'{castle}を{fact.get("enemy", "敵")}から守る'
+        fact['choice'] = '守る'
+        fact['why'] = '城を空にせず、失っても次の立て直しを考える'
+        fact['not_result'] = kind == 'defense_observed'
         return fact
     if kind in {'month_plan', 'buy', 'soldier_refill_receipt', 'soldier_refill_outcome',
                 'poor_harvest', 'gift'}:
@@ -535,6 +561,15 @@ def _focus_fact(record):
                 fact['item'] = item
             if (price := _number(record.get('price'))) is not None:
                 fact['price'] = price
+        fact['plain'] = feature
+        fact['choice'] = {'month_plan': '資金と兵の配分を決める',
+                          'buy': '切り札を買う',
+                          'soldier_refill_receipt': '兵士を補充する',
+                          'soldier_refill_outcome': '補充の結果を確認する',
+                          'poor_harvest': '凶作に合わせて予定を変える',
+                          'gift': 'おねだりに対応する'}[kind]
+        fact['why'] = '限られた資金・兵士・札を何に優先するか'
+        fact['not_result'] = kind in {'month_plan', 'buy', 'soldier_refill_receipt'}
         return fact
     if kind in {'chart_adjust_applied', 'chart_adjust_request', 'chart_interim_order'}:
         feature = {'chart_adjust_applied': 'チャート調整',
@@ -563,13 +598,22 @@ def _focus_fact(record):
                     fact[key] = value
             if record.get('purpose') in {'retake', 'move', 'attack'}:
                 fact['purpose'] = record['purpose']
+        fact['plain'] = 'チャートを組み直す'
+        fact['choice'] = '次の一手を組み直す'
+        fact['why'] = '固定チャートが使えない時に、止まらず次の手を描く'
+        fact['not_result'] = True
         return fact
     if kind == 'hero_priority_selected':
         general = _name(record.get('general'))
-        return ({'category': 'sortie', 'feature': '主人公の安全優先',
-                 'general': general,
-                 'meaning': '主人公を危険に晒さず、代わりの将軍を先発させる判断'}
-                if general else None)
+        if not general:
+            return None
+        return {'category': 'sortie', 'feature': '主人公の安全優先',
+                'general': general,
+                'meaning': '主人公を危険に晒さず、代わりの将軍を先発させる判断',
+                'plain': f'主人公の代わりに{general}を先発させる',
+                'choice': '代わりの将軍を先発させる',
+                'why': '主人公の危険を避ける',
+                'not_result': True}
     return None
 
 
@@ -724,10 +768,22 @@ def situation(runtime_dir, run, state, now):
         if order and _name(order.get('target')):
             focus = {'category': 'sortie', 'feature': '次の狙い',
                      'target': order['target'],
+                     'plain': f'{order["target"]}へ向かう',
+                     'choice': '次の一手を決める',
+                     'why': 'いまの目標と、そこへ向かう道筋',
                      'meaning': 'いまの目標と、そこへ向かう次の一手'}
             general = _name(order.get('general'))
             if general:
                 focus['general'] = general
+    if focus:
+        category = focus.get('category')
+        if category not in {'battle', 'defense'}:
+            current.pop('battle', None)
+        if category not in {'sortie', 'chart'}:
+            current.pop('order', None)
+        if category != 'economy':
+            current.pop('economy', None)
+    current.pop('totals', None)
     window = {'minutes': max(1, round((now - window_start) / 60))}
     # Aggregate over all decisions in the window, not only the capped event
     # sample, so a busy fight is still counted accurately.
@@ -794,10 +850,19 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '次の5つを自然につなげてください。',
         '1. 焦点の判断（何を狙ったか、なぜその判断をしたか）',
         '2. その判断の良かった点と、課題・反省・次に活かせる改善点',
-        '3. 他の出来事は背景として2〜3個だけ触れる（全部を列挙しない）',
-        '4. 将軍や城のドラマ、軽いユーモアやジョークを1つ',
+        '3. 他の出来事は背景として最大2個だけ触れる（全部を列挙しない）',
+        '4. 将軍や城のドラマ。ユーモアは自然に入る場合だけ、無理に例えを入れない',
         '5. 視聴者への前向きな締め（心に残る一言）',
-        '焦点の判断を説明するときも、focusに書かれた材料だけを使い、実行結果と計画を混同しないでください。',
+        '最初の2文で「今回の焦点は…」と、誰が・何を・どう判断したかを明言してください。'
+        '読者が最初の2文で「結局何の話か」を理解できるようにします。',
+        'focus.plain と focus.choice を言い換えて示し、focus.why を説明してください。'
+        'focusにない戦略意図を創作してはいけません。',
+        '焦点の判断を説明するときも、focusに書かれた材料だけを使い、実行結果と計画を混同しないでください。'
+        '結果がまだ観測されていないなら「まだ分からない」と明言してください。',
+        '名前（将軍・城・札）はfocusと背景を合わせて最大6つまで。1文に複数の将軍や城を詰め込まず、'
+        '1文1話題にしてください。',
+        '比喩は焦点の理解に役立つ場合だけ1つまで。日常の例えや、状況と関係の薄い比喩は使わないでください。',
+        '結論→理由→課題→展望の順で、同じ段落に複数の話題を混ぜないでください。',
         '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
         '事実を曲げないでください。',
         '下の「状況」に書かれた事実だけを使います。書かれていない数値・将軍名・城名・札名・勝敗・'
@@ -819,7 +884,7 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '長さは500〜800文字を目安にし、300文字未満や1000文字超にしないでください。',
         '出来事を網羅しようとせず、焦点の判断を軸に因果と意味を語ってください。'
         '「〜しました。〜しました。」の連続や、数字の羅列にしないでください。',
-        '数字は焦点と印象づけたい1〜2個に絞り、比喩・問いかけ・視聴者への語りかけを混ぜてください。',
+        '数字は焦点とwindowの主要な1〜2個に絞り、比喩・問いかけ・視聴者への語りかけを混ぜてください。',
         '出来事を箇条書きのように列挙せず、「何が起きたか→それが何を意味したか→次にどう活かすか」の'
         '一つの物語として話してください。',
         'それぞれの出来事には、意味・評価・感情のどれかを添え、「まず」「次に」「また」で機械的に'
@@ -1053,6 +1118,20 @@ def _number_in_context(value, before, after, facts):
             if fact.get('enemy') in present and fact.get('enemy_hp') == value:
                 return True
     return False
+
+
+def focus_clear(text, focus, facts, max_names=6):
+    """The first two sentences must name the focus; keep background names small."""
+    if not isinstance(focus, dict):
+        return True
+    concrete = [focus[key] for key in ('general', 'target', 'card', 'castle', 'enemy', 'ally')
+                if _name(focus.get(key))]
+    if concrete:
+        first = ''.join(re.split(r'(?<=[。！？])', text)[:2])
+        if not any(name in first for name in concrete):
+            return False
+    mentioned = {name for name in _fact_names(facts) if name in text}
+    return len(mentioned) <= max_names
 
 
 def _future_claim(text):
@@ -1349,6 +1428,13 @@ def tick(g, game, runtime_dir, run, identity, *, now=None):
         _save_state(runtime_dir, state)
         return None
     cfg = live
+    last = state.get('last_delivered_at')
+    if (isinstance(last, (int, float)) and math.isfinite(last)
+            and 0 <= now - last < MIN_WINDOW_S):
+        state['next_at'] = max(now + 30.0, last + MIN_WINDOW_S)
+        _save_state(runtime_dir, state)
+        _log(runtime_dir, {'event': 'deferred', 'reason': 'window'})
+        return None
     if run.get('phase') == 'battle':
         if state['defer_since'] is None:
             state['defer_since'] = now

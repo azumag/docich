@@ -100,7 +100,6 @@ def live(tmp_path):
               {'decision': 'soldier_refill_receipt', 'resulting_event': 'paid',
                'observed_metric': {'qty': 99, 'soldiers_after': 99},
                'at': now - 200, 'step': 3},
-              {'decision': 'battle_card', 'card': 'クースカン', 'at': now - 100},
               {'decision': 'action_plan', 'at': now - 50})
     return SimpleNamespace(runtime=runtime, root=tmp_path, now=now, game=_game())
 
@@ -218,10 +217,10 @@ def test_situation_is_whitelisted_and_counts_the_window(live):
     assert value['window']['castle_losses'] == 1
     assert {event['kind'] for event in value['events']} == {
         'battle_result', 'castle_lost_observed', 'soldier_refill_receipt'}
-    assert value['current']['battle']['ally'] == 'トレビス'
-    assert value['current']['order'] == {'goal': 'retake', 'target': 'おかざき'}
     assert value['current']['economy']['gold'] == 732
-    assert value['focus']['category'] in {'card', 'defense', 'economy'}
+    assert 'battle' not in value['current'] and 'order' not in value['current']
+    assert 'totals' not in value['current']
+    assert value['focus']['category'] in {'defense', 'economy'}
     text = json.dumps(value, ensure_ascii=False)
     for forbidden in ('decision_id', 'runtime_id', 'lease_id', 'reason',
                       'battle_card', 'action_plan', 'snapshot'):
@@ -249,6 +248,27 @@ def test_narrative_rejects_a_flat_fact_list():
     assert periodic.narrative_ok(fact_list) is False
     assert periodic.narrative_ok(LONG_A) is True
     assert periodic.narrative_ok(LONG_B) is True
+
+
+def test_focus_clarity_rejects_buried_focus_and_too_many_names():
+    facts = [{'kind': 'battle_result', 'ally': 'マスカット', 'enemy': 'ヘーゼル'},
+             {'kind': 'current_battle', 'ally': 'マスカット', 'enemy': 'ヘーゼル'},
+             {'kind': 'focus', 'category': 'battle', 'ally': 'マスカット',
+              'enemy': 'ヘーゼル'},
+             {'kind': 'current_order', 'general': 'ゼウス', 'target': 'ひめじ'},
+             {'kind': 'order', 'general': 'キッシュ', 'target': 'おだわら'},
+             {'kind': 'order', 'general': 'ショコラ', 'target': 'しまばら'},
+             {'kind': 'order', 'general': 'コンポート', 'target': 'えど'},
+             {'kind': 'order', 'general': 'ヴィーナス', 'target': 'いちじょうだに'},
+             {'kind': 'order', 'general': 'ポワソン', 'target': 'まつやま'}]
+    focus = {'category': 'battle', 'ally': 'マスカット', 'enemy': 'ヘーゼル'}
+    good = '今回の焦点はマスカットとヘーゼルの戦いです。開戦時体力は27対33でした。'
+    assert periodic.focus_clear(good, focus, facts) is True
+    buried = 'まず遠征の話です。札の話も少し。今回の焦点はマスカットとヘーゼルの戦いです。'
+    assert periodic.focus_clear(buried, focus, facts) is False
+    many = ('今回の焦点はマスカットとヘーゼルの戦いです。'
+            'ゼウス、キッシュ、ショコラ、コンポート、ヴィーナス、ポワソンも動きました。')
+    assert periodic.focus_clear(many, focus, facts) is False
 
 
 def test_parse_candidates_keeps_valid_long_lines_and_skips_short_ones():
@@ -280,7 +300,11 @@ def _facts(live):
     ('次はえど城へ向かいます。', False),
 ])
 def test_valid_text_grounds_names_numbers_and_claims(live, text, expected):
-    assert periodic.valid_text(text, _facts(live)) is expected
+    facts = _facts(live)
+    if 'HP' in text or '体力' in text:
+        facts.append({'kind': 'current_battle', 'ally': 'トレビス', 'enemy': 'ブラッキー',
+                      'ally_hp': 66, 'enemy_hp': 55, 'castle': 'いちじょうだに'})
+    assert periodic.valid_text(text, facts) is expected
 
 
 def test_novelty_rejects_same_opening_and_template_lines():
@@ -359,6 +383,20 @@ def test_scheduler_defers_during_battle_but_not_forever(live, monkeypatch):
     request = periodic.tick(g, live.game, live.runtime, battle, IDENTITY,
                             now=live.now + 900 + periodic.DEFER_MAX_S + 1)
     assert request is not None and spawned == [live.runtime]
+
+
+def test_scheduler_waits_for_a_minimum_window_after_a_recent_delivery(live, monkeypatch):
+    spawned = []
+    monkeypatch.setattr(periodic, '_spawn', lambda repo, runtime, fd, config: spawned.append(runtime))
+    g = SimpleNamespace(repo_root=live.root, config_path=live.root / 'config.toml')
+    state = _state(live)
+    state['last_delivered_at'] = live.now - 300
+    state['next_at'] = live.now - 1
+    periodic._save_state(live.runtime, state)
+    assert periodic.tick(g, live.game, live.runtime, RUN, IDENTITY, now=live.now) is None
+    assert spawned == []
+    state = json.loads((live.runtime / periodic.STATE).read_text())
+    assert state['next_at'] == live.now + 300
 
 
 def test_scheduler_does_nothing_when_disabled_or_terminal(live, monkeypatch):

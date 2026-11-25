@@ -135,10 +135,11 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
                       None, 0, None)
         return exc.reason, None, 0, None
     facts = periodic.flatten(request['situation'])
-    focus = request['situation'].get('focus') if isinstance(request['situation'], dict) else None
-    focus = focus.get('category') if isinstance(focus, dict) else None
+    focus_fact = request['situation'].get('focus') if isinstance(request['situation'], dict) else None
+    focus = focus_fact.get('category') if isinstance(focus_fact, dict) else None
     if focus not in periodic.FOCUS_CATEGORIES:
         focus = None
+        focus_fact = None
     recent = list(request['recent_texts'])
     avoid = []
     attempts = 0
@@ -174,7 +175,9 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
             _log(runtime, {'event': 'invalid_output', 'seq': request['seq'],
                            'attempt': attempts})
             continue
-        valid = [text for text in candidates if periodic.valid_text(text, facts)]
+        valid = [text for text in candidates
+                 if periodic.valid_text(text, facts)
+                 and periodic.focus_clear(text, focus_fact, facts)]
         _log(runtime, {'event': 'generated', 'seq': request['seq'],
                        'attempt': attempts, 'candidates': len(candidates),
                        'valid': len(valid)})
