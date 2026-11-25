@@ -95,6 +95,10 @@ def test_scroll_exhaustion_gets_one_extra_bounded_reveal_attempt(monkeypatch):
     mem = memory()
     mem['battle']['planned_cards'] = ['クースカン']
     mem['battle']['summon_card_scroll'] = B.SUMMON_CARD_SCROLL_LIMIT - 1
+    # Isolate the already-selected attack path: with the egg row still
+    # available, the initial summon policy may legitimately choose the egg.
+    mem['egg_battle'] = True
+    mem['egg_action'] = 'attack'
 
     assert B.egg_battle_step(
         screen(text='こうげきもうこうげきたまごをつかう'), mem) == [B.pad('down')]
