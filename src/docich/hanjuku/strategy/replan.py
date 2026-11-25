@@ -3078,9 +3078,21 @@ def _supersede_unstarted_steps(mem, new_orders):
 
 def _adopt_plan(mem, doc, rid):
     """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
-    orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
-               'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
-              for o in doc['orders']]
+    orders = []
+    for o in doc['orders']:
+        cards = list(o['cards'])
+        # Adjusted charts validate card names, not the live inventory. Mirror
+        # the interim planner's stock fallback before adoption; otherwise all
+        # suggested cards can be dropped at the menu and the sortie still
+        # launches empty (#5282). Explicitly cardless orders, staging moves,
+        # and boss kits retain their dedicated behavior.
+        if (cards and o.get('purpose') != 'move'
+                and not o.get('source_probe') and not o.get('roster_probe')
+                and not chart.is_boss_castle(o['target'])):
+            cards = _stock_cards(mem, cards)
+        orders.append({**o, 'step': chart_adjust.execution_step(rid, o['step']),
+                       'local_step': o['step'], 'cards': cards,
+                       'after': list(o['after']) if o['after'] else None})
     garrison = _world(mem).get('garrison') or {}
     for order in orders:
         present = garrison.get(order['source'])

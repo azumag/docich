@@ -8174,6 +8174,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1494-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
             "hanjuku-chart-v1498-recall-battle-mode-lost",
+
+            "hanjuku-chart-v1499-adjusted-stock-fallback",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
             "hanjuku-chart-v1482-departure-request-ownership",
@@ -8207,6 +8209,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1433-fort-recall-evidence",
             "hanjuku-chart-v1434-camp-dispatch-evidence",
             "hanjuku-chart-v1435-recall-dispatch-unattributed",
+            "hanjuku-chart-v1442-adjusted-plan-stock-cards",
             "hanjuku-chart-v1438-chikujou-castle-width-fold",
             "hanjuku-chart-v1443-boss-companion-stage-timeout",
             "hanjuku-chart-v1444-chikujou-skip-note",
