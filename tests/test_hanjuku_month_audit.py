@@ -1774,6 +1774,31 @@ def test_sortie_without_cards_despite_stock_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_non_boss_sortie_ignores_boss_only_stock(runtime_dir):
+    # #5510: メガパタ is an ordinary chapter-3 castle. バルムンク is
+    # boss-only, so its field count cannot make this an unarmed-sortie defect.
+    value = _cards_state(stock={'バルムンク': 1}, purpose='attack',
+                         cards=['ミックミー', 'ミックミー'])
+    value['policy']['chapter'] = 3
+    value['policy']['plan']['chart_plan']['orders'][0]['target'] = 'メガパタ'
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()], now=1000)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_boss_sortie_still_counts_boss_only_stock(runtime_dir):
+    value = _cards_state(stock={'バルムンク': 1}, purpose='boss',
+                         cards=['バルムンク'])
+    value['policy']['chapter'] = 3
+    value['policy']['plan']['chart_plan']['orders'][0]['target'] = 'ボス'
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record('boss')], now=1000)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'sortie_without_cards'
+    assert records[0]['sortie_event']['inventory'] == {'バルムンク': 1}
+
+
 def test_sortie_without_cards_names_a_planned_kit(runtime_dir):
     # docich#5353: 計画に札があるのに携行できていない型は、計画が空の型と区別する。
     value = _cards_state(cards=['クースカン'])
