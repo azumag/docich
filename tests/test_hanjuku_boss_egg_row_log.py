@@ -199,3 +199,28 @@ def test_boss_only_card_remains_eligible_after_measured_boss_entry(monkeypatch):
     rows = [r for r in mem['_records'] if r['decision'] == 'battle_boss_card_missed']
     assert len(rows) == 1
     assert rows[0]['card'] == 'バルムンク'
+
+
+def test_scroll_exhaustion_gets_one_extra_bounded_reveal_attempt(monkeypatch):
+    # #5560: the carried card row was still hidden after the previous three
+    # navigation steps. One additional down is safe; selection still requires
+    # the actual きりふだ label on a fresh observation.
+    mem = memory()
+    mem['battle']['planned_cards'] = ['クースカン']
+    mem['battle']['summon_card_scroll'] = B.SUMMON_CARD_SCROLL_LIMIT - 1
+    # Isolate the already-selected attack path: with the egg row still
+    # available, the initial summon policy may legitimately choose the egg.
+    mem['egg_battle'] = True
+    mem['egg_action'] = 'attack'
+
+    assert B.egg_battle_step(
+        screen(text='こうげきもうこうげきたまごをつかう'), mem) == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == B.SUMMON_CARD_SCROLL_LIMIT
+    assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
