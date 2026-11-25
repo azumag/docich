@@ -1672,6 +1672,8 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
         'hanjuku-chart-v1495-recall-scene-covered-dispatch-audit',
         'hanjuku-chart-v1498-recall-battle-mode-lost',
         'hanjuku-chart-v1500-boss-wave-stock-cards',
+        'hanjuku-chart-v1501-retreat-cards-unclassified',
+        'hanjuku-chart-v1503-summon-card-scroll-retry',
     ):
         state['bot_version'] = marker
         assert module._project_corner_state(state)['bot_version'] == marker
