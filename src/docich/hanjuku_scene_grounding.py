@@ -13,7 +13,7 @@ def _mentions(text, names, *, subject=False):
     found = []
     for name in names:
         # "エピィ将軍が勝ちました" is the same subject as "エピィが…".
-        suffix = r'(?:将軍)?(?:が|は)' if subject else ''
+        suffix = r'(?:将軍)?(?:が|は|も)' if subject else ''
         found += [(m.start(), m.end(), name) for m in re.finditer(re.escape(name) + suffix, text)]
     return sorted(found)
 
@@ -55,7 +55,8 @@ def _outcomes_match(text, facts):
         after = re.split(r'[、,。！？]', text[match.start():])[0]
         # Accept a positive result formulation, not arbitrary conjugations of
         # 勝. A win fact cannot license "勝てません" or "勝たなかった".
-        if (not re.match(r'勝(?:ち|った|利|てた)|制し|撃退(?:した|しました)|負け|敗[れ北戦]', after)
+        if (not re.match(r'勝(?:ち|った|利|てた|し|して|ち返し|ち越し)|連勝|制し|'
+                         r'撃退(?:した|しました)|負け|敗[れ北戦]', after)
                 or re.search(r'ない|なかった|ません|ず|ぬ|なさそう', after)):
             return False
     return True
@@ -117,14 +118,21 @@ def _number_matches(text, match, facts):
     return False
 
 
-def _castle_results_match(text, facts):
+def _castle_results_match(text, facts, *, allow_unnamed=False):
     castles = {fact['castle'] for fact in facts if 'castle' in fact}
     for match in re.finditer(r'占領|奪取|奪還|制圧|奪われ|失っ|失い|陥落|落城', text):
         kind = ('castle_lost_observed' if re.match(r'奪われ|失|陥落|落城', match.group())
                 else 'castle_owned_observed')
         before = re.split(r'[、,。！？]', text[:match.start()])[-1]
         names = _mentions(before, castles)
-        if not names or not any(fact['kind'] == kind and fact.get('castle') == names[-1][2] for fact in facts):
+        if not names:
+            # A long narrative may say "城を失って" without repeating the name.
+            # Accept it only when the snapshot has exactly one fact of that kind.
+            matching = [fact for fact in facts if fact['kind'] == kind]
+            if allow_unnamed and len(matching) == 1 and re.search(r'城|拠点', before):
+                continue
+            return False
+        if not any(fact['kind'] == kind and fact.get('castle') == names[-1][2] for fact in facts):
             return False
         after = re.split(r'[、,。！？]', text[match.start():])[0]
         if re.search(r'ない|なかった|ません|ず|ぬ', after):
@@ -137,9 +145,9 @@ def outcomes_match(text, facts):
     return _outcomes_match(text, facts)
 
 
-def castle_results_match(text, facts):
+def castle_results_match(text, facts, *, allow_unnamed=False):
     """Public castle-ownership claim check shared with periodic commentary."""
-    return _castle_results_match(text, facts)
+    return _castle_results_match(text, facts, allow_unnamed=allow_unnamed)
 
 
 def claims_match(text, facts):

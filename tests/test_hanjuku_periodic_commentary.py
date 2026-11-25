@@ -16,6 +16,22 @@ from docich import hanjuku_narration, hanjuku_periodic as periodic
 from docich import hanjuku_periodic_worker as worker
 from docich.game_switch import atomic_write_json
 
+
+
+LONG_A = ('第8章の14年2月、この15分はエピィ将軍がミュスカデに勝ちました。'
+          'その一方でおかざき城を失い、攻めの勢いと守りの脆さが同時に見えた15分でした。'
+          'それでも兵士を99人補充できたのは大きい。'
+          '次はおかざき城の奪還を狙いますが、まずは守りを立て直したいところです。'
+          '将軍たちの粘りは見事で、流れはまだ十分に巻き返せます。'
+          'この経験を次の戦いに活かせれば、きっと面白い展開になります。')
+
+LONG_B = ('第8章の14年2月、エピィ将軍がミュスカデに勝った一方で、おかざき城は失いました。'
+          'それでも兵士を99人補充し、次はおかざき城の奪還を狙います。'
+          '苦しい時間帯でも判断を止めなかった将軍たちには、思わず拍手を送りたくなります。'
+          '課題は城を守り切ることで、攻めと守りのバランスを見直したいところです。'
+          '城の出入りは激しく、目が離せない展開でしたが、最後まで前を向いていました。'
+          'この15分の経験が次の戦いできっと生きてくると信じています。')
+
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g7-abc123',
             'generation': 7, 'lease_id': 'lease-periodic'}
 RUN = {**IDENTITY, 'playing': True, 'phase': 'field', 'terminal_reason': None,
@@ -100,6 +116,9 @@ def test_config_is_opt_in_and_bounded():
         'opencode-go:deepseek-v4.1-flash'
     with pytest.raises(ValueError):
         periodic.settings({'agents': 'model; rm -rf /'})
+    assert periodic.settings({})['persona'] == periodic.DEFAULT_PERSONA
+    with pytest.raises(ValueError):
+        periodic.settings({'persona': 'bad\x00persona'})
 
 
 def test_scene_generate_helper_honors_the_periodic_agent_override():
@@ -116,7 +135,8 @@ def test_live_game_config_is_read_from_the_game_file(tmp_path):
     assert periodic.config(game)['enabled'] is False
     assert periodic.config(game, path) == {
         'enabled': True, 'interval_s': 600.0, 'retry_s': 300.0,
-        'generation_timeout_s': 90.0, 'max_attempts': 2, 'agents': ''}
+        'generation_timeout_s': 90.0, 'max_attempts': 2, 'agents': '',
+        'persona': periodic.DEFAULT_PERSONA}
 
 
 def test_current_falls_back_to_observed_country_counts_without_shop():
@@ -163,15 +183,24 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '直近の実況' in prompt
     assert '前回の実況です。' in prompt and '直前の候補です。' in prompt
     assert '同じ書き出し' in prompt
+    assert '4〜8文' in prompt and '300〜600' in prompt
+    assert '課題' in prompt and 'ユーモア' in prompt
+    assert '列挙' in prompt and '物語' in prompt
+    assert periodic.DEFAULT_PERSONA in prompt
     assert '"texts"' in prompt
 
 
-def test_parse_candidates_keeps_valid_lines_and_skips_short_ones():
-    output = json.dumps({'texts': ['短い。', '第8章の14年2月、所持金は732ゴールドです。',
-                                   '第8章の14年2月、所持金は732ゴールドです。']},
-                        ensure_ascii=False)
-    assert periodic.parse_candidates(output) == [
-        '第8章の14年2月、所持金は732ゴールドです。']
+def test_narrative_rejects_a_flat_fact_list():
+    fact_list = ('エピィ将軍がミュスカデに勝ちました。おかざき城を失いました。'
+                 '兵士を99人補充しました。次はおかざき城の奪還を狙います。')
+    assert periodic.narrative_ok(fact_list) is False
+    assert periodic.narrative_ok(LONG_A) is True
+    assert periodic.narrative_ok(LONG_B) is True
+
+
+def test_parse_candidates_keeps_valid_long_lines_and_skips_short_ones():
+    output = json.dumps({'texts': ['短い。', LONG_A, LONG_A]}, ensure_ascii=False)
+    assert periodic.parse_candidates(output) == [LONG_A]
     with pytest.raises(periodic.PeriodicError):
         periodic.parse_candidates(json.dumps({'texts': ['短い。']}, ensure_ascii=False))
 
@@ -233,13 +262,13 @@ def test_scheduler_waits_interval_then_starts_one_worker(live, monkeypatch):
     assert len(spawned) == 1
     atomic_write_json(live.runtime / periodic.RESULT, {
         'schema': 1, **IDENTITY, 'seq': 1, 'at': live.now + 920,
-        'status': 'enqueued', 'text': '第8章の14年2月、所持金は732ゴールドです。',
+        'status': 'enqueued', 'text': LONG_A,
         'attempts': 1})
     periodic.tick(g, live.game, live.runtime, RUN, IDENTITY, now=live.now + 940)
     state = json.loads((live.runtime / periodic.STATE).read_text())
     assert state['pending_seq'] is None
     assert state['last_result_seq'] == 1
-    assert state['recent_texts'] == ['第8章の14年2月、所持金は732ゴールドです。']
+    assert state['recent_texts'] == [LONG_A]
     assert state['next_at'] >= live.now + 900
 
 
@@ -318,7 +347,7 @@ def test_worker_sets_the_periodic_agent_override(live, monkeypatch):
         SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime,
         now=live.now,
         generate_fn=lambda *args: seen.append(os.environ.get('HANJUKU_PERIODIC_AGENTS'))
-        or (json.dumps({'texts': ['第8章の14年2月、所持金は732ゴールドです。']},
+        or (json.dumps({'texts': [LONG_A]},
                        ensure_ascii=False), 'RADIO_AGENTS'),
         deliver_fn=lambda *args, **kwargs: 'enqueued')
     assert seen == ['opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash']
@@ -326,15 +355,10 @@ def test_worker_sets_the_periodic_agent_override(live, monkeypatch):
 
 def test_worker_delivers_the_least_repetitive_grounded_candidate(live, monkeypatch):
     delivered = []
-    output = json.dumps({'texts': [
-        '第8章の14年2月、所持金は732ゴールドです。',
-        'この15分、エピィ将軍がミュスカデに勝ちました。',
-        '第8章の14年2月、兵士を99人補充しました。']}, ensure_ascii=False)
+    output = json.dumps({'texts': [LONG_A, LONG_B]}, ensure_ascii=False)
     status, text, attempts, role = _worker(
-        live, monkeypatch, output, delivered,
-        recent=['第8章の14年2月、所持金は732ゴールドです。'])
-    assert (status, text, attempts, role) == ('enqueued',
-        'この15分、エピィ将軍がミュスカデに勝ちました。', 1, 'RADIO_AGENTS')
+        live, monkeypatch, output, delivered, recent=[LONG_A])
+    assert (status, text, attempts, role) == ('enqueued', LONG_B, 1, 'RADIO_AGENTS')
     assert len(delivered) == 1
     assert delivered[0][0][4] == text
     result = json.loads((live.runtime / periodic.RESULT).read_text())
@@ -343,7 +367,7 @@ def test_worker_delivers_the_least_repetitive_grounded_candidate(live, monkeypat
 
 def test_worker_is_silent_when_every_candidate_repeats(live, monkeypatch):
     delivered = []
-    repeated = '第8章の14年2月、所持金は732ゴールドです。'
+    repeated = LONG_A
     _write(live.runtime / periodic.REQUEST, _request(live, [repeated]))
     monkeypatch.setattr(worker, 'load_game', lambda *args: live.game)
     monkeypatch.setattr(worker, 'current', lambda *args, **kwargs: RUN)
@@ -364,14 +388,13 @@ def test_worker_retries_an_invalid_answer_then_delivers(live, monkeypatch):
     monkeypatch.setattr(worker, 'current', lambda *args, **kwargs: RUN)
     answers = iter([
         json.dumps({'texts': ['第9章に進みました。']}, ensure_ascii=False),
-        json.dumps({'texts': ['第8章の14年2月、所持金は732ゴールドです。']},
-                   ensure_ascii=False)])
+        json.dumps({'texts': [LONG_A]}, ensure_ascii=False)])
     status, text, attempts, role = worker.consume(
         SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime, now=live.now,
         generate_fn=lambda *args: (next(answers), 'RADIO_AGENTS'),
         deliver_fn=lambda *args, **kwargs: delivered.append(args) or 'enqueued')
     assert status == 'enqueued' and attempts == 2
-    assert text == '第8章の14年2月、所持金は732ゴールドです。'
+    assert text == LONG_A
 
 
 def test_periodic_delivery_keeps_the_soren_fence_within_120_seconds(live, monkeypatch):
