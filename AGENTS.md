@@ -209,6 +209,7 @@ worker / queue / model / provider / fallback / runtime component を変更した
 
 - テストは PR ごとに CI が実行する。ローカルでは変更に関係するテストファイルだけを実行する（例: `python3 -m pytest -q tests/test_hanjuku_chart_bot.py`）。
 - 半熟だけを変更する PR は、CI がフルスイートの代わりに半熟スイート（`tests/test_hanjuku*.py` と、`hanjuku` に言及する他のテストファイル）を実行する。半熟以外のコードが直接 import する半熟モジュールを変更した場合と、判定できない場合はフルスイートになる。判定は `.github/scripts/ci_test_scope.py`。フルスイートは main で毎晩も実行する。夜間の失敗は半熟 PR が他の領域を壊した可能性があるので、優先して調べる。
+- `hanjuku-speedrun` も半熟と同じ規則で扱う。`src/docich/hanjuku_speedrun/`・`brains/hanjuku_speedrun/` は `tools/hanjuku_speedrun_fork.py` の生成物なので、凍結までは手で編集しない（凍結後は通常のソース）。`tools/hanjuku_speedrun_fork.py check` が CI の門で、元コーナーの `src/docich/hanjuku_*.py`（`hanjuku_corner.py` を除く）・`src/docich/hanjuku/`・`brains/hanjuku/` は変更しない。速度改善はスピードラン側だけに入れる。
 - CI のテストジョブ（`full-suite` / `hanjuku-suite`）は、収集されたテストをファイル単位で 2 つのシャードに分けて別 runner で並列に実行する（`.github/scripts/ci_shard.py`、環境変数 `CI_SHARD=1/2`）。シャードは収集結果から機械的に切るので、テストファイルの追加に CI の編集は要らない。`ci-required` はマトリクス全体の結果を見る。ローカルの実行は `CI_SHARD` を設定しない限り変わらない。
 - main へのマージには `ci-required` チェックの成功が必要である（2026-11-02 オーナー決定）。赤または実行中の PR を `--admin` で通さない。通常のマージに `--admin` は使わない。例外は本番障害の復旧に必要な場合だけで、理由を PR に書く。main が赤のときは他の作業より先に main を直す。
 - ローカルで全体を流すのは CI では確認できない理由があるときに限り、1 つの変更につき 1 回までにする。失敗したら、失敗したテストのファイルだけを再実行する。

@@ -71,7 +71,8 @@ def test_flat_live_catalog_and_financial_boundary():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-                                     "nethack", "hanjuku-hero", "paper", "meriken", "weather", "tsuitate",
+                                     "nethack", "hanjuku-hero", "hanjuku-speedrun", "paper", "meriken",
+                                     "weather", "tsuitate",
                                      "yosou-oh", "doushi-card", "puyo-corner", "mystery",
                                      "trpg-corner", "communist-law-simulator", "chart-659"}
     assert all(c.live_eligible is False for c in catalog)
@@ -79,6 +80,10 @@ def test_flat_live_catalog_and_financial_boundary():
     lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
     assert lawsim.enabled and not lawsim.manual_only and lawsim.audio_enabled is True
     assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
+    # スピードランは当面手動のみ（自動抽選には入らない）。
+    speedrun = next(c for c in catalog if c.id == "hanjuku-speedrun")
+    assert speedrun.enabled and speedrun.manual_only
+    assert (speedrun.adapter, speedrun.game) == ("game", "hanjuku-speedrun")
     assert not any(c.id == "retro" for c in catalog)
     assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
@@ -95,7 +100,8 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     catalog = load_catalog(g)
     # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本。
     # 2026-11-18: chart-659 (#659) 追加 → 18本（manual-only）。
-    assert len(catalog) == 18
+    # 2026-11-25: hanjuku-speedrun 追加 → 19本（manual-only）。
+    assert len(catalog) == 19
     # Issue #698: PR-4 activation (owner-approved) makes ぷよぷよクローン
     # manual-bookable with audio opt-in; auto-rotation still excludes it
     # until a later approved step drops manual_only.
@@ -291,7 +297,7 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
             "yosou-oh", "doushi-card", "mystery", "communist-law-simulator"} <= set(eligible)
     assert excluded == {"puyo-corner": "manual-only", "trpg-corner": "manual-only",
-                        "chart-659": "manual-only"}
+                        "chart-659": "manual-only", "hanjuku-speedrun": "manual-only"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
@@ -300,7 +306,23 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     assert excluded == {"tsuitate": "adapter-unavailable",
                         "puyo-corner": "manual-only",
                         "trpg-corner": "manual-only",
-                        "chart-659": "manual-only"}
+                        "chart-659": "manual-only",
+                        "hanjuku-speedrun": "manual-only"}
+
+
+def test_production_speedrun_is_manual_only_but_bookable(tmp_path, monkeypatch):
+    from docich.retro_corner import RetroCornerManager
+    g = replace(load_global(ROOT, ROOT / "config/docich.soren-live.toml"), state_dir=tmp_path)
+    monkeypatch.setattr(RetroCornerManager, "_executable_exists", staticmethod(lambda _: True))
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_rom", lambda *_: ROOT / "vm-only.sfc")
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
+    manager = CornerRotationManager(g)
+    eligible, excluded = manager._eligible()
+    assert "hanjuku-speedrun" not in eligible
+    assert excluded["hanjuku-speedrun"] == "manual-only"
+    queued = manager.queue_manual("hanjuku-speedrun")
+    assert queued["corner"] == "hanjuku-speedrun"
+    assert json.loads((tmp_path / "corner_manual_queue.json").read_text())["corner"] == "hanjuku-speedrun"
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
