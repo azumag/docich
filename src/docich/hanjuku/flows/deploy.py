@@ -186,9 +186,22 @@ def _verify_sortie_source(screen, mem, order):
         _garrison_move(mem, sortie['general'], source=sortie['source'])
         from .camp_recheck import observe_departure
         observe_departure(mem, sortie['general'], sortie.get('tick'))
+    # owner 2026-11-26: 9話で出撃キャンセルが続く事象を issue から読めるよう、
+    # 「なぜ出発しなかったか」の材料（確認要求・拒否・計画状態・在城観測）を残す。
+    cancel_state = {
+        'step': step,
+        'plan_status': (_plan_region(mem).get('orders') or {}).get(step),
+        'departure_requested': bool((_flow(mem).get('departure_request') or {}).get('step') == step),
+        'decline_sent': bool(mem['sortie_decline'].get('decline_sent'))
+        if isinstance(mem.get('sortie_decline'), dict) else False,
+        'attempt_open': bool(_flow(mem).get('sortie_attempt')),
+        'general': sortie['general'],
+        'target': sortie.get('target') or sortie.get('planned_target'),
+    }
     _record(mem, 'sortie_cancelled_observed' if cancelled else 'sortie_departed_observed',
             chart_step=step, general=sortie['general'], source=sortie['source'], target=None,
-            observed_metric=present,
+            observed_metric=({**present, 'cancel_state': cancel_state}
+                             if cancelled and isinstance(present, dict) else present),
             reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
     _flow(mem).pop('sortie_attempt', None)
