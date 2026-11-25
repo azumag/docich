@@ -88,6 +88,26 @@ def test_a_missing_egg_row_reveals_then_opens_the_carried_card(monkeypatch):
     assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
 
 
+def test_scroll_exhaustion_gets_one_extra_bounded_reveal_attempt(monkeypatch):
+    # #5560: the carried card row was still hidden after the previous three
+    # navigation steps. One additional down is safe; selection still requires
+    # the actual きりふだ label on a fresh observation.
+    mem = memory()
+    mem['battle']['planned_cards'] = ['クースカン']
+    mem['battle']['summon_card_scroll'] = B.SUMMON_CARD_SCROLL_LIMIT - 1
+
+    assert B.egg_battle_step(
+        screen(text='こうげきもうこうげきたまごをつかう'), mem) == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == B.SUMMON_CARD_SCROLL_LIMIT
+    assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
 def test_a_message_panel_does_not_spend_the_card_scroll_budget():
     # A message inside the summon keeps the egg-battle latch and can mention
     # こうげき; it must not burn the bounded scroll before the real box draws.
@@ -102,7 +122,7 @@ def test_the_missed_card_record_carries_the_battle_identity(monkeypatch):
     # #5398 was filed as 戦闘: 不明 / 城: 不明 / 画面: None because the emit
     # omitted the battle identity the month audit projects.
     mem = memory()
-    mem['battle'].update(planned_cards=['ノリウツール'], summon_card_scroll=3)
+    mem['battle'].update(planned_cards=['ノリウツール'], summon_card_scroll=B.SUMMON_CARD_SCROLL_LIMIT)
     monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
     monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
     B.egg_battle_step(screen(text='こうげき'), mem)
