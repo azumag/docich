@@ -641,3 +641,39 @@ def test_performance_position_snapshot_must_match_fill_ledger(tmp_path, position
     assert perf["unrealized_pnl_jpy"] is None
     assert perf["cumulative_pnl_jpy"] is None
     assert perf["equity_jpy"] is None
+
+def test_interval_performance_counts_more_than_twenty_fills(tmp_path):
+    """A 30-fill ledger must not be truncated to a recent-20 window."""
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+
+    # Fifteen complete round trips produce 30 fill rows. The first two are
+    # before the interval cursor; the remaining thirteen belong to it.
+    for index in range(15):
+        opened = 1000.0 + index * 10
+        broker.fill(
+            _decision(f"buy-{index}", "buy", "1", "100"),
+            timestamp=opened,
+        )
+        broker.fill(
+            _decision(f"sell-{index}", "sell", "1", "101"),
+            timestamp=opened + 5,
+        )
+    ledger.close()
+
+    performance = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=1200.0,
+        interval_start=1020.0,
+    )
+
+    assert performance["complete"] is True
+    assert performance["ledger_status"] == "ok"
+    assert performance["unpaired_sell_count"] == 0
+    assert performance["realized_total_jpy"] == "15"
+    assert performance["interval_realized_pnl_jpy"] == "13"
+    assert performance["equity_jpy"] == "1015"
