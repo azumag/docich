@@ -27,8 +27,8 @@ class DiagnosticsHeadroomMonitorContractTest(unittest.TestCase):
         self.assertIn("percent >= warn", self.text)
 
     def test_alert_includes_the_validated_section_breakdown(self):
-        self.assertIn("SECTION_BYTES_SUMMARY: \${{ steps.diagnostics.outputs.section_bytes_summary }}", self.text)
-        self.assertGreaterEqual(self.text.count("- section_bytes: \${SECTION_BYTES_SUMMARY:-unavailable}"), 2)
+        self.assertIn("SECTION_BYTES_SUMMARY: ${{ steps.diagnostics.outputs.section_bytes_summary }}", self.text)
+        self.assertGreaterEqual(self.text.count("- section_bytes: ${SECTION_BYTES_SUMMARY:-unavailable}"), 2)
         self.assertIn("summarize_section_bytes", self.text)
         self.assertIn("validated section names with byte counts", self.text)
 
