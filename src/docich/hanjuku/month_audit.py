@@ -2400,6 +2400,18 @@ def _sortie_cards_event(record, mem, records=None):
     stock = _positive_card_stock(mem)
     if not stock:
         return None
+    # A positive field count is not automatically usable by every sortie.
+    # バルムンク is intentionally boss-only: carrying it on an ordinary
+    # attack/retake is prohibited, so it must not make an empty ordinary kit
+    # look like a missed opportunity. Boss-purpose orders and measured boss
+    # castles keep the card eligible.
+    from .. import hanjuku_chart as chart, hanjuku_reference as reference
+    boss_order = (purpose == 'boss' or chart.is_boss_castle(order.get('target')))
+    if not boss_order:
+        stock = {name: count for name, count in stock.items()
+                 if name not in reference.BOSS_ONLY_CARDS}
+    if not stock:
+        return None
     carried = _sortie_carried_cards(mem, step, record, records)
     if carried:
         return None
