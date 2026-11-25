@@ -105,6 +105,12 @@ def settings(raw):
         if key == 'max_attempts' and type(value) is not int:
             raise ValueError('periodic_commentary.max_attempts must be an integer')
         result[key] = int(value) if key == 'max_attempts' else float(value)
+    agents = raw.get('agents', '')
+    if not isinstance(agents, str) or (
+            agents and not re.fullmatch(
+                r'[A-Za-z0-9._:/-]{1,80}(?:,[A-Za-z0-9._:/-]{1,80}){0,7}', agents)):
+        raise ValueError('periodic_commentary.agents is invalid')
+    result['agents'] = agents
     return result
 
 
