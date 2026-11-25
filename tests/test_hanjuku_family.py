@@ -134,13 +134,17 @@ def test_module_is_not_cached_by_the_dispatcher(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["hanjuku_run", "hanjuku_hotload", "hanjuku.state_budget"])
-def test_speedrun_package_not_generated_yet(name):
-    # The copy is produced by a separate change.  Until then the dispatcher
-    # must fail loudly rather than silently fall back to the original package.
-    with pytest.raises(ModuleNotFoundError):
-        module(SPEEDRUN, name)
-    with pytest.raises(ImportError):
-        module(SPEEDRUN, name)
+def test_speedrun_modules_resolve_to_their_own_package(name):
+    speedrun = module(SPEEDRUN, name)
+    original = module(ORIGINAL, name)
+    assert speedrun is not original
+    assert speedrun.__name__ == f"docich.hanjuku_speedrun.{name}"
+    assert original.__name__ == f"docich.{name}"
+
+
+def test_speedrun_hotload_is_bound_to_the_speedrun_game():
+    assert module(SPEEDRUN, "hanjuku_hotload").RUN_GAME == SPEEDRUN
+    assert module(ORIGINAL, "hanjuku_hotload").RUN_GAME == ORIGINAL
 
 
 @pytest.mark.parametrize("game", [None, "nethack", 42])
