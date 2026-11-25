@@ -603,6 +603,10 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
                 # 切り札で押し切り、卵を使わせる前に倒す。追撃の保証が無い
                 # 制御札も、確実に敵将軍を半減できるなら選択する。
                 result.update(allowed=True, role='egg_race_not_a_kill')
+            elif _score_pressure(mem, cur) and _egg_race_card_advances(estimate):
+                # Owner 2026-11-25: 戦闘力×残HP×残兵士の総合スコアで劣勢なら、
+                # ピンチを待たず切り札で押し切る（制御札も同じ根拠で選択）。
+                result.update(allowed=True, role='score_pressure_not_a_kill')
             else:
                 result['role'] = 'control_has_no_observed_followup'
     elif _egg_race_pressure(mem, cur) and _egg_race_card_advances(estimate):
@@ -610,6 +614,10 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         # 従来根拠に当たらない札でも、確実に敵将軍へ効いて戦闘を前へ進める
         # 効果なら選択する（回復・退却・自傷は除外）。
         result.update(allowed=True, role='egg_race_not_a_kill')
+    elif _score_pressure(mem, cur) and _egg_race_card_advances(estimate):
+        # Owner 2026-11-25: 総合スコアで劣勢なら、従来根拠に当たらない札でも
+        # 確実に敵将軍へ効く効果なら選択する（回復・退却・自傷は除外）。
+        result.update(allowed=True, role='score_pressure_not_a_kill')
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
     # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
@@ -1574,7 +1582,7 @@ def _egg_race_pressure(mem, cur):
     if cur.get('side') not in ('attack', 'defense'):
         return False
     if (enemy in reference.BOSS_GENERALS or enemy in chart.BOSSES.values()
-            or cur.get('event_duel')):
+            or cur.get('event_duel') or _hp1_resource_hold(cur)):
         return False
     if (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
             or cur.get('enemy_summon_observed') or cur.get('enemy_transform_observed')
@@ -1611,6 +1619,65 @@ def _egg_race_card_advances(estimate):
         return estimate.get('target_kind') in ('general', 'egg_monster')
     raw = estimate.get('raw_damage_min')
     return type(raw) is int and raw > 0
+
+
+# Owner 2026-11-25: 切り札を持っている場合、ピンチのとき以外に、相手の戦闘力と
+# 残っているHPと残っている兵士の数を掛け算したスコアで、こちらのスコアが総合的に
+# 負けている場合は優先的に切り札を使ってください。相手が卵を持っていてこちらが
+# 持っていない場合も同様に優先的に使うこと。開幕で卵落とし条件に合致する場合は
+# 開幕すぐその該当の切り札を使うこと。
+def _melee_product_scores(cur):
+    """戦闘力 × 残HP × 残兵士数 の両軍スコア。
+
+    兵士0は掛け算で0になり「総合的に負けている」判定が消えるため、将軍個人の
+    戦力として1人分と数える（兵士1人以上は指示どおりその人数を掛ける）。
+    HP・兵士数・将軍戦闘力が現在値として揃わない側は None (fail-closed)。
+    """
+    if not isinstance(cur, dict):
+        return None, None
+    if (cur.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+            or cur.get('event_duel')):
+        return None, None
+    balance = _melee_balance(cur)
+    if balance.get('soldiers_current') is not True:
+        return None, None
+    scores = []
+    for side in ('ally', 'enemy'):
+        hp, combat = cur.get(side + '_hp'), balance.get(side + '_combat')
+        soldiers = cur.get(side + '_soldiers')
+        if not (type(hp) is int and 0 < hp <= 9999
+                and type(combat) is int and 1 <= combat <= 15
+                and type(soldiers) is int and 0 <= soldiers <= 6):
+            return None, None
+        scores.append(combat * hp * (soldiers if soldiers > 0 else 1))
+    return scores[0], scores[1]
+
+
+def _score_pressure(mem, cur):
+    """総合スコアで負けているなら、ピンチを待たず切り札を優先する。
+
+    現在のHP・両軍の兵士数・将軍の戦闘力がすべて現在値として揃った通常将軍戦だけを
+    対象にする。ボス・召喚獣戦・一騎打ち、および本人の卵の変身が先に必要な
+    ``_dying_with_egg`` は従来の判断へ戻す (fail-closed)。
+    """
+    if not isinstance(mem, dict) or not isinstance(cur, dict):
+        return False
+    ally, enemy = cur.get('ally'), cur.get('enemy')
+    if not isinstance(ally, str) or not isinstance(enemy, str) or not ally or not enemy:
+        return False
+    if cur.get('side') not in ('attack', 'defense'):
+        return False
+    if (enemy in reference.BOSS_GENERALS or enemy in chart.BOSSES.values()
+            or cur.get('event_duel') or _hp1_resource_hold(cur)):
+        return False
+    if (cur.get('egg_battle') or mem.get('egg_battle') or cur.get('card_summon_observed')
+            or cur.get('enemy_summon_observed') or cur.get('enemy_transform_observed')):
+        return False
+    if _dying_with_egg(mem, cur):
+        return False                     # 卵の変身が先 (既存の安全弁)
+    ours, theirs = _melee_product_scores(cur)
+    return ours is not None and theirs is not None and ours < theirs
 
 
 def _survival_state(mem, cur):

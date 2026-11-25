@@ -12,6 +12,8 @@ def refused_card(monkeypatch):
     The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
     """
     monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+    # owner 2026-11-25: 総合スコア劣勢の押し込みは tests/test_hanjuku_score_pressure.py が持つ。
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._score_pressure', lambda *a: False)
 
 
 def rescue(enemy_hp=32, soldiers=(0, 0)):

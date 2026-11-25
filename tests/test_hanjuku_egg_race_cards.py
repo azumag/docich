@@ -54,6 +54,7 @@ def charted_card(mem, monkeypatch, *, after_card=None, kit_known=True):
     ('observed_positive', False), ('unread_count', False),
     ('enemy_without_trigger', False), ('boss', False), ('summoned', False),
     ('defense', True), ('side_unknown', False), ('recheck_pending', False),
+    ('enemy_hp1', False),                  # owner 2026-11-25: HP1は資源を温存
 ])
 def test_pressure_needs_a_named_eggless_side_and_an_egg_capable_enemy(case, expected):
     mem = memory()
@@ -76,6 +77,8 @@ def test_pressure_needs_a_named_eggless_side_and_an_egg_capable_enemy(case, expe
     elif case == 'recheck_pending':
         mem = memory(ally='クミン', egg=0)
         mem['egg_recheck'] = ['クミン']    # a selection dirties the old count
+    elif case == 'enemy_hp1':
+        mem = memory(enemy_hp=1)
     assert rules._egg_race_pressure(mem, mem['battle']) is expected
 
 
