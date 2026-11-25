@@ -2635,7 +2635,7 @@ def _mechanical_boss_plan(mem, rid):
     owned = _owned(mem)
     if not normal or not normal <= owned:
         return False
-    base = list(chart.orders(chapter))
+    base = list(chart.orders(chapter)) or list(chart.all_orders(chapter))
     boss_orders = [o for o in base if chart.is_boss_castle(o.get('target'))
                    and not _site_king_down(mem, o.get('target'))]
     if not boss_orders:
