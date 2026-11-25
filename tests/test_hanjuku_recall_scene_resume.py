@@ -51,8 +51,9 @@ def test_a_recall_cut_three_times_is_skipped_instead_of_looping():
 
 def dispatch_memory(input_sent=True):
     recall = {'stage': 'await_dispatch', 'steps': 0, 'target': [132, 124],
-              'goal': 'アルマムーン', 'fort': True, 'general': 'バジル',
-              'a_inputs': 1, 'request_trace': {'request': 'recall-1'}}
+              'goal': 'アルマムーン', 'fort': True, 'kind': 'dome',
+              'general': 'バジル', 'a_inputs': 1,
+              'request_trace': {'request': 'recall-1'}}
     if input_sent:
         recall['input_sent'] = True
     mem = {'tick': 100, 'chapter': 12, 'flow': {'recall': recall},
