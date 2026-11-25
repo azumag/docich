@@ -58,6 +58,14 @@ issue化の既定は `high` のみ。
 - `boss_hp_seen` または `boss_hp_history`（ボスHPパネルを読めた）
 - `boss_victories` または `boss_defeated`
 
+ボスサイトを対象にした `attack_observed`（または
+`plan.attack.entry_evidence=measured_boss_entry`）は、戦闘成立の証拠には数えない。
+ただし突入メッセージから戦闘パネルが描画されるまでの遷移を考慮し、実測時刻から
+120秒だけ無戦闘Issueの判定を延期する。120秒後も `battle_start` / ボスHPの証拠が
+なければ記録し、突入将軍・サイト・step・経過秒をincidentへ残す。
+これにより、突入直後の誤報を避けながら、戦闘パネルが出ないまま停止したケースは
+引き続き検出する。
+
 600秒はボス城への行軍・突入を待つ猶予。phaseが途切れた場合（通常城を失った、
 章が変わった、ボスを撃破した）はリセットし、同じphaseで一度だけ記録する。
 記録は `world` / `plan` / `flow` とフェーズ中の決定を含み、既定でissue対象

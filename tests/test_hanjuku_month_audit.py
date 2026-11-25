@@ -312,6 +312,9 @@ def test_boss_phase_ends_when_the_boss_is_owned():
 def test_boss_battle_evidence_is_not_only_battle_start():
     value = _boss_state()['policy']
     assert audit._boss_battle_seen(value, [], 9, 'ハデス') is False
+    # A measured entry is not a battle panel; it only starts the bounded transition grace.
+    assert audit._boss_battle_seen(
+        value, [{'decision': 'attack_observed', 'castle': 'ボス'}], 9, 'ハデス') is False
     assert audit._boss_battle_seen(value, [{'decision': 'battle_start', 'enemy': 'ハデス'}],
                                    9, 'ハデス') is True
     value['boss_hp_seen'] = {'hp': 100, 'castle': 'ボス', 'tick': 1}
@@ -331,13 +334,29 @@ def test_chapter_four_season_king_battle_counts_as_boss_evidence():
     assert audit._rows_boss_battle(rows, 9, 'ハデス') is False
 
 
+def test_boss_entry_evidence_requires_a_boss_site():
+    mem = _boss_state()['policy']
+    row = {'decision': 'attack_observed', 'general': 'G1', 'castle': 'ボス',
+           'chart_step': 'A:1:1', 'at': 1010.0}
+    entry = audit._boss_entry_evidence(mem, [row], 9, 1020.0)
+    assert entry == {'at': 1010.0, 'general': 'G1', 'castle': 'ボス',
+                     'step': 'A:1:1', 'source': 'decision_log'}
+    ordinary = {**row, 'castle': 'オオキク'}
+    assert audit._boss_entry_evidence(mem, [ordinary], 9, 1020.0) is None
+
+
 def _run_boss(runtime, count=401, *, battle_at=None, hp=False,
-              live_sortie=False, sortie_age=10):
+              live_sortie=False, sortie_age=10, entry_at=None, entry_plan_at=None):
     for index in range(count):
         at = 1000 + index * STEP
         value = _boss_state(month='1-1', tick=index)
         if hp:
             value['policy']['boss_hp_seen'] = {'hp': 50, 'castle': 'ボス', 'tick': index}
+        if entry_plan_at == index:
+            value['policy']['plan']['attack'] = {
+                'general': 'G1', 'castle': 'ボス', 'side': 'attack',
+                'step': 'A:1:1', 'entry_evidence': 'measured_boss_entry',
+            }
         if live_sortie:
             value['policy']['tick'] = index + sortie_age
             value['policy']['world']['sorties'] = {
@@ -357,8 +376,11 @@ def _run_boss(runtime, count=401, *, battle_at=None, hp=False,
                 },
             }
         records = []
+        if entry_at == index:
+            records.append({'decision': 'attack_observed', 'general': 'G1',
+                            'castle': 'ボス', 'chart_step': 'A:1:1', 'at': at})
         if battle_at == index:
-            records = [{'decision': 'battle_start', 'enemy': 'ハデス', 'at': at}]
+            records.append({'decision': 'battle_start', 'enemy': 'ハデス', 'at': at})
         audit.observe(runtime, audit.capture(value), value, records, now=at)
     return value
 
@@ -376,6 +398,78 @@ def test_boss_phase_without_a_battle_is_recorded_after_the_grace(runtime_dir):
     assert record['boss_phase']['observed_s'] >= audit.BOSS_NO_BATTLE_SECONDS
     assert 'ボスフェーズでボス戦闘ゼロ' in audit._issue_title(record)
     assert '### ボスフェーズ' in audit.render(record)
+
+
+def test_boss_phase_defers_after_measured_entry_then_reports_after_grace(runtime_dir):
+    _run_boss(runtime_dir, count=401, entry_at=390)
+    assert audit.load_incidents(runtime_dir) == []
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    entry_at = 1000 + 390 * STEP
+    assert saved['boss']['entry_observed_at'] == entry_at
+    assert saved['boss']['boss_entry_deferred'] is True
+
+    # Keep observing so the grace expires without introducing an observation gap.
+    for index in range(401, 471):
+        at = 1000 + index * STEP
+        value = _boss_state(month='1-1', tick=index)
+        audit.observe(runtime_dir, audit.capture(value), value, [], now=at)
+        if index < 470:
+            assert audit.load_incidents(runtime_dir) == []
+    record = audit.load_incidents(runtime_dir)[0]
+    entry = record['boss_phase']['boss_entry']
+    assert entry['observed_at'] == entry_at
+    assert entry['age_s'] == audit.BOSS_ENTRY_BATTLE_GRACE_SECONDS
+    assert entry['general'] == 'G1' and entry['castle'] == 'ボス'
+    assert '実測突入: G1 / ボス' in audit.render(record)
+
+
+def test_boss_phase_defers_when_only_the_active_plan_proves_entry(runtime_dir):
+    _run_boss(runtime_dir, count=401, entry_plan_at=390)
+    assert audit.load_incidents(runtime_dir) == []
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['boss']['entry_observed_at'] == 1000 + 390 * STEP
+    assert saved['boss']['entry_source'] == 'active_plan'
+
+
+def test_decision_log_entry_upgrades_active_plan_fallback_timestamp(runtime_dir):
+    _run_boss(runtime_dir, count=401, entry_plan_at=390)
+    entry_at = 1000 + 390 * STEP
+    measured_at = entry_at - STEP
+    value = _boss_state(month='1-1', tick=401)
+    value['policy']['plan']['attack'] = {
+        'general': 'G1', 'castle': 'ボス', 'side': 'attack',
+        'step': 'A:1:1', 'entry_evidence': 'measured_boss_entry',
+    }
+    row = {'decision': 'attack_observed', 'general': 'G1', 'castle': 'ボス',
+           'chart_step': 'A:1:1', 'at': measured_at}
+    audit.observe(runtime_dir, audit.capture(value), value, [row],
+                  now=1000 + 401 * STEP)
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['boss']['entry_observed_at'] == measured_at
+    assert saved['boss']['entry_source'] == 'decision_log'
+
+
+def test_boss_battle_after_measured_entry_prevents_the_record(runtime_dir):
+    _run_boss(runtime_dir, count=401, entry_at=390, battle_at=400)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_boss_incident_signals_use_observed_departures(runtime_dir):
+    value = _boss_state()
+    current = {
+        'chapter': 9, 'boss_name': 'ハデス', 'bosses': ['ボス'],
+        'started_at': 1000.0, 'first_tick': 0, 'last_at': 1700.0,
+        'last_tick': 400, 'observations': 401, 'max_gap_s': 0.0,
+    }
+    rows = [
+        {'decision': 'order_start', 'chart_step': 'A:1:1', 'at': 1001.0},
+        {'decision': 'order_launched', 'chart_step': 'A:1:1', 'at': 1010.0,
+         'purpose': 'attack', 'target': 'ボス'},
+    ]
+    record = audit._build_boss_incident(
+        str(runtime_dir), {'identity': IDENTITY}, value, [], 1700.0, current, rows=rows)
+    assert record['sorties']['departures'] == 1
+    assert 'order_start_without_launch' not in record['signals']
 
 
 def test_boss_phase_with_a_battle_is_not_recorded(runtime_dir):

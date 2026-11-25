@@ -49,6 +49,8 @@ LOG_NAME = 'hanjuku_month_audit'
 TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
+# The measured #5500 entry-to-incident gap was 53s; allow a bounded panel transition.
+BOSS_ENTRY_BATTLE_GRACE_SECONDS = 120
 # An active boss-targeted march is not evidence that the bot has failed to
 # start the battle yet. Match the existing stuck-march expiry boundary.
 BOSS_LIVE_SORTIE_MAX_AGE_TICKS = 3000
@@ -619,6 +621,98 @@ def _rows_boss_battle(rows, chapter, boss_name):
     return False
 
 
+def _boss_entry_evidence(mem, rows, chapter, now):
+    """Return a measured boss-site entry, without treating it as a completed battle.
+
+    The Japanese boss-entry message is observed before the battle panel is
+    drawn. Keep its timestamp so the audit can defer the zero-battle alert for
+    a bounded transition window instead of permanently counting entry as a
+    battle.
+    """
+    from .. import hanjuku_chart as chart
+    boss_sites = set(chart.boss_sites(chapter) or ())
+    candidates = []
+    for row in rows or ():
+        if not isinstance(row, dict) or row.get('decision') != 'attack_observed':
+            continue
+        metric = row.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        castle = _bounded_text(row.get('castle'), 48)
+        if castle not in boss_sites:
+            castle = _bounded_text(metric.get('castle') or metric.get('target'), 48)
+        if castle not in boss_sites:
+            continue
+        at = row.get('at')
+        if type(at) not in (int, float) or not 0 <= at <= now:
+            at = None
+        candidates.append({
+            'at': float(at) if at is not None else None,
+            'general': _bounded_text(row.get('general'), 48),
+            'castle': castle,
+            'step': _bounded_text(row.get('chart_step'), 64),
+            'source': 'decision_log',
+        })
+
+    from .state.regions import PLAN, region
+    plan = region(mem, PLAN)
+    attack = plan.get('attack') if isinstance(plan, dict) else None
+    if (isinstance(attack, dict) and attack.get('side') == 'attack'
+            and attack.get('entry_evidence') == 'measured_boss_entry'
+            and attack.get('castle') in boss_sites):
+        general = _bounded_text(attack.get('general'), 48)
+        castle = _bounded_text(attack.get('castle'), 48)
+        step = _bounded_text(attack.get('step'), 64)
+        matching = [entry for entry in candidates
+                    if entry.get('general') == general
+                    and entry.get('castle') == castle
+                    and entry.get('step') == step]
+        if matching:
+            return max(matching, key=lambda entry: entry.get('at') or 0)
+        return {'at': None, 'general': general, 'castle': castle,
+                'step': step, 'source': 'active_plan'}
+    return max(candidates, key=lambda entry: entry.get('at') or 0) if candidates else None
+
+
+def _remember_boss_entry(current, entry, now):
+    """Persist the newest measured entry once, including when only plan state remains."""
+    if not isinstance(entry, dict):
+        return
+    general = _bounded_text(entry.get('general'), 48)
+    castle = _bounded_text(entry.get('castle'), 48)
+    step = _bounded_text(entry.get('step'), 64)
+    source = _bounded_text(entry.get('source'), 24)
+    same_entry = (current.get('entry_general') == general
+                  and current.get('entry_castle') == castle
+                  and current.get('entry_step') == step)
+    at = entry.get('at')
+    if type(at) not in (int, float) or not 0 <= at <= now:
+        at = current.get('entry_observed_at') if same_entry else None
+    if type(at) not in (int, float):
+        at = now
+    previous = current.get('entry_observed_at')
+    previous_valid = type(previous) in (int, float)
+    # An active-plan observation may arrive before its decision-log row.  The
+    # later row is more authoritative even when its event timestamp is older
+    # than the fallback observation time; prefer that measured timestamp.
+    source_rank = {'active_plan': 0, 'decision_log': 1}
+    source_upgrade = (same_entry
+                      and source_rank.get(source, -1)
+                      > source_rank.get(current.get('entry_source'), -1))
+    if (not same_entry or not previous_valid
+            or float(at) > float(previous) or source_upgrade):
+        current['entry_observed_at'] = float(at)
+        current['entry_general'] = general
+        current['entry_castle'] = castle
+        current['entry_step'] = step
+        current['entry_source'] = source
+
+
+def _boss_entry_grace_active(current, now):
+    at = current.get('entry_observed_at')
+    return (type(at) in (int, float)
+            and max(0.0, float(now) - float(at)) < BOSS_ENTRY_BATTLE_GRACE_SECONDS)
+
+
 def _boss_incident_id(identity, current):
     raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|boss|"
            f"{current.get('chapter')}|{current.get('started_at')}")
@@ -649,7 +743,9 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
         signals.append('boss_hp_missing')
     if not any(name.startswith('boss_pursuit') for name in counts):
         signals.append('boss_pursuit_idle')
-    for name in _signals(context, counts, 0, 0, battle_starts):
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    for name in _signals(context, counts, confirmed, departures, battle_starts):
         if name not in signals:
             signals.append(name)
     signals = signals[:8]
@@ -675,8 +771,6 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
                  'max_gap_s': current.get('max_gap_s'), 'started_clean': True}
     move_launches = sum(1 for row in rows if row.get('decision') == 'order_launched'
                         and row.get('purpose') == 'move')
-    month_sorties = (context or {}).get('month_sorties') or {}
-    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
     identity = state.get('identity') or {}
     signal_text = '+'.join(signals) if signals else 'boss_no_battle'
     record = {
@@ -701,6 +795,15 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
             'max_gap_s': current.get('max_gap_s'),
             'battle_count': 0,
             'battle_starts': battle_starts,
+            'boss_entry': ({
+                'observed_at': float(current.get('entry_observed_at')),
+                'age_s': max(0.0, float(now) - float(current.get('entry_observed_at'))),
+                'grace_s': BOSS_ENTRY_BATTLE_GRACE_SECONDS,
+                'general': _bounded_text(current.get('entry_general'), 48),
+                'castle': _bounded_text(current.get('entry_castle'), 48),
+                'step': _bounded_text(current.get('entry_step'), 64),
+                'source': _bounded_text(current.get('entry_source'), 24),
+            } if type(current.get('entry_observed_at')) in (int, float) else None),
             'boss_hp_seen': mem.get('boss_hp_seen'),
             'boss_hp_history_count': len(mem.get('boss_hp_history') or []),
             'boss_cell': mem.get('boss_cell'),
@@ -2721,6 +2824,8 @@ def _track_boss(runtime, state, after, records, now, on_sealed=None):
         version = _bounded_text(after.get('bot_version'), 80)
         if version:
             current['bot_version'] = version
+    _remember_boss_entry(
+        current, _boss_entry_evidence(mem, records, phase['chapter'], now), now)
     if _boss_battle_seen(mem, records, phase['chapter'], phase['boss_name']):
         if not current.get('battle_at'):
             current['battle_count'] = 1
@@ -2737,6 +2842,13 @@ def _track_boss(runtime, state, after, records, now, on_sealed=None):
     current.pop('live_boss_sortie_deferred', None)
     rows = _read_decisions(runtime, current.get('started_at') or now, now,
                            state.get('identity'))
+    _remember_boss_entry(
+        current, _boss_entry_evidence(mem, [*(rows or ()), *(records or ())],
+                                     phase['chapter'], now), now)
+    if _boss_entry_grace_active(current, now):
+        current['boss_entry_deferred'] = True
+        return
+    current.pop('boss_entry_deferred', None)
     if _rows_boss_battle(rows, phase['chapter'], phase['boss_name']):
         current['battle_count'] = 1
         current['battle_at'] = float(now)
@@ -3845,6 +3957,7 @@ def render(record):
     chikujou = record.get('chikujou_event') or {}
     boss_month = record.get('boss_month') or {}
     boss = record.get('boss_phase') or {}
+    boss_entry = boss.get('boss_entry') if isinstance(boss.get('boss_entry'), dict) else None
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
     battle_menu = record.get('battle_menu') or {}
@@ -4035,6 +4148,11 @@ def render(record):
             f"- ボス戦闘: {boss.get('battle_count')} / battle_start 全体: {boss.get('battle_starts')}",
             f"- ボスHP観測: {bool(boss.get('boss_hp_seen') or boss.get('boss_hp_history_count'))}"
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
+            *([f"- 実測突入: {boss_entry.get('general') or '不明'} / {boss_entry.get('castle') or '不明'}"
+                f" / 経過 {round(float(boss_entry.get('age_s') or 0), 1)}秒"
+                f" / 待機上限 {boss_entry.get('grace_s')}秒"
+                f" / source {boss_entry.get('source') or '不明'}"]
+               if boss_entry else []),
             '',
         ]
     body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall
