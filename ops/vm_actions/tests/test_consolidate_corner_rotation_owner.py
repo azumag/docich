@@ -324,20 +324,19 @@ class ConsolidateOwnerTests(unittest.TestCase):
         self.assertEqual(self.mutating_calls(), [])
         self.assertNotIn(str(self.root), result.stdout)
 
-    def test_apply_stops_then_masks_the_legacy_owner(self):
+    def test_apply_disables_and_stops_the_legacy_owner(self):
         result, payload = self.run_owner("apply")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(payload["action"], "consolidated")
         self.assertIs(payload["duplicate_owner"], False)
         self.assertEqual(payload["canonical"]["timer_active"], True)
         order = [[arg for arg in call if arg != "--user"][0] for call in self.mutating_calls()]
-        self.assertEqual(order, [
-            "disable", "stop", "disable", "mask", "daemon-reload", "start",
-        ])
+        self.assertEqual(order, ["disable", "stop", "disable", "start"])
+        self.assertNotIn("mask", order)
         units = self.read_units()
         self.assertFalse(units["legacy_service"]["active"])
         self.assertFalse(units["legacy_timer"]["active"])
-        self.assertEqual(units["legacy_timer"]["enabled"], "masked")
+        self.assertEqual(units["legacy_timer"]["enabled"], "disabled")
         heartbeat = json.loads((self.state / "corner_rotation_heartbeat.json").read_text())
         self.assertEqual(heartbeat["pid"], 4242)
 
@@ -397,9 +396,10 @@ class ConsolidateOwnerTests(unittest.TestCase):
         result, _ = self.run_owner("apply", extra_env={"FAKE_NO_TAKEOVER": "1"})
         self.assertEqual(result.returncode, 41)
         self.assertIn("the legacy owner was restored", result.stderr)
-        names = [call[0] for call in self.mutating_calls()]
-        self.assertIn("unmask", names)
+        names = [[arg for arg in call if arg != "--user"][0] for call in self.mutating_calls()]
         self.assertIn("enable", names)
+        self.assertNotIn("unmask", names)
+        self.assertNotIn("mask", names)
 
     def test_rejects_arguments_and_unknown_mode(self):
         result, _ = self.run_owner("check", args=("unexpected",))
