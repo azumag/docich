@@ -50,7 +50,7 @@ def test_a_recall_cut_three_times_is_skipped_instead_of_looping():
 
 
 def dispatch_memory(input_sent=True):
-    recall = {'stage': 'await_dispatch', 'steps': 2, 'target': [132, 124],
+    recall = {'stage': 'await_dispatch', 'steps': 0, 'target': [132, 124],
               'goal': 'アルマムーン', 'fort': True, 'general': 'バジル',
               'a_inputs': 1, 'request_trace': {'request': 'recall-1'}}
     if input_sent:
@@ -95,9 +95,9 @@ def test_scene_before_dispatch_receipt_keeps_the_existing_free_retry_marker():
 
 def test_text_frame_does_not_spend_the_dispatch_receipt_window():
     mem, recall = dispatch_memory()
-    actions = R._camp_recall_step(Screen([], None, 'イベント文面', kind='text'), mem, None)
+    actions = R.camp_recall_step(Screen([], None, 'イベント文面', kind='text'), mem, None)
     assert actions is None
-    assert recall['steps'] == 2
+    assert recall['steps'] == 0
     assert recall['scene_covered'] is True
 
 
