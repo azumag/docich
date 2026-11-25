@@ -1952,6 +1952,14 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              # stale positive as a spendable egg (repeated
                              # false "eggs left" incidents).
                              'egg_uses_source': 'ledger',
+                             # owner 2026-11-26: 台帳値を無効にした結果「卵を
+                             # 使わずに負けた」まで消えていた。実画面で卵が
+                             # 使えると観測できていた（own_egg_positive_observed）
+                             # のに卵戦に入っていない場合だけ、実測の証拠として
+                             # 「使える卵を残した」を立てる。
+                             'egg_available_unused': bool(cur.get('own_egg_positive_observed'))
+                             and not (cur.get('egg_battle') or mem.get('egg_battle'))
+                             and not cur.get('egg_used'),
                              'cards_used': cur.get('cards_used', []),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),

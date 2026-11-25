@@ -2707,3 +2707,22 @@ def test_an_unexplained_empty_kit_is_still_reported(runtime_dir):
                   now=1000, on_sealed=lambda record: None)
     assert [r['kind'] for r in audit.load_incidents(runtime_dir)] == ['sortie_without_cards']
 
+def test_a_measured_unused_egg_is_evidence_even_with_a_ledger_source():
+    # owner 2026-11-26: 台帳値を無効にした結果「卵を使わずに負けた」まで
+    # 消えていた。実測フラグが立っていれば卵の機会損失として扱う。
+    measured = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 1, 'egg_uses_source': 'ledger',
+                'egg_available_unused': True, 'ally_hp': 0, 'enemy_hp': 40},
+        general='バゲット'))
+    assert measured['kind'] == 'battle_loss_with_resources'
+    assert measured['resources'] == ['egg']
+
+
+def test_a_ledger_value_alone_is_still_not_evidence():
+    ledger_only = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 4, 'egg_uses_source': 'ledger',
+                'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
+    assert ledger_only is None
+

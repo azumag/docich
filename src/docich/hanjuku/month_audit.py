@@ -1284,7 +1284,11 @@ def _battle_resources(record):
     # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
     if metric.get('egg_uses_source') == 'ledger':
-        egg = 0
+        # A ledger value is not a battle-time count. The flow still marks the
+        # measured case (a usable egg observed, no egg battle entered, no egg
+        # used) as egg_available_unused, so a real "lost with an egg left"
+        # keeps being filed (owner 2026-11-26).
+        egg = 1 if metric.get('egg_available_unused') is True else 0
     selected = [card for card in (metric.get('cards_selected') or [])
                 if isinstance(card, str)][:12]
     used = [card for card in (metric.get('cards_used') or [])
