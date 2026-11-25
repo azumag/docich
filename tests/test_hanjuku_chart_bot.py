@@ -18,6 +18,7 @@ from docich import pulse_volume
 from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_font import UNKNOWN, read_lines
 from docich.hanjuku_screen import Screen
+from docich.hanjuku.flows import battle_menus as B
 
 MASH = [action for _ in range(policy.POWER_TAPS)
         for action in (policy.pad('a', 3), {'type': 'wait', 'ms': 50})]
@@ -4562,7 +4563,7 @@ def test_summon_menu_records_a_missed_carried_card_for_the_audit():
                                    'planned_cards': ['ノリウツール'],
                                    'cards_used': [], 'cards_selected': [],
                                    'cards_unclassified': [], 'cards_missing': [],
-                                   'summon_card_scroll': 3}}}
+                                   'summon_card_scroll': B.SUMMON_CARD_SCROLL_LIMIT}}}
     actions, state = decide(c.frame(), state)
     assert actions and actions[0]['buttons'] == ['a']
     assert state['policy']['battle'].get('boss_card_missed_noted') is True
@@ -4584,7 +4585,7 @@ def test_a_battle_that_already_used_a_card_does_not_file_a_miss():
                                    'cards_used': ['ミックミー'],
                                    'cards_selected': ['ミックミー'],
                                    'cards_unclassified': [], 'cards_missing': [],
-                                   'summon_card_scroll': 3}}}
+                                   'summon_card_scroll': B.SUMMON_CARD_SCROLL_LIMIT}}}
     _, state = decide(c.frame(), state)
     assert not any(row.get('decision') == 'battle_boss_card_missed'
                    for row in state.get('_records', []))
@@ -4602,7 +4603,7 @@ def test_summon_menu_does_not_file_card_miss_before_attack_cursor_is_read():
                                    'planned_cards': ['ノリウツール'],
                                    'cards_used': [], 'cards_selected': [],
                                    'cards_unclassified': [], 'cards_missing': [],
-                                   'summon_card_scroll': 3}}}
+                                   'summon_card_scroll': B.SUMMON_CARD_SCROLL_LIMIT}}}
     _, state = decide(c.frame(), state)
     assert not state['policy']['battle'].get('boss_card_missed_noted')
     assert not any(row.get('decision') == 'battle_boss_card_missed'
