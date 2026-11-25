@@ -221,8 +221,12 @@ def _event_fact(record):
         if outcome not in {'win', 'loss'} or not ally or not enemy:
             return None
         fact = {'kind': 'battle_result', 'outcome': outcome, 'ally': ally, 'enemy': enemy}
+        metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
         for key in ('ally_hp', 'enemy_hp'):
-            if (value := _number(record.get(key))) is not None:
+            value = _number(record.get(key))
+            if value is None:
+                value = _number(metric.get(key))
+            if value is not None:
                 fact[key] = value
         return fact
     if kind == 'battle_start':

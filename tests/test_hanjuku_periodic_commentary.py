@@ -117,6 +117,15 @@ def test_current_falls_back_to_observed_country_counts_without_shop():
     assert current['economy']['generals'] == 3
 
 
+def test_event_fact_reads_battle_hp_from_the_observed_metric():
+    fact = periodic._event_fact({
+        'decision': 'battle_result', 'outcome': 'win', 'ally': 'エピィ',
+        'enemy': 'ミュスカデ',
+        'observed_metric': {'ally_hp': 57, 'enemy_hp': 0}})
+    assert fact == {'kind': 'battle_result', 'outcome': 'win', 'ally': 'エピィ',
+                    'enemy': 'ミュスカデ', 'ally_hp': 57, 'enemy_hp': 0}
+
+
 def test_situation_is_whitelisted_and_counts_the_window(live):
     value = periodic.situation(live.runtime, RUN, _state(live), live.now)
     assert value['progress'] == {'cleared': 7, 'chapter': 8, 'year': 14,
