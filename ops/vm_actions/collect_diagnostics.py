@@ -8180,7 +8180,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1500-boss-wave-stock-cards",
             "hanjuku-chart-v1502-battle-loss-unclassified",
             "hanjuku-chart-v1503-battle-loss-unclassified",
-            "hanjuku-chart-v1503-summon-card-scroll-retry",
+            "hanjuku-chart-v1504-summon-card-scroll-retry",
 
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
