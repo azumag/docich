@@ -8205,6 +8205,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1518-card-purchase-priority",
             "hanjuku-chart-v1519-card-ledger-all-kinds",
             "hanjuku-chart-v1520-summon-card-flow-hold",
+            "hanjuku-chart-v1521-stall-60s-issue",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
