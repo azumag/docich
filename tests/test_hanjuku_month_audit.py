@@ -2252,10 +2252,9 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     assert battle['screen_text'] == 'x' * 96
 
 
-def test_boss_battle_starts_are_counted_beyond_the_truncated_decision_map(tmp_path):
-    # Issue #5276: _decision_counts keeps only 30 names, so a busy phase can
-    # drop 'battle_start' from the compact map. The incident must still count
-    # every battle_start row directly.
+def test_boss_battle_starts_are_preserved_in_complete_decision_counts(tmp_path):
+    # Issue #5525: a low-frequency decision must survive alongside more than
+    # 30 other decision names instead of disappearing from the audit summary.
     current = {
         'chapter': 9, 'boss_name': 'ハデス', 'bosses': ['ボス'],
         'started_at': 1000.0, 'first_tick': 0, 'last_at': 1700.0,
@@ -2268,10 +2267,23 @@ def test_boss_battle_starts_are_counted_beyond_the_truncated_decision_map(tmp_pa
     state_value = _boss_state()
     record = audit._build_boss_incident(str(tmp_path), state_value, state_value,
                                         [], 1700.0, current, rows=rows)
-    assert 'battle_start' not in record['decisions']['counts']
+    counts = record['decisions']['counts']
+    assert len(counts) == 31
+    assert counts['battle_start'] == 1
+    assert all(counts[f'filler_{i:02d}'] == 2 for i in range(30))
     assert record['boss_phase']['battle_starts'] == 1
     assert record['sorties']['battle_starts'] == 1
     assert record['battles']['decisions'] == 1
+
+
+def test_order_start_signal_is_preserved_after_more_than_30_decision_types():
+    # Issue #5525: the rare order_start must reach _signals, not just the
+    # human-readable count map.
+    rows = [{'decision': f'filler_{i:02d}'} for i in range(31) for _ in range(2)]
+    rows.append({'decision': 'order_start'})
+    counts = audit._decision_counts(rows)
+    assert counts['order_start'] == 1
+    assert 'order_start_without_launch' in audit._signals({}, counts, 0, 0, 0)
 
 
 def test_boss_phase_with_live_boss_attack_sorties_is_deferred_until_they_settle(runtime_dir):

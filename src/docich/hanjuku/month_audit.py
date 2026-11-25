@@ -633,9 +633,7 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
                                state.get('identity'))
     counts = _decision_counts(rows)
     departures, launch_events = _departures(rows)
-    # _decision_counts truncates its compact map to the 30 most frequent names;
-    # a busy phase can therefore hide a real battle_start from this count.
-    battle_starts = sum(1 for row in rows if row.get('decision') == 'battle_start')
+    battle_starts = counts.get('battle_start', 0)
     from .. import hanjuku_reference as reference
     boss_enemies = set(reference.BOSS_GENERALS)
     if current.get('chapter') == 4:
@@ -3023,9 +3021,10 @@ def _boss_departures(rows, chapter):
 
 
 def _decision_counts(rows):
+    """Count every observed decision; rare names can determine audit signals."""
     counts = Counter(row.get('decision') for row in rows
                      if isinstance(row.get('decision'), str))
-    return {name: count for name, count in counts.most_common(30)}
+    return dict(counts.most_common())
 
 
 def _decision_rows(rows, limit):
