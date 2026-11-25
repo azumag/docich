@@ -216,12 +216,14 @@ CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancellin
 NORMAL_CARD_UNREADABLE_LIMIT = 3  # an ordinary sortie escapes the list sooner (owner: depart anyway)
 SORTIE_CONFIRM_UNREADABLE_LIMIT = 3  # an ordinary unreadable confirmation departs after this many
 SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
-# Owner 2026-11-26: keep every catalogue kind. The old cap (24 of 32) evicted
-# the oldest ledger entries when a panel read added kinds, and could drop the
-# proven 0 of a purchase target: S2 never buys an unknown kind, so the dropped
-# target stayed unbuyable (live g1342 14-2: ミックミー/クースカン/ノリウツール
-# became unknown again when 24 overflowed). The catalogue is only 32 names, so
-# the adjusted-chart request can carry them all.
+# Owner 2026-11-26: keep every catalogue kind. The old 24-kind cap popped the
+# oldest inserted entry whenever a panel read added a kind, so a proven 0 of a
+# purchase target could leave the ledger: S2 never buys an unknown kind, and
+# the dropped target stayed unbuyable. The catalogue is only 32 names, so the
+# adjusted-chart request can carry them all. (The cap's eviction is verified by
+# `test_a_zero_buy_target_survives_a_binding_stock_limit`; live g1342 14-2
+# showed `forget_picked` after an unconfirmed launch instead, which is why its
+# card_stock lost kinds twice at 01:18/01:39.)
 CARD_STOCK_LIMIT = len(reference.ALL_CARD_IDS)  # every catalogue kind stays in the ledger
 
 
