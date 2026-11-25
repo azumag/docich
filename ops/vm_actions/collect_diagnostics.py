@@ -8166,6 +8166,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1494-card-open-bounded-audit",
             "hanjuku-chart-v1493-recall-scene-covered-dispatch",
             "hanjuku-chart-v1495-recall-scene-covered-dispatch-audit",
+            "hanjuku-chart-v1496-card-open-limit",
             "hanjuku-chart-v1493-interim-order-purpose",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
