@@ -1,0 +1,57 @@
+"""Which Hanjuku logic package a game name belongs to.
+
+The original corner (``hanjuku-hero``) keeps its modules directly under
+``docich``.  The mechanically generated speedrun copy lives under
+``docich.hanjuku_speedrun`` with the same module names.  Common code (game
+switch, corner rotation/adapters, WebUI, telemetry) is shared by both, so it
+resolves a game's modules through this tiny dispatcher instead of hard-coding
+one package.
+
+Only :mod:`importlib` is imported here: this module must stay cheap and must
+not pull Hanjuku logic into processes that never run the corner.  Modules are
+not cached -- :func:`module` always goes through ``importlib.import_module`` so
+it returns the same object as ``sys.modules`` and keeps existing monkeypatches
+(``docich.hanjuku_run.X``) effective.
+"""
+import importlib
+
+ORIGINAL = "hanjuku-hero"
+SPEEDRUN = "hanjuku-speedrun"
+PACKAGES = {ORIGINAL: "docich", SPEEDRUN: "docich.hanjuku_speedrun"}
+FAMILY = frozenset(PACKAGES)
+
+
+def name_of(game) -> str | None:
+    """The game name for a string or a Game-like object (``.name``)."""
+    if isinstance(game, str):
+        return game
+    name = getattr(game, "name", None)
+    return name if isinstance(name, str) else None
+
+
+def is_hanjuku(game) -> bool:
+    """True when ``game`` belongs to the Hanjuku family."""
+    return name_of(game) in FAMILY
+
+
+def is_original(game) -> bool:
+    """True only for the original ``hanjuku-hero`` corner."""
+    return name_of(game) == ORIGINAL
+
+
+def module(game, name: str):
+    """Import ``name`` from the package that owns ``game``.
+
+    ``module(ORIGINAL, "hanjuku_run")`` is ``docich.hanjuku_run`` and
+    ``module(SPEEDRUN, "hanjuku_run")`` is
+    ``docich.hanjuku_speedrun.hanjuku_run``.  A game outside :data:`FAMILY`
+    raises :class:`KeyError`; a package/module that does not exist yet (the
+    speedrun copy is generated in a separate change) raises
+    :class:`ModuleNotFoundError`.
+    """
+    return importlib.import_module(f"{PACKAGES[name_of(game)]}.{name}")
+
+
+def hotload(game):
+    """The game's ``hanjuku_hotload`` trampoline module."""
+    return module(game, "hanjuku_hotload")

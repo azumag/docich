@@ -44,7 +44,8 @@ from .naming import (
     validate_runtime_id,
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
-from .hanjuku_log_retention import prune_completed
+from .hanjuku_family import is_hanjuku, module
+from .hanjuku_log_retention import prune_completed  # family: original-only
 from .retire_marker import RetireMarkerError, write_retire_marker
 from .log_redaction import redact_log_detail
 
@@ -3345,7 +3346,7 @@ class GameSwitchCoordinator:
                       cleanup_pending=recovered.cleanup_pending)
             return recovered
         transition_target = rotate_target if rotate_target is not None else target
-        if acceptance.claimed_from_queue and transition_target == "hanjuku-hero":
+        if acceptance.claimed_from_queue and is_hanjuku(transition_target):
             # A queued/replayed Hanjuku switch runs below the corner's
             # prepare_start(): once its durable boundary decision is gone or
             # bound to another request, claim() can only fail inside
@@ -3357,7 +3358,7 @@ class GameSwitchCoordinator:
             try:
                 spec = self._candidate_spec(acceptance, transition_target)
                 probe_adapter = self._make_adapter(spec, deadline)
-                from .hanjuku_resume import start_claimable
+                start_claimable = module(transition_target, "hanjuku_resume").start_claimable
                 claimable = bool(start_claimable(probe_adapter, request_id))
             except Exception:
                 # An unreadable decision is not proof that this request owns it.
@@ -5049,8 +5050,11 @@ class GameSwitchCoordinator:
             # 遷移し、prepare() で pending 扱いしない。runtime 停止未確認
             # （torn_down=False）は claimed のまま（recovery-required）。
             # 判定は実測値 bool(torn_down) に1元化する。
-            if candidate.get("game") == "hanjuku-hero":
-                from .hanjuku_resume import transition_rollback_claim
+            candidate_game = candidate.get("game")
+            if is_hanjuku(candidate_game):
+                # The claim artefact lives in the candidate's own package.
+                transition_rollback_claim = module(
+                    candidate_game, "hanjuku_resume").transition_rollback_claim
                 from types import SimpleNamespace
                 _g = SimpleNamespace(state_dir=self.store.state_dir)
                 transition_rollback_claim(_g, runtime_stopped=bool(torn_down))
@@ -5641,7 +5645,14 @@ class GameSwitchCoordinator:
 
     def _prune_hanjuku_logs(self, warnings: list[str]) -> None:
         """Bounded retention for completed hanjuku decision/event logs (#3132).
-        Failures are warnings, never rollback reasons."""
+
+        Original corner only: ``hanjuku_log_retention.GAME`` names exactly
+        ``hanjuku-hero``.  Speedrun logs are intentionally not pruned for now
+        (until the R2 archival path handles them); passing the canonical state
+        here would have the original retention delete nothing for speedrun.
+
+        Failures are warnings, never rollback reasons.
+        """
         canonical = self.store.canonical
         try:
             result = prune_completed(canonical.state_dir, lambda: canonical.load()[0])
@@ -5931,7 +5942,7 @@ class GameSwitchCoordinator:
             if (isinstance(previous, Mapping) and active is None and not cleanup_pending
                     and state.get("candidate") is None and not state.get("retiring")
                     and previous.get("adapter") == "retroarch"
-                    and previous.get("game") == "hanjuku-hero"):
+                    and is_hanjuku(previous.get("game"))):
                 try:
                     adapter = self._make_adapter(
                         RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)

@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
+from .hanjuku_family import ORIGINAL, is_hanjuku, is_original, module
 from .game_switch import (
     DEFAULT_REQUEST_TIMEOUT_S,
     ERROR_QUIESCE_FAILED,
@@ -326,10 +327,8 @@ def corner_intro(g: GlobalConfig, game_name: str) -> str:
 
 def describe_strategy_change(state_dir, game_name: str) -> str:
     """ゲーム固有の前回履歴を今回の開始案内向けに短く説明する。"""
-    if game_name == "hanjuku-hero":
-        from .hanjuku_history import describe_latest_run
-
-        return describe_latest_run(Path(state_dir))
+    if is_hanjuku(game_name):
+        return module(game_name, "hanjuku_history").describe_latest_run(Path(state_dir))
 
     if game_name == "ninvaders":
         from .ninvaders.store import PolicyStore
@@ -665,17 +664,18 @@ class RetroCornerManager:
             identity.get("runtime_id"), str
         ):
             return None
+        game = state.get("game")
+        if not is_hanjuku(game):
+            return None
         try:
-            from .hanjuku_commentary import recap_body
-            from .hanjuku_hotload import load as load_hanjuku_run
             from .naming import runtime_directory
 
             runtime_dir = runtime_directory(self.g.state_dir, identity["runtime_id"])
-            run_state = load_hanjuku_run(runtime_dir, identity)
+            run_state = module(game, "hanjuku_hotload").load(runtime_dir, identity)
             if isinstance(run_state, dict):
                 run_state = dict(run_state)
                 run_state["terminal_reason"] = self._end_reason_key(state)
-            return recap_body(runtime_dir, run_state)
+            return module(game, "hanjuku_commentary").recap_body(runtime_dir, run_state)
         except Exception:
             return None
 
@@ -688,7 +688,7 @@ class RetroCornerManager:
         同内容)。他のゲームは ゲーム名＋終了理由＋プレイ時間。
         """
         reason = self._end_reason_key(state)
-        if state.get("game") == "hanjuku-hero":
+        if is_hanjuku(state.get("game")):
             body = self._hanjuku_end_body(state)
             if body is not None:
                 closing = _END_HANJUKU_CLOSING.get(
@@ -701,7 +701,7 @@ class RetroCornerManager:
             title = load_game(self.g, title).title
         except Exception:
             pass
-        if game == "hanjuku-hero" and reason == "game_over":
+        if is_hanjuku(game) and reason == "game_over":
             clause = "タイトル画面への復帰を確認しました"
         else:
             clause = _END_CLAUSE.get(reason, _END_CLAUSE_DEFAULT)
@@ -724,7 +724,7 @@ class RetroCornerManager:
             for number, part in enumerate(
                 _end_result_chat_parts(self._end_result_text(state, completed_at)), 1
             ):
-                if state.get("game") == "hanjuku-hero" and self._chat is self._default_chat:
+                if is_hanjuku(state.get("game")) and self._chat is self._default_chat:
                     # Keep transport identity out of the visible story. The shared
                     # queue keeps source-based mirror exclusions intact while an
                     # optional run/part dedup key distinguishes equal passages.
@@ -1898,7 +1898,7 @@ class RetroCornerManager:
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         """終了時改善ジョブを切り離して起動する。失敗しても finish を壊さない。"""
-        if state.get('game') == 'hanjuku-hero':
+        if is_hanjuku(state.get('game')):
             state['improve_job'] = {'spawned': False, 'reason': 'hanjuku-improvement-deferred'}
             return
         if state.get("game") == "nethack":
@@ -2016,7 +2016,7 @@ class RetroCornerManager:
             return self._state_result(state)
 
         expected_source = None
-        if game == 'hanjuku-hero':
+        if is_hanjuku(game):
             expected_source = state.get('bot_identity')
             if not isinstance(expected_source, dict):
                 raise RetroCornerError('Hanjuku runtime identity missing before restore')
@@ -2150,13 +2150,13 @@ class RetroCornerManager:
         poisons later rotations.  A request budget of None means the slot is
         already over, which is also insufficient.
 
-        Only hanjuku-hero targets are gated: both constants were measured on
+        Only Hanjuku-family targets are gated: both constants were measured on
         the hanjuku resume path (materialize->restore) and the residual claim
-        that poisons later rotations is specific to hanjuku_resume.claim().
+        that poisons later rotations is specific to the resume claim step.
         Other adapters were not measured and stay ungated for now.
         """
 
-        if target != "hanjuku-hero":
+        if not is_hanjuku(target):
             return True
         return timeout_s is not None and timeout_s >= SWITCH_MIN_START_BUDGET_S
 
@@ -2399,7 +2399,8 @@ class RetroCornerManager:
 
     @staticmethod
     def _bind_hanjuku_start(state, transition):
-        if state.get('game') != 'hanjuku-hero':
+        game = state.get('game')
+        if not is_hanjuku(game):
             return
         # Bind the identity committed by THIS start, never whichever runtime
         # happens to be active at the monitor's first observation.
@@ -2412,13 +2413,13 @@ class RetroCornerManager:
         identity = result.get('active_runtime') if isinstance(result, dict) else None
         keys = ('game', 'runtime_id', 'generation', 'lease_id')
         if (not isinstance(identity, dict) or set(identity) != set(keys)
-                or identity.get('game') != 'hanjuku-hero'
+                or identity.get('game') != game
                 or type(identity.get('generation')) is not int or identity['generation'] < 1
                 or not all(isinstance(identity.get(k), str) and identity[k]
                            for k in ('runtime_id', 'lease_id'))
                 or receipt.get('status') != 'succeeded'
                 or receipt.get('request_id') != state.get('switch_request_id')
-                or receipt.get('target') != 'hanjuku-hero'
+                or receipt.get('target') != game
                 or identity.get('runtime_id') != receipt.get('runtime_id')
                 or identity.get('generation') != receipt.get('generation')
                 or result.get('status') != 'succeeded'):
@@ -2753,7 +2754,7 @@ class RetroCornerManager:
             # DISABLED: no file and no behaviour change.
             from .agent import telemetry as telemetry_mod
             tel = telemetry_mod.AgentTelemetry.from_env(
-                self.g.state_dir, 'hanjuku-hero', 'corner', role='corner')
+                self.g.state_dir, state.get('game') or ORIGINAL, 'corner', role='corner')
             telemetry_mod.set_active(tel)
             try:
                 return self._wait_hanjuku(state)
@@ -2821,10 +2822,10 @@ class RetroCornerManager:
                         return self._finish_locked(latest, self._local_now())
 
     def _scripted_hanjuku(self, state):
-        if state.get('game') != 'hanjuku-hero':
+        game = state.get('game')
+        if not is_hanjuku(game):
             return False
-        from .hanjuku_run import enabled
-        return enabled(load_game(self.g, 'hanjuku-hero'))
+        return module(game, 'hanjuku_run').enabled(load_game(self.g, game))
 
     def _wait_hanjuku(self, state):
         """No fixed session deadline: observe until game-over or 300s stasis."""
@@ -2832,9 +2833,12 @@ class RetroCornerManager:
         from .agent import telemetry as telemetry_mod
         from .agent.fence import AgentFence, shared_section
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
-        from .hanjuku_run import event
-        from . import hanjuku_hotload
         from .naming import runtime_directory
+        game = state.get('game')
+        if not is_hanjuku(game):
+            raise RetroCornerError('Hanjuku runtime identity missing before observation')
+        event = module(game, 'hanjuku_run').event
+        hotload = module(game, 'hanjuku_hotload')
         from .adapters.base import AdapterError
         next_repair = 0.
         not_ready = 0
@@ -2849,7 +2853,7 @@ class RetroCornerManager:
                 return stopped
             canonical, _missing = self.store.canonical.load()
             active = canonical.get('active') or {}
-            if active.get('game') != 'hanjuku-hero':
+            if active.get('game') != game:
                 with self._locked():
                     return self._finish_locked(self._read_state(), self._local_now())
             if owned_runtime is not None and active.get('runtime_id') != owned_runtime:
@@ -2861,7 +2865,7 @@ class RetroCornerManager:
             owned_runtime = active.get('runtime_id')
             fence = AgentFence(game=active['game'], runtime_id=active['runtime_id'],
                                generation=active['generation'], lease_id=active['lease_id'])
-            hanjuku_game = load_game(self.g, 'hanjuku-hero')
+            hanjuku_game = load_game(self.g, game)
             adapter = make_adapter(self.g, hanjuku_game, fence=fence)
             try:
                 observation = shared_section(self.g.state_dir, adapter.observe)
@@ -2899,9 +2903,9 @@ class RetroCornerManager:
             # #1469: durably publish the Hanjuku logic generation this corner is
             # executing, and read back the agent's.  The agent publishes through
             # the same trampoline; a mixed pair fails the teardown gate closed.
-            hanjuku_hotload.publish(runtime_dir, owned_identity, 'corner')
+            hotload.publish(runtime_dir, owned_identity, 'corner')
             terminal_reason = run.get('terminal_reason')
-            teardown_allowed, hotload_status = hanjuku_hotload.generation_gate(
+            teardown_allowed, hotload_status = hotload.generation_gate(
                 runtime_dir, owned_identity, terminal_reason)
             if teardown_allowed:
                 mixed_since = None
@@ -2928,24 +2932,27 @@ class RetroCornerManager:
                 event(runtime_dir, {'event': 'hotload_generation_timeout', 'at': time.time(),
                                     'terminal_reason': terminal_reason, **hotload_status})
             try:
-                from . import hanjuku_narration
+                narration = module(game, 'hanjuku_narration')
                 # Terminal narration is published after observe releases the
                 # shared switch lock and before _finish_locked can start the
                 # next corner. Ordinary narration keeps its asynchronous path.
-                hanjuku_narration.consider(
+                narration.consider(
                     self.g, hanjuku_game, runtime_dir,
                     terminal=bool(run.get('terminal_reason') or run.get('terminal_candidate')))
             except Exception:
                 print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
             # Network side channel runs only AFTER shared_section has released
             # the input gate. It re-verifies durable terminal evidence itself.
-            from .record_clips import consider_hanjuku
-            consider_hanjuku(self.g, owned_identity)
+            # Both are original-corner-only features: the new-record clip and
+            # the channel-point prediction round do not exist for speedrun.
+            if is_original(game):
+                from .record_clips import consider_hanjuku  # family: original-only
+                consider_hanjuku(self.g, owned_identity)
             # Resolved through the hot-load trampoline (#3838): the long-lived
             # corner worker must pick up a deployed predictions change without
-            # a process restart.
-            prediction = hanjuku_hotload.module('hanjuku_predictions').tick(
-                self.g, owned_identity)
+            # a process restart. Original corner only (see above).
+            prediction = (hotload.module('hanjuku_predictions').tick(
+                self.g, owned_identity) if is_original(game) else None)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
@@ -2961,18 +2968,18 @@ class RetroCornerManager:
                 latest['bot_runtime_id'] = active['runtime_id']
                 latest['bot_identity'] = dict(owned_identity)
                 try:
-                    from .hanjuku_policy import summary
                     from .retroarch_boundary import read_record
                     bot = read_record(runtime_directory(self.g.state_dir, active['runtime_id'])
                                       / 'hanjuku_bot.json', limit=256 * 1024)
-                    latest['bot_chart'] = summary(bot.get('policy'))
+                    latest['bot_chart'] = module(game, 'hanjuku_policy').summary(
+                        bot.get('policy'))
                     latest['bot_version'] = bot.get('bot_version')
                 except Exception:
                     latest['bot_chart'] = None
                 try:
-                    from .hanjuku_narration import delivery_summary
                     from .retroarch_boundary import read_record
-                    latest['narration'] = delivery_summary(runtime_dir)
+                    latest['narration'] = module(
+                        game, 'hanjuku_narration').delivery_summary(runtime_dir)
                     audio = read_record(runtime_dir / 'audio_volume.json')
                     streams = audio.get('streams') if isinstance(audio.get('streams'), list) else []
                     latest['game_audio'] = {
@@ -2987,9 +2994,9 @@ class RetroCornerManager:
                     # Re-verify durable evidence bound to this runtime,
                     # generation and lease before any teardown; a mismatch
                     # or invalid record raises and fails closed.
-                    from .hanjuku_hotload import runtime_identity, terminal
-                    evidence = terminal(runtime_directory(self.g.state_dir, active['runtime_id']),
-                                        runtime_identity(fence))
+                    evidence = hotload.terminal(
+                        runtime_directory(self.g.state_dir, active['runtime_id']),
+                        hotload.runtime_identity(fence))
                     if evidence is None:
                         raise RetroCornerError('Hanjuku terminal evidence is not durable')
                     latest['terminal_evidence'] = evidence.get('terminal_evidence')
@@ -2998,10 +3005,10 @@ class RetroCornerManager:
                         # #1085 L4: collate base/adjusted charts with outcomes
                         # once; a failure must never block the teardown.
                         try:
-                            from .hanjuku_chart_review import review
-                            latest['chart_review'] = review(
-                                runtime_directory(self.g.state_dir, active['runtime_id']),
-                                runtime_identity(fence))
+                            latest['chart_review'] = module(
+                                game, 'hanjuku_chart_review').review(
+                                    runtime_directory(self.g.state_dir, active['runtime_id']),
+                                    hotload.runtime_identity(fence))
                         except Exception as exc:
                             latest['chart_review'] = {'error': type(exc).__name__}
                     if run.get('terminal_reason') in {'screen_stalled', 'input_stalled'}:
@@ -3048,10 +3055,11 @@ class RetroCornerManager:
         if not self._scripted_hanjuku(state):
             return
 
+        game = state.get("game")
         identity = state.get("bot_identity")
         identity_keys = {"game", "runtime_id", "generation", "lease_id"}
         if (not isinstance(identity, dict) or set(identity) != identity_keys
-                or identity.get("game") != "hanjuku-hero"
+                or identity.get("game") != game
                 or type(identity.get("generation")) is not int
                 or identity["generation"] < 1
                 or not isinstance(identity.get("runtime_id"), str)
@@ -3072,10 +3080,9 @@ class RetroCornerManager:
                 or terminal_generation != identity["generation"]):
             raise RetroCornerError("Hanjuku terminal generation does not match runtime")
 
-        from .hanjuku_hotload import terminal
         from .naming import runtime_directory
 
-        evidence = terminal(
+        evidence = module(game, "hanjuku_hotload").terminal(
             runtime_directory(self.g.state_dir, identity["runtime_id"]), identity
         )
         if (evidence is None
@@ -3653,7 +3660,7 @@ class RetroCornerManager:
         Never relaunch the finished Hanjuku, rewrite its failed receipt, or
         replace another active game. The new capped start has a durable ID.
         """
-        if state.get("game") != "hanjuku-hero" or state.get("previous_game") != "sorengame":
+        if not is_original(state.get("game")) or state.get("previous_game") != "sorengame":
             return None
         evidence = self._restore_failed_receipt(
             state, late_cleanup_proved=True, allow_unrecorded_source=True)
@@ -3975,7 +3982,7 @@ class RetroCornerManager:
         runtime, completed manual save request, newer complete checkpoint — is
         re-proved here; the caller only names the runtime.
         """
-        from . import hanjuku_resume, hanjuku_run
+        from . import hanjuku_resume, hanjuku_run  # family: original-only
         from .retroarch_boundary import read_record
         state_dir = Path(self.g.state_dir)
         runtime = state_dir / 'runtimes' / validate_runtime_id(runtime_id)
@@ -3986,7 +3993,7 @@ class RetroCornerManager:
         adapter = make_coordinator_adapter(self.g, spec)
         sealed = hanjuku_resume.seal_dead_manual_save(
             self.g, spec.runtime_id, adapter=adapter)
-        return CornerResult('completed', game='hanjuku-hero',
+        return CornerResult('completed', game='hanjuku-hero',  # family: original-only
                             detail=f"sealed {sealed['checkpoint']} ({sealed['bytes']} bytes)")
 
     def recover_runtime(self) -> CornerResult:
@@ -4020,6 +4027,7 @@ class RetroCornerManager:
                 if state.get("status") not in {"active", "failed"}:
                     return CornerResult("noop", detail="not-recoverable")
                 identity = state.get("bot_identity")
+                game = state.get("game")
                 identity_keys = {"game", "runtime_id", "generation", "lease_id"}
                 canonical, _missing = self.store.canonical.load()
                 active = canonical.get("active")
@@ -4029,7 +4037,7 @@ class RetroCornerManager:
                     or not isinstance(identity, dict)
                     or set(identity) != identity_keys
                     or any(active.get(key) != identity.get(key) for key in identity_keys)
-                    or identity.get("game") != "hanjuku-hero"
+                    or identity.get("game") != game
                 ):
                     raise RetroCornerError("復旧対象runtimeのidentityを確認できません")
             # Adapter calls can take seconds; the tick guard keeps a live
@@ -4129,7 +4137,7 @@ class RetroCornerManager:
             active = canonical.get("active") or {}
             expected = state.get("bot_identity")
             if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
-                    or active.get("game") != "hanjuku-hero"
+                    or active.get("game") != state.get("game")
                     or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
                            ("game", "runtime_id", "generation", "lease_id"))):
                 raise RetroCornerError("Hanjuku stop runtime identity is unverified")
@@ -4160,7 +4168,7 @@ class RetroCornerManager:
         # Through the trampoline (#3838) so a deploy reaches this worker live.
         # tick_active also lets a legacy/no-rotation timer adopt a live run
         # whose corner observe loop never created the round (#4228).
-        from . import hanjuku_hotload
+        from . import hanjuku_hotload  # family: original-only
         prediction_module = hanjuku_hotload.module('hanjuku_predictions')
         prediction_tick = getattr(prediction_module, 'tick_active', None)
         if callable(prediction_tick):

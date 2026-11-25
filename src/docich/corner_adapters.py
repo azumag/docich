@@ -1070,8 +1070,19 @@ class CornerExecutionCoordinator:
                     wait_deadline_ts=self.clock() + self.wait_seconds,
                     wait_boundary=True, sleep=self.sleep, now=self.clock,
                 ):
-                    from .hanjuku_resume import prepare_start
-                    prepare_start(self.g, request)
+                    # Dispatch the corner's own Hanjuku package.  A queued
+                    # request names its corner (and, in newer records, the
+                    # game); the configured adapter is the fallback.  A
+                    # Non-family corner skips the call, which is what the
+                    # original prepare_start did by returning early.
+                    from .hanjuku_family import is_hanjuku, module
+                    game = request.get('game')
+                    if not isinstance(game, str):
+                        game = request.get('corner')
+                    if not isinstance(game, str):
+                        game = getattr(getattr(adapter, 'corner', None), 'game', None)
+                    if is_hanjuku(game):
+                        module(game, 'hanjuku_resume').prepare_start(self.g, request)
                     return adapter.run(request)
         except CornerWaitExpired:
             return "queued"

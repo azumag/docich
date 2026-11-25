@@ -51,6 +51,7 @@ from typing import Any, Mapping
 
 from . import speech
 from . import overlay_queue as shared_overlay_queue
+from .hanjuku_family import FAMILY, ORIGINAL, SPEEDRUN, is_hanjuku, is_original
 from .comment_queue import comment_queue_dir
 from .webui_resources_loader import ResourceLoader
 from .config import (
@@ -1868,7 +1869,7 @@ _CORNER_QUEUED_MANUAL_ADAPTERS = frozenset({"weather", "tsuitate", "yoso", "dous
 # docich.hanjuku_corner / start-hanjuku と同じ共通 coordinator への durable 予約
 # (CornerRotationManager.queue_manual) で行う。adapter が game のままなので
 # game 名で判定する。停止は従来どおり runner/base stop 経路を使う。
-_CORNER_QUEUED_MANUAL_GAMES = frozenset({"hanjuku-hero"})
+_CORNER_QUEUED_MANUAL_GAMES = frozenset(FAMILY)
 # adapter -> (fixed WebUI error-code prefix, operator-facing label).
 _CORNER_QUEUED_MANUAL_LABELS = {
     "weather": ("weather", "天気"),
@@ -1882,7 +1883,8 @@ _CORNER_QUEUED_MANUAL_LABELS = {
 }
 _MANUAL_RESERVATION_CORNERS = frozenset({
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
-    "pacman4console", "nethack", "hanjuku-hero", "soren91", "paper", "meriken", "tsuitate",
+    "pacman4console", "nethack", ORIGINAL, SPEEDRUN, "soren91", "paper",
+    "meriken", "tsuitate",
     "yosou-oh",
     "doushi-card",
     "puyo-corner",
@@ -2562,13 +2564,14 @@ def _corner_base_stop_argv(g: GlobalConfig, corner_id: str) -> tuple[list[str], 
 
 
 def _hanjuku_stop_retryable(g: GlobalConfig, state: dict) -> bool:
-    if state.get("game") != "hanjuku-hero" or state.get("status") != "failed":
+    game = state.get("game")
+    if not is_hanjuku(game) or state.get("status") != "failed":
         return False
     canonical = _load_json_file(Path(g.state_dir) / "game_switch.json") or {}
     active = canonical.get("active") or {}
     expected = state.get("bot_identity")
     return (canonical.get("phase") == "ready" and isinstance(active, dict)
-            and active.get("game") == "hanjuku-hero" and isinstance(expected, dict)
+            and active.get("game") == game and isinstance(expected, dict)
             and all(active.get(k) is not None and active.get(k) == expected.get(k)
                     for k in ("game", "runtime_id", "generation", "lease_id")))
 
@@ -5384,13 +5387,14 @@ class _Handler(BaseHTTPRequestHandler):
         if action in ("schedule", "cancel-schedule"):
             return self._handle_scheduled_corner_action(row, action, data)
         if action == "new-game":
-            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
+            # Checkpoint resume / fresh chapter 1 are original-corner-only.
+            if not is_original(row.game):
                 self._send_error_json(400, "new_game_unsupported",
                                       "第1話からの新規開始は半熟英雄だけに対応しています")
                 return 400
             return self._handle_hanjuku_corner_start(row, new_game=True)
         if action == "resume-latest":
-            if row.game not in _CORNER_QUEUED_MANUAL_GAMES:
+            if not is_original(row.game):
                 self._send_error_json(400, "resume_latest_unsupported",
                                       "最新セーブからの再開は半熟英雄だけに対応しています")
                 return 400
@@ -5462,14 +5466,17 @@ class _Handler(BaseHTTPRequestHandler):
         """
         from .corner_rotation import CornerRotationManager, RotationError
         from .adapters.base import AdapterError
-        from .hanjuku_resume_recovery import CancelRefused, queue_failed_start
+        # Original-only failed-start recovery; speedrun has no such artefact.
+        from .hanjuku_resume_recovery import (  # family: original-only
+            CancelRefused, queue_failed_start)
 
         try:
             manager = CornerRotationManager(self.g)
             if new_game:
                 outcome = manager.queue_manual(row.game, new_game=True)
             elif resume_latest:
-                outcome = queue_failed_start(self.g) or manager.queue_manual(row.game, resume_latest=True)
+                recovered = queue_failed_start(self.g) if is_original(row.game) else None
+                outcome = recovered or manager.queue_manual(row.game, resume_latest=True)
             else:
                 outcome = manager.queue_manual(row.game)
             status = outcome.get("status") if isinstance(outcome, dict) else None
