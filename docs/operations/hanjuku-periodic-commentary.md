@@ -21,7 +21,7 @@ BOTが落ちても、BOTを再起動しても、定期実況の都合で入力�
 enabled = true
 interval_s = 900          # 15分。300〜3600
 retry_s = 300             # 生成失敗・重複時の再試行。60〜1800
-generation_timeout_s = 15 # 1回のLLM呼出しの上限。5〜15
+generation_timeout_s = 90 # 1回のLLM呼出しの上限。5〜120
 max_attempts = 2          # 1回の実況で作る候補生成の試行数。1〜3
 ```
 
@@ -134,7 +134,7 @@ Sorenの既存 `enqueue_audio_text` に `context=hanjuku_commentary` で渡す�
 `eloop_lib.sh`、`ai_generate_list 'RADIO:hanjuku-commentary'`、
 `BATCH_COMMENTARY_AGENTS` → `RADIO_AGENTS` → `AI_COMMON_AGENTS` の
 実効設定を再利用し、モデル・provider・queue・backoffを新設しない。
-生成は `OwnedSceneProcess` のsubreaper配下で最大15秒に制限し、timeout後は
+生成は `OwnedSceneProcess` のsubreaper配下で設定上限（既定90秒）に制限し、timeout後は
 今回の子孫だけを終了する。入力processは待たない。
 
 ## 配備後の確認

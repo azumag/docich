@@ -6,7 +6,10 @@ set -uo pipefail
 scene_root="$1"; scene_prompt="$2"; scene_output="$3"
 scene_agent="$4"; scene_failure="$5"; scene_meta="$6"; scene_budget="$7"
 case "$scene_budget" in ''|*[!0-9]*) exit 2 ;; esac
-[ "$scene_budget" -ge 1 ] && [ "$scene_budget" -le 15 ] || exit 2
+# The scene consumer passes a <=15s semantic budget. The periodic recap
+# passes a longer, still bounded budget because the existing radio provider
+# chain may try several models before one answers.
+[ "$scene_budget" -ge 1 ] && [ "$scene_budget" -le 120 ] || exit 2
 [ "${DOCICH_ALLOW_REAL_AI:-}" = 1 ] || exit 2
 cd "$scene_root" || exit 2
 [ -f ./eloop_lib.sh ] || exit 2

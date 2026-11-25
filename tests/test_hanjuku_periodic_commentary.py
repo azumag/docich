@@ -105,7 +105,7 @@ def test_live_game_config_is_read_from_the_game_file(tmp_path):
     assert periodic.config(game)['enabled'] is False
     assert periodic.config(game, path) == {
         'enabled': True, 'interval_s': 600.0, 'retry_s': 300.0,
-        'generation_timeout_s': 15.0, 'max_attempts': 2}
+        'generation_timeout_s': 90.0, 'max_attempts': 2}
 
 
 def test_current_falls_back_to_observed_country_counts_without_shop():
