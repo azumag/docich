@@ -134,3 +134,19 @@ def test_plain_map_return_without_a_scene_still_accepts_the_dispatch():
     assert 'recall' not in mem['flow']
     assert mem['flow']['recall_verification']['status'] == 'dispatched'
     assert any(row['decision'] == 'camp_recall_dispatched' for row in mem['_records'])
+
+
+
+def test_receipt_arriving_after_scene_marker_does_not_charge_the_destination():
+    mem, recall = dispatch_memory(input_sent=False)
+    R._mark_recall_interrupted(mem)
+    trace = recall['request_trace']
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 1}
+    for tick in range(6):
+        mem['tick'] = 101 + tick
+        R._recall_dispatch_step(Screen([], None, '', kind='map'), mem, recall)
+    decisions = [row['decision'] for row in mem['_records']]
+    assert recall['scene_covered'] is True
+    assert 'camp_recall_unconfirmed' in decisions
+    assert 'camp_recall_goal_failed' not in decisions
+    assert mem['flow']['recall_verification']['status'] == 'arrival_unconfirmed'
