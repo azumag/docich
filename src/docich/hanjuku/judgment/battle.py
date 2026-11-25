@@ -2872,7 +2872,8 @@ def _defender_summon_preempt(mem, cur):
                           # 携行していても「使える資源」ではないので、卵が無い
                           # 召喚獣戦はメニューを開いておくのてを選ぶ。
                           and (cur.get('summon_egg_unavailable')
-                               or not _card_usable_here(cur))))
+                               or not (_card_usable_here(cur)
+                                       and cur.get('planned_cards')))))
     hp = cur.get('ally_hp')
     draws = int(cur.get('okunote_draws') or 0)
     if not resources_free:
