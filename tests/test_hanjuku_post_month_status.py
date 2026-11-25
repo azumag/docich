@@ -2080,6 +2080,7 @@ def test_month_end_defers_a_named_recall_task_until_the_next_roster_scan(monkeyp
     state = mem['post_month_status']
     state.update(stage='task_jump', job={'kind': 'recall', 'name': 'ヴィーナス'},
                  tasks=[])
+    _flow(mem)['retreat_rechecks'] = {'ヴィーナス': {'status': 'needs_observation'}}
     monkeypatch.setattr(post, 'own_camps', lambda _frame: [
         {'target': (131, 110), 'clipped': False, 'kind': 'dome'}])
     screen = Screen([], None, '', kind='map', cursor=(131, 110))
@@ -2088,5 +2089,6 @@ def test_month_end_defers_a_named_recall_task_until_the_next_roster_scan(monkeyp
     assert state['stage'] == 'process'
     assert state.get('job') is None
     assert 'recall' not in _flow(mem)
+    assert 'retreat_rechecks' not in _flow(mem)
     assert any(row.get('resulting_event') == 'recall_deferred_month_end'
                for row in mem['_records'])
