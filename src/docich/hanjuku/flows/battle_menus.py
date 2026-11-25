@@ -3161,6 +3161,22 @@ def egg_battle_step(screen: Screen, mem):
             carried = _confirmed_carried_kit(mem, battle) or []
             cards_left = [c for c in carried
                           if c not in attempted and _card_usable_in_battle(mem, battle, c)]
+        open_count = battle.get('summon_card_opens')
+        if (not battle.get('card_flow') and type(open_count) is int
+                and open_count >= SUMMON_CARD_OPEN_LIMIT):
+            # Do not spend another scroll budget after the per-battle open
+            # budget is exhausted. Preserve the remaining cards as unclassified
+            # rather than silently treating a failed open as a successful use.
+            abandoned = [c for c in cards_left
+                         if c not in (battle.get('cards_unclassified') or [])]
+            if abandoned:
+                battle.setdefault('cards_unclassified', []).extend(abandoned)
+                _record(mem, 'battle_summon_card_abandoned', **_battle_labels(battle),
+                        observed_metric={'opens': open_count,
+                                         'open_limit': SUMMON_CARD_OPEN_LIMIT,
+                                         'abandoned': abandoned},
+                        reason='召喚獣戦の切り札オープン上限に達したため再試行を止め、未確認札として記録して攻撃へ切り替える')
+            cards_left = []
         # Owner 2026-11-22: enemy summon + our general was going straight to
         # こうげき while a carried card was still in planned_cards.  In a
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
@@ -3177,10 +3193,6 @@ def egg_battle_step(screen: Screen, mem):
                                          'empty_egg': bool(empty_egg)},
                         reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
                 return [pad('down')]
-        if int(battle.get('summon_card_opens') or 0) >= SUMMON_CARD_OPEN_LIMIT:
-            # Reopening the same carried card after the retreat-cancel loop only
-            # churns the menu (retreat is banned); attack instead.
-            cards_left = []
         resume = battle.get('summon_card_resume')
         if not isinstance(resume, dict) or resume.get('card') not in cards_left:
             resume = None
@@ -3406,7 +3418,7 @@ MONSTER_STALL_RETURN_TURNS = 6
 # downs reveal it.  Bound the scroll so an unreadable box cannot loop.
 SUMMON_CARD_SCROLL_LIMIT = 3
 CARD_RETREAT_CANCEL_LIMIT = 2   # cancels before the carried card is abandoned
-SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   # cancels before the carried card is abandoned
+SUMMON_CARD_OPEN_LIMIT = 2      # open attempts per summon battle before abandoning remaining cards
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
 # enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
 # even at enemy HP 27 with the summon at 515, which looked like throwing a
