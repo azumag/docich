@@ -18,6 +18,7 @@ from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, 
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
+                               _card_usable_here,
                                _behind, _boss_tactics_allowed, _card_damage_gate,
                                _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
@@ -1462,7 +1463,10 @@ def battle_menu_step(screen: Screen, mem):
             return _emit_moves(move)
         flow['stage'] = 'list'
         return [pad('a')]
-    if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:
+    # owner 2026-11-26: 自城（防御戦）では切り札を使えない。きりふだ行を開いて
+    # 失敗するより、そのまま こうげき / おくのて の判断へ進める。
+    if (not flow and _card_usable_here(cur) and cur.get('egg_battle')
+            and 'きりふだ' in screen.text):
         rare = _available_rare_tactic(mem, cur)
         # docich#5600 (owner 2026-11-25: 資源は使い切る): a carried, usable
         # card is worth opening even without a rare tactic. Leaving it unopened
