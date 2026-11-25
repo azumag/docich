@@ -2726,3 +2726,22 @@ def test_a_ledger_value_alone_is_still_not_evidence():
                 'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
     assert ledger_only is None
 
+def test_a_carried_card_never_opened_is_still_a_loss_resource():
+    # owner 2026-11-26: 選択履歴が無い戦闘でも、携行の実測が残っていれば
+    # 「切り札を残して敗北」として起票する。
+    record = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'cards_left_unused': ['ミックミー'], 'ally_hp': 0, 'enemy_hp': 40},
+        general='バーミセリ'))
+    assert record['kind'] == 'battle_loss_with_resources'
+    assert record['resources'] == ['card']
+    assert record['cards_remaining'] == ['ミックミー']
+
+
+def test_a_used_card_is_not_a_leftover():
+    record = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'cards_left_unused': ['ミックミー'], 'cards_used': ['ミックミー'],
+                'ally_hp': 0, 'enemy_hp': 40}, general='バーミセリ'))
+    assert record is None
+

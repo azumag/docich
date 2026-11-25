@@ -1299,6 +1299,12 @@ def _battle_resources(record):
     remaining = _remaining_cards(selected, used)
     if pending and pending not in remaining and pending not in used:
         remaining.append(pending)
+    # owner 2026-11-26: a battle that never opened the card list carries no
+    # selection history; the flow now records the measured leftover names so
+    # a real "lost with carried cards" still counts.
+    for card in (metric.get('cards_left_unused') or ()):
+        if isinstance(card, str) and card not in remaining and card not in used:
+            remaining.append(card)
     # owner 決定 2026-11-23 (#5117): the live list proved this card missing
     # (battle_card_missing), so it is not carried and not a remaining resource.
     missing = {card for card in (metric.get('cards_missing') or ())
