@@ -2937,6 +2937,15 @@ class RetroCornerManager:
                     terminal=bool(run.get('terminal_reason') or run.get('terminal_candidate')))
             except Exception:
                 print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
+            try:
+                from . import hanjuku_periodic
+                # The corner owns the 15-minute progress recap. The input bot
+                # never generates or waits for it; this only publishes a
+                # request and starts one detached, bounded worker.
+                hanjuku_periodic.tick(
+                    self.g, hanjuku_game, runtime_dir, run, owned_identity)
+            except Exception:
+                print('[hanjuku-periodic] status=tick_failed', file=sys.stderr)
             # Network side channel runs only AFTER shared_section has released
             # the input gate. It re-verifies durable terminal evidence itself.
             from .record_clips import consider_hanjuku
