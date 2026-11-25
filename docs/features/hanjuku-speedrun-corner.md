@@ -599,3 +599,13 @@ PR 1 の範囲は実装済み。確認済みの内容と、元コーナー側に
 - 計測開始は「今の画面が名前入力画面で、ゲームプレイ前」。取り逃した runtime は試走を作らず `pending / no_start_seen`。完走の合計は、第10話までの区間が揃っていないとPBにしない（`pb_eligible`）。
 - 独立レビューの指摘（別 runtime の試走の誤終了、途中開始、一時的な読み込みエラーでの PB 消失、teardown 失敗 runtime の誤終了、再起動後の回収先の取り違え）は修正済み。
 - **PR 3 への申し送り**: ボットは終端フレームでは動かないので、ゲームオーバー・停滞の DNF はコーナー終了時まで確定しない（それまで `timer.json` は `running`）。表示側は `heartbeat_at_ms` の古さと `hanjuku_run.json` の終端状態を見て止める。完走の時刻は `clear_ending_seen` が初めて立った観測の画像時刻（誤読は `pb_eligible` で防ぐ）。
+
+## 付録E. PR 3 の実装状況（2026-11-25）
+
+スプリットタイマーの**表示**。実際の配信画面・実機では未確認で、合成した `timer.json` とヘッドレス Chromium で確かめている。
+
+- `overlays/direct_broadcast_overlay_state.mjs`: `speedrunTimer` を state に追加。`game_switch.json` の active が `hanjuku-speedrun` で、`active.runtime_id` と `timer.json` の `runtime_id` が**一致するときだけ**出す（runtime が取れない旧形式は出さない）。schema・status・数値を検証し、公開項目を絞る。`running` のまま `heartbeat_at_ms` が30秒より古ければ `stale`（時計を止め、「計測停止中」を出す）。`finished` / `dnf` は終了10分後に消えて4行サマリへ戻る。
+- `overlays/direct_broadcast_overlay.html`: `#top-rail`（960×90）の中に `#speedrun-timer`。左に合計・PB・SoB・試走番号、右に12区間（6×2）。色は確定区間は writer の `verdict`、走行中の区間と合計だけ表示側で判定（合計は、確定累計か現在の経過のどちらかがPBより遅ければ赤、先行なら青、比較できなければ白。完走時は writer の `total_verdict` を優先）。優先順位は タイマー ＞ 作業中 ＞ コメント生成中 ＞ 4行サマリ（作業中とコメントは左下のチップに縮小）。
+- ミリ秒は `requestAnimationFrame`（約30fps）で合計と走行中セルの2か所だけ更新。上部レールが見えない領域（`full` / `top` 以外）、非表示の iframe、stale、タイマー無しでは回さない。判定と書式の純関数は `speedrun-timer-pure` のマーカーで囲み、`node --test` から評価する。
+- CI: `overlays/**/*.html` / `*.mjs` と `tests/**/*.mjs` を `ci_test_scope` の対象に追加（共有 UI なので変更は full）。Playwright のテストは CI に Chromium が無いため skip される。色・書式の判定は `tests/test_speedrun_timer_view.mjs`（node）で CI でも検証される。
+- 残り: 反映は共有オーバーレイの再読込経路で行う。`direct_broadcast_overlay_state.mjs` だけを変える PR は、`vm-operations` の自動再読込の対象にならない（`.html` の差分だけを見ている）。実際の配信画面での見え方（色・文字の切れ）は実機で確かめて調整する。
