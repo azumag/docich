@@ -35,6 +35,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _egg_race_pressure,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
+                               _hp1_resource_hold,
                                _early_resource_rescue_needed, _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
                                _survival_state, _tactic_enemy_ok, reset_battle_controls,
                                HERO_SURVIVAL_REOPEN_LIMIT)
@@ -907,9 +908,14 @@ def battle_step(screen: Screen, mem):
     melee_followup = _card_melee_ready(mem, cur)
     # An eligible carried egg-drop card opens before an easy melee finish:
     # the owner's rule is unconditional once the enemy egg and max-HP
-    # remainder are known. A prior selection is not a new opening.
-    if _one_hit_lethal(cur) and not _egg_plan(mem, cur).get('dropper'):
+    # remainder are known. A prior selection is not a new opening. At enemy
+    # HP1 outside a boss battle the 2026-11-25 conservation rule always wins:
+    # no card, okunote or egg is spent, even when soldiers still stand.
+    hold = _hp1_resource_hold(cur)
+    if _one_hit_lethal(cur) and (hold or not _egg_plan(mem, cur).get('dropper')):
         return _one_hit_finish_step(mem, cur)
+    if hold:
+        return _hp1_hold_step(mem, cur)
     opening_wait = _command_open_wait(mem, cur)
     if opening_wait is not None:
         return opening_wait
@@ -1213,6 +1219,33 @@ def battle_step(screen: Screen, mem):
     if kit_read is not None:
         return kit_read
     return _melee_step(mem, cur)
+
+
+def _hp1_hold_step(mem, cur):
+    """Melee a non-boss HP1 enemy without spending a card, okunote or egg.
+
+    Owner 2026-11-25: ボス戦以外では、相手のHPが1なら切り札や奥の手や卵を
+    使わない. Enemy soldiers may still stand, so this deliberately has its own
+    record instead of claiming ``battle_one_hit_finish``: the next push is
+    not guaranteed to be the last one. The card flow is dropped before any
+    list selection; an already-announced use stays unclassified.
+    """
+    flow = cur.get('card_flow')
+    if flow:
+        if flow.get('stage') == 'announce':
+            _card_use_unclassified(
+                mem, cur, '相手HP1で資源を使わないため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
+        else:
+            cur['card_flow'] = None
+    cur['melee_holds'] = 0
+    if not cur.get('hp1_hold'):
+        cur['hp1_hold'] = True
+        _record(mem, 'battle_hp1_resource_hold', **_battle_labels(cur),
+                enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
+                observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
+                                 'enemy_soldiers': cur.get('enemy_soldiers'), 'boss': False},
+                reason='ボス戦以外で相手HPが1のため、切り札・奥の手・卵を使わず白兵で押し切る')
+    return _power_mash(mem, cur)
 
 
 def _one_hit_finish_step(mem, cur):

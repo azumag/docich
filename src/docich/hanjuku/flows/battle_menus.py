@@ -29,7 +29,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _retreat_cards_to_spend, _retreat_immediate_loss, _retreat_remaining_cards,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _stale_army_melee_hold,
-                               _dying_with_egg, _migrate_card_evidence, _one_hit_lethal, _own_egg_empty,
+                               _dying_with_egg, _migrate_card_evidence, _one_hit_lethal, _hp1_resource_hold, _own_egg_empty,
                                _own_egg_needed, _own_egg_positive,
                                _survival_needed, _survival_state, _watch_card_melee, _watch_egg_drop,
                                _wounded_summoner, _summoner_return_risk, _rescue_rearm)
@@ -1375,16 +1375,22 @@ def battle_menu_step(screen: Screen, mem):
         return [pad('b')]
     cur['own_egg_zero_observed'] = _own_egg_empty(mem, cur)
     cur['own_egg_positive_observed'] = _own_egg_positive(mem, cur)
-    if _one_hit_lethal(cur) and not _plain_attack_box:
+    if (_one_hit_lethal(cur) or _hp1_resource_hold(cur)) and not _plain_attack_box:
         # A menu that is already open (or opened before the HP fell): close it
-        # unused. battle_step opens none while the enemy is one push from death.
+        # unused. battle_step opens none while the enemy is one push from death
+        # or a non-boss enemy sits at HP1.
         if (cur.get('card_flow') or {}).get('stage') != 'announce':
             cur['card_flow'] = None
         if not cur.get('one_hit_menu_closed'):
             cur['one_hit_menu_closed'] = True
+            hold = _hp1_resource_hold(cur) and not _one_hit_lethal(cur)
             _record(mem, 'battle_one_hit_menu_close', **_battle_labels(cur),
-                    observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
-                    reason='敵HPが一撃で倒せる値のため、奥の手・卵・切り札を選ばずメニューを閉じて白兵へ戻る')
+                    observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
+                                     'enemy_soldiers': cur.get('enemy_soldiers'),
+                                     'non_boss_hp1_hold': hold},
+                    reason=('ボス戦以外で相手HPが1のため、奥の手・卵・切り札を選ばずメニューを閉じて白兵へ戻る'
+                            if hold else
+                            '敵HPが一撃で倒せる値のため、奥の手・卵・切り札を選ばずメニューを閉じて白兵へ戻る'))
         return [pad('b')]
     if flow and flow.get('read_kit'):
         # #4456: reuse the command-menu navigation to reach きりふだ, then let
@@ -1820,13 +1826,19 @@ def okunote_step(screen, mem):
                                          'wall_damage': EGG_WALL_DAMAGE},
                         reason='敵の召喚獣のHPが一撃で倒せる残りのため、おくのてを使わず通常攻撃へ戻す')
                 return None
-        elif _one_hit_lethal(cur):
+        elif _one_hit_lethal(cur) or _hp1_resource_hold(cur):
             # Owner 2026-11-04: 通常戦でも相手のHPが一撃で倒せる残りなら
             # 奥の手を開かない（既存の one_hit_lethal と同じ境界）。
+            # Owner 2026-11-25: ボス戦以外で相手HP1なら資源を使わない.
+            hold = _hp1_resource_hold(cur) and not _one_hit_lethal(cur)
             _record(mem, 'battle_okunote_skip_one_hit', **_battle_labels(cur),
                     observed_metric={'enemy_hp': cur.get('enemy_hp'),
-                                     'wall_damage': EGG_WALL_DAMAGE},
-                    reason='相手のHPが一撃で倒せる残りのため、おくのてを使わず通常攻撃へ戻す')
+                                     'enemy_soldiers': cur.get('enemy_soldiers'),
+                                     'wall_damage': EGG_WALL_DAMAGE,
+                                     'non_boss_hp1_hold': hold},
+                    reason=('ボス戦以外で相手HPが1のため、おくのてを使わず通常攻撃へ戻す'
+                            if hold else
+                            '相手のHPが一撃で倒せる残りのため、おくのてを使わず通常攻撃へ戻す'))
             return None
         # g482: パプリカ34 entered the irreversible random choices and chose
         # しんだフリ (28..48 self damage), then lost at HP0. Before opening
@@ -2091,7 +2103,8 @@ def card_list_step(screen: Screen, mem):
     cur = mem.get('battle') or {}
     _card_battle_reading(screen, cur, mem)
     flow = cur.get('card_flow')
-    if _one_hit_lethal(cur) and not (flow and flow.get('stage') == 'announce'):
+    if ((_one_hit_lethal(cur) or _hp1_resource_hold(cur))
+            and not (flow and flow.get('stage') == 'announce')):
         cur['card_flow'] = None
         return [pad('b')]  # an unselected list closes unused: the next push wins
     names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
