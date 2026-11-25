@@ -51,6 +51,9 @@ CLEAR_ENDING_TEXT = 'めでたし'
 # the first inputs are delivered).
 GAME_OVER_CLEAR_GRACE_S = 120
 STALL_SECONDS=300
+# owner 2026-11-26: a screen that has not changed for 60 s is already worth an
+# issue (a monitor alert), even though the run only ends at STALL_SECONDS.
+STALL_ALERT_SECONDS=60
 # #1369: the merchant confirm screen held ~16 min with no input sent while the
 # screen kept animating, so screen_stalled never fired and the corner had no
 # exit. End the run when observations keep arriving but no input is sent.
@@ -397,6 +400,21 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     loop_proof = (hanjuku_repetition.confirmed(repetition, now=now, seconds=STALL_SECONDS)
                   if playing and not reason and not candidate else None)
     frame_since, frame_duration = since, duration
+    # owner 2026-11-26: file one issue per stall episode once the screen has not
+    # changed for STALL_ALERT_SECONDS. The terminal 300 s stall keeps its own
+    # path; this only raises the alert earlier (same dedupe/filer pipeline).
+    stall_alert_since = old.get('stall_alert_since')
+    if (playing and frame_duration >= STALL_ALERT_SECONDS
+            and stall_alert_since != frame_since):
+        stall_alert_since = frame_since
+        try:
+            from .hanjuku.fault_issue import note_fault
+            note_fault(runtime_dir, signature='screen_stalled_60s',
+                       kind='screen_stalled',
+                       detail={'seconds': round(frame_duration, 1),
+                               'phase': phase})
+        except Exception:
+            pass
     if loop_proof:
         reason = 'screen_stalled'
         since, duration = loop_proof['since'], loop_proof['seconds']
@@ -412,6 +430,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
                                    else None),
            'terminal_cleared_reason': old.get('terminal_cleared_reason'),
            'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
+           'stall_alert_since': stall_alert_since,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,
            'name_entered':named,'gameplay_seen':played,'clear_ending_seen':clear_ending,
