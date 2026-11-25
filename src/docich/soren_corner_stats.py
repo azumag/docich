@@ -22,6 +22,8 @@ import stat
 from pathlib import Path
 from typing import Mapping
 
+from .hanjuku_family import is_hanjuku
+
 
 DEFAULT_DOCICH_STATE_DIR = Path("/home/ubuntu/docich/run-soren-live")
 CONSOLE_GAMES = frozenset({"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"})
@@ -1371,7 +1373,7 @@ def _hanjuku_snapshot(root: Path, state: Mapping[str, object]):
         identity = {key: active.get(key) for key in keys}
         runtime_id = identity["runtime_id"]
         match = re.fullmatch(r"g([1-9][0-9]*)-([a-f0-9]{6,32})", runtime_id or "")
-        if (identity["game"] != "hanjuku-hero" or not match
+        if (identity["game"] != state.get("game") or not match
                 or type(identity["generation"]) is not int
                 or int(match[1]) != identity["generation"]
                 or not isinstance(identity["lease_id"], str) or not identity["lease_id"]
@@ -1626,7 +1628,7 @@ def load_active_corner(state_dir: str | os.PathLike[str] | None = None, *,
             snapshot["console"] = _console_progress(root, state, snapshot["scores"], history_status,
                                                      observed_now)
             snapshot["session_matches"] = snapshot["console"]["session_count"]
-        if snapshot["game"] == "hanjuku-hero":
+        if is_hanjuku(snapshot["game"]):
             snapshot["hanjuku"] = _hanjuku_snapshot(root, state)
     elif kind == "paper":
         observed_now = time.time() if now is None else float(now)

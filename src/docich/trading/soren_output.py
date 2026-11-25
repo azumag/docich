@@ -140,10 +140,25 @@ def send_overlay(g: GlobalConfig, payload: dict[str, object]) -> None:
 
 
 def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -> None:
-    """Drain validated terminal recaps before publishing later audio."""
-    from ..hanjuku_narration import retry_pending_terminal_deliveries
+    """Drain validated terminal recaps before publishing later audio.
 
-    if not retry_pending_terminal_deliveries(g, exclude_key=exclude_key):
+    Both corners share the Soren outbox, so a pending recap of either family
+    member must block later audio.  The speedrun package is generated in a
+    separate change; until it exists there is simply nothing to drain there.
+    """
+    from ..hanjuku_family import FAMILY, ORIGINAL, module
+
+    pending = False
+    for game in sorted(FAMILY):
+        try:
+            retry = module(game, "hanjuku_narration").retry_pending_terminal_deliveries
+        except ModuleNotFoundError:
+            if game == ORIGINAL:
+                raise
+            continue
+        if not retry(g, exclude_key=exclude_key):
+            pending = True
+    if pending:
         raise HanjukuTerminalPendingError(
             "A prior Hanjuku terminal recap is still pending in the audio outbox"
         )
