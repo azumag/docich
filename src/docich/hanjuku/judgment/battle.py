@@ -2537,6 +2537,9 @@ def _one_hit_lethal(cur):
     Only a complete, current battle panel counts (``_card_battle_reading``
     clears the unread flags on one): a stale HP, a summon or an egg battle
     is not evidence that the enemy general is one hit from defeat.
+    This is the *safe finish* claim. ``_hp1_resource_hold`` separately
+    suppresses resources at HP1 with soldiers still standing; it does not
+    imply the next push is the last one.
     """
     if not isinstance(cur, dict):
         return False
