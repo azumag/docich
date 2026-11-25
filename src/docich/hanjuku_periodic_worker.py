@@ -177,7 +177,8 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
             continue
         valid = [text for text in candidates
                  if periodic.valid_text(text, facts)
-                 and periodic.focus_clear(text, focus_fact, facts)]
+                 and periodic.focus_clear(text, focus_fact, facts)
+                 and periodic.persona_ok(text)]
         _log(runtime, {'event': 'generated', 'seq': request['seq'],
                        'attempt': attempts, 'candidates': len(candidates),
                        'valid': len(valid)})
