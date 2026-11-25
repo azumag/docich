@@ -1020,6 +1020,23 @@ def _battle_record(decision, *, outcome=None, metric=None, general=None,
             'chart_step': step, 'reason': 'battle result', 'at': 1000.0}
 
 
+def test_a_ledger_egg_count_is_not_remaining_resource_evidence():
+    # docich#5542/#5551: battle_result writes the last observed ledger value.
+    # A stale positive must not be read as a spendable egg left at the loss.
+    ledger_only = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 4, 'egg_uses_source': 'ledger',
+                'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
+    assert ledger_only is None or ledger_only['resources'] == []
+
+    # A record without the provenance field keeps the existing behaviour.
+    legacy = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 2, 'ally_hp': 0, 'enemy_hp': 40}, general='バゲット'))
+    assert legacy['kind'] == 'battle_loss_with_resources'
+    assert legacy['resources'] == ['egg']
+
+
 def test_battle_resource_events_are_classified():
     loss_egg = audit._battle_resource_event(_battle_record(
         'battle_result', outcome='loss',

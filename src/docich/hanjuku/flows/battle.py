@@ -1880,6 +1880,12 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
+                             # docich#5542/#5551: this is the last observed
+                             # ledger value, not a battle-time remaining count.
+                             # Mark the provenance so the audit does not read a
+                             # stale positive as a spendable egg (repeated
+                             # false "eggs left" incidents).
+                             'egg_uses_source': 'ledger',
                              'cards_used': cur.get('cards_used', []),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),
