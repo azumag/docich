@@ -449,11 +449,14 @@ def _current(policy):
     if (isinstance(generals, dict) and _number(generals.get('count')) is not None
             and generals.get('scope') == [chapter, month_key]):
         economy['generals'] = generals['count']
-    captured, lost = _clean_names(policy.get('captured')), _clean_names(policy.get('lost'))
+    ownership = policy.get('castle_ownership')
+    held = [castle for castle, row in ownership.items()
+            if isinstance(castle, str) and _name(castle)
+            and isinstance(row, dict) and row.get('owner') == 'own'] if isinstance(
+                ownership, dict) else []
+    captured = held[:6] if held else _clean_names(policy.get('captured'))
     if captured:
         economy['captured'] = captured
-    if lost:
-        economy['lost'] = lost
     if economy:
         current['economy'] = economy
     stats = policy.get('stats') if isinstance(policy.get('stats'), dict) else {}
@@ -556,7 +559,7 @@ def build_prompt(situation_value, recent=(), avoid=()):
         '将軍名と「HP」または「体力」、そして「開戦時」「終了時」を添えてください。',
         'current.battleは直近に観測できた戦闘の状態です。current.orderはこれからの予定で、'
         '実行結果ではありません。「次は」「これから」はcurrent.orderがある場合だけ使えます。',
-        '過去の出来事は過去形で話します。数字は半角算用数字にし、章・年・月・分・勝敗数・'
+        'eventsは古い順です。過去の出来事は過去形で話します。数字は半角算用数字にし、章・年・月・分・勝敗数・'
         '金額・人数は、状況にある数字と項目を対応させてください。',
         '将軍名・城名・札名以外のカタカナ語は使わないでください。',
         '同じ言い回しの反復を避けます。特に「直近の実況」と同じ書き出し・同じ文型・'

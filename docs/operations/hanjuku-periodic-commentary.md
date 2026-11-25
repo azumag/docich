@@ -53,6 +53,8 @@ max_attempts = 2          # 1回の実況で作る候補生成の試行数。1�
 | `events` | 直近の戦闘結果、城の所有変更、出撃、月次計画、購入、補充、chart調整など最大10件 |
 | `current` | 観測済みの現在戦闘、現在の狙い、金・兵士・将軍数・保持城、通算成績 |
 
+`current.economy.captured` は現在の所有観測が `own` の城だけを使い、過去の喪失listを
+そのまま現在の保持城として出さない。
 raw OCR、`reason`、`decision_id`、runtime identity、path、自由文の内部判断は
 材料に入れない。出来事は決定ログのwhitelist済みfieldだけを使い、計画
 （`order_start`など）と確認済み結果（`battle_result`、`castle_*_observed`、
