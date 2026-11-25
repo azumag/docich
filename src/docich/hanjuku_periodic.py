@@ -2,10 +2,11 @@
 
 The corner publishes a bounded situation snapshot roughly every fifteen
 minutes and starts one short-lived worker.  The worker asks the existing Soren
-radio dispatcher for several differently-worded candidates, rejects any line
-that uses a name or number not present in the snapshot, and speaks the
-candidate least similar to the recent delivered lines.  Only the existing
-fenced audio queue is used; this module never posts a chat comment.
+radio dispatcher for several long, persona-driven narrative candidates, rejects
+any line that uses a name or number not present in the snapshot or merely lists
+facts, and speaks the candidate least similar to the recent delivered lines.
+Only the existing fenced audio queue is used; this module never posts a chat
+comment.
 """
 from __future__ import annotations
 
@@ -36,13 +37,13 @@ LOCK = 'hanjuku_periodic.lock'
 ERR_FILE = 'hanjuku_periodic_worker.err'
 LOG = 'hanjuku_periodic_commentary'
 
-MAX_TEXT = 140
-MIN_TEXT = 15
+MAX_TEXT = 700
+MIN_TEXT = 180
 MAX_CANDIDATES = 3
 RECENT = 24
 MAX_EVENTS = 10
-REQUEST_TTL_S = 240
-PENDING_TIMEOUT_S = 300
+REQUEST_TTL_S = 360
+PENDING_TIMEOUT_S = 420
 DEFER_MAX_S = 180
 DEFER_STEP_S = 30
 RETRY_LIMIT = 2
@@ -74,7 +75,20 @@ KATAKANA_ALLOWED = frozenset({
     'ペース', 'バランス', 'スタート', 'クリア', 'ミス', 'チャレンジ',
     'ランキング', 'スコア', 'タイトル', 'セーブ', 'ロード', 'リセット',
     'プラン', 'ポイント', 'ボーナス', 'テンポ', 'リズム', 'ピンチ',
+    'ドラマ', 'ストーリー', 'ハプニング', 'シーン', 'プレイヤー', 'ユーモア',
+    'ジョーク', 'ギャグ', 'ツッコミ', 'ナイス', 'ファイト', 'ラスト',
+    'クライマックス', 'リカバリー', 'モチベーション', 'チーム', 'メンタル',
+    'テンション', 'ムード', 'エモ', 'ロマン', 'ドキドキ', 'ワクワク',
+    'ハラハラ', 'ホッ', 'ウケ', 'ノリ', 'キレ', 'センス', 'スタイル',
+    'ポジション', 'スキル', 'ミステリー', 'サプライズ', 'メッセージ', 'エール',
+    'シーズン', 'エピソード', 'クエスト', 'ミッション',
 })
+
+DEFAULT_PERSONA = (
+    '半熟英雄を長く見守ってきた、落ち着きと熱量のある実況者。'
+    '将軍たちの判断を尊重し、小さな進展を一緒に喜び、失敗には優しくツッコミを入れる。'
+    '視聴者に語りかけるように、事実と感想を織り交ぜ、最後は前向きな余韻を残す。'
+)
 
 
 class PeriodicError(RuntimeError):
@@ -97,7 +111,7 @@ def settings(raw):
     for key, default, low, high in (
             ('interval_s', 900, 300, 3600),
             ('retry_s', 300, 60, 1800),
-            ('generation_timeout_s', 90, 5, 120),
+            ('generation_timeout_s', 90, 5, 240),
             ('max_attempts', 2, 1, 3)):
         value = raw.get(key, default)
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -111,6 +125,11 @@ def settings(raw):
                 r'[A-Za-z0-9._:/-]{1,80}(?:,[A-Za-z0-9._:/-]{1,80}){0,7}', agents)):
         raise ValueError('periodic_commentary.agents is invalid')
     result['agents'] = agents
+    persona = raw.get('persona', DEFAULT_PERSONA)
+    if (not isinstance(persona, str) or len(persona) > 500
+            or re.search(r'[\x00-\x1f<>]', persona)):
+        raise ValueError('periodic_commentary.persona is invalid')
+    result['persona'] = persona
     return result
 
 
@@ -556,15 +575,28 @@ def flatten(situation_value):
 
 # ---------------------------------------------------------------- prompt
 
-def build_prompt(situation_value, recent=(), avoid=()):
+def build_prompt(situation_value, recent=(), avoid=(), persona=None):
     avoid = [text for text in [*recent, *avoid] if isinstance(text, str)][-8:]
+    persona = persona or DEFAULT_PERSONA
     return '\n'.join([
-        'SFC「半熟英雄」の実況を担当してください。直近の進行を、視聴者に向けて'
-        '1文か2文、140文字以内の日本語で実況します。',
-        '下の「状況」に書かれた事実だけを使います。書かれていない数値・将軍名・城名・'
-        '札名・勝敗・出来事を作ってはいけません。',
+        'あなたはSFC「半熟英雄」の長期戦を一緒に見守る実況者です。',
+        'ペルソナ: ' + persona,
+        '直近の出来事（window.minutes 分、通常は15分）を、視聴者に語りかけるように4〜8文、'
+        '300〜600文字で実況してください。',
+        '次の5つを自然につなげてください。',
+        '1. この15分の流れと進展（何が起き、どう進んだか）',
+        '2. 良かったこと・成長したこと',
+        '3. 課題・反省・次に活かせる改善点（事実から言える範囲で）',
+        '4. 将軍や城のドラマ、軽いユーモアやジョークを1つ',
+        '5. 視聴者への前向きな締め（心に残る一言）',
+        '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
+        '事実を曲げないでください。',
+        '下の「状況」に書かれた事実だけを使います。書かれていない数値・将軍名・城名・札名・勝敗・'
+        '出来事を作ってはいけません。',
         '勝敗を話せるのはeventsのbattle_resultだけです。勝利は城の占領ではありません。'
         '敗北は将軍の死亡ではありません。死亡・全滅・撃破・ゲームオーバーを断定しないでください。',
+        '「勝負」「勝利への道」のような比喩で勝敗を曖昧にせず、勝敗はbattle_resultを指す場合だけ'
+        '「〜が勝ちました」「〜は敗れました」と書いてください。',
         '城の占領・奪還・喪失はeventsのcastle_owned_observed／castle_lost_observedだけです。'
         'それ以外から城の出入りを推測しないでください。',
         'battle_startとbattle_resultのHPは観測時点の値です。現在HPと断定せず、'
@@ -573,11 +605,17 @@ def build_prompt(situation_value, recent=(), avoid=()):
         '実行結果ではありません。「次は」「これから」はcurrent.orderがある場合だけ使えます。',
         'eventsは古い順です。過去の出来事は過去形で話します。数字は半角算用数字にし、章・年・月・分・勝敗数・'
         '金額・人数は、状況にある数字と項目を対応させてください。',
-        '将軍名・城名・札名以外のカタカナ語は使わないでください。',
-        '同じ言い回しの反復を避けます。特に「直近の実況」と同じ書き出し・同じ文型・'
-        '同じ締め方にしないでください。今回は前回と違う切り口（進み具合、最近の戦い、'
-        '城の出入り、月の買い物、作戦変更のどれか）を選んでください。',
-        '書き出しも文型も変えた候補を3つ作り、事実の取捨も候補ごとに変えてください。',
+        '将軍名・城名・札名以外のカタカナ語は使わないでください。絵文字・Markdown・URLは使わない。',
+        'ジョークは状況の範囲で軽く。個人攻撃、下品な表現、死亡・故障の断定はしないでください。',
+        '長さは300〜600文字を目安にし、180文字未満や700文字超にしないでください。',
+        '出来事を箇条書きのように列挙せず、「何が起きたか→それが何を意味したか→次にどう活かすか」の'
+        '一つの物語として話してください。',
+        'それぞれの出来事には、意味・評価・感情のどれかを添え、「まず」「次に」「また」で機械的に'
+        '並べないでください。',
+        '書き出し・リズム・ユーモアの入れ方・締め方を変えた候補を3つ作り、事実の取捨も候補ごとに'
+        '変えてください。',
+        '同じ言い回しの反復を避けます。特に「直近の実況」と同じ書き出し・同じ文型・同じ締め方に'
+        'しないでください。',
         'JSONオブジェクトだけを返してください: {"texts":["候補1","候補2","候補3"]}',
         '## 状況', json.dumps(situation_value, ensure_ascii=False, sort_keys=True),
         '## 直近の実況（この言い回しは使わない）',
@@ -585,8 +623,25 @@ def build_prompt(situation_value, recent=(), avoid=()):
     ])
 
 
+EVAL_MARKERS = re.compile(
+    r'見事|課題|反省|良かった|成長|手応え|悔し|もったい|頼もしい|面白|ユーモア|'
+    r'ドラマ|思い|感じ|でしょう|見えます|かもしれません|願い|楽しみ|応援|拍手|'
+    r'心配|不安|希望|粘り|踏ん張り|教訓|改善|魅力|見どころ|印象|評価')
+
+
+def narrative_ok(text):
+    """Reject a flat fact list; require an arc and at least one evaluation."""
+    if len(re.findall(r'[。！？]', text)) < 3:
+        return False
+    if not EVAL_MARKERS.search(text):
+        return False
+    if re.search(r'(?:^|[\n。])\s*(?:[・\-–—*]|[0-9０-９]+[.)、])', text):
+        return False
+    return True
+
+
 def parse_candidates(output):
-    if not isinstance(output, str) or len(output.encode()) > 8192:
+    if not isinstance(output, str) or len(output.encode()) > 16384:
         raise PeriodicError('invalid_output')
     try:
         value = json.loads(output)
@@ -604,6 +659,7 @@ def parse_candidates(output):
         if (not MIN_TEXT <= len(text) <= MAX_TEXT
                 or re.search(r'[\x00-\x1f<>`{}]|https?://', text)
                 or not re.search(r'[ぁ-ゖァ-ヺ一-龯]', text)
+                or not narrative_ok(text)
                 or text in texts):
             continue
         texts.append(text)
@@ -702,6 +758,9 @@ def _number_in_context(value, before, after, facts):
     if after.startswith('城') and re.search(r'取|獲得|占領|失|落', before):
         return any(fact.get('captures') == value or fact.get('castle_losses') == value
                    for fact in facts if fact.get('kind') == 'window')
+    if re.search(r'兵(?:士)?(?:が|は|も|を)?$', before):
+        return any(fact.get('soldiers') == value for fact in facts
+                   if fact.get('kind') in {'current_economy', 'month_plan'})
     if 'HP' in before or '体力' in before:
         present = [name for name in _fact_names(facts) if name in before]
         if not present:
@@ -732,8 +791,16 @@ def valid_text(text, facts):
            for word in KATAKANA_RE.findall(normalized)):
         return False
     for match in re.finditer(r'([ぁ-ゖァ-ヺ一-龯々ー・]{2,12})城', normalized):
-        if match.group(1) not in names and match.group(1) not in {'自軍', '敵軍', '本城', 'ボス'}:
-            return False
+        token = match.group(1)
+        if any(token.endswith(name) for name in names):
+            continue
+        if token in {'自軍', '敵軍', '本城', 'ボス', 'この', 'その', 'あの',
+                     '例の', '大きな', '小さな', '目の前'}:
+            continue
+        if token.endswith(('は', 'が', 'を', 'に', 'へ', 'で', 'と', 'も', 'の',
+                           'や', 'から', 'まで', 'より')):
+            continue
+        return False
     if re.search(r'死亡|戦死|亡くな|全滅|一撃|瞬殺|必ず|確実に|絶対|ゲームオーバー|'
                  r'エンディング|倒した|撃破した?|ゲーム(?:を)?クリア', normalized):
         return False
@@ -754,7 +821,7 @@ def valid_text(text, facts):
         castle_text = re.sub(
             r'(?:占領|奪取|奪還|制圧)(?:を)?(?:狙(?:う|い|います)|目指(?:す|し|します)|'
             r'する予定|の予定|です|だ)', '', castle_text)
-    if not castle_results_match(castle_text, facts):
+    if not castle_results_match(castle_text, facts, allow_unnamed=True):
         return False
     if re.search(r'出撃(?:した|しました|完了)', normalized) and not any(
             fact.get('kind') == 'order_launched' for fact in facts):
@@ -809,18 +876,26 @@ def _lcs(left, right):
 
 
 def similarity(left, right):
-    """Normalized 0..1 measure; >= 1.0 means the new line repeats an old one."""
+    """Normalized 0..1 measure; >= 1.0 means the new line repeats an old one.
+
+    Long recaps naturally share the date, chapter and battle names.  The
+    opening and substring thresholds are therefore relaxed for texts longer
+    than a short scene line, while near-identical long text still fails on
+    shingle overlap.
+    """
     left, right = normalize(left), normalize(right)
     if len(left) < 8 or len(right) < 8:
         return 1.0
-    if left[:8] == right[:8]:
+    shortest = min(len(left), len(right))
+    if shortest < 150 and left[:8] == right[:8]:
         return 1.0
     left_shingles, right_shingles = _shingles(left), _shingles(right)
     union = left_shingles | right_shingles
     jaccard = len(left_shingles & right_shingles) / len(union) if union else 0.0
     containment = (len(left_shingles & right_shingles)
                    / min(len(left_shingles), len(right_shingles)))
-    return max(jaccard / 0.30, containment / 0.55, _lcs(left, right) / 12.0)
+    lcs_limit = max(12.0, shortest * 0.12)
+    return max(jaccard / 0.35, containment / 0.65, _lcs(left, right) / lcs_limit)
 
 
 def choose_novel(candidates, recent):

@@ -34,7 +34,7 @@ REASONS = frozenset({'none', 'disabled', 'no_facts', 'duplicate', 'cooldown', 'i
                      'generation_failed', 'timeout', 'queue_giveup', 'gate_giveup',
                      'rate_limit', 'backoff', 'delivery_failed', 'worker_error'})
 ROLES = frozenset({'BATCH_COMMENTARY_AGENTS', 'RADIO_AGENTS', 'AI_COMMON_AGENTS'})
-MAX_OUTPUT_BYTES = 8192
+MAX_OUTPUT_BYTES = 16384
 CARD_ROLE_MEANINGS = {
     'nonlethal_egg_risk': '削りで敵の卵発動条件に近づく危険があり、使用候補から外した判断',
     'damage_or_egg_risk_unclassified': '現在の損害または卵発動リスクを確定できず、使用を許可しなかった判断',
@@ -243,7 +243,7 @@ def generate_prompt(g, runtime, prompt, timeout):
     root = resolve_soren_root(g)
     if not (root / 'eloop_lib.sh').is_file():
         raise SceneError('unavailable')
-    remaining = min(120.0, max(1.0, float(timeout)))
+    remaining = min(240.0, max(1.0, float(timeout)))
     with tempfile.TemporaryDirectory(prefix='.scene-', dir=runtime) as directory:
         work = Path(directory)
         prompt_path, output_path, last, failure, meta = [work / name for name in

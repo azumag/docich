@@ -1,10 +1,10 @@
 """One bounded periodic-commentary job through Soren's radio dispatcher.
 
 The corner starts this short-lived worker at most once per interval.  It reads
-one bounded situation snapshot, asks for several candidate lines, rejects
-ungrounded candidates, chooses the least repetitive one and hands it to the
-existing fenced audio queue.  It never posts a chat comment and never touches
-game input.
+one bounded situation snapshot, asks for several long narrative candidates,
+rejects ungrounded or flat fact-list candidates, chooses the least repetitive
+one and hands it to the existing fenced audio queue.  It never posts a chat
+comment and never touches game input.
 """
 from __future__ import annotations
 
@@ -147,7 +147,8 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
         if remaining < 1:
             status = 'stale'
             break
-        prompt = periodic.build_prompt(request['situation'], recent, avoid)
+        prompt = periodic.build_prompt(
+            request['situation'], recent, avoid, cfg.get('persona'))
         attempts += 1
         try:
             output, result_role = (generate_fn or generate_prompt)(
