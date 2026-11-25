@@ -431,6 +431,24 @@ def test_boss_phase_defers_when_only_the_active_plan_proves_entry(runtime_dir):
     assert saved['boss']['entry_source'] == 'active_plan'
 
 
+def test_decision_log_entry_upgrades_active_plan_fallback_timestamp(runtime_dir):
+    _run_boss(runtime_dir, count=401, entry_plan_at=390)
+    entry_at = 1000 + 390 * STEP
+    measured_at = entry_at - STEP
+    value = _boss_state(month='1-1', tick=401)
+    value['policy']['plan']['attack'] = {
+        'general': 'G1', 'castle': 'ボス', 'side': 'attack',
+        'step': 'A:1:1', 'entry_evidence': 'measured_boss_entry',
+    }
+    row = {'decision': 'attack_observed', 'general': 'G1', 'castle': 'ボス',
+           'chart_step': 'A:1:1', 'at': measured_at}
+    audit.observe(runtime_dir, audit.capture(value), value, [row],
+                  now=1000 + 401 * STEP)
+    saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
+    assert saved['boss']['entry_observed_at'] == measured_at
+    assert saved['boss']['entry_source'] == 'decision_log'
+
+
 def test_boss_battle_after_measured_entry_prevents_the_record(runtime_dir):
     _run_boss(runtime_dir, count=401, entry_at=390, battle_at=400)
     assert audit.load_incidents(runtime_dir) == []
