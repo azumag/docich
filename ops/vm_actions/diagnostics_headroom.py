@@ -8,7 +8,7 @@ import re
 
 _SECTION_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
 _MAX_REPORTED_BYTES = 10_000_000
-_MAX_TOP_SECTIONS = 10
+_MAX_TOP_SECTIONS = 32
 
 
 def _safe_bytes(value):
@@ -18,13 +18,13 @@ def _safe_bytes(value):
 
 
 def summarize_section_bytes(document):
-    """Return the ten largest gateway-visible sections, without their values.
+    """Return up to 32 largest gateway-visible sections, without their values.
 
     Recompute sizes from the sanitized document returned by the gateway rather
-    than relying on the collector's bounded top-five accounting map. This makes
-    the alert's "others" bucket useful when several medium-sized sections
-    collectively dominate the envelope. Each size includes the JSON key and
-    value; the total excludes only outer braces and commas.
+    than relying on the collector's embedded accounting map. Reporting more
+    section names reduces the opaque others bucket while keeping issue output
+    bounded. Each size includes the JSON key and value; the total excludes
+    only outer braces and commas.
     """
     diagnostics = document.get("diagnostics") if isinstance(document, dict) else None
     if not isinstance(diagnostics, dict) or not diagnostics:
@@ -40,11 +40,13 @@ def summarize_section_bytes(document):
             size = 0
         byte_sizes[name] = _safe_bytes(size)
 
-    ranked = sorted(
+    ranked_all = sorted(
         byte_sizes.items(),
         key=lambda item: _safe_bytes(item[1]),
         reverse=True,
-    )[:_MAX_TOP_SECTIONS]
+    )
+    ranked = ranked_all[:_MAX_TOP_SECTIONS]
+    omitted_sections = max(0, len(ranked_all) - len(ranked))
     total = min(_MAX_REPORTED_BYTES, sum(byte_sizes.values()))
     top_total = sum(_safe_bytes(size) for _, size in ranked)
     others = max(0, total - top_total)
@@ -57,6 +59,14 @@ def summarize_section_bytes(document):
         percent = (size * 100) // total if total > 0 else 0
         compact_parts.append(f"{safe_name}={size}B ({percent}%)")
         lines.append(f"  - {safe_name}: {size} B ({percent}%)")
-    compact_parts.extend((f"others={others}B", f"total={total}B"))
-    lines.extend((f"  - others: {others} B", f"  - total: {total} B"))
+    compact_parts.extend((
+        f"others={others}B",
+        f"omitted={omitted_sections}",
+        f"total={total}B",
+    ))
+    lines.extend((
+        f"  - others: {others} B",
+        f"  - omitted_sections: {omitted_sections}",
+        f"  - total: {total} B",
+    ))
     return "; ".join(compact_parts), lines
