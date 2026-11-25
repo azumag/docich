@@ -132,7 +132,8 @@ def test_a_rich_merchant_takes_a_bargain_target_to_99_too():
     """Owner 2026-11-22: BARGAIN_TARGETS are stocked to 99 at 1000G+ as well."""
     mem = {'chapter': 1, 'month': '1-9', 'tick': 1, 'card_stock': {'クースカン': 50}}
     shop = plan(mem, shop_state(), {'クースカン': 24})
-    assert 'クースカン' not in b.RICH_MERCHANT_CARDS      # only a bargain target
+    # The 2026-11-25 purchase priority also lists every bargain target.
+    assert 'クースカン' in b.RICH_MERCHANT_CARDS
     assert shop['items'] == [['クースカン', 49]]
 
 

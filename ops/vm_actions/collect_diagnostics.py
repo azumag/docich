@@ -8201,6 +8201,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1513-duel-decline-funded",
             "hanjuku-chart-v1514-egg-ledger-not-remaining",
             "hanjuku-chart-v1515-monster-menu-total-cap",
+            "hanjuku-chart-v1516-card-purchase-priority",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
