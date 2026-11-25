@@ -76,15 +76,28 @@ def test_the_scene_advances_on_every_later_frame():
         assert 'camp_recall_interrupted' not in decisions(state)
 
 
-def test_a_dispatched_recall_waits_out_the_scene_and_ends_on_the_month_screen():
-    # The recall A was already sent: the scene advances with A and the dispatch
-    # wait is settled (unconfirmed, finitely) on the next screen, as before v286
-    # it was settled on the scene itself.
-    actions, state = decide(read_png(SCENE), recall_state(stage='await_dispatch'))
+def test_a_dispatched_recall_scene_coverage_waits_for_field_evidence():
+    # A has a receipt already. The concert scene covers the picker, but is not
+    # itself proof of acceptance and must not create the pre-send retry marker.
+    actions, state = decide(
+        read_png(SCENE), recall_state(stage='await_dispatch', input_sent=True))
     assert actions == [pad('a')]
+    assert 'camp_recall_scene_covered' in decisions(state)
     assert 'camp_recall_interrupted' not in decisions(state)
-    assert state['policy']['flow']['recall']['stage'] == 'await_dispatch'
-    _, state = decide(read_png(MONTH_MENU), state)
+    recall = state['policy']['flow']['recall']
+    assert recall['stage'] == 'await_dispatch'
+    assert recall['scene_covered'] is True
+    assert 'recall_interrupted' not in state['policy']['flow']
+
+    # A later text frame still belongs to the scene/month owner and cannot
+    # consume the dispatch receipt window.
+    steps = recall['steps']
+    assert recall_flow.camp_recall_step(
+        Screen([], None, '月初の案内文', kind='text'), state['policy'], None) is None
+    assert recall['steps'] == steps
+
+    # Only a field/picker observation can settle the covered request.
+    _, state = decide(Screen([], None, '', kind='map_target', marker=(90, 80)), state)
     assert 'camp_recall_unconfirmed' in decisions(state)
     assert 'recall' not in state['policy']
 
@@ -94,7 +107,8 @@ def test_a_sent_but_unclosed_recall_schedules_the_destination_roster_read():
     # "unconfirmed" and never asked the destination roster, so the general's
     # arrival could not be confirmed. The bounded read is scheduled instead.
     state = recall_state(stage='await_dispatch', input_sent=True, goal='ファルゲ')
-    _, state = decide(read_png(MONTH_MENU), state)
+    picker = Screen([], None, '', kind='map_target', marker=(90, 80))
+    _, state = decide(picker, state)
     assert 'camp_recall_unconfirmed' in decisions(state)
     due = state['policy']['roster_read_due']['ファルゲ']
     assert 70400 + recall_flow.RECALL_READ_DELAY <= due <= 70400 + recall_flow.RECALL_READ_DELAY + 10
