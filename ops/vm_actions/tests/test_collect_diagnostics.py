@@ -1664,6 +1664,10 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
         'hanjuku-chart-v1490-fort-recall-picker-owner-bounded',
         'hanjuku-chart-v1491-card-abandon-retreat-ban',
         'hanjuku-chart-v1492-boss-only-card-miss-eligibility',
+        'hanjuku-chart-v1493-card-open-bounded',
+        'hanjuku-chart-v1494-card-open-bounded-audit',
+        'hanjuku-chart-v1493-recall-scene-covered-dispatch',
+        'hanjuku-chart-v1495-recall-scene-covered-dispatch-audit',
     ):
         state['bot_version'] = marker
         assert module._project_corner_state(state)['bot_version'] == marker
