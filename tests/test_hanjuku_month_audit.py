@@ -2168,8 +2168,13 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     miss = {'schema': 1, 'event': 'decision', 'at': 1001,
             'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
             'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
-            'screen_kind': 'egg_battle_menu', 'reason': '携行切り札を開けず攻撃',
-            'observed_metric': {'cards_left': ['ノリウツール']}, **IDENTITY}
+            'screen_kind': 'egg_battle_menu', 'side': 'attack',
+            'reason': '携行切り札を開けず攻撃',
+            'observed_metric': {
+                'cards_left': ['ノリウツール'], 'scrolls': 3, 'cursor': 192,
+                'text': 'こうげきたいきゃく', 'empty_egg': False,
+                'summon_egg_unavailable': False, 'enemy_summon_observed': True,
+            }, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
     assert len(sealed) == 1
@@ -2177,15 +2182,55 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert incident['kind'] == 'card_miss'
     assert incident['auto_file'] is True
     assert incident['card'] == 'ノリウツール'
+    battle = incident['battle_event']
+    assert battle['side'] == 'attack'
+    assert battle['scrolls'] == 3 and battle['cursor'] == 192
+    assert battle['empty_egg'] is False
+    assert battle['summon_egg_unavailable'] is False
+    assert battle['enemy_summon_observed'] is True
+    assert battle['screen_text'] == 'こうげきたいきゃく'
+    assert battle['cards_left'] == ['ノリウツール']
     assert '切り札未使用' in audit._issue_title(incident)
     body = audit.render(incident)
     assert 'ノリウツール' in body and 'card_miss' in body
+    assert 'scrolls: 3' in body and 'cursorY: 192' in body
+    assert 'こうげきたいきゃく' in body and 'side: attack' in body
     comment = audit.render_comment(incident)
     assert '再発' in comment
     # The same decision observed again does not seal a second incident.
     audit.observe(runtime_dir, audit.capture(second), state(1, '1-1', 2), [miss],
                   now=1002, on_sealed=sealed.append)
     assert len(sealed) == 1
+
+
+def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
+    first = state(1, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
+    second = state(1, '1-1', 1)
+    miss = {
+        'schema': 1, 'event': 'decision', 'at': 1001,
+        'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
+        'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
+        'side': {'unexpected': 'value'}, 'screen_kind': 'egg_battle_menu',
+        'reason': '携行切り札を開けず攻撃',
+        'observed_metric': {
+            'cards_left': 'not-a-list', 'scrolls': True, 'cursor': 225,
+            'text': 'x' * 200, 'empty_egg': 'false',
+            'summon_egg_unavailable': 1, 'enemy_summon_observed': None,
+        },
+        **IDENTITY,
+    }
+    sealed = []
+    audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
+                  on_sealed=sealed.append)
+    battle = sealed[0]['battle_event']
+    assert battle['side'] is None
+    assert battle['cards_left'] is None
+    assert battle['scrolls'] is None and battle['cursor'] is None
+    assert battle['empty_egg'] is None
+    assert battle['summon_egg_unavailable'] is None
+    assert battle['enemy_summon_observed'] is None
+    assert battle['screen_text'] == 'x' * 96
 
 
 def test_boss_battle_starts_are_counted_beyond_the_truncated_decision_map(tmp_path):
