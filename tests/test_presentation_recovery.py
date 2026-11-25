@@ -354,7 +354,9 @@ def test_legacy_tree_cleanup_reaps_child_mirror_and_preserves_shared_process(tmp
     import subprocess,sys,time
     from docich.process_tree import terminate_process_tree,is_running
     child_file=tmp_path/'child.pid'
-    source="import subprocess,time,pathlib; p=subprocess.Popen(['sleep','60'],start_new_session=True); pathlib.Path(%r).write_text(str(p.pid)); time.sleep(60)"%str(child_file)
+    source=("import subprocess,time,pathlib; p=subprocess.Popen(['sleep','60'],start_new_session=True); "
+            "path=pathlib.Path(%r); tmp=path.with_suffix('.tmp'); tmp.write_text(str(p.pid)); "
+            "tmp.replace(path); time.sleep(60)")%str(child_file)
     guardian=subprocess.Popen([sys.executable,'-c',source],start_new_session=True)
     game=subprocess.Popen(['sleep','60'],start_new_session=True)
     shared=subprocess.Popen(['sleep','60'],start_new_session=True)

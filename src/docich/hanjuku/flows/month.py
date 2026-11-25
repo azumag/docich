@@ -223,13 +223,36 @@ def _month_nav_stuck(mem):
     return isinstance(nav, dict) and nav.get('cancel_sent') is True
 
 
-def _month_opened(move, mem, label: str):
-    """'here' from the guarded walk, or a blind-nav plan ending on ``label``.
+def _month_menu_hint_only(screen):
+    """Whether the readable foreground glyphs can only belong to the menu hint.
 
-    The blind plan's trailing 'a' opens the target exactly like the 'here'
-    branch's A, so callers apply the same opened-state (month_sub, refill
-    stage, exit/merchant flags). The marker is one tick old: reaching the
-    guarded walk below clears it, and a stale label cannot match a walk move.
+    The hand can cover part of 「じゅうじキー」, so an exact substring check
+    is too strict. Accept a two-or-more-character subsequence only; any other
+    dialogue remains owned by the foreground-text handler.
+    """
+    body = _month_dialog_body(screen).replace(' ', '')
+    # The hand may hide the dakuten/small-kana tile; normalize only the
+    # corresponding base glyphs that can occur in this fixed hint.
+    body = body.translate(str.maketrans({'し': 'じ', 'ゆ': 'ゅ', 'き': 'キ'}))
+    hint = 'じゅうじキー'
+    if len(body) < 2:
+        return False
+    pos = 0
+    for char in body:
+        pos = hint.find(char, pos)
+        if pos < 0:
+            return False
+        pos += 1
+    return True
+
+
+def _month_opened(move, mem, label: str):
+    """'here' from the guarded walk, or a separately verified blind-nav A.
+
+    The blind plan only positions the cursor. Its later A is sent on a fresh
+    frame after the exact target row is observed, then this marker lets callers
+    apply the same opened-state (month_sub, refill stage, exit/merchant flags).
+    A stale label cannot match a walk move.
     """
     if move == 'here':
         return True
@@ -276,9 +299,10 @@ def _month_menu_move(screen: Screen, mem, label: str):
     # message, not the menu. The only exempt body is the menu's own じゅうじキー
     # hint line; any other foreground text is owned by _month_text_advance or
     # the hold path.
-    dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
+    dialogue_free = (_month_menu_quiet(screen) or screen.has('じゅうじキー')
+                     or (hand and hand[1] >= 175 and _month_menu_hint_only(screen)))
     exhausted = _blind_nav_exhausted(mem, label)
-    if (not exhausted
+    if (not exhausted and screen.kind != 'discharge_menu'
             and ((hand and hand[1] >= 175) or _month_nav_stuck(mem))
             and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
             and screen.has(label.replace('!', '').replace('！', ''))
@@ -291,25 +315,47 @@ def _month_menu_move(screen: Screen, mem, label: str):
         # right, confirm, bounded.
         row_col = _month_menu_row_col(screen, label)
         state = mem.get('month_blind_nav')
-        if not isinstance(state, dict) or state.get('label') != label:
-            state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
-        if row_col is not None and state['tries'] < MONTH_BLIND_NAV_LIMIT:
-            state['tries'] += 1
-            row, col = row_col
+        if (not isinstance(state, dict) or state.get('label') != label
+                or state.get('month') != mem.get('month')
+                or state.get('row_col') != list(row_col)):
+            state = mem['month_blind_nav'] = {
+                'label': label, 'month': mem.get('month'),
+                'row_col': list(row_col), 'tries': 0}
+        row, col = row_col
+        # The old blind walk appended A to the same batch as its cursor
+        # positioning. If one directional press was dropped or the menu was
+        # covered by a foreground panel, A could confirm a different row
+        # (live g1190 ch9 73-8: the supposed ちくじょう open produced a
+        # discharge_menu). A fresh frame must show the exact target row under
+        # the hand before the confirm is allowed.
+        current = _current(screen)
+        current_row_col = None
+        if current is not None:
+            current_row = (current[1] - 47) // 16
+            if 0 <= current_row <= 3:
+                current_row_col = (current_row, 1 if current[0] >= 128 else 0)
+        current_label = ((current[2] or '').replace('!', '').replace('！', '').replace('〜', '～')
+                         if current is not None else '')
+        target_label = (label or '').replace('!', '').replace('！', '').replace('〜', '～')
+        if (screen.kind == 'month_menu' and current is not None
+                and current_label == target_label and current_row_col == row_col):
+            mem.pop('month_blind_nav', None)
+            mem['month_blind_opened'] = label
+            _record(mem, 'month_blind_nav_confirmed', screen=screen.kind, choice=label,
+                    observed_metric={'row': row, 'col': col,
+                                     'tries': int(state.get('tries') or 0)},
+                    reason='盲操作後の新しい観測で対象行のカーソルを確認したため確定する')
+            return [pad('a')]
+        tries = int(state.get('tries') or 0)
+        if tries < MONTH_BLIND_NAV_LIMIT:
+            state['tries'] = tries + 1
             _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
                     observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
-                                     'row': row, 'col': col,
+                                     'row': row, 'col': col, 'confirmed': False,
                                      'limit': MONTH_BLIND_NAV_LIMIT},
-                    reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
-            # Give each press time to reach the menu's own scan: a rapid
-            # burst is dropped (the same cadence lesson as the しろ list, v920).
-            keys = (['up'] * 4 + ['right' if col else 'left']
-                    + ['down'] * row + ['a'])
-            # The blind 'a' opens the target like the 'here' branch's A: mark
-            # which label it confirmed so the caller applies the same
-            # opened-state (month_sub, refill stage, exit/merchant flags)
-            # instead of returning the steps with the open unrecorded.
-            mem['month_blind_opened'] = label
+                    reason='月メニューのカーソル位置が読めないため、対象行まで移動して次の画面で選択を照合する')
+            # Position only. Never combine blind navigation with a purchase/exit confirm.
+            keys = (['up'] * 4 + ['right' if col else 'left'] + ['down'] * row)
             steps = []
             for key in keys:
                 steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
