@@ -1415,7 +1415,12 @@ def _hero_retreat_open(mem, cur):
         _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
                 general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
                 observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
-                                 'card_confirmation': 'unclassified'},
+                                 'card_confirmation': 'unclassified',
+                                 # docich#5192/#5194: export the unclassified
+                                 # selection so the audit's cards_unconfirmed_only
+                                 # downgrade fires on the retreat path too. #5158/
+                                 # #5181 covered only the loss (battle_result) path.
+                                 'cards_unclassified': cur.get('cards_unclassified', [])},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
     elif (not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur)):
@@ -1447,6 +1452,7 @@ def _hero_retreat_open(mem, cur):
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_used': cur.get('cards_used', []),
+                             'cards_unclassified': cur.get('cards_unclassified', []),
                              'card_pending': (cur.get('card_flow') or {}).get('card')
                              if isinstance(cur.get('card_flow'), dict) else None,
                              'melee_balance': _melee_balance(cur),
