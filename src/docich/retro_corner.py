@@ -2834,9 +2834,14 @@ class RetroCornerManager:
         from .agent.fence import AgentFence, shared_section
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .naming import runtime_directory
-        game = state.get('game')
+        # The corner state of a running hanjuku corner carries ``game``; an older
+        # state only has the owned identity, whose game is authoritative.
+        owned = state.get('bot_identity')
+        game = state.get('game') or (owned.get('game') if isinstance(owned, dict) else None)
         if not is_hanjuku(game):
-            raise RetroCornerError('Hanjuku runtime identity missing before observation')
+            if not isinstance(owned, dict):
+                raise RetroCornerError('Hanjuku runtime identity missing before observation')
+            game = ORIGINAL
         event = module(game, 'hanjuku_run').event
         hotload = module(game, 'hanjuku_hotload')
         from .adapters.base import AdapterError
