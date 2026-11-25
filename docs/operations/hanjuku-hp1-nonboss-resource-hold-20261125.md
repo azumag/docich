@@ -1,4 +1,4 @@
-# 半熟英雄: ボス戦以外の相手HP1では資源を使わない（v1505、2026-11-25）
+# 半熟英雄: ボス戦以外の相手HP1では資源を使わない（v1506、2026-11-25）
 
 ## オーナー指示
 
@@ -33,7 +33,7 @@ observed_metric.card_damage_gate.role: single_card_lethal
   選択せず B で閉じる（`flows/battle_menus`）。
 - 防衛の切り札一覧読み（`_defense_kit_read_window`）とおくのて最後の手段
   （`_defender_last_resort`）も HP1 では開かない。
-- `BOT_VERSION` v1505、診断の hot-load 既知バージョンへ追加。
+- `BOT_VERSION` v1506、診断の hot-load 既知バージョンへ追加。
 
 ## ボス戦の扱い
 
