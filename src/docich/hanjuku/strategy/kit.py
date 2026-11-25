@@ -216,7 +216,13 @@ CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancellin
 NORMAL_CARD_UNREADABLE_LIMIT = 3  # an ordinary sortie escapes the list sooner (owner: depart anyway)
 SORTIE_CONFIRM_UNREADABLE_LIMIT = 3  # an ordinary unreadable confirmation departs after this many
 SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
-CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
+# Owner 2026-11-26: keep every catalogue kind. The old cap (24 of 32) evicted
+# the oldest ledger entries when a panel read added kinds, and could drop the
+# proven 0 of a purchase target: S2 never buys an unknown kind, so the dropped
+# target stayed unbuyable (live g1342 14-2: ミックミー/クースカン/ノリウツール
+# became unknown again when 24 overflowed). The catalogue is only 32 names, so
+# the adjusted-chart request can carry them all.
+CARD_STOCK_LIMIT = len(reference.ALL_CARD_IDS)  # every catalogue kind stays in the ledger
 
 
 def _card_panel_complete(inventory) -> bool:
@@ -349,21 +355,22 @@ def observe_full_card_inventory(mem, rows):
     merchant refused, a card returned or spent outside the bot's ledger).
 
     Returns ``(read_cards, dropped)``: the cards written, and the entries the
-    unchanged ``CARD_STOCK_LIMIT`` (24) dropped -- the read is still the proof,
-    the dropped names are only reported so a truncated ledger stays visible.
+    ``CARD_STOCK_LIMIT`` dropped -- with the 2026-11-26 limit (every catalogue
+    kind) nothing is dropped, and the list stays as a guard should the
+    catalogue ever outgrow the bound.
 
     The limit keeps the cards the bot can actually use first: positive stock
     (in count order), then the proven zeros some plan can still buy
     (``_buy_targets``), in the owner's purchase-priority order, then the other
     zeros; card ID inside each rank.
-    S2's window reads only inserted the rows they saw, but a full read always
-    rebuilds all 32 catalogue kinds. Dropping the lowest IDs threw away the
-    common 99s (イッテツーン at ID 0) that sorties carry; dropping a usable
-    0 loses it for good, because S2 never buys an unknown kind (ファバード
-    and エンジェリン are high-ID rich-merchant cards). With the 2026-11-25
-    purchase priority the 16 target kinds compete for those slots, so the
-    zeros kept are the ones the merchant plan buys first. Ties stay in card-ID
-    order, the list's own order, so the choice is deterministic.
+    A full read always rebuilds all 32 catalogue kinds. Dropping the lowest IDs
+    threw away the common 99s (イッテツーン at ID 0) that sorties carry;
+    dropping a usable 0 loses it for good, because S2 never buys an unknown
+    kind (ファバード and エンジェリン are high-ID rich-merchant cards). With
+    the 2026-11-25 purchase priority the 16 target kinds compete for those
+    slots, so if the limit ever binds the zeros kept are the ones the merchant
+    plan buys first. Ties stay in card-ID order, the list's own order, so the
+    choice is deterministic.
     """
     shown = {row['card']: row['stock'] for row in rows}
     stock = mem.setdefault('card_stock', {})
