@@ -1464,7 +1464,11 @@ def battle_menu_step(screen: Screen, mem):
         return [pad('a')]
     if not flow and cur.get('egg_battle') and 'きりふだ' in screen.text:
         rare = _available_rare_tactic(mem, cur)
-        move = _battle_menu_move(screen, mem, 'きりふだ') if rare else None
+        # docich#5600 (owner 2026-11-25: 資源は使い切る): a carried, usable
+        # card is worth opening even without a rare tactic. Leaving it unopened
+        # while attacking melee is the card_miss signal the audit files.
+        carried = _carried_card_left(mem, cur) if rare is None else None
+        move = _battle_menu_move(screen, mem, 'きりふだ') if (rare or carried) else None
         if move == []:
             return []  # an identical frame is still not the card row
         if isinstance(move, dict) and move.get('buttons') == ['b']:
@@ -1473,16 +1477,21 @@ def battle_menu_step(screen: Screen, mem):
             # bounded unaccepted close, not a step toward the row.
             return _emit_moves(move)
         if move is not None:
-            tid = rare['tactic_id']
-            cur.setdefault('tactics_done', []).append(tid)
-            cur['card_flow'] = {'card': 'キャトルミュー', 'stage': 'list' if move == 'here' else 'down',
+            if rare is not None:
+                card, tid = 'キャトルミュー', rare['tactic_id']
+                cur.setdefault('tactics_done', []).append(tid)
+            else:
+                card, tid = carried, None
+            cur['card_flow'] = {'card': card, 'stage': 'list' if move == 'here' else 'down',
                                 'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp'),
                                 'enemy_soldiers_at_open': cur.get('enemy_soldiers')}
-            _record(mem, 'battle_card', **_battle_labels(cur), card='キャトルミュー',
+            _record(mem, 'battle_card', **_battle_labels(cur), card=card,
                     observed_metric={'enemy_hp': cur.get('enemy_hp'), 'egg_battle': True},
                     reason=('実携行のキャトルミューをボスへ使用し90ダメージを狙う'
-                            if cur.get('enemy') in chart.BOSSES.values() else
-                            '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'))
+                            if card == 'キャトルミュー' and cur.get('enemy') in chart.BOSSES.values() else
+                            '実携行のキャトルミューを敵EMへ使用し224ダメージと石化を狙う'
+                            if card == 'キャトルミュー' else
+                            '召喚獣戦で実際に携行している切り札を開いて使う'))
             return [pad('a')] if move == 'here' else _emit_moves(move)
     if cur.get('survival') or _survival_needed(cur):
         res = _survival_menu(screen, mem, cur)
