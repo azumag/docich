@@ -1092,13 +1092,19 @@ def unknown_hold_advance(screen, mem, actions, digest, phase=None):
     watch['total'] = int(watch.get('total') or 0) + 1
     mem['unknown_hold_watch'] = watch
     in_battle = bool(mem.get('battle'))
+    # A message box whose sprite keeps animating never repeats a digest, so the
+    # identical-frame bound is never reached and the box is held forever
+    # (measured chapter 12: thousands of field_menu holds on a text panel).
+    # Count consecutive plain-text frames like the battle case and send the same
+    # bounded A to advance it.
+    plain = plain_text_hold(screen)
     # After one press this screen already proved it does not clear itself:
     # waiting the full six frames again just costs frames (g1163 2026-11-12
     # 22:1x: 66 no-input `unknown` frames in ten minutes, mostly three-frame
     # episodes). The first episode is unchanged.
     limit = UNKNOWN_HOLD_ADVANCE - 1 if watch.get('pressed') else UNKNOWN_HOLD_ADVANCE
     if watch['n'] < limit and not (
-            in_battle and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
+            (in_battle or plain) and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
         return actions
     presses = int(watch.get('presses') or 0)
     if presses >= UNKNOWN_HOLD_BURST_MAX:
@@ -1249,6 +1255,36 @@ def y_jump_close_settle_step(screen, mem, generic):
 # The same freeze reaches the egg and monster command boxes, which ignore one
 # button exactly like the ordinary たまごをつかう／きりふだ／たいきゃく box.
 BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
+
+
+STATUS_PANEL_LABELS = ('ステータス', 'てきぜんいん', 'ぜんいん', 'しょうぐん')
+STATUS_PANEL_HOLD_LIMIT = 3
+
+
+def status_panel_close_step(screen, mem, phase, actions):
+    """Close a castle/sortie status panel that the policy has no task for.
+
+    Measured chapter 12: 出撃ステータス / てきぜんいん panels opened from the
+    field menu cost thousands of no-input holds because the panel's sprite
+    animates (every frame is a new digest, so the frozen-screen fallback never
+    fires). B is the panel's own exit key; bounded so a real menu is untouched.
+    """
+    if actions or phase != 'field_menu' or screen.kind != 'text':
+        mem.pop('status_panel_holds', None)
+        return None
+    text = ''.join((screen.text or '').split())
+    if not any(label in text for label in STATUS_PANEL_LABELS):
+        mem.pop('status_panel_holds', None)
+        return None
+    n = int(mem.get('status_panel_holds') or 0) + 1
+    if n < STATUS_PANEL_HOLD_LIMIT:
+        mem['status_panel_holds'] = n
+        return None
+    mem['status_panel_holds'] = 0
+    decision_log._record(mem, 'status_panel_close', screen=screen.kind, phase=phase,
+                         observed_metric={'text': text[:40], 'holds': n},
+                         reason='城メニューの出撃ステータス/敵全員パネルを読めず無入力が続くため、Bで閉じて再観測する')
+    return [pad('b')]
 
 
 def field_fallback_actions(kind):
@@ -2620,6 +2656,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 phase=phase, observed_metric={'streak': streak},
                 reason='商店の退出確認を所有者なしで検出したため、既定のAで閉じて再観測する')
             actions = [pad(hint)]
+    if not actions:
+        status_close = status_panel_close_step(screen, mem, phase, actions)
+        if status_close is not None:
+            actions = status_close
     if not actions:
         hint = shop_list_unowned_input(
             kind, streak,
