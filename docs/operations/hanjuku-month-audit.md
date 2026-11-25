@@ -107,6 +107,9 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 
 - 将軍・出撃元・対象・目的・step・misses・理由・直前120秒の決定・
   計画/在城/flow/statsを1件32KB以内で保存する。
+- `order_failed` の終端recordには、実行stepから解決した `purpose`・`general`・`source`・`target` を補完する。
+  暫定注文（`chart_adjust.interim_order`）も対象に含め、`chart_plan` に注文が無くても
+  `move` / `house` / `repair` / `recall` / `defend` の失敗を出撃失敗Issueから除外できる。
 - 同じ `(chapter, kind, reason_code, step_local, general, target)` は900秒cooldown。
 - issue題名は `[半熟英雄] 出撃失敗/キャンセル: ch<章> <将軍またはstep>`。
 - `sortie_launch_unverified`（再試行中）、`target_not_under_marker`（位置再測定）、
