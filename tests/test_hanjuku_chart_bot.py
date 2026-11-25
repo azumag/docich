@@ -16,6 +16,7 @@ from docich import hanjuku_chart as chart
 from docich import hanjuku_commentary, hanjuku_narration, hanjuku_policy as policy
 from docich import pulse_volume
 from docich.hanjuku_bot import classify, decide
+from docich.hanjuku.flows import battle_menus as B
 from docich.hanjuku_font import UNKNOWN, read_lines
 from docich.hanjuku_screen import Screen
 
@@ -4562,7 +4563,7 @@ def test_summon_menu_records_a_missed_carried_card_for_the_audit():
                                    'planned_cards': ['ノリウツール'],
                                    'cards_used': [], 'cards_selected': [],
                                    'cards_unclassified': [], 'cards_missing': [],
-                                   'summon_card_scroll': 3}}}
+                                   'summon_card_scroll': B.SUMMON_CARD_SCROLL_LIMIT}}}
     actions, state = decide(c.frame(), state)
     assert actions and actions[0]['buttons'] == ['a']
     assert state['policy']['battle'].get('boss_card_missed_noted') is True
