@@ -931,6 +931,13 @@ def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
                  or (recall.get('stage') == 'dest' and kind == 'map_target'))
             and (kind in ('map', 'map_target', 'text')
                  or (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no'))
+                 # docich#5452: a castle menu during destination steering is
+                 # mode-loss evidence only the recall's own mis-fired input
+                 # could open; route it back so the recall can close it and
+                 # restart instead of stalling behind someone else's menu.
+                 or (recall.get('stage') in recall_flow.MOVE_MODE_STAGES
+                     and kind in ('castle_menu', 'general_list', 'castle_info',
+                                  'main_menu'))
                  # Between a 砦's screens the default A would pick the list's
                  # top row or confirm the marker on the 砦 itself, which
                  # cancels the sortie.

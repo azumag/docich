@@ -846,6 +846,12 @@ def _camp_event(record):
         'picker_closed': metric.get('picker_closed') is True,
         'escape_move': metric.get('escape_move') is True,
         'interrupted': metric.get('interrupted') is True,
+        'mode_lost': metric.get('mode_lost') is True,
+        'recent_screens': [kind for kind in
+                           (_bounded_text(raw, 32) for raw in
+                            (metric.get('recent_screens')
+                             if isinstance(metric.get('recent_screens'), list) else [])[:6])
+                           if kind is not None],
         'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
         'screen_text': _bounded_text(metric.get('screen_text'), 120),
         'observed_general': _bounded_text(metric.get('observed_general'), 48),
