@@ -560,3 +560,17 @@ OPENCODE_API_KEY=proxy-injected dsh --profile headless --approval-policy never -
 - 設定: `~/.dsh/profiles/headless/cordis.patch.yml`（既定モデル、送信テレメトリ無効、コマンド上限10分）。環境 `full` のセットアップスクリプトが新しいセッションで同じものを作る。
 - Git: worktree の中では、dsh はファイルを書けるが、Gitの記録（add/commit）には書き込めない（実測）。コミットは Claude が行う。
 - 作業が終わった worktree は `git worktree remove` で片付ける。
+
+## 付録C. PR 1 の実装状況（2026-11-25）
+
+PR 1 の範囲は実装済み。確認済みの内容と、元コーナー側に入れた変更を残す。
+
+- 生成ツール `tools/hanjuku_speedrun_fork.py`（`generate` / `check`）。コピーは `src/docich/hanjuku_speedrun/`、`brains/hanjuku_speedrun/`、`config/games/hanjuku-speedrun.toml`、`tests/hanjuku_speedrun/`（テスト661本）。`hanjuku_family` と運用者専用モジュールはコピーしない。
+- 共通側の呼び分け: `src/docich/hanjuku_family.py`。元コーナーの経路は同じ名前束縛・同じ呼び出しのまま。
+- 起動: カタログに `manual_only` で登録。`hanjuku_corner --game hanjuku-speedrun`、`start-hanjuku-speedrun`（VM 操作・認可・workflow）、WebUI。再開系（resume-latest / new-game）は元コーナーのみ。
+- 検証: 元の半熟テストとコピーしたテストを同じ pytest セッションで流して 25,745 件が通過（スキップ45）。コピー側のスキップは `TEST_SKIPS` に理由付きで持つ。
+- **元コーナー側に入れた変更（挙動は同じ。スピードランの runtime が同じ `runtimes/` に並ぶための分離）**:
+  - `hanjuku_resume.py` / `hanjuku_resume_recovery.py` / `hanjuku_narration.py`: 別ゲームの runtime を走査から除外（`retroarch_boundary.runtime_game`）。入れないと、スピードランの後に元コーナーが開始できなくなる。
+  - `retro_corner.py`: `manual_only` の game 行を共通の抽選リストと周期から外す。
+  - `hanjuku_hotload.py` は元のまま。コピー側の動的モジュール名は生成ツールの完全一致パッチで直す。
+- 残り（後続 PR / 凍結時に扱う）: `check` は FORK.json の `source_commit` から作り直して比べるため、squash merge するとコミットが無くなる。マージ後に main のコミットから再生成すること。生成対象外の余分なファイルは検出しない。スピードランのログは R2 退避まで prune しない。`cancel-hanjuku` などの運用者向け操作はスピードラン未対応（停止は WebUI）。コメント用プロフィールは PR 5。
