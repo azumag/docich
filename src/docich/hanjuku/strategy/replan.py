@@ -1467,8 +1467,10 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target) or card_orders.get(target)
         cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else None)
-        if chart.is_boss_castle(target):
-            cards = []   # 波: strict kit waits for nobody — carry what is there
+        # Boss waves carry the stock-aware fallback. A source/roster probe
+        # is not a committed sortie and remains cardless.
+        if chart.is_boss_castle(target) and general == MOVE_ANY_GENERAL:
+            cards = []
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
@@ -1507,7 +1509,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 except Exception:
                     roster_probe = False
             boss_wave_orders.append({
-                'general': general2, 'target': boss, 'cards': [], 'source': source2,
+                'general': general2, 'target': boss,
+                'cards': [] if probe else _stock_cards(mem, None), 'source': source2,
                 'after': None, 'purpose': 'attack',
                 'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
                           else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe

@@ -47,7 +47,7 @@ class DiagnosticsHeadroomMonitorContractTest(unittest.TestCase):
 
 
 class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
-    def test_reports_ten_largest_gateway_sections_not_just_collector_top_five(self):
+    def test_reports_all_sections_within_the_32_section_bound(self):
         bad_key = "bad" + chr(10) + "::error::inject"
         diagnostics = {
             "corners": "c" * 10558,
@@ -62,8 +62,7 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
             "prediction": "p" * 500,
             "nethack_history": "n" * 400,
             "miscellaneous": "z" * 300,
-            # The collector's embedded map is intentionally only five entries.
-            # The monitor must inspect the sanitized gateway document itself.
+            # The collector's embedded map must never be treated as a section.
             "meta": {"section_bytes": {
                 "top": {"collector_only": 999999},
                 "others": 1,
@@ -71,26 +70,45 @@ class DiagnosticsHeadroomSummaryTest(unittest.TestCase):
             }},
         }
         compact, lines = _HEADROOM.summarize_section_bytes({"diagnostics": diagnostics})
-        self.assertIn("corners=", compact)
-        self.assertIn("workers=", compact)
+        for name in (
+            "corners", "workers", "ai", "markets", "orders",
+            "storage_breakdown", "host_metrics", "hanjuku_tactical",
+            "prediction", "nethack_history", "miscellaneous", "meta",
+        ):
+            self.assertIn(f"{name}=", compact)
         self.assertIn("?=", compact)
-        self.assertIn("orders=", compact)
-        self.assertIn("prediction=", compact)
-        self.assertNotIn("nethack_history=", compact)
-        self.assertNotIn("miscellaneous=", compact)
         self.assertNotIn("collector_only", compact)
         self.assertNotIn("inject", compact)
         self.assertNotIn("cccc", compact)
         self.assertNotIn("wwww", compact)
-        self.assertIn("others=", compact)
+        self.assertIn("others=0B", compact)
+        self.assertIn("omitted=0", compact)
         self.assertIn("total=", compact)
         section_rows = [
             line for line in lines
             if line.startswith("  - ")
             and not line.startswith("  - others:")
+            and not line.startswith("  - omitted_sections:")
             and not line.startswith("  - total:")
         ]
-        self.assertEqual(len(section_rows), 10)
+        self.assertEqual(len(section_rows), len(diagnostics))
+
+    def test_section_output_is_capped_and_reports_omitted_count(self):
+        diagnostics = {
+            f"section_{index:02d}": "x" * (40 - index)
+            for index in range(36)
+        }
+        compact, lines = _HEADROOM.summarize_section_bytes({"diagnostics": diagnostics})
+        self.assertIn("section_00=", compact)
+        self.assertIn("section_31=", compact)
+        self.assertNotIn("section_32=", compact)
+        self.assertIn("omitted=4", compact)
+        self.assertIn("others=", compact)
+        section_rows = [
+            line for line in lines
+            if line.startswith("  - section_")
+        ]
+        self.assertEqual(len(section_rows), 32)
 
     def test_unserializable_section_is_zeroed(self):
         compact, _ = _HEADROOM.summarize_section_bytes({
