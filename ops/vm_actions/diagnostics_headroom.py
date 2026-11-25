@@ -3,11 +3,12 @@
 Only fixed-shape section names and non-negative byte counts are returned.
 No section values or arbitrary diagnostics text cross into GitHub issue bodies.
 """
+import json
 import re
 
-_SECTION_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\Z")
+_SECTION_NAME = re.compile(r"[A-Za-z0-9_]{1,64}\\Z")
 _MAX_REPORTED_BYTES = 10_000_000
-_MAX_TOP_SECTIONS = 5
+_MAX_TOP_SECTIONS = 10
 
 
 def _safe_bytes(value):
@@ -17,21 +18,36 @@ def _safe_bytes(value):
 
 
 def summarize_section_bytes(document):
-    """Return a one-line issue-safe summary and Markdown summary lines."""
+    """Return the ten largest gateway-visible sections, without their values.
+
+    Recompute sizes from the sanitized document returned by the gateway rather
+    than relying on the collector's bounded top-five accounting map. This makes
+    the alert's "others" bucket useful when several medium-sized sections
+    collectively dominate the envelope. Each size includes the JSON key and
+    value; the total excludes only outer braces and commas.
+    """
     diagnostics = document.get("diagnostics") if isinstance(document, dict) else None
-    meta = diagnostics.get("meta") if isinstance(diagnostics, dict) else None
-    accounting = meta.get("section_bytes") if isinstance(meta, dict) else None
-    top = accounting.get("top") if isinstance(accounting, dict) else None
-    if not isinstance(top, dict) or not top:
+    if not isinstance(diagnostics, dict) or not diagnostics:
         return "unavailable", ["- section_bytes: unavailable"]
 
-    total = _safe_bytes(accounting.get("total"))
-    others = _safe_bytes(accounting.get("others"))
+    byte_sizes = {}
+    for name, value in diagnostics.items():
+        try:
+            entry = json.dumps(name, ensure_ascii=True) + ":" + json.dumps(
+                value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+            size = len(entry.encode("utf-8"))
+        except (TypeError, ValueError):
+            size = 0
+        byte_sizes[name] = _safe_bytes(size)
+
     ranked = sorted(
-        top.items(),
+        byte_sizes.items(),
         key=lambda item: _safe_bytes(item[1]),
         reverse=True,
     )[:_MAX_TOP_SECTIONS]
+    total = min(_MAX_REPORTED_BYTES, sum(byte_sizes.values()))
+    top_total = sum(_safe_bytes(size) for _, size in ranked)
+    others = max(0, total - top_total)
 
     compact_parts = []
     lines = ["- section_bytes:"]
