@@ -8185,6 +8185,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1506-hp1-nonboss-resource-hold",
             "hanjuku-chart-v1507-verified-month-blind-nav",
             "hanjuku-chart-v1508-score-pressure",
+            "hanjuku-chart-v1509-card-at-hp1-audit",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",

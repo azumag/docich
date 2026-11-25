@@ -2432,6 +2432,102 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     assert battle['screen_text'] == 'x' * 96
 
 
+def test_hp1_card_decision_seals_an_auto_file_incident(runtime_dir):
+    # Owner 2026-11-25: a non-boss enemy at HP1 must not spend a card. The
+    # live g1342 ミックミー/マフィン case is the regression this alarm watches.
+    battle_state = {'ally': 'どうし', 'enemy': 'マフィン', 'castle': None,
+                    'side': 'attack', 'ally_hp': 23, 'enemy_soldiers': 1}
+    first = state(7, '12-9', 0)
+    first['policy']['battle'] = dict(battle_state)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
+    second = state(7, '12-9', 1)
+    second['policy']['battle'] = dict(battle_state)
+    card = {
+        'schema': 1, 'event': 'decision', 'at': 1001,
+        'decision': 'battle_card', 'card': 'ミックミー', 'chapter': 7,
+        'ally_hp': 23, 'enemy': 'マフィン', 'enemy_hp': 1,
+        'screen_kind': 'battle', 'reason': '調整チャート既定: 開幕使用',
+        'resulting_event': 'card_planned',
+        'observed_metric': {'stage': 'battle',
+                            'card_damage_gate': {'role': 'single_card_lethal'}},
+        **IDENTITY,
+    }
+    sealed = []
+    audit.observe(runtime_dir, audit.capture(first), second, [card], now=1001,
+                  on_sealed=sealed.append)
+    assert len(sealed) == 1
+    incident = sealed[0]
+    assert incident['kind'] == 'battle_card_at_hp1'
+    assert incident['auto_file'] is True
+    assert incident['card'] == 'ミックミー'
+    battle = incident['battle_event']
+    assert battle['enemy'] == 'マフィン' and battle['enemy_hp'] == 1
+    assert battle['ally_hp'] == 23 and battle['enemy_soldiers'] == 1
+    assert battle['resulting_event'] == 'card_planned'
+    assert battle['damage_role'] == 'single_card_lethal'
+    assert 'HP1で切り札' in audit._issue_title(incident)
+    body = audit.render(incident)
+    assert 'ミックミー' in body and 'battle_card_at_hp1' in body
+    assert '敵 1' in body and 'resulting_event' in body
+    comment = audit.render_comment(incident)
+    assert '再発' in comment and 'ミックミー' in comment
+    dry = audit.file_issue(runtime_dir, dry_run=True)
+    assert dry['status'] == 'dry_run'
+    assert 'HP1で切り札' in dry['title'] and 'ミックミー' in dry['body']
+    # The same decision observed again does not seal a second incident.
+    audit.observe(runtime_dir, audit.capture(second), state(7, '12-9', 2), [card],
+                  now=1002, on_sealed=sealed.append)
+    assert len(sealed) == 1
+
+
+@pytest.mark.parametrize('overrides', [
+    {'enemy': 'クイーン'},                 # chapter boss name
+    {'castle': 'ボス'},                    # boss castle
+    {'enemy_hp': 2},                       # not HP1
+    {'decision': 'battle_card_selected'},  # not the planning record
+    {'card': None},                        # no card identity
+])
+def test_hp1_card_alarm_skips_boss_other_hp_and_missing_card(runtime_dir, overrides):
+    battle_state = {'ally': 'どうし', 'enemy': 'マフィン', 'castle': None,
+                    'side': 'attack', 'ally_hp': 23, 'enemy_soldiers': 1}
+    first = state(7, '12-9', 0)
+    first['policy']['battle'] = dict(battle_state)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
+    second = state(7, '12-9', 1)
+    second['policy']['battle'] = dict(battle_state)
+    card = {'schema': 1, 'event': 'decision', 'at': 1001,
+            'decision': 'battle_card', 'card': 'ミックミー', 'chapter': 7,
+            'ally_hp': 23, 'enemy': 'マフィン', 'enemy_hp': 1,
+            'reason': 'test', **IDENTITY, **overrides}
+    sealed = []
+    audit.observe(runtime_dir, audit.capture(first), second, [card], now=1001,
+                  on_sealed=sealed.append)
+    assert sealed == []
+
+
+def test_hp1_card_alarm_accepts_a_digit_string_enemy_hp(runtime_dir):
+    battle_state = {'ally': 'どうし', 'enemy': 'マフィン', 'castle': None,
+                    'side': 'attack', 'ally_hp': 23, 'enemy_soldiers': None}
+    first = state(7, '12-9', 0)
+    first['policy']['battle'] = dict(battle_state)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
+    card = {'schema': 1, 'event': 'decision', 'at': 1001,
+            'decision': 'battle_card', 'card': 'ミックミー', 'chapter': 7,
+            'ally_hp': 23, 'enemy': 'マフィン', 'enemy_hp': '1',
+            'side': {'unexpected': 'value'}, 'reason': 'x' * 300,
+            'observed_metric': {'card_damage_gate': {'role': {'unexpected': 'value'}}},
+            **IDENTITY}
+    sealed = []
+    audit.observe(runtime_dir, audit.capture(first), state(7, '12-9', 1), [card],
+                  now=1001, on_sealed=sealed.append)
+    assert len(sealed) == 1
+    battle = sealed[0]['battle_event']
+    assert battle['enemy_hp'] == 1
+    assert battle['side'] is None
+    assert battle['damage_role'] is None
+    assert len(battle['reason']) == 200
+
+
 def test_boss_battle_starts_are_preserved_in_complete_decision_counts(tmp_path):
     # Issue #5525: a low-frequency decision must survive alongside more than
     # 30 other decision names instead of disappearing from the audit summary.
