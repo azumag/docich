@@ -71,3 +71,25 @@
   `_command_rows_to` 経由の揭示を検討する（PR #5347 の `own_attack_menu` は未マージ）。
 - 卵行がOCRで落ちただけで実際は卵が使える場合もスクロールするが、移動のみで
   選択は実表示の `きりふだ` 行に限るため、札を消費しない。
+
+
+## 2026-11-25 追補: 開札上限の適用順序と監査記録（v1494）
+
+v1493 の再オープン上限は、隠れた `きりふだ` 行を探すスクロールより後に評価されていたため、
+上限到達後も最大3回の down を追加で送る余地があった。v1494 では上限を先に評価し、
+上限到達後はスクロールも再オープンもしない。
+
+残っている札は使用済みと見なさず `cards_unclassified` に移し、
+`battle_summon_card_abandoned` に `opens` / `open_limit` / `abandoned` を記録する。
+既に進行中の `card_flow` は中断しない。これにより、上限による安全な打ち切りと
+実際の札使用・使用未確認を区別できる。
+
+回帰テスト:
+- `test_summon_card_open_limit_is_checked_before_scrolling`: 上限到達後に down/open を送らず、
+  未確認札を一度だけ記録する。
+- `test_summon_card_open_limit_does_not_interrupt_an_active_card_flow`: 開札後の進行中フローを
+  上限処理が中断しない。
+- hot-load marker v1494 を diagnostics allowlist と固定値テストへ同期。
+
+#5506 は同じ章・同じ実行世代で発生した未使用札の観測として関連付けるが、
+この上限修正だけで札の実使用を保証したとは扱わない。自然ランでの成功確認までIssueはOpenのままにする。
