@@ -6,13 +6,16 @@ set -euo pipefail
 # A hand-installed system-scope docich-soren91-corner.timer/.service competes
 # with the canonical user timer for the same rotation lock: the first one to
 # start owns the rolling rotation and the other waits with already-running
-# forever. This helper makes the user timer the only owner: disable/stop/mask
-# the legacy system units, start the canonical user service, and prove the
+# forever. This helper makes the user timer the only owner: disable the legacy
+# timer, stop its worker, start the canonical user service, and prove the
 # heartbeat handover inside the 180s park window (parked, not quarantined).
+# `systemctl mask` cannot shadow a unit installed in /etc ("File ... already
+# exists"), so disable is the durable guard; diagnostics/health catch a
+# re-enabled legacy owner.
 #
 # No unit name or command is accepted as input. It does not touch the display,
 # audio, stream, encoder or game, the rotation ledger, the locks or the
-# game-switch receipts. Mask is reversible with unmask; unit files stay.
+# game-switch receipts. Unit files stay; rollback re-enables the legacy timer.
 #
 # ROTATION_OWNER_MODE (prefixed on stdin): check (default) or apply.
 
@@ -316,18 +319,11 @@ pre_status="$status"
 pre_phase="$pending_phase"
 
 if [[ "$already_consolidated" == true ]]; then
-  if [[ "$legacy_service_present" == true || "$legacy_timer_present" == true ]]; then
-    [[ "$legacy_service_present" == true ]] && sudo -n systemctl disable "$legacy_service" >/dev/null 2>&1 || true
-    [[ "$legacy_timer_present" == true ]] && sudo -n systemctl disable "$legacy_timer" >/dev/null 2>&1 || true
-    sudo -n systemctl mask "$legacy_service" "$legacy_timer" >/dev/null 2>&1 || true
-    sudo -n systemctl daemon-reload >/dev/null 2>&1 || true
-  fi
   emit already_consolidated
   exit 0
 fi
 
 rollback_legacy_owner() {
-  sudo -n systemctl unmask "$legacy_service" "$legacy_timer" >/dev/null 2>&1 || true
   sudo -n systemctl enable "$legacy_timer" >/dev/null 2>&1 || true
   sudo -n systemctl start --no-block "$legacy_timer" >/dev/null 2>&1 || true
   sudo -n systemctl start --no-block "$legacy_service" >/dev/null 2>&1 || true
@@ -370,9 +366,6 @@ if [[ "$legacy_service_present" == true ]]; then
   [[ "$stopped" == true ]] || fail 'the legacy system service did not stop; left it running' 24
   sudo -n systemctl disable "$legacy_service" >/dev/null 2>&1 || true
 fi
-sudo -n systemctl mask "$legacy_service" "$legacy_timer" >/dev/null 2>&1 || \
-  rollback_legacy_owner
-sudo -n systemctl daemon-reload >/dev/null 2>&1 || true
 
 legacy_pid="$main_pid"
 took_over=false
