@@ -952,7 +952,9 @@ g749の募集終了付近では、ヘッダーだけの画像1883と暗転1885/1
   move/house/repair/defend/recallは対象外。同じ章・step・将軍は900秒cooldown。
 - 戦闘のBメニューを開いた後、卵・切り札・退却・奥の手を一度も実行せず
   閉じた場合 `battle_menu_wasted` を記録する。攻撃コマンドなしのcloseと
-  敵一撃の `battle_one_hit_menu_close` は正当なので除外。
+  敵一撃の `battle_one_hit_menu_close` は正当なので除外。ボス戦以外の
+  相手HP1で資源を温存するcloseも同じ記録名を使い、`observed_metric` の
+  `non_boss_hp1_hold` で区別する（v1505）。
 - `screen_stalled` / `input_stalled` でHanjukuコーナーが停止しローテーションへ
   戻る直前、`corner_stalled` を記録してissue化する。理由・無変化秒・actions・
   runtime/generation・terminal evidence・flow/計画/在城を含める。記録失敗は

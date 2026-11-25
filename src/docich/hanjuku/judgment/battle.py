@@ -1264,7 +1264,7 @@ def _defense_kit_read_window(mem, cur):
             or cur.get('card_summon_observed') or cur.get('enemy_summon_observed')
             or cur.get('card_damage_list_blocked') or cur.get('cards_unclassified')
             or (cur.get('survival') or {}).get('exhausted')
-            or _one_hit_lethal(cur)):
+            or _one_hit_lethal(cur) or _hp1_resource_hold(cur)):
         return None
     return {'reason': 'egg_drop_kit_unread', 'due': True,
             'max_hp_sum': plan['max_hp_sum'], 'remainder': plan.get('remainder'),
@@ -2506,6 +2506,28 @@ EGG_WALL_DAMAGE = 4          # gcgx battle.html: a hit against the edge costs 4 
 DEFENDER_EGG_OPEN_LIMIT = 3
 
 
+def _boss_battle(cur):
+    """The current panel is a chapter boss, boss general/monster, or boss entry.
+
+    Owner 2026-11-25: ボス戦以外では、相手のHPが1なら資源を使わない. Boss
+    battles keep their own tactics, so the HP1 conservation rule must not
+    capture them. This mirrors ``judgment.events``/``_note_boss_panel_hp``:
+    every name in ``chart.BOSSES``, every reference boss form, a boss castle,
+    and a measured boss entry. A renamed or unlisted later form is covered by
+    the entry receipt even when its name is not in the tables.
+    """
+    if not isinstance(cur, dict):
+        return False
+    if cur.get('entry_evidence') == 'measured_boss_entry':
+        return True
+    enemy = cur.get('enemy')
+    if isinstance(enemy, str) and (enemy in chart.BOSSES.values()
+                                   or reference.is_boss_target(enemy)):
+        return True
+    castle = cur.get('castle')
+    return bool(isinstance(castle, str) and castle and chart.is_boss_castle(castle))
+
+
 def _one_hit_lethal(cur):
     """The next push already wins: no okunote, egg or card is worth spending.
 
@@ -2526,6 +2548,27 @@ def _one_hit_lethal(cur):
     return (type(enemy) is int and 0 < enemy <= EGG_WALL_DAMAGE
             and type(hp) is int and hp > EGG_WALL_DAMAGE
             and cur.get('enemy_soldiers') == 0
+            and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
+                     or cur.get('egg_battle') or cur.get('card_summon_observed')))
+
+
+def _hp1_resource_hold(cur):
+    """Owner 2026-11-25: ボス戦以外では、相手のHPが1なら資源を使わない.
+
+    A non-boss enemy at exactly 1 HP is effectively decided: a trump card,
+    okunote or egg spent here is waste. This is a conservation rule, not the
+    safe-melee-finish claim of ``_one_hit_lethal``. Enemy soldiers may still
+    stand (the owner's 2026-11-22 correction), so the zero-soldier condition
+    deliberately does not apply. Boss battles keep their tactics. Like the
+    one-hit rule, only a complete current panel counts: a stale HP, a summon
+    or an egg battle is not evidence, and the panel's own ally HP must be
+    known.
+    """
+    if not isinstance(cur, dict) or _boss_battle(cur):
+        return False
+    hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
+    return (type(enemy) is int and enemy == 1
+            and type(hp) is int and hp > 0
             and not (cur.get('card_hp_unread') or cur.get('card_context_unclassified')
                      or cur.get('egg_battle') or cur.get('card_summon_observed')))
 
@@ -2700,7 +2743,7 @@ def _defender_last_resort(mem, cur):
             or cur.get('planned_cards') or cur.get('card_flow') or cur.get('egg_battle')
             or cur.get('okunote_last_resort_selected')
             or (cur.get('okunote_egg_preempt') or {}).get('selected')
-            or _one_hit_lethal(cur)
+            or _one_hit_lethal(cur) or _hp1_resource_hold(cur)
             or not cur.get('okunote_only_observed')):
         return False
     hp, enemy, start, enemy_start = (cur.get(k) for k in
