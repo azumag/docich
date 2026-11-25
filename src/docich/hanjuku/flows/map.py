@@ -198,11 +198,33 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                                  'source': snapshot['source'],
                                  'screen': screen.kind},
                 reason='出撃先ピッカーの最中に戦闘が割り込み目標決定前に閉じたため、割り込みからの再開率を測る')
+    # Owner 2026-11-26: when the target picker closes before a send, rebuild the
+    # same departure instead of leaving the sortie unconfirmed, within a bound.
+    retries = flow(mem).setdefault('departure_closed_retry', {})
+    used = int(retries.get(step) or 0)
+    card_step_done = ((mem.get('rare_card_kit') or {}).get(step) is not None
+                      or (mem.get('strong_card_kit') or {}).get(step) is not None
+                      or (mem.get('card_drop') or {}).get(step) is not None)
+    if card_step_done and used < DEPARTURE_CLOSED_RETRY_LIMIT:
+        retries[step] = used + 1
+        flow(mem).pop('departure_request', None)
+        _flow(mem).pop('sortie_attempt', None)
+        _record(mem, 'sortie_closed_retry', chart_step=step, general=general,
+                target=order['target'],
+                observed_metric={'retries': used + 1,
+                                 'limit': DEPARTURE_CLOSED_RETRY_LIMIT,
+                                 'screen': screen.kind},
+                resulting_event='rebuild_departure',
+                reason='出撃先選択が目標決定前に閉じたため、同じ目標で出撃を組み直す')
+        attempt['interrupted'] = True
+        mem.pop('expect_menu', None)
+        return
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
                   reason='目標決定前に出撃先選択を離れたため出撃の成否と行先を未確定として記録')
     attempt['interrupted'] = True
     mem.pop('expect_menu', None)
+DEPARTURE_CLOSED_RETRY_LIMIT = 2   # rebuild a departure whose picker closed unsent
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 # Owner 2026-11-21: the ch9 boss runs a fixed track; to place generals on it
 # the trace has to be dense. While a boss wave is out, survey the whole-island
