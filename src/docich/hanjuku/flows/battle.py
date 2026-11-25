@@ -1611,6 +1611,24 @@ def _defense_kit_read_open(mem, cur):
     return [pad('b')]
 
 
+def _defense_summon_without_okunote(mem, cur):
+    """owner 2026-11-26: 自城の防御戦・敵召喚獣あり・卵なし・おくのて未使用か。
+
+    自城では切り札が使えないため、この状況で おくのて を選ばないと
+    資源なしで押し切られる。issue 側（fault_issue）がこの証拠を拾う。
+    """
+    if not isinstance(cur, dict) or cur.get('side') != 'defense':
+        return False
+    if not (cur.get('enemy_summon_observed') or cur.get('card_summon_observed')):
+        return False
+    uses = ((mem or {}).get('egg_uses') or {}).get(cur.get('ally'))
+    egg_empty = bool(cur.get('summon_egg_unavailable')) or uses == 0
+    if not egg_empty:
+        return False
+    guard = cur.get('okunote_summon_preempt') or cur.get('okunote_egg_preempt') or {}
+    return not (guard.get('selected') or cur.get('okunote_draws'))
+
+
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
                attack_continues=False, panel_changed=False):
     _hold_general_loss_metric(mem)
@@ -1904,6 +1922,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                                                      .get('cards_uncertain')),
                              'card_consumption_complete': cur.get('card_consumption_complete', False),
                              'hero_retreat_selected': bool((cur.get('hero_retreat') or {}).get('selected')),
+                             # owner 2026-11-26: 自城の防御戦で敵の召喚獣が出て、
+                             # 卵も無いのに おくのて を一度も使わなかった戦闘は
+                             # issue にする（fault_issue.note_decision_faults が拾う）。
+                             'defense_summon_no_okunote': _defense_summon_without_okunote(mem, cur),
                              'general_loss': 'unclassified',
                              **({'castle_owner_after_defeat': observed_owner} if observed_owner else {})},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,

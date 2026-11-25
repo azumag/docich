@@ -2803,6 +2803,16 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             'short_burst': enemy <= critical_hp + 2 * margin}
 
 
+def _card_usable_here(cur):
+    """owner 2026-11-26: 自城（防御戦）では切り札を使えない。
+
+    切り札は攻めの道具で、自城の防衛戦では選べない。携行していても
+    「使える資源」として数えない（g1190: 自城の召喚獣戦で きりふだ を
+    開こうとして失敗し、おくのてへ移れなかった）。
+    """
+    return not (isinstance(cur, dict) and cur.get('side') == 'defense')
+
+
 DEFENDER_SUMMON_OPEN_LIMIT = 3
 # The egg-battle command box shows 3 rows; おくのて is a 4th row below the
 # greyed たまごをつかう (owner-confirmed layout, v362). Bounded downward
@@ -2858,7 +2868,12 @@ def _defender_summon_preempt(mem, cur):
         return None
     resources_free = (cur.get('okunote_only_observed')
                       or ((_own_egg_empty(mem, cur) or cur.get('summon_egg_unavailable'))
-                          and (cur.get('summon_egg_unavailable') or not cur.get('planned_cards'))))
+                          # owner 2026-11-26: 自城の防御戦では切り札を使えない。
+                          # 携行していても「使える資源」ではないので、卵が無い
+                          # 召喚獣戦はメニューを開いておくのてを選ぶ。
+                          and (cur.get('summon_egg_unavailable')
+                               or not (_card_usable_here(cur)
+                                       and cur.get('planned_cards')))))
     hp = cur.get('ally_hp')
     draws = int(cur.get('okunote_draws') or 0)
     if not resources_free:
