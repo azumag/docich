@@ -2317,6 +2317,22 @@ def _fort_step(screen, mem, state):
     """
     from . import house
     stage = state['stage']
+    # A fort sortie takes longer than the remaining month-end margin. Do not
+    # begin a new sortie (or send the status-panel A) when the concert scene
+    # is close enough to cover its destination picker. A picker already
+    # requested remains owned by its existing bounded wait.
+    if _month_end_soon(mem) and not state.get('fort_picker_requested'):
+        ready_to_defer = False
+        if stage in ('fort_menu', 'fort_list'):
+            ready_to_defer = is_fort_menu(screen) or fort_list_open(screen)
+        elif stage == 'fort_status':
+            info = house.general_status(screen)
+            ready_to_defer = bool(info and info.get('general') == state.get('general'))
+        if ready_to_defer:
+            return _leave_fort(
+                mem, state,
+                '月末場面までの猶予が短いため、砦しゅつげきを次月へ延期',
+                [pad('b')])
     if stage != 'fort_status' and screen.kind == 'map':
         return _leave_fort(mem, state, '砦のメニューが閉じてマップへ戻ったためこのしゅつげきを見送る', [])
     if stage == 'fort_menu':
