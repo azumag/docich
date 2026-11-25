@@ -3164,6 +3164,35 @@ def egg_battle_step(screen: Screen, mem):
                     'tactic_id': interrupted_flow.get('tactic_id'),
                 }
             battle['card_flow'] = None
+        elif (isinstance(interrupted_flow, dict)
+                and (interrupted_flow.get('stage') == 'announce'
+                     or interrupted_flow.get('selection_planned'))):
+            # docich#5538/#5553: a selected-but-unconfirmed card flow can
+            # only advance its announce wait on the card_list screen, which
+            # the enemy summon menu replaced.  Frozen here it can never
+            # progress again, yet its truthy value keeps both the reveal
+            # scroll (_summon_card_row_hidden) and the reopen gate shut, so
+            # the remaining carried cards are never even shown before
+            # こうげき is confirmed.  Keep it for a bounded look first — one
+            # observation could still be a misread frame — then book the
+            # selected card as unclassified, the same conservative ledger
+            # battle end uses, and release the flow so the remaining
+            # cards_left behave normally.  The list is already gone, so no
+            # B is sent.
+            scope = [interrupted_flow.get('card'), interrupted_flow.get('stage')]
+            stall = battle.get('summon_card_flow_stall')
+            observations = (int(stall.get('observations') or 0) + 1
+                            if isinstance(stall, dict)
+                            and stall.get('scope') == scope else 1)
+            battle['summon_card_flow_stall'] = {'scope': scope,
+                                                'observations': observations}
+            if observations >= SUMMON_CARD_FLOW_STALL_LIMIT:
+                battle.pop('summon_card_flow_stall', None)
+                _card_use_unclassified(
+                    mem, battle,
+                    '選択済み・消費未確定の切り札告知待ちが召喚画面で進行不能のまま滞留したため、未分類として保持して解放する')
+        else:
+            battle.pop('summon_card_flow_stall', None)
         if int(battle.get('card_retreat_cancels') or 0) >= CARD_RETREAT_CANCEL_LIMIT:
             abandoned = [c for c in (battle.get('planned_cards') or [])
                          if c not in (battle.get('cards_unclassified') or [])]
@@ -3352,6 +3381,7 @@ def egg_battle_step(screen: Screen, mem):
             if (missed and cards_left and not battle.get('cards_used')
                     and not battle.get('boss_card_missed_noted')):
                 battle['boss_card_missed_noted'] = True
+                parked_flow = battle.get('card_flow')
                 _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
                         # The month audit projects the battle identity from
                         # these top-level fields (#5398 was filed as
@@ -3364,6 +3394,17 @@ def egg_battle_step(screen: Screen, mem):
                                          'screen': screen.kind,
                                          'text': (screen.text or '')[:80],
                                          'scrolls': battle.get('summon_card_scroll'),
+                                         # docich#5538/#5553: name the card_flow
+                                         # still holding the reveal/reopen
+                                         # gates, so the frozen-announce
+                                         # subtype is identifiable from the
+                                         # issue alone.
+                                         'card_flow': (
+                                             {'card': parked_flow.get('card'),
+                                              'stage': parked_flow.get('stage'),
+                                              'selection_planned': bool(
+                                                  parked_flow.get('selection_planned'))}
+                                             if isinstance(parked_flow, dict) else None),
                                          'summon_egg_unavailable': bool(
                                              battle.get('summon_egg_unavailable')),
                                          'empty_egg': bool(empty_egg),
@@ -3433,6 +3474,12 @@ MONSTER_STALL_RETURN_TURNS = 6
 SUMMON_CARD_SCROLL_LIMIT = 3
 CARD_RETREAT_CANCEL_LIMIT = 2
 SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   # cancels before the carried card is abandoned
+# egg_battle_menu observations a selected-but-unconfirmed (announce) card
+# flow may sit frozen before it is booked unclassified and released.  The
+# flow can only advance on a card_list screen, so every parked observation
+# is another card-less こうげき; the bound only rides out a misread frame
+# (~4.5 s at the 1500 ms observation interval, card_miss #5538/#5553).
+SUMMON_CARD_FLOW_STALL_LIMIT = 3
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
 # enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
 # even at enemy HP 27 with the summon at 515, which looked like throwing a

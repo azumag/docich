@@ -310,6 +310,15 @@ def _names(value, limit=12):
     return [name for name in names if name]
 
 
+def _bounded_card_flow(value):
+    if not isinstance(value, dict):
+        return None
+    planned = value.get('selection_planned')
+    return {'card': _bounded_text(value.get('card'), 48),
+            'stage': _bounded_text(value.get('stage'), 16),
+            'selection_planned': planned if type(planned) is bool else None}
+
+
 def _text_map(value, limit=12):
     if not isinstance(value, dict):
         return None
@@ -3496,6 +3505,7 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 96),
             'cards_left': _names(metric.get('cards_left'), limit=8),
             'scrolls': _bounded_int(metric.get('scrolls'), 0, 10),
+            'card_flow': _bounded_card_flow(metric.get('card_flow')),
             'cursor': _bounded_int(metric.get('cursor'), 0, 224),
             'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
             'summon_egg_unavailable': (metric.get('summon_egg_unavailable')
@@ -4071,6 +4081,15 @@ def _card_miss_bool(value):
     return 'unknown'
 
 
+def _card_miss_flow(value):
+    if not isinstance(value, dict):
+        return 'なし'
+    card = _md(value.get('card')) or '不明'
+    stage = _md(value.get('stage')) or '不明'
+    return (f"card={card} / stage={stage}"
+            f" / selection_planned={_card_miss_bool(value.get('selection_planned'))}")
+
+
 def _timeline(record):
     rows = (record.get('decisions') or {}).get('before') or []
     noisy = {'situation_held', 'unknown_hold_advance', 'battle_draw_hold'}
@@ -4134,6 +4153,7 @@ def _render_card_miss(record):
         f"- 卵状態: empty_egg={_card_miss_bool(battle.get('empty_egg'))}"
         f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
         f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
+        f"- card_flow: {_card_miss_flow(battle.get('card_flow'))}",
         f"- 表示文言: {_md(battle.get('screen_text')) or '未記録'}",
         f"- 携行札候補: {', '.join(battle.get('cards_left') or []) or '未記録'}",
         f"- 理由: {battle.get('reason') or ''}",

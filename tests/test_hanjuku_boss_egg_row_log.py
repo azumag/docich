@@ -158,6 +158,64 @@ def test_selected_or_announcement_card_flow_is_not_reopened():
     assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
 
 
+def test_a_frozen_announce_flow_is_released_after_bounded_observations(monkeypatch):
+    # docich#5538/#5553: a card selected just before the enemy summon kept
+    # its announce wait frozen on egg_battle_menu — the screen system can
+    # never advance it — and its truthy value shut both the reveal scroll
+    # and the reopen gate, so the carried ノリウツール was never even shown.
+    mem = memory()
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ミックミー', 'ノリウツール'],
+        'cards_selected': ['ミックミー'],
+        'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                      'selection_planned': True},
+    })
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    # Within the bound the flow is kept: a single misread frame must not
+    # unclassify a card that may still be firing.
+    for _ in range(B.SUMMON_CARD_FLOW_STALL_LIMIT - 1):
+        B.egg_battle_step(screen(text='こうげきもうこうげき'), mem)
+        assert battle['card_flow']['stage'] == 'announce'
+
+    # At the bound the frozen card is booked unclassified and released; the
+    # same observation already scrolls for the remaining carried card.
+    assert B.egg_battle_step(screen(text='こうげきもうこうげき'), mem) == [B.pad('down')]
+    assert battle['card_flow'] is None
+    assert battle['cards_unclassified'] == ['ミックミー']
+    assert not battle.get('summon_card_flow_stall')
+    assert any(r['decision'] == 'battle_card_unclassified'
+               and r.get('card') == 'ミックミー' for r in mem['_records'])
+
+    # With the flow gone the remaining carried card reveals and opens.
+    assert B.egg_battle_step(screen(text='こうげききりふだたいきゃく'), mem) == [B.pad('a')]
+    assert battle['card_flow']['card'] == 'ノリウツール'
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
+def test_the_missed_card_record_projects_the_blocking_card_flow(monkeypatch):
+    # docich#5538/#5553: an emit that fires while a card_flow still holds
+    # the gates names that flow, so the frozen-announce subtype is
+    # identifiable from the issue alone.
+    mem = memory()
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ミックミー', 'ノリウツール'],
+        'cards_selected': ['ミックミー'],
+        'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                      'selection_planned': True},
+    })
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+    B.egg_battle_step(screen(text='こうげき'), mem)
+    row = [r for r in mem['_records']
+           if r['decision'] == 'battle_boss_card_missed'][-1]
+    assert row['observed_metric']['card_flow'] == {
+        'card': 'ミックミー', 'stage': 'announce', 'selection_planned': True}
+
+
 def test_boss_only_card_is_not_reported_as_missed_before_boss_entry(monkeypatch):
     # VERIFY-5458 path 2: a carried Balmung is intentionally unavailable
     # during an ordinary battle launched from a boss sortie.

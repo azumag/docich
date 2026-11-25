@@ -2433,6 +2433,7 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
             'cards_left': 'not-a-list', 'scrolls': True, 'cursor': 225,
             'text': 'x' * 200, 'empty_egg': 'false',
             'summon_egg_unavailable': 1, 'enemy_summon_observed': None,
+            'card_flow': 'not-a-dict',
         },
         **IDENTITY,
     }
@@ -2446,7 +2447,35 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     assert battle['empty_egg'] is None
     assert battle['summon_egg_unavailable'] is None
     assert battle['enemy_summon_observed'] is None
+    assert battle['card_flow'] is None
     assert battle['screen_text'] == 'x' * 96
+
+
+def test_card_miss_incident_projects_the_blocking_card_flow(runtime_dir):
+    # docich#5538/#5553: a card_flow still holding the gates at emit time
+    # identifies the frozen-announce subtype from the issue alone.
+    first = state(1, '1-1', 0)
+    audit.observe(runtime_dir, audit.capture(first), first, [], now=1000)
+    second = state(1, '1-1', 1)
+    sealed = []
+    miss = {'schema': 1, 'event': 'decision', 'at': 1001,
+            'decision': 'battle_boss_card_missed', 'card': 'ノリウツール',
+            'chapter': 1, 'ally': 'ヘルメス', 'enemy': 'ニンフ', 'castle': 'ながはま',
+            'screen_kind': 'egg_battle_menu', 'side': 'attack',
+            'reason': '携行切り札を開けず攻撃',
+            'observed_metric': {
+                'cards_left': ['ノリウツール'], 'scrolls': 0, 'cursor': 176,
+                'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                              'selection_planned': True},
+            }, **IDENTITY}
+    audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
+                  on_sealed=sealed.append)
+    battle = sealed[0]['battle_event']
+    assert battle['card_flow'] == {'card': 'ミックミー', 'stage': 'announce',
+                                 'selection_planned': True}
+    body = audit.render(sealed[0])
+    assert 'card=ミックミー' in body and 'stage=announce' in body
+    assert 'selection_planned=true' in body
 
 
 def test_hp1_card_decision_seals_an_auto_file_incident(runtime_dir):
