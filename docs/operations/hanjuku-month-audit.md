@@ -331,7 +331,8 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 `hanjuku_bot.json` には監査状態を追加しない（256KB制限とstate budgetに影響させない）。
 incident は runtime_id / generation / bot_version / chapter / month / tick /
 観測数 / max gap / 出撃内訳 / 計画 / 在城 / 行軍 / flow / stats / 決定内訳 /
-前後30件 / signals / 証拠ファイル名を持つ。リストは20件、文字列は160字、
+前後30件 / signals / 証拠ファイル名を持つ。`decisions.counts` は観測窓内の全 decision 種を件数順で保持し、
+`decisions.before` と `after.rows` は直近の行だけを別途制限する。リストは20件、文字列は160字、
 1件は32KBで打ち切る。生ログ・例外文・環境変数・tokenは保存しない。
 
 月を閉じた直後から300秒を after window として集計し、その間に出撃・奪取・
