@@ -3282,10 +3282,29 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             continue
         seen.append(incident_id)
         state['card_miss_ids'] = seen[-20:]
-        battle = {'ally': row.get('ally'), 'enemy': row.get('enemy'),
-                  'castle': row.get('castle'), 'at': float(at),
-                  'reason': row.get('reason'), 'screen': row.get('screen_kind'),
-                  'cards_left': (row.get('observed_metric') or {}).get('cards_left')}
+        metric = row.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        battle = {
+            'ally': _bounded_text(row.get('ally'), 48),
+            'enemy': _bounded_text(row.get('enemy'), 48),
+            'castle': _bounded_text(row.get('castle'), 48),
+            'side': _bounded_text(row.get('side'), 16),
+            'at': float(at),
+            'reason': _bounded_text(row.get('reason'), 120),
+            'screen': _bounded_text(row.get('screen_kind') or metric.get('screen')
+                                    or metric.get('screen_kind'), 32),
+            'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 96),
+            'cards_left': _names(metric.get('cards_left'), limit=8),
+            'scrolls': _bounded_int(metric.get('scrolls'), 0, 10),
+            'cursor': _bounded_int(metric.get('cursor'), 0, 224),
+            'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
+            'summon_egg_unavailable': (metric.get('summon_egg_unavailable')
+                                       if type(metric.get('summon_egg_unavailable')) is bool
+                                       else None),
+            'enemy_summon_observed': (metric.get('enemy_summon_observed')
+                                      if type(metric.get('enemy_summon_observed')) is bool
+                                      else None),
+        }
         record = {
             'schema': SCHEMA,
             'kind': 'card_miss',
@@ -3707,6 +3726,14 @@ def _cell(value):
     return f'{BT}{text}{BT}' if text else ''
 
 
+def _card_miss_bool(value):
+    if value is True:
+        return 'true'
+    if value is False:
+        return 'false'
+    return 'unknown'
+
+
 def _timeline(record):
     rows = (record.get('decisions') or {}).get('before') or []
     noisy = {'situation_held', 'unknown_hold_advance', 'battle_draw_hold'}
@@ -3730,9 +3757,17 @@ def _render_card_miss(record):
         f"- 章: ch{record.get('chapter')} / 月: {record.get('month')}",
         f"- 未使用の携行札: {record.get('card')}",
         f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
-        f" / 城: {battle.get('castle') or '不明'}",
+        f" / 城: {battle.get('castle') or '不明'} / side: {battle.get('side') or '不明'}",
         f"- 時刻: {_clock(battle.get('at'))}",
-        f"- 画面: {BT}{battle.get('screen')}{BT} / 理由: {battle.get('reason') or ''}",
+        f"- 画面: {BT}{battle.get('screen') or '不明'}{BT}"
+        f" / scrolls: {battle.get('scrolls') if type(battle.get('scrolls')) is int else '不明'}"
+        f" / cursorY: {battle.get('cursor') if type(battle.get('cursor')) is int else '不明'}",
+        f"- 卵状態: empty_egg={_card_miss_bool(battle.get('empty_egg'))}"
+        f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
+        f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
+        f"- 表示文言: {_md(battle.get('screen_text')) or '未記録'}",
+        f"- 携行札候補: {', '.join(battle.get('cards_left') or []) or '未記録'}",
+        f"- 理由: {battle.get('reason') or ''}",
         '',
         '敵召喚獣戦/ボス戦で、卵なし・奥の手不可のときに携行切り札を開かず攻撃へ進みました。',
         '切り札を開けなかった画面遷移と、未使用のまま攻撃した判断を確認してください。',
