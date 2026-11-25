@@ -86,7 +86,7 @@ generation_timeout_s = 15
 enabled = true
 interval_s = 900
 retry_s = 300
-generation_timeout_s = 15
+generation_timeout_s = 90
 max_attempts = 2
 
 # unified live rotationへ登録済み。ROM/core/実行ファイルが揃った環境だけ抽選候補になる。
