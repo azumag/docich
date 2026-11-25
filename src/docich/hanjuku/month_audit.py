@@ -690,8 +690,16 @@ def _remember_boss_entry(current, entry, now):
     if type(at) not in (int, float):
         at = now
     previous = current.get('entry_observed_at')
-    if (not same_entry or type(previous) not in (int, float)
-            or float(at) > float(previous)):
+    previous_valid = type(previous) in (int, float)
+    # An active-plan observation may arrive before its decision-log row.  The
+    # later row is more authoritative even when its event timestamp is older
+    # than the fallback observation time; prefer that measured timestamp.
+    source_rank = {'active_plan': 0, 'decision_log': 1}
+    source_upgrade = (same_entry
+                      and source_rank.get(source, -1)
+                      > source_rank.get(current.get('entry_source'), -1))
+    if (not same_entry or not previous_valid
+            or float(at) > float(previous) or source_upgrade):
         current['entry_observed_at'] = float(at)
         current['entry_general'] = general
         current['entry_castle'] = castle
