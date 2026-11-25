@@ -23,14 +23,22 @@ LONG_A = ('第8章の14年2月、この15分はエピィ将軍がミュスカデ
           'それでも兵士を99人補充できたのは大きい。'
           '次はおかざき城の奪還を狙いますが、まずは守りを立て直したいところです。'
           '将軍たちの粘りは見事で、流れはまだ十分に巻き返せます。'
-          'この経験を次の戦いに活かせれば、きっと面白い展開になります。')
+          'この経験を次の戦いに活かせれば、きっと面白い展開になります。'
+          'その判断の背景には、城を守りながら次の攻めを探る難しさがありました。'
+          '将軍たちは限られた兵と札の中で、何を優先するかを毎回合わせています。'
+          'だからこそ、小さな勝ちを次につなげる采配が問われるのでしょう。'
+          'この15分の流れを、次の戦いの準備として受け止めたいと思います。')
 
 LONG_B = ('第8章の14年2月、エピィ将軍がミュスカデに勝った一方で、おかざき城は失いました。'
           'それでも兵士を99人補充し、次はおかざき城の奪還を狙います。'
           '苦しい時間帯でも判断を止めなかった将軍たちには、思わず拍手を送りたくなります。'
           '課題は城を守り切ることで、攻めと守りのバランスを見直したいところです。'
           '城の出入りは激しく、目が離せない展開でしたが、最後まで前を向いていました。'
-          'この15分の経験が次の戦いできっと生きてくると信じています。')
+          'この15分の経験が次の戦いできっと生きてくると信じています。'
+          'その判断の背景には、攻めと守りのどちらを優先するかの迷いがありました。'
+          'それでも将軍たちは、限られた兵と札で次の一手を選び続けています。'
+          'だからこそ、小さな前進を次につなげる采配が問われるのでしょう。'
+          'この流れを、次の戦いの準備として一緒に見守りたいと思います。')
 
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g7-abc123',
             'generation': 7, 'lease_id': 'lease-periodic'}
@@ -160,6 +168,48 @@ def test_event_fact_reads_battle_hp_from_the_observed_metric():
         'roster_probe': True}) is None
 
 
+def test_focus_fact_recognizes_strategic_decisions():
+    card = periodic._focus_fact({
+        'decision': 'battle_card', 'card': 'クースカン', 'enemy': 'ミュスカデ',
+        'observed_metric': {'card_damage_gate': {
+            'allowed': True, 'role': 'egg_drop_candidate_not_a_kill',
+            'target_kind': 'general', 'lethal': False}}})
+    assert card['category'] == 'card' and card['feature'] == '切り札の使用判断'
+    assert card['allowed'] is True and card['role'] == 'egg_drop_candidate_not_a_kill'
+    assert '撃破の実績ではない' in card['meaning']
+    order = periodic._focus_fact({
+        'decision': 'order_start', 'general': 'コリアンダー', 'source': 'あるまむーん',
+        'target': 'ながはま', 'cards': ['フットバース']})
+    assert order['category'] == 'sortie' and order['target'] == 'ながはま'
+    assert periodic._focus_fact({
+        'decision': 'order_start', 'general': 'コリアンダー', 'target': 'ながはま',
+        'roster_probe': True}) is None
+    defense = periodic._focus_fact({
+        'decision': 'castle_lost_observed', 'castle': 'おかざき',
+        'observed_metric': {'enemy': 'ブレッツェル', 'cause': 'defense_loss',
+                            'garrison': ['ブラマンジェ']}})
+    assert defense['category'] == 'defense' and defense['enemy'] == 'ブレッツェル'
+    chart = periodic._focus_fact({
+        'decision': 'chart_adjust_applied',
+        'order_digest': [{'general': 'ポワソン', 'target': 'しまばら'}]})
+    assert chart['category'] == 'chart' and chart['orders'] == [['ポワソン', 'しまばら']]
+    economy = periodic._focus_fact({
+        'decision': 'month_plan', 'month': '14-2', 'gold': 732,
+        'plan': {'cards': [['クースカン', 2]], 'soldiers': 99}})
+    assert economy['category'] == 'economy' and economy['gold'] == 732
+    assert economy['cards'] == ['クースカン']
+
+
+def test_focus_rotation_prefers_the_least_recent_category():
+    candidates = [(1.0, {'category': 'defense', 'feature': '城の防衛'}),
+                  (2.0, {'category': 'economy', 'feature': '兵士補充'}),
+                  (3.0, {'category': 'card', 'feature': '切り札の使用判断'})]
+    assert periodic._choose_focus(candidates, [])['category'] == 'card'
+    assert periodic._choose_focus(candidates, ['card', 'economy'])['category'] == 'defense'
+    assert periodic._choose_focus(candidates, ['card'])['category'] == 'economy'
+    assert periodic._choose_focus([], ['card']) is None
+
+
 def test_situation_is_whitelisted_and_counts_the_window(live):
     value = periodic.situation(live.runtime, RUN, _state(live), live.now)
     assert value['progress'] == {'cleared': 7, 'chapter': 8, 'year': 14,
@@ -171,6 +221,7 @@ def test_situation_is_whitelisted_and_counts_the_window(live):
     assert value['current']['battle']['ally'] == 'トレビス'
     assert value['current']['order'] == {'goal': 'retake', 'target': 'おかざき'}
     assert value['current']['economy']['gold'] == 732
+    assert value['focus']['category'] in {'card', 'defense', 'economy'}
     text = json.dumps(value, ensure_ascii=False)
     for forbidden in ('decision_id', 'runtime_id', 'lease_id', 'reason',
                       'battle_card', 'action_plan', 'snapshot'):
@@ -183,9 +234,11 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '直近の実況' in prompt
     assert '前回の実況です。' in prompt and '直前の候補です。' in prompt
     assert '同じ書き出し' in prompt
-    assert '4〜8文' in prompt and '300〜600' in prompt
+    assert '5〜9文' in prompt and '500〜800' in prompt
     assert '課題' in prompt and 'ユーモア' in prompt
-    assert '列挙' in prompt and '物語' in prompt
+    assert '列挙' in prompt and 'focus' in prompt
+    assert '焦点' in prompt
+    assert value['focus']['feature'] in prompt
     assert periodic.DEFAULT_PERSONA in prompt
     assert '"texts"' in prompt
 
@@ -363,6 +416,26 @@ def test_worker_delivers_the_least_repetitive_grounded_candidate(live, monkeypat
     assert delivered[0][0][4] == text
     result = json.loads((live.runtime / periodic.RESULT).read_text())
     assert result['status'] == 'enqueued' and result['text'] == text
+
+
+def test_worker_result_records_the_focus_and_state_rotates_it(live, monkeypatch):
+    delivered = []
+    request = _request(live)
+    focus = request['situation']['focus']['category']
+    _write(live.runtime / periodic.REQUEST, request)
+    monkeypatch.setattr(worker, 'load_game', lambda *args: live.game)
+    monkeypatch.setattr(worker, 'current', lambda *args, **kwargs: RUN)
+    status, text, attempts, role = worker.consume(
+        SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime, now=live.now,
+        generate_fn=lambda *args: (json.dumps({'texts': [LONG_A]}, ensure_ascii=False),
+                                   'RADIO_AGENTS'),
+        deliver_fn=lambda *args, **kwargs: delivered.append(args) or 'enqueued')
+    assert status == 'enqueued'
+    result = json.loads((live.runtime / periodic.RESULT).read_text())
+    assert result['focus'] == focus
+    state = periodic._state(live.runtime, IDENTITY)
+    periodic._apply(live.runtime, state, result, periodic.config(live.game), live.now)
+    assert state['focus_history'] == [focus]
 
 
 def test_worker_is_silent_when_every_candidate_repeats(live, monkeypatch):
