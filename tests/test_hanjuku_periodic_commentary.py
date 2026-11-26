@@ -32,7 +32,7 @@ LONG_A = ('第8章の14年2月、この15分はエピィ将軍がミュスカデ
 LONG_B = ('第8章の14年2月、エピィ将軍がミュスカデに勝った一方で、おかざき城は失いました。'
           'それでも兵士を99人補充し、次はおかざき城の奪還を狙います。'
           '苦しい時間帯でも判断を止めなかった同志たちには、思わず拍手を送りたくなります。'
-          '課題は城を守り切ることで、攻めと守りのバランスを見直したいところです。'
+          '残るのは城を守り切ることで、攻めと守りのバランスを見直したいところです。'
           '城の出入りは激しく、目が離せない展開でしたが、最後まで前を向いていました。'
           'この15分の経験が次の戦いできっと生きてくると信じています。'
           'その判断の背景には、攻めと守りのどちらを優先するかの迷いがありました。'
@@ -236,11 +236,11 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '直近の実況' in prompt
     assert '前回の実況です。' in prompt and '直前の候補です。' in prompt
     assert '同じ書き出し' in prompt
-    assert '5〜9文' in prompt and '500〜800' in prompt
+    assert '3〜5文' in prompt and '320〜450' in prompt
     assert '課題' in prompt and 'ユーモア' in prompt
     assert '列挙' in prompt and 'focus' in prompt
     assert '焦点' in prompt
-    assert '現場リポート' in prompt and '4ビート' in prompt
+    assert '短い報告' in prompt and '乾いた' in prompt
     assert '評価したいのは' in prompt
     assert 'ソ連' in prompt and '同志' in prompt and 'focus.humor' in prompt
     assert value['focus']['feature'] in prompt
@@ -261,6 +261,10 @@ def test_style_rejects_report_formula():
     hedging = ('切り分けられません。急いで結びつけない慎重さが必要です。'
                '宿題です。次の観測で答え合わせをしましょう。')
     assert periodic.style_ok(hedging) is False
+    purple = ('長い戦いの中で現場は静かに区切りをつけ、深い余韻が穏やかに長く残った。'
+              '帳面は落ち着き、土台と足元を整えて時を待つ。')
+    assert periodic.style_ok(purple) is False
+    assert periodic.style_ok('あ' * 81 + '。') is False
     assert periodic.style_ok(LONG_A) is True
 
 
@@ -313,6 +317,7 @@ def test_persona_requires_one_to_four_soviet_riffs():
     assert periodic.persona_ok('今回の焦点は同志の出撃判断です。') is True
     assert periodic.persona_ok('今回の焦点は出撃判断です。') is False
     assert periodic.persona_ok('同志、人民、赤旗、五カ年計画、政治局、集団農場、ペレストロイカ。') is False
+    assert periodic.persona_ok('同志、人民、五カ年計画、赤旗、冬将軍。') is False
 
 
 def test_focus_clarity_rejects_buried_focus_and_too_many_names():
