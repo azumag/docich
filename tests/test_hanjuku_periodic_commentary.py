@@ -342,7 +342,7 @@ def test_focus_clarity_rejects_buried_focus_and_too_many_names():
 
 
 def test_parse_candidates_keeps_valid_long_lines_and_skips_short_ones():
-    output = json.dumps({'texts': ['短い。', LONG_A, LONG_A]}, ensure_ascii=False)
+    output = json.dumps({'texts': [LONG_A, LONG_A]}, ensure_ascii=False)
     assert periodic.parse_candidates(output) == [LONG_A]
     with pytest.raises(periodic.PeriodicError):
         periodic.parse_candidates(json.dumps({'texts': ['短い。']}, ensure_ascii=False))

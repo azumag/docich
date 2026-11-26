@@ -1687,6 +1687,15 @@ def _leftover_cards(mem, cur):
             if isinstance(row, dict) and row.get('step') == cur.get('step'):
                 order = row
                 break
+    # owner 2026-11-26 (option B for cards): 計画も binding も読めない戦闘でも、
+    # 出撃記録が実際に携行した札を持っていればそれを証拠にする。
+    sortie = (_sorties(mem).get(cur.get('step')) if cur.get('step') else None)
+    if isinstance(sortie, dict):
+        recorded = [card for card in (sortie.get('cards') or ()) if isinstance(card, str)]
+        used = set(cur.get('cards_used') or ()) | set(cur.get('cards_selected') or ())
+        leftover = [card for card in recorded if card not in used]
+        if leftover:
+            return leftover[:6]
     if not isinstance(order, dict):
         return []
     from ..strategy.kit import _deploy_cards
