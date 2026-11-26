@@ -2931,6 +2931,74 @@ def _summon_card_rearm(mem, battle):
     return True
 
 
+EGG_MENU_ESCAPE_HOLD = 8      # consecutive identical egg-menu frames
+EGG_MENU_ESCAPE_SENDS = 3     # bounded forced attack-row presses per episode
+
+
+def egg_menu_escape(screen, mem):
+    """Bounded attack-row escape for a held egg battle menu.
+
+    Measured chapter 4 twice: the menu showed もうこうげき/たまごをつかう/
+    きりふだ, the bot decided to give up the egg and attack, yet sent no input
+    and the run ended input_stalled. The counter is keyed on the battle
+    identity (ally/enemy), not the frame text, so the menu's animation cannot
+    restart it; after EGG_MENU_ESCAPE_HOLD observations the attack row is
+    selected and A is pressed, bounded per battle.
+    """
+    if screen.kind != 'egg_battle_menu':
+        mem.pop('egg_menu_escape', None)
+        return None
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    ident = repr((battle.get('ally'), battle.get('enemy')))
+    state = mem.get('egg_menu_escape') or {}
+    same = state.get('ident') == ident
+    n = (int(state.get('n') or 0) + 1) if same else 1
+    sent = int(state.get('sent') or 0) if same else 0
+    mem['egg_menu_escape'] = {'ident': ident, 'n': n, 'sent': sent}
+    if n < EGG_MENU_ESCAPE_HOLD:
+        return None
+    row = _battle_menu_to(screen, 'もうこうげき')
+    if row is None:
+        row = _battle_menu_to(screen, 'こうげき')
+    if row is None:
+        # Measured (g1163 2026-11-18): a battle box whose rows read as
+        # もうこうげき/きりふだ can have the knight cursor parked on a grey row;
+        # every A is then a no-op. One up returns it to a readable row and the
+        # next A opens the attack. Nudge first (not counted in the send budget),
+        # then press.
+        nudges = int(state.get('nudges') or 0) if same else 0
+        if nudges < 2:
+            mem['egg_menu_escape'] = {'ident': ident, 'n': n, 'sent': sent,
+                                      'nudges': nudges + 1}
+            _record(mem, 'egg_menu_cursor_nudge', screen=screen.kind,
+                    observed_metric={'nudges': nudges + 1, 'holds': n,
+                                     'text': (screen.text or '')[:40],
+                                     'cursor': getattr(screen, 'menu_cursor', None),
+                                     'ally': battle.get('ally'), 'enemy': battle.get('enemy')},
+                    reason='卵バトルの行が読めずカーソルが灰色行にある可能性のため、upで読める行へ戻す')
+            return [pad('up')]
+        if sent >= EGG_MENU_ESCAPE_SENDS:
+            return None
+        mem['egg_menu_escape'] = {'ident': ident, 'n': 0, 'sent': sent + 1,
+                                  'nudges': nudges}
+        _record(mem, 'egg_menu_escape_blind_attack', screen=screen.kind,
+                observed_metric={'holds': n, 'sent': sent + 1, 'nudges': nudges,
+                                 'text': (screen.text or '')[:40],
+                                 'ally': battle.get('ally'), 'enemy': battle.get('enemy')},
+                reason='カーソルを戻した後の卵バトルメニューでAを送る')
+        return [pad('a')]
+    if sent >= EGG_MENU_ESCAPE_SENDS:
+        return None
+    mem['egg_menu_escape'] = {'ident': ident, 'n': 0, 'sent': sent + 1}
+    if row == 'here':
+        _record(mem, 'egg_menu_escape_attack', screen=screen.kind,
+                observed_metric={'holds': n, 'sent': sent + 1,
+                                 'ally': battle.get('ally'), 'enemy': battle.get('enemy')},
+                reason='卵バトルのメニューで無入力が続くため、もうこうげき行を確認してAを送る')
+        return [pad('a')]
+    return _emit_moves(row)
+
+
 def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
