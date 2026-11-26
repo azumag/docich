@@ -5776,6 +5776,7 @@ CORNER_STATE_FILES = {
     "nethack_corner_manual": "nethack_corner_manual.json",
     "soren91_corner": "soren91_corner.json",
     "chart": "chart_corner_659_runtime.json",
+    "new_corner": "new_corner.json",
 }
 
 # Fixed enum of the switch result a corner recorded in its own state file.
@@ -5792,7 +5793,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
-    "doushi_corner", "mystery_corner", "lawsim_corner",
+    "doushi_corner", "mystery_corner", "lawsim_corner", "new_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -7004,6 +7005,8 @@ def _project_corner_state(data):
                            "operator-moved-during-doushi",
                            "operator-moved-during-mystery",
                            "operator-moved-during-lawsim",
+                           "operator-moved-during-new-corner",
+                           "released-failure-before-retry",
                            "case-completed", "case-error",
                            "duration",
                            "audio-complete",
@@ -9558,6 +9561,7 @@ def _collect_corner_files(state_dir, payload, now):
         "mystery_corner",
         "lawsim_corner",
         "soren91_corner",
+        "new_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
@@ -14480,6 +14484,7 @@ PROGRAM_ADMISSION_OWNERS = {
     'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
     'mystery': 'mystery_corner',
     'communist-law-simulator': 'lawsim_corner',
+    'geography-world': 'new_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',

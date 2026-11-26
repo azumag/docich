@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "corner": "geography-world",
+  "fixtureId": "fixed-geography-world-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Theme candidate list for the geography/world-from-maps corner. Candidates are planning seeds only: a candidate title selects the topic the production runner collects verified public-Web material for; the titles themselves are not verified geographic data and are never presented as such.",
+  "candidates": [
+    {
+      "id": "singapore-malacca-chokepoint",
+      "title": "シンガポールとマラッカ海峡：地図から読む海運の要衝",
+      "domain": "maritime-geography",
+      "description": "狭水深海峡・船舶航路・埋立て・港湾/空港連絡網が、貿易・エネルギー安全保障・都市計画を形づくる構造。",
+      "fixtureId": "fixed-geography-world-001"
+    },
+    {
+      "id": "suez-canal-bottleneck",
+      "title": "スエズ運河：1本の水路が世界の時刻表を変える",
+      "domain": "maritime-geography",
+      "description": "地中海-紅海の短絡、通航容量と座礁事故の連鎖影響、代替航路の距離・費用を地図で読む。",
+      "fixtureId": null
+    },
+    {
+      "id": "panama-canal-water-budget",
+      "title": "パナマ運河：淡水の収支が決める通航量",
+      "domain": "hydrology-infrastructure",
+      "description": "閘門式運河が湖水の水位に依存する構造、乾季の通航制限、地形と気候が輸送容量を左右する例。",
+      "fixtureId": null
+    },
+    {
+      "id": "himalaya-monsoon-water-tower",
+      "title": "ヒマラヤとモンスーン：大河を生む地形の仕組み",
+      "domain": "physical-geography",
+      "description": "山山脈・氷河・季節風の配置が人口稠密な下流平野の水資源と災害リスクを決める地形-気候-人口の連鎖。",
+      "fixtureId": null
+    },
+    {
+      "id": "sahara-atlas-resource-corridors",
+      "title": "サハラとアトラス山脈：乾燥帯の資源と交通路",
+      "domain": "arid-land-geography",
+      "description": "オアシス・鉱山・送電/パイプライン回廊、沿岸部への人口集中が地図上の線として現れる構造。",
+      "fixtureId": null
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizeOfficialGeographicSources": true
+  }
+}
