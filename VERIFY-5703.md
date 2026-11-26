@@ -5,9 +5,9 @@
 - ラン: `g1190-ch1v9` / generation `1190` / `hanjuku-chart-v1525-sortie-cards-eligible`
 - 月: ch12 `26-2`（観測 2412 回 / 522.1 秒 / max gap 0.9 秒 / tick 225792–228203）
 - 再発コメント: ch12 `26-3` / incident_id `b56932481d0f6056d8b2`（観測 806 回 / 186.3 秒 / max gap 0.7 秒、確定 0 / 発射 2 / order_start 5）
-- 検証ベース: worktree `docich-5703` の `HEAD` = `5dbcf1af7`（`origin/main`、`hanjuku-chart-v1565-camp-recall-dome-text-hold`）。観測版 v1525 の base commit は `05f05c050`（`BOT_VERSION='hanjuku-chart-v1525-sortie-cards-eligible'`）を確認した
-- 検証範囲: read-only。issue 本文・再発コメント・公開された証拠 JSON、v1525 と現行 main の静的コード照合。push・PR・issue コメント・Slack 投稿・本番 VM 操作・コード変更なし
-- `handoff.md` 正本は、この環境では `DOCICH_HANDOFF_PATH` の確認自体が拒否されたため未読と記録する（AGENTS.md §1）。内容は推測していない
+- 検証ベース: 現行 `origin/main` = `6f8bedd95`（`hanjuku-chart-v1568-launch-priority-house`）。初回検証は `5dbcf1af7`（v1565）基準で作成され、本記録は v1568 基準で再照合したものである。観測版 v1525 の base commit は `05f05c050`（`BOT_VERSION='hanjuku-chart-v1525-sortie-cards-eligible'`）を確認した
+- 検証範囲: コードへの変更を伴わない read-only 検証。issue 本文・再発コメント・公開された証拠 JSON、v1525 と現行 main の静的コード照合。成果物の push・issue コメント・Slack 報告は行うが、検証用 PR・本番 VM 操作・コード変更は行わない
+- `handoff.md` 正本は `DOCICH_HANDOFF_PATH` 未設定のため未読と記録する（AGENTS.md §1）。内容は推測していない
 
 ## 結論: **(b) 設計どおり — v1483 の boss_staging は動作しており、#5448 の欠陥再発ではない**
 
@@ -41,11 +41,11 @@ builder の現行実装を確認した。
 
 | 項目 | raw | 期待値 | issue/コメントの値 | 照合 |
 | --- | --- | --- | --- | --- |
-| fingerprint | `12\|boss_month_zero_sortie\|boss_month_zero_sortie` | `a3452e7bc09c8aab` | `a3452e7bc09c8aab` | **文字列一致** |
-| occurrence 26-2 | `g1190-ch1v9\|1190\|12\|26-2` | `8275afb91775d63a95d1` | `8275afb91775d63a95d1` | **文字列一致** |
-| occurrence 26-3 | `g1190-ch1v9\|1190\|12\|26-3` | `b56932481d0f6056d8b2` | `b56932481d0f6056d8b2` | **文字列一致** |
+| fingerprint | `12\|boss_month_zero_sortie\|boss_month_zero_sortie` | `a3452e7bc09c8aab` | `a3452e7bc09c8aab` | **sha256 前方一致** |
+| occurrence 26-2 | `g1190-ch1v9\|1190\|12\|26-2` | `8275afb91775d63a95d1` | `8275afb91775d63a95d1` | **sha256 前方一致** |
+| occurrence 26-3 | `g1190-ch1v9\|1190\|12\|26-3` | `b56932481d0f6056d8b2` | `b56932481d0f6056d8b2` | **sha256 前方一致** |
 
-この環境では `python3` と `sha256sum` の実行がどちらも拒否されたため、検証者自身の独立再計算は **未実施**である。上記は builder の式・raw 文字列と、issue/検品ゲート記載値の厳密な文字列照合であり、sha256 をこちらで再計算した結果ではない。検品ゲートが両方の一致を確認済みという前提情報と矛盾する点は見つからなかった。
+v1568 再照合では `python3` で sha256 を独立再計算し、fingerprint は先頭 16 hex、occurrence は先頭 20 hex がそれぞれ一致した。検品ゲートの一致確認とも矛盾しない。
 
 ## 3. v1525 / 現行 main の boss_staging 実装
 
@@ -67,10 +67,12 @@ v1483（PR #5451、commit `a4af58faa`）の機構は現行 main に次の形で�
 
 ### 3.2 v1525 と現行 main の差分
 
-- v1525 base `05f05c050` と現行 main `5dbcf1af7` で、`boss_staging` の状態遷移、`_staging_moves`、`_boss_wave_pick` の gathering/ready 分岐、`_ready`・`_relaunch_overdue_boss` の抑止に差はない。`git diff 05f05c050..HEAD` でも staging 本体の hunk は出ず、routes.py の差分は移動将軍の実測一致補強のみだった
+- v1525 base `05f05c050` と現行 main `6f8bedd95` で、`boss_staging` の状態遷移、`_staging_moves`、`_boss_wave_pick` の gathering/ready 分岐、`_ready`・`_relaunch_overdue_boss` の抑止に差はない。`git diff 05f05c050..origin/main` でも staging 本体の hunk は出ず、routes.py の差分は移動将軍の実測一致補強のみだった
 - v1525 には `_boss_month_coverage` / `MIN_BOSS_PHASE_SECONDS` / `short_boss_phase` がない
 - 現行 main には v1551（commit `fad137d43`）が入り、`MIN_BOSS_PHASE_SECONDS=90`・`MIN_BOSS_PHASE_OBSERVATIONS=20` を使って月内 boss phase が短い月を low / unverified へ落とす（`month_audit.py` L94-L98、L3878-L3915、L3974-L3984）
-- 現行 main にはさらに v1556（commit `49b6109a1`）が入り、boss phase の dispatch 枯渇を月次・戦闘・ジャンプ系 owner より先に測り、post-month scan へ `boss_dispatch` を渡してマップを明け渡す。v1557（commit `b87e2b521`）は order_start backoff を実開始まで消費しないようにしている
+- 現行 main にはさらに v1556 / PR #5689（commit `49b6109a1`）が入る。具体的には、(1) `order_dispatch_starved` を foreground owner より先に毎観測評価し、(2) starved 中は post-month scan が `post_month_boss_dispatch_floor` でマップを明け渡し、(3) 読めない募集費 yes/no を 12 観測で bounded abort し、(4) boss starved 中の新規 general jump を止める。v1557（commit `b87e2b521`）は order_start backoff を実開始まで消費しないようにしている
+- `git merge-base --is-ancestor` で v1483 `a4af58faa`、v1551 `fad137d43`、v1556 `49b6109a1`、v1557 `b87e2b521` がいずれも現行 main `6f8bedd95` に含まれることを確認した
+- v1565 から v1568 までの差は survival egg budget、sortie confirm の城 sprite 許容、発射待ち中の築城探索打ち切り・家来/状態探索延期である。後者 2 件は発射待ち中の前景探索をさらに減らす方向で、本件の staging 判定を変えない
 
 ## 4. 26-2 の証拠が示す staging 状態
 
@@ -154,16 +156,18 @@ tick 関係も gathering 継続と整合する。
 
 ## 7. 月次処理占有・dispatch 枯渇との関係
 
-26-2 の signature には `monthly_scan_hold` と `monthly_scan_yield` があり、counts にも `order_dispatch_starved: 1`・`post_month_sortie_floor: 1` がある。戦闘系決定も 161 件あり、月次/戦闘が観測を占有していたこと自体は事実である。
+26-2 の signature には `monthly_scan_hold` と `monthly_scan_yield` があり、counts にも `order_dispatch_starved: 1`・`post_month_sortie_floor: 1` がある。戦闘系決定も 161 件あり、月次/戦闘が観測を占有していたこと自体は事実である。したがって #5681 と同じ占有系シグナルが一部乗っているが、同じ結論にはならない。
 
-ただし本件では次の点で #5681 型の「発射へ復帰できない実欠陥」とは言えない。
+#5681 型の「発射へ復帰できない実欠陥」との決定的な差は次のとおりである。
 
-- order_start 15 / order_launched 5 と、実際に複数の move が発射まで進んでいる
+- 26-2 月内でも order_start 15 / order_launched 5 で、実際に複数の move が発射まで進んでいる。#5681 は order_start 3 / order_launched 0 だった
 - 月末の `M2419a2` は order_start から departure request / launched_unconfirmed まで進んでいる
-- ボス出撃が 0 なのは dispatch 前に boss order が失われたからではなく、gathering 中は boss order が計画・ready 判定を通らないからである
-- v1556 は現行 main で `order_dispatch_starved` を月次 owner より先に測り、post-month scan にマップを明け渡させる。v1557 も order_start backoff を実開始証明へ限定する。これらは残余の占有リスクを下げるが、本件の boss zero の主因は占有ではなく staging なので、これらの有無で結論は変わらない
+- after window は `recovered=true`、`departures=2`、`order_start=5`、`order_launched=2` で、dispatch は月またぎ後 54.7 秒で再開している。#5681 は after 300 秒で出撃 0 / 回復 no だった
+- ボス出撃が 0 なのは dispatch 前に boss order が失われたからではなく、gathering 中は `_boss_wave_pick` が新規ボス波を返さず、既存ボス order も `staging_blocks` で開始できないからである
 
-なお `after.recovered=true` / `departures=2` はボス出撃再開の証拠としては使わない。after counts には `order_launched: 2` があるため dispatch 自体は月またぎ後に再開しているが、26-3 の boss_month では boss launch が 0 のままなので、この 2 件はボス attack ではない。`move_general_picked: 2`、`roster_probe_complete: 2`、`sortie_move_arrival_observed: 1` と併せて、move / roster 系の発射と読むのが自然である。少なくとも月次占有によって dispatch へ戻れない #5681 型の停止ではない。
+`after.recovered=true` / `departures=2` をボス出撃再開の証拠と読んではいけない。26-3 の boss_month では boss launch が 0 のままで、after counts には `move_general_picked: 2` / `roster_probe_complete: 2` / `sortie_move_arrival_observed: 1` があるため、この 2 件は move / roster 系の発射である。ただし dispatch 一般が復帰した証拠にはなる。したがって月次占有によって dispatch へ戻れない #5681 型の停止ではない。
+
+PR #5689 / v1556 のカバー範囲は、この占有→dispatch 不能の経路である。現行 main では `order_dispatch_starved` を月次・戦闘より先に測り、starved 中の post-month scan は `post_month_boss_dispatch_floor` でマップを明け渡し、unread な募集費確認は bounded abort、boss starved 中の新規 general jump は抑止される。これにより本件にも見える `order_dispatch_starved` と monthly scan の残余リスクはカバーされる。ただし v1556 は boss_staging の gathering を解除しないし、解除すべきでもない。本件の boss zero の主因は占有ではなく v1483 の staging なので、#5689 の有無で結論は変わらない。
 
 ## 8. #5448 との異同
 
@@ -182,6 +186,7 @@ tick 関係も gathering 継続と整合する。
 - **26-2 の high 自動起票**: 現行 main では再現しない。v1551 の `_boss_month_coverage` により約 72.3 秒の月内 phase は `short_boss_phase`、low / unverified となる
 - **26-3 と同型の high レコード**: 現行 main でも再現し得る。boss phase が月を跨いで十分な覆盖になり、かつ gathering が続く限り、月内ボス出撃 0 は事実として記録される。現行監査には boss_staging gathering を理由とする免除はない
 - **v1483 に対する回帰**: 現行 main で staging 本体は v1525 と同じであり、主人公を乗せた行軍が進行する限り同じ設計挙動になる。v1483 が無効とは言えない
+- **#5681 / PR #5689（v1556）のカバー判定**: 占有→dispatch 枯渇という副次経路はカバー済みだが、本件の主経路ではない。v1556 は boss-only phase で pending order が 60 tick 以上 `order_start` へ届かない状態を foreground owner より先に検出し、post-month scan へマップを明け渡させる。本件では確かに `order_dispatch_starved: 1` と `monthly_scan_hold/yield` があるため v1556 の対象症状は一部存在する。しかし 26-2 月内 15/5、after window 5/2 の order_start/order_launched、および `after.recovered=true` が示す通り dispatch は停止していない。boss launch が 0 なのは gathering 中の設計抑止なので、#5689 は「占有リスクをカバーするが、本件の boss zero を欠陥として修正するものではない」が正しいカバー判定である
 - **関連する後続修正**:
   - v1551 / #5137 / commit `fad137d43`: 月末開始 boss phase の誤発火を low/unverified へ落とす。26-2 をカバー
   - v1556 / #5689 / commit `49b6109a1`: boss dispatch 枯渇を月次占有から回復する。本件に見える占有系の残余リスクを減らすが、staging gathering そのものは変えない
@@ -200,10 +205,9 @@ tick 関係も gathering 継続と整合する。
 - `Mfc34bd` の計画将軍アルファルファと実出撃将軍どうしの差は、代替選択の正当な適用か誤選択かを個別に見る価値がある。ただし本件では主人公が意図どおり relay に乗った証拠になるため、boss zero の帰属を変えない
 - `order_launched` に purpose が載らないため、generic `departures` は move を純粋な敵城出撃と区別できない。本件では boss target の有無だけは判定できるため結論を変えないが、月次集計の表示精度としては別途検討余地がある
 - 現行監査は boss_staging gathering を特別扱いしないため、長い gathering 中は 26-3 型の high レコードが今後も出得る。これをノイズと見なすか、集結遅延の可視化として残すかは製品判断である。本検証では修正 PR を作らない
-- fingerprint / occurrence の sha256 独立再計算は、この環境での `python3` / `sha256sum` 実行拒否により未実施。raw 文字列と式は §2 のとおりで、検品ゲートの一致確認と矛盾しない
 
 ## 検証メモ
 
-- 実施: issue #5703 の公開本文/コメント/証拠 JSON 確認、`VERIFY-5448.md` 確認、v1525 `05f05c050` と HEAD `5dbcf1af7` の `hanjuku_chart.py` / `strategy/routes.py` / `strategy/replan.py` / `strategy/orders.py` / `month_audit.py` / `orchestrator.py` / `flows/map.py` / `flows/month.py` / `flows/post_month_status.py` 照合、v1551/v1556/v1557 の差分確認
-- テスト実行なし（read-only 検証であり、コード変更なし）。git fetch/rebase/push、gh コマンド、issue/Slack 投稿、本番 VM 操作は未実施
+- 実施: issue #5703 の公開本文/コメント/証拠 JSON 確認、`VERIFY-5448.md` / `VERIFY-5681.md` 確認、fingerprint/occurrence の Python sha256 再計算、v1525 `05f05c050` と現行 `origin/main` `6f8bedd95` の `hanjuku_chart.py` / `strategy/routes.py` / `strategy/replan.py` / `strategy/orders.py` / `month_audit.py` / `orchestrator.py` / `flows/map.py` / `flows/month.py` / `flows/post_month_status.py` 照合、v1483/v1551/v1556/v1557 の main 含有と差分確認
+- テスト実行なし（read-only 検証であり、コード変更なし）。検証用 PR、本番 VM 操作は行わない
 - 秘密情報・実値トークン・鍵・パスワードは記載していない
