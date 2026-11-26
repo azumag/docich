@@ -1,6 +1,7 @@
 """Measured split announcements for the hanjuku-speedrun RTA records."""
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -335,6 +336,51 @@ def test_hook_records_a_confirmed_split_and_launches_delivery(tmp_path, monkeypa
     assert [item['text'] for item in items] == [
         '第1話を0分10秒で通過。区間ベスト更新です。']
     assert launches
+
+
+def test_split_lost_to_lock_collision_is_retried_on_the_next_observation(
+        tmp_path, monkeypatch):
+    runtime, shot = make_hook_runtime(tmp_path)
+    monkeypatch.setattr(announce, 'launch_pending', lambda *a, **k: True)
+    real_locked = announce._locked
+    calls = {'count': 0}
+
+    @contextlib.contextmanager
+    def flaky_locked(runtime_path, wait_s=0.0):
+        calls['count'] += 1
+        if calls['count'] == 1:
+            # The first confirmation collides with the drainer's lock and
+            # gives up (the real _record waits 0.25 s).
+            yield False
+            return
+        with real_locked(runtime_path, wait_s=wait_s) as locked:
+            yield locked
+
+    monkeypatch.setattr(announce, '_locked', flaky_locked)
+    base = time.time() - 20
+    hook_observe(runtime, shot, at=base,
+                 run_extra={'name_entered': True, 'phase': 'name'})
+    first = hook_observe(
+        runtime, shot,
+        [{'decision': 'prompt', 'strategy_variant': 'chapter_end_save',
+          'chapter': 1}],
+        at=base + 10)
+    assert first['current_index'] == 1
+    assert calls['count'] == 1
+    assert announce.pending(runtime) == []
+
+    # No new split arrives here.  The timer still holds the confirmed
+    # segment, so diffing it against the empty seen receipts retries it.
+    hook_observe(runtime, shot, at=base + 11)
+    items = announce.pending(runtime)
+    assert [item['text'] for item in items] == [
+        '第1話を0分10秒で通過。区間ベスト更新です。']
+    assert items[0]['key'].endswith(':split:0:0')
+
+    # The receipt now suppresses the same split on later observations.
+    hook_observe(runtime, shot, at=base + 12)
+    hook_observe(runtime, shot, at=base + 13)
+    assert len(announce.pending(runtime)) == 1
 
 
 def test_hook_records_finish_and_dnf(tmp_path, monkeypatch):

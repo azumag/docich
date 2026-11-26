@@ -319,8 +319,7 @@ def _announce_identity(run):
     return identity if announce.valid_identity(identity) is not None else None
 
 
-def _announce_changes(runtime, timer, before_splits, run, *, finished=False,
-                      dnf=False):
+def _announce_changes(runtime, timer, run, *, finished=False, dnf=False):
     """Queue the measured sentences for this observation; never raises."""
     try:
         identity = _announce_identity(run)
@@ -333,9 +332,10 @@ def _announce_changes(runtime, timer, before_splits, run, *, finished=False,
             announce.finish_event(runtime, timer, identity=identity)
         elif dnf:
             announce.dnf_event(runtime, timer, identity=identity)
-        splits = (timer.get('splits')
-                  if isinstance(timer.get('splits'), list) else [])
-        for split in splits[before_splits:]:
+        # Diff the timer's confirmed splits against the durable receipts, not
+        # a before/after index: a split dropped by a state-lock collision is
+        # retried on the next observation instead of being skipped forever.
+        for split in announce.unannounced_splits(runtime, timer):
             announce.split_event(
                 runtime, split, attempt_id=timer.get('attempt_id'),
                 identity=identity,
@@ -443,7 +443,6 @@ def _observe(runtime, records, state, meta, *, screenshot):
             recovered_same = True
 
     if status == 'running':
-        before_splits = len(timer.get('splits') or [])
         changed_records = False
         for end_index, source in _signals(observations, state):
             before = len(timer.get('splits') or [])
@@ -459,7 +458,7 @@ def _observe(runtime, records, state, meta, *, screenshot):
             timer, updated = timer_mod.finish(timer, stored, observed)
             stored = updated
             _commit(runtime, timer, stored, save_records=True, final=True)
-            _announce_changes(runtime, timer, before_splits, run, finished=True)
+            _announce_changes(runtime, timer, run, finished=True)
             return timer
         if terminal in _TERMINAL_REASONS:
             timer, updated = timer_mod.finish_or_dnf(
@@ -468,14 +467,14 @@ def _observe(runtime, records, state, meta, *, screenshot):
             # segment best; save it before the attempt row is written.
             _commit(runtime, timer, updated, save_records=changed_records,
                     final=True)
-            _announce_changes(runtime, timer, before_splits, run, dnf=True)
+            _announce_changes(runtime, timer, run, dnf=True)
             return timer
         if not changed_records:
             timer = timer_mod.heartbeat(timer, observed)
             _commit(runtime, timer, stored, save_records=False)
         else:
             _commit(runtime, timer, stored, save_records=True)
-        _announce_changes(runtime, timer, before_splits, run)
+        _announce_changes(runtime, timer, run)
         return timer
 
     start_here = (

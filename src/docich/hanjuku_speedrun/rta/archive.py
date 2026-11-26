@@ -57,6 +57,8 @@ SPOOL_DIR = spool.SPOOL_DIR
 FRAMES_DIR = spool.FRAMES_DIR
 LOCK_FILE = 'archive.lock'
 ARCHIVE_STATE_FILE = 'archive_state.json'
+#: Legacy dry-run artifact.  Dry runs now print the plan to stdout, but an
+#: older build's file is still pruned by :func:`enforce_local_retention`.
 ARCHIVE_PLAN_FILE = 'archive_plan.json'
 MANIFEST_FILE = 'manifest.json'
 SEGMENTS_FILE = 'segments.json'
@@ -671,7 +673,8 @@ def enforce_local_retention(directory, *, keep=RECENT_LOCAL_ATTEMPTS):
             # still present; a later upload pass will finish it.
             continue
         base = attempt_dir(directory, attempt_id)
-        for name in (MANIFEST_FILE, SEGMENTS_FILE, ARCHIVE_STATE_FILE):
+        for name in (MANIFEST_FILE, SEGMENTS_FILE, ARCHIVE_STATE_FILE,
+                     ARCHIVE_PLAN_FILE):
             path = base / name
             try:
                 meta = os.lstat(path)
@@ -715,8 +718,14 @@ class ArchiveResult:
         }
 
 
-def _gzip_lock_live(path):
-    """True when ``<path>.gz.lock`` names a live compressor."""
+def _gzip_lock_live(path, *, take_over_stale=True):
+    """True when ``<path>.gz.lock`` names a live compressor.
+
+    A stale lock (owner process gone) is removed and treated as not live by
+    the uploader, so the uncompressed file is sent instead of waiting
+    forever.  ``take_over_stale=False`` is the read-only form for dry runs:
+    it reports the same liveness without deleting anything.
+    """
     lock = Path(str(path) + spool.GZIP_LOCK_SUFFIX)
     try:
         meta = os.lstat(lock)
@@ -727,6 +736,8 @@ def _gzip_lock_live(path):
     pid = spool._read_lock_pid(lock)
     if isinstance(pid, int) and spool._pid_alive(pid):
         return True
+    if not take_over_stale:
+        return False
     # The launcher died (or the lock is stale).  Drop it and send the
     # uncompressed file rather than waiting forever.
     try:
@@ -1176,13 +1187,15 @@ def _do_upload(directory, info, config, *, now_ms, client=None,
 
 
 def plan_attempt(runtime_data_dir, attempt_id, *, now_ms=None):
-    """Write the would-be upload list without sending or deleting anything.
+    """Build the would-be upload list without sending, writing or deleting.
 
     This is the local ``--dry-run`` path: it never reads ``r2.env``, never
     opens a socket and never calls ``_ensure_manifest`` (which would write
-    files).  The plan is stored next to the attempt so an operator can inspect
-    the keys and byte counts the real uploader would use.  The ``frames.tar``
-    size is the sum of the frame inputs (tar headers are not included).
+    files).  The returned document is printed by the CLI; it is not stored
+    next to the attempt, so a dry run leaves the data directory byte-for-byte
+    unchanged.  Gzip locks are inspected read-only: a stale lock is reported
+    as not live but is never removed here.  The ``frames.tar`` size is the
+    sum of the frame inputs (tar headers are not included).
     """
     directory = data_dir(runtime_data_dir)
     attempt_id = spool._component(attempt_id, 'attempt_id')
@@ -1206,9 +1219,9 @@ def plan_attempt(runtime_data_dir, attempt_id, *, now_ms=None):
         name = Path(relative).name
         if name.startswith('.') or name.endswith(spool.GZIP_LOCK_SUFFIX):
             continue
-        if _gzip_lock_live(path):
+        if _gzip_lock_live(path, take_over_stale=False):
             # The real uploader waits for the detached gzip; list it but make
-            # clear it is not ready yet.
+            # clear it is not ready yet.  A stale lock is read-only here.
             pending_gzip.append(f'{SPOOL_DIR}/{relative}')
         files.append({
             'key': f'{prefix}/{SPOOL_DIR}/{relative}',
@@ -1296,7 +1309,6 @@ def plan_attempt(runtime_data_dir, attempt_id, *, now_ms=None):
         'total_bytes': total,
         'notes': notes,
     }
-    spool.write_json(base / ARCHIVE_PLAN_FILE, document)
     return document
 
 
@@ -1564,8 +1576,9 @@ def _cli_upload(args):
         except ArchiveError as exc:
             print(f'archive: {exc.code}')
             return 1
-        print(f'archive: dry_run {len(document["files"])} '
-              f'{document["total_bytes"]}')
+        # stdout only: the plan is not written to the data directory, so a
+        # dry run cannot leave an archive_plan.json behind.
+        print(json.dumps(document, ensure_ascii=False, sort_keys=True))
         return 0
     if args.pending == bool(args.attempt):
         print('archive: error invalid_arguments', file=sys.stderr)

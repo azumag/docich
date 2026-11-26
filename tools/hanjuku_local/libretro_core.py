@@ -311,7 +311,8 @@ class LibretroCore:
     def _bind(self):
         lib = self._lib
         for name in ('retro_init', 'retro_deinit', 'retro_load_game',
-                     'retro_unload_game', 'retro_run', 'retro_serialize_size',
+                     'retro_unload_game', 'retro_run', 'retro_get_system_info',
+                     'retro_serialize_size',
                      'retro_serialize', 'retro_unserialize',
                      'retro_get_memory_data', 'retro_get_memory_size',
                      'retro_get_system_av_info', 'retro_set_environment',
@@ -330,6 +331,8 @@ class LibretroCore:
         lib.retro_set_input_state.argtypes = [InputStateCallback]
         lib.retro_load_game.argtypes = [POINTER(RetroGameInfo)]
         lib.retro_load_game.restype = c_bool
+        lib.retro_get_system_info.argtypes = [POINTER(RetroSystemInfo)]
+        lib.retro_get_system_info.restype = None
         lib.retro_serialize_size.restype = c_size_t
         lib.retro_serialize.argtypes = [c_void_p, c_size_t]
         lib.retro_serialize.restype = c_bool
@@ -487,8 +490,26 @@ class LibretroCore:
 
     def load_game(self, rom_path):
         self.setup()
+        rom_path = Path(rom_path)
         path = os.fsencode(str(rom_path))
-        info = RetroGameInfo(path=path, data=None, size=0, meta=None)
+        # A core that sets need_fullpath uses the path only; every other core
+        # may dereference data, so it must receive the ROM bytes and keep them
+        # alive for as long as the game is loaded.
+        system_info = RetroSystemInfo()
+        self._lib.retro_get_system_info(byref(system_info))
+        self._system_info = system_info
+        if system_info.need_fullpath:
+            info = RetroGameInfo(path=path, data=None, size=0, meta=None)
+        else:
+            try:
+                rom = rom_path.read_bytes()
+            except OSError as exc:
+                raise CoreError('rom_read_failed') from exc
+            buffer = ctypes.create_string_buffer(bytes(rom), max(1, len(rom)))
+            self._keep_alive.append(buffer)
+            self._keep_alive.append(path)
+            info = RetroGameInfo(path=path, data=cast(buffer, c_void_p),
+                                 size=len(rom), meta=None)
         if not self._lib.retro_load_game(byref(info)):
             raise CoreError('game_load_failed')
         self._loaded = True

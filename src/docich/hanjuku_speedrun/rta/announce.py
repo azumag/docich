@@ -352,15 +352,51 @@ def _record(runtime, key, text, at_ms, identity, *, terminal, now):
         return True
 
 
+def split_key(split, *, attempt_id):
+    """The stable dedupe key for one confirmed segment (or ``None``)."""
+    if not isinstance(attempt_id, str) or not attempt_id:
+        return None
+    if not isinstance(split, dict):
+        return None
+    index = _int(split.get('index'))
+    end = _int(split.get('end_index'))
+    return f'{attempt_id}:split:{index}:{end if end is not None else index}'
+
+
+def unannounced_splits(runtime, timer):
+    """Timer splits whose dedupe key is neither received nor already queued.
+
+    The hook calls this on every observation.  Comparing the timer's
+    confirmed segments with the durable ``seen`` receipts means a split whose
+    first ``_record`` lost the state-lock race is retried on the next
+    observation; a before/after index difference would already have moved
+    past it and lose the segment forever.
+    """
+    splits = timer.get('splits') if isinstance(timer, dict) else None
+    if not isinstance(splits, list):
+        return []
+    attempt_id = timer.get('attempt_id')
+    state = _read_state(Path(runtime))
+    known = set(state['seen'])
+    known.update(item['key'] for item in state['pending'])
+    result = []
+    for split in splits:
+        key = split_key(split, attempt_id=attempt_id)
+        if key is None or key in known:
+            continue
+        result.append(split)
+    return result
+
+
 def split_event(runtime, split, *, attempt_id, identity, at_ms=None, terminal=False,
                 now=None):
     """Queue one confirmed segment (false for repeated/stale/overflowed)."""
     text = compose_split(split)
-    if not text or not isinstance(attempt_id, str) or not attempt_id:
+    if not text:
         return False
-    index = _int(split.get('index'))
-    end = _int(split.get('end_index'))
-    key = f'{attempt_id}:split:{index}:{end if end is not None else index}'
+    key = split_key(split, attempt_id=attempt_id)
+    if key is None:
+        return False
     return _record(Path(runtime), key, text, at_ms, identity, terminal=terminal, now=now)
 
 

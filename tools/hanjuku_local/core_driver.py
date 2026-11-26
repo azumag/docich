@@ -143,8 +143,8 @@ class DriverConfig:
         game = game or _env_text('HANJUKU_GAME', 'hanjuku-hero')
         if game not in GAME_BOT_DIRS:
             raise ValueError(f'unknown game: {game}')
-        runtime_id = _env_text('HANJUKU_RUNTIME_ID', 'g1163-42bfb85e')
-        generation = _env_int('HANJUKU_GENERATION', 1163)
+        runtime_id = _env_text('HANJUKU_RUNTIME_ID', 'g1-00000000')
+        generation = _env_int('HANJUKU_GENERATION', 1)
         runtime = _env_path(
             'HANJUKU_RUNTIME',
             root / 'run-local' / 'runtimes' / runtime_id)

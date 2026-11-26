@@ -113,43 +113,65 @@ def _attempt_tree(data, attempt_id, *, with_manifest=True):
     return attempt, spool
 
 
-def test_archive_dry_run_writes_plan_and_sends_nothing(monkeypatch, tmp_path,
-                                                      capsys):
+def _snapshot(root):
+    """Every entry under ``root`` with its bytes and mtime (dirs included)."""
+    result = {}
+    for path in sorted(Path(root).rglob('*')):
+        relative = path.relative_to(root).as_posix()
+        meta = path.lstat()
+        if path.is_symlink():
+            result[relative] = ('link', os.readlink(path))
+        elif path.is_file():
+            result[relative] = ('file', path.read_bytes(), meta.st_mtime_ns)
+        else:
+            result[relative] = ('dir', meta.st_mtime_ns)
+    return result
+
+
+def test_archive_dry_run_prints_plan_without_touching_data(monkeypatch, tmp_path,
+                                                          capsys):
     data = tmp_path / 'speedrun-data'
     data.mkdir()
     attempt_id = f'a0001-{RUNTIME_ID}'
     attempt, spool = _attempt_tree(data, attempt_id)
+    # A stale lock must not be unlinked by a dry run.  Even a write/delete
+    # would change the directory snapshot.
+    lock = Path(str(spool / 'decisions.previous.jsonl.gz') + '.gz.lock')
+    lock.write_text('0', encoding='ascii')
     monkeypatch.setenv(store.DATA_DIR_ENV, str(data))
     monkeypatch.setenv(store.ENVIRONMENT_ENV, 'local')
     monkeypatch.delenv(archive.ENV_FILE_ENV, raising=False)
-    before = {path: path.read_bytes() for path in data.rglob('*')
-              if path.is_file()}
+    before = _snapshot(data)
 
-    document = archive.plan_attempt(data, attempt_id)
-    plan_path = attempt / 'archive_plan.json'
-    assert plan_path.is_file()
-    plan = json.loads(plan_path.read_text(encoding='utf-8'))
-    assert plan == document
-    assert plan['dry_run'] is True
-    assert plan['env'] == 'local'
-    keys = {item['key'] for item in plan['files']}
+    document = archive.plan_attempt(data, attempt_id, now_ms=BASE_MS)
+    assert not (attempt / 'archive_plan.json').exists()
+    assert lock.is_file() and lock.read_text(encoding='ascii') == '0'
+    assert _snapshot(data) == before
+    assert document['dry_run'] is True
+    assert document['env'] == 'local'
+    keys = {item['key'] for item in document['files']}
     assert f'hanjuku-speedrun/attempts/0001-{attempt_id}/spool/decisions.previous.jsonl.gz' in keys
     assert f'hanjuku-speedrun/attempts/0001-{attempt_id}/spool/frames.tar' in keys
     assert f'hanjuku-speedrun/attempts/0001-{attempt_id}/segments.json' in keys
     assert f'hanjuku-speedrun/attempts/0001-{attempt_id}/manifest.json' in keys
-    assert plan['keep'] == []
-    # Nothing was deleted or changed except the new plan file.
-    for path, content in before.items():
-        assert path.read_bytes() == content
-    assert (spool / 'decisions.previous.jsonl.gz').read_bytes() == b'log'
-    assert (spool / 'frames' / 'frame-001.png').read_bytes() == b'png'
+    assert document['keep'] == []
 
     code = archive.main(['--data-dir', str(data), 'upload', '--attempt',
                          attempt_id, '--dry-run'])
     assert code == 0
     captured = capsys.readouterr()
-    assert 'archive: dry_run' in captured.out
+    printed = json.loads(captured.out)
+    assert printed['files'] == document['files']
+    assert printed['keep'] == document['keep']
+    assert printed['env'] == 'local'
+    assert printed['attempt_id'] == attempt_id
+    assert printed['dry_run'] is True
+    assert printed['total_bytes'] == document['total_bytes']
     assert captured.err == ''
+    # plan_attempt and the CLI together changed nothing at all.
+    assert _snapshot(data) == before
+    assert not (attempt / 'archive_plan.json').exists()
+    assert lock.is_file()
 
 
 def test_archive_dry_run_without_manifest_lists_generated_key(tmp_path):
@@ -164,7 +186,7 @@ def test_archive_dry_run_without_manifest_lists_generated_key(tmp_path):
     assert manifest_entry['generated_at_upload'] is True
     assert 'manifest_will_be_generated' in plan['notes']
     assert not (attempt / 'manifest.json').exists()
-    assert (attempt / 'archive_plan.json').is_file()
+    assert not (attempt / 'archive_plan.json').exists()
 
 
 def test_archive_dry_run_rejects_pending(tmp_path, capsys):

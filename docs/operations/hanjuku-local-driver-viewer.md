@@ -70,8 +70,8 @@ nohup python3 tmp/hanjuku-local/core_driver.py --fast >> tmp/hanjuku-local/prod1
 |---|---|---|
 | `HANJUKU_CODE_ROOT` | `/Users/azumag/work/docich` | bot ソースのルート。**worktree を使うときは必ずここを切り替える**。 |
 | `HANJUKU_RUNTIME` | `run-local/runtimes/<RUNTIME_ID>` | 観測・判断ログ・スクショの出力先。 |
-| `HANJUKU_RUNTIME_ID` | `g1163-42bfb85e` | 実行ID。`hanjuku_run` の identity に載る。 |
-| `HANJUKU_GENERATION` | `1163` | 世代番号。 |
+| `HANJUKU_RUNTIME_ID` | `g1-00000000` | 実行ID。`hanjuku_run` の identity に載る。 |
+| `HANJUKU_GENERATION` | `1` | 世代番号。 |
 | `HANJUKU_LEASE` | サンプル値 | リースID（実行の同一性）。 |
 | `HANJUKU_STATE` | `tmp/hanjuku-local/states/hanjuku-hero.state` | セーブステート（`retro_serialize`）。 |
 | `HANJUKU_SAVE_EVERY` | `10` | 90 フレーム×この値ごとに state を保存（既定で約 900 フレーム毎）。 |
@@ -460,12 +460,13 @@ python3 -m docich.hanjuku_speedrun.rta.preview --root run-local --port 8780
 ```bash
 python3 -m docich.hanjuku_speedrun.rta.archive \
   --data-dir run-local/speedrun/hanjuku-speedrun \
-  upload --attempt <attempt_id> --dry-run
-cat run-local/speedrun/hanjuku-speedrun/attempts/<attempt_id>/archive_plan.json
+  upload --attempt <attempt_id> --dry-run | python3 -m json.tool
 ```
 
-`archive_plan.json` には送信キー・バイト数・keep コピー（PB / 区間ベストの試走のみ）・
-`env` が入る。資格情報は読まない。
+計画 JSON は**標準出力にだけ**出る。`attempts/<attempt_id>/archive_plan.json` のような
+ファイルは書かないので、dry-run の前後でデータディレクトリは完全に同じままになる。
+古い `.gz.lock` も読み取り専用で確認し、削除しない。JSON には送信キー・バイト数・
+keep コピー（PB / 区間ベストの試走のみ）・`env` が入る。資格情報は読まない。
 
 ### 9.5 未確認・注意
 

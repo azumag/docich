@@ -827,6 +827,9 @@ def test_non_archived_old_attempt_survives_local_retention(tmp_path, server):
             'schema': 1, 'game': store.GAME, 'attempt_id': attempt_id,
             'attempt_no': number,
         })
+        if number == 2:
+            # A plan left by an older build is data-directory state too.
+            spool.write_json(base / 'archive_plan.json', {'schema': 1})
 
     archive.enforce_local_retention(data, keep=3)
 
@@ -834,8 +837,10 @@ def test_non_archived_old_attempt_survives_local_retention(tmp_path, server):
     # must stay even though it is outside the newest three.
     assert (data / 'attempts' / ids[0] / 'manifest.json').is_file()
     assert (data / 'attempts' / ids[0] / 'segments.json').is_file()
-    # An archived attempt outside the newest three is pruned.
+    # An archived attempt outside the newest three is pruned, including a
+    # legacy archive_plan.json.
     assert not (data / 'attempts' / ids[1] / 'manifest.json').exists()
+    assert not (data / 'attempts' / ids[1] / 'archive_plan.json').exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1036,9 @@ def test_local_retention_keeps_only_the_newest_three_archived(tmp_path, server):
             'schema': 1, 'game': store.GAME, 'attempt_id': attempt_id,
             'attempt_no': number,
         })
+        if number == 2:
+            # A plan left by an older build is data-directory state too.
+            spool.write_json(base / 'archive_plan.json', {'schema': 1})
 
     archive.enforce_local_retention(data, keep=3)
 
