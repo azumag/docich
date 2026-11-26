@@ -3789,6 +3789,29 @@ def spawn_issue_filer(runtime, record):
                              stderr=subprocess.STDOUT, start_new_session=True,
                              close_fds=True)
     except OSError:
+        _note_filer_problem(runtime, record, 'spawn_failed')
+        return False
+    return True
+
+
+def _note_filer_problem(runtime, record, reason):
+    """owner 2026-11-26: issue が作られない原因を判断できるよう、失敗を残す。
+
+    The filer is a detached child, so a failure there used to vanish (its log
+    lives in the runtime directory and nobody reads it). One bounded decision
+    per failure keeps it visible in the decisions log.
+    """
+    try:
+        from ..hanjuku_run import append_log
+        append_log(Path(runtime), 'hanjuku_decisions', {
+            'decision': 'issue_filer_failed',
+            'deviation_reason': reason,
+            'chart_step': None,
+            'observed_metric': {'incident_id': record.get('incident_id'),
+                                'kind': record.get('kind')},
+            'reason': 'issue 発行の子プロセスを起動できなかった',
+        })
+    except Exception:
         return False
     return True
 
