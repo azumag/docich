@@ -2334,6 +2334,18 @@ def deploy_step(screen: Screen, mem, *, frame=None):
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
+    if (kind != 'sortie_confirm'
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+        # docich#5146: the blind-approve allowance and its miss budget belong
+        # to one uninterrupted confirmation round. Any other observed screen
+        # means the panel was left (a battle can swallow the blind A and drop
+        # the flow back through the menus), so the re-entered confirmation
+        # gets its own single blind approval instead of inheriting the spent
+        # flag and cancelling on its third unreadable observation. An
+        # unconfirmed launch keeps the flag: its menu reads reconcile the
+        # previous departure, they do not rearm it (map.py order_start).
+        for key in ('sortie_confirm_miss', 'sortie_confirm_blind'):
+            (mem.get(key) or {}).pop(order['step'], None)
     if ('_run_identity' in mem
             and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
         # The deploy continuation (castle menu, general list, card select,
@@ -2822,8 +2834,12 @@ def deploy_step(screen: Screen, mem, *, frame=None):
         return [move]
     if kind == 'sortie_confirm':
         _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
-        empty_receipt = _empty_sortie_inventory(screen)
-        slot_receipt = _sortie_inventory(screen)
+        from .house import SORTIE_PANEL_OCCLUDED
+        # docich#5146: the same castle-sprite occlusion the repair dispatch
+        # already tolerates (house.py SORTIE_PANEL_OCCLUDED, #3920/v655) hid
+        # the departure panel at ながはま every frame and cancelled sorties.
+        empty_receipt = _empty_sortie_inventory(screen, occluded=SORTIE_PANEL_OCCLUDED)
+        slot_receipt = _sortie_inventory(screen, occluded=SORTIE_PANEL_OCCLUDED)
         carried = [] if empty_receipt else slot_receipt
         inventory_evidence = ('measured_empty_sortie' if empty_receipt else
                               'measured_single_card_sortie' if slot_receipt and len(slot_receipt) == 1 else
@@ -2878,7 +2894,8 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                         return [pad('a'), {'type': 'wait', 'ms': 150}, pad('a')]
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
-                                  observed_metric={'carried': None},
+                                  observed_metric={'carried': None, 'blind_approved': bool(
+                                      (mem.get('sortie_confirm_blind') or {}).get(order['step']))},
                                   reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
                 if misses[order['step']] == limit:

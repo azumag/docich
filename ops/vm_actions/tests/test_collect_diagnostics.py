@@ -663,6 +663,12 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert output['end_reason']=='screen_stalled'
     assert output['bot_phase']=='battle' and output['bot_actions_sent']==17
     assert output['battles_finished']==1
+    state['bot_version']='hanjuku-chart-v1457-empty-kit-cancel'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1457-empty-kit-cancel'
+    state['bot_version']='hanjuku-chart-v1458-merchant-mickey-priority'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1458-merchant-mickey-priority'
+    state['bot_version']='hanjuku-chart-v1552-sortie-panel-occluded'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1552-sortie-panel-occluded'
     assert 'SECRET' not in json.dumps(output)
     state.update(end_reason='SECRET-OUTCOME',bot_phase='SECRET-PHASE',bot_actions_sent='SECRET-COUNT',screen_unchanged_seconds=float('nan'))
     output=module._project_corner_state(state)
