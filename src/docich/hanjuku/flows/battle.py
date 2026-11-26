@@ -1629,6 +1629,28 @@ def _defense_summon_without_okunote(mem, cur):
     return not (guard.get('selected') or cur.get('okunote_draws'))
 
 
+def _leftover_cards(mem, cur):
+    """owner 2026-11-26: 携行していて未使用の切り札（実測の携行元から）。
+
+    A battle that never opened the card list has no selection history, so the
+    audit saw no remaining card. Reuse battle_menus' carried union (plan,
+    confirmed kit, kit ledgers) and keep the still-unused names.
+    """
+    if not isinstance(cur, dict) or cur.get('cards_used'):
+        return []
+    from .battle_menus import _carried_card_left
+    left = []
+    probe = dict(cur)
+    for _ in range(6):
+        card = _carried_card_left(mem, probe)
+        if not card or card in left:
+            break
+        left.append(card)
+        probe['cards_selected'] = [*(probe.get('cards_selected') or []), card]
+        probe['cards_used'] = [*(probe.get('cards_used') or []), card]
+    return left
+
+
 def _boss_card_left_unused(mem, cur):
     """owner 2026-11-26: ボス戦で携行切り札を使わずに戦闘が終わったか。
 
@@ -1952,6 +1974,19 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              # stale positive as a spendable egg (repeated
                              # false "eggs left" incidents).
                              'egg_uses_source': 'ledger',
+                             # owner 2026-11-26: 台帳値を無効にした結果「卵を
+                             # 使わずに負けた」まで消えていた。実画面で卵が
+                             # 使えると観測できていた（own_egg_positive_observed）
+                             # のに卵戦に入っていない場合だけ、実測の証拠として
+                             # 「使える卵を残した」を立てる。
+                             'egg_available_unused': bool(cur.get('own_egg_positive_observed'))
+                             and not (cur.get('egg_battle') or mem.get('egg_battle'))
+                             and not cur.get('egg_used'),
+                             # owner 2026-11-26: 携行した切り札を一度も開かずに
+                             # 負けた戦闘は、選択履歴が空なので監査の残存札
+                             # 判定に掛からなかった。携行の実測（計画・確定キット）
+                             # から未使用の1枚を証拠として残す。
+                             'cards_left_unused': _leftover_cards(mem, cur),
                              'cards_used': cur.get('cards_used', []),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),
