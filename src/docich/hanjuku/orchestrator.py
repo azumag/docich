@@ -2714,6 +2714,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 phase=phase, observed_metric={'streak': streak},
                 reason='戦闘後の地図を所有者なしで検出したため、SELECTで再フォーカスして再観測する')
             actions = [pad(hint)]
+    if not actions and kind == 'egg_battle_menu':
+        escape = battle_menus_flow.egg_menu_escape(screen, mem)
+        if escape is not None:
+            actions = escape
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
