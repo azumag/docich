@@ -2757,3 +2757,40 @@ def test_a_filer_spawn_failure_is_reported(monkeypatch):
     record = {'incident_id': 'inc-1', 'kind': 'card_miss', 'auto_file': True}
     assert audit.spawn_issue_filer('/tmp/unused-runtime', record) is False
     assert notes == ['spawn_failed']
+
+def test_a_measured_unused_egg_loss_is_sealed_and_autofiled(runtime_dir):
+    # owner 2026-11-26: 台帳ソースでも実測フラグがあれば封緘・自動起票される。
+    value = state(10, '1-1', 0)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_result', outcome='loss',
+                                  metric={'egg_uses': 1, 'egg_uses_source': 'ledger',
+                                          'egg_available_unused': True,
+                                          'ally_hp': 0, 'enemy_hp': 40},
+                                  general='セミヨン')],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'battle_loss_with_resources'
+    assert records[0]['battle_event']['resources'] == ['egg']
+    assert records[0]['auto_file'] is True
+
+
+def test_a_carried_card_never_opened_is_sealed_and_autofiled(runtime_dir):
+    # owner 2026-11-26: カード一覧を開かない敗北も、携行の実測から封緘される。
+    value = state(10, '1-1', 0)
+    seen = []
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_battle_record('battle_result', outcome='loss',
+                                  metric={'cards_left_unused': ['ミックミー'],
+                                          'cards_used': [], 'ally_hp': 0,
+                                          'enemy_hp': 40},
+                                  general='クランベリー')],
+                  now=1000, on_sealed=seen.append)
+    records = audit.load_incidents(runtime_dir)
+    assert len(records) == 1
+    assert records[0]['kind'] == 'battle_loss_with_resources'
+    assert records[0]['battle_event']['resources'] == ['card']
+    assert records[0]['battle_event']['cards_remaining'] == ['ミックミー']
+    assert records[0]['auto_file'] is True
+
