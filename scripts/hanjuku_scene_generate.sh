@@ -6,7 +6,10 @@ set -uo pipefail
 scene_root="$1"; scene_prompt="$2"; scene_output="$3"
 scene_agent="$4"; scene_failure="$5"; scene_meta="$6"; scene_budget="$7"
 case "$scene_budget" in ''|*[!0-9]*) exit 2 ;; esac
-[ "$scene_budget" -ge 1 ] && [ "$scene_budget" -le 15 ] || exit 2
+# The scene consumer passes a <=15s semantic budget. The periodic recap
+# passes a longer, still bounded budget because the existing radio provider
+# chain may try several models before one answers.
+[ "$scene_budget" -ge 1 ] && [ "$scene_budget" -le 240 ] || exit 2
 [ "${DOCICH_ALLOW_REAL_AI:-}" = 1 ] || exit 2
 cd "$scene_root" || exit 2
 [ -f ./eloop_lib.sh ] || exit 2
@@ -21,6 +24,10 @@ fi
 declare -F ai_generate_list >/dev/null || { printf 'unavailable\n' >"$scene_failure"; exit 2; }
 scene_role=BATCH_COMMENTARY_AGENTS
 scene_agents="${BATCH_COMMENTARY_AGENTS:-}"
+# Periodic recap may name its own short chain.  The label/lane and all queue
+# policy stay the same; only the candidate models are narrowed so the 15-minute
+# job does not spend its budget cycling through unrelated fallbacks.
+if [ -n "${HANJUKU_PERIODIC_AGENTS:-}" ]; then scene_agents="$HANJUKU_PERIODIC_AGENTS"; fi
 if [ -z "$scene_agents" ]; then scene_role=RADIO_AGENTS; scene_agents="${RADIO_AGENTS:-}"; fi
 if [ -z "$scene_agents" ]; then scene_role=AI_COMMON_AGENTS; scene_agents="${AI_COMMON_AGENTS:-}"; fi
 [ -n "$scene_agents" ] || { printf 'unavailable\n' >"$scene_failure"; exit 2; }

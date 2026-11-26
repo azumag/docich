@@ -1024,8 +1024,13 @@ def _plan_pending(mem) -> bool:
         if after and after[0] == 'captured' and after[1] not in owned:
             return after[1] in heading          # waits on a capture somebody is making
         # A source read empty cannot start the order (g438: dead ココット's J1).
+        # An attack whose target is already ours can never launch either;
+        # counting it live kept a stale plan of バスカビル waves pending and
+        # starved the rebuild for a whole month (docich#5623).
         return (_ready(o, mem) and _source(o, mem) in owned
                 and _source_list_open(o, mem)
+                and (o.get('purpose') == 'move' or chart.is_boss_castle(o.get('target'))
+                     or o.get('roster_probe') is True or o.get('target') not in owned)
                 and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem, allow_probe=True))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)

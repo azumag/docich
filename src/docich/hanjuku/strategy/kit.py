@@ -216,7 +216,15 @@ CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancellin
 NORMAL_CARD_UNREADABLE_LIMIT = 3  # an ordinary sortie escapes the list sooner (owner: depart anyway)
 SORTIE_CONFIRM_UNREADABLE_LIMIT = 3  # an ordinary unreadable confirmation departs after this many
 SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
-CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
+# Owner 2026-11-26: keep every catalogue kind. The old 24-kind cap popped the
+# oldest inserted entry whenever a panel read added a kind, so a proven 0 of a
+# purchase target could leave the ledger: S2 never buys an unknown kind, and
+# the dropped target stayed unbuyable. The catalogue is only 32 names, so the
+# adjusted-chart request can carry them all. (The cap's eviction is verified by
+# `test_a_zero_buy_target_survives_a_binding_stock_limit`; live g1342 14-2
+# showed `forget_picked` after an unconfirmed launch instead, which is why its
+# card_stock lost kinds twice at 01:18/01:39.)
+CARD_STOCK_LIMIT = len(reference.ALL_CARD_IDS)  # every catalogue kind stays in the ledger
 
 
 def _card_panel_complete(inventory) -> bool:
@@ -310,6 +318,12 @@ def _observe_card_stock(mem, inventory):
     return revived
 
 
+def _purchase_priority_index():
+    """Owner purchase priority as ``{card: rank}`` (local import: bargains reads kit)."""
+    from .bargains import CARD_PURCHASE_PRIORITY
+    return {name: rank for rank, name in enumerate(CARD_PURCHASE_PRIORITY)}
+
+
 def _buy_targets(mem):
     """Card kinds some current plan can still ask a merchant to sell.
 
@@ -343,18 +357,22 @@ def observe_full_card_inventory(mem, rows):
     merchant refused, a card returned or spent outside the bot's ledger).
 
     Returns ``(read_cards, dropped)``: the cards written, and the entries the
-    unchanged ``CARD_STOCK_LIMIT`` (24) dropped -- the read is still the proof,
-    the dropped names are only reported so a truncated ledger stays visible.
+    ``CARD_STOCK_LIMIT`` dropped -- with the 2026-11-26 limit (every catalogue
+    kind) nothing is dropped, and the list stays as a guard should the
+    catalogue ever outgrow the bound.
 
     The limit keeps the cards the bot can actually use first: positive stock
     (in count order), then the proven zeros some plan can still buy
-    (``_buy_targets``), then the other zeros; card ID inside each rank.
-    S2's window reads only inserted the rows they saw, but a full read always
-    rebuilds all 32 catalogue kinds. Dropping the lowest IDs threw away the
-    common 99s (イッテツーン at ID 0) that sorties carry; dropping a usable
-    0 loses it for good, because S2 never buys an unknown kind (ファバード
-    and エンジェリン are high-ID rich-merchant cards). Ties stay in card-ID
-    order, the list's own order, so the choice is deterministic.
+    (``_buy_targets``), in the owner's purchase-priority order, then the other
+    zeros; card ID inside each rank.
+    A full read always rebuilds all 32 catalogue kinds. Dropping the lowest IDs
+    threw away the common 99s (イッテツーン at ID 0) that sorties carry;
+    dropping a usable 0 loses it for good, because S2 never buys an unknown
+    kind (ファバード and エンジェリン are high-ID rich-merchant cards). With
+    the 2026-11-25 purchase priority the 16 target kinds compete for those
+    slots, so if the limit ever binds the zeros kept are the ones the merchant
+    plan buys first. Ties stay in card-ID order, the list's own order, so the
+    choice is deterministic.
     """
     shown = {row['card']: row['stock'] for row in rows}
     stock = mem.setdefault('card_stock', {})
@@ -365,13 +383,14 @@ def observe_full_card_inventory(mem, rows):
         if card not in shown:
             _note_ledger_drift(mem, card, 0, 'full')
     targets = _buy_targets(mem)
+    priority = _purchase_priority_index()
 
     def rank(name):
         count = shown.get(name, 0)
         if count > 0:
             return (0, -count, CARD_IDS[name])
         if name in targets:
-            return (1, 0, CARD_IDS[name])
+            return (1, priority.get(name, len(priority)), CARD_IDS[name])
         return (2, 0, CARD_IDS[name])
 
     keep = set(sorted(ordered, key=rank)[:CARD_STOCK_LIMIT])

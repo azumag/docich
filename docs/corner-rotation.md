@@ -706,19 +706,20 @@ read-only diagnostics に投影される。
   - `apply`: 前提（canonical timer enabled+active、legacy ExecStart がレビュー済み、
     rotation が running/waiting/ready、clock hold なし、heartbeat が同一 request で 120 秒以内、
     passwordless sudo 可）を確認してから、legacy timer を `disable --now` → service を
-    `stop` → `mask`（service と timer）→ `daemon-reload`。その後 canonical user service を
-    起動し、heartbeat の pid と age で引き継ぎを確認する。
+    `stop` → service を `disable`。その後 canonical user service を起動し、heartbeat の
+    pid と age で引き継ぎを確認する。`systemctl mask` は /etc に置かれた unit を
+    shadow できず EEXIST で失敗するため使わない（2026-11-25 実測）。
   - 実行中コーナーは `corner_rotation_heartbeat.json` の park 判定（fresh 180 秒）で
     quarantine されず継続する。停止から canonical の tick まで最大60秒の空白が生じるが、
     ゲーム・エンコーダ・音声・表示・state・lock・game-switch receipt は変更しない。
-  - 引き継ぎに失敗した場合は `unmask` + legacy timer/service の再開で旧 owner に戻す。
-    `mask` は reversible で、unit ファイルは削除しない。
+  - 引き継ぎに失敗した場合は legacy timer/service の `enable` + 再開で旧 owner に戻す。
+    unit ファイルは変更・削除しない。
   - 引き継ぎ後に state / game_switch / 共有 PID が変わった場合は、二重 owner を作らないため
     legacy を戻さず `invariant_mismatch` として非0で報告する。
 - 再発検知: diagnostics の `corners.corner_rotation_timer.system_legacy`（system scope の
   legacy service/timer の active/enabled）と `duplicate_owner`、および corner health の
   `rotation_owner_duplicate` 行。deploy hook は user scope 専用のまま（system へ触れない）。
-- 受入: legacy service/timer が inactive・disabled・masked、canonical timer が enabled+active、
+- 受入: legacy service/timer が inactive・disabled、canonical timer が enabled+active、
   heartbeat の request/corner 不変で pid が canonical、`clock_hold_until` なし、
   `game_switch` と announce marker 不変、共有配信 PID 不変。
 - 以後の rotation worker のコード更新は `restart-service` operation を使う

@@ -941,6 +941,10 @@ def test_all_survival_attempted_duplicate_cards_are_unconfirmed(runtime_dir):
     incident = audit.load_incidents(runtime_dir)[0]
     assert incident['confidence'] == 'medium'
     assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    battle = incident['battle_event']
+    assert battle['cards_attempted'] == ['ノリウツール'] * 5
+    assert battle['cards_unclassified'] == ['ノリウツール']
+    assert '消費未確認の使用試行' in audit.render(incident)
 
 
 def test_survival_attempted_card_beside_a_plain_card_stays_high(runtime_dir):
@@ -1018,6 +1022,23 @@ def _battle_record(decision, *, outcome=None, metric=None, general=None,
     return {'decision': decision, 'outcome': outcome, 'observed_metric': metric or {},
             'general': general, 'choice': choice, 'card': card,
             'chart_step': step, 'reason': 'battle result', 'at': 1000.0}
+
+
+def test_a_ledger_egg_count_is_not_remaining_resource_evidence():
+    # docich#5542/#5551: battle_result writes the last observed ledger value.
+    # A stale positive must not be read as a spendable egg left at the loss.
+    ledger_only = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 4, 'egg_uses_source': 'ledger',
+                'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
+    assert ledger_only is None or ledger_only['resources'] == []
+
+    # A record without the provenance field keeps the existing behaviour.
+    legacy = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 2, 'ally_hp': 0, 'enemy_hp': 40}, general='バゲット'))
+    assert legacy['kind'] == 'battle_loss_with_resources'
+    assert legacy['resources'] == ['egg']
 
 
 def test_battle_resource_events_are_classified():
@@ -2373,6 +2394,8 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
                 'cards_left': ['ノリウツール'], 'scrolls': 3, 'cursor': 192,
                 'text': 'こうげきたいきゃく', 'empty_egg': False,
                 'summon_egg_unavailable': False, 'enemy_summon_observed': True,
+                'card_flow': {'card': 'ミックミー', 'stage': 'announce',
+                              'selection_planned': True},
             }, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
@@ -2389,10 +2412,14 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert battle['enemy_summon_observed'] is True
     assert battle['screen_text'] == 'こうげきたいきゃく'
     assert battle['cards_left'] == ['ノリウツール']
+    assert battle['card_flow'] == {'card': 'ミックミー', 'stage': 'announce',
+                                   'selection_planned': True}
     assert '切り札未使用' in audit._issue_title(incident)
     body = audit.render(incident)
     assert 'ノリウツール' in body and 'card_miss' in body
     assert 'scrolls: 3' in body and 'cursorY: 192' in body
+    assert 'card=ミックミー' in body and 'stage=announce' in body
+    assert 'selection_planned=true' in body
     assert 'こうげきたいきゃく' in body and 'side: attack' in body
     comment = audit.render_comment(incident)
     assert '再発' in comment
@@ -2416,6 +2443,7 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
             'cards_left': 'not-a-list', 'scrolls': True, 'cursor': 225,
             'text': 'x' * 200, 'empty_egg': 'false',
             'summon_egg_unavailable': 1, 'enemy_summon_observed': None,
+            'card_flow': 'not-a-dict',
         },
         **IDENTITY,
     }
@@ -2429,6 +2457,7 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     assert battle['empty_egg'] is None
     assert battle['summon_egg_unavailable'] is None
     assert battle['enemy_summon_observed'] is None
+    assert battle['card_flow'] is None
     assert battle['screen_text'] == 'x' * 96
 
 
@@ -2591,3 +2620,128 @@ def test_chapter_four_season_king_battle_counts_as_boss_evidence():
     # Season kings are chapter 4 evidence only; the same name in another
     # chapter's window must not suppress its boss incident.
     assert audit._rows_boss_battle(rows, 9, 'ハデス') is False
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("en_route", True),
+        ("launched_unconfirmed", True),
+        ("arrived", False),
+        ("overdue", False),
+        ("cancelled", False),
+        ("closed", False),
+    ],
+)
+def test_stuck_march_only_counts_live_march_statuses(status, expected):
+    context = {
+        "flow": {},
+        "world": {
+            "garrison": {"S": ["G", "H"]},
+            "sorties": {"old": {"status": status, "age_ticks": 3001}},
+        },
+        "plan": {"orders": {"A:1:M1": "pending"}},
+    }
+
+    signals = audit._signals(
+        context, {}, confirmed=0, departures=0, battle_count=0,
+    )
+
+    assert ("stuck_march" in signals) is expected
+
+
+@pytest.mark.parametrize(("age_ticks", "expected"), [
+    (3000, False), (3001, True), (True, False), ("3001", False), (None, False),
+])
+def test_stuck_march_keeps_the_existing_age_threshold(age_ticks, expected):
+    context = {
+        "flow": {},
+        "world": {
+            "garrison": {"S": ["G", "H"]},
+            "sorties": {"live": {"status": "en_route", "age_ticks": age_ticks}},
+        },
+        "plan": {"orders": {"A:1:M1": "pending"}},
+    }
+
+    signals = audit._signals(
+        context, {}, confirmed=0, departures=0, battle_count=0,
+    )
+
+    assert ("stuck_march" in signals) is expected
+
+def test_stock_without_an_eligible_card_is_not_a_missed_carry(runtime_dir):
+    # owner 2026-11-26: 計画が空のとき自動携行は 卵落 0 の札だけを選ぶ。
+    # 卵落 > 0 の札しか無い在庫は「携行できたのに空」ではない。
+    value = _cards_state(stock={'イッテツーン': 1, 'フットバース': 2})
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=lambda record: None)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_stock_with_a_safe_card_still_reports_the_empty_kit(runtime_dir):
+    value = _cards_state(stock={'イッテツーン': 1, 'フットバース': 2, 'デッドガン': 1})
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=lambda record: None)
+    records = audit.load_incidents(runtime_dir)
+    assert [r['kind'] for r in records] == ['sortie_without_cards']
+
+def test_a_kit_dropped_by_the_screen_is_not_a_missed_carry(runtime_dir):
+    # owner 2026-11-26 (#5510): 選択画面が札の不在を証明して card_dropped で
+    # 落とした空キットは「機会損失」ではない。
+    value = _cards_state(stock={'ノリウツール': 96}, cards=['ノリウツール'])
+    _measured_empty_kit(value)
+    dropped = {'decision': 'card_dropped', 'chart_step': 'A:1:M1',
+               'dropped': ['ノリウツール'], 'at': 999}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_launch_record(), dropped], now=1000,
+                  on_sealed=lambda record: None)
+    assert audit.load_incidents(runtime_dir) == []
+
+
+def test_an_unexplained_empty_kit_is_still_reported(runtime_dir):
+    value = _cards_state(stock={'ノリウツール': 96}, cards=['ノリウツール'])
+    _measured_empty_kit(value)
+    audit.observe(runtime_dir, audit.capture(value), value, [_launch_record()],
+                  now=1000, on_sealed=lambda record: None)
+    assert [r['kind'] for r in audit.load_incidents(runtime_dir)] == ['sortie_without_cards']
+
+def test_a_measured_unused_egg_is_evidence_even_with_a_ledger_source():
+    # owner 2026-11-26: 台帳値を無効にした結果「卵を使わずに負けた」まで
+    # 消えていた。実測フラグが立っていれば卵の機会損失として扱う。
+    measured = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 1, 'egg_uses_source': 'ledger',
+                'egg_available_unused': True, 'ally_hp': 0, 'enemy_hp': 40},
+        general='バゲット'))
+    assert measured['kind'] == 'battle_loss_with_resources'
+    assert measured['resources'] == ['egg']
+
+
+def test_a_ledger_value_alone_is_still_not_evidence():
+    ledger_only = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 4, 'egg_uses_source': 'ledger',
+                'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
+    assert ledger_only is None
+
+def test_a_carried_card_never_opened_is_still_a_loss_resource():
+    # owner 2026-11-26: 選択履歴が無い戦闘でも、携行の実測が残っていれば
+    # 「切り札を残して敗北」として起票する。
+    record = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'cards_left_unused': ['ミックミー'], 'ally_hp': 0, 'enemy_hp': 40},
+        general='バーミセリ'))
+    assert record['kind'] == 'battle_loss_with_resources'
+    assert record['resources'] == ['card']
+    assert record['cards_remaining'] == ['ミックミー']
+
+
+def test_a_used_card_is_not_a_leftover():
+    record = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'cards_left_unused': ['ミックミー'], 'cards_used': ['ミックミー'],
+                'ally_hp': 0, 'enemy_hp': 40}, general='バーミセリ'))
+    assert record is None
+

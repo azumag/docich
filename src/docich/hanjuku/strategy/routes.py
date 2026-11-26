@@ -68,20 +68,27 @@ def move_leg(mem, source, target, owned=None):
 
 
 def order_allowed(mem, order, source):
-    if not is_road(mem.get('chapter')) or chart.is_boss_castle(order.get('target')):
-        return True
     owned = _owned(mem)
+    target = order.get('target')
+    # An adopted attack must still target an enemy castle at the moment it
+    # commits, even in chapters without a measured road graph. A stale plan
+    # cannot turn a newly captured castle into an attack.
+    if order.get('purpose') == 'attack' and (source not in owned or target in owned):
+        return False
+    if not is_road(mem.get('chapter')):
+        return True
     if source not in owned:
         return False
+    if chart.is_boss_castle(target):
+        return True
     if order.get('purpose') == 'move':
         # Owner 2026-11-16: chapter 9's road only carries a march to the
         # castle before it — a transfer aimed past a neighbour is absorbed by
         # the castle between and never arrives (タオ→オシロガ over サヌト
         # settled as move_overdue after 1400+ ticks). A move's leg is the
         # adjacent hop only; the N-2→N-1→N relay rides successive orders.
-        return (order.get('target') in owned
-                and allowed(mem, source, order['target']))
-    return allowed(mem, source, order.get('target'))
+        return (target in owned and allowed(mem, source, target))
+    return allowed(mem, source, target)
 
 
 def path(mem, source, target, owned):

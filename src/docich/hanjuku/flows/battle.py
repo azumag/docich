@@ -1611,6 +1611,82 @@ def _defense_kit_read_open(mem, cur):
     return [pad('b')]
 
 
+def _defense_summon_without_okunote(mem, cur):
+    """owner 2026-11-26: 自城の防御戦・敵召喚獣あり・卵なし・おくのて未使用か。
+
+    自城では切り札が使えないため、この状況で おくのて を選ばないと
+    資源なしで押し切られる。issue 側（fault_issue）がこの証拠を拾う。
+    """
+    if not isinstance(cur, dict) or cur.get('side') != 'defense':
+        return False
+    if not (cur.get('enemy_summon_observed') or cur.get('card_summon_observed')):
+        return False
+    uses = ((mem or {}).get('egg_uses') or {}).get(cur.get('ally'))
+    egg_empty = bool(cur.get('summon_egg_unavailable')) or uses == 0
+    if not egg_empty:
+        return False
+    guard = cur.get('okunote_summon_preempt') or cur.get('okunote_egg_preempt') or {}
+    return not (guard.get('selected') or cur.get('okunote_draws'))
+
+
+def _leftover_cards(mem, cur):
+    """owner 2026-11-26: 携行していて未使用の切り札（実測の携行元から）。
+
+    A battle that never opened the card list has no selection history, so the
+    audit saw no remaining card. Reuse battle_menus' carried union (plan,
+    confirmed kit, kit ledgers) and keep the still-unused names.
+    """
+    if not isinstance(cur, dict) or cur.get('cards_used'):
+        return []
+    from .battle_menus import _carried_card_left
+    left = []
+    probe = dict(cur)
+    for _ in range(6):
+        card = _carried_card_left(mem, probe)
+        if not card or card in left:
+            break
+        left.append(card)
+        probe['cards_selected'] = [*(probe.get('cards_selected') or []), card]
+        probe['cards_used'] = [*(probe.get('cards_used') or []), card]
+    return left
+
+
+def _boss_card_left_unused(mem, cur):
+    """owner 2026-11-26: ボス戦で携行切り札を使わずに戦闘が終わったか。
+
+    The summon-battle menu files its own ``battle_boss_card_missed``; a boss
+    fight that never opened that menu (normal melee) had no such evidence,
+    so a carried card was silently unused. This is the same signal, filed
+    once per battle.
+    """
+    if not isinstance(cur, dict) or cur.get('boss_card_missed_noted'):
+        return None
+    if cur.get('cards_used'):
+        return None
+    # The boss identity can be lost in the final frame (OCR reads 不明), so the
+    # boss castle and the battle's own boss latch also count. Live ノブナーガ:
+    # the fight ended with the enemy unread and the carried card never used,
+    # which stayed invisible while only cur['enemy'] was trusted.
+    enemy = cur.get('enemy')
+    boss = (enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS
+            or bool(cur.get('boss_battle')) or bool(cur.get('boss'))
+            or chart.is_boss_castle(cur.get('castle')))
+    if not boss:
+        return None
+    # The carried kit can come from the sortie plan, a confirmed panel kit or
+    # the rare/strong/dropper ledgers; battle_menus owns that union, so reuse
+    # it instead of looking only at planned_cards.
+    from .battle_menus import _carried_card_left
+    leftover = _carried_card_left(mem, cur)
+    if leftover:
+        return leftover
+    attempted = {*(cur.get('cards_selected') or ()), *(cur.get('cards_used') or ()),
+                 *(cur.get('cards_unclassified') or ()), *(cur.get('cards_missing') or ())}
+    carried = [card for card in (cur.get('planned_cards') or ())
+               if isinstance(card, str) and card not in attempted]
+    return carried[0] if carried else None
+
+
 def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False,
                attack_continues=False, panel_changed=False):
     _hold_general_loss_metric(mem)
@@ -1875,11 +1951,42 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         resulting = f'attack_continues:{castle}'
     elif defense_retained:
         resulting = f'defense_retained:{castle}'
+    # owner 2026-11-26: ボス戦で携行切り札を使わずに終わった戦闘は issue にする
+    # （召喚獣戦メニューを通らない白兵のボス戦でも同じ証拠を残す）。
+    _boss_card = _boss_card_left_unused(mem, cur)
+    if _boss_card:
+        cur['boss_card_missed_noted'] = True
+        _record(mem, 'battle_boss_card_missed', **_battle_labels(cur), card=_boss_card,
+                ally=cur.get('ally'), enemy=cur.get('enemy'), castle=castle,
+                side=cur.get('side'), screen_kind='battle_end',
+                observed_metric={'cards_left': [card for card in (cur.get('planned_cards') or ())
+                                               if isinstance(card, str)],
+                                 'screen': 'battle_end'},
+                reason='ボス戦で携行切り札を使わないまま戦闘が終了した')
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
                              'egg_uses': (mem.get('egg_uses') or {}).get(cur.get('ally')),
+                             # docich#5542/#5551: this is the last observed
+                             # ledger value, not a battle-time remaining count.
+                             # Mark the provenance so the audit does not read a
+                             # stale positive as a spendable egg (repeated
+                             # false "eggs left" incidents).
+                             'egg_uses_source': 'ledger',
+                             # owner 2026-11-26: 台帳値を無効にした結果「卵を
+                             # 使わずに負けた」まで消えていた。実画面で卵が
+                             # 使えると観測できていた（own_egg_positive_observed）
+                             # のに卵戦に入っていない場合だけ、実測の証拠として
+                             # 「使える卵を残した」を立てる。
+                             'egg_available_unused': bool(cur.get('own_egg_positive_observed'))
+                             and not (cur.get('egg_battle') or mem.get('egg_battle'))
+                             and not cur.get('egg_used'),
+                             # owner 2026-11-26: 携行した切り札を一度も開かずに
+                             # 負けた戦闘は、選択履歴が空なので監査の残存札
+                             # 判定に掛からなかった。携行の実測（計画・確定キット）
+                             # から未使用の1枚を証拠として残す。
+                             'cards_left_unused': _leftover_cards(mem, cur),
                              'cards_used': cur.get('cards_used', []),
                              'cards_selected': cur.get('cards_selected', []),
                              'cards_missing': cur.get('cards_missing', []),
@@ -1898,6 +2005,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                                                      .get('cards_uncertain')),
                              'card_consumption_complete': cur.get('card_consumption_complete', False),
                              'hero_retreat_selected': bool((cur.get('hero_retreat') or {}).get('selected')),
+                             # owner 2026-11-26: 自城の防御戦で敵の召喚獣が出て、
+                             # 卵も無いのに おくのて を一度も使わなかった戦闘は
+                             # issue にする（fault_issue.note_decision_faults が拾う）。
+                             'defense_summon_no_okunote': _defense_summon_without_okunote(mem, cur),
                              'general_loss': 'unclassified',
                              **({'castle_owner_after_defeat': observed_owner} if observed_owner else {})},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,

@@ -144,6 +144,9 @@ class TestSnapshotRetention(unittest.TestCase):
             self.assertEqual(status["market_count"], 2)
             self.assertEqual(status["snapshot_seq"], 1)
             self.assertEqual(status["snapshot_generated_at"], NOW)
+            snapshot_id = status["snapshot_id"]
+            self.assertTrue(snapshot_id.startswith("paper:1:"))
+            self.assertEqual(status["performance_summary"]["snapshot_id"], snapshot_id)
             # Second cycle with total discovery failure keeps the snapshot.
             class DeadGateway:
                 def discover_markets(self):
@@ -157,6 +160,8 @@ class TestSnapshotRetention(unittest.TestCase):
             self.assertEqual(status["eligible_symbols"], ["BTC/JPY", "ETH/JPY"])
             self.assertEqual(status["snapshot_seq"], 1)
             self.assertEqual(status["snapshot_generated_at"], NOW)
+            self.assertEqual(status["snapshot_id"], snapshot_id)
+            self.assertEqual(status["performance_summary"]["snapshot_id"], snapshot_id)
             self.assertEqual(status["heartbeat_at"], NOW + 60)
 
     def test_partial_failure_keeps_fresh_and_marks_failed(self):
