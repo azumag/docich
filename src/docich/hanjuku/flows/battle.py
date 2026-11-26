@@ -1674,7 +1674,28 @@ def _leftover_cards(mem, cur):
         left.append(card)
         probe['cards_selected'] = [*(probe.get('cards_selected') or []), card]
         probe['cards_used'] = [*(probe.get('cards_used') or []), card]
-    return left
+    if left:
+        return left
+    # owner 2026-11-26 (クランベリー): 出撃確定の binding が読めない戦闘は
+    # 確定キットが無いため上の経路が空になる。計画札（_deploy_cards）を
+    # 代替の実測元として使い、未選択・未使用の札だけを残す。
+    order = _plan_region(mem).get('active')
+    order = order if isinstance(order, dict) else None
+    if order is None:
+        chart_plan = _plan_region(mem).get('chart_plan') or {}
+        for row in chart_plan.get('orders') or ():
+            if isinstance(row, dict) and row.get('step') == cur.get('step'):
+                order = row
+                break
+    if not isinstance(order, dict):
+        return []
+    from ..strategy.kit import _deploy_cards
+    try:
+        planned = [card for card in _deploy_cards(order, mem) if isinstance(card, str)]
+    except Exception:
+        return []
+    used = set(cur.get('cards_used') or ()) | set(cur.get('cards_selected') or ())
+    return [card for card in planned if card not in used][:6]
 
 
 def _boss_card_left_unused(mem, cur):
