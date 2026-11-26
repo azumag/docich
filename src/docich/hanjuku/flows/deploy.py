@@ -1506,6 +1506,7 @@ def _cursor_order_cards(order, mem) -> bool:
     """Chapter 9 picks cards from the top of the list (owner 2026-11-11)."""
     return (chart.guard_free(mem.get('chapter')) and not _is_boss_order(order, mem)
             and not _strict_boss_cards(order, mem)
+            and order.get('corridor_strong_kit') is not True
             and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed')
 
 

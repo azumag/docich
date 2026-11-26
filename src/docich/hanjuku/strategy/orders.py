@@ -1091,6 +1091,7 @@ SITE_STEP_REARM_COOLDOWN = 300              # between two re-arms of the same st
 # cycles. Keep an unentered attempt bindable after its step is sent again, so
 # a late 「ボスじょうにせめこんだ!!」 is not orphaned by the overwritten record.
 SITE_LATE_ENTRY_TICKS = 8 * SORTIE_BUSY_TICKS
+MOVING_BOSS_LATE_ENTRY_TICKS = 21600
 RETIRED_SORTIES_PER_STEP = 3
 
 
@@ -3246,7 +3247,10 @@ def _match_sortie(mem, castle, general):
     if candidates:
         return None, 'ambiguous'
     launched = (_world(mem).get('launched') or {}).get(castle) or {}
-    step = _long_march(sorties, castle, general, now, retired)
+    step = _long_march(
+        sorties, castle, general, now, retired,
+        moving_boss=(mem.get('chapter') == chart.MOVING_BOSS_CHAPTER),
+    )
     if step is not None:
         return step, 'matched'
     if launched.get('general') == general and launched.get('step') not in sorties:
@@ -3259,7 +3263,7 @@ def _arrival_limit(mem, sortie):
     return march_arrival_limit(mem, sortie)
 
 
-def _long_march(sorties, castle, general, now, retired=None):
+def _long_march(sorties, castle, general, now, retired=None, *, moving_boss=False):
     """A march longer than SORTIE_BUSY_TICKS: the general's newest sortie.
 
     g1075 2026-10-29 12:45: ポセイドン took 677 observations from グリン to リグア.
@@ -3287,7 +3291,9 @@ def _long_march(sorties, castle, general, now, retired=None):
     boss = chart.is_boss_castle(castle)
     site = castle in chart.boss_sites(4)
     statuses = ('en_route', 'launched_unconfirmed', 'overdue') if boss else ('en_route', 'launched_unconfirmed')
-    limit = SITE_LATE_ENTRY_TICKS if site else LONG_MARCH_TICKS
+    limit = (SITE_LATE_ENTRY_TICKS if site else
+             MOVING_BOSS_LATE_ENTRY_TICKS if (boss and moving_boss) else
+             LONG_MARCH_TICKS)
     if (sortie.get('status') not in statuses
             or not (target == castle or (target is None and sortie.get('planned_target') == castle))
             or not 0 <= now - newest < limit):
