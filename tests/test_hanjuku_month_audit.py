@@ -2394,6 +2394,8 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
                 'cards_left': ['ノリウツール'], 'scrolls': 3, 'cursor': 192,
                 'text': 'こうげきたいきゃく', 'empty_egg': False,
                 'summon_egg_unavailable': False, 'enemy_summon_observed': True,
+                'rearms': 1, 'summon_card_scroll_out': True,
+                'summon_card_exhausted_tick': 900,
                 'card_flow': {'card': 'ミックミー', 'stage': 'announce',
                               'selection_planned': True},
             }, **IDENTITY}
@@ -2414,12 +2416,19 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert battle['cards_left'] == ['ノリウツール']
     assert battle['card_flow'] == {'card': 'ミックミー', 'stage': 'announce',
                                    'selection_planned': True}
+    # docich#5632: the re-arm state is projected so a first exhaustion, a
+    # re-arm wait and a final exhaustion are distinguishable in the issue.
+    assert battle['rearms'] == 1
+    assert battle['summon_card_scroll_out'] is True
+    assert battle['summon_card_exhausted_tick'] == 900
     assert '切り札未使用' in audit._issue_title(incident)
     body = audit.render(incident)
     assert 'ノリウツール' in body and 'card_miss' in body
     assert 'scrolls: 3' in body and 'cursorY: 192' in body
     assert 'card=ミックミー' in body and 'stage=announce' in body
     assert 'selection_planned=true' in body
+    assert 'rearms=1' in body and 'scroll_out=true' in body
+    assert 'exhausted_tick=900' in body
     assert 'こうげきたいきゃく' in body and 'side: attack' in body
     comment = audit.render_comment(incident)
     assert '再発' in comment

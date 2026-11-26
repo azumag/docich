@@ -4590,9 +4590,11 @@ def test_a_visible_cursor_resets_the_blind_map_streak():
     assert mem.get('map_blind') is None
 
 
-def test_summon_menu_records_a_missed_carried_card_for_the_audit():
-    # When the summon turn attacks with a carried card still in hand, one
-    # battle_boss_card_missed decision feeds the month audit's card_miss issue.
+def test_summon_menu_holds_attack_while_the_card_reveal_can_rearm():
+    # docich#5632: a fresh reveal exhaustion only arms the re-arm gap; while a
+    # re-arm can still recover the きりふだ row the command wait must not
+    # confirm こうげき or file card_miss.  The old spec attacked and emitted
+    # battle_boss_card_missed on the same observation (#5632).
     c = Canvas()
     c.text(176, 175, 'こうげき')
     c.text(176, 191, 'もうこうげき')
@@ -4607,8 +4609,13 @@ def test_summon_menu_records_a_missed_carried_card_for_the_audit():
                                    'cards_unclassified': [], 'cards_missing': [],
                                    'summon_card_scroll': 3}}}
     actions, state = decide(c.frame(), state)
-    assert actions and actions[0]['buttons'] == ['a']
-    assert state['policy']['battle'].get('boss_card_missed_noted') is True
+    assert not any(a.get('buttons') == ['a'] for a in (actions or []))
+    assert not state['policy']['battle'].get('boss_card_missed_noted')
+    assert state['policy']['battle']['summon_card_exhausted_tick'] is not None
+    assert any(row.get('decision') == 'battle_summon_card_exhausted'
+               for row in state.get('_records', []))
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
 
 
 def test_a_battle_that_already_used_a_card_does_not_file_a_miss():
