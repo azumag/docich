@@ -8219,6 +8219,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1535-shop-reenter-limit",
             "hanjuku-chart-v1537-egg-available-battle",
             "hanjuku-chart-v1538-cards-left-plan-fallback",
+            "hanjuku-chart-v1539-shop-loop-issue",
             "hanjuku-chart-v1533-egg-unused-measured",
             "hanjuku-chart-v1529-owned-target-settle",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
