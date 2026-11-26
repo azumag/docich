@@ -257,6 +257,33 @@ def test_interrupted_opening_card_flow_resumes_the_exact_carried_card(monkeypatc
     assert opened['observed_metric']['resumed_tactic_id'] == 'opening:2'
 
 
+def test_selected_interrupted_card_flow_is_booked_instead_of_reopened():
+    # docich#5676: announce retry で selection_planned=False に戻った flow は、
+    # 召喚画面への置換で未選択の意図へ巻き戻さず、消費未確認として解放する。
+    mem = memory(uses=0)
+    battle = mem['battle']
+    battle.update({
+        'planned_cards': ['ノリウツール'],
+        'cards_selected': ['ノリウツール'],
+        'cards_used': [],
+        'cards_unclassified': [],
+        'card_flow': {'card': 'ノリウツール', 'stage': 'list',
+                      'selection_planned': False, 'announce_retried': True,
+                      'tactic_id': 'opening:1'},
+    })
+
+    B.egg_battle_step(screen(text='こうげき'), mem)
+
+    assert battle['card_flow'] is None
+    assert battle['cards_unclassified'] == ['ノリウツール']
+    assert 'summon_card_resume' not in battle
+    unclassified = [r for r in mem['_records']
+                    if r['decision'] == 'battle_card_unclassified'][-1]
+    assert unclassified['card'] == 'ノリウツール'
+    assert unclassified['observed_metric']['selected_interrupted'] is True
+    assert not any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
 def test_selected_or_announcement_card_flow_is_not_reopened():
     mem = memory(uses=0)
     battle = mem['battle']

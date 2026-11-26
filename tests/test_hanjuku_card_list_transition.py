@@ -167,6 +167,57 @@ def test_pre_selection_unreadable_list_does_not_book_cards_unclassified():
     assert not any(r['decision'] == 'battle_card_unclassified' for r in mem['_records'])
 
 
+def test_announce_retry_list_flow_at_battle_end_books_unconfirmed_and_downgrades_loss(tmp_path):
+    # docich#5676: announce retry が stage='list' へ戻した選択済み flow は、
+    # 戦闘終了で消えても消費未確認 evidence を残す。
+    from docich.hanjuku import month_audit as audit
+    from test_hanjuku_month_audit import state as audit_state
+
+    mem = memory('クースカン', enemy='プリンス', enemy_hp=100, ally='どうし', ally_hp=90)
+    cur = mem['battle']
+    visible = ('クースカン', 'クースカン', 'ゼンマイン')
+    assert p.card_list_step(cards(visible), mem) == [p.pad('a')]
+    for _ in range(p.CARD_ANNOUNCE_LIMIT + 1):
+        assert p.card_list_step(cards(visible), mem) == []
+    flow = cur['card_flow']
+    assert flow['stage'] == 'list' and flow['announce_retried'] is True
+    assert cur['cards_selected'] == ['クースカン']
+
+    cur.update(ally_hp=0, enemy_hp=20)
+    p.battle_end(mem, 'map')
+    p.battle_end(mem, 'map')
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['クースカン']
+    unclassified = next(r for r in reversed(mem['_records'])
+                        if r['decision'] == 'battle_card_unclassified')
+    assert unclassified['observed_metric']['selected_interrupted'] is True
+    result = next(r for r in reversed(mem['_records']) if r['decision'] == 'battle_result')
+    assert result['outcome'] == 'loss'
+
+    value = audit_state(7, '6-5', 0)
+    audit.observe(tmp_path, audit.capture(value), value, [result], now=1000)
+    incident = audit.load_incidents(tmp_path)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    assert incident['battle_event']['cards_unconfirmed_only'] is True
+    assert incident['battle_event']['cards_unclassified'] == ['クースカン']
+
+
+def test_pre_selection_list_flow_at_battle_end_does_not_book_cards_unclassified():
+    # 対照: 開札前/選択前の flow は戦闘終了でも台帳を汚さない。
+    mem = memory('クースカン', enemy='プリンス', enemy_hp=100, ally='どうし', ally_hp=90)
+    cur = mem['battle']
+    assert cur['card_flow']['stage'] == 'list'
+    assert cur['cards_selected'] == []
+    cur.update(ally_hp=0, enemy_hp=20)
+    p.battle_end(mem, 'map')
+    p.battle_end(mem, 'map')
+    result = next(r for r in reversed(mem['_records']) if r['decision'] == 'battle_result')
+    assert result['observed_metric']['cards_selected'] == []
+    assert result['observed_metric']['cards_unclassified'] == []
+    assert not any(r['decision'] == 'battle_card_unclassified' for r in mem['_records'])
+
+
 @pytest.mark.parametrize('fixture,target', [
     ('g749-roquefort-control-card-list.png', 'クースカン'),
     ('g684-castora-kooskan-list.png', 'クースカン'),

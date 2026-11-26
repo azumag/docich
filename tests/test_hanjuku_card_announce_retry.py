@@ -48,6 +48,8 @@ def test_announce_timeout_retries_same_card_once():
     _first_timeout(mem, ['ゼンマイン'])
     assert flow.get('announce_retried') is True
     assert flow['stage'] == 'list'
+    assert mem['battle']['cards_spend_retry'] == ['ゼンマイン']
+    assert mem['battle']['cards_spend_attempts'] == {'ゼンマイン': 1}
     assert any(r.get('decision') == 'battle_card_announce_retry'
                for r in mem.get('_records') or [])
 
@@ -183,6 +185,63 @@ def test_announce_timeout_enemy_soldiers_drop_confirms_use():
     assert cur['card_flow'] is None
     assert cur['cards_used'] == ['ゼンマイン']
     assert _effect_confirmed(mem)['observed_metric']['evidence'] == 'enemy_soldiers_drop'
+
+
+def test_retry_then_measured_use_leaves_an_unconfirmed_residual_copy(tmp_path):
+    # docich#5676: the retry re-selects the same physical card, so
+    # cards_selected intentionally has two entries while cards_used has one.
+    # The remaining copy is the retry lineage's detection-limit remnant, not
+    # high-confidence proof of an unused card.
+    from docich.hanjuku import month_audit as audit
+    from test_hanjuku_month_audit import state as audit_state
+
+    mem = memory(enemy_hp=32, soldiers=(0, 0))
+    cur = mem['battle']
+    flow = cur['card_flow']
+    flow.update(enemy_hp_at_open=32, enemy_soldiers_at_open=0)
+    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('a')]
+    assert cur['cards_selected'] == ['ゼンマイン']
+
+    for i in range(7):
+        screen = _card_screen(['ゼンマイン'], sha=_sha(i + 1))
+        screen.battle = Battle('クミン', 32, 'ココット', 22)
+        screen.field_soldiers = (0, 0)
+        p.card_list_step(screen, mem)
+    assert flow['stage'] == 'list' and flow['announce_retried'] is True
+    assert cur['cards_spend_retry'] == ['ゼンマイン']
+    assert cur['cards_spend_attempts'] == {'ゼンマイン': 1}
+
+    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('a')]
+    assert cur['cards_selected'] == ['ゼンマイン', 'ゼンマイン']
+    for i in range(7):
+        screen = _card_screen(['ゼンマイン'], sha=_sha(i + 10))
+        screen.battle = Battle('クミン', 16, 'ココット', 22)
+        screen.field_soldiers = (0, 0)
+        p.card_list_step(screen, mem)
+    assert cur['card_flow'] is None
+    assert cur['cards_used'] == ['ゼンマイン']
+
+    cur.update(ally_hp=0, enemy_hp=16)
+    p.battle_end(mem, 'map')
+    p.battle_end(mem, 'map')
+    result = next(r for r in reversed(mem['_records']) if r['decision'] == 'battle_result')
+    assert result['outcome'] == 'loss'
+    assert result['observed_metric']['cards_selected'] == ['ゼンマイン', 'ゼンマイン']
+    assert result['observed_metric']['cards_used'] == ['ゼンマイン']
+    assert result['observed_metric']['cards_spend_retry'] == ['ゼンマイン']
+
+    value = audit_state(7, '6-5', 0)
+    audit.observe(tmp_path, audit.capture(value), value, [result], now=1000)
+    incident = audit.load_incidents(tmp_path)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    battle = incident['battle_event']
+    assert battle['cards_remaining'] == ['ゼンマイン']
+    assert battle['cards_unconfirmed_only'] is True
+    assert battle['cards_unclassified'] == []
+    assert battle['cards_attempted'] == []
+    assert battle['cards_spend_retry'] == ['ゼンマイン']
+    assert '消費未確認の再選択: [\'ゼンマイン\']' in audit.render(incident)
 
 
 def test_unreadable_list_wait_counts_only_distinct_frames():

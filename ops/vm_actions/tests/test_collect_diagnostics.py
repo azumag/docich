@@ -1931,6 +1931,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
                  "hanjuku-chart-v1557-order-start-proof",
+                 "hanjuku-chart-v1559-selected-card-interruption",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

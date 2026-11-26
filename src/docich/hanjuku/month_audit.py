@@ -1441,12 +1441,16 @@ def _battle_resource_event(record):
         # docich#5198: a remaining card the survival list already tried is the
         # same unconfirmed signature even when the settle never reached the
         # cards_unclassified ledger (e.g. the flow was dropped or the battle
-        # ended mid-attempt).
+        # ended mid-attempt). docich#5676: an announce retry's re-selection
+        # leaves the same detection-limit remnant when measured use confirms
+        # only one of the intentional duplicate selected entries.
         'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
             resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
-            resources['cards_unclassified'], resources['cards_attempted']),
+            resources['cards_unclassified'], resources['cards_attempted'],
+            resources['cards_spend_retry']),
         'cards_unclassified': resources['cards_unclassified'],
         'cards_attempted': resources['cards_attempted'],
+        'cards_spend_retry': resources['cards_spend_retry'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -4475,6 +4479,8 @@ def render(record):
               if battle.get('cards_unclassified') else []),
             *([f"- 消費未確認の使用試行: {battle.get('cards_attempted')}"]
               if battle.get('cards_attempted') else []),
+            *([f"- 消費未確認の再選択: {battle.get('cards_spend_retry')}"]
+              if battle.get('cards_spend_retry') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]
