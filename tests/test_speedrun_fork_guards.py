@@ -35,8 +35,10 @@ def test_only_the_owning_checkout_is_treated_as_real(tmp_path):
 def test_the_real_generated_copy_contains_the_rotation_hook():
     generated = (ROOT / COPY_REL).read_text(encoding='utf-8')
     assert 'before_rotate' in generated
-    tool._verify_required_source_patches(
-        {COPY_REL: generated.encode('utf-8')}, require_real=True)
+    files = {rel: (ROOT / rel).read_bytes()
+             for rel in tool.REQUIRED_SOURCE_PATCH_MARKERS}
+    files[COPY_REL] = generated.encode('utf-8')
+    tool._verify_required_source_patches(files, require_real=True)
 
 
 def test_a_real_copy_without_the_patch_is_a_hard_error():
