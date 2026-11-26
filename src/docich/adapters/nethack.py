@@ -250,6 +250,11 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             raise AdapterError("NetHack corner はwizard/explore modeを使用できません")
         return [*command, "-u", self.player_name]
 
+    def _game_session_env(self) -> dict[str, str]:
+        # NetHack hides the turn counter unless the time option is enabled;
+        # turn-driven progress and watchdog logic depend on the visible T: field.
+        return {"NETHACKOPTIONS": "time"}
+
     def _xterm_command(self) -> list[str]:
         if self.presentation_mode != "tiles":
             return super()._xterm_command()
