@@ -1629,6 +1629,32 @@ def _defense_summon_without_okunote(mem, cur):
     return not (guard.get('selected') or cur.get('okunote_draws'))
 
 
+def _egg_available_unused(mem, cur):
+    """owner 2026-11-26: 実測で「使える卵」があったのに卵戦に入らず終わったか。
+
+    own_egg_positive_observed only covers one menu frame. A battle that never
+    opened the egg menu still shows the white たまごをつかう row, which the flow
+    records as battle_egg_white_available on the same step. Either measured
+    source counts; an unread or unknown egg stays excluded.
+    """
+    if not isinstance(cur, dict):
+        return False
+    if cur.get('egg_battle') or mem.get('egg_battle') or cur.get('egg_used'):
+        return False
+    if cur.get('own_egg_positive_observed'):
+        return True
+    step = cur.get('step')
+    for row in reversed((mem.get('_records') or [])[-80:]):
+        if not isinstance(row, dict):
+            continue
+        if row.get('decision') != 'battle_egg_white_available':
+            continue
+        if step is not None and row.get('chart_step') not in (None, step):
+            continue
+        return True
+    return False
+
+
 def _leftover_cards(mem, cur):
     """owner 2026-11-26: 携行していて未使用の切り札（実測の携行元から）。
 
@@ -1979,9 +2005,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              # 使えると観測できていた（own_egg_positive_observed）
                              # のに卵戦に入っていない場合だけ、実測の証拠として
                              # 「使える卵を残した」を立てる。
-                             'egg_available_unused': bool(cur.get('own_egg_positive_observed'))
-                             and not (cur.get('egg_battle') or mem.get('egg_battle'))
-                             and not cur.get('egg_used'),
+                             'egg_available_unused': _egg_available_unused(mem, cur),
                              # owner 2026-11-26: 携行した切り札を一度も開かずに
                              # 負けた戦闘は、選択履歴が空なので監査の残存札
                              # 判定に掛からなかった。携行の実測（計画・確定キット）
