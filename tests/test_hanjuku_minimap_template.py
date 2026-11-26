@@ -65,6 +65,16 @@ class HanjukuMinimapTemplateTest(unittest.TestCase):
         self.assertNotIn("general.textContent = move.general;", HTML)
         self.assertNotIn("flowTitle.textContent = '出撃チャート';", HTML)
 
+    def test_sortie_intent_is_not_duplicated_in_the_gap_chart(self):
+        # #3550: the intent belongs only to the right card's 出撃意図 row.
+        self.assertIn("出撃意図", HTML)
+        self.assertNotIn("function gapPlanInfo", HTML)
+        self.assertNotIn("gapPlanInfo(value)", HTML)
+        self.assertNotIn("out.push([`▸ 処理中 ${value.pending}`, 'plan'])", HTML)
+        self.assertNotIn("tone-plan", HTML)
+        self.assertNotIn("has-plan", HTML)
+        self.assertNotIn("hanjuku-gap-current-plan", HTML)
+
 
 if __name__ == "__main__":
     unittest.main()
