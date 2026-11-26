@@ -2340,7 +2340,9 @@ def test_file_respects_comment_cooldown(runtime_dir):
     record = sealed_zero(runtime_dir)
     issue = {'number': 7, 'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
     now = time.time()
-    comments = [{'body': 'earlier', 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))}]
+    # 本文に occurrence マーカーを持つbot自身のコメントだけがcooldownを開始する。
+    comments = [{'body': '<!-- hanjuku-month-audit occurrence=other-episode -->',
+                 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))}]
     gh = FakeGh(issues=[issue], comments=comments)
     result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=now)
     assert result['status'] == 'cooldown'
@@ -2357,7 +2359,7 @@ def test_battle_loss_comments_before_the_generic_hour(runtime_dir):
     issue = {'number': 7,
              'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
     now = time.time()
-    comments = [{'body': 'earlier',
+    comments = [{'body': 'hanjuku-month-audit occurrence=earlier-episode',
                  'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ',
                                             time.gmtime(now - 1200))}]
     gh = FakeGh(issues=[issue], comments=comments)
@@ -2451,7 +2453,8 @@ def test_watch_retries_unchanged_log_after_cooldown(runtime_dir):
     record = sealed_zero(runtime_dir)
     now = time.time()
     issue = {'number': 7, 'body': f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->"}
-    comments = [{'body': 'earlier', 'createdAt': time.strftime(
+    comments = [{'body': 'hanjuku-month-audit occurrence=earlier-episode',
+                 'createdAt': time.strftime(
         '%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 60))}]
     gh = FakeGh(issues=[issue], comments=comments)
     seen = {}

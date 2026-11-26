@@ -128,24 +128,48 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 - **v1402**: `order_failed` のうち、理由文が明示的に「出撃要求が送信・受理されない」を示すものだけ `sortie_order_unaccepted` と分類する。`month_sorties.scope` が現在の章・月と一致し、同月の確定発射が1件以上ある場合は confidence を `medium` にして台帳へ残し、既定の high-confidence filer では起票しない。scope不明・不一致は `high` のまま。発射後の未確認、戦闘retry上限、出撃元メニュー不成立、未知理由は従来どおり `high`。
 
-## 卵・切り札を残した退却/敗北（v1410）
+## 卵・切り札を残した退却/敗北（v1410 / v1558）
 
-戦闘結果が退却または敗北なのに、本人の卵残数が正数、または切り札が未使用で
-残っている場合に `battle_retreat_with_resources` / `battle_loss_with_resources`
+戦闘結果が退却または敗北なのに、本人の卵を使える証拠があり未使用のまま
+終わった、または切り札が未使用で残っている場合に
+`battle_retreat_with_resources` / `battle_loss_with_resources`
 を保存する。
 
 | decision | 条件 | 意味 |
 | --- | --- | --- |
-| `battle_hero_retreat_select`（choice=たいきゃく） | `egg_uses>0` または切り札が未使用 | 卵/切り札を残して退却 |
+| `battle_hero_retreat_select`（choice=たいきゃく） | 卵の実測残存または切り札が未使用 | 卵/切り札を残して退却 |
 | `battle_retreat_preempted_card` | 切替待ちの切り札が未確認 | 切り札を残して退却 |
-| `battle_result`（outcome=loss） | `egg_uses>0` または `cards_selected` に未使用札 | 卵/切り札を残して敗北 |
+| `battle_result`（outcome=loss） | 卵の実測残存または `cards_selected` に未使用札 | 卵/切り札を残して敗北 |
+| `battle_result`（outcome=unclassified、ally_hp=0、enemy_hp 欠落） | 上と同じ資源条件 | 敵HPを読めない敗北 |
 
 - 将軍・敵・城・side・HP・卵残数・切り札の選択/使用/残り/pending・
   退却選択・理由・直前120秒の決定・計画/在城/flow/statsを1件32KB以内で保存する。
+- 卵は「この戦闘で使える白行を見た」（`egg_white_seen` /
+  `egg_available_unused`）または「この戦闘で卵を選択した」
+  （`egg_selected` / `egg_summon_seen`）を実測として扱う。卵戦に入った戦闘では
+  台帳の正数だけを残存の証拠にしない。
+- 台帳値しかなく、この戦闘で卵戦にも選択にも入っていない場合は
+  `egg_ledger_only=true` として「使わなかった可能性」を残す。台帳値は
+  `egg_uses_ledger`、選択回数は `egg_selected` に分けて保存する。
+- `battle_result` が `unclassified` でも、味方HPだけが int の 0 で敵HPが
+  未読なら敗北として扱い、`outcome_source=ally_zero_enemy_unread` を残す。
+  通常の敗北は `outcome_source=battle_end`。両方0・味方HP未読は従来どおり
+  記録しない。
+- 卵を含む敗北/退却の fingerprint は種別＋`_with_egg` で作り、札だけの
+  記録とは分ける。卵同士は同じ fingerprint、札だけは従来の fingerprint のまま。
+- 残り札が卵落とし型または使用告知未校正の札だけの場合、札だけの記録は
+  `medium`（`cards_unconfirmed_signature`）に留め、既定の high では起票しない。
+  同じ記録に実測の卵が含まれる場合は `high` のまま
+  `cards_unconfirmed_signature_card_only` を confidence_reasons に残す。
+- 自動起票の対象は既存の high-confidence filer に従う。`high` の卵/切り札
+  インシデントは起票し、`medium` の札だけ記録は保存に留める。
 - `battle_egg_before_retreat` は「退却より先に卵を確認する」 proactiveな記録なので
   単独ではissue化しない。実際の退却選択または敗北だけを対象にする。
 - 同じ `(chapter, kind, resources, general, step)` は900秒cooldown。
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
+- 既存issueへのコメントcooldownは、本文に
+  `hanjuku-month-audit occurrence=` を含むbot自身のコメントだけを基準にする。
+  人のコメントではcooldownを開始しない。同じ occurrence の重複判定は従来どおり。
 - 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
 
 ## 野営放置（3ヶ月以上連続）（v1410）

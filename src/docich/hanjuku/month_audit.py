@@ -171,6 +171,10 @@ SIGNAL_LABELS = {
     'sortie_order_failed': '指示が失敗',
     'battle_retreat_with_resources': '卵/切り札を残して退却',
     'battle_loss_with_resources': '卵/切り札を残して敗北',
+    'battle_retreat_with_resources_with_egg': '卵を残して退却',
+    'battle_retreat_with_resources_with_card': '切り札を残して退却',
+    'battle_loss_with_resources_with_egg': '卵を残して敗北',
+    'battle_loss_with_resources_with_card': '切り札を残して敗北',
     'battle_retreat_with_egg': '卵を残して退却',
     'battle_retreat_with_card': '切り札を残して退却',
     'battle_loss_with_egg': '卵を残して敗北',
@@ -240,6 +244,10 @@ PRIMARY_LABELS = {
     'sortie_order_failed': '指示が失敗',
     'battle_retreat_with_resources': '卵/切り札を残して退却',
     'battle_loss_with_resources': '卵/切り札を残して敗北',
+    'battle_retreat_with_resources_with_egg': '卵を残して退却',
+    'battle_retreat_with_resources_with_card': '切り札を残して退却',
+    'battle_loss_with_resources_with_egg': '卵を残して敗北',
+    'battle_loss_with_resources_with_card': '切り札を残して敗北',
     'battle_retreat_with_egg': '卵を残して退却',
     'battle_retreat_with_card': '切り札を残して退却',
     'battle_loss_with_egg': '卵を残して敗北',
@@ -1288,14 +1296,20 @@ def _battle_resources(record):
     # not a battle-time remaining egg. Counting it produced repeated false
     # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
+    egg_ledger = egg
+    egg_selected = _bounded_int(metric.get('egg_selected'), 0, 10 ** 6)
     ledger_only = False
     if metric.get('egg_uses_source') == 'ledger':
         # owner 2026-11-26 (option B): 台帳の正数は実残数ではないが、この戦闘で
         # 卵戦に入っていないなら「卵を使わなかった」ことの証拠にはなる。
         # 実測（egg_available_unused）がある場合を除き、台帳のみの場合は
         # egg_ledger_only を立てて判別できるようにする。
+        # owner (egg-loss detection): この戦闘で卵を選択した実測
+        # (egg_selected) がある場合、台帳の正数は選択前の値を読んだものなので
+        # 残存の証拠に使わない。
         measured = metric.get('egg_available_unused') is True
         ledger_only = (not measured and (egg or 0) > 0
+                       and not egg_selected
                        and metric.get('egg_battle') is not True)
         egg = 1 if (measured or ledger_only) else 0
     selected = [card for card in (metric.get('cards_selected') or [])
@@ -1336,6 +1350,8 @@ def _battle_resources(record):
     return {
         'resources': resources,
         'egg_uses': egg,
+        'egg_uses_ledger': egg_ledger,
+        'egg_selected': egg_selected,
         'egg_ledger_only': bool(ledger_only),
         'cards_selected': selected,
         'cards_used': used,
@@ -1405,12 +1421,25 @@ def _battle_resource_event(record):
         if record.get('choice') != 'たいきゃく':
             return None
         outcome = 'retreat'
+        outcome_source = None
     elif decision == 'battle_retreat_preempted_card':
         outcome = 'retreat'
+        outcome_source = None
     elif decision == 'battle_result':
-        if record.get('outcome') != 'loss':
+        if record.get('outcome') == 'loss':
+            outcome = 'loss'
+            outcome_source = 'battle_end'
+        elif (record.get('outcome') == 'unclassified'
+              and type(metric.get('ally_hp')) is int
+              and metric.get('ally_hp') == 0
+              and metric.get('enemy_hp') is None):
+            # The panel can disappear after the ally reaches 0 HP before the
+            # enemy HP is readable. Treat that measured ally-zero as a loss;
+            # both-zero and unread ally HP stay ambiguous and are dropped.
+            outcome = 'loss'
+            outcome_source = 'ally_zero_enemy_unread'
+        else:
             return None
-        outcome = 'loss'
     else:
         return None
     if outcome == 'retreat':
@@ -1426,9 +1455,12 @@ def _battle_resource_event(record):
         'kind': ('battle_loss_with_resources' if outcome == 'loss'
                  else 'battle_retreat_with_resources'),
         'outcome': outcome,
+        'outcome_source': outcome_source,
         'decision': decision,
         'resources': resources['resources'],
         'egg_uses': resources['egg_uses'],
+        'egg_uses_ledger': resources.get('egg_uses_ledger'),
+        'egg_selected': resources.get('egg_selected'),
         'egg_ledger_only': resources.get('egg_ledger_only') is True,
         'cards_selected': resources['cards_selected'],
         'cards_used': resources['cards_used'],
@@ -1491,11 +1523,16 @@ def _build_battle_resource_incident(runtime, state, after, event, now):
     # docich#5165: an egg-drop-only remaining card cannot be confirmed by the
     # current signatures, so keep the occurrence in the ledger at medium rather
     # than filing it as a high-confidence loss. A real egg or a plain card keeps
-    # the high signal.
+    # the high signal. When an egg is also left behind, the egg is measured
+    # evidence on its own: keep the incident high and only record the card
+    # signature limit in the reasons.
     confidence, confidence_reasons = 'high', []
     if event.get('cards_unconfirmed_only'):
-        confidence = 'medium'
-        confidence_reasons = ['cards_unconfirmed_signature']
+        if 'egg' in (event.get('resources') or ()):
+            confidence_reasons = ['cards_unconfirmed_signature_card_only']
+        else:
+            confidence = 'medium'
+            confidence_reasons = ['cards_unconfirmed_signature']
     identity = state.get('identity') or {}
     record = {
         'schema': SCHEMA,
@@ -1543,7 +1580,15 @@ def _build_battle_resource_incident(runtime, state, after, event, now):
            f"{event.get('general')}|{event.get('step')}|{int(float(now))}")
     record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
     record['signature'] = event['kind']
-    record['fingerprint'] = _fingerprint(mem.get('chapter'), event['kind'], [event['kind']])
+    if 'egg' in event['resources']:
+        # An egg-backed loss is a different incident from a card-only loss:
+        # the chapter-wide fingerprint used to make every battle resource
+        # event comment on the same open issue across all 12 chapters.
+        fingerprint_signals = [event['kind'], f"{event['kind']}_with_egg"]
+    else:
+        fingerprint_signals = [event['kind']]
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), event['kind'],
+                                         fingerprint_signals)
     record['auto_file'] = True
     return _shrink(record)
 
@@ -4054,17 +4099,36 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
         force = True
     else:
         _touch_month(observed, after, now)
-    _track_boss(runtime, state, after, records, now, on_sealed)
-    _track_camp(runtime, state, after, records, now, on_sealed)
-    _track_sortie(runtime, state, after, records, now, on_sealed)
-    _track_battle_resources(runtime, state, after, records, now, on_sealed)
-    _track_card_at_hp1(runtime, state, after, records, now, on_sealed)
-    _track_camp_abandon(runtime, state, after, now, on_sealed)
-    _track_chikujou(runtime, state, before, after, records, now, on_sealed)
-    _track_card_miss(runtime, state, after, records, now, on_sealed)
-    _track_recall_kikan(runtime, state, after, records, now, on_sealed)
-    _track_battle_menu(runtime, state, before, after, records, now, on_sealed)
-    _track_sortie_cards(runtime, state, after, records, now, on_sealed)
+    # A broken tracker must not hide the other incidents or skip the state
+    # write. Each tracker is isolated and the failure is named on stderr (the
+    # bot's log captures it); the observation continues.
+    trackers = (
+        ('_track_boss', lambda: _track_boss(runtime, state, after, records, now, on_sealed)),
+        ('_track_camp', lambda: _track_camp(runtime, state, after, records, now, on_sealed)),
+        ('_track_sortie', lambda: _track_sortie(runtime, state, after, records, now, on_sealed)),
+        ('_track_battle_resources', lambda: _track_battle_resources(
+            runtime, state, after, records, now, on_sealed)),
+        ('_track_card_at_hp1', lambda: _track_card_at_hp1(
+            runtime, state, after, records, now, on_sealed)),
+        ('_track_camp_abandon', lambda: _track_camp_abandon(
+            runtime, state, after, now, on_sealed)),
+        ('_track_chikujou', lambda: _track_chikujou(
+            runtime, state, before, after, records, now, on_sealed)),
+        ('_track_card_miss', lambda: _track_card_miss(
+            runtime, state, after, records, now, on_sealed)),
+        ('_track_recall_kikan', lambda: _track_recall_kikan(
+            runtime, state, after, records, now, on_sealed)),
+        ('_track_battle_menu', lambda: _track_battle_menu(
+            runtime, state, before, after, records, now, on_sealed)),
+        ('_track_sortie_cards', lambda: _track_sortie_cards(
+            runtime, state, after, records, now, on_sealed)),
+    )
+    for name, tracker in trackers:
+        try:
+            tracker()
+        except Exception as exc:  # noqa: BLE001 - one tracker must not stop the rest
+            print(f"hanjuku-month-audit: tracker_failed {name} "
+                  f"{type(exc).__name__}", file=sys.stderr)
     state['write_tick'] = int(state.get('write_tick') or 0) + 1
     # The open-month counters only advance if every observation persists them:
     # a write every tenth observation restarted from the last file and could
@@ -4469,6 +4533,11 @@ def render(record):
             f"- 卵残数: {battle.get('egg_uses')} / 切り札: 選択 {battle.get('cards_selected')}"
             f" / 使用 {battle.get('cards_used')} / 残り {battle.get('cards_remaining')}"
             f" / pending {battle.get('card_pending')}",
+            f"- 卵の証拠: 台帳のみ {bool(battle.get('egg_ledger_only'))} (egg_ledger_only)"
+            f" / 台帳値 {battle.get('egg_uses_ledger')} (egg_uses_ledger)"
+            f" / 選択 {battle.get('egg_selected')} (egg_selected)"
+            f" / この戦闘の召喚 {bool(battle.get('egg_summon_seen'))} (egg_summon_seen)",
+            f"- 結果の根拠: {battle.get('outcome_source') or '不明'} (outcome_source)",
             *([f"- 残資源（消費確定不能・署名未校正）: {battle.get('cards_unconfirmed_egg_drop')}"]
               if battle.get('cards_unconfirmed_egg_drop') else []),
             *([f"- 使用未分類（告知未校正）: {battle.get('cards_unclassified')}"]
@@ -4693,6 +4762,11 @@ def render_comment(record):
     elif record.get('kind') in ('battle_retreat_with_resources', 'battle_loss_with_resources'):
         lines.insert(5, f"- 戦闘: {battle.get('outcome')} / 資源 {battle.get('resources')}"
                         f" / {battle.get('general') or '不明'}")
+        lines.insert(6, f"- 卵の証拠: 台帳のみ {bool(battle.get('egg_ledger_only'))}"
+                        f" (egg_ledger_only) / 台帳値 {battle.get('egg_uses_ledger')}"
+                        f" (egg_uses_ledger) / 選択 {battle.get('egg_selected')}"
+                        f" (egg_selected) / 結果の根拠"
+                        f" {battle.get('outcome_source') or '不明'} (outcome_source)")
     elif record.get('kind') in ('sortie_failed', 'sortie_cancelled'):
         lines.insert(5, f"- 出撃: {sortie.get('outcome')} / {sortie.get('reason_code')}"
                         f" / {sortie.get('general') or sortie.get('step_local') or '不明'}")
@@ -4926,7 +5000,15 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
         comments = _issue_comments(repo, number, gh=gh)
         if _occurrence_present([existing, *comments], record.get('incident_id')):
             return {**result, 'status': 'already_commented', 'issue': number}
-        latest = max((comment.get('createdAt') or '' for comment in comments), default='')
+        # Only this bot's occurrence comments drive the cooldown. A human
+        # comment inside the window must not delay the next auto-file. The
+        # already_commented guard above deliberately stays unchanged: an
+        # occurrence marker anywhere is still a duplicate.
+        bot_comments = [comment for comment in comments
+                        if 'hanjuku-month-audit occurrence='
+                        in (comment.get('body') or '')]
+        latest = max((comment.get('createdAt') or '' for comment in bot_comments),
+                     default='')
         if latest:
             try:
                 age = now - dt.datetime.fromisoformat(latest.replace('Z', '+00:00')).timestamp()

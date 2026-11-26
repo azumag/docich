@@ -1632,27 +1632,20 @@ def _defense_summon_without_okunote(mem, cur):
 def _egg_available_unused(mem, cur):
     """owner 2026-11-26: 実測で「使える卵」があったのに卵戦に入らず終わったか。
 
-    own_egg_positive_observed only covers one menu frame. A battle that never
-    opened the egg menu still shows the white たまごをつかう row, which the flow
-    records as battle_egg_white_available on the same step. Either measured
-    source counts; an unread or unknown egg stays excluded.
+    The white-row latch is the measured availability, and ``egg_selected`` is
+    the measured use. A selection makes the remaining egg evidence irrelevant
+    even when the summon panel later resets ``egg_battle``; a melee-only
+    summon is a deliberate no-egg battle. ``mem['_records']`` is not read:
+    the orchestrator clears it every frame, so scanning it was unreliable.
     """
     if not isinstance(cur, dict):
         return False
-    if cur.get('egg_battle') or mem.get('egg_battle') or cur.get('egg_used'):
+    if cur.get('egg_melee_only'):
         return False
-    if cur.get('own_egg_positive_observed') or cur.get('egg_white_seen'):
-        return True
-    step = cur.get('step')
-    for row in reversed((mem.get('_records') or [])[-80:]):
-        if not isinstance(row, dict):
-            continue
-        if row.get('decision') != 'battle_egg_white_available':
-            continue
-        if step is not None and row.get('chart_step') not in (None, step):
-            continue
-        return True
-    return False
+    selected = cur.get('egg_selected')
+    if type(selected) is int and selected > 0:
+        return bool(cur.get('egg_white_seen'))
+    return bool(cur.get('egg_white_seen') or cur.get('own_egg_positive_observed'))
 
 
 def _leftover_cards(mem, cur):
@@ -2039,7 +2032,13 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              # owner 2026-11-26 (B): 卵メニューを観測できなくても、
                              # 卵戦に入っていないことを証拠として残す（監査は
                              # 台帳と合わせて「未使用の可能性」を判定する）。
-                             'egg_battle': bool(cur.get('egg_battle') or mem.get('egg_battle')),
+                             # egg_summon_seen はパネル再読で egg_battle が
+                             # False に戻っても、この戦闘が召喚戦に入った証拠。
+                             'egg_battle': bool(cur.get('egg_summon_seen')
+                                                or cur.get('egg_battle')
+                                                or mem.get('egg_battle')),
+                             'egg_selected': int(cur.get('egg_selected') or 0),
+                             'egg_summon_seen': bool(cur.get('egg_summon_seen')),
                              # owner 2026-11-26: 携行した切り札を一度も開かずに
                              # 負けた戦闘は、選択履歴が空なので監査の残存札
                              # 判定に掛からなかった。携行の実測（計画・確定キット）

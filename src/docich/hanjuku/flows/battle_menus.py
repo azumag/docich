@@ -47,6 +47,21 @@ from ..os_layer.world import NAME
 from ..strategy.economy import _egg_recheck
 
 
+def _note_egg_selected(mem):
+    """Record one measured egg selection for the current battle.
+
+    The egg recheck marks the status stale, but the selection is the evidence
+    the audit needs: a battle that selected an egg did use its egg even when
+    the panel later resets ``egg_battle``. Clearing the white-row latch keeps
+    the latch about *available*, not *still unused*.
+    """
+    _egg_recheck(mem)
+    battle = mem.get('battle')
+    if isinstance(battle, dict):
+        battle['egg_selected'] = int(battle.get('egg_selected') or 0) + 1
+        battle['egg_white_seen'] = False
+
+
 LAST_RESORT_STALL_TICKS = 60   # a full turn apart with the summon HP unmoved
 EMPTY_CARD_LIST_TEXTS = ('きりふだはありません', 'きりふだなし', 'なにももってない')
 CARD_LIST_SAME_FRAME_LIMIT = 12
@@ -858,7 +873,7 @@ def _survival_menu(screen, mem, cur):
         rescue['cards_checked'] += 1
         cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
     else:
-        _egg_recheck(mem)
+        _note_egg_selected(mem)
         rescue['egg_attempted'] = True
         # One selection is not a used summon: the box can fade before the row
         # is taken (g1163 2026-11-12 18:0x: the egg menu opened, the skill box
@@ -1584,7 +1599,7 @@ def battle_menu_step(screen: Screen, mem):
         move = _battle_menu_move(screen, mem, 'たまごをつかう')
         if move != 'here':
             return _emit_moves(move)
-        _egg_recheck(mem)
+        _note_egg_selected(mem)
         return [pad('a')]
     return [pad('b')]
 
@@ -3148,6 +3163,16 @@ def egg_battle_step(screen: Screen, mem):
                              ('ally_melee_score', 'enemy_melee_score'))
                          and egg_evidence['ally_melee_score'] * 10
                          <= egg_evidence['enemy_melee_score'] * BEHIND_EGG_RATIO_TENTHS))
+    if isinstance(battle, dict):
+        # This battle reached the summon menu. Keep the episode evidence even
+        # after a later panel read resets egg_battle. The enemy general's
+        # command menu returns above, so it never reaches here.
+        battle['egg_summon_seen'] = True
+        if (not empty_egg and 'たまごをつかう' in (screen.text or '')
+                and not getattr(screen, 'disabled_item_box', False)):
+            battle['egg_white_seen'] = True
+        if melee_only:
+            battle['egg_melee_only'] = True
     if not mem.get('egg_battle'):
         mem['egg_battle'] = True
         rescue = battle.get('survival') or {}
@@ -3612,7 +3637,7 @@ def egg_battle_step(screen: Screen, mem):
                                          'cursor': screen.menu_cursor},
                         reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         return [pad('a')] if move == 'here' else _emit_moves(move)
-    _egg_recheck(mem)
+    _note_egg_selected(mem)
     if screen.hand:
         move = menu_to(screen, 'たまごをつかう')
         if move == 'here':
