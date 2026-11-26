@@ -317,6 +317,7 @@ def test_narrative_rejects_a_flat_fact_list():
 def test_history_allows_framed_facts_but_rejects_game_attribution_and_mockery():
     assert periodic.history_ok('史実では、ソ連の大粛清で多くの人が犠牲になった。') is True
     assert periodic.history_ok('史実では、ソ連で飢餓が起きた。') is True
+    assert periodic.history_ok('1942年の命令227号は退却を禁じた。') is True
     assert periodic.history_ok('将軍が粛清されました。') is False
     assert periodic.history_ok('史実ではソ連の大粛清を笑え。') is False
     assert periodic.history_ok('ソ連の大粛清はなかったという主張は誤りだ。') is False
