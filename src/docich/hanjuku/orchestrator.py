@@ -1301,6 +1301,35 @@ def status_panel_close_step(screen, mem, phase, actions):
     return [pad('b')]
 
 
+VICTORY_MENU_HOLD_LIMIT = 3   # battle-menu observations with the enemy at HP0
+
+
+def victory_menu_advance(screen, mem, kind, phase, actions):
+    """Advance a battle command menu left open after the enemy reached HP0.
+
+    Measured chapter 5 (クロチェット defence): ヴィーナス 82 vs マングスチン 0,
+    the command menu stayed on screen and the bot sent no input until
+    input_stalled. A is the menu's own advance key once the fight is over.
+    """
+    if actions or kind != 'battle_menu':
+        mem.pop('victory_menu_holds', None)
+        return None
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    if not (type(battle.get('enemy_hp')) is int and battle['enemy_hp'] <= 0):
+        mem.pop('victory_menu_holds', None)
+        return None
+    n = int(mem.get('victory_menu_holds') or 0) + 1
+    if n < VICTORY_MENU_HOLD_LIMIT:
+        mem['victory_menu_holds'] = n
+        return None
+    mem['victory_menu_holds'] = 0
+    decision_log._record(mem, 'victory_menu_advance', screen=screen.kind, phase=phase,
+                         observed_metric={'holds': n, 'enemy': battle.get('enemy'),
+                                          'ally': battle.get('ally')},
+                         reason='敵HP0で戦闘メニューが残り無入力のため、Aで戦闘終了フローを進める')
+    return [pad('a')]
+
+
 def field_fallback_actions(kind):
     """The no-input fallback's input for a frozen ``field``-phase screen."""
     if kind in {'unknown', 'map'}:
@@ -2714,6 +2743,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 phase=phase, observed_metric={'streak': streak},
                 reason='戦闘後の地図を所有者なしで検出したため、SELECTで再フォーカスして再観測する')
             actions = [pad(hint)]
+    if not actions:
+        _victory = victory_menu_advance(screen, mem, kind, phase, actions)
+        if _victory is not None:
+            actions = _victory
     if not actions and kind == 'egg_battle_menu':
         escape = battle_menus_flow.egg_menu_escape(screen, mem)
         if escape is not None:
