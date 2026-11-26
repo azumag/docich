@@ -40,7 +40,8 @@ from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIM
                                drop_retired_step_context, _finish_order,
                                _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
-                               next_order, order_dispatch_starved, parked_boss_steps)
+                               next_order, order_dispatch_starved, parked_boss_steps,
+                               arm_sortie_launch_priority)
 from ..strategy.replan import _off_chart
 from .result import FlowResult
 
@@ -2693,6 +2694,10 @@ def map_step(screen: Screen, mem, frame):
         if order.get('source_probe') is True:
             mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
         mem.pop('order_dispatch_since', None)   # docich#5077: the wait ends at dispatch
+        # docich#5702: the priority window starts at dispatch, not only after
+        # the later departure commit. Housekeeping otherwise keeps preempting
+        # the long source/cards/target walk before sortie_departure_requested.
+        arm_sortie_launch_priority(mem, order)
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
@@ -3048,8 +3053,7 @@ def _commit_departure(mem, order, context, snapshot):
             'tick': int(mem.get('tick') or 0), 'roster_read': False}
         # owner 2026-11-27 (#5696/#5702): 出撃を開始したが発射を確認できていない
         # 間は、築城一覧・家来確認などの割り込みより発射確認を優先する。
-        # 記録が消える（launch_probe が空になる）と自動的に解除される。
-        mem['sortie_launch_pending'] = order['step']
+        arm_sortie_launch_priority(mem, order)
         mem['world_map_due'] = True
 
 

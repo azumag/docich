@@ -5,6 +5,7 @@ the economy plan, and verifies each transaction against the visible receipt.
 """
 from __future__ import annotations
 from ..state.regions import world as _world
+from ..strategy.orders import active_sortie_launch_priority
 
 import re
 import unicodedata
@@ -1364,13 +1365,14 @@ def _chikujou_scroll(screen, mem, sub, names=None):
               'screen_kind': screen.kind}
     # owner 2026-11-27 (#5696/#5702): 出撃の開始から発射確認までの間は、築城一覧の
     # 探索を1回で打ち切って月一メニューを閉じ、発射確認へ時間を回す。
-    if mem.get('sortie_launch_pending') and int(state.get('presses') or 0) >= 1:
+    launch_step = active_sortie_launch_priority(mem)
+    if launch_step and int(state.get('presses') or 0) >= 1:
         sub['declined'] = True
         sub['aborted'] = True
         _record(mem, 'chikujou_deferred_sortie',
                 observed_metric={'visible': [r[2] for r in rows],
                                  'scrolls': int(state.get('presses') or 0),
-                                 'step': mem.get('sortie_launch_pending')},
+                                 'step': launch_step},
                 reason='出撃の開始から発射確認までのため、築城一覧の探索を打ち切る')
         return [pad('b')]
     if (state.get('end_down') and state.get('end_up')

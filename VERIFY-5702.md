@@ -31,7 +31,7 @@
 
 ## 実修正（この検証で特定した残りの実欠陥）
 
-`hanjuku-chart-v1569-launch-priority-start` として次を実装した。
+`hanjuku-chart-v1570-launch-priority-start` として次を実装した。
 
 1. 敵向け出撃（`attack` / `retake` / `boss` / `invade`、read-only probe と move を除く）の `order_start` 時点で `sortie_launch_pending` を立てる。従来どおり departure commit でも再適用する。
 2. 家来/状態探索と築城スクロールは、ラッチの文字列を無条件信用せず `active_sortie_launch_priority()` で検証する。
@@ -39,7 +39,7 @@
    - pre-commit では plan active、`sortie_attempt`、`departure_request` のいずれかが同一步を示す間だけ有効。
    - 完了・失敗・確認後・rollback 後・kept portrait march ではラッチを消す。
 3. read-only/move の指示では優先ラッチを立てない。
-4. `ops/vm_actions/collect_diagnostics.py` の hotload version allowlist に v1569 を登録した。
+4. `ops/vm_actions/collect_diagnostics.py` の hotload version allowlist に v1570 を登録した。
 
 ## テスト
 
@@ -52,5 +52,5 @@
 ## 残りの未確認事項
 
 - issue に保存された月末末尾だけでは `order_start` 2 件目の step は特定できない。完全特定には runtime `g1190-ch1v9` の `hanjuku_decisions.jsonl` 全行が必要。
-- v1569 の実機確認（争奪月で order_start 後に家来/築城を見送り、発射確認後に再開すること）は次回該当月のランで必要。
+- v1570 の実機確認（争奪月で order_start 後に家来/築城を見送り、発射確認後に再開すること）は次回該当月のランで必要。
 - 防衛戦そのものはゲーム側の強制割り込みなので無視しない。修正が対象にするのは、戦闘後の自由画面で月次・家来/築城が出撃手順を再度押し出す優先順位逆転である。
