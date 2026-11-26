@@ -37,6 +37,9 @@ WORLD_VIEWS = {
     'g1075-ch4-y-view-season-skulls.png',
     'g1133-ch6-y-view-grey-sea.png',
     'g1163-ch4-y-view-cleared-sites.png',
+    # g1342 production Y views (21:20 after the 北東 fight, 23:50 survey).
+    'g1342-ch4-y-view-northeast-defeated-camp.png', 'g1342-ch4-y-view-2350-live.png',
+    'g1342-ch4-y-view-0024-cursor-on-northwest.png',
     'g1163-ch9-y-view-g-at-west-edge-lake-icon.png', 'g1163-ch9-y-view-g-near-hayaku.png',
     # A production-state Y view captured through the 16-bit RGB565 path: the
     # gold frame's (57,40,16) reads as (56,40,16).

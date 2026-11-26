@@ -2927,19 +2927,26 @@ def _collect_browser_processes(proc_root=Path("/proc"), *,
         else:
             type_sources["type_arg"] += 1
         by_type[row["type"]] = by_type.get(row["type"], 0) + 1
-        owner = by_owner.setdefault(row["owner"], {"count": 0, "cpu_pct": 0.0})
+        owner = by_owner.setdefault(
+            row["owner"],
+            {"count": 0, "cpu_pct": 0.0, "rss_mb": 0.0, "renderer_rss_mb": 0.0},
+        )
         owner["count"] += 1
         owner["cpu_pct"] += row["cpu_pct"]
+        owner["rss_mb"] += row["rss_kb"] / 1024.0
         if row["type"] == "gpu":
             owner["gpu_cpu_pct"] = owner.get("gpu_cpu_pct", 0.0) + row["cpu_pct"]
         elif row["type"] == "renderer":
             owner["renderer_cpu_pct"] = owner.get("renderer_cpu_pct", 0.0) + row["cpu_pct"]
+            owner["renderer_rss_mb"] += row["rss_kb"] / 1024.0
 
     for owner in by_owner.values():
         owner["cpu_pct"] = round(owner["cpu_pct"], 1)
         for key in ("gpu_cpu_pct", "renderer_cpu_pct"):
             if key in owner:
                 owner[key] = round(owner[key], 1)
+        for key in ("rss_mb", "renderer_rss_mb"):
+            owner[key] = round(owner[key], 1)
 
     result = {
         "schema_version": 1,
@@ -5769,6 +5776,7 @@ CORNER_STATE_FILES = {
     "nethack_corner_manual": "nethack_corner_manual.json",
     "soren91_corner": "soren91_corner.json",
     "chart": "chart_corner_659_runtime.json",
+    "new_corner": "new_corner.json",
 }
 
 # Fixed enum of the switch result a corner recorded in its own state file.
@@ -5785,7 +5793,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
-    "doushi_corner", "mystery_corner", "lawsim_corner",
+    "doushi_corner", "mystery_corner", "lawsim_corner", "new_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -6414,6 +6422,11 @@ def _collect_rotation_evidence(state_dir):
 # the legacy name currently is that alias.
 CANONICAL_ROTATION_TIMER = "docich-corner-rotation.timer"
 LEGACY_ROTATION_TIMER = "docich-retro-corner.timer"
+# Hand-installed system-scope legacy rotation owner. The canonical user timer
+# and this unit take the same corner-rotation lock, so at most one can own the
+# rolling rotation. Diagnostics reports both without paths or unit bodies.
+SYSTEM_LEGACY_ROTATION_SERVICE = "docich-soren91-corner.service"
+SYSTEM_LEGACY_ROTATION_TIMER = "docich-soren91-corner.timer"
 
 
 def _rotation_timer_selection(unit_dir=None):
@@ -6985,13 +6998,15 @@ def _project_corner_state(data):
         "end_reason": (data.get("end_reason") if data.get("end_reason")
                        in {"game_over", "screen_stalled", "input_stalled", "manual_saved_stop",
                            "manual_forced_stop",
-                           "switch-terminal-before-corner-active", "game-completed",
+                           "switch-terminal-before-corner-active", "game-completed", "game_clear",
                            "queue-timeout", "beta-stopped", "manual", "match-timeout",
                            "operator-moved-during-tsuitate",
                            "operator-moved-during-yosou",
                            "operator-moved-during-doushi",
                            "operator-moved-during-mystery",
                            "operator-moved-during-lawsim",
+                           "operator-moved-during-new-corner",
+                           "released-failure-before-retry",
                            "case-completed", "case-error",
                            "duration",
                            "audio-complete",
@@ -8099,6 +8114,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1388-crying-egg-battle-menu",
             "hanjuku-chart-v1389-idou-y-route-recall-hold",
             "hanjuku-chart-v1392-dispatch-starve-measure",
+            "hanjuku-chart-v1393-roster-due-consume",
             "hanjuku-chart-v1397-recall-map-hold",
             "hanjuku-chart-v1398-egg-retry-on-hp-loss",
             "hanjuku-chart-v1399-recall-map-hold",
@@ -8108,20 +8124,147 @@ def _project_corner_state(data):
             "hanjuku-chart-v1447-password-measured-order",
             "hanjuku-chart-v1448-auto-carry-safe-card",
             "hanjuku-chart-v1449-chikujou-hold-note",
+            "hanjuku-chart-v1450-attack-route-revalidation",
             "hanjuku-chart-v1450-password-dispatch",
             "hanjuku-chart-v1451-defense-wait-probe",
+            "hanjuku-chart-v1452-battle-card-row-evidence",
+            "hanjuku-chart-v1453-attack-route-revalidation",
             "hanjuku-chart-v1452-password-hold",
             "hanjuku-chart-v1453-okunote-unclassified",
             "hanjuku-chart-v1454-sortie-card-type",
             "hanjuku-chart-v1455-password-in-game-retry",
+            "hanjuku-chart-v1456-live-boss-sortie-audit",
             "hanjuku-chart-v1456-password-phrase-ocr",
             "hanjuku-chart-v1457-empty-kit-cancel",
             "hanjuku-chart-v1458-merchant-mickey-priority",
             "hanjuku-chart-v1459-merchant-listed-unknown",
+            "hanjuku-chart-v1461-survival-unconfirmed-ledger",
+            "hanjuku-chart-v1460-retreat-unclassified-export",
             "hanjuku-chart-v1460-password-entered-field",
             "hanjuku-chart-v1461-melee-only-ugokazaru",
             "hanjuku-chart-v1462-status-panel-owner-guard",
             "hanjuku-chart-v1465-unowned-screen-review-guards",
+            "hanjuku-chart-v1464-verified-month-blind-nav",
+            "hanjuku-chart-v1463-battle-menu-scrolled-bottom",
+            "hanjuku-chart-v1464-status-panel-owner-followups",
+            "hanjuku-chart-v1466-status-panel-owner-name",
+            "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
+            "hanjuku-chart-v1470-interim-order-purpose",
+            "hanjuku-chart-v1457-interim-order-failure-purpose",
+            "hanjuku-chart-v1468-battle-menu-bounded-episode",
+            "hanjuku-chart-v1469-recall-yjump-goal",
+            "hanjuku-chart-v1470-ch4-site-bounded-wait",
+            "hanjuku-chart-v1471-roster-due-probe",
+            "hanjuku-chart-v1473-hidden-season-site-priority",
+            "hanjuku-chart-v1474-departure-request-ownership",
+            "hanjuku-chart-v1476-site-cursor-shape",
+            "hanjuku-chart-v1480-ch4-boss-dispatch",
+            "hanjuku-chart-v1478-site-nearest-source",
+            "hanjuku-chart-v1472-status-panel-owner-unreadable-skip",
+            "hanjuku-chart-v1477-boss-camp-recall",
+            "hanjuku-chart-v1483-ch12-boss-staging",
+            "hanjuku-chart-v1484-clear-ending-corner-end",
+            "hanjuku-chart-v1485-locked-boss-activation",
+            "hanjuku-chart-v1485-camp-watch-hint-identity",
+            "hanjuku-chart-v1486-locked-boss-activation",
+            "hanjuku-chart-v1486-ch4-southern-kings",
+            "hanjuku-chart-v1484-sortie-kit-evidence-confidence",
+            "hanjuku-chart-v1487-ch4-southern-kings",
+            "hanjuku-chart-v1488-discharge-last-general",
+            "hanjuku-chart-v1488-summon-card-without-egg",
+            "hanjuku-chart-v1489-discharge-last-general",
+            "hanjuku-chart-v1490-fort-recall-picker-owner-bounded",
+            "hanjuku-chart-v1491-card-abandon-retreat-ban",
+            "hanjuku-chart-v1492-boss-only-card-miss-eligibility",
+
+            "hanjuku-chart-v1493-card-open-bounded",
+            "hanjuku-chart-v1494-card-open-bounded-audit",
+            "hanjuku-chart-v1493-recall-scene-covered-dispatch",
+            "hanjuku-chart-v1495-recall-scene-covered-dispatch-audit",
+            "hanjuku-chart-v1496-card-open-limit",
+            "hanjuku-chart-v1497-boss-audit-live-sortie-defer",
+            "hanjuku-chart-v1493-interim-order-purpose",
+            "hanjuku-chart-v1494-boss-audit-live-sortie-defer",
+            "hanjuku-chart-v1498-recall-battle-mode-lost",
+            "hanjuku-chart-v1499-adjusted-stock-fallback",
+            "hanjuku-chart-v1500-retreat-cards-unclassified",
+            "hanjuku-chart-v1500-boss-wave-stock-cards",
+            "hanjuku-chart-v1502-ch10-approach",
+            "hanjuku-chart-v1503-battle-loss-unclassified",
+            "hanjuku-chart-v1504-ch10-approach",
+            "hanjuku-chart-v1505-egg-race-cards",
+            "hanjuku-chart-v1506-hp1-nonboss-resource-hold",
+            "hanjuku-chart-v1507-verified-month-blind-nav",
+            "hanjuku-chart-v1508-score-pressure",
+            "hanjuku-chart-v1509-card-at-hp1-audit",
+            "hanjuku-chart-v1510-status-panel-close",
+            "hanjuku-chart-v1510-live-march-status",
+            "hanjuku-chart-v1511-status-panel-close",
+            "hanjuku-chart-v1512-attack-route-revalidation",
+            "hanjuku-chart-v1513-duel-decline-funded",
+            "hanjuku-chart-v1514-ch4-site-orders-steady",
+            "hanjuku-chart-v1515-monster-menu-total-cap",
+            "hanjuku-chart-v1517-ch4-site-orders-steady",
+            "hanjuku-chart-v1518-card-purchase-priority",
+            "hanjuku-chart-v1519-card-ledger-all-kinds",
+            "hanjuku-chart-v1520-summon-card-flow-hold",
+            "hanjuku-chart-v1521-stall-60s-issue",
+            "hanjuku-chart-v1522-summon-battle-carried-card",
+            "hanjuku-chart-v1523-egg-choice-strongest",
+            "hanjuku-chart-v1524-defense-cards-unusable",
+            "hanjuku-chart-v1525-sortie-cards-eligible",
+            "hanjuku-chart-v1527-audit-card-drop",
+            "hanjuku-chart-v1528-card-list-unconfirmed-evidence",
+            "hanjuku-chart-v1530-boss-card-unused-issue",
+            "hanjuku-chart-v1531-boss-card-detect",
+            "hanjuku-chart-v1532-sortie-cancel-state",
+            "hanjuku-chart-v1534-shop-reenter-limit",
+            "hanjuku-chart-v1535-shop-reenter-limit",
+            "hanjuku-chart-v1537-egg-available-battle",
+            "hanjuku-chart-v1538-cards-left-plan-fallback",
+            "hanjuku-chart-v1539-shop-loop-issue",
+            "hanjuku-chart-v1540-egg-white-latch",
+            "hanjuku-chart-v1541-filer-failure-visible",
+            "hanjuku-chart-v1533-egg-unused-measured",
+            "hanjuku-chart-v1529-owned-target-settle",
+            "hanjuku-chart-v1542-unconfirmed-march-end-reopen",
+            "hanjuku-chart-v1544-egg-ledger-loss-option-b",
+            "hanjuku-chart-v1545-egg-menu-escape",
+            "hanjuku-chart-v1546-cards-left-sortie-fallback",
+            "hanjuku-chart-v1548-victory-menu-hold",
+            "hanjuku-chart-v1549-victory-menu-hold",
+            "hanjuku-chart-v1550-camp-dispatch-receipt",
+            "hanjuku-chart-v1551-boss-month-phase-guard",
+            "hanjuku-chart-v1553-chapter-end-save",
+            "hanjuku-chart-v1554-chapter-end-save",
+            "hanjuku-chart-v1556-boss-dispatch-recovery",
+            "hanjuku-chart-v1557-order-start-proof",
+            "hanjuku-chart-v1560-residual-card-evidence",
+            "hanjuku-chart-v1558-game-over-issue",
+            "hanjuku-chart-v1561-camp-resend-scene-reset",
+            "hanjuku-chart-v1562-duel-accept-evidence",
+            "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
+            "hanjuku-chart-v1563-speedrun-corner",
+            "hanjuku-chart-v1564-speedrun-corner",
+            "hanjuku-chart-v1565-camp-recall-dome-text-hold",
+            "hanjuku-chart-v1566-egg-attempt-retry",
+            "hanjuku-chart-v1567-sortie-launch-priority",
+            "hanjuku-chart-v1552-chapter-end-save-accept",
+            "hanjuku-chart-v1552-ch9-sortie-speed",
+            "hanjuku-chart-v1559-selected-card-interruption",
+            "hanjuku-chart-v1567-sortie-panel-occluded",
+            "hanjuku-chart-v1568-launch-priority-house",
+            "hanjuku-chart-v1569-chikujou-scan",
+            "hanjuku-chart-v1570-launch-priority-start",
+            "hanjuku-chart-v1547-victory-menu-advance",
+            "hanjuku-chart-v1547-ch11-boss-gateway",
+            "hanjuku-chart-v1543-summon-card-rearm-hold",
+            "hanjuku-chart-v1544-egg-menu-escape",
+            "hanjuku-chart-v1546-recall-dispatch-receipt",
+            "hanjuku-chart-v1501-retreat-cards-unclassified",
+            "hanjuku-chart-v1478-departure-request-ownership",
+            "hanjuku-chart-v1481-boss-camp-recall-followup",
+            "hanjuku-chart-v1482-departure-request-ownership",
             "hanjuku-chart-v1402-sortie-audit-confidence",
             "hanjuku-chart-v1403-boss-phase-scan-defer",
             "hanjuku-chart-v1404-defense-egg-rescue",
@@ -8152,6 +8295,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1433-fort-recall-evidence",
             "hanjuku-chart-v1434-camp-dispatch-evidence",
             "hanjuku-chart-v1435-recall-dispatch-unattributed",
+            "hanjuku-chart-v1442-adjusted-plan-stock-cards",
             "hanjuku-chart-v1438-chikujou-castle-width-fold",
             "hanjuku-chart-v1443-boss-companion-stage-timeout",
             "hanjuku-chart-v1444-chikujou-skip-note",
@@ -8197,7 +8341,8 @@ def _project_corner_state(data):
                 "hanjuku-chart-v169-repair-interruption",
                 "hanjuku-chart-v170-chapter-two-boss",
                 "hanjuku-chart-v173-resume-sortie-menu", "hanjuku-chart-v174-status-reuse-hero-guard", "hanjuku-chart-v175-combat-aware-force", "hanjuku-chart-v176-individual-egg-recovery", "hanjuku-chart-v177-continuous-chikujou", "hanjuku-chart-v178-native-individual-quote", "hanjuku-chart-v179-soldier-team-reading", "hanjuku-chart-v180-disabled-defense-probe", "hanjuku-chart-v181-merchant-reserve", "hanjuku-chart-v182-recovery-list-return", "hanjuku-chart-v184-ritual-foreground", "hanjuku-chart-v185-layered", "hanjuku-chart-v186-unicorn-layered", "hanjuku-chart-v187-ritual-recitation", "hanjuku-chart-v188-restored-terminal-context", "hanjuku-chart-v189-priest-sprite-dialogue", "hanjuku-chart-v190-bound-sortie-execution", "hanjuku-chart-v191-orphan-battle-menu", "hanjuku-chart-v192-conserved-army-reobserve", "hanjuku-chart-v193-wounded-summoner", "hanjuku-chart-v194-army-count-check", "hanjuku-chart-v195-melee-hp-continuation", "hanjuku-chart-v196-observed-menu-feedback", "hanjuku-chart-v197-unread-battle-force", "hanjuku-chart-v198-retry-exhaust-month-step", "hanjuku-chart-v199-no-hero-substitute", "hanjuku-chart-v200-live-summon-shield", "hanjuku-chart-v201-month-exit-bound", "hanjuku-chart-v202-steady-edition", "hanjuku-chart-v203-current-roster-budget", "hanjuku-chart-v204-observed-monster-alias", "hanjuku-chart-v205-unlocated-successor", "hanjuku-chart-v206-enemy-general-command", "hanjuku-chart-v207-recruit-return-ownership", "hanjuku-chart-v208-control-melee-option", "hanjuku-chart-v209-partial-enemy-command", "hanjuku-chart-v210-zero-army-egg-skip", "hanjuku-chart-v211-naruto-damage-priority", "hanjuku-chart-v212-roster-scroll-end", "hanjuku-chart-v213-unknown-text-boundaries", "hanjuku-chart-v214-trade-choice-safety", "hanjuku-chart-v215-roster-known-members", "hanjuku-chart-v216-roster-selected-name", "hanjuku-chart-v218-egg-before-retreat", "hanjuku-chart-v219-boss-and-army-refill", "hanjuku-chart-v220-finishing-resources",
-            "hanjuku-chart-v221-recall-status-proof"} else None),
+            "hanjuku-chart-v221-recall-status-proof",
+            "hanjuku-chart-v1485-camp-watch-identity-subset"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
         "narration": _project_counts(data.get("narration"),
                                      ("enqueued", "delivery_failed", "skipped")),
@@ -9420,13 +9565,19 @@ def _collect_corner_files(state_dir, payload, now):
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
         deadline_at = data.get("deadline_at")
         deadline_expired = None
+        deadline_overdue_sec = None
         if isinstance(deadline_at, str) and deadline_at:
             try:
                 from datetime import datetime, timezone
                 deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
                 deadline_expired = deadline_dt.timestamp() < now
-            except (ValueError, TypeError):
+                if deadline_expired:
+                    deadline_overdue_sec = min(
+                        7 * 86400, max(0, int(now - deadline_dt.timestamp()))
+                    )
+            except (ValueError, TypeError, OverflowError):
                 deadline_expired = None
+                deadline_overdue_sec = None
         entry.update(
             {
                 "phase": _bounded_str(data.get("phase"), 32),
@@ -9441,6 +9592,7 @@ def _collect_corner_files(state_dir, payload, now):
                 "updated_at": _bounded_str(data.get("updated_at"), 40),
                 "deadline_at": _bounded_str(deadline_at, 40),
                 "deadline_expired": deadline_expired,
+                "deadline_overdue_sec": deadline_overdue_sec,
             }
         )
     payload["game_switch"] = entry
@@ -9483,6 +9635,7 @@ def _collect_corner_files(state_dir, payload, now):
         "mystery_corner",
         "lawsim_corner",
         "soren91_corner",
+        "new_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
@@ -10338,14 +10491,18 @@ def _collect_programs(state_dir, soren, now):
     """
     state_dir = Path(state_dir)
     timer_unit, legacy_alias = _rotation_timer_selection()
+    canonical_timer_active = _unit_is_active(timer_unit)
+    system_legacy = _collect_system_legacy_rotation_owner(canonical_timer_active)
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "corner_rotation": {"present": False, "readable": False},
         "corner_rotation_timer": {
             "unit": timer_unit,
-            "active": _unit_is_active(timer_unit),
+            "active": canonical_timer_active,
             "enabled": _unit_is_enabled(timer_unit),
             "legacy_alias": legacy_alias,
+            "system_legacy": system_legacy["system_legacy"],
+            "duplicate_owner": system_legacy["duplicate_owner"],
         },
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
@@ -11466,6 +11623,32 @@ CORNER_ROTATION_CANONICAL_SERVICE = "docich-corner-rotation.service"
 CORNER_ROTATION_CANONICAL_TIMER = "docich-corner-rotation.timer"
 
 
+def _collect_system_legacy_rotation_owner(canonical_timer_active):
+    """Sanitized projection of the hand-installed system-scope rotation owner.
+
+    The canonical user timer and the system-scope ``docich-soren91-corner``
+    unit compete for the same rotation lock, so a host that has both can show a
+    healthy user timer while the legacy unit owns every tick. Only booleans and
+    the duplicate-owner verdict leave this collector; unit paths, unit bodies
+    and command lines never do.
+    """
+    service_active = _unit_is_active(SYSTEM_LEGACY_ROTATION_SERVICE, scope="system")
+    timer_active = _unit_is_active(SYSTEM_LEGACY_ROTATION_TIMER, scope="system")
+    projected = {
+        "service_active": service_active,
+        "service_enabled": _unit_is_enabled(SYSTEM_LEGACY_ROTATION_SERVICE, scope="system"),
+        "timer_active": timer_active,
+        "timer_enabled": _unit_is_enabled(SYSTEM_LEGACY_ROTATION_TIMER, scope="system"),
+    }
+    duplicate = None
+    if canonical_timer_active is not None:
+        duplicate = bool(
+            canonical_timer_active is True
+            and (service_active is True or timer_active is True)
+        )
+    return {"system_legacy": projected, "duplicate_owner": duplicate}
+
+
 def _collect_corner_rotation_timer_alias():
     """Fixed projection of corner rotation timer alias state (#1092).
 
@@ -11908,6 +12091,7 @@ SEVERITY_TRIGGERS = (
     "retro_corner_recovery_required",
     "corner_rotation_recovery_required",
     "corner_rotation_overdue",
+    "game_switch_in_flight_expired",
     "required_worker_stale",
     "required_worker_down",
     "paused_workers_actionable",
@@ -11925,6 +12109,27 @@ SEVERITY_TRIGGERS = (
     "improvement_persist_failure",
     "improvement_persist_clone_disappeared",
 )
+
+# docich#5708: canonical phases in which a switch waits on the old runtime
+# (round boundary / quiesce / stop).  Holding one past ``deadline_at`` means
+# the driver could not finish *or* cancel it -- the 2026-11-26 NetHack drain
+# sat there ~3.5 h with no alert.  A short grace absorbs the seconds a live
+# driver legitimately needs to notice the deadline and cancel.
+GAME_SWITCH_WAITING_PHASES = frozenset({"draining", "quiescing", "stopping"})
+GAME_SWITCH_EXPIRED_GRACE_SEC = 120
+
+
+def _game_switch_in_flight_expired(game_switch):
+    if not isinstance(game_switch, dict) or game_switch.get("readable") is not True:
+        return False
+    overdue = game_switch.get("deadline_overdue_sec")
+    return (
+        game_switch.get("phase") in GAME_SWITCH_WAITING_PHASES
+        and game_switch.get("deadline_expired") is True
+        and isinstance(overdue, int)
+        and not isinstance(overdue, bool)
+        and overdue >= GAME_SWITCH_EXPIRED_GRACE_SEC
+    )
 
 
 def _positive_count(value):
@@ -11973,6 +12178,9 @@ def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_res
     # reason itself is ambiguous, so the projection pre-ages it.
     triggers["corner_rotation_overdue"] = (
         isinstance(rotation, dict) and rotation.get("waiting_overdue") is True
+    )
+    triggers["game_switch_in_flight_expired"] = _game_switch_in_flight_expired(
+        corners.get("game_switch") if isinstance(corners, dict) else None
     )
     triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
     triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)
@@ -14375,6 +14583,7 @@ PROGRAM_ADMISSION_OWNERS = {
     'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
     'mystery': 'mystery_corner',
     'communist-law-simulator': 'lawsim_corner',
+    'geography-world': 'new_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',

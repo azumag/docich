@@ -26,6 +26,7 @@ COPY requirements-screen.txt ./requirements-screen.txt
 COPY requirements-twica-overlay.txt ./requirements-twica-overlay.txt
 COPY requirements-test.txt ./requirements-test.txt
 RUN python -m pip install --no-cache-dir -r requirements-test.txt
+COPY src/docich/hanjuku_family.py ./src/docich/hanjuku_family.py
 COPY src/docich/comment_classifier/__init__.py src/docich/comment_classifier/heuristic.py \
      src/docich/comment_classifier/active_game.py \
      src/docich/comment_classifier/jev.py src/docich/comment_classifier/screen.py \

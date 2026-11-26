@@ -26,7 +26,12 @@ from .paper import PaperBroker
 from .performance import build_performance
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
-from .status import build_public_status, freshness_summary_payload, write_public_status
+from .status import (
+    _snapshot_identity,
+    build_public_status,
+    freshness_summary_payload,
+    write_public_status,
+)
 from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_exit_opportunities, scan_opportunities, select_diversified_opportunities
 from .strategy_runtime import get_active_experiment, pop_reason_context
@@ -340,6 +345,14 @@ def _carry_snapshot(
     as new. Only a successful market batch or ledger update advances it."""
     payload["snapshot_seq"] = seq
     payload["snapshot_generated_at"] = generated
+    snapshot_id = _snapshot_identity(seq, generated)
+    payload["snapshot_id"] = snapshot_id
+    performance = payload.get("performance_summary")
+    if isinstance(performance, dict):
+        if snapshot_id is None:
+            performance.pop("snapshot_id", None)
+        else:
+            performance["snapshot_id"] = snapshot_id
     payload["market_freshness"] = freshness
     payload["coverage"] = coverage
     payload["freshness_summary"] = freshness_summary_payload(freshness)
@@ -746,11 +759,7 @@ def run_worker_cycle(
             **slot_runtime.slot_summary(slot_steps, markets.keys(), invalid=not slot_layout.ok),
         })
         payload["heartbeat_at"] = float(now)
-        payload["snapshot_seq"] = snapshot_seq
-        payload["snapshot_generated_at"] = snapshot_generated
-        payload["market_freshness"] = freshness
-        payload["coverage"] = coverage
-        payload["freshness_summary"] = freshness_summary_payload(freshness)
+        _carry_snapshot(payload, snapshot_seq, snapshot_generated, freshness, coverage)
         write_public_status(status_path, payload)
         return WorkerCycleResult(
             cycle_index=cycle_index,

@@ -5,6 +5,7 @@ the economy plan, and verifies each transaction against the visible receipt.
 """
 from __future__ import annotations
 from ..state.regions import world as _world
+from ..strategy.orders import active_sortie_launch_priority
 
 import re
 import unicodedata
@@ -41,6 +42,10 @@ from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_AB
 
 
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
+# An unread recruitment-payment confirmation stays fail-closed, but not forever:
+# after this many observations the bounded transaction aborts instead of owning
+# the monthly scene while the no-input fallback presses around it (#5681).
+MONTH_SUB_UNREAD_CONFIRM_HOLD = 12
 
 
 RECRUIT_READ_DELAY = 40        # ticks after a join before the home roster is read
@@ -223,13 +228,36 @@ def _month_nav_stuck(mem):
     return isinstance(nav, dict) and nav.get('cancel_sent') is True
 
 
-def _month_opened(move, mem, label: str):
-    """'here' from the guarded walk, or a blind-nav plan ending on ``label``.
+def _month_menu_hint_only(screen):
+    """Whether the readable foreground glyphs can only belong to the menu hint.
 
-    The blind plan's trailing 'a' opens the target exactly like the 'here'
-    branch's A, so callers apply the same opened-state (month_sub, refill
-    stage, exit/merchant flags). The marker is one tick old: reaching the
-    guarded walk below clears it, and a stale label cannot match a walk move.
+    The hand can cover part of 「じゅうじキー」, so an exact substring check
+    is too strict. Accept a two-or-more-character subsequence only; any other
+    dialogue remains owned by the foreground-text handler.
+    """
+    body = _month_dialog_body(screen).replace(' ', '')
+    # The hand may hide the dakuten/small-kana tile; normalize only the
+    # corresponding base glyphs that can occur in this fixed hint.
+    body = body.translate(str.maketrans({'し': 'じ', 'ゆ': 'ゅ', 'き': 'キ'}))
+    hint = 'じゅうじキー'
+    if len(body) < 2:
+        return False
+    pos = 0
+    for char in body:
+        pos = hint.find(char, pos)
+        if pos < 0:
+            return False
+        pos += 1
+    return True
+
+
+def _month_opened(move, mem, label: str):
+    """'here' from the guarded walk, or a separately verified blind-nav A.
+
+    The blind plan only positions the cursor. Its later A is sent on a fresh
+    frame after the exact target row is observed, then this marker lets callers
+    apply the same opened-state (month_sub, refill stage, exit/merchant flags).
+    A stale label cannot match a walk move.
     """
     if move == 'here':
         return True
@@ -276,9 +304,10 @@ def _month_menu_move(screen: Screen, mem, label: str):
     # message, not the menu. The only exempt body is the menu's own じゅうじキー
     # hint line; any other foreground text is owned by _month_text_advance or
     # the hold path.
-    dialogue_free = _month_menu_quiet(screen) or screen.has('じゅうじキー')
+    dialogue_free = (_month_menu_quiet(screen) or screen.has('じゅうじキー')
+                     or (hand and hand[1] >= 175 and _month_menu_hint_only(screen)))
     exhausted = _blind_nav_exhausted(mem, label)
-    if (not exhausted
+    if (not exhausted and screen.kind != 'discharge_menu'
             and ((hand and hand[1] >= 175) or _month_nav_stuck(mem))
             and (screen.has('じゅうじキー') or screen.has('メインメニュー'))
             and screen.has(label.replace('!', '').replace('！', ''))
@@ -291,25 +320,47 @@ def _month_menu_move(screen: Screen, mem, label: str):
         # right, confirm, bounded.
         row_col = _month_menu_row_col(screen, label)
         state = mem.get('month_blind_nav')
-        if not isinstance(state, dict) or state.get('label') != label:
-            state = mem['month_blind_nav'] = {'label': label, 'tries': 0}
-        if row_col is not None and state['tries'] < MONTH_BLIND_NAV_LIMIT:
-            state['tries'] += 1
-            row, col = row_col
+        if (not isinstance(state, dict) or state.get('label') != label
+                or state.get('month') != mem.get('month')
+                or state.get('row_col') != list(row_col)):
+            state = mem['month_blind_nav'] = {
+                'label': label, 'month': mem.get('month'),
+                'row_col': list(row_col), 'tries': 0}
+        row, col = row_col
+        # The old blind walk appended A to the same batch as its cursor
+        # positioning. If one directional press was dropped or the menu was
+        # covered by a foreground panel, A could confirm a different row
+        # (live g1190 ch9 73-8: the supposed ちくじょう open produced a
+        # discharge_menu). A fresh frame must show the exact target row under
+        # the hand before the confirm is allowed.
+        current = _current(screen)
+        current_row_col = None
+        if current is not None:
+            current_row = (current[1] - 47) // 16
+            if 0 <= current_row <= 3:
+                current_row_col = (current_row, 1 if current[0] >= 128 else 0)
+        current_label = ((current[2] or '').replace('!', '').replace('！', '').replace('〜', '～')
+                         if current is not None else '')
+        target_label = (label or '').replace('!', '').replace('！', '').replace('〜', '～')
+        if (screen.kind == 'month_menu' and current is not None
+                and current_label == target_label and current_row_col == row_col):
+            mem.pop('month_blind_nav', None)
+            mem['month_blind_opened'] = label
+            _record(mem, 'month_blind_nav_confirmed', screen=screen.kind, choice=label,
+                    observed_metric={'row': row, 'col': col,
+                                     'tries': int(state.get('tries') or 0)},
+                    reason='盲操作後の新しい観測で対象行のカーソルを確認したため確定する')
+            return [pad('a')]
+        tries = int(state.get('tries') or 0)
+        if tries < MONTH_BLIND_NAV_LIMIT:
+            state['tries'] = tries + 1
             _record(mem, 'month_blind_nav', screen=screen.kind, choice=label,
                     observed_metric={'tries': state['tries'], 'hand': list(hand) if hand else None,
-                                     'row': row, 'col': col,
+                                     'row': row, 'col': col, 'confirmed': False,
                                      'limit': MONTH_BLIND_NAV_LIMIT},
-                    reason='月メニューのカーソル位置が読めないため、実測2列レイアウトを盲操作で目標行へ進む')
-            # Give each press time to reach the menu's own scan: a rapid
-            # burst is dropped (the same cadence lesson as the しろ list, v920).
-            keys = (['up'] * 4 + ['right' if col else 'left']
-                    + ['down'] * row + ['a'])
-            # The blind 'a' opens the target like the 'here' branch's A: mark
-            # which label it confirmed so the caller applies the same
-            # opened-state (month_sub, refill stage, exit/merchant flags)
-            # instead of returning the steps with the open unrecorded.
-            mem['month_blind_opened'] = label
+                    reason='月メニューのカーソル位置が読めないため、対象行まで移動して次の画面で選択を照合する')
+            # Position only. Never combine blind navigation with a purchase/exit confirm.
+            keys = (['up'] * 4 + ['right' if col else 'left'] + ['down'] * row)
             steps = []
             for key in keys:
                 steps += [pad(key), {'type': 'wait', 'ms': MONTH_BLIND_NAV_WAIT_MS}]
@@ -724,18 +775,22 @@ def _note_chikujou_skip_unexplained(mem, shop):
     if isinstance(refused, dict) and refused.get('castles'):
         if not any(name not in tried for name in _chikujou_candidates(mem)):
             return
-    # A bounded wait that gave up on the screen transition is a cause too
-    # (docich#5326: chikujou_held -> skipped). Name it instead of calling the
-    # month unexplained; the audit still files, but the log now points at the
-    # real failure.
+    # A bounded hold that gave up before the month closed is a cause too
+    # (docich#5326/#5704: chikujou_held -> skipped). Name it instead of calling
+    # the month unexplained; the audit still files, but the log now points at
+    # the real failure.
     held_reason = None
-    for row in reversed(mem.get('_records') or ()):
-        if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
-            continue
-        if row.get('month') not in (None, month):
-            continue
-        held_reason = row.get('deviation_reason') or row.get('reason')
-        break
+    last_hold = shop.get('chikujou_last_hold')
+    if isinstance(last_hold, dict) and last_hold.get('month') in (None, month):
+        held_reason = last_hold.get('deviation_reason') or last_hold.get('reason')
+    if held_reason is None:
+        for row in reversed(mem.get('_records') or ()):
+            if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
+                continue
+            if row.get('month') not in (None, month):
+                continue
+            held_reason = row.get('deviation_reason') or row.get('reason')
+            break
     seen = shop.get('chikujou_skip_logged')
     if seen == month:
         return
@@ -747,7 +802,7 @@ def _note_chikujou_skip_unexplained(mem, shop):
                                  'tried': list(tried)[:8],
                                  'candidates': sorted(_chikujou_candidates(mem))[:8],
                                  'held_reason': held_reason},
-                reason='築城の画面遷移を有限回待っても確認できずに skipped のまま月を終えた')
+                reason='築城の保留後に skipped のまま月を終えた')
         return
     _record(mem, 'chikujou_skip_unexplained', month=month,
             observed_metric={'gold': (shop.get('gold_start')),
@@ -1067,6 +1122,8 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
+CHIKUJOU_SCROLL_SCHEMA = 2     # bidirectional scan state; v1 stopped at the first repeated window
+CHIKUJOU_SCROLL_RECOVER_WAIT = 2  # inputless observations before retrying a dead scroll episode
 
 
 LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
@@ -1139,25 +1196,112 @@ def _chikujou_text_has_castle(text, name, suffix):
     return _chikujou_castle_key(f'{name}{suffix}') in _chikujou_castle_key(text)
 
 
+def _chikujou_scan_direction(labels, rows, names, current):
+    """Choose the catalog-order direction of the nearest remaining castle row."""
+    order = {key: index for index, key in enumerate(labels)}
+    visible = [order[key] for _, _, word in rows
+               if (key := _chikujou_castle_key(word)) in order]
+    remaining = [order[key] for name in names or ()
+                 if (key := _chikujou_castle_key(name)) in order]
+    if not visible or not remaining:
+        return current if current in ('up', 'down') else 'down'
+    low, high = min(visible), max(visible)
+    above = [index for index in remaining if index < low]
+    below = [index for index in remaining if index > high]
+    if current == 'up' and above:
+        return 'up'
+    if current == 'down' and below:
+        return 'down'
+    if above and below:
+        up_distance = min(low - index for index in above)
+        down_distance = min(index - high for index in below)
+        return 'up' if up_distance < down_distance else 'down'
+    if above:
+        return 'up'
+    if below:
+        return 'down'
+    return current if current in ('up', 'down') else 'down'
+
+
+def _chikujou_opposite(direction):
+    return 'up' if direction == 'down' else 'down'
+
+
+def _chikujou_catalog_end(labels, rows, cur, direction):
+    """Whether the cursor is at the provable catalog end in this direction.
+
+    Ownership can make the practical end earlier than the first/last catalog
+    castle, so an interior repeated window is not treated as an end merely
+    because the reverse probe moved. The first/last catalog row is still a
+    hard boundary: no castle can exist beyond it in that direction.
+    """
+    keys = list(labels or ())
+    if not keys or cur not in rows or len(rows) != 4:
+        return False
+    if direction == 'up':
+        return cur == rows[0] and _chikujou_castle_key(rows[0][2]) == keys[0]
+    if direction == 'down':
+        return cur == rows[-1] and _chikujou_castle_key(rows[-1][2]) == keys[-1]
+    return False
+
+
+def _store_chikujou_hold(mem, sub, deviation_reason, metric, reason):
+    """Keep the latest same-month build hold after the observation buffer resets."""
+    shop = mem.get('shop')
+    month = sub.get('key') if isinstance(sub, dict) else None
+    if (not isinstance(shop, dict) or not isinstance(metric, dict)
+            or (month is not None and shop.get('key') not in (None, month))):
+        return
+    hold = {'month': month or shop.get('key'),
+            'deviation_reason': deviation_reason, 'reason': reason}
+    for key in ('castle', 'scrolls', 'stalled', 'stage', 'screen_kind'):
+        value = metric.get(key)
+        if type(value) in (int, str):
+            hold[key] = value
+    for key in ('visible', 'seen', 'missing'):
+        value = metric.get(key)
+        if isinstance(value, list):
+            hold[key] = [item for item in value if isinstance(item, str)][:16]
+    shop['chikujou_last_hold'] = hold
+
+
+def _record_chikujou_hold(mem, sub, deviation_reason, observed_metric, reason):
+    metric = dict(observed_metric or {})
+    _store_chikujou_hold(mem, sub, deviation_reason, metric, reason)
+    return _record(mem, 'chikujou_held', month=sub.get('key'), deviation_reason=deviation_reason,
+                   observed_metric=metric, reason=reason)
+
+
+def _clear_chikujou_scroll_hold(mem, sub):
+    shop = mem.get('shop')
+    hold = shop.get('chikujou_last_hold') if isinstance(shop, dict) else None
+    if (isinstance(hold, dict) and hold.get('month') in (None, sub.get('key'))
+            and str(hold.get('deviation_reason') or '').startswith('castle_scroll')):
+        shop.pop('chikujou_last_hold', None)
+
+
 def _chikujou_wait(screen, mem, sub, reason):
     sub['build_wait'] = int(sub.get('build_wait') or 0) + 1
     if sub['build_wait'] < CHIKUJOU_WAIT_LIMIT:
         return []
     sub['declined'] = True
     sub['aborted'] = True
-    _record(mem, 'chikujou_held', deviation_reason=reason,
-            observed_metric={'castle': sub.get('chosen'), 'text': screen.text[-60:]},
-            reason='築城の画面遷移を有限回待っても確認できないため、追加確定せずBで戻る')
+    _record_chikujou_hold(mem, sub, reason,
+                          {'castle': sub.get('chosen'), 'text': screen.text[-60:],
+                           'screen_kind': screen.kind},
+                          '築城の画面遷移を有限回待っても確認できないため、追加確定せずBで戻る')
     return [pad('b')]
 
 
-def _chikujou_scroll(screen, mem, sub):
+def _chikujou_scroll(screen, mem, sub, names=None):
     """Reveal off-screen holdings in the observed four-row castle list.
 
     g684: all four visible castles were already tried, but ゴーメン and
-    スペンソニア remained below them. A missing menu_to target is not the end
-    of this list. Move down only from a named row in the real list, and
-    bound both ignored inputs and an entire traversal (including wrap).
+    スペンソニア remained below them. A repeated window is not proof that the
+    untried rows are absent: the scan probes the reverse direction, treats only
+    a provable catalog boundary as an end, waits out a dead input episode, and
+    stops only after an end-to-end sweep or a full cycle with no new row.
+    Selection/confirmation still requires the row itself.
     """
     chapter = mem.get('chapter') or 1
     resolved = _chikujou_list_rows(screen, chapter)
@@ -1170,25 +1314,123 @@ def _chikujou_scroll(screen, mem, sub):
             or any(b[1] - a[1] != 16 for a, b in zip(rows, rows[1:]))
             or cur not in rows):
         return _chikujou_wait(screen, mem, sub, 'castle_list_unread')
+    if names is None:
+        tried = set(sub.get('rows_tried') or [])
+        tried.update((mem.get('shop') or {}).get('chikujou_tried') or [])
+        names = [c for c in _chikujou_candidates(mem) if c not in tried]
     signature = [list(r) for r in rows] + [list(cur)]
     state = sub.setdefault('build_scroll', {})
-    stalled = int(state.get('stalled') or 0) + 1 if state.get('signature') == signature else 0
-    presses = int(state.get('presses') or 0)
-    if stalled >= MENU_NAV_PRESS_LIMIT or presses >= len(labels) + 4:
+    direction = _chikujou_scan_direction(labels, rows, names, state.get('direction'))
+    if state.get('schema') != CHIKUJOU_SCROLL_SCHEMA:
+        # Keep the press count across the schema change: the launch-pending
+        # deferral (owner 2026-11-27, #5696/#5702) fires after one press, and
+        # a sub that already pressed must not lose that count to the migration.
+        presses = int(state.get('presses') or 0)
+        state.clear()
+        state.update(schema=CHIKUJOU_SCROLL_SCHEMA, signature=None, direction=direction,
+                     mode='scan', same=0, presses=presses, since_new_row=0, input_episodes=0,
+                     end_down=False, end_up=False, seen_keys=[], seen=[], wait=0)
+    seen_keys = state.get('seen_keys')
+    if not isinstance(seen_keys, list):
+        seen_keys = state['seen_keys'] = []
+    visible_keys = [_chikujou_castle_key(r[2]) for r in rows]
+    new_keys = [key for key in visible_keys if key and key not in seen_keys]
+    if new_keys:
+        seen_keys.extend(new_keys)
+    state['seen'] = [labels.get(key, key) for key in seen_keys]
+    changed = state.get('signature') is not None and state.get('signature') != signature
+    if changed:
+        _clear_chikujou_scroll_hold(mem, sub)
+        state['input_episodes'] = 0
+        if state.get('mode') == 'probe':
+            probe = state.get('probe_direction')
+            if probe in ('up', 'down'):
+                state['direction'] = probe
+            state['mode'] = 'scan'
+            state['wait'] = 0
+        elif state.get('mode') == 'wait':
+            state['mode'] = 'scan'
+            state['wait'] = 0
+        state['same'] = 0
+        state['since_new_row'] = (0 if new_keys else int(state.get('since_new_row') or 0) + 1)
+    elif state.get('signature') is not None:
+        state['same'] = int(state.get('same') or 0) + 1
+    desired = _chikujou_scan_direction(labels, rows, names, state.get('direction'))
+    if state.get('mode') == 'scan' and desired != state.get('direction'):
+        state['direction'] = desired
+        state['same'] = 0
+    metric = {'visible': [r[2] for r in rows], 'selected': cur[2],
+              'direction': state.get('direction'), 'mode': state.get('mode'),
+              'seen': list(state.get('seen') or []), 'missing': list(names or [])[:8],
+              'screen_kind': screen.kind}
+    # owner 2026-11-27 (#5696/#5702): 出撃の開始から発射確認までの間は、築城一覧の
+    # 探索を1回で打ち切って月一メニューを閉じ、発射確認へ時間を回す。
+    launch_step = active_sortie_launch_priority(mem)
+    if launch_step and int(state.get('presses') or 0) >= 1:
         sub['declined'] = True
         sub['aborted'] = True
-        _record(mem, 'chikujou_held', deviation_reason='castle_scroll_no_progress',
-                observed_metric={'visible': [r[2] for r in rows], 'scrolls': presses,
-                                 'stalled': stalled},
-                reason='築城一覧の移動が効かないか探索上限に達したため、城を推測して確定せず戻る')
+        _record(mem, 'chikujou_deferred_sortie',
+                observed_metric={'visible': [r[2] for r in rows],
+                                 'scrolls': int(state.get('presses') or 0),
+                                 'step': launch_step},
+                reason='出撃の開始から発射確認までのため、築城一覧の探索を打ち切る')
         return [pad('b')]
-    state.update(signature=signature, stalled=stalled, presses=presses + 1)
+    if (state.get('end_down') and state.get('end_up')
+            or int(state.get('since_new_row') or 0) >= len(labels) + 4):
+        sub['declined'] = True
+        sub['aborted'] = True
+        state['signature'] = signature
+        metric.update(scrolls=int(state.get('presses') or 0), stalled=int(state.get('same') or 0),
+                      text=screen.text[-60:])
+        _record_chikujou_hold(mem, sub, 'castle_scan_exhausted', metric,
+                              '築城一覧を端まで往復しても未試行候補行を確認できないため、城を推測して確定せず戻る')
+        return [pad('b')]
+    if state.get('mode') == 'wait':
+        if not changed:
+            wait = int(state.get('wait') or 0) + 1
+            state['wait'] = wait
+            if wait < CHIKUJOU_SCROLL_RECOVER_WAIT:
+                state['signature'] = signature
+                return []
+        state['mode'] = 'scan'
+        state['same'] = 0
+        state['wait'] = 0
+    if state.get('mode') == 'probe':
+        probe = state.get('probe_direction') or _chikujou_opposite(state.get('direction'))
+        if int(state.get('same') or 0) >= MENU_NAV_PRESS_LIMIT:
+            state['mode'] = 'wait'
+            state['wait'] = 0
+            state['same'] = 0
+            state['input_episodes'] = int(state.get('input_episodes') or 0) + 1
+            metric.update(scrolls=int(state.get('presses') or 0), stalled=MENU_NAV_PRESS_LIMIT,
+                          input_episodes=state['input_episodes'])
+            _store_chikujou_hold(mem, sub, 'castle_scroll_input_stalled', metric,
+                                 '築城一覧の逆方向確認も動かないため、入力の回復を待って走査を継続する')
+            _record(mem, 'chikujou_scroll_stalled', month=sub.get('key'),
+                    deviation_reason='castle_scroll_input_stalled', observed_metric=metric,
+                    reason='築城一覧の逆方向確認も動かないため、確定せず入力の回復を待って走査を継続する')
+            state['signature'] = signature
+            return []
+        action = probe
+    elif int(state.get('same') or 0) >= MENU_NAV_PRESS_LIMIT:
+        current = state.get('direction') if state.get('direction') in ('up', 'down') else 'down'
+        if _chikujou_catalog_end(labels, rows, cur, current):
+            state[f'end_{current}'] = True
+        probe = _chikujou_opposite(current)
+        state['mode'] = 'probe'
+        state['probe_direction'] = probe
+        state['same'] = 0
+        action = probe
+    else:
+        action = state.get('direction') if state.get('direction') in ('up', 'down') else 'down'
+    presses = int(state.get('presses') or 0) + 1
+    state.update(signature=signature, presses=presses)
     sub['build_wait'] = 0
-    _record(mem, 'chikujou_scroll',
-            observed_metric={'visible': [r[2] for r in rows], 'selected': cur[2],
-                             'scrolls': presses + 1},
-            reason='未試行の所有城が画面外に残るため、4行の築城一覧を下へ送って確認する')
-    return [pad('down')]
+    metric.update(scrolls=presses, stalled=int(state.get('same') or 0), action=action)
+    _record(mem, 'chikujou_scroll', month=sub.get('key'),
+            observed_metric=metric,
+            reason='未試行の所有城が画面外に残るため、4行の築城一覧を上下へ送って確認する')
+    return [pad(action)]
 
 
 def _month_chikujou(screen, mem, shop):
@@ -1490,7 +1732,7 @@ def _chikujou_step(screen, mem, sub):
             sub.pop('chosen', None)
             sub.pop('quoted_cost', None)
             sub['build_wait'] = 0
-            _record(mem, 'chikujou_castle_unavailable',
+            _record(mem, 'chikujou_castle_unavailable', month=key,
                     observed_metric={'castle': chosen},
                     reason='選択した城が増築不可のため、その城を今回の候補から外して次を探す')
         elif 'ぞうちくなさいます' in text and screen.hand is not None:
@@ -1524,7 +1766,7 @@ def _chikujou_step(screen, mem, sub):
             # refusal is otherwise indistinguishable from ignored input.
             # Skip observed capped rows before A, only in this month's substate.
             tried.extend(maxed)
-            _record(mem, 'chikujou_max_level_seen',
+            _record(mem, 'chikujou_max_level_seen', month=key,
                     observed_metric={'castles': maxed, 'level': 5},
                     reason='実一覧でレベル5を確認した城は当月の選択を省き、未表示の増築候補へ進む')
         names = [c for c in _chikujou_candidates(mem) if c not in tried]
@@ -1543,7 +1785,7 @@ def _chikujou_step(screen, mem, sub):
                 return [pad('a')]
             return [move]
         if names:
-            return _chikujou_scroll(screen, mem, sub)
+            return _chikujou_scroll(screen, mem, sub, names)
         sub['declined'] = True
         _record(mem, 'chikujou_declined', observed_metric={'tried': tried},
                 reason='当月未試行で増築候補となる所有城がなくなったため、築城を終える')
@@ -1952,7 +2194,7 @@ def _recruit_guard_step(screen, mem, reason):
     return [pad('b')]
 
 
-def month_sub_step(screen: Screen, mem):
+def month_sub_step(screen: Screen, mem, *, boss_dispatch=False):
     """Screens inside measured egg recovery / unmeasured general recruitment.
 
     Recruitment advances with A (first audition candidate, owner
@@ -2045,7 +2287,15 @@ def month_sub_step(screen: Screen, mem):
                 # An unread header is not "no spare cash" (g662). Never confirm
                 # a payment blind; other dialogue advances within the limit.
                 if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
-                    return []
+                    holds = int(sub.get('unread_confirm_holds') or 0) + 1
+                    sub['unread_confirm_holds'] = holds
+                    if holds <= MONTH_SUB_UNREAD_CONFIRM_HOLD:
+                        return []
+                    sub.pop('unread_confirm_holds', None)
+                    sub['aborted'] = True
+                    _record(mem, 'month_sub_unread_confirm_abort', screen=kind,
+                            observed_metric={'held': holds, 'boss_dispatch': bool(boss_dispatch)},
+                            reason='募集費確認の金額を読めないまま保留が上限へ達したため、支払わず月一取引を離脱する')
             elif spare is not True:
                 sub['aborted'] = True
                 if shop:

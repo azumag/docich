@@ -12,6 +12,8 @@ from docich.trading.timeframe_chart import (  # noqa: E402
     BB_PERIOD,
     TIMEFRAME_BARS,
     TIMEFRAMES,
+    CHART_CACHE_RETENTION_S,
+    TimeframeChartCache,
     TimeframeChartReader,
     TimeframeChartSampler,
     TimeframeDataError,
@@ -246,6 +248,85 @@ def test_sampler_caches_per_timeframe_ttl(tmp_path):
     assert second["timeframes"][0]["stale"] is False
     sampler.snapshot(now=NOW + 6)
     assert len(reader.exchange.calls) > calls_after_first
+
+
+def test_sampler_persists_public_views_across_instances(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    first_reader = CountingReader()
+    first = TimeframeChartSampler(
+        trading_dir, reader_factory=lambda: first_reader,
+        ttl_overrides={key: 5.0 for key in TIMEFRAMES},
+    )
+    first_snapshot = first.snapshot(now=NOW)
+    assert first_snapshot["available"] is True
+    assert first_reader.exchange.calls
+
+    second_reader = CountingReader()
+    second = TimeframeChartSampler(
+        trading_dir, reader_factory=lambda: second_reader,
+        ttl_overrides={key: 5.0 for key in TIMEFRAMES},
+    )
+    second_snapshot = second.snapshot(now=NOW + 1)
+    assert second_snapshot["available"] is True
+    assert [view["bars"] for view in second_snapshot["timeframes"]] == [
+        view["bars"] for view in first_snapshot["timeframes"]
+    ]
+    # A new sampler (as after a dashboard restart) reuses the durable TTL cache.
+    assert second_reader.exchange.calls == []
+
+
+def test_sampler_does_not_reuse_persistent_cache_past_retention(tmp_path, monkeypatch):
+    from docich.trading import timeframe_chart as tc
+
+    monkeypatch.setattr(tc, "_FETCH_RETRY_DELAY_S", 0.0)
+    trading_dir = _trading_dir(tmp_path)
+    first = TimeframeChartSampler(trading_dir, reader_factory=CountingReader)
+    assert first.snapshot(now=NOW)["available"] is True
+    cache_dir = trading_dir / "timeframe_chart_cache"
+    assert list(cache_dir.glob("*.json"))
+
+    failing_reader = CountingReader(fail_timeframes=TIMEFRAMES)
+    second = TimeframeChartSampler(trading_dir, reader_factory=lambda: failing_reader)
+    expired_at = NOW + CHART_CACHE_RETENTION_S + 1
+    snapshot = second.snapshot(now=expired_at)
+    assert snapshot["available"] is False
+    assert all(view["available"] is False for view in snapshot["timeframes"])
+    assert not list(cache_dir.glob("*.json"))
+
+
+def test_chart_cache_rejects_impossible_ohlc_before_persisting(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    cache = TimeframeChartCache(trading_dir)
+    rows = _rows("1m", count=3, start_ms=int(NOW * 1000) - 3 * STEP_MS["1m"])
+    record = build_timeframe_view("BTC/JPY", "1m", rows, now=NOW)
+    invalid = dict(record)
+    invalid["bars"] = [dict(bar) for bar in record["bars"]]
+    invalid["bars"][0]["h"] = invalid["bars"][0]["o"] - 1
+    assert cache.save("BTC/JPY", "1m", invalid, now=NOW) is False
+    assert not (trading_dir / "timeframe_chart_cache").exists()
+
+
+def test_chart_cache_evicts_oldest_entries_to_respect_byte_cap(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    cache = TimeframeChartCache(trading_dir, max_bytes=10_000_000)
+    rows = _rows("1m", count=60, start_ms=int(NOW * 1000) - 60 * STEP_MS["1m"])
+    record = build_timeframe_view("BTC/JPY", "1m", rows, now=NOW)
+    symbols = ("BTC/JPY", "ETH/JPY", "XRP/JPY")
+    for index, symbol in enumerate(symbols):
+        item = dict(record)
+        item["symbol"] = symbol
+        assert cache.save(symbol, "1m", item, now=NOW + index)
+
+    files = list((trading_dir / "timeframe_chart_cache").glob("*.json"))
+    total = sum(path.stat().st_size for path in files)
+    assert len(files) == 3 and total > 0
+    cache.max_bytes = total - 1
+    cache.prune(now=NOW + 3)
+
+    remaining = list((trading_dir / "timeframe_chart_cache").glob("*.json"))
+    assert sum(path.stat().st_size for path in remaining) <= cache.max_bytes
+    assert cache.load("BTC/JPY", "1m", now=NOW + 3) is None
+    assert cache.load("XRP/JPY", "1m", now=NOW + 3) is not None
 
 
 def test_sampler_reports_unavailable_without_inventing(tmp_path):

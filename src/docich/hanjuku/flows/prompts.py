@@ -84,6 +84,8 @@ YES_NO_UNREAD_BOUND = 12       # ~18 s: well inside the 120-obs input stall
 # lets a mid-transition frame resolve before the press.
 YES_NO_ACCEPT_SETTLE = 3
 YES_NO_FORCED_MAX = 4          # forced presses per unchanged prompt episode
+DUEL_DECLINE_GOLD = 500        # owner 2026-11-25: funded 果し合い is declined (いかんッ!)
+DUEL_DECLINE_GENERALS = 20     # owner 2026-11-25: an ample army also declines the duel
 # 実機の断り行は標準の いかんッ! とは限らない（倒転王国 monthlyevent.html の
 # うんデヘヘ！/けえんな！）。かな書きの揺れ（けーんな）も候補に含める。
 BIJIN_DECLINE_TOKENS = ('いかんッ', 'けえんな', 'けーんな')
@@ -550,8 +552,40 @@ def yes_no_step(screen: Screen, mem):
         # (2026-11-15): this is the castle-attack duel that recruits the
         # enemy general for free, so it must always be taken -- never
         # declined for a lower HP panel.
-        choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
-        variant = 'accept_duel'
+        #
+        # Owner correction (2026-11-25): however, when the treasury is ample
+        # (500G+), decline the 果し合い with いかんッ! instead of うむッ! so the
+        # dangerous one-on-one is avoided. A betrayal event has no such
+        # choice and is simply accepted as unavoidable.
+        gold = (screen.header or {}).get('gold')
+        if type(gold) is not int:
+            gold = mem.get('gold') if type(mem.get('gold')) is int else None
+        generals = None
+        counted = mem.get('country_general_count')
+        if isinstance(counted, dict) and type(counted.get('count')) is int:
+            generals = counted['count']
+        command_owned = mem.get('army_count_owned')
+        if generals is None and type(command_owned) is int:
+            generals = command_owned
+        if gold is not None and gold >= DUEL_DECLINE_GOLD:
+            choice, reason, variant = (
+                'いかんッ!', f'所持金が{DUEL_DECLINE_GOLD}G以上あるため果し合いを断り危険度を下げる',
+                'decline_duel_funded')
+            metric = {'gold': gold, 'minimum_gold': DUEL_DECLINE_GOLD}
+        elif generals is not None and generals >= DUEL_DECLINE_GENERALS:
+            choice, reason, variant = (
+                'いかんッ!', f'将軍が{generals}人（{DUEL_DECLINE_GENERALS}人以上）いるため果し合いを避ける',
+                'decline_duel_army')
+            metric = {'generals': generals, 'minimum_generals': DUEL_DECLINE_GENERALS}
+        else:
+            choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
+            variant = 'accept_duel'
+            # owner 2026-11-26 (#5694): 「なぜ断らなかったか」を後から説明できる
+            # よう、判定に使った実測値（読めた/読めないを含む）を残す。
+            metric = {'gold': gold, 'gold_read': type(gold) is int,
+                      'generals': generals, 'generals_read': type(generals) is int,
+                      'gold_floor': DUEL_DECLINE_GOLD,
+                      'generals_floor': DUEL_DECLINE_GENERALS}
     elif _is_general_trade_prompt(text):
         # Owner rule (2026-09-28): the general trade (花いちもんめ) almost
         # always offers an unfair deal (odoru7094: ろくでもないのしか手に

@@ -171,6 +171,10 @@ def test_missing_dispatch_receipt_does_not_suppress_other_camps(monkeypatch):
     p.camp_recall_step(parse(status('ゼウス', main=False, hp=6)), mem, FRAME)
     _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2, request_trace={'decision_id': 'new'})
     assert p.camp_recall_step(MAP, mem, FRAME) == []
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        assert p.camp_recall_step(MAP, mem, FRAME) == []
     assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
     assert not _flow(mem).get('recall_skip')
     assert _flow(mem)['retreat_rechecks']['ゼウス']['retry_after'] == mem['tick'] + 30
@@ -288,6 +292,10 @@ def test_same_failed_camp_cannot_fall_immediately_into_anonymous_recall(monkeypa
     mem = memory(); named_menu(mem)
     _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        assert p.camp_recall_step(MAP, mem, FRAME) == []
     assert p.camp_recall_step(MAP, mem, FRAME) is None
     assert not _flow(mem).get('recall') and not _flow(mem).get('recall_skip')
     mem['tick'] += 30
@@ -303,6 +311,10 @@ def test_two_roofs_keep_the_same_failed_camp_backoff_when_map_animates(monkeypat
         {'kind': 'own', 'target': (90, 90)}, {'kind': 'enemy', 'target': (180, 90)}])
     named_menu(mem); _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        assert p.camp_recall_step(MAP, mem, FRAME) == []
     rgb = bytearray(FRAME.rgb); rgb[0:3] = b'\x00\x00\x00'
     from docich.hanjuku_pixels import Frame
     changed = Frame(FRAME.width, FRAME.height, bytes(rgb))
@@ -437,6 +449,10 @@ def test_roof_view_backoff_survives_state_json_roundtrip(monkeypatch):
         {'kind': 'own', 'target': (90, 90)}, {'kind': 'enemy', 'target': (180, 90)}])
     named_menu(mem); _flow(mem)['recall'].update(stage='await_dispatch', steps=5, a_inputs=2)
     p.camp_recall_step(MAP, mem, FRAME)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        assert p.camp_recall_step(MAP, mem, FRAME) == []
     mem = json.loads(json.dumps(mem))
     rgb = bytearray(FRAME.rgb); rgb[0:3] = b'\x00\x00\x00'
     from docich.hanjuku_pixels import Frame

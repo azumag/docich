@@ -56,9 +56,14 @@ def test_control_melee_permission_needs_healthy_hp_current_army_and_combat(chang
 
 @pytest.mark.parametrize('ally_hp, allowed', [(12, False), (16, False), (17, True), (33, True), (38, True)])
 def test_halving_opens_when_the_enemy_ends_up_no_stronger_than_us(ally_hp, allowed):
-    """Owner 2026-11-04: 切り札は不利でなくても使う。半減後に敵HPが自HP以下なら開く。"""
+    """Owner 2026-11-04: 切り札は不利でなくても使う。半減後に敵HPが自HP以下なら開く。
+
+    マカデミアの実卵を観測した状態でこの境界だけを固定する。卵なし・敵卵ありの
+    押し込み (owner 2026-11-25) は tests/test_hanjuku_egg_race_cards.py が持つ。
+    """
     mem = castora()
     mem['battle'].update(ally_hp=ally_hp, ally_soldiers=0, enemy_soldiers=6)
+    mem['egg_uses'] = {'マカデミア': 2}
     gate = p._card_damage_gate(mem, mem['battle'], 'クースカン', listed_cards=['クースカン'])
     assert gate['allowed'] is allowed
     assert gate['role'] == ('halving_not_a_kill' if allowed else 'control_has_no_observed_followup')

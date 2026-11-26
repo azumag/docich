@@ -78,6 +78,8 @@ corners = [
   # ROM本体は著作権物のためGit追跡外。自己吸い出しROMはVMにのみ配置し、
   # ROM/core/実行環境が揃ったVMでだけ適格性検査を通過して抽選される。
   { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" },
+  # スピードラン。当面手動のみ（docs/features/hanjuku-speedrun-corner.md §7 Phase 1）。
+  { id = "hanjuku-speedrun", adapter = "game", game = "hanjuku-speedrun", manual_only = true },
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
   # beta.tsuitate.info の1局owner。次局開始可能なWorkerだけを自動抽選候補にする。
@@ -130,7 +132,21 @@ corners = [
   # 自動抽選は owner 承認前のため manual_only。音声は将来の読み上げ用 opt-in
   # で、既定は false。外部API取得 (fetch_on_start) は行わない。
   { id = "chart-659", adapter = "chart", game = "chart-659", enabled = true, manual_only = true, live_eligible = false, audio_enabled = false },
+  # geography-world (#5584): new_corner_runtime の共通 production adapter 初回発火対象。
+  # 実材料取得 (web_material) と RADIO:* direct 生成は program adapter の preflight が
+  # fail-closed で行う。新経路は DOCICH_NEW_CORNER_ENABLED=1（既定OFF）でのみ適格に
+  # なるため、flag OFF の間は既存 rotation への影響はゼロ。preview 検証後に正規
+  # リリース順序で flag ON にする（この行の enabled は catalog 上の登録であり、
+  # 発火可否は常に env flag が握る）。音声は未配線のため false。
+  { id = "geography-world", adapter = "newcorner", game = "geography-world-view", enabled = true, duration_minutes = 4, audio_enabled = false },
 ]
+
+# new_corner_runtime 共通 production adapter の生成チェーン (#5584)。
+# RADIO:* direct API のみ（openrouter/vercel/cloudflare/sarashina の -api provider）。
+# DOCICH_NEW_CORNER_ENABLED=1 で発火する際に必須。空なら preflight が fail-closed で
+# 失敗し、コーナーは開始しない。
+[new_corner]
+draft_agents = "openrouter-api:openai/gpt-4.1-nano,sarashina-api:sarashina3-nano,cloudflare-api:cf/meta/llama-3.1-8b-instruct-fp8-fast"
 
 [nethack_corner]
 # NetHackの固定時刻cornerは無効のまま、毎朝のローカルretrospectiveだけ有効化する。

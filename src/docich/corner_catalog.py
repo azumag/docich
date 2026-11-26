@@ -304,6 +304,29 @@ def load_catalog(g) -> tuple[Corner, ...]:
                     type(item.duration_minutes) is not int
                     or not 1 <= item.duration_minutes <= 14):
                 raise CornerCatalogError("chart duration_minutes must be an integer 1-14")
+        elif item.adapter == "newcorner":
+            # data-driven production adapter for every new_corner_runtime
+            # corner (#5584): the catalog id selects CORNER_SPECS and the game
+            # is the derived <id>-view. The production path is gated by
+            # DOCICH_NEW_CORNER_ENABLED (default OFF); while off the adapter
+            # is ineligible and rotation is unchanged. fetch_on_start is
+            # rejected — verified material collection lives in the program
+            # adapter's fail-closed preflight, not a fetch timer. Speech stays
+            # a boolean opt-in for a future narration step.
+            from .new_corner_runtime import CORNER_SPECS
+            from .new_corner_view import view_name_for
+            if item.id not in CORNER_SPECS or item.game != view_name_for(item.id):
+                raise CornerCatalogError(
+                    "newcorner requires a CORNER_SPECS id and game=<id>-view"
+                )
+            if item.fetch_on_start or type(item.audio_enabled) is not bool:
+                raise CornerCatalogError(
+                    "newcorner accepts no fetch_on_start; audio_enabled is a boolean opt-in"
+                )
+            if item.duration_minutes is not None and (
+                    type(item.duration_minutes) is not int
+                    or not 1 <= item.duration_minutes <= 14):
+                raise CornerCatalogError("newcorner duration_minutes must be an integer 1-14")
         elif item.duration_minutes is not None or item.audio_enabled or item.fetch_on_start:
             raise CornerCatalogError("duration_minutes, audio_enabled and fetch_on_start require weather adapter")
         if item.target_matches is not None and (

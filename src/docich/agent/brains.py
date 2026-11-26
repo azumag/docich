@@ -16,6 +16,7 @@ import time
 from copy import deepcopy
 
 from .. import procs
+from ..hanjuku_family import is_hanjuku, module
 from . import telemetry as telemetry_mod
 from ..actions import Action, ActionError, extract_json, parse_actions
 from ..adapters import AdapterError, Observation
@@ -103,15 +104,16 @@ class CommandBrain:
         # status cache could never be attributed to compaction vs. a run
         # identity reset from the parent's log. Forward only the tagged lines;
         # the rest of the bot's stderr stays captured as before.
-        if self.game.name == "hanjuku-hero":
-            from ..hanjuku.state_budget import DROP_LOG_TAG
+        if is_hanjuku(self.game):
+            # Same module name under both packages.
+            DROP_LOG_TAG = module(self.game, "hanjuku.state_budget").DROP_LOG_TAG
             for line in (result.stderr or "").splitlines():
                 if DROP_LOG_TAG in line:
                     print(line, file=sys.stderr, flush=True)
 
         try:
             actions = parse_actions(result.stdout)
-            if self.game.name == "hanjuku-hero" and self.game.raw.get("hanjuku", {}).get("script_bot") is True:
+            if is_hanjuku(self.game) and self.game.raw.get("hanjuku", {}).get("script_bot") is True:
                 payload = json.loads(extract_json(result.stdout))
                 interval = payload.get("observation_interval_ms") if isinstance(payload, dict) else None
                 if type(interval) is int and interval in (500, 1500):

@@ -40,8 +40,8 @@ def test_keeps_newest_completed_and_prunes_older(tmp_path):
     for log in LOGS:
         assert not _exists(tmp_path, names[1], log)
         assert _exists(tmp_path, names[3], log)
-    assert result.files_removed == 8
-    assert result.bytes_removed == 80
+    assert result.files_removed == 12
+    assert result.bytes_removed == 120
 
 
 def test_active_and_retiring_generations_are_never_touched(tmp_path):

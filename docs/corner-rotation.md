@@ -684,6 +684,47 @@ read-only diagnostics に投影される。
 - 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
   継続することまで。
 
+### 2026-11-25 正規経路への一本化（canonical user timer を唯一の rotation owner に）
+
+本番で rotation の実行主体が二重化していた。system scope の
+`docich-soren91-corner.timer`（2026-09-15 に root で手置き、enabled）が
+`corner-rotation.lock` と `retro-corner-tick.lock` を保持し、`docich-soren91-corner.service`
+（`soren91-corner tick`）が 2026-11-23 から rotation を所有していた。正規の user
+`docich-corner-rotation.timer` は enabled+active のまま、毎分の tick が
+`{"reason":"already-running"}` で終了していた。deploy hook
+`ensure_corner_rotation_timer.sh` は user scope だけを管理するため、この system scope の
+手置き unit は検知も停止もされない。
+
+- rotation owner は常に **user の `docich-corner-rotation.timer` ただ1つ**。
+  system scope への手置きは行わない。`docich-soren91-corner.*` は rotation 無効の
+  legacy 構成専用で、canonical timer と同時に enable しない。
+- 一本化は owner-only の固定 operation `check-rotation-owner` / `consolidate-rotation-owner`
+  が `ops/vm_actions/consolidate_corner_rotation_owner.sh` を実行する。任意の unit 名・
+  コマンドは受け付けない。
+  - `check`: 変更せず、canonical unit、legacy unit、rotation ledger、heartbeat、lock 所有者を
+    固定 boolean / enum / age だけで返す。
+  - `apply`: 前提（canonical timer enabled+active、legacy ExecStart がレビュー済み、
+    rotation が running/waiting/ready、clock hold なし、heartbeat が同一 request で 120 秒以内、
+    passwordless sudo 可）を確認してから、legacy timer を `disable --now` → service を
+    `stop` → service を `disable`。その後 canonical user service を起動し、heartbeat の
+    pid と age で引き継ぎを確認する。`systemctl mask` は /etc に置かれた unit を
+    shadow できず EEXIST で失敗するため使わない（2026-11-25 実測）。
+  - 実行中コーナーは `corner_rotation_heartbeat.json` の park 判定（fresh 180 秒）で
+    quarantine されず継続する。停止から canonical の tick まで最大60秒の空白が生じるが、
+    ゲーム・エンコーダ・音声・表示・state・lock・game-switch receipt は変更しない。
+  - 引き継ぎに失敗した場合は legacy timer/service の `enable` + 再開で旧 owner に戻す。
+    unit ファイルは変更・削除しない。
+  - 引き継ぎ後に state / game_switch / 共有 PID が変わった場合は、二重 owner を作らないため
+    legacy を戻さず `invariant_mismatch` として非0で報告する。
+- 再発検知: diagnostics の `corners.corner_rotation_timer.system_legacy`（system scope の
+  legacy service/timer の active/enabled）と `duplicate_owner`、および corner health の
+  `rotation_owner_duplicate` 行。deploy hook は user scope 専用のまま（system へ触れない）。
+- 受入: legacy service/timer が inactive・disabled、canonical timer が enabled+active、
+  heartbeat の request/corner 不変で pid が canonical、`clock_hold_until` なし、
+  `game_switch` と announce marker 不変、共有配信 PID 不変。
+- 以後の rotation worker のコード更新は `restart-service` operation を使う
+  （system scope の unit を直接 restart しない）。
+
 ### 2026-10-06 本番運用メモ: 「待機中なのに始まらない」とweather復帰後のSoren
 
 #### 1. 半熟の残留 `manual_pending` が全rotationを塞いだケース
@@ -793,6 +834,8 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 無効化・利用者のpause・recovery latchは維持する。待機中にpauseされた予約は保持して待機する。
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
+
+半熟英雄スピードラン（`hanjuku-speedrun`）は、同じ `hanjuku_corner` に `--game hanjuku-speedrun` を渡す固定operator `start-hanjuku-speedrun` で手動予約する。catalog は `manual_only = true` なので自動抽選には入らず、WebUI の開始予約も共通 coordinator の同じ queue を使う。最新セーブからの再開（`--resume-latest`）と第1話からの新規開始は元コーナー専用で、スピードランでは `invalid_value`（終了コード85）として拒否する。
 
 WebUI の半熟英雄には3つの起動方法がある。
 

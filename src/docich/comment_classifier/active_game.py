@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+from ..hanjuku_family import ORIGINAL, SPEEDRUN
+
 ENABLE_ENV = "COMMENT_ACTIVE_GAME_ENABLED"
 KIND_ENV = "COMMENT_ACTIVE_GAME_KIND"
 INTERACTION_ENV = "COMMENT_ACTIVE_GAME_INTERACTION"
@@ -22,7 +24,7 @@ INTERACTION_ENV = "COMMENT_ACTIVE_GAME_INTERACTION"
 # Reviewed allowlist. Public display names live with the game-owned adapter
 # (``docich.comment.sorengame_context.GAME_BLURBS``); only these keys may ever
 # reach the classifier. Anything else is treated as stale/unknown.
-GAME_KINDS = frozenset({"sorengame", "robots", "nethack", "hanjuku-hero"})
+GAME_KINDS = frozenset({"sorengame", "robots", "nethack", ORIGINAL, SPEEDRUN})
 INTERACTION_KINDS = frozenset({"board", "action", "menu", "unknown"})
 
 # Explicit non-game topics that must never be reinterpreted as gameplay,
