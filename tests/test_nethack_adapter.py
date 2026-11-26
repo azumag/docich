@@ -165,6 +165,10 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
                 ["/usr/games/nethack", "-u", "docich"],
             )
 
+    def test_game_session_enables_the_turn_counter(self):
+        adapter = self.adapter()
+        self.assertEqual(adapter._game_session_env(), {"NETHACKOPTIONS": "time"})
+
     def test_presentation_defaults_to_native_tty(self):
         adapter = self.adapter()
         self.assertEqual(adapter.presentation_mode, "tty")
