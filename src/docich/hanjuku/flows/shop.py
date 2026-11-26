@@ -125,9 +125,39 @@ def _quote_stall_decline(screen, mem, shop, want, reason):
     return [pad('b')]
 
 
+SHOP_EXIT_LIMIT = 4    # owner 2026-11-26: 買わずに開閉を繰り返す商人は閉じる
+SHOP_LOOP_ALERT_LIMIT = 2   # 買わずに2回開閉したらループとして issue を出す
+
+
 def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
     """Record a merchant-list exit that spends nothing (diagnostic, no behavior change)."""
     items = (shop or {}).get('items') or []
+    # owner 2026-11-26: 「商人のメニューを開いては閉じる」ループを止める。購入が
+    # 一度も成立しないまま同じ月で退出が上限に達したら、その商人は当月
+    # 閉じる（次の再入で何も買えないまま開閉を繰り返さない）。
+    if isinstance(shop, dict):
+        counts = mem.setdefault('shop_exit_counts', {})
+        key = shop.get('key')
+        exits = int(counts.get(key) or 0) + 1
+        counts[key] = exits
+        # owner 2026-11-26: ループが実際に起きたら issue を発行する
+        # （fault_issue.note_decision_faults がこの決定を拾う）。閉じるより
+        # 早い段階（2回）で知らせ、閉じるのは従来どおり4回。
+        if (exits >= SHOP_LOOP_ALERT_LIMIT and not shop.get('bought')
+                and not shop.get('loop_alerted')):
+            shop['loop_alerted'] = True
+            _record(mem, 'shop_reenter_loop', month=shop.get('key'),
+                    observed_metric={'exits': exits, 'limit': SHOP_LOOP_ALERT_LIMIT,
+                                     'reason': reason,
+                                     'plan_month': mem.get('month')},
+                    reason='購入なしの開閉が繰り返されたため、ループとして記録する')
+        if exits >= SHOP_EXIT_LIMIT and not shop.get('bought') and not shop.get('closed'):
+            shop['closed'] = True
+            _record(mem, 'shop_reenter_limit', month=shop.get('key'),
+                    observed_metric={'exits': exits, 'limit': SHOP_EXIT_LIMIT,
+                                     'reason': reason,
+                                     'plan_month': mem.get('month')},
+                    reason='購入なしの開閉が上限に達したため、当月この商人を閉じる')
     _record(mem, 'shop_list_exit', month=(shop or {}).get('key'),
             observed_metric={'reason': reason, 'planned': [list(row) for row in items[:4]],
                              'listed': dict(listed or {}),

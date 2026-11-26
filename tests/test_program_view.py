@@ -110,6 +110,20 @@ class TestLoadSnapshot(unittest.TestCase):
             snapshot, closes = load_snapshot(root / "trading")
             self.assertEqual((snapshot, closes), ({}, {}))
 
+    def test_snapshot_identity_is_preserved_for_dashboard_consumers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trading = root / "trading"
+            trading.mkdir()
+            snapshot_id = "paper:7:1800000000000000"
+            (trading / "status.json").write_text(json.dumps(_snapshot(
+                snapshot_id=snapshot_id,
+                performance_summary={"snapshot_id": snapshot_id, "as_of": NOW},
+            )), encoding="utf-8")
+            snapshot, _closes = load_snapshot(trading)
+            self.assertEqual(snapshot["snapshot_id"], snapshot_id)
+            self.assertEqual(snapshot["performance_summary"]["snapshot_id"], snapshot_id)
+
     def test_closes_use_stored_values_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

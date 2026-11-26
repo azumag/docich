@@ -5776,6 +5776,7 @@ CORNER_STATE_FILES = {
     "nethack_corner_manual": "nethack_corner_manual.json",
     "soren91_corner": "soren91_corner.json",
     "chart": "chart_corner_659_runtime.json",
+    "new_corner": "new_corner.json",
 }
 
 # Fixed enum of the switch result a corner recorded in its own state file.
@@ -5792,7 +5793,7 @@ ROTATION_CORNER_FILES = (
 # intentionally narrower and is not inferred from catalog input.
 ROTATION_PENDING_OWNER_FILES = (
     *ROTATION_CORNER_FILES, "weather_corner", "tsuitate_corner", "yoso_corner",
-    "doushi_corner", "mystery_corner", "lawsim_corner",
+    "doushi_corner", "mystery_corner", "lawsim_corner", "new_corner",
 )
 ROTATION_IMPROVE_GAMES = (
     "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
@@ -6421,6 +6422,11 @@ def _collect_rotation_evidence(state_dir):
 # the legacy name currently is that alias.
 CANONICAL_ROTATION_TIMER = "docich-corner-rotation.timer"
 LEGACY_ROTATION_TIMER = "docich-retro-corner.timer"
+# Hand-installed system-scope legacy rotation owner. The canonical user timer
+# and this unit take the same corner-rotation lock, so at most one can own the
+# rolling rotation. Diagnostics reports both without paths or unit bodies.
+SYSTEM_LEGACY_ROTATION_SERVICE = "docich-soren91-corner.service"
+SYSTEM_LEGACY_ROTATION_TIMER = "docich-soren91-corner.timer"
 
 
 def _rotation_timer_selection(unit_dir=None):
@@ -6999,6 +7005,8 @@ def _project_corner_state(data):
                            "operator-moved-during-doushi",
                            "operator-moved-during-mystery",
                            "operator-moved-during-lawsim",
+                           "operator-moved-during-new-corner",
+                           "released-failure-before-retry",
                            "case-completed", "case-error",
                            "duration",
                            "audio-complete",
@@ -8116,8 +8124,11 @@ def _project_corner_state(data):
             "hanjuku-chart-v1447-password-measured-order",
             "hanjuku-chart-v1448-auto-carry-safe-card",
             "hanjuku-chart-v1449-chikujou-hold-note",
+            "hanjuku-chart-v1450-attack-route-revalidation",
             "hanjuku-chart-v1450-password-dispatch",
             "hanjuku-chart-v1451-defense-wait-probe",
+            "hanjuku-chart-v1452-battle-card-row-evidence",
+            "hanjuku-chart-v1453-attack-route-revalidation",
             "hanjuku-chart-v1452-password-hold",
             "hanjuku-chart-v1453-okunote-unclassified",
             "hanjuku-chart-v1454-sortie-card-type",
@@ -8186,6 +8197,48 @@ def _project_corner_state(data):
             "hanjuku-chart-v1507-verified-month-blind-nav",
             "hanjuku-chart-v1508-score-pressure",
             "hanjuku-chart-v1509-card-at-hp1-audit",
+            "hanjuku-chart-v1510-status-panel-close",
+            "hanjuku-chart-v1510-live-march-status",
+            "hanjuku-chart-v1511-status-panel-close",
+            "hanjuku-chart-v1512-attack-route-revalidation",
+            "hanjuku-chart-v1513-duel-decline-funded",
+            "hanjuku-chart-v1514-ch4-site-orders-steady",
+            "hanjuku-chart-v1515-monster-menu-total-cap",
+            "hanjuku-chart-v1517-ch4-site-orders-steady",
+            "hanjuku-chart-v1518-card-purchase-priority",
+            "hanjuku-chart-v1519-card-ledger-all-kinds",
+            "hanjuku-chart-v1520-summon-card-flow-hold",
+            "hanjuku-chart-v1521-stall-60s-issue",
+            "hanjuku-chart-v1522-summon-battle-carried-card",
+            "hanjuku-chart-v1523-egg-choice-strongest",
+            "hanjuku-chart-v1524-defense-cards-unusable",
+            "hanjuku-chart-v1525-sortie-cards-eligible",
+            "hanjuku-chart-v1527-audit-card-drop",
+            "hanjuku-chart-v1528-card-list-unconfirmed-evidence",
+            "hanjuku-chart-v1530-boss-card-unused-issue",
+            "hanjuku-chart-v1531-boss-card-detect",
+            "hanjuku-chart-v1532-sortie-cancel-state",
+            "hanjuku-chart-v1534-shop-reenter-limit",
+            "hanjuku-chart-v1535-shop-reenter-limit",
+            "hanjuku-chart-v1537-egg-available-battle",
+            "hanjuku-chart-v1538-cards-left-plan-fallback",
+            "hanjuku-chart-v1539-shop-loop-issue",
+            "hanjuku-chart-v1540-egg-white-latch",
+            "hanjuku-chart-v1541-filer-failure-visible",
+            "hanjuku-chart-v1533-egg-unused-measured",
+            "hanjuku-chart-v1529-owned-target-settle",
+            "hanjuku-chart-v1542-unconfirmed-march-end-reopen",
+            "hanjuku-chart-v1544-egg-ledger-loss-option-b",
+            "hanjuku-chart-v1545-egg-menu-escape",
+            "hanjuku-chart-v1546-cards-left-sortie-fallback",
+            "hanjuku-chart-v1548-victory-menu-hold",
+            "hanjuku-chart-v1549-victory-menu-hold",
+            "hanjuku-chart-v1550-camp-dispatch-receipt",
+            "hanjuku-chart-v1547-victory-menu-advance",
+            "hanjuku-chart-v1547-ch11-boss-gateway",
+            "hanjuku-chart-v1543-summon-card-rearm-hold",
+            "hanjuku-chart-v1544-egg-menu-escape",
+            "hanjuku-chart-v1546-recall-dispatch-receipt",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",
@@ -9553,6 +9606,7 @@ def _collect_corner_files(state_dir, payload, now):
         "mystery_corner",
         "lawsim_corner",
         "soren91_corner",
+        "new_corner",
     ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
@@ -10408,14 +10462,18 @@ def _collect_programs(state_dir, soren, now):
     """
     state_dir = Path(state_dir)
     timer_unit, legacy_alias = _rotation_timer_selection()
+    canonical_timer_active = _unit_is_active(timer_unit)
+    system_legacy = _collect_system_legacy_rotation_owner(canonical_timer_active)
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "corner_rotation": {"present": False, "readable": False},
         "corner_rotation_timer": {
             "unit": timer_unit,
-            "active": _unit_is_active(timer_unit),
+            "active": canonical_timer_active,
             "enabled": _unit_is_enabled(timer_unit),
             "legacy_alias": legacy_alias,
+            "system_legacy": system_legacy["system_legacy"],
+            "duplicate_owner": system_legacy["duplicate_owner"],
         },
         "game_switch": {"present": False, "readable": False},
         "weather_corner": {"present": False, "readable": False},
@@ -11534,6 +11592,32 @@ CORNER_ROTATION_LEGACY_SERVICE = "docich-retro-corner.service"
 CORNER_ROTATION_LEGACY_TIMER = "docich-retro-corner.timer"
 CORNER_ROTATION_CANONICAL_SERVICE = "docich-corner-rotation.service"
 CORNER_ROTATION_CANONICAL_TIMER = "docich-corner-rotation.timer"
+
+
+def _collect_system_legacy_rotation_owner(canonical_timer_active):
+    """Sanitized projection of the hand-installed system-scope rotation owner.
+
+    The canonical user timer and the system-scope ``docich-soren91-corner``
+    unit compete for the same rotation lock, so a host that has both can show a
+    healthy user timer while the legacy unit owns every tick. Only booleans and
+    the duplicate-owner verdict leave this collector; unit paths, unit bodies
+    and command lines never do.
+    """
+    service_active = _unit_is_active(SYSTEM_LEGACY_ROTATION_SERVICE, scope="system")
+    timer_active = _unit_is_active(SYSTEM_LEGACY_ROTATION_TIMER, scope="system")
+    projected = {
+        "service_active": service_active,
+        "service_enabled": _unit_is_enabled(SYSTEM_LEGACY_ROTATION_SERVICE, scope="system"),
+        "timer_active": timer_active,
+        "timer_enabled": _unit_is_enabled(SYSTEM_LEGACY_ROTATION_TIMER, scope="system"),
+    }
+    duplicate = None
+    if canonical_timer_active is not None:
+        duplicate = bool(
+            canonical_timer_active is True
+            and (service_active is True or timer_active is True)
+        )
+    return {"system_legacy": projected, "duplicate_owner": duplicate}
 
 
 def _collect_corner_rotation_timer_alias():
@@ -14445,6 +14529,7 @@ PROGRAM_ADMISSION_OWNERS = {
     'yosou-oh': 'yoso_corner', 'doushi-card': 'doushi_corner',
     'mystery': 'mystery_corner',
     'communist-law-simulator': 'lawsim_corner',
+    'geography-world': 'new_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',

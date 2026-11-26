@@ -596,6 +596,19 @@ def test_a_plan_of_orders_that_can_never_run_does_not_block_off_chart_sorties():
     assert policy._plan_pending(mem) is True
 
 
+def test_a_pending_attack_on_an_owned_castle_does_not_keep_the_plan_live():
+    """docich#5623: ch5 wave attacks on an already-owned バスカビル stayed
+    'pending', kept _plan_pending true and starved the plan rebuild."""
+    mem = {'chapter': 1, '_records': [], 'captured': ['ジョンリギ'],
+           'chart_plan': {'request_id': 'p', 'orders': [
+               {'step': 'A:p:K1', 'general': 'ココット', 'source': 'ジョンリギ',
+                'target': 'アルマムーン', 'purpose': 'attack', 'cards': [], 'after': None}]},
+           'orders': {},
+           'garrison': {'ジョンリギ': ['ココット', 'ゼウス']},
+           'sorties': {}}
+    assert policy._plan_pending(mem) is False
+
+
 def test_a_recruit_makes_the_home_garrison_unknown_again():
     mem = {'chapter': 1, '_records': [], 'garrison': {'アルマムーン': [], 'ジョンリギ': ['ココット']},
            'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-9'}}

@@ -1907,6 +1907,13 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1446-password-measured-order",
                  "hanjuku-chart-v1446-boss-companion-wait-bound",
                  "hanjuku-chart-v1447-password-measured-order",
+                 "hanjuku-chart-v1448-auto-carry-safe-card",
+                 "hanjuku-chart-v1449-chikujou-hold-note",
+                 "hanjuku-chart-v1450-attack-route-revalidation",
+                 "hanjuku-chart-v1450-password-dispatch",
+                 "hanjuku-chart-v1451-defense-wait-probe",
+                 "hanjuku-chart-v1452-battle-card-row-evidence",
+                 "hanjuku-chart-v1453-attack-route-revalidation",
                  "hanjuku-chart-v1464-verified-month-blind-nav",
                  "hanjuku-chart-v1456-live-boss-sortie-audit",
                  "hanjuku-chart-v1402-sortie-audit-confidence",
@@ -3226,8 +3233,35 @@ class RotationTimerUnitProjectionTests(unittest.TestCase):
         self.assertIs(timer["active"], True)
         self.assertIs(timer["enabled"], True)
         self.assertIs(timer["legacy_alias"], True)
+        self.assertEqual(
+            set(timer["system_legacy"]),
+            {"service_active", "service_enabled", "timer_active", "timer_enabled"},
+        )
+        self.assertIs(timer["duplicate_owner"], True)
         self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
         self.assertNotIn(str(self.base), json.dumps(result))
+
+    def test_system_legacy_owner_projection_exposes_only_booleans(self):
+        module = self.module
+
+        def active(unit, scope="user"):
+            if scope == "system":
+                return unit == module.SYSTEM_LEGACY_ROTATION_SERVICE
+            return True
+
+        with mock.patch.object(module, "_unit_is_active", side_effect=active), \
+             mock.patch.object(module, "_unit_is_enabled", return_value=True):
+            result = module._collect_system_legacy_rotation_owner(True)
+        self.assertIs(result["duplicate_owner"], True)
+        self.assertEqual(result["system_legacy"], {
+            "service_active": True,
+            "service_enabled": True,
+            "timer_active": False,
+            "timer_enabled": True,
+        })
+        rendered = json.dumps(result)
+        self.assertNotIn("docich", rendered)
+        self.assertNotIn(str(self.base), rendered)
 
 
 def test_rotation_latch_projects_fixed_identity_without_request_id(tmp_path):

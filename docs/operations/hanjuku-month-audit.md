@@ -387,6 +387,9 @@ PYTHONPATH=src python3 -m docich.hanjuku.month_audit watch \
   plan_starved / departure_failure / monthly_scan / camp_recall / battle / unread /
   no_source / stuck_march / ledger_unknown の優先順で1つ選ぶ（全signalsは本文に残す）
   （同じ incident の重複コメントはしない。コメントは1時間に1回まで）。
+- `stuck_march` は `world.sorties` の status が `en_route` / `launched_unconfirmed` で、
+  `age_ticks > 3000` の場合だけ付与する。`arrived` / `overdue` / `cancelled` / `closed` は
+  行軍中として扱わない。
 - 既知の追跡issueへ寄せたい場合は、本文の `fingerprint` を確認して手動で
   コメントする。自動closeはしない。回復は次の完全な月の `confirmed > 0` で
   確認する。

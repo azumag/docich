@@ -149,10 +149,11 @@ def _migrate_card_evidence(mem):
             reason='旧戦闘の選択済みリストは実使用証拠でないためafter_cardを解禁しない')
 
 
-def _card_use_unclassified(mem, cur, reason):
+def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
     flow = cur.get('card_flow') or {}
     card = flow.get('card')
-    selected = (flow.get('selection_planned') is True
+    selected = (selected_interrupted
+                or flow.get('selection_planned') is True
                 or (flow.get('stage') == 'announce'
                     and card in cur.get('cards_selected', [])))
     if not selected:
@@ -199,7 +200,10 @@ def _card_use_unclassified(mem, cur, reason):
         cur['deviation_reason'] = reason
     _record(mem, 'battle_card_unclassified', **_battle_labels(cur), card=card,
             expected_metric='選択した切り札の実使用告知',
-            observed_metric={'confirmation': 'unclassified'}, reason=reason)
+            observed_metric={'confirmation': 'unclassified',
+                             **({'selected_interrupted': True,
+                                 'stage': flow.get('stage')} if selected_interrupted else {})},
+            reason=reason)
     if flow.get('egg_drop_only'):
         _egg_drop_trace(mem, cur, 'unclassified', card=card,
                         tactic_id=flow.get('tactic_id'), reason=reason)
@@ -2803,6 +2807,16 @@ def _defender_egg_window(mem, cur, *, menu_open=False):
             'short_burst': enemy <= critical_hp + 2 * margin}
 
 
+def _card_usable_here(cur):
+    """owner 2026-11-26: 自城（防御戦）では切り札を使えない。
+
+    切り札は攻めの道具で、自城の防衛戦では選べない。携行していても
+    「使える資源」として数えない（g1190: 自城の召喚獣戦で きりふだ を
+    開こうとして失敗し、おくのてへ移れなかった）。
+    """
+    return not (isinstance(cur, dict) and cur.get('side') == 'defense')
+
+
 DEFENDER_SUMMON_OPEN_LIMIT = 3
 # The egg-battle command box shows 3 rows; おくのて is a 4th row below the
 # greyed たまごをつかう (owner-confirmed layout, v362). Bounded downward
@@ -2858,7 +2872,12 @@ def _defender_summon_preempt(mem, cur):
         return None
     resources_free = (cur.get('okunote_only_observed')
                       or ((_own_egg_empty(mem, cur) or cur.get('summon_egg_unavailable'))
-                          and (cur.get('summon_egg_unavailable') or not cur.get('planned_cards'))))
+                          # owner 2026-11-26: 自城の防御戦では切り札を使えない。
+                          # 携行していても「使える資源」ではないので、卵が無い
+                          # 召喚獣戦はメニューを開いておくのてを選ぶ。
+                          and (cur.get('summon_egg_unavailable')
+                               or not (_card_usable_here(cur)
+                                       and cur.get('planned_cards')))))
     hp = cur.get('ally_hp')
     draws = int(cur.get('okunote_draws') or 0)
     if not resources_free:

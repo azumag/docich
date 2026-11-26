@@ -73,6 +73,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'sortie_launch_confirmed','sortie_launch_unverified','sortie_launch_failed',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+    'camp_recall_dispatch_stale','camp_recall_dispatch_resumed','camp_recall_dispatch_resent',
     'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
     'camp_escape_move_requested','camp_escape_move_dispatched','camp_escape_move_unconfirmed',
 })
@@ -202,6 +203,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+                              'camp_recall_dispatch_stale','camp_recall_dispatch_resumed','camp_recall_dispatch_resent',
                               'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
                               'camp_escape_move_requested','camp_escape_move_dispatched','camp_escape_move_unconfirmed',
                               'recall_arrival_status_started','recall_in_castle_observed',
@@ -411,38 +413,51 @@ def _valid_request_trace(trace, identity):
 def _journal_pad_inputs(runtime, trace, button):
     """Distinct delivered ``button`` presses matching this request trace.
 
-    Reads only a bounded tail of the existing sender journal; never replays.
-    None means the journal could not be read, which is *unknown*, not
-    *unsent* — callers must not treat it as permission to resend.
+    Reads only bounded tails of the existing sender journals; never replays.
+    ``hanjuku_inputs_sent.jsonl`` mirrors every delivered input (docich#5665):
+    the dense events journal can evict the matching row inside a write burst
+    before the recall's bounded check runs, so the sparse input-only mirror is
+    scanned alongside the events tail. ``later_inputs`` reports that the
+    sender journaled other inputs at/after this request — with no matching row
+    that is the sender-side proof this press never left (unsent). None means
+    no journal could be read at all, which is *unknown*, not *unsent* —
+    callers must not treat it as permission to resend.
     """
-    try:
-        path = runtime / 'hanjuku_events.jsonl'
-        if path.is_symlink() or not path.is_file():
-            return None
-        with path.open('rb') as stream:
-            stream.seek(0, 2)
-            offset = max(0, stream.tell() - 65536)
-            stream.seek(offset)
-            tail = stream.read(65536)
-            if offset:
-                tail = tail.partition(b'\n')[2]
-        seen = set()
+    seen, later, readable = set(), False, False
+    for name in ('hanjuku_inputs_sent', 'hanjuku_events'):
+        try:
+            path = runtime / f'{name}.jsonl'
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open('rb') as stream:
+                stream.seek(0, 2)
+                offset = max(0, stream.tell() - 65536)
+                stream.seek(offset)
+                tail = stream.read(65536)
+                if offset:
+                    tail = tail.partition(b'\n')[2]
+        except OSError:
+            continue
+        readable = True
         for raw in tail.splitlines():
             try:
                 row = json.loads(raw)
             except (ValueError, UnicodeError):
                 continue
-            if (isinstance(row, dict) and row.get('event') == 'input_sent'
-                    and row.get('decision_id') == trace['decision_id']
+            if (not isinstance(row, dict) or row.get('event') != 'input_sent'
+                    or type(row.get('at')) not in (int, float)
+                    or not (trace['planned_at'] <= row['at'] < 10**12)):
+                continue
+            if (row.get('decision_id') == trace['decision_id']
                     and row.get('decision_frame_sha256') == trace['frame_sha256']
-                    and type(row.get('at')) in (int, float)
-                    and trace['planned_at'] <= row['at'] < 10**12
                     and row.get('type') == 'pad' and row.get('buttons') == [button]
                     and row.get('hold_ms') == 100):
                 seen.add(row['at'])
-    except OSError:
+            else:
+                later = True
+    if not readable:
         return None
-    return min(2, len(seen))
+    return {'count': min(2, len(seen)), 'later_inputs': later}
 
 
 def recall_input_receipts(runtime, state, meta):
@@ -453,13 +468,14 @@ def recall_input_receipts(runtime, state, meta):
     """
     recall = ((state.get('policy') or {}).get('flow') or {}).get('recall') or {}
     trace = recall.get('request_trace') or {}
-    if (recall.get('stage') != 'await_dispatch'
+    if (recall.get('stage') not in ('await_dispatch', 'await_dispatch_stale')
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
         return None
-    count = _journal_pad_inputs(runtime, trace, 'a')
-    if count is None:
+    result = _journal_pad_inputs(runtime, trace, 'a')
+    if result is None:
         return None
-    return {'request_trace': trace, 'a_inputs': count}
+    return {'request_trace': trace, 'a_inputs': result['count'],
+            'later_inputs': result['later_inputs']}
 
 
 def card_scroll_receipt(runtime, state, meta):
@@ -469,10 +485,11 @@ def card_scroll_receipt(runtime, state, meta):
     if (boundary.get('await_input') is not True
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
         return None
-    count = _journal_pad_inputs(runtime, trace, 'up')
-    if count is None:
+    result = _journal_pad_inputs(runtime, trace, 'up')
+    if result is None:
         return None
-    return {'request_trace': trace, 'up_inputs': count}
+    return {'request_trace': trace, 'up_inputs': result['count'],
+            'later_inputs': result['later_inputs']}
 
 
 def departure_input_receipt(runtime, state, meta):
@@ -486,10 +503,11 @@ def departure_input_receipt(runtime, state, meta):
     if (request.get('status') not in ('requested', 'sent')
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
         return None
-    count = _journal_pad_inputs(runtime, trace, 'a')
-    if count is None:
+    result = _journal_pad_inputs(runtime, trace, 'a')
+    if result is None:
         return None
-    return {'request_trace': trace, 'a_inputs': count}
+    return {'request_trace': trace, 'a_inputs': result['count'],
+            'later_inputs': result['later_inputs']}
 
 
 # The agent and the corner monitor both write screenshots/latest.png. A pad A

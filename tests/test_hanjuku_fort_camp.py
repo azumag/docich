@@ -257,6 +257,10 @@ def test_the_next_general_follows_soon_after_a_fort_sortie():
     mem = memory(recall=fort_recall(stage='await_dispatch', fort=True, general='ヴィーナス', steps=6,
                                     camp_kind='dome'))
     assert p.camp_recall_step(MAP, mem, object()) == []
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        assert p.camp_recall_step(MAP, mem, object()) == []
     assert 'recall' not in _flow(mem)
     assert _flow(mem)['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
     assert decisions(mem, 'camp_recall_unconfirmed')[-1]['observed_metric']['general'] == 'ヴィーナス'

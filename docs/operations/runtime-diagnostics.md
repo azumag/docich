@@ -508,6 +508,11 @@ cooldown付き guard と、ownerが管理する systemd timer の導入・実機
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  さらに system scope の手置き legacy owner（`docich-soren91-corner.service` /
+  `docich-soren91-corner.timer`）の active/enabled を `system_legacy` として投影し、
+  canonical timer と legacy が同時に active な場合だけ `duplicate_owner` を true にする。
+  unit path・unit 本文・command line は出さない。corner health は同じ条件を
+  `rotation_owner_duplicate` 行として報告する。
   alias pair投影も支配timer選択と同じ`PROD_ROOT.parent`のuser unit rootを使う。
   gatewayのscrubbed `HOME=/tmp` をunit欠損の判定元にしない。
   時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに
@@ -1159,6 +1164,13 @@ queue lane は lock dir スキャンで自動検出されるため登録不要�
 診断key・既存radio laneを登録する。確認済みfactがある時だけ最大1件を処理するゲーム所属の
 短命processなので `start_all.sh` の常駐worker表へは追加しない。待機中にPIDが無いことは正常。
 healthは同じruntime/世代の `scene_narration` の鮮度と `generate_*` / `deliver_*` の進行で判断する。
+半熟の15分定期実況は `HANJUKU_PERIODIC_ONESHOT` に request/state/result/lock/log と
+既存radio laneを登録する。cornerが起動するゲーム所属の短命workerであり、待機中に
+PIDが無いことは正常。同じruntime identityの `hanjuku_periodic.json` の
+`next_at` / `pending_seq` / `last_result_seq` / `recent_texts` 件数と、
+`hanjuku_periodic_result.json` のstatusを読む。本文・prompt・provider出力は出さない。
+詳細は [hanjuku-periodic-commentary.md](hanjuku-periodic-commentary.md)。
+
 初回のlauncher receiptだけでworker journalが未完成の間は、workerのstatusは `unavailable` になる。
 
 CI は以下を検査する（`ops/vm_actions/tests/test_runtime_registry.py`）：

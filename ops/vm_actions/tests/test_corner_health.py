@@ -373,6 +373,25 @@ class AssessTests(unittest.TestCase):
         ))
         self.assertNotIn("timer_inactive", [row["code"] for row in disabled["rotation"]])
 
+    def test_duplicate_rotation_owner_is_reported(self):
+        assessment = health.assess(base_document(timer={
+            "active": True,
+            "enabled": True,
+            "duplicate_owner": True,
+            "system_legacy": {
+                "service_active": True,
+                "service_enabled": True,
+                "timer_active": False,
+                "timer_enabled": True,
+            },
+        }))
+        rows = {row["code"]: row for row in assessment["rotation"]}
+        self.assertIn("rotation_owner_duplicate", rows)
+        self.assertIs(rows["rotation_owner_duplicate"]["legacy_service_active"], True)
+        self.assertIs(rows["rotation_owner_duplicate"]["legacy_timer_active"], False)
+        self.assertIs(rows["rotation_owner_duplicate"]["canonical_timer_active"], True)
+        self.assertNotIn("docich", json.dumps(assessment))
+
     def test_stalled_tick_is_reported_for_a_free_slot(self):
         assessment = health.assess(base_document(rotation={
             "status": "ready",

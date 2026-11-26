@@ -42,6 +42,28 @@ def _decimal_text(value: Decimal | str | int | float) -> str:
     return str(as_decimal(value, "status decimal"))
 
 
+def _snapshot_identity(snapshot_seq: object, snapshot_generated_at: object) -> str | None:
+    """Return the stable identity shared by every consumer of one PAPER snapshot."""
+    if type(snapshot_seq) is not int or snapshot_seq < 0:
+        return None
+    if not isinstance(snapshot_generated_at, (int, float)) or isinstance(snapshot_generated_at, bool):
+        return None
+    generated = float(snapshot_generated_at)
+    scaled = generated * 1_000_000
+    if not math.isfinite(generated) or generated < 0 or not math.isfinite(scaled):
+        return None
+    return f"paper:{snapshot_seq}:{int(round(scaled))}"
+
+
+def _valid_snapshot_id(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 96:
+        return None
+    parts = value.split(":")
+    if len(parts) != 3 or parts[0] != "paper" or not all(part.isdecimal() for part in parts[1:]):
+        return None
+    return value
+
+
 _SIGNAL_CONTEXT_KEYS = (
     "kind", "experiment_id", "rule_id", "combine",
     "average_price", "last_price", "pnl_bps", "hold_minutes",
@@ -89,6 +111,9 @@ def performance_summary_payload(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         return {}
     result: dict[str, object] = {}
+    snapshot_id = _valid_snapshot_id(value.get("snapshot_id"))
+    if snapshot_id is not None:
+        result["snapshot_id"] = snapshot_id
     raw_as_of = value.get("as_of")
     if isinstance(raw_as_of, (int, float)) and not isinstance(raw_as_of, bool):
         as_of = float(raw_as_of)
@@ -231,6 +256,18 @@ def build_public_status(
         for symbol, amount in sorted(open_positions.items())
         if as_decimal(amount, f"position[{symbol}]") != 0
     }
+    snapshot_seq_value = snapshot_seq if type(snapshot_seq) is int and snapshot_seq >= 0 else None
+    snapshot_generated_value = None
+    if isinstance(snapshot_generated_at, (int, float)) and not isinstance(snapshot_generated_at, bool):
+        candidate = float(snapshot_generated_at)
+        if math.isfinite(candidate) and candidate >= 0:
+            snapshot_generated_value = candidate
+    snapshot_id = _snapshot_identity(snapshot_seq_value, snapshot_generated_value)
+    performance_values = dict(performance_summary) if isinstance(performance_summary, Mapping) else {}
+    if snapshot_id is None:
+        performance_values.pop("snapshot_id", None)
+    else:
+        performance_values["snapshot_id"] = snapshot_id
     return {
         "schema_version": 1,
         "mode": "paper",
@@ -255,10 +292,9 @@ def build_public_status(
             if worker_summary is not None and key in worker_summary
         },
         "heartbeat_at": None if heartbeat_at is None else float(heartbeat_at),
-        "snapshot_seq": None if snapshot_seq is None else int(snapshot_seq),
-        "snapshot_generated_at": (
-            None if snapshot_generated_at is None else float(snapshot_generated_at)
-        ),
+        "snapshot_seq": snapshot_seq_value,
+        "snapshot_generated_at": snapshot_generated_value,
+        "snapshot_id": snapshot_id,
         "market_freshness": {
             str(symbol): dict(entry)
             for symbol, entry in sorted((market_freshness or {}).items())
@@ -266,7 +302,7 @@ def build_public_status(
         },
         "freshness_summary": freshness_summary_payload(market_freshness),
         "coverage": dict(coverage or {}),
-        "performance_summary": performance_summary_payload(performance_summary),
+        "performance_summary": performance_summary_payload(performance_values),
     }
 
 

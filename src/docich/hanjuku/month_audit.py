@@ -310,6 +310,15 @@ def _names(value, limit=12):
     return [name for name in names if name]
 
 
+def _bounded_card_flow(value):
+    if not isinstance(value, dict):
+        return None
+    planned = value.get('selection_planned')
+    return {'card': _bounded_text(value.get('card'), 48),
+            'stage': _bounded_text(value.get('stage'), 16),
+            'selection_planned': planned if type(planned) is bool else None}
+
+
 def _text_map(value, limit=12):
     if not isinstance(value, dict):
         return None
@@ -1270,7 +1279,20 @@ def _remaining_cards_are_unconfirmed(remaining, *evidence_groups):
 def _battle_resources(record):
     metric = record.get('observed_metric')
     metric = metric if isinstance(metric, dict) else {}
+    # docich#5542/#5551: a ledger-sourced count is the last observed value,
+    # not a battle-time remaining egg. Counting it produced repeated false
+    # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
+    ledger_only = False
+    if metric.get('egg_uses_source') == 'ledger':
+        # owner 2026-11-26 (option B): 台帳の正数は実残数ではないが、この戦闘で
+        # 卵戦に入っていないなら「卵を使わなかった」ことの証拠にはなる。
+        # 実測（egg_available_unused）がある場合を除き、台帳のみの場合は
+        # egg_ledger_only を立てて判別できるようにする。
+        measured = metric.get('egg_available_unused') is True
+        ledger_only = (not measured and (egg or 0) > 0
+                       and metric.get('egg_battle') is not True)
+        egg = 1 if (measured or ledger_only) else 0
     selected = [card for card in (metric.get('cards_selected') or [])
                 if isinstance(card, str)][:12]
     used = [card for card in (metric.get('cards_used') or [])
@@ -1281,6 +1303,12 @@ def _battle_resources(record):
     remaining = _remaining_cards(selected, used)
     if pending and pending not in remaining and pending not in used:
         remaining.append(pending)
+    # owner 2026-11-26: a battle that never opened the card list carries no
+    # selection history; the flow now records the measured leftover names so
+    # a real "lost with carried cards" still counts.
+    for card in (metric.get('cards_left_unused') or ()):
+        if isinstance(card, str) and card not in remaining and card not in used:
+            remaining.append(card)
     # owner 決定 2026-11-23 (#5117): the live list proved this card missing
     # (battle_card_missing), so it is not carried and not a remaining resource.
     missing = {card for card in (metric.get('cards_missing') or ())
@@ -1303,6 +1331,7 @@ def _battle_resources(record):
     return {
         'resources': resources,
         'egg_uses': egg,
+        'egg_ledger_only': bool(ledger_only),
         'cards_selected': selected,
         'cards_used': used,
         'cards_remaining': remaining[:12],
@@ -1395,6 +1424,7 @@ def _battle_resource_event(record):
         'decision': decision,
         'resources': resources['resources'],
         'egg_uses': resources['egg_uses'],
+        'egg_ledger_only': resources.get('egg_ledger_only') is True,
         'cards_selected': resources['cards_selected'],
         'cards_used': resources['cards_used'],
         'cards_remaining': resources['cards_remaining'],
@@ -1410,6 +1440,8 @@ def _battle_resource_event(record):
         'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
             resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
             resources['cards_unclassified'], resources['cards_attempted']),
+        'cards_unclassified': resources['cards_unclassified'],
+        'cards_attempted': resources['cards_attempted'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -2522,6 +2554,17 @@ def _sortie_carried_cards(mem, step, record, records=None):
     # Preserve None (unobserved) separately from [] (measured empty).
     return carried if measured or carried else None
 
+def _dropped_cards_for_step(records, step):
+    """Cards the selection screen proved absent and the sortie dropped."""
+    dropped = []
+    for row in records or ():
+        if (not isinstance(row, dict) or row.get('decision') != 'card_dropped'
+                or row.get('chart_step') != step):
+            continue
+        dropped.extend(_card_names(row.get('dropped')))
+    return dropped
+
+
 def _sortie_cards_event(record, mem, records=None):
     if not isinstance(record, dict) or record.get('decision') not in LAUNCH_DECISIONS:
         return None
@@ -2547,11 +2590,32 @@ def _sortie_cards_event(record, mem, records=None):
     if not boss_order:
         stock = {name: count for name, count in stock.items()
                  if name not in reference.BOSS_ONLY_CARDS}
+    # owner 2026-11-24 (v1448) / 2026-11-26: when the plan names no card, the
+    # kit planner only carries a card whose 卵落 is exactly 0. A stock holding
+    # nothing eligible therefore cannot be a missed carry; flagging it was a
+    # false 'sortie_without_cards' (g1190 ch2: イッテツーン/フットバース
+    # only, both 卵落 > 0, empty plan). A plan that names cards keeps them.
+    if not _card_names(order.get('cards')):
+        stock = {name: count for name, count in stock.items()
+                 if (reference.CARDS.get(name) or {}).get('egg_drop') == 0}
     if not stock:
         return None
     carried = _sortie_carried_cards(mem, step, record, records)
     if carried:
         return None
+    # owner 2026-11-26 (#5510): a card the selection screen proved absent is
+    # dropped by design (bounded readings -> card_dropped) and the sortie
+    # leaves without it. That is not a missed opportunity, so an empty kit
+    # fully explained by those drops is not filed.
+    planned = _card_names(order.get('cards'))
+    dropped = _dropped_cards_for_step(records, step) if planned else []
+    if planned and dropped:
+        remaining = list(planned)
+        for name in dropped:
+            if name in remaining:
+                remaining.remove(name)
+        if not remaining:
+            return None
     carried_observed = carried is not None
     kind = 'sortie_without_cards' if carried_observed else 'sortie_kit_unconfirmed'
     return {
@@ -3231,8 +3295,15 @@ def _signals(context, counts, confirmed, departures, battle_count):
     if not staffed or max(staffed) <= 1:
         out.append('no_source')
     sorties = world.get('sorties') if isinstance(world.get('sorties'), dict) else {}
-    if any(isinstance(row, dict) and (row.get('age_ticks') or 0) > 3000
-           for row in sorties.values()):
+    # Match the world layer's live-march contract: an old arrival/overdue
+    # receipt is historical evidence, not a unit that is still on the road.
+    if any(
+        isinstance(row, dict)
+        and row.get('status') in ('en_route', 'launched_unconfirmed')
+        and type(row.get('age_ticks')) is int
+        and row['age_ticks'] > 3000
+        for row in sorties.values()
+    ):
         out.append('stuck_march')
     if confirmed is None:
         out.append('ledger_unknown')
@@ -3484,6 +3555,13 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 96),
             'cards_left': _names(metric.get('cards_left'), limit=8),
             'scrolls': _bounded_int(metric.get('scrolls'), 0, 10),
+            'rearms': _bounded_int(metric.get('rearms'), 0, 10),
+            'summon_card_scroll_out': (metric.get('summon_card_scroll_out')
+                                       if type(metric.get('summon_card_scroll_out')) is bool
+                                       else None),
+            'summon_card_exhausted_tick': _bounded_int(
+                metric.get('summon_card_exhausted_tick'), 0, 10 ** 9),
+            'card_flow': _bounded_card_flow(metric.get('card_flow')),
             'cursor': _bounded_int(metric.get('cursor'), 0, 224),
             'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
             'summon_egg_unavailable': (metric.get('summon_egg_unavailable')
@@ -3723,6 +3801,29 @@ def spawn_issue_filer(runtime, record):
                              stderr=subprocess.STDOUT, start_new_session=True,
                              close_fds=True)
     except OSError:
+        _note_filer_problem(runtime, record, 'spawn_failed')
+        return False
+    return True
+
+
+def _note_filer_problem(runtime, record, reason):
+    """owner 2026-11-26: issue が作られない原因を判断できるよう、失敗を残す。
+
+    The filer is a detached child, so a failure there used to vanish (its log
+    lives in the runtime directory and nobody reads it). One bounded decision
+    per failure keeps it visible in the decisions log.
+    """
+    try:
+        from ..hanjuku_run import append_log
+        append_log(Path(runtime), 'hanjuku_decisions', {
+            'decision': 'issue_filer_failed',
+            'deviation_reason': reason,
+            'chart_step': None,
+            'observed_metric': {'incident_id': record.get('incident_id'),
+                                'kind': record.get('kind')},
+            'reason': 'issue 発行の子プロセスを起動できなかった',
+        })
+    except Exception:
         return False
     return True
 
@@ -4059,6 +4160,15 @@ def _card_miss_bool(value):
     return 'unknown'
 
 
+def _card_miss_flow(value):
+    if not isinstance(value, dict):
+        return 'なし'
+    card = _md(value.get('card')) or '不明'
+    stage = _md(value.get('stage')) or '不明'
+    return (f"card={card} / stage={stage}"
+            f" / selection_planned={_card_miss_bool(value.get('selection_planned'))}")
+
+
 def _timeline(record):
     rows = (record.get('decisions') or {}).get('before') or []
     noisy = {'situation_held', 'unknown_hold_advance', 'battle_draw_hold'}
@@ -4122,6 +4232,10 @@ def _render_card_miss(record):
         f"- 卵状態: empty_egg={_card_miss_bool(battle.get('empty_egg'))}"
         f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
         f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
+        f"- card_flow: {_card_miss_flow(battle.get('card_flow'))}",
+        f"- 切り札行揭示: rearms={battle.get('rearms') if type(battle.get('rearms')) is int else '不明'}"
+        f" / scroll_out={_card_miss_bool(battle.get('summon_card_scroll_out'))}"
+        f" / exhausted_tick={battle.get('summon_card_exhausted_tick') if type(battle.get('summon_card_exhausted_tick')) is int else '不明'}",
         f"- 表示文言: {_md(battle.get('screen_text')) or '未記録'}",
         f"- 携行札候補: {', '.join(battle.get('cards_left') or []) or '未記録'}",
         f"- 理由: {battle.get('reason') or ''}",
@@ -4298,6 +4412,8 @@ def render(record):
               if battle.get('cards_unconfirmed_egg_drop') else []),
             *([f"- 使用未分類（告知未校正）: {battle.get('cards_unclassified')}"]
               if battle.get('cards_unclassified') else []),
+            *([f"- 消費未確認の使用試行: {battle.get('cards_attempted')}"]
+              if battle.get('cards_attempted') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]

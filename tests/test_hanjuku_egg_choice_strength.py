@@ -1,0 +1,56 @@
+"""owner 2026-11-26: 選べるエッグの三択は素の5能力の合計が最大の召喚獣を選ぶ。"""
+from docich import hanjuku_reference as reference
+
+
+def test_the_total_is_the_sum_of_the_five_stats():
+    hp, atk, df, hit, spd = reference.EGG_MONSTER_STATS['コロボックル']
+    assert reference.egg_monster_total('コロボックル') == hp + atk + df + hit + spd
+    assert reference.egg_monster_total('未知のモンスター') is None
+
+
+def test_the_strongest_candidate_wins_regardless_of_row_order():
+    names = ['エッグスライム', 'おめでとり', 'コロボックル']
+    assert reference.strongest_egg_candidate(names) == 'おめでとり'
+    assert reference.strongest_egg_candidate(list(reversed(names))) == 'おめでとり'
+
+
+def test_unknown_names_never_beat_a_known_candidate():
+    assert reference.strongest_egg_candidate(['未知A', 'コロボックル', '未知B']) == 'コロボックル'
+
+
+def test_all_unknown_candidates_keep_the_old_behaviour():
+    assert reference.strongest_egg_candidate(['未知A', '未知B']) is None
+    assert reference.strongest_egg_candidate([]) is None
+
+
+def test_the_evidence_table_covers_the_whole_published_roster():
+    # 出典の表は 124 体 (2026-11-26 取得)。欠落を検出できるよう件数も固定する。
+    assert len(reference.EGG_MONSTER_STATS) == 124
+    assert reference.EGG_MONSTER_STATS['エッグマン'] == (1, 1, 1, 1, 4)
+
+def test_the_picker_chooses_the_strongest_visible_monster(monkeypatch):
+    from types import SimpleNamespace
+    from docich.hanjuku.flows import battle_menus as menus
+    from docich.hanjuku.os_layer import screen as screen_mod
+
+    events = []
+    monkeypatch.setattr(screen_mod, 'egg_choice_names',
+                        lambda screen: ['エッグスライム', 'おめでとり', 'コロボックル'])
+    monkeypatch.setattr(menus, '_screen_egg_empty', lambda *a, **kw: False)
+    monkeypatch.setattr(menus, '_summon_scene', lambda mem: None)
+    monkeypatch.setattr(menus, '_battle_menu_to', lambda screen, name: 'here')
+    monkeypatch.setattr(menus, '_menu_move_batch', lambda screen, name, move: move)
+    monkeypatch.setattr(menus, '_record', lambda mem, event, **kw: events.append((event, kw)))
+    # この卵は通常エッグ（スロットではない）として扱う
+    monkeypatch.setattr(menus.egg_memory, 'egg_type', lambda mem, actor: 'カラフルエッグ')
+
+    screen = SimpleNamespace(kind='egg_choice_menu', menu_cursor=176, menu_rows=[],
+                             egg_rows=[], text='')
+    mem = {'battle': {'ally': 'ヘルメス'}}
+    actions = menus.egg_choice_step(screen, mem)
+
+    assert actions == [menus.pad('a')]
+    picks = [kw['observed_metric'].get('choice') for name, kw in events
+             if name == 'egg_choice_select']
+    assert picks == ['おめでとり']
+

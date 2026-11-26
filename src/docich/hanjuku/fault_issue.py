@@ -242,4 +242,33 @@ def note_decision_faults(runtime, records, *, identity=None, chapter=None,
             runtime, signature=signature, detail=detail,
             kind=KIND_YJUMP_STALL, identity=identity, chapter=chapter,
             month=month, bot_version=bot_version, records=[record], now=now))
+    # owner 2026-11-26: 自城の防御戦で敵の召喚獣が出て、卵も無いのに おくのて を
+    # 一度も使わなかった戦闘は issue にする（同じ事象の繰り返しで1件）。
+    for record in records or ():
+        if not isinstance(record, dict) or record.get('decision') != 'battle_result':
+            continue
+        metric = record.get('observed_metric')
+        if not (isinstance(metric, dict) and metric.get('defense_summon_no_okunote')):
+            continue
+        detail = ('自城の防御戦で敵召喚獣あり・卵なし・おくのて未使用: '
+                  f"{record.get('ally') or '不明'} vs {record.get('enemy') or '不明'}")
+        results.append(note_fault(
+            runtime, signature='defense_summon_no_okunote', detail=detail,
+            kind=KIND_YJUMP_STALL, identity=identity, chapter=chapter,
+            month=month, bot_version=bot_version, records=[record], now=now))
+        break
+    # owner 2026-11-26: 商人メニューの開閉ループが実際に起きたら issue にする。
+    for record in records or ():
+        if not isinstance(record, dict) or record.get('decision') != 'shop_reenter_limit':
+            continue
+        metric = record.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        detail = (f"商人の開閉ループ: month={record.get('month') or '不明'} "
+                  f"exits={metric.get('exits')} limit={metric.get('limit')} "
+                  f"reason={metric.get('reason') or '不明'}")
+        results.append(note_fault(
+            runtime, signature='shop_menu_loop', detail=detail,
+            kind=KIND_YJUMP_STALL, identity=identity, chapter=chapter,
+            month=month, bot_version=bot_version, records=[record], now=now))
+        break
     return results

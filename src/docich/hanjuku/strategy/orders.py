@@ -1024,8 +1024,13 @@ def _plan_pending(mem) -> bool:
         if after and after[0] == 'captured' and after[1] not in owned:
             return after[1] in heading          # waits on a capture somebody is making
         # A source read empty cannot start the order (g438: dead ココット's J1).
+        # An attack whose target is already ours can never launch either;
+        # counting it live kept a stale plan of バスカビル waves pending and
+        # starved the rebuild for a whole month (docich#5623).
         return (_ready(o, mem) and _source(o, mem) in owned
                 and _source_list_open(o, mem)
+                and (o.get('purpose') == 'move' or chart.is_boss_castle(o.get('target'))
+                     or o.get('roster_probe') is True or o.get('target') not in owned)
                 and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem, allow_probe=True))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
@@ -1782,8 +1787,16 @@ def _expire_spent_sorties(mem):
             # waiting for _arrival_limit. No probe means the launch was
             # already confirmed: a retreat discards only.
             probe = (_flow(mem).get('launch_probe') or {}).get(step) or {}
-            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind'))
-            if unconfirmed and (_plan_region(mem).get('orders') or {}).get(step) == 'launched':
+            order_state = (_plan_region(mem).get('orders') or {}).get(step)
+            # docich#5626: a 'launched_unconfirmed' order is itself an
+            # unconfirmed launch — a measured camp/castle end must reopen it
+            # the same way instead of stranding the step with no record
+            # (live g1342 ch8 14-5: ポワソン->いちじょうだに stayed
+            # launched_unconfirmed; the retry and re-arm paths only cover
+            # chapter-4 sites and boss castles).
+            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind')
+                               or order_state == 'launched_unconfirmed')
+            if unconfirmed and order_state in ('launched', 'launched_unconfirmed'):
                 # Mirrors flows.map.LAUNCH_MISS_LIMIT; strategy must not import
                 # flows (layers test), so the budget lives here.
                 _MISS_LIMIT = 2
@@ -1796,7 +1809,11 @@ def _expire_spent_sorties(mem):
                     (_plan_region(mem).get(key) or {}).pop(step, None)
                 _plan_region(mem).setdefault('order_context', {}).pop(step, None)
                 _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
-                (_world(mem).get('launched_orders') or {}).pop(step, None)
+                if step in {o.get('step') for o in _orders(mem)}:
+                    # An in-plan step re-arms through the plan itself; a
+                    # dead-plan step re-enters only via next_order's retry
+                    # list, which reads this copy (docich#5626).
+                    (_world(mem).get('launched_orders') or {}).pop(step, None)
                 for target, entry in list((_world(mem).get('launched') or {}).items()):
                     if isinstance(entry, dict) and entry.get('step') == step:
                         _world(mem)['launched'].pop(target, None)

@@ -1300,6 +1300,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         if stage_phase == 'ready':
             staging = chart.boss_staging(chapter)['castle']
             owned = [c for c in owned if c == staging]
+        gate = chart.gateway(chapter)
+        if gate:
+            # Chapter 11's boss castle is across the same central divide as the
+            # back half. A wave or roster probe from a front castle can open
+            # the sortie menu, but the march then turns back at the impassable
+            # terrain (#5342), so even evidence gathering must stay on the
+            # reachable side.
+            owned = [c for c in owned if c == gate['hub'] or c in gate['back']]
         boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
         garrison = _world(mem).get('garrison') or {}
         unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ()) | {NAME}
@@ -1669,7 +1677,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     gate = chart.gateway(chapter)
     stage_lost_hub = bool(gate and gate['hub'] not in owned)
     if gate and (gate['hub'] in owned or stage_lost_hub) and (
-            stage_lost_hub or any(c not in owned for c in gate['back'])):
+            stage_lost_hub or boss_open or any(c not in owned for c in gate['back'])):
         hub = gate['hub']
         if stage_lost_hub:
             # The hub is the enemy's, so the army has nowhere to stage: g1190
@@ -2635,7 +2643,7 @@ def _mechanical_boss_plan(mem, rid):
     owned = _owned(mem)
     if not normal or not normal <= owned:
         return False
-    base = list(chart.orders(chapter))
+    base = list(chart.orders(chapter)) or list(chart.all_orders(chapter))
     boss_orders = [o for o in base if chart.is_boss_castle(o.get('target'))
                    and not _site_king_down(mem, o.get('target'))]
     if not boss_orders:

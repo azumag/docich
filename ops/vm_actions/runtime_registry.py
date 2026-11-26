@@ -168,6 +168,19 @@ HANJUKU_SCENE_ONESHOT = {
     "queue_lane": "radio",
 }
 
+# Corner-owned, bounded periodic recap. It is not part of the input bot and is
+# absent between requests; its own state/result/log files are the evidence.
+HANJUKU_PERIODIC_ONESHOT = {
+    "game": "hanjuku-hero",
+    "module": "docich.hanjuku_periodic_worker",
+    "request_file": "hanjuku_periodic_request.json",
+    "state_file": "hanjuku_periodic.json",
+    "result_file": "hanjuku_periodic_result.json",
+    "lock_file": "hanjuku_periodic.lock",
+    "log_file": "hanjuku_periodic_commentary.jsonl",
+    "queue_lane": "radio",
+}
+
 # Read-only per-runtime evidence file, not a worker, lock or queue: the current
 # Hanjuku runtime's own bounded decision tail. It exists so a corner that keeps
 # answering with the same input (no chart-counter movement, no stall while the

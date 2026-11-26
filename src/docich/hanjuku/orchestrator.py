@@ -678,6 +678,15 @@ def plan_starved_rearm(mem, phase, kind):
                              or order_mod._source(full, mem) not in owned
                              or not order_mod._source_list_open(full, mem)
                              or order_mod._retake_reserved(full, mem)
+                             # Same stale-step gate next_order applies: an
+                             # attack whose target is already ours can never
+                             # launch, and activating it only walks into the
+                             # deploy route check every observation
+                             # (docich#5623).
+                             or (full.get('purpose') != 'move'
+                                 and not _chart.is_boss_castle(full.get('target'))
+                                 and full.get('roster_probe') is not True
+                                 and full.get('target') in owned)
                              or order_mod._source_spare_missing(full, mem, allow_probe=True))):
                     continue
                 plan['active'] = step
@@ -709,6 +718,7 @@ def plan_starved_rearm(mem, phase, kind):
         # rearm from rebuilding). Keep the plan only if some pending order
         # survives next_order's own launch gates.
         from .strategy import orders, replan
+        from .. import hanjuku_chart as _chart
         situation = replan._adjust_situation(mem)
         owned = orders._owned(mem)
         if any(replan.chart_adjust.startable(o, situation) is None
@@ -716,6 +726,10 @@ def plan_starved_rearm(mem, phase, kind):
                and orders._source(o, mem) in owned
                and orders._source_list_open(o, mem)
                and not orders._retake_reserved(o, mem)
+               and (o.get('purpose') == 'move'
+                    or _chart.is_boss_castle(o.get('target'))
+                    or o.get('roster_probe') is True
+                    or o.get('target') not in owned)
                and not orders._source_spare_missing(o, mem, allow_probe=True)
                for o in pending):
             return False
@@ -930,7 +944,8 @@ def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
             and (not mem.get('month_sub')
                  or (recall.get('stage') == 'dest' and kind == 'map_target'))
             and (kind in ('map', 'map_target', 'text')
-                 or (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no'))
+                 or (recall.get('stage') in ('await_dispatch', 'await_dispatch_stale')
+                     and kind in ('unknown', 'yes_no'))
                  # docich#5452: a castle menu during destination steering is
                  # mode-loss evidence only the recall's own mis-fired input
                  # could open; route it back so the recall can close it and
@@ -954,7 +969,7 @@ def _recall_after_scene(mem, recall, kind, phase):
     distinguish scene closure from destination-picker acceptance.
     """
     from .state.regions import flow as _flow
-    if recall.get('stage') == 'await_dispatch':
+    if recall.get('stage') in ('await_dispatch', 'await_dispatch_stale'):
         # The A already has a receipt (or is still awaiting one). A concert
         # scene may cover the picker, but it must not erase the request and
         # make a later field map look like picker acceptance.
@@ -1092,13 +1107,19 @@ def unknown_hold_advance(screen, mem, actions, digest, phase=None):
     watch['total'] = int(watch.get('total') or 0) + 1
     mem['unknown_hold_watch'] = watch
     in_battle = bool(mem.get('battle'))
+    # A message box whose sprite keeps animating never repeats a digest, so the
+    # identical-frame bound is never reached and the box is held forever
+    # (measured chapter 12: thousands of field_menu holds on a text panel).
+    # Count consecutive plain-text frames like the battle case and send the same
+    # bounded A to advance it.
+    plain = plain_text_hold(screen)
     # After one press this screen already proved it does not clear itself:
     # waiting the full six frames again just costs frames (g1163 2026-11-12
     # 22:1x: 66 no-input `unknown` frames in ten minutes, mostly three-frame
     # episodes). The first episode is unchanged.
     limit = UNKNOWN_HOLD_ADVANCE - 1 if watch.get('pressed') else UNKNOWN_HOLD_ADVANCE
     if watch['n'] < limit and not (
-            in_battle and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
+            (in_battle or plain) and watch['total'] >= UNKNOWN_BATTLE_ADVANCE):
         return actions
     presses = int(watch.get('presses') or 0)
     if presses >= UNKNOWN_HOLD_BURST_MAX:
@@ -1249,6 +1270,65 @@ def y_jump_close_settle_step(screen, mem, generic):
 # The same freeze reaches the egg and monster command boxes, which ignore one
 # button exactly like the ordinary たまごをつかう／きりふだ／たいきゃく box.
 BATTLE_COMMAND_MENU_KINDS = frozenset({'battle_menu', 'egg_battle_menu', 'monster_menu'})
+
+
+STATUS_PANEL_LABELS = ('ステータス', 'てきぜんいん', 'ぜんいん', 'しょうぐん')
+STATUS_PANEL_HOLD_LIMIT = 3
+
+
+def status_panel_close_step(screen, mem, phase, actions):
+    """Close a castle/sortie status panel that the policy has no task for.
+
+    Measured chapter 12: 出撃ステータス / てきぜんいん panels opened from the
+    field menu cost thousands of no-input holds because the panel's sprite
+    animates (every frame is a new digest, so the frozen-screen fallback never
+    fires). B is the panel's own exit key; bounded so a real menu is untouched.
+    """
+    if actions or phase != 'field_menu' or screen.kind != 'text':
+        mem.pop('status_panel_holds', None)
+        return None
+    text = ''.join((screen.text or '').split())
+    if not any(label in text for label in STATUS_PANEL_LABELS):
+        mem.pop('status_panel_holds', None)
+        return None
+    n = int(mem.get('status_panel_holds') or 0) + 1
+    if n < STATUS_PANEL_HOLD_LIMIT:
+        mem['status_panel_holds'] = n
+        return None
+    mem['status_panel_holds'] = 0
+    decision_log._record(mem, 'status_panel_close', screen=screen.kind, phase=phase,
+                         observed_metric={'text': text[:40], 'holds': n},
+                         reason='城メニューの出撃ステータス/敵全員パネルを読めず無入力が続くため、Bで閉じて再観測する')
+    return [pad('b')]
+
+
+VICTORY_MENU_HOLD_LIMIT = 3   # battle-menu observations with the enemy at HP0
+
+
+def victory_menu_advance(screen, mem, kind, phase, actions):
+    """Advance a battle command menu left open after the enemy reached HP0.
+
+    Measured chapter 5 (クロチェット defence): ヴィーナス 82 vs マングスチン 0,
+    the command menu stayed on screen and the bot sent no input until
+    input_stalled. A is the menu's own advance key once the fight is over.
+    """
+    if actions or kind != 'battle_menu':
+        mem.pop('victory_menu_holds', None)
+        return None
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    if not (type(battle.get('enemy_hp')) is int and battle['enemy_hp'] <= 0):
+        mem.pop('victory_menu_holds', None)
+        return None
+    n = int(mem.get('victory_menu_holds') or 0) + 1
+    if n < VICTORY_MENU_HOLD_LIMIT:
+        mem['victory_menu_holds'] = n
+        return None
+    mem['victory_menu_holds'] = 0
+    decision_log._record(mem, 'victory_menu_advance', screen=screen.kind, phase=phase,
+                         observed_metric={'holds': n, 'enemy': battle.get('enemy'),
+                                          'ally': battle.get('ally')},
+                         reason='敵HP0で戦闘メニューが残り無入力のため、Aで戦闘終了フローを進める')
+    return [pad('a')]
 
 
 def field_fallback_actions(kind):
@@ -2621,6 +2701,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 reason='商店の退出確認を所有者なしで検出したため、既定のAで閉じて再観測する')
             actions = [pad(hint)]
     if not actions:
+        status_close = status_panel_close_step(screen, mem, phase, actions)
+        if status_close is not None:
+            actions = status_close
+    if not actions:
         hint = shop_list_unowned_input(
             kind, streak,
             guarded=(trade_guard_hold or bijin_guard_hold or bounded_wait
@@ -2660,6 +2744,14 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                 phase=phase, observed_metric={'streak': streak},
                 reason='戦闘後の地図を所有者なしで検出したため、SELECTで再フォーカスして再観測する')
             actions = [pad(hint)]
+    if not actions:
+        _victory = victory_menu_advance(screen, mem, kind, phase, actions)
+        if _victory is not None:
+            actions = _victory
+    if not actions and kind == 'egg_battle_menu':
+        escape = battle_menus_flow.egg_menu_escape(screen, mem)
+        if escape is not None:
+            actions = escape
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'

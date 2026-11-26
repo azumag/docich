@@ -74,7 +74,8 @@ def test_flat_live_catalog_and_financial_boundary():
                                      "nethack", "hanjuku-hero", "hanjuku-speedrun", "paper", "meriken",
                                      "weather", "tsuitate",
                                      "yosou-oh", "doushi-card", "puyo-corner", "mystery",
-                                     "trpg-corner", "communist-law-simulator", "chart-659"}
+                                     "trpg-corner", "communist-law-simulator", "chart-659",
+                                     "geography-world"}
     assert all(c.live_eligible is False for c in catalog)
     # 2026-10-24 オーナー指示 (#2694) で自動抽選へ復帰。
     lawsim = next(c for c in catalog if c.id == "communist-law-simulator")
@@ -100,8 +101,9 @@ def test_production_profile_marks_common_rotation_enabled_with_auto_tsuitate():
     catalog = load_catalog(g)
     # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本。
     # 2026-11-18: chart-659 (#659) 追加 → 18本（manual-only）。
-    # 2026-11-25: hanjuku-speedrun 追加 → 19本（manual-only）。
-    assert len(catalog) == 19
+    # #5584: geography-world (newcorner, DOCICH_NEW_CORNER_ENABLED ゲート) → 19本。
+    # 2026-11-25: hanjuku-speedrun 追加 → 20本（manual-only）。
+    assert len(catalog) == 20
     # Issue #698: PR-4 activation (owner-approved) makes ぷよぷよクローン
     # manual-bookable with audio opt-in; auto-rotation still excludes it
     # until a later approved step drops manual_only.
@@ -297,7 +299,12 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero", "tsuitate",
             "yosou-oh", "doushi-card", "mystery", "communist-law-simulator"} <= set(eligible)
     assert excluded == {"puyo-corner": "manual-only", "trpg-corner": "manual-only",
-                        "chart-659": "manual-only", "hanjuku-speedrun": "manual-only"}
+                        "chart-659": "manual-only",
+                        # docich#5584: the new corner adapter is ineligible
+                        # while DOCICH_NEW_CORNER_ENABLED is off (default),
+                        # recorded as adapter-unavailable, not auto-eligible.
+                        "geography-world": "adapter-unavailable",
+                        "hanjuku-speedrun": "manual-only"}
     monkeypatch.setattr(manager.adapters["tsuitate"].manager, "control", lambda *_: {
         "state": "playing", "readyForNextRun": False,
     })
@@ -307,6 +314,9 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
                         "puyo-corner": "manual-only",
                         "trpg-corner": "manual-only",
                         "chart-659": "manual-only",
+                        # docich#5584: flag OFF keeps geography-world
+                        # adapter-unavailable (see the first assertion above).
+                        "geography-world": "adapter-unavailable",
                         "hanjuku-speedrun": "manual-only"}
 
 
