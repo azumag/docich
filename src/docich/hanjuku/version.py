@@ -1,1 +1,7 @@
-BOT_VERSION = 'hanjuku-chart-v1564-speedrun-corner'
+"""Hot-load marker.
+
+Bump it with every behaviour change so production logs show which policy
+produced a decision (the bot is hot-loaded per observation).
+"""
+
+BOT_VERSION = 'hanjuku-chart-v1565-camp-recall-dome-text-hold'
