@@ -8,6 +8,7 @@ emulator: the observation loop, pad delivery, the frame-derived clock, the
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -215,6 +216,55 @@ def test_stop_copies_state_to_prev_and_saves_state_and_sram(tmp_path):
     assert driver.config.sram_out.read_bytes() == b'NEW-SRAM'
     assert core.closed is True
     assert any('stop requested' in line for line in logs)
+
+
+def test_stop_finalizes_speedrun_attempt_as_stopped_dnf(tmp_path):
+    """SIGTERM closes the local RTA attempt like the corner teardown."""
+    driver, _core, _run, _observation, logs = _driver(tmp_path)
+    runtime = driver.config.runtime
+    runtime.mkdir(parents=True)
+    data = driver.config.data_dir
+    data.mkdir(parents=True)
+    timer = {
+        'schema': 1, 'game': 'hanjuku-speedrun',
+        'runtime_id': runtime.name, 'generation': 1300,
+        'attempt_id': f'a0001-{runtime.name}', 'attempt_no': 1,
+        'status': 'running', 'started_at_ms': 1000, 'ended_at_ms': None,
+        'current_index': 0, 'splits': [], 'comparison': {},
+        'heartbeat_at_ms': 4000,
+    }
+    (data / 'timer.json').write_text(json.dumps(timer), encoding='utf-8')
+    (runtime / 'hanjuku_run.json').write_text(
+        json.dumps({'observed_at_ms': 4321, 'phase': 'field'}),
+        encoding='utf-8')
+    driver.request_stop()
+    code = driver.run()
+
+    assert code == 0
+    saved = json.loads((data / 'timer.json').read_text(encoding='utf-8'))
+    assert saved['status'] == 'dnf'
+    assert saved['dnf_reason'] == 'stopped'
+    # The frame-derived observation clock, not the host wall clock.
+    assert saved['ended_at_ms'] == 4321
+    rows = [json.loads(line) for line in
+            (data / 'attempts.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert rows[-1]['attempt_id'] == timer['attempt_id']
+    assert rows[-1]['status'] == 'dnf'
+    attempt = data / 'attempts' / timer['attempt_id']
+    assert (attempt / 'manifest.json').is_file()
+    assert (attempt / 'segments.json').is_file()
+    assert any('rta finalized: dnf' in line for line in logs)
+
+    # A restart after the attempt ended (and was archived) must not rebuild
+    # the manifest: that would clear the archived flags.
+    manifest_path = attempt / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest['archived'] = True
+    manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+    driver.request_stop()
+    assert driver.run() == 0
+    assert json.loads(manifest_path.read_text(encoding='utf-8'))['archived'] is True
+    assert any('rta already ended: dnf' in line for line in logs)
 
 
 def test_unreadable_state_exits_without_overwriting(tmp_path):

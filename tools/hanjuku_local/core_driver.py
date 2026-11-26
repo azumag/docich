@@ -682,6 +682,44 @@ class CoreDriver:
         if self._save_sram():
             self._log('[drv] sram saved')
 
+    def finalize_speedrun(self):
+        """Close the RTA attempt like the common corner teardown does.
+
+        The split timer is finalized by ``game_switch`` in production, but the
+        local driver has no game switch.  Without this the local attempt stays
+        ``running`` forever: no DNF row, no manifest/segments, nothing for the
+        R2 archiver.  The runtime's own ``hanjuku_run.json`` remains the
+        authoritative terminal reason; SIGTERM without one becomes a
+        ``stopped`` DNF (the operator-stop path in the design).
+        """
+        if self.config.game != 'hanjuku-speedrun':
+            return
+        try:
+            from docich.hanjuku_speedrun.rta import spool, store
+            before = store.load_timer(self.config.runtime)
+            was_running = (isinstance(before, dict)
+                           and before.get('status') == 'running'
+                           and before.get('runtime_id') == self.config.runtime_id)
+            result = store.finalize_attempt(self.config.runtime)
+            if not isinstance(result, dict):
+                return
+            if result.get('runtime_id') != self.config.runtime_id:
+                return
+            if result.get('status') not in ('finished', 'dnf'):
+                return
+            attempt_id = result.get('attempt_id')
+            # Collect the spool only for the transition this exit caused.  A
+            # restart after the attempt was already archived must not rebuild
+            # its manifest (that would clear the archived flags).
+            if was_running and isinstance(attempt_id, str) and attempt_id:
+                spool.finalize_logs(self.config.runtime, attempt_id)
+                self._log(f"[drv] rta finalized: {result.get('status')} {attempt_id}")
+            else:
+                self._log(f"[drv] rta already ended: {result.get('status')}")
+        except Exception as exc:
+            # A recording side channel must never block the state/SRAM save.
+            self._log(f'[drv] rta finalize failed: {type(exc).__name__}')
+
     def request_stop(self):
         self._stop_requested = True
 
@@ -719,6 +757,7 @@ class CoreDriver:
         finally:
             if self._loaded and self._save_on_exit:
                 self.save_state(keep_previous=True)
+                self.finalize_speedrun()
             try:
                 self.core.close()
             except Exception:

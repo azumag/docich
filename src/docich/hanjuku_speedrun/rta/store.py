@@ -619,4 +619,21 @@ def finalize_attempt(runtime, terminal_reason=None, *, now_ms=None, reason=None)
     save_records(runtime, records)
     append_attempt(runtime, attempt_row(timer, at_ms=now))
     save_timer(runtime, timer)
+    # The common teardown is the only place that sees a terminal the bot did
+    # not observe (the bot is not called on a terminal frame).  Queue the
+    # measured finish/DNF sentence here so the narration still gets it; the
+    # queue deduplicates by attempt, so an observation that already queued it
+    # is not spoken twice.  Announcements are a side channel: never fail the
+    # finalize because of them.
+    try:
+        from . import announce
+        identity = {key: run.get(key) for key in announce.IDENTITY_KEYS}
+        if announce.valid_identity(identity) is not None:
+            if timer.get('status') == 'finished':
+                announce.finish_event(runtime, timer, identity=identity)
+            else:
+                announce.dnf_event(runtime, timer, identity=identity)
+            announce.launch_pending(runtime)
+    except Exception:
+        pass
     return timer

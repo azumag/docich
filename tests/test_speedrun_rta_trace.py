@@ -243,3 +243,34 @@ def test_hook_still_returns_the_timer_when_the_trace_fails(tmp_path, monkeypatch
                           screenshot=shot)
     assert result is not None
     assert result['status'] == 'running'
+
+
+def test_hook_does_not_trace_a_restart_of_a_closed_attempt(tmp_path, monkeypatch):
+    """After a DNF, a state-restart keeps observing but must not touch its spool."""
+    from docich.hanjuku_speedrun.rta import announce
+    monkeypatch.setattr(announce, 'launch_pending', lambda *a, **k: True)
+    runtime = make_runtime(tmp_path)
+    start_running(runtime)
+    shot = runtime / 'screenshot.png'
+    shot.write_bytes(b'png')
+    run_path = runtime / 'hanjuku_run.json'
+    run_path.write_text(json.dumps({
+        'game': 'hanjuku-speedrun', 'runtime_id': runtime.name,
+        'generation': 1, 'lease_id': 'lease', 'phase': 'field',
+        'observed_at_ms': BASE_MS + 10_000, 'terminal_reason': 'game_over',
+    }), encoding='utf-8')
+    closed = hook.observe(runtime, [], {}, {}, screenshot=shot)
+    assert closed['status'] == 'dnf'
+
+    # The local driver can restart from .state; the attempt is not resumed, so
+    # later frames belong to no attempt and must not grow this spool.
+    run_path.write_text(json.dumps({
+        'game': 'hanjuku-speedrun', 'runtime_id': runtime.name,
+        'generation': 1, 'lease_id': 'lease', 'phase': 'field',
+        'observed_at_ms': BASE_MS + 70_000,
+    }), encoding='utf-8')
+    again = hook.observe(runtime, [], {}, {}, screenshot=shot)
+    assert again['status'] == 'dnf'
+    rows = trace_lines(runtime, 'a0001-' + runtime.name)
+    assert len(rows) == 1
+    assert rows[0]['at'] == BASE_MS + 10_000

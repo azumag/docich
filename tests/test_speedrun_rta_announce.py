@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import time
 
 import pytest
 
-from docich.hanjuku_speedrun.rta import announce, hook, timer
+from docich.hanjuku_speedrun.rta import announce, hook, store, timer
 
 BASE_MS = 1_700_000_000_000
 ROOT = Path(__file__).resolve().parents[1]
@@ -369,6 +370,38 @@ def test_hook_records_finish_and_dnf(tmp_path, monkeypatch):
                  run_extra={'terminal_reason': 'game_over'})
     texts = [item['text'] for item in announce.pending(runtime2)]
     assert '第2話の途中で終了。理由はゲームオーバーです。' in texts
+
+
+def test_teardown_finalize_queues_the_terminal_sentence(tmp_path, monkeypatch):
+    """A terminal the bot never observed still gets its DNF sentence."""
+    monkeypatch.setattr(announce, 'launch_pending', lambda *a, **k: True)
+    start = int(time.time() * 1000) - 20_000
+    data = tmp_path / 'run-local' / 'speedrun' / 'hanjuku-speedrun'
+    data.mkdir(parents=True)
+    monkeypatch.setenv('DOCICH_SPEEDRUN_DATA_DIR', str(data))
+    monkeypatch.setenv('DOCICH_SPEEDRUN_ENV', 'local')
+    runtime = tmp_path / 'run-local' / 'runtimes' / 'g2-def456'
+    runtime.mkdir(parents=True)
+    records = timer.default_records(start)
+    value = running(records, runtime_id='g2-def456', start_ms=start)
+    value['heartbeat_at_ms'] = start + 10_000
+    store.save_timer(runtime, value)
+    store.save_records(runtime, records)
+    (runtime / 'hanjuku_run.json').write_text(json.dumps({
+        **IDENTITY, 'observed_at_ms': start + 11_000, 'phase': 'field',
+        'terminal_reason': 'game_over',
+    }), encoding='utf-8')
+
+    saved = store.finalize_attempt(runtime)
+
+    assert saved['status'] == 'dnf'
+    assert saved['dnf_reason'] == 'game_over'
+    assert saved['ended_at_ms'] == start + 11_000
+    assert [item['text'] for item in announce.pending(runtime)] == [
+        '第1話の途中で終了。理由はゲームオーバーです。']
+    # A repeated finalize (teardown retried) must not queue it twice.
+    store.finalize_attempt(runtime)
+    assert len(announce.pending(runtime)) == 1
 
 
 def test_hook_never_fails_when_announcement_delivery_breaks(tmp_path, monkeypatch):

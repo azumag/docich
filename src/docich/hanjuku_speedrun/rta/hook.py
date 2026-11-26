@@ -79,6 +79,11 @@ def _launch_archive_once(runtime):
         return False
 
 
+def _closed(timer):
+    return (isinstance(timer, dict)
+            and timer.get('status') in {'finished', 'dnf'})
+
+
 def observe(runtime, records, state, meta, *, screenshot):
     """Record one observation.  Returns the resulting timer or ``None``.
 
@@ -88,6 +93,11 @@ def observe(runtime, records, state, meta, *, screenshot):
     whose mtime is the observation time when available.
     """
     _launch_archive_once(runtime)
+    previous_timer = None
+    try:
+        previous_timer = store.load_timer(runtime)
+    except Exception:
+        previous_timer = None
     try:
         timer = _observe(runtime, records, state, meta, screenshot=screenshot)
     except OSError as exc:
@@ -105,8 +115,20 @@ def observe(runtime, records, state, meta, *, screenshot):
     # a trace failure never undoes or blocks the split-timer update.
     try:
         from . import trace as trace_mod
-        trace_mod.append(runtime, timer, records=records, state=state,
-                         meta=meta, screenshot=screenshot)
+        # A restarted driver can keep observing after the attempt was closed
+        # (the timer is DNF and a trial is never resumed).  Those observations
+        # are not part of the closed attempt: appending them would grow its
+        # spool and, because the closed timer's heartbeat is frozen, write
+        # every line at the same ``at``.  The observation that *closed* the
+        # attempt still gets its line.
+        same_closed = (_closed(previous_timer) and _closed(timer)
+                       and previous_timer.get('attempt_id')
+                       == timer.get('attempt_id'))
+        if not same_closed:
+            observed = _observation_ms(screenshot, store.load_run(runtime), meta)
+            trace_mod.append(runtime, timer, records=records, state=state,
+                             meta=meta, screenshot=screenshot,
+                             observed_ms=observed)
     except Exception:
         pass
     try:
