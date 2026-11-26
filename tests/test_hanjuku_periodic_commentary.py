@@ -240,10 +240,41 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '課題' in prompt and 'ユーモア' in prompt
     assert '列挙' in prompt and 'focus' in prompt
     assert '焦点' in prompt
+    assert '現場リポート' in prompt and '4ビート' in prompt
+    assert '評価したいのは' in prompt
     assert 'ソ連' in prompt and '同志' in prompt and 'focus.humor' in prompt
     assert value['focus']['feature'] in prompt
     assert periodic.DEFAULT_PERSONA in prompt
     assert '"texts"' in prompt
+
+
+def test_purchase_noun_does_not_require_a_completed_receipt(live):
+    facts = _facts(live)
+    assert periodic.valid_text('月次の購入と補充の判断でした。', facts) is True
+    assert periodic.valid_text('クースカンを購入しました。', facts) is False
+
+
+def test_style_rejects_report_formula():
+    report = ('評価したいのは粘りです。課題は守備です。見どころは次です。'
+              '楽しみにしています。')
+    assert periodic.style_ok(report) is False
+    assert periodic.style_ok(LONG_A) is True
+
+
+def test_focus_candidates_attach_a_later_battle_outcome(tmp_path):
+    runtime = tmp_path / 'runtimes' / IDENTITY['runtime_id']
+    runtime.mkdir(parents=True)
+    _decision(runtime / 'hanjuku_decisions.jsonl',
+              {'decision': 'order_start', 'general': 'コリアンダー',
+               'source': 'あるまむーん', 'target': 'ながはま',
+               'cards': ['フットバース'], 'at': 100, 'step': 1},
+              {'decision': 'battle_result', 'outcome': 'win', 'ally': 'コリアンダー',
+               'enemy': 'ヘーゼル', 'at': 200, 'step': 2})
+    found = periodic._focus_candidates(runtime, 0, 300)
+    order = next(fact for _at, fact in found if fact['category'] == 'sortie')
+    assert order['outcome']['kind'] == 'battle_result'
+    assert order['outcome']['outcome'] == 'win'
+    assert order['not_result'] is False
 
 
 def test_narrative_rejects_a_flat_fact_list():

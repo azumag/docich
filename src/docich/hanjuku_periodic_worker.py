@@ -179,9 +179,11 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
         tier = 'none'
         for name, predicate in (
                 ('strict', lambda text: periodic.focus_clear(text, focus_fact, facts)
-                 and periodic.persona_ok(text)),
-                ('focus', lambda text: periodic.focus_clear(text, focus_fact, facts)),
-                ('persona', periodic.persona_ok),
+                 and periodic.persona_ok(text) and periodic.style_ok(text)),
+                ('focus', lambda text: periodic.focus_clear(text, focus_fact, facts)
+                 and periodic.style_ok(text)),
+                ('persona', lambda text: periodic.persona_ok(text)
+                 and periodic.style_ok(text)),
                 ('grounded', lambda text: True)):
             valid = [text for text in candidates
                      if periodic.valid_text(text, facts) and predicate(text)]
