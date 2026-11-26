@@ -8248,6 +8248,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1564-speedrun-corner",
             "hanjuku-chart-v1565-camp-recall-dome-text-hold",
             "hanjuku-chart-v1566-egg-attempt-retry",
+            "hanjuku-chart-v1567-sortie-launch-priority",
             "hanjuku-chart-v1552-chapter-end-save-accept",
             "hanjuku-chart-v1552-ch9-sortie-speed",
             "hanjuku-chart-v1559-selected-card-interruption",

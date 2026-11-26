@@ -123,3 +123,35 @@ def test_scrolled_selection_still_declines_a_quote_that_spends_reserved_wages():
     assert sub['chosen'] == NAMES[4]
     assert policy.month_sub_step(quote(NAMES[4], 45, 18, on='いかんッ!'), mem) == [policy.pad('a')]
     assert sub['declined'] and not sub.get('confirm_sent')
+
+
+def test_a_pending_launch_defers_the_castle_scroll():
+    # owner 2026-11-27 (#5696/#5702): 出撃の開始から発射確認までの間は、
+    # 築城一覧の探索を1回で打ち切って発射確認へ時間を回す。
+    from docich.hanjuku.flows import month as month_flow
+    frame = read_png(FRAME)
+    screen = parse(frame)
+    mem = holdings(key='3-9')
+    mem['month'] = '3-9'
+    mem['sortie_launch_pending'] = 'A:3:M1'
+    sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
+                              'rows_tried': list(NAMES[:4]), 'presses': 1,
+                              'build_scroll': {'presses': 1}, 'left_menu': True}
+    assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('b')]
+    assert sub.get('declined') and sub.get('aborted')
+    record = mem['_records'][-1]
+    assert record['decision'] == 'chikujou_deferred_sortie'
+    assert record['observed_metric']['step'] == 'A:3:M1'
+
+
+def test_without_a_pending_launch_the_scroll_continues():
+    from docich.hanjuku.flows import month as month_flow
+    frame = read_png(FRAME)
+    screen = parse(frame)
+    mem = holdings(key='3-9')
+    mem['month'] = '3-9'
+    sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
+                              'rows_tried': list(NAMES[:4]), 'presses': 1,
+                              'left_menu': True}
+    assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('down')]
+    assert not sub.get('declined')

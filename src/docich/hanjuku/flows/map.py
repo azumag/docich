@@ -3046,6 +3046,10 @@ def _commit_departure(mem, order, context, snapshot):
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
             'tick': int(mem.get('tick') or 0), 'roster_read': False}
+        # owner 2026-11-27 (#5696/#5702): 出撃を開始したが発射を確認できていない
+        # 間は、築城一覧・家来確認などの割り込みより発射確認を優先する。
+        # 記録が消える（launch_probe が空になる）と自動的に解除される。
+        mem['sortie_launch_pending'] = order['step']
         mem['world_map_due'] = True
 
 
