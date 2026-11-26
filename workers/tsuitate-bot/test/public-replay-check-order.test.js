@@ -23,8 +23,8 @@ const state = {
   knownEnemies: [],
 };
 
-test("v15 probes the visible king escape before a blind block", () => {
-  assert.equal(BRAIN_VERSION, "tsuitate-brain-v15");
+test("v16 probes the visible king escape before a blind block", () => {
+  assert.equal(BRAIN_VERSION, "tsuitate-brain-v16");
   const choice = chooseMove(state, { profile, seed: "fixture:52" });
   assert.equal(choice.usi, "6a7a");
   assert.equal(choice.features.kingMove, 1);

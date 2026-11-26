@@ -22,8 +22,8 @@ const state = {
   knownEnemies: [],
 };
 
-test("v15 prefers a non-king move over a drop in the check response pool", () => {
-  assert.equal(BRAIN_VERSION, "tsuitate-brain-v15");
+test("v16 prefers a non-king move over a drop in the check response pool", () => {
+  assert.equal(BRAIN_VERSION, "tsuitate-brain-v16");
   const choice = chooseMove(state, { profile, seed: "fixture:42" });
   assert.equal(choice.usi, "3c3d");
   assert.equal(choice.features.kingMove, 0);
