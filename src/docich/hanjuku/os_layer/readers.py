@@ -995,13 +995,21 @@ def _empty_sortie_inventory(screen, *, occluded=0):
     return not any(card in word for _, _, word in _options(screen) for card in ALL_CARD_NAMES)
 
 
-def _sortie_inventory(screen):
+def _sortie_inventory(screen, *, occluded=0):
     """Read complete card names from the fixed sortie panel slots.
 
     The one-card placement is live-measured. Additional names are classified
     only when each occupies a complete known slot and the whole panel matches;
     this recognizes text, not quantities or partial names. The receipt uses
     the canonical game catalogue, independently of the planning allowlist.
+
+    ``occluded`` gives the fixed cells the same allowance
+    ``_empty_sortie_inventory`` takes: a source castle's sprite drawn over the
+    right panel reads those tiles as unknown on every frame (docich#5146:
+    ながはま's sorties cancelled every unreadable confirmation). Card names
+    are content, not fixed cells — a name split by an unknown glyph still
+    fails its span check and keeps the panel unreadable instead of guessing
+    the carried kit.
     """
     # g1133 decision-003: the same confirm cursor measured x0=139 (the
     # left-edge orange column jitters 138/139, see _measured_card_select).
@@ -1014,15 +1022,26 @@ def _sortie_inventory(screen):
                      for x, ch in line.cells if left <= x < 256)
     def text_cells(x, text):
         return tuple((x + 8*i, ch) for i, ch in enumerate(text))
+    lost = 0
+    def matches(observed, expected):
+        nonlocal lost
+        if observed == expected:
+            return True
+        if not occluded:
+            return False
+        want = dict(expected)
+        seen = {x: ch for x, ch in observed if ch != UNKNOWN}
+        if any(want.get(x) != ch for x, ch in seen.items()):
+            return False
+        lost += sum(1 for x in want if x not in seen)
+        return lost <= occluded
     first = cells(47)
     heading = text_cells(136, 'きりふだ')
     first_spans = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
     if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in ALL_CARD_NAMES:
         return None
     cards = [first_spans[0][1]]
-    if first != heading + text_cells(176, cards[0]):
-        return None
-    expected = {47: first, 63: (), 79: (),
+    expected = {47: heading + text_cells(176, cards[0]), 63: (), 79: (),
                 95: text_cells(136, 'ーしゅつげき') + text_cells(192, 'しますか?ー'),
                 111: text_cells(160, 'うむッ!'), 127: text_cells(160, 'いかんッ!')}
     empty_tail = False
@@ -1036,12 +1055,10 @@ def _sortie_inventory(screen):
         spans = TextLine(y, tuple((x, ch) for x, ch in row if x >= 176)).spans()
         if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in ALL_CARD_NAMES:
             return None
-        if row != text_cells(176, spans[0][1]):
-            return None
         cards.append(spans[0][1])
-        expected[y] = row
+        expected[y] = text_cells(176, spans[0][1])
     for y, wanted in expected.items():
-        if cells(y, 160 if y in (111, 127) else 136) != wanted:
+        if not matches(cells(y, 160 if y in (111, 127) else 136), wanted):
             return None
     # Background and dakuten/cursor UNKNOWNs are not body text. Additional
     # known text anywhere else inside this right panel is uncalibrated.
@@ -1049,7 +1066,13 @@ def _sortie_inventory(screen):
            and (line.y not in expected or (line.y in (111, 127) and x < 160))
            for line in screen.lines if 32 <= line.y < 135 for x, ch in line.cells):
         return None
-    if [word for _, _, word in _options(screen) if word in ALL_CARD_NAMES] != cards:
+    option_cards = [word for _, _, word in _options(screen) if word in ALL_CARD_NAMES]
+    if occluded:
+        # An occluded option span drops a carried name entirely; a readable
+        # name that is not one of the slot cards is still uncalibrated text.
+        if any(word not in cards for word in option_cards):
+            return None
+    elif option_cards != cards:
         return None
     return cards
 
