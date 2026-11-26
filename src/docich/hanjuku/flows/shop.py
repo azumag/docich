@@ -125,7 +125,7 @@ def _quote_stall_decline(screen, mem, shop, want, reason):
     return [pad('b')]
 
 
-SHOP_EXIT_LIMIT = 4    # owner 2026-11-26: 買わずに開閉を繰り返す商人は閉じる
+SHOP_EXIT_LIMIT = 2    # owner 2026-11-26: 買わずに開閉を繰り返す商人は2回でループ扱い
 
 
 def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
@@ -141,9 +141,12 @@ def _record_shop_exit(mem, shop, screen, reason, *, listed=None):
         counts[key] = exits
         if exits >= SHOP_EXIT_LIMIT and not shop.get('bought') and not shop.get('closed'):
             shop['closed'] = True
+            # owner 2026-11-26: ループが実際に起きたら issue を発行する
+            # （fault_issue.note_decision_faults がこの決定を拾う）。
             _record(mem, 'shop_reenter_limit', month=shop.get('key'),
                     observed_metric={'exits': exits, 'limit': SHOP_EXIT_LIMIT,
-                                     'reason': reason},
+                                     'reason': reason,
+                                     'plan_month': mem.get('month')},
                     reason='購入なしの開閉が上限に達したため、当月この商人を閉じる')
     _record(mem, 'shop_list_exit', month=(shop or {}).get('key'),
             observed_metric={'reason': reason, 'planned': [list(row) for row in items[:4]],
