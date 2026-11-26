@@ -30,7 +30,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _defender_summon_preempt, _defense_kit_read_unread, _defense_kit_read_window,
-                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics,
+                               _egg_attempts_spent, _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics,
                                _egg_drop_trace, _egg_plan, _hero_marching,
                                _egg_race_pressure, _score_pressure,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
@@ -851,6 +851,8 @@ def battle_step(screen: Screen, mem):
     from . import okunote
     okunote.combat_return(screen, mem, cur)
     cur.pop('okunote_flow', None)  # the command finished; a later use is a new attempt
+    if isinstance(cur.get('survival'), dict):
+        cur['survival'].pop('egg_wait_timed_out', None)
     preempt_guard = cur.get('okunote_egg_preempt') or {}
     if preempt_guard.get('selected'):
         # A complete human-battle panel ends the menu episode. Keep the
@@ -1195,7 +1197,7 @@ def battle_step(screen: Screen, mem):
     if _survival_needed(cur):
         rescue = _survival_state(mem, cur)
         if (_critical_survival_needed(cur) and not rescue.get('critical_open_recheck')
-                and not rescue.get('egg_attempted')
+                and not _egg_attempts_spent(rescue, cur)
                 and (rescue.get('exhausted') or rescue['opens'] >= 12
                      or rescue.get('pending_opens', 0) >= 3)):
             # g749 hero/Athena: three unacknowledged B requests exhausted
@@ -1664,16 +1666,8 @@ def _leftover_cards(mem, cur):
     """
     if not isinstance(cur, dict) or cur.get('cards_used'):
         return []
-    from .battle_menus import _carried_card_left
-    left = []
-    probe = dict(cur)
-    for _ in range(6):
-        card = _carried_card_left(mem, probe)
-        if not card or card in left:
-            break
-        left.append(card)
-        probe['cards_selected'] = [*(probe.get('cards_selected') or []), card]
-        probe['cards_used'] = [*(probe.get('cards_used') or []), card]
+    from .battle_menus import _remaining_carried_cards
+    left = list(dict.fromkeys(_remaining_carried_cards(mem, cur)))[:6]
     if left:
         return left
     # owner 2026-11-26 (クランベリー): 出撃確定の binding が読めない戦闘は

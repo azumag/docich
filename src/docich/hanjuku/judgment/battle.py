@@ -627,9 +627,17 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
     # 既に1枚使った戦闘が危険なままなら、卵落とし等の非致死リスクで拒否せず
     # 次の札を開かせる。1枚目や通常戦闘の判定は従来どおり（安全弁は維持）。
+    heal_alternative = (
+        listed_cards is not None
+        and 'エンジェリン' in listed_cards
+        and card != 'エンジェリン'
+        and _card_healing_needed(cur)
+    )
     if (not result['allowed'] and not finished
             and _critical_survival_needed(cur)
-            and (summoned or boss)
+            and not heal_alternative
+            and card not in reference.BOSS_ONLY_CARDS
+            and estimate.get('effect_kind') != 'retreat'
             and result['role'] in {'nonlethal_egg_risk', 'control_has_no_observed_followup',
                                    'damage_or_egg_risk_unclassified'}):
         result.update(allowed=True, role='critical_card_spend')
@@ -1501,14 +1509,7 @@ def _early_resource_rescue_needed(mem, cur):
             or opens < 0 or pending < 0 or opens >= 12 or pending >= 3):
         return False
 
-    attempts = rescue.get('egg_attempts', 0)
-    if type(attempts) is not int or attempts < 0:
-        attempts = EGG_ATTEMPT_HARD_LIMIT
-    egg_limit = EGG_ATTEMPT_LIMIT
-    last_hp = rescue.get('egg_attempt_hp')
-    if (type(last_hp) is int and hp < last_hp and attempts < EGG_ATTEMPT_HARD_LIMIT):
-        egg_limit = EGG_ATTEMPT_HARD_LIMIT
-    egg_spent = attempts >= egg_limit or (rescue.get('egg_attempted') and not attempts)
+    egg_spent = _egg_attempts_spent(rescue, cur)
     egg_ready = (not rescue.get('egg_pending') and not egg_spent
                  and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur))
 
@@ -2257,8 +2258,9 @@ def _retreat_cards_to_spend(cur):
     (cards_checked, cards_exhausted, exhausted) cap it too.
     """
     rescue = cur.get('survival') or {}
-    if (rescue.get('exhausted') or rescue.get('cards_exhausted')
-            or int(rescue.get('cards_checked') or 0) >= CARD_SPEND_ATTEMPT_LIMIT):
+    checks = int(rescue.get('cards_checked') or 0)
+    over_check_limit = checks > 6 if _critical_survival_needed(cur) else checks >= CARD_SPEND_ATTEMPT_LIMIT
+    if rescue.get('exhausted') or rescue.get('cards_exhausted') or over_check_limit:
         return False
     attempts = _card_spend_attempts(cur)
     return any(attempts.get(card, 0) < CARD_SPEND_ATTEMPT_LIMIT
@@ -2372,6 +2374,26 @@ EGG_ATTEMPT_LIMIT = 2      # summon-menu selections per battle before melee resu
 EGG_ATTEMPT_HARD_LIMIT = 4
 
 
+def _egg_attempts_spent(rescue, cur) -> bool:
+    """Whether summon-menu egg retries are exhausted for this battle."""
+    if not isinstance(rescue, dict):
+        return False
+    attempts = rescue.get('egg_attempts', 0)
+    if type(attempts) is not int or attempts < 0:
+        attempts = EGG_ATTEMPT_HARD_LIMIT
+    limit = EGG_ATTEMPT_LIMIT
+    last_hp = rescue.get('egg_attempt_hp')
+    hp = cur.get('ally_hp') if isinstance(cur, dict) else None
+    if (type(last_hp) is int and type(hp) is int and hp < last_hp
+            and attempts < EGG_ATTEMPT_HARD_LIMIT):
+        # The general lost more HP after the failed selection: the egg is still
+        # carried and the earlier attempt proved nothing. One more bounded try.
+        limit = EGG_ATTEMPT_HARD_LIMIT
+    # A legacy flag without the counter means the menu was already used: only
+    # the counted attempts (v726) may retry.
+    return attempts >= limit or (bool(rescue.get('egg_attempted')) and not attempts)
+
+
 def _egg_before_retreat(mem, cur, *, menu=False):
     """Inspect this actor's untried positive egg before fleeing ordinary melee.
 
@@ -2384,18 +2406,7 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     if (rescue.get('conserving_melee') is True
             and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
         return False
-    attempts = int(rescue.get('egg_attempts') or 0)
-    limit = EGG_ATTEMPT_LIMIT
-    last_hp = rescue.get('egg_attempt_hp')
-    hp = cur.get('ally_hp')
-    if (type(last_hp) is int and type(hp) is int and hp < last_hp
-            and attempts < EGG_ATTEMPT_HARD_LIMIT):
-        # The general lost more HP after the failed selection: the egg is still
-        # carried and the earlier attempt proved nothing. One more bounded try.
-        limit = EGG_ATTEMPT_HARD_LIMIT
-    # A legacy flag without the counter means the menu was already used: only
-    # the counted attempts (v726) may retry once.
-    spent = attempts >= limit or (rescue.get('egg_attempted') and not attempts)
+    spent = _egg_attempts_spent(rescue, cur)
     return (not cur.get('egg_battle') and not cur.get('event_duel')
             and _survival_needed(cur)
             # #4606: against an observed summon/large enemy the retreat must not

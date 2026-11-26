@@ -5,6 +5,7 @@ selects the option the judgment layer chose.
 """
 from __future__ import annotations
 
+from collections import Counter
 from types import SimpleNamespace
 
 from ..os_layer.screen import OKUNOTE_CHOICES, Screen
@@ -26,7 +27,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                EGG_WALL_DAMAGE, SUMMON_SCROLL_BATCH,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort, _defense_kit_read_unread, _egg_drop_trace,
-                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
+                               _egg_attempts_spent, _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _retreat_cards_to_spend, _retreat_immediate_loss, _retreat_remaining_cards,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _stale_army_melee_hold,
@@ -725,11 +726,12 @@ def _survival_menu(screen, mem, cur):
         if rescue['egg_wait'] <= 3:
             return []  # allow the accepted summon to leave its menu
         rescue['egg_pending'] = False
+        rescue['egg_wait_timed_out'] = True
     labels = {word for _, _, word in _options(screen)}
     critical = _critical_survival_needed(cur)
     safe_card = critical and _critical_safe_card(mem, cur, rescue)
-    egg_ready = ('たまごをつかう' in labels and not rescue['egg_attempted']
-                 and not _own_egg_empty(mem, cur))
+    egg_ready = ('たまごをつかう' in labels and not _egg_attempts_spent(rescue, cur)
+                 and not _own_egg_empty(mem, cur) and not rescue.get('egg_wait_timed_out'))
     conserving = ('たまごをつかう' in labels and _hold_melee_egg(mem, cur, labels)
                   and ('きりふだ' not in labels or rescue.get('cards_exhausted')
                        or rescue['cards_checked'] >= 3))
@@ -819,13 +821,14 @@ def _survival_menu(screen, mem, cur):
                     observed_metric={'confirmed_kit': list(confirmed_kit),
                                      'melee_balance': _melee_balance(cur)},
                     reason='出撃確定の携行札と確定使用の差分から使える切り札が無いと分かるため、携行確認のためだけの実メニュー開放を省く')
+    card_check_limit = 6 if critical else 3
     if (critical or _dying_with_egg(mem, cur) or rescue.get('egg_priority')) and egg_ready and not safe_card:
         label = 'たまごをつかう'
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
-            and rescue['cards_checked'] < 3) or final_read:
+            and rescue['cards_checked'] < card_check_limit) or final_read:
         label = 'きりふだ'
-    elif ('たまごをつかう' in labels and not rescue['egg_attempted']
-          and not _own_egg_empty(mem, cur)):
+    elif ('たまごをつかう' in labels and not _egg_attempts_spent(rescue, cur)
+          and not _own_egg_empty(mem, cur) and not rescue.get('egg_wait_timed_out')):
         label = 'たまごをつかう'
     elif ('たまごをつかう' in labels and critical
           and cur.get('side') == 'defense'
@@ -905,9 +908,12 @@ def _survival_card_list(screen, mem, cur, flow, names):
     # proceeds instead of staying on the audit's remaining list. The same
     # two-reading settle applies: a flickering list is not a re-pick.
     retry = []
-    if uncertain and (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)):
+    if uncertain and (egg_bait.retreat_due(mem, cur) or _hero_retreat_needed(cur)
+                      or _critical_survival_needed(cur)):
         attempts = _card_spend_attempts(cur)
         remaining = set(_retreat_remaining_cards(cur))
+        if _critical_survival_needed(cur):
+            remaining |= set(counts)
         retry = [c for c in uncertain if c in remaining
                  and attempts.get(c, 0) < CARD_SPEND_ATTEMPT_LIMIT]
         if retry:
@@ -1266,22 +1272,45 @@ def _card_usable_in_battle(mem, cur, card):
     return card not in reference.BOSS_ONLY_CARDS or _boss_tactics_allowed(mem, cur)
 
 
+def _remaining_carried_cards(mem, cur):
+    """Carried usable cards remaining after subtracting confirmed/attempted copies."""
+    missing = set(cur.get('cards_missing') or ())
+    used_counts = Counter(c for c in (cur.get('cards_used') or []) if isinstance(c, str))
+    selected_counts = Counter(c for c in (cur.get('cards_selected') or []) if isinstance(c, str))
+    unclassified_counts = Counter(c for c in (cur.get('cards_unclassified') or []) if isinstance(c, str))
+
+    def _left_from(source):
+        spent = {
+            c: max(used_counts[c], selected_counts[c], unclassified_counts[c])
+            for c in set(used_counts) | set(selected_counts) | set(unclassified_counts)
+        }
+        remaining = []
+        for card in source:
+            if not isinstance(card, str) or card in missing:
+                continue
+            if spent.get(card, 0) > 0:
+                spent[card] -= 1
+                continue
+            if _card_usable_in_battle(mem, cur, card):
+                remaining.append(card)
+        return remaining
+
+    planned = [c for c in (cur.get('planned_cards') or []) if isinstance(c, str)]
+    left = _left_from(planned) if planned else []
+    if not left:
+        kit = _confirmed_carried_kit(mem, cur) or []
+        left = _left_from(kit)
+    return left
+
+
 def _carried_card_left(mem, cur):
     """A card the general actually carries and has not spent yet.
 
     Castle stock alone is not "holding" a card for the miss audit; only the
     planned sortie kit or a confirmed carried kit counts.
     """
-    attempted = {*(cur.get('cards_selected') or []), *(cur.get('cards_used') or []),
-                 *(cur.get('cards_unclassified') or []), *(cur.get('cards_missing') or [])}
-    planned = [c for c in (cur.get('planned_cards') or [])
-               if isinstance(c, str) and c not in attempted
-               and _card_usable_in_battle(mem, cur, c)]
-    if planned:
-        return planned[0]
-    kit = _confirmed_carried_kit(mem, cur) or []
-    return next((c for c in kit if isinstance(c, str) and c not in attempted
-                 and _card_usable_in_battle(mem, cur, c)), None)
+    left = _remaining_carried_cards(mem, cur)
+    return left[0] if left else None
 
 
 def _card_row_walk(flow, screen, ticks):
@@ -1339,6 +1368,12 @@ def battle_menu_step(screen: Screen, mem):
         # 「卵を残して敗北」を検出できなかった（ビシソワーズ）。
         if isinstance(cur, dict):
             cur['egg_white_seen'] = True
+            rescue = cur.get('survival')
+            if (isinstance(rescue, dict) and rescue.get('exhausted')
+                    and not _egg_attempts_spent(rescue, cur)
+                    and not rescue.get('egg_wait_timed_out')
+                    and not rescue.get('white_egg_rearmed')):
+                rescue.update(exhausted=False, menu_ticks=0, white_egg_rearmed=True)
         if isinstance(ally, str) and ally in (mem.get('egg_zero_owners') or []):
             mem['egg_zero_owners'] = [n for n in mem['egg_zero_owners'] if n != ally]
             _record(mem, 'battle_egg_white_available', **_battle_labels(cur),
@@ -3340,18 +3375,7 @@ def egg_battle_step(screen: Screen, mem):
                         observed_metric={'cancels': battle.get('card_retreat_cancels'),
                                          'abandoned': abandoned},
                         reason='退却禁止のため切り札一覧の再オープンが空転する。札は使えないものとして攻撃へ切り替える')
-        attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
-                     *(battle.get('cards_unclassified') or []), *(battle.get('cards_missing') or [])}
-        cards_left = [c for c in (battle.get('planned_cards') or [])
-                      if c not in attempted and _card_usable_in_battle(mem, battle, c)]
-        if not cards_left:
-            # The summon battle's battle context often has no planned_cards,
-            # even though the sortie confirmation carried a card.  Use the
-            # measured carried kit (departure binding minus spent) so a held
-            # card is not silently treated as absent.
-            carried = _confirmed_carried_kit(mem, battle) or []
-            cards_left = [c for c in carried
-                          if c not in attempted and _card_usable_in_battle(mem, battle, c)]
+        cards_left = _remaining_carried_cards(mem, battle)
         # Owner 2026-11-22: enemy summon + our general was going straight to
         # こうげき while a carried card was still in planned_cards.  In a
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in

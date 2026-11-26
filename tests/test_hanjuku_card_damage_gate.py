@@ -75,10 +75,15 @@ def test_a_critical_summon_battle_may_open_its_first_card():
 
 def test_an_ordinary_battle_keeps_the_existing_refusal():
     from docich.hanjuku.judgment import battle as rules
-    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=40)
     cur = mem['battle']
     gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
     assert gate['allowed'] is False
+    # Retreat-banned critical HP in an ordinary battle must spend usable cards.
+    critical_mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    critical_gate = rules._card_damage_gate(
+        critical_mem, critical_mem['battle'], 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert critical_gate['allowed'] is True and critical_gate['role'] == 'critical_card_spend'
 
 
 def assert_not_spent(mem):

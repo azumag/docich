@@ -8235,6 +8235,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1549-victory-menu-hold",
             "hanjuku-chart-v1550-camp-dispatch-receipt",
             "hanjuku-chart-v1551-boss-month-phase-guard",
+            "hanjuku-chart-v1553-spend-eggs-and-cards",
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
