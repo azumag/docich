@@ -1928,6 +1928,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
                  "hanjuku-chart-v1485-camp-watch-identity-subset",
                  "hanjuku-chart-v1551-boss-month-phase-guard",
+                 "hanjuku-chart-v1561-camp-resend-scene-reset",
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
                  "hanjuku-chart-v1557-order-start-proof",
