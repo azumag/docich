@@ -1301,6 +1301,51 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_same_month_maxed_evidence_survives_the_history_filter(runtime_dir):
+    value = _chikujou_state()
+    mem = value['policy']
+    home = chart.home_castle(10)
+    other = mem['captured'][0]
+    third = next(c for c in chart.CASTLE_NAMES[10] if c not in (home, other))
+    mem['captured'].append(third)
+    mem['world']['garrison'][third] = ['C']
+    mem['general_statuses']['statuses'][third] = {'location': 'castle', 'castle': third}
+    note(runtime_dir, 999, decision='chikujou_max_level_seen', month='1-1',
+         observed_metric={'castles': [other], 'level': 5},
+         reason='実一覧でレベル5を確認した城は当月の選択を省く')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['chikujou_event']
+    assert event['maxed'] == [other]
+    assert other not in event['candidates']
+    assert third in event['staffed_candidates']
+
+
+def test_chikujou_month_end_renders_last_held_visible_rows(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, decision='chikujou_held', month='1-1',
+         deviation_reason='castle_scan_exhausted',
+         observed_metric={'visible': ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン'],
+                          'scrolls': 9, 'stalled': 3},
+         reason='築城一覧を往復しても候補行を確認できないためBで戻る')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    diagnostic = record['chikujou_event']['terminal_diagnostic']
+    assert diagnostic['deviation_reason'] == 'castle_scan_exhausted'
+    assert diagnostic['visible'] == ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン']
+    assert diagnostic['scrolls'] == 9
+    assert diagnostic['stalled'] == 3
+    rendered = audit.render(record)
+    assert '最終保留理由: castle_scan_exhausted' in rendered
+    assert 'ファルゲ' in rendered
+    assert 'scrolls: 9 / stalled: 3' in rendered
+
 
 def test_chikujou_month_end_uses_live_policy_gold_over_stale_outer_gold(runtime_dir):
     # docich#5465: the last verified upgrade left 30G (the 30G reserve),

@@ -669,6 +669,8 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1458-merchant-mickey-priority'
     state['bot_version']='hanjuku-chart-v1567-sortie-panel-occluded'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1567-sortie-panel-occluded'
+    state['bot_version']='hanjuku-chart-v1569-chikujou-scan'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1569-chikujou-scan'
     assert 'SECRET' not in json.dumps(output)
     state.update(end_reason='SECRET-OUTCOME',bot_phase='SECRET-PHASE',bot_actions_sent='SECRET-COUNT',screen_unchanged_seconds=float('nan'))
     output=module._project_corner_state(state)
@@ -1936,6 +1938,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1551-boss-month-phase-guard",
                  "hanjuku-chart-v1561-camp-resend-scene-reset",
                  "hanjuku-chart-v1566-egg-attempt-retry",
+                 "hanjuku-chart-v1569-chikujou-scan",
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
                  "hanjuku-chart-v1557-order-start-proof",
