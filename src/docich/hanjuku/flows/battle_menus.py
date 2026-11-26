@@ -22,6 +22,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                _behind, _boss_tactics_allowed, _card_damage_gate,
                                _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
+                               _release_interrupted_card_flow,
                                DEFENDER_EGG_OPEN_LIMIT, DEFENDER_SUMMON_SCROLL_LIMIT, DEFENSE_MENU_READ_LIMIT,
                                EGG_WALL_DAMAGE, SUMMON_SCROLL_BATCH,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
@@ -1386,7 +1387,8 @@ def battle_menu_step(screen: Screen, mem):
         # unused. battle_step opens none while the enemy is one push from death
         # or a non-boss enemy sits at HP1.
         if (cur.get('card_flow') or {}).get('stage') != 'announce':
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま一撃撃破/HP1温存のため一覧を閉じる')
         if not cur.get('one_hit_menu_closed'):
             cur['one_hit_menu_closed'] = True
             hold = _hp1_resource_hold(cur) and not _one_hit_lethal(cur)
@@ -2123,7 +2125,8 @@ def card_list_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if ((_one_hit_lethal(cur) or _hp1_resource_hold(cur))
             and not (flow and flow.get('stage') == 'announce')):
-        cur['card_flow'] = None
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま一撃撃破/HP1温存のため一覧を閉じる')
         return [pad('b')]  # an unselected list closes unused: the next push wins
     names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
     rescue = {**(cur.get('survival') or {}), 'listed_cards': names}
@@ -2139,10 +2142,14 @@ def card_list_step(screen: Screen, mem):
                      and _retreat_cards_to_spend(cur))
             and not (cur.get('hero_retreat') or {}).get('unavailable')
             and not (cur.get('hero_retreat') or {}).get('exhausted')):
-        cur['card_flow'] = None
+        selected_interrupted = (isinstance(flow.get('card'), str)
+                                and flow.get('card') in (cur.get('cards_selected') or []))
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま緊急退却へ切り替えるため一覧を閉じる')
         cur['card_retreat_cancels'] = int(cur.get('card_retreat_cancels') or 0) + 1
         _record(mem, 'battle_hero_retreat_cancel_card', **_battle_labels(cur),
-                reason='未選択の切り札一覧を閉じ、どうしの緊急退却を優先')
+                reason=('選択済み・消費未確認の切り札一覧を閉じ、どうしの緊急退却を優先'
+                        if selected_interrupted else '未選択の切り札一覧を閉じ、どうしの緊急退却を優先'))
         return [pad('b')]
     # Recognition follows the real catalogue; tactic/rescue selection retains
     # its own planning and damage gates. A held event card must be visible.
@@ -2339,6 +2346,8 @@ def card_list_step(screen: Screen, mem):
                 flow.update(stage='list', selection_planned=False,
                             announce_ticks=0, cursor_ticks=0, list_observations=0,
                             list_same_observations=0, list_obs_sha=None, announce_absent_frames=[])
+                if isinstance(flow.get('card'), str):
+                    _note_card_spend_attempt(cur, flow['card'])
                 _record(mem, 'battle_card_announce_retry', **_battle_labels(cur),
                         card=flow['card'],
                         expected_metric='実使用告知または一覧からの消失',
@@ -3300,12 +3309,23 @@ def egg_battle_step(screen: Screen, mem):
             # navigation belongs to the previous menu; keep the exact card
             # intent, then reopen it from the summon menu's real list.
             interrupted_card = interrupted_flow.get('card')
-            if isinstance(interrupted_card, str):
-                battle['summon_card_resume'] = {
-                    'card': interrupted_card,
-                    'tactic_id': interrupted_flow.get('tactic_id'),
-                }
-            battle['card_flow'] = None
+            if (isinstance(interrupted_card, str)
+                    and interrupted_card in (battle.get('cards_selected') or [])):
+                # A retry-reset list flow has selection_planned=False, but its
+                # card is already a bounded selection.  Do not save it as a
+                # fresh pre-selection intent: that would erase the unconfirmed
+                # consumption evidence and can re-select a spent card.
+                battle.pop('summon_card_resume', None)
+                _release_interrupted_card_flow(
+                    mem, battle,
+                    '選択済み・消費未確認のまま敵召喚画面へ置き換わったため中断')
+            else:
+                if isinstance(interrupted_card, str):
+                    battle['summon_card_resume'] = {
+                        'card': interrupted_card,
+                        'tactic_id': interrupted_flow.get('tactic_id'),
+                    }
+                battle['card_flow'] = None
         elif (isinstance(interrupted_flow, dict)
                 and (interrupted_flow.get('stage') == 'announce'
                      or interrupted_flow.get('selection_planned'))):
