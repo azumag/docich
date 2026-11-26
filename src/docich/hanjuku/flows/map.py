@@ -1136,15 +1136,14 @@ ORDER_START_BACKOFF = 12      # observations (~18 s) before the same order resta
 
 
 def _order_start_due(mem, step):
-    """The same order is not restarted on every observation.
+    """Whether a proven start of this order is still inside its backoff.
 
-    A start that an interruption (defence, event) cut short used to restart at
-    once: g1133 2026-11-05 started the same move 10 times in five minutes, each
-    attempt opening the world map and aborting. The backoff keeps the order
-    pending without paying that cost again.
+    The check itself must not consume the budget: an interruption can cut the
+    attempt before the castle menu is ever reached (g1190 2026-11-19 run 5 —
+    #4622), and stamping here would hold the first real retry for no reason.
     """
     now = int(mem.get('tick') or 0)
-    started = mem.setdefault('order_start_tick', {})
+    started = mem.get('order_start_tick') or {}
     last = started.get(step)
     if last is not None and now - int(last) < ORDER_START_BACKOFF:
         # Counted, not recorded: a held frame that never reaches the plan is
@@ -1152,10 +1151,17 @@ def _order_start_due(mem, step):
         # decision and no order_start — #4622).
         _tally(mem, 'order_start_backoff')
         return False
-    started[step] = now
+    return True
+
+
+def _mark_order_started(mem, step):
+    """Record that the order reached a concrete castle-opening action."""
+    if not step:
+        return
+    started = mem.setdefault('order_start_tick', {})
+    started[step] = int(mem.get('tick') or 0)
     for stale in list(started)[:-40]:      # del on the temporary list is a no-op
         started.pop(stale, None)
-    return True
 
 
 def _drop_jump_state(mem, step):
@@ -1559,6 +1565,7 @@ def _mark_hero_select_miss(mem, step):
 
 def _start_castle_jump(mem, order, source):
     if _hero_select_jump_allowed(mem, order, source):
+        _mark_order_started(mem, order['step'])
         mem['castle_jump'] = {'step': order['step'], 'source': source,
                               'target': order.get('target'), 'phase': 'confirm',
                               'mode': 'hero_select', 'age': 0, 'total': 0,
@@ -1876,6 +1883,8 @@ def castle_jump_step(screen, mem, frame):
                 return []
             return _end_castle_jump(screen, mem, 'unexpected_menu')
         if screen.kind == 'main_menu':
+            if jump.get('step') and jump.get('mode') != 'reanchor':
+                _mark_order_started(mem, jump['step'])
             jump['fade'] = 0
             if screen.hand is None:
                 # A blind frame says nothing about which row is selected: the
@@ -2699,6 +2708,7 @@ def map_step(screen: Screen, mem, frame):
             mem.pop('near_goal', None)
             mem['cursor'], mem['uncertain'] = list(goal), False
             mem['expect_menu'] = True
+            _mark_order_started(mem, order['step'])
             return _deploy_input(screen, mem, order, [pad('a')], '全体マップで選んだ出撃元の屋根に合わせて城を選択')
         if aligned:
             return _deploy_input(screen, mem, order, aligned, '全体マップで選んだ出撃元の屋根へカーソルを合わせる')
@@ -2788,6 +2798,7 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('off_castle', None)
         # If no castle menu follows, the cell was wrong: re-localize.
         mem['expect_menu'] = True
+        _mark_order_started(mem, order['step'])
         return _deploy_input(screen, mem, order, [pad('a')], '出撃元の城を選択')
     if result is None:
         if _cursor(screen):
