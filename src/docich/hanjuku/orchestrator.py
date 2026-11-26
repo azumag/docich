@@ -17,7 +17,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     prompts as prompts_flow, recall as recall_flow, shop as shop_flow,
                     status_panel)
 from .judgment import battle as battle_judgment
-from .strategy import campaign, card_census as card_census_booking, edition, goals
+from .strategy import campaign, card_census as card_census_booking, edition, goals, orders as strategy_orders
 from .os_layer import readers
 from .os_layer.navigation import observe_jump_foreground
 from .os_layer.phase import classify, shop_exit_confirmation
@@ -1843,6 +1843,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # frame and the read starts only when the map is actually free.
     card_census_flow.wait_step(screen, mem)
     kind=screen.kind
+    # Measure dispatch starvation before any foreground owner runs: battles,
+    # monthly scenes, recalls and jumps otherwise keep the check itself from
+    # ever being evaluated, which is exactly the #5155/#5681 blind spot.
+    boss_dispatch_starved = strategy_orders.order_dispatch_starved(mem)
     month_sub = mem.get('month_sub')
     # docich#5046: a live egg recovery owns its own quote screen. The priest's
     # 「NこでNGになりまんな! よろしでっか?」 classifies as shop_quantity too, but
@@ -2335,11 +2339,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # month_sub answered them with its own keys (and a B), so the scan
         # saw the menu for one frame and never reached roster.
         from .flows import post_month_status as _pm_flow
-        actions = _pm_flow.step(screen, mem, frame)
+        actions = _pm_flow.step(screen, mem, frame, boss_dispatch=boss_dispatch_starved)
     if actions is None:
         actions = (recall_flow.camp_recall_step(screen, mem, frame)
                    if _recall_owns_dialog(kind, recall_dialog, ch9_field_recall)
-                   else month_flow.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
+                   else month_flow.month_sub_step(screen, mem, boss_dispatch=boss_dispatch_starved) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
                    else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
     # every branch answers such a text frame with [] or B, which advances
@@ -2353,7 +2357,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
     if actions is None:
         from .flows import post_month_status
-        actions = post_month_status.step(screen, mem, frame)
+        actions = post_month_status.step(screen, mem, frame, boss_dispatch=boss_dispatch_starved)
         monthly = mem.get('post_month_status') or {}
         # Only this owner's freshly entered status stage may accelerate A.
         # A generic confirm, a pending/retried read, or another flow cannot

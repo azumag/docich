@@ -2164,6 +2164,11 @@ def general_jump_step(screen, mem, frame):
         # 'unexpected_menu' and retries every observation.
         if screen.kind != 'map' or isinstance(mem.get('boss_pursuit'), dict):
             return None
+        if order_dispatch_starved(mem):
+            # A starved boss-phase order owns the next free map frame. The
+            # jump is useful recovery work, but arming it here repeatedly kept
+            # that order behind a multi-menu roster trip (#5155).
+            return None
         if (mem.get('chapter') or 0) == 9:
             from . import boss_pursuit as _boss_pursuit
             if _boss_pursuit.wave_active(mem) and _boss_pursuit._candidate(mem) is not None:
