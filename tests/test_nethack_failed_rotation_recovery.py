@@ -110,6 +110,71 @@ class TestAutomaticNethackFailedRestore(TestCase):
         self.manager._restore_replay_source_proved.assert_called_once()
         self.manager._recover_restore_failed.assert_called_once()
 
+    def _use_dead_active_retire_receipt(self, retiring=()):
+        """Shape produced when an expired drain retires the dead active runtime."""
+        self.original_result.pop("restored_generation", None)
+        self.original_result.update({
+            "status": "failed",
+            "error_code": "timeout",
+            "failure_phase": "round_boundary",
+            "retained_active": None,
+            "active_retired": True,
+            "boundary_cancelled": True,
+            "cleanup_pending": bool(retiring),
+        })
+        self.receipt["status"] = "failed"
+        self.canonical.update({
+            "phase": "idle",
+            "active": None,
+            "retiring": list(retiring),
+            "last_result": self.original_result,
+        })
+        self.store.canonical.load.side_effect = [(self.canonical, False)]
+
+    def test_dead_active_retire_receipt_terminalizes_without_prompt_classification(self):
+        # docich#5708 acceptance case: the exact switch/failed/timeout receipt
+        # with active_retired=True is itself terminal evidence.  The strict
+        # death-disclosure prompt classifier is not part of this proof.
+        self._use_dead_active_retire_receipt()
+        self.manager._runtime_screen.side_effect = AssertionError(
+            "dead-active retire must not classify the pane"
+        )
+        result = self.manager.recover_failed_rotation()
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(self.manager._read_state.return_value["status"], "interrupted")
+        self.manager._write_state.assert_called_once()
+        self.manager.coordinator.recover.assert_not_called()
+        self.manager._recover_restore_failed.assert_not_called()
+
+    def test_dead_active_retire_cleans_exact_retiring_rows_before_terminalizing(self):
+        retiring = [{
+            **self.source,
+            "adapter": "cli",
+            "cleanup_role": "failed_boundary_active",
+        }]
+        self._use_dead_active_retire_receipt(retiring)
+        cleaned = {**self.canonical, "retiring": []}
+        self.store.canonical.load.side_effect = [
+            (self.canonical, False), (cleaned, False),
+        ]
+        result = self.manager.recover_failed_rotation()
+        self.assertEqual(result.status, "succeeded")
+        self.manager.coordinator.recover.assert_called_once_with(
+            timeout_s=120.0, expected_snapshot=self.canonical,
+        )
+        self.assertEqual(self.manager._read_state.return_value["status"], "interrupted")
+
+    def test_dead_active_retire_refuses_when_canonical_still_has_an_active_game(self):
+        self._use_dead_active_retire_receipt()
+        self.canonical["phase"] = "ready"
+        self.canonical["active"] = self.source
+        result = self.manager.recover_failed_rotation()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.detail, "dead-active retire canonical unproven")
+        self.assertEqual(self.manager._read_state.return_value["status"], "failed")
+        self.manager._write_state.assert_not_called()
+        self.manager.coordinator.recover.assert_not_called()
+
     def test_healthy_or_manual_slot_is_not_recovered(self):
         original = self.manager._read_state.return_value
         for change in (

@@ -345,6 +345,104 @@ class NethackCornerManager(RetroCornerManager):
                 latest["screen_readable"] = text is not None
                 return self._finish_locked(latest, now)
 
+    @staticmethod
+    def _dead_active_retire_receipt_shape(original: dict, result: dict) -> bool:
+        """The exact boundary-failure shape produced by dead-active retire."""
+        return bool(
+            original.get("status") == "failed"
+            and result.get("status") == "failed"
+            and result.get("error_code") == "timeout"
+            and result.get("failure_phase") == "round_boundary"
+            and result.get("boundary_cancelled") is True
+            and "retained_active" in result
+            and result.get("retained_active") is None
+            and result.get("active_retired") is True
+            and result.get("cleanup_pending") in (None, False, True)
+        )
+
+    @staticmethod
+    def _dead_active_idle_canonical(canonical: dict, result: dict) -> bool:
+        """Canonical still belongs to the exact retired-boundary receipt."""
+        return bool(
+            canonical.get("phase") == "idle"
+            and canonical.get("active") is None
+            and canonical.get("candidate") is None
+            and canonical.get("previous") is None
+            and canonical.get("operation") is None
+            and canonical.get("request_id") is None
+            and canonical.get("deadline_at") is None
+            and canonical.get("last_result") == result
+            and isinstance(canonical.get("retiring"), list)
+        )
+
+    @staticmethod
+    def _dead_active_retiring_owned(retiring: list) -> bool:
+        """Every remaining cleanup row is this receipt's retired NetHack runtime."""
+        return all(
+            isinstance(entry, dict)
+            and entry.get("game") == GAME_NAME
+            and entry.get("adapter") == "cli"
+            and entry.get("cleanup_role") == "failed_boundary_active"
+            and type(entry.get("generation")) is int
+            and isinstance(entry.get("runtime_id"), str)
+            and bool(entry.get("runtime_id"))
+            and isinstance(entry.get("lease_id"), str)
+            and bool(entry.get("lease_id"))
+            for entry in retiring
+        )
+
+    def _recover_dead_active_retire_locked(
+        self,
+        state: dict[str, object],
+        result: dict[str, object],
+        canonical: dict[str, object],
+    ) -> CornerResult:
+        """Settle a failed restore whose dead NetHack active was retired.
+
+        This receipt shape is terminal evidence in itself: no rollback owner
+        remains to replay from, and no death/disclosure prompt classification
+        is needed.  Canonical must still be the same idle boundary outcome.
+        If teardown rows remain, run the ordinary coordinator cleanup once
+        under the exact snapshot and require them gone before terminalizing
+        the corner; anything foreign or unproven stays fail-closed.
+        """
+        if not self._dead_active_idle_canonical(canonical, result):
+            return CornerResult(
+                "failed", game=GAME_NAME,
+                detail="dead-active retire canonical unproven",
+            )
+        retiring = canonical.get("retiring")
+        if retiring:
+            if not self._dead_active_retiring_owned(retiring):
+                return CornerResult(
+                    "failed", game=GAME_NAME,
+                    detail="dead-active retire cleanup ownership unproven",
+                )
+            recovered = self.coordinator.recover(
+                timeout_s=120.0, expected_snapshot=canonical,
+            )
+            if (getattr(recovered, "status", None) != "succeeded"
+                    or getattr(recovered, "cleanup_pending", True) is not False):
+                return CornerResult(
+                    "queued", game=GAME_NAME,
+                    detail="dead-active retire cleanup pending",
+                )
+            verified, missing = self.store.canonical.load()
+            if (missing
+                    or not self._dead_active_idle_canonical(verified, result)
+                    or verified.get("retiring")):
+                return CornerResult(
+                    "failed", game=GAME_NAME,
+                    detail="dead-active retire cleanup unproven",
+                )
+        state["status"] = "interrupted"
+        state.pop("switch_status", None)
+        self._write_state(state)
+        return CornerResult(
+            "succeeded", game=GAME_NAME, previous_game="sorengame",
+            detail="dead-active retireを確認してinterruptedとして確定しました",
+        )
+
     def recover_failed_rotation(self) -> CornerResult:
         """Settle the one proven failed automatic NetHack restore.
 
@@ -402,22 +500,34 @@ class NethackCornerManager(RetroCornerManager):
                             or original.get("request_id") != restore_id
                             or original.get("operation") != "switch"
                             or original.get("target") != "sorengame"
-                            or original.get("status") != "rolled_back"
                             or result.get("request_id") != restore_id
                             or result.get("operation") != "switch"
-                            or result.get("status") != "rolled_back"
+                            or result.get("status") != original.get("status")
                             or result.get("from_game") != GAME_NAME
                             or result.get("to_game") != "sorengame"
                             or type(result.get("generation")) is not int
                             or result.get("generation") != original.get("generation")
-                            or type(result.get("restored_generation")) is not int
                             or result.get("cleanup_pending") not in (None, False, True)):
+                        return CornerResult("failed", game=GAME_NAME,
+                                            detail="original restore receipt unproven")
+                    rolled_back = bool(
+                        original.get("status") == "rolled_back"
+                        and type(result.get("restored_generation")) is int
+                    )
+                    dead_active_retire = self._dead_active_retire_receipt_shape(
+                        original, result
+                    )
+                    if not rolled_back and not dead_active_retire:
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="original restore receipt unproven")
                     canonical, missing = self.store.canonical.load()
                     if missing:
                         return CornerResult("failed", game=GAME_NAME,
                                             detail="canonical unavailable")
+                    if dead_active_retire:
+                        return self._recover_dead_active_retire_locked(
+                            state, result, canonical
+                        )
 
                     owner_keys = ("game", "runtime_id", "generation", "lease_id")
                     proof = state.get("restore_cleanup")
