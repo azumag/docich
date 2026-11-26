@@ -1283,12 +1283,16 @@ def _battle_resources(record):
     # not a battle-time remaining egg. Counting it produced repeated false
     # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
+    ledger_only = False
     if metric.get('egg_uses_source') == 'ledger':
-        # A ledger value is not a battle-time count. The flow still marks the
-        # measured case (a usable egg observed, no egg battle entered, no egg
-        # used) as egg_available_unused, so a real "lost with an egg left"
-        # keeps being filed (owner 2026-11-26).
-        egg = 1 if metric.get('egg_available_unused') is True else 0
+        # owner 2026-11-26 (option B): 台帳の正数は実残数ではないが、この戦闘で
+        # 卵戦に入っていないなら「卵を使わなかった」ことの証拠にはなる。
+        # 実測（egg_available_unused）がある場合を除き、台帳のみの場合は
+        # egg_ledger_only を立てて判別できるようにする。
+        measured = metric.get('egg_available_unused') is True
+        ledger_only = (not measured and egg > 0
+                       and metric.get('egg_battle') is not True)
+        egg = 1 if (measured or ledger_only) else 0
     selected = [card for card in (metric.get('cards_selected') or [])
                 if isinstance(card, str)][:12]
     used = [card for card in (metric.get('cards_used') or [])
@@ -1327,6 +1331,7 @@ def _battle_resources(record):
     return {
         'resources': resources,
         'egg_uses': egg,
+        'egg_ledger_only': bool(ledger_only),
         'cards_selected': selected,
         'cards_used': used,
         'cards_remaining': remaining[:12],
@@ -1419,6 +1424,7 @@ def _battle_resource_event(record):
         'decision': decision,
         'resources': resources['resources'],
         'egg_uses': resources['egg_uses'],
+        'egg_ledger_only': resources.get('egg_ledger_only') is True,
         'cards_selected': resources['cards_selected'],
         'cards_used': resources['cards_used'],
         'cards_remaining': resources['cards_remaining'],

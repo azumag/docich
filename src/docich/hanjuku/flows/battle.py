@@ -2027,6 +2027,10 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                              # のに卵戦に入っていない場合だけ、実測の証拠として
                              # 「使える卵を残した」を立てる。
                              'egg_available_unused': _egg_available_unused(mem, cur),
+                             # owner 2026-11-26 (B): 卵メニューを観測できなくても、
+                             # 卵戦に入っていないことを証拠として残す（監査は
+                             # 台帳と合わせて「未使用の可能性」を判定する）。
+                             'egg_battle': bool(cur.get('egg_battle') or mem.get('egg_battle')),
                              # owner 2026-11-26: 携行した切り札を一度も開かずに
                              # 負けた戦闘は、選択履歴が空なので監査の残存札
                              # 判定に掛からなかった。携行の実測（計画・確定キット）

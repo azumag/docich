@@ -1024,14 +1024,23 @@ def _battle_record(decision, *, outcome=None, metric=None, general=None,
             'chart_step': step, 'reason': 'battle result', 'at': 1000.0}
 
 
-def test_a_ledger_egg_count_is_not_remaining_resource_evidence():
-    # docich#5542/#5551: battle_result writes the last observed ledger value.
-    # A stale positive must not be read as a spendable egg left at the loss.
+def test_a_ledger_egg_count_counts_only_when_no_egg_battle_was_entered():
+    # owner 2026-11-26 (option B): 台帳は実残数ではないが、その戦闘で卵戦に
+    # 入っていないなら「使わなかった」証拠にはなる。判別用に egg_ledger_only を
+    # 立てて起票する（旧: 台帳だけでは起票しない）。
     ledger_only = audit._battle_resource_event(_battle_record(
         'battle_result', outcome='loss',
         metric={'egg_uses': 4, 'egg_uses_source': 'ledger',
                 'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
-    assert ledger_only is None or ledger_only['resources'] == []
+    assert ledger_only is not None
+    assert ledger_only['resources'] == ['egg']
+    assert ledger_only['egg_ledger_only'] is True
+
+    entered = audit._battle_resource_event(_battle_record(
+        'battle_result', outcome='loss',
+        metric={'egg_uses': 4, 'egg_uses_source': 'ledger', 'egg_battle': True,
+                'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
+    assert entered is None or entered['resources'] == []
 
     # A record without the provenance field keeps the existing behaviour.
     legacy = audit._battle_resource_event(_battle_record(
@@ -2728,12 +2737,13 @@ def test_a_measured_unused_egg_is_evidence_even_with_a_ledger_source():
     assert measured['resources'] == ['egg']
 
 
-def test_a_ledger_value_alone_is_still_not_evidence():
-    ledger_only = audit._battle_resource_event(_battle_record(
+def test_a_ledger_value_counts_only_without_an_egg_battle():
+    # owner 2026-11-26 (option B) の契約。卵戦に入っていれば台帳だけでは起票しない。
+    entered = audit._battle_resource_event(_battle_record(
         'battle_result', outcome='loss',
-        metric={'egg_uses': 4, 'egg_uses_source': 'ledger',
+        metric={'egg_uses': 4, 'egg_uses_source': 'ledger', 'egg_battle': True,
                 'ally_hp': 0, 'enemy_hp': 40}, general='キッシュ'))
-    assert ledger_only is None
+    assert entered is None
 
 def test_a_carried_card_never_opened_is_still_a_loss_resource():
     # owner 2026-11-26: 選択履歴が無い戦闘でも、携行の実測が残っていれば
