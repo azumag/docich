@@ -8228,6 +8228,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1533-egg-unused-measured",
             "hanjuku-chart-v1529-owned-target-settle",
             "hanjuku-chart-v1542-unconfirmed-march-end-reopen",
+            "hanjuku-chart-v1544-egg-ledger-loss-option-b",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
