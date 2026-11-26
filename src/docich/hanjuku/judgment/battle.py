@@ -210,6 +210,21 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
     cur['card_flow'] = None
 
 
+def _release_interrupted_card_flow(mem, cur, reason):
+    """Release a card flow without erasing selected-but-unconfirmed evidence.
+
+    Menu interruptions historically dropped pre-selection flows silently.  Keep
+    that clean-kit behaviour until the selection input exists in the ledger;
+    after it, the same interruption is consumption-unconfirmed evidence.
+    """
+    flow = cur.get('card_flow') or {}
+    card = flow.get('card')
+    if isinstance(card, str) and card in (cur.get('cards_selected') or []):
+        _card_use_unclassified(mem, cur, reason, selected_interrupted=True)
+    else:
+        cur['card_flow'] = None
+
+
 def reset_battle_controls(mem):
     mem['egg_battle'] = False
     mem.pop('battle_menu_pending_ticks', None)

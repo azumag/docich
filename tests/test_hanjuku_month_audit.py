@@ -1742,6 +1742,10 @@ def test_boss_phase_month_with_zero_boss_sorties_is_recorded(runtime_dir):
     assert record['auto_file'] is True
     assert record['boss_month']['boss_name'] == chart.BOSSES[9]
     assert record['boss_month']['departures'] == 0
+    # A phase that began before the month covers it whole (docich#5120).
+    assert record['boss_month']['phase_sufficient'] is True
+    assert record['boss_month']['in_month_s'] >= audit.MIN_BOSS_PHASE_SECONDS
+    assert record['boss_month']['in_month_observations'] >= audit.MIN_BOSS_PHASE_OBSERVATIONS
     assert 'ボスフェーズで月内ボス出撃ゼロ' in audit._issue_title(record)
     assert '### ボスフェーズ月次' in audit.render(record)
 
@@ -1755,6 +1759,77 @@ def test_boss_phase_month_with_a_boss_sortie_is_not_flagged(runtime_dir):
     saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
     assert saved['last_close']['kind'] == 'ok'
     assert saved['pending'] is None
+
+
+def run_boss_month_tail(runtime, chapter, month, start, count, tail, *,
+                        tail_step=0.2):
+    """A month that enters the boss phase only for its last observations."""
+    last = None
+    for index in range(count):
+        at = start + index * STEP
+        last = state(chapter, month, index)
+        audit.observe(runtime, audit.capture(last), last, [], now=at)
+        note(runtime, at)
+    tail_start = start + count * STEP + 0.5
+    for index in range(tail):
+        at = tail_start + index * tail_step
+        last = boss_state(chapter, month, 1000 + index)
+        audit.observe(runtime, audit.capture(last), last, [], now=at)
+        note(runtime, at)
+    return last, tail_start + (tail - 1) * tail_step
+
+
+def test_boss_phase_beginning_at_the_month_end_is_unverified(runtime_dir):
+    # docich#5120: the phase began ~7 s before the month closed with dozens
+    # of dense observations, so zero boss departures proved nothing.
+    old = run_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, state(9, '1-2', 200), 1200)
+    last, tail_at = run_boss_month_tail(runtime_dir, 9, '1-2', 1200, 100, 30)
+    boundary(runtime_dir, last, boss_state(9, '1-3', 400), tail_at + 10)
+    record = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())['pending']['incident']
+    assert record['kind'] == 'boss_month_zero_unverified'
+    assert record['confidence'] == 'low'
+    assert 'short_boss_phase' in record['confidence_reasons']
+    assert record['auto_file'] is False
+    month = record['boss_month']
+    assert month['phase_sufficient'] is False
+    assert month['in_month_s'] < audit.MIN_BOSS_PHASE_SECONDS
+    assert month['in_month_observations'] >= audit.MIN_BOSS_PHASE_OBSERVATIONS
+
+
+def test_boss_phase_first_seen_at_the_boundary_is_unverified(runtime_dir):
+    # No in-month tracker: the phase cannot be proven to have given the
+    # bot any window at all, so the month is unverified, not zero.
+    old = run_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, state(9, '1-2', 200), 1200)
+    old = run_month(runtime_dir, 9, '1-2', 1200, 100)
+    boundary(runtime_dir, old, boss_state(9, '1-3', 400), 1380)
+    record = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())['pending']['incident']
+    assert record['kind'] == 'boss_month_zero_unverified'
+    assert 'short_boss_phase' in record['confidence_reasons']
+    assert record['auto_file'] is False
+    assert record['boss_month']['phase_sufficient'] is False
+    assert record['boss_month']['in_month_s'] is None
+    assert record['boss_month']['in_month_observations'] is None
+
+
+def test_the_month_guard_does_not_suppress_boss_no_battle(runtime_dir):
+    old = run_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, state(9, '1-2', 200), 1200)
+    last, tail_at = run_boss_month_tail(runtime_dir, 9, '1-2', 1200, 100, 30)
+    boundary(runtime_dir, last, boss_state(9, '1-3', 400), tail_at + 10)
+    # The guard downgrades the closed month, but the phase tracker keeps
+    # running into the next month, so a later stall still reports.
+    at = tail_at + 10
+    while at < tail_at + audit.BOSS_NO_BATTLE_SECONDS + 30:
+        at += STEP
+        value = boss_state(9, '1-3', int(at))
+        audit.observe(runtime_dir, audit.capture(value), value, [], now=at)
+        note(runtime_dir, at)
+    kinds = [record['kind'] for record in audit.load_incidents(runtime_dir)]
+    assert 'boss_phase_no_battle' in kinds
+    assert 'boss_month_zero_unverified' in kinds
+    assert 'boss_month_zero_sortie' not in kinds
 
 
 def _kikan_record(choice='きかん', move='here'):
@@ -1877,11 +1952,89 @@ def test_non_stall_corner_reason_is_not_recorded(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_game_over_is_recorded_and_titled(runtime_dir):
+    final_state = state(10, '1-1', 88)
+    final_state['policy']['captured'] = ['アルマムーン']
+    final_state['policy']['lost'] = ['スタート']
+    final_state['policy']['home_lost'] = True
+    (runtime_dir / 'hanjuku_bot.json').write_text(
+        json.dumps(final_state, ensure_ascii=False), encoding='utf-8')
+    note(runtime_dir, 999, 'battle_result', chart_step='10-A1', outcome='loss',
+         target='ボス', reason='最終戦に敗北')
+    terminal = {
+        'terminal_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'frame_sha256': 'c' * 64,
+        'observed_at': 1000.0,
+        'observed_monotonic': 200.0,
+        'title_since': 197.0,
+        'title_count': 3,
+        'phase': 'title',
+        'observations': 88,
+        'actions_sent': 70,
+        'battles_started': 4,
+        'battles_finished': 4,
+    }
+    review = {'file': 'hanjuku_chart_review.json', 'proposals': 2,
+              'by_type': {'review_base_step': 2}, 'off_chart_requests': 1,
+              'adjusted_orders': 3, 'battle_outcomes': 4,
+              'unattributed_battles': 1}
+    record = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        rotation_request_id='req-game-over', terminal_evidence=terminal,
+        chart_review=review, now=1000, spawn=False)
+    assert record['kind'] == 'game_over'
+    assert record['auto_file'] is True
+    assert record['chapter'] == 10
+    assert record['month'] == '1-1'
+    over = record['game_over']
+    assert over['observations'] == 88
+    assert over['title_hold_s'] == 3.0
+    assert over['lost'] == ['スタート']
+    assert over['chart_review']['proposals'] == 2
+    assert 'ゲームオーバー' in audit._issue_title(record)
+    body = audit.render(record)
+    assert '### chart review' in body
+    assert 'battle_result' in body
+    assert '最終戦に敗北' in body
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_game_over_is_recorded_once(runtime_dir):
+    terminal = {'terminal_reason': 'game_over', 'frame_sha256': 'd' * 64,
+                'observed_at': 1000.0, 'observations': 10}
+    first = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1000, spawn=False)
+    second = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1100, spawn=False)
+    assert first['incident_id'] == second['incident_id']
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_game_over_files_a_github_issue(runtime_dir):
+    terminal = {'terminal_reason': 'game_over', 'frame_sha256': 'e' * 64,
+                'observed_at': 1000.0, 'observations': 10}
+    audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1000, spawn=False)
+    gh = FakeGh()
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+    create = [call for call in gh.calls if call[:2] == ['issue', 'create']][0]
+    title = create[create.index('--title') + 1]
+    assert title.startswith('[半熟英雄] ゲームオーバー:')
+    assert '--label' in create and 'auto-generated' in create
+
+
 def test_retro_corner_records_screen_stall_before_teardown():
     text = (Path(__file__).resolve().parents[1] / 'src/docich/retro_corner.py').read_text(
         encoding='utf-8')
+    assert 'record_game_over' in text
     assert 'record_corner_stall' in text
     assert "screen_stalled', 'input_stalled'" in text
+    assert 'from .hanjuku import month_audit' in text
 
 
 def _menu_state(menu=True):

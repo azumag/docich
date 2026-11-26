@@ -91,6 +91,11 @@ CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
+# A boss phase needs a fair window inside the closed month before the audit
+# can claim a missing boss sortie: the order dispatcher alone allows ~90 s
+# (ORDER_DISPATCH_STARVE_TICKS) for a pending order to reach order_start.
+MIN_BOSS_PHASE_SECONDS = 90
+MIN_BOSS_PHASE_OBSERVATIONS = 20
 MAX_READ_BYTES = 2 * 1024 * 1024
 MAX_RECORD_BYTES = 32 * 1024
 MAX_STATE_BYTES = 128 * 1024
@@ -180,6 +185,7 @@ SIGNAL_LABELS = {
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
     'corner_stalled': '画面停滞でコーナー停止',
+    'game_over': 'ゲームオーバー',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
@@ -249,6 +255,7 @@ PRIMARY_LABELS = {
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
     'corner_stalled': '画面停滞でコーナー停止',
+    'game_over': 'ゲームオーバー',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
@@ -1436,12 +1443,16 @@ def _battle_resource_event(record):
         # docich#5198: a remaining card the survival list already tried is the
         # same unconfirmed signature even when the settle never reached the
         # cards_unclassified ledger (e.g. the flow was dropped or the battle
-        # ended mid-attempt).
+        # ended mid-attempt). docich#5676: an announce retry's re-selection
+        # leaves the same detection-limit remnant when measured use confirms
+        # only one of the intentional duplicate selected entries.
         'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
             resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
-            resources['cards_unclassified'], resources['cards_attempted']),
+            resources['cards_unclassified'], resources['cards_attempted'],
+            resources['cards_spend_retry']),
         'cards_unclassified': resources['cards_unclassified'],
         'cards_attempted': resources['cards_attempted'],
+        'cards_spend_retry': resources['cards_spend_retry'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -3864,6 +3875,46 @@ def _seal_if_due(runtime, state, now, on_sealed=None):
     return _seal(runtime, state, now, on_sealed)
 
 
+def _boss_month_coverage(state, boss_phase, observed, close_at):
+    """Boss-phase coverage inside the closed month (docich#5120).
+
+    state['boss'] is the tracker as of the last in-month observation (the
+    boundary observation updates it after the close).  A phase that spans
+    the boundary covers the whole month; one that began inside it only
+    covers [started_at, close_at].  A tracker for a different episode, or
+    none at all, means the current phase was first seen at the boundary,
+    so its in-month coverage is not provable.  Coverage below the floor
+    cannot prove a missing boss sortie — the bot had no fair window to
+    launch one — so such months downgrade to unverified.
+    """
+    info = {'in_month_s': None, 'in_month_observations': None,
+            'phase_sufficient': False}
+    tracker = state.get('boss') if isinstance(state.get('boss'), dict) else None
+    if tracker is not None and (
+            tracker.get('chapter') != boss_phase.get('chapter')
+            or sorted(tracker.get('bosses') or []) != sorted(boss_phase.get('bosses') or [])):
+        tracker = None
+    started = tracker.get('started_at') if tracker is not None else None
+    first_at = observed.get('first_at')
+    if type(started) in (int, float) and type(first_at) in (int, float):
+        info['in_month_s'] = round(
+            max(0.0, float(close_at) - max(float(started), float(first_at))), 1)
+        if float(started) >= float(first_at):
+            info['in_month_observations'] = _bounded_int(
+                tracker.get('observations'), 0, 10 ** 9)
+        else:
+            # The phase covers the whole month, so every in-month
+            # observation is also a boss-phase observation.
+            info['in_month_observations'] = _bounded_int(
+                observed.get('observations'), 0, 10 ** 9)
+    if (info['in_month_s'] is not None
+            and info['in_month_s'] >= MIN_BOSS_PHASE_SECONDS
+            and info['in_month_observations'] is not None
+            and info['in_month_observations'] >= MIN_BOSS_PHASE_OBSERVATIONS):
+        info['phase_sufficient'] = True
+    return info
+
+
 def _close_month(runtime, state, before, after, now, on_sealed=None):
     observed = state.get('observed')
     if not isinstance(observed, dict):
@@ -3916,9 +3967,21 @@ def _close_month(runtime, state, before, after, now, on_sealed=None):
             'started_at': tracker.get('started_at'),
             'observations': tracker.get('observations'),
         }
+        boss_month.update(_boss_month_coverage(state, boss_phase, observed, close_at))
     duration_s = max(0.0, until - since)
     confidence, reasons = _confidence(observed, context, ledger_ok, chapter_changed,
                                       irregular, coverage, duration_s)
+    # A phase that began moments before the month closed never gave the bot
+    # a window to launch a boss sortie, so zero departures is not evidence
+    # of a stall (docich#5120).  Downgrade like any other weak-evidence
+    # month; the phase carries into the next month's judgment.  Months that
+    # did produce a boss departure keep their classification — the coverage
+    # fields stay in boss_month as diagnostics only.
+    if (boss_month is not None and boss_departures == 0
+            and not boss_month.get('phase_sufficient')):
+        if 'short_boss_phase' not in reasons:
+            reasons.append('short_boss_phase')
+        confidence = 'low'
     if not observed.get('started_clean'):
         kind = 'skipped'
     elif chapter_changed:
@@ -4016,6 +4079,153 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _write_state(runtime, state)
     return state
 
+
+
+def _bounded_seconds(value):
+    return round(float(value), 1) if type(value) in (int, float) and 0 <= value <= 10 ** 7 else None
+
+
+def _terminal_bot_state(runtime):
+    """Best-effort bounded final bot state for terminal incident evidence."""
+    try:
+        from ..retroarch_boundary import read_record
+        state = read_record(Path(runtime) / 'hanjuku_bot.json', limit=256 * 1024)
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _bounded_chart_review(value):
+    if not isinstance(value, dict):
+        return None
+    by_type = value.get('by_type') if isinstance(value.get('by_type'), dict) else {}
+    types = {}
+    for key, count in list(by_type.items())[:8]:
+        name = _bounded_text(key, 64)
+        if name and type(count) is int and 0 <= count <= 10 ** 6:
+            types[name] = count
+    out = {
+        'file': _bounded_text(value.get('file'), 64),
+        'proposals': _bounded_int(value.get('proposals'), 0, 10 ** 6),
+        'by_type': types or None,
+        'off_chart_requests': _bounded_int(value.get('off_chart_requests'), 0, 10 ** 6),
+        'adjusted_orders': _bounded_int(value.get('adjusted_orders'), 0, 10 ** 6),
+        'battle_outcomes': _bounded_int(value.get('battle_outcomes'), 0, 10 ** 6),
+        'unattributed_battles': _bounded_int(value.get('unattributed_battles'), 0, 10 ** 6),
+    }
+    return {key: item for key, item in out.items() if item is not None} or None
+
+
+def record_game_over(runtime, *, run, identity, rotation_request_id=None,
+                     terminal_evidence=None, chart_review=None, now=None, spawn=True):
+    """Append one game-over incident and file it as a follow-up issue.
+
+    A game over is a normal terminal state for the game, but for the automated
+    run it is the loss report that must feed the next chart/policy improvement.
+    The corner calls this after durable terminal evidence exists and before the
+    runtime is torn down. The incident id is deterministic for that terminal
+    frame, so a repeated corner tick cannot append duplicates; filing itself
+    remains the detached, secret-scanned monthly-audit pipeline.
+    """
+    now = time.time() if now is None else float(now)
+    runtime = Path(runtime)
+    run = run if isinstance(run, dict) else {}
+    identity = identity if isinstance(identity, dict) else {}
+    bot_state = _terminal_bot_state(runtime)
+    context_state = bot_state if isinstance(bot_state.get('policy'), dict) else run
+    context = _context(context_state)
+    mem = context_state.get('policy') if isinstance(context_state.get('policy'), dict) else {}
+    chapter = (context or {}).get('chapter')
+    if type(chapter) is not int:
+        chapter = mem.get('chapter') if type(mem.get('chapter')) is int else None
+    month = (context or {}).get('month')
+    if not isinstance(month, str) or not month:
+        month = mem.get('month') if isinstance(mem.get('month'), str) else None
+    evidence = terminal_evidence if isinstance(terminal_evidence, dict) else run
+    evidence = evidence if isinstance(evidence, dict) else {}
+    frame = evidence.get('frame_sha256') or run.get('frame_sha256')
+    frame = frame if isinstance(frame, str) else ''
+    observed_at = evidence.get('observed_at') if type(evidence.get('observed_at')) in (int, float) else now
+    runtime_id = identity.get('runtime_id') or run.get('runtime_id') or runtime.name
+    generation = identity.get('generation') if type(identity.get('generation')) is int else run.get('generation')
+    raw_id = f"{runtime_id}|{generation}|game_over|{frame or observed_at}"
+    incident_id = hashlib.sha256(raw_id.encode('utf-8')).hexdigest()[:20]
+    for existing in load_incidents(runtime):
+        if existing.get('incident_id') == incident_id:
+            return existing
+    rows = _read_decisions(runtime, 0.0, now, identity)
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    title_hold = None
+    if (type(evidence.get('observed_monotonic')) in (int, float)
+            and type(evidence.get('title_since')) in (int, float)):
+        title_hold = _bounded_seconds(evidence['observed_monotonic'] - evidence['title_since'])
+    bot_version = bot_state.get('bot_version') or run.get('bot_version')
+    record = {
+        'schema': SCHEMA,
+        'event': 'game_over',
+        'kind': 'game_over',
+        'confidence': 'high',
+        'confidence_reasons': [
+            'ゲームプレイ後のタイトル復帰を連続確認し、terminal_reason=game_over が永続化された',
+        ],
+        'chapter': chapter,
+        'month': month,
+        'game_over': {
+            'runtime_id': _bounded_text(runtime_id, 64),
+            'generation': _bounded_int(generation, 0, 10 ** 9),
+            'observed_at': float(observed_at),
+            'phase': _bounded_text(evidence.get('phase') or run.get('phase'), 32),
+            'terminal_evidence': _bounded_text(evidence.get('terminal_evidence'), 64),
+            'frame_sha256': _bounded_text(frame, 64),
+            'title_count': _bounded_int(evidence.get('title_count'), 0, 10 ** 6),
+            'title_hold_s': title_hold,
+            'observations': _bounded_int(evidence.get('observations'), 0, 10 ** 9),
+            'actions_sent': _bounded_int(evidence.get('actions_sent'), 0, 10 ** 9),
+            'battles_started': _bounded_int(evidence.get('battles_started'), 0, 10 ** 6),
+            'battles_finished': _bounded_int(evidence.get('battles_finished'), 0, 10 ** 6),
+            'captured': _names(mem.get('captured')),
+            'lost': _names(mem.get('lost')),
+            'home_lost': mem.get('home_lost') if type(mem.get('home_lost')) is bool else None,
+            'rotation_request_id': _bounded_text(rotation_request_id, 64),
+            'chart_review': _bounded_chart_review(chart_review),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': ['game_over'],
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'sorties': {'departures': departures, 'launch_events': launch_events},
+        'evidence': {
+            'runtime_dir': str(runtime.name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': bot_version,
+            'identity': identity,
+        },
+        'created_at': now,
+    }
+    record['incident_id'] = incident_id
+    record['signature'] = 'game_over'
+    record['fingerprint'] = _fingerprint(chapter, 'game_over', [
+        str(runtime_id), str(generation), frame or str(observed_at)])
+    record['auto_file'] = True
+    record = _shrink(record)
+    _append_incident(runtime, record)
+    if spawn:
+        spawn_issue_filer(runtime, record)
+    return record
 
 
 def record_corner_stall(runtime, *, reason, run, identity, rotation_request_id=None,
@@ -4245,10 +4455,70 @@ def _render_card_miss(record):
     ])
 
 
+def _render_game_over(record):
+    over = record.get('game_over') or {}
+    evidence = record.get('evidence') or {}
+    identity = evidence.get('identity') or {}
+    review = over.get('chart_review') or {}
+    counts = ((record.get('decisions') or {}).get('counts') or {})
+    rows = ((record.get('decisions') or {}).get('before') or [])[-8:]
+    lines = [
+        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **game_over** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{evidence.get('bot_version')}{BT}",
+        f"- 章/月: ch{record.get('chapter')} {record.get('month') or ''}",
+        f"- 終端: {_clock(over.get('observed_at'))} / phase {BT}{over.get('phase') or '不明'}{BT}"
+        f" / title_count {over.get('title_count')} / evidence {BT}{over.get('terminal_evidence') or '不明'}{BT}",
+        f"- 観測: {over.get('observations')}回 / 入力 {over.get('actions_sent')}回"
+        f" / 戦闘開始 {over.get('battles_started')} / 戦闘終了 {over.get('battles_finished')}",
+        f"- 出撃: departure {((record.get('sorties') or {}).get('departures'))}"
+        f" / launch_events {((record.get('sorties') or {}).get('launch_events'))}",
+        f"- 城: captured={over.get('captured') or '不明'} / lost={over.get('lost') or '不明'}"
+        f" / home_lost={over.get('home_lost')}",
+        '',
+        '### chart review',
+        '',
+        f"- file: {BT}{review.get('file') or 'hanjuku_chart_review.json'}{BT}"
+        f" / proposals {review.get('proposals', 0)}"
+        f" / by_type {review.get('by_type') or {}}",
+        f"- battle_outcomes {review.get('battle_outcomes', 0)}"
+        f" / unattributed_battles {review.get('unattributed_battles', 0)}"
+        f" / off_chart_requests {review.get('off_chart_requests', 0)}",
+        '',
+        '### 直近の判断',
+        '',
+    ]
+    if counts:
+        top = ' / '.join(f'{name}={count}' for name, count in list(counts.items())[:8])
+        lines.append(f"- 件数: {top}")
+    else:
+        lines.append('- 件数: 記録なし')
+    for row in rows:
+        detail = ' '.join(part for part in (
+            f"{_clock(row.get('at'))}",
+            f"{BT}{row.get('decision')}{BT}" if row.get('decision') else '',
+            f"step={_md(row.get('chart_step'))}" if row.get('chart_step') else '',
+            f"target={_md(row.get('target'))}" if row.get('target') else '',
+            f"reason={_md(row.get('reason'))}" if row.get('reason') else '',
+        ) if part)
+        lines.append(f"- {detail}")
+    lines += [
+        '',
+        'ゲーム側の終了として検出されました。直近の敗北・防衛・出撃判断と chart review の提案を確認し、'
+        '次回のランで直すべきチャートまたは policy の改善対象を決めてください。',
+    ]
+    return '\n'.join(lines)
+
+
 def render(record):
     """Deterministic Markdown for one incident."""
     if not isinstance(record, dict):
         raise AuditError('invalid_incident')
+    if record.get('kind') == 'game_over':
+        return _render_game_over(record)
     if record.get('kind') == 'card_miss':
         return _render_card_miss(record)
     if record.get('kind') == 'battle_card_at_hp1':
@@ -4333,6 +4603,10 @@ def render(record):
             f" / launch_events {boss_month.get('launch_events')}",
             f"- フェーズ開始: {boss_month.get('started_at')}"
             f" / 観測 {boss_month.get('observations')}回",
+            f"- 月内フェーズ: {boss_month.get('in_month_s')}秒"
+            f" / 観測 {boss_month.get('in_month_observations')}回"
+            + ('' if boss_month.get('phase_sufficient')
+               else '（出撃猶予不足・docich#5120）'),
             '',
         ]
     if chikujou:
@@ -4414,6 +4688,8 @@ def render(record):
               if battle.get('cards_unclassified') else []),
             *([f"- 消費未確認の使用試行: {battle.get('cards_attempted')}"]
               if battle.get('cards_attempted') else []),
+            *([f"- 消費未確認の再選択: {battle.get('cards_spend_retry')}"]
+              if battle.get('cards_spend_retry') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]
@@ -4674,6 +4950,12 @@ def _issue_title(record):
         menu = record.get('battle_menu') or {}
         who = menu.get('general') or menu.get('step') or '将軍不明'
         return (f"[半熟英雄] 戦闘Bメニューを無駄に開閉: ch{record.get('chapter')} {who}")[:100]
+    if kind == 'game_over':
+        over = record.get('game_over') or {}
+        runtime_id = over.get('runtime_id') or 'runtime不明'
+        chapter = record.get('chapter')
+        where = f"ch{chapter} " if type(chapter) is int else ''
+        return (f"[半熟英雄] ゲームオーバー: {where}{runtime_id}")[:100]
     if kind == 'corner_stalled':
         stall = record.get('corner_stall') or {}
         label = ('画面停滞' if stall.get('reason') == 'screen_stalled' else '入力停滞')

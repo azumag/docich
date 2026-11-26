@@ -52,7 +52,7 @@ def test_a_recall_cut_three_times_is_skipped_instead_of_looping():
 def dispatch_memory(input_sent=True):
     recall = {'stage': 'await_dispatch', 'steps': 0, 'target': [132, 124],
               'goal': 'アルマムーン', 'fort': True, 'kind': 'dome',
-              'general': 'バジル', 'a_inputs': 1,
+              'general': 'バジル', 'a_inputs': 1, 'requested_tick': 99,
               'request_trace': {'request': 'recall-1'}}
     if input_sent:
         recall['input_sent'] = True
@@ -151,3 +151,15 @@ def test_receipt_arriving_after_scene_marker_does_not_charge_the_destination():
     assert 'camp_recall_unconfirmed' in decisions
     assert 'camp_recall_goal_failed' not in decisions
     assert mem['flow']['recall_verification']['status'] == 'arrival_unconfirmed'
+
+
+def test_receipt_does_not_promote_an_interruption_older_than_the_request():
+    mem, recall = dispatch_memory(input_sent=False)
+    recall['requested_tick'] = 100
+    mem['flow']['recall_interrupted'] = 99
+    trace = recall['request_trace']
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 1}
+    R._recall_dispatch_step(Screen([], None, '', kind='map_target', marker=(90, 80)), mem, recall)
+    assert recall['input_sent'] is True
+    assert recall.get('scene_covered') is not True
+    assert 'scene_covered_tick' not in recall

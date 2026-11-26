@@ -115,7 +115,8 @@ PERSONA_MARKERS = re.compile(
 HISTORICAL_TERMS = re.compile(
     r'大粛清|粛清|処刑|飢餓|ホロドモール|虐殺|グラーグ|収容所|強制収容|'
     r'シベリア送り|チェルノブイリ|アフガニスタン|アフガン戦争|冬戦争|独ソ戦|冷戦|'
-    r'スターリン|レーニン|フルシチョフ|ブレジネフ|ゴルバチョフ|ベルリンの壁')
+    r'スターリン|レーニン|フルシチョフ|ブレジネフ|ゴルバチョフ|ベルリンの壁|'
+    r'命令227号|227号|退却禁止')
 
 HISTORY_FRAME = re.compile(
     r'史実|歴史|当時|ソ連|ソビエト|20世紀|19[0-9]{2}|冷戦|社会主義|共産主義|'
@@ -1136,6 +1137,10 @@ def _number_in_context(value, before, after, facts):
                        if fact.get('kind') == 'progress')
         return any((fact.get('chapter') == value or fact.get('cleared') == value)
                    for fact in facts if fact.get('kind') == 'progress')
+    if 1900 <= value <= 2099 and (after.startswith('年') or before.endswith('年')):
+        return True
+    if after.startswith('号') and re.search(r'命令\s*$', before):
+        return True
     if after.startswith('年') or before.endswith('年'):
         return any(fact.get('year') == value for fact in facts
                    if fact.get('kind') in {'progress', 'month_plan'})

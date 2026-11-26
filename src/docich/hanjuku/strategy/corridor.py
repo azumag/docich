@@ -95,12 +95,18 @@ def _drained(mem, castle, purpose) -> bool:
         return False
     names = _front_names(mem, castle)
     if isinstance(names, list) and len(names) > 1:
-        # The castle has company again: whatever the mark says, it is not
-        # drained. g1163 2026-11-12 21:1x: オシロガ kept a 'hero' mark from an
-        # older month while its page listed どうし+3, and the ドンドン retake
-        # was skipped on every observation.
-        (mem.get(DRAINED) or {}).pop(castle, None)
-        return False
+        if entry.get('kind') == 'hero' and purpose != 'move' and NAME in names:
+            others = [g for g in names if g != NAME]
+            if len(others) >= 2:
+                (mem.get(DRAINED) or {}).pop(castle, None)
+                return False
+        else:
+            # The castle has company again: whatever the mark says, it is not
+            # drained. g1163 2026-11-12 21:1x: オシロガ kept a 'hero' mark from an
+            # older month while its page listed どうし+3, and the ドンドン retake
+            # was skipped on every observation.
+            (mem.get(DRAINED) or {}).pop(castle, None)
+            return False
     if entry.get('month') != mem.get('month'):
         # A new month alone is not news about this castle. Re-probing every
         # drained castle at each month change cost about a fifth of the run's
@@ -258,7 +264,7 @@ def _wave(mem, target, front):
     # measured list counts, and the list has to be thin after this wave's
     # movers left.
     thin = _front_thin(mem, front) if front else False
-    if (front and (thin or (drained.get('kind') == 'empty'
+    if (front and (thin or (drained.get('kind') in ('empty', 'hero')
                             and type(drained.get('tick')) is int
                             and drained['tick'] >= wave['tick']))
             and _moved(mem, wave, front) >= SQUAD
@@ -365,6 +371,19 @@ def orders(mem) -> list[dict]:
                 (mem.get('front_guard_hold') or {}).pop(source, None)
                 (mem.get('front_guard_expired_tick') or {}).pop(source, None)
             _finish = _defender_nearly_dead(mem, target)
+            if (isinstance(_front_names_now, list)
+                    and NAME in _front_names_now
+                    and len(_front_names_now) < 4
+                    and len([g for g in _front_names_now if g != NAME]) <= 1
+                    and not _front_roster_stale(mem, source)):
+                # The hero stands at the front (PR #5255), and deploy refuses
+                # any attack that would leave him alone (_keeps_hero_company).
+                # Skip minting an attack that will immediately close with
+                # drained='hero', so rear supply moves are not starved.
+                _record_only(mem, 'front_guard_held', target=source,
+                             observed_metric={'residents': list(_front_names_now)[:8]},
+                             reason='前線の城に主人公と最後の1人しかいないため、この城から攻撃に出さず増援を優先する')
+                continue
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):
                 # A nearly dead general is a lost sortie, not a wave: g1163
@@ -709,7 +728,8 @@ def _probe_spend(mem, decision, idle=False, budgeted=True):
 
 
 MINTED_ORDER_KEYS = ('step', 'general', 'source', 'target', 'cards', 'after',
-                     'purpose', 'source_probe', 'corridor', 'corridor_hero', 'note')
+                     'purpose', 'source_probe', 'corridor', 'corridor_hero',
+                     'corridor_strong_kit', 'note')
 # A minted probe that is still pending this long is reused instead of minting
 # (and budgeting) a second visit while the first is still being executed.
 PROBE_MINT_TTL = 120
@@ -1094,6 +1114,8 @@ def _front_thin(mem, castle) -> bool:
         names = partial.get(castle) if isinstance(partial, dict) else None
     if not isinstance(names, list):
         return False                       # unread is not thin
+    if NAME in names:
+        return len([g for g in names if g != NAME]) < FRONT_REFILL_MIN
     return len(names) < FRONT_REFILL_MIN
 
 
@@ -1430,11 +1452,23 @@ def _record_only(mem, decision, **fields):
 
 
 def _order(mem, source, hop, target, purpose, hero=False):
+    cards = []
+    strong_kit = False
+    if not hero and purpose in ('attack', 'retake') and mem.get('chapter') == 9:
+        stock = mem.get('card_stock')
+        if isinstance(stock, dict) and stock:
+            from .replan import _strong_stock_kit
+            strong = _strong_stock_kit(mem, stock)
+            if strong:
+                cards = list(strong)
+                strong_kit = True
     order = {'step': _step(mem, source, hop, 'h' if hero else ''), 'general': chart_adjust.PROBE_GENERAL,
-             'source': source, 'target': hop, 'cards': [], 'after': None,
+             'source': source, 'target': hop, 'cards': cards, 'after': None,
              'purpose': purpose, 'source_probe': True, 'corridor': True,
              'note': (f'第9話: {source}から{target}へ最大{SQUAD}人' if hop == target
                       else f'第9話: {target}の手前{hop}へ{source}から最大{SQUAD}人移動')}
+    if strong_kit:
+        order['corridor_strong_kit'] = True
     if hero:
         order.update(corridor_hero=True, note=f'第9話: 城を取ったため主人公を{source}から{hop}へ進める')
     return order

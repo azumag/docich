@@ -3029,20 +3029,36 @@ class RetroCornerManager:
                                     hotload.runtime_identity(fence))
                         except Exception as exc:
                             latest['chart_review'] = {'error': type(exc).__name__}
+                        # owner 2026-11-26: ゲームオーバーごとに改善用 issue を
+                        # 起票する。起票は detached filer に任せ、失敗しても
+                        # 終端処理と corner 解放を止めない。
+                        try:
+                            from .hanjuku import month_audit
+                            month_audit.record_game_over(
+                                runtime_dir,
+                                run=run,
+                                identity=owned_identity,
+                                rotation_request_id=latest.get('rotation_request_id'),
+                                terminal_evidence=evidence,
+                                chart_review=latest.get('chart_review'))
+                        except Exception as exc:
+                            print(
+                                f"[hanjuku-game-over-audit] status=failed error={type(exc).__name__}",
+                                file=sys.stderr)
                     if run.get('terminal_reason') in {'screen_stalled', 'input_stalled'}:
                         # A screen/input stall ends this corner and releases the
                         # slot to rotation. Record the stop before teardown so
                         # the fix issue carries the measured terminal evidence;
                         # never let filing failure block the teardown.
                         try:
-                            from . import month_audit
+                            from .hanjuku import month_audit
                             month_audit.record_corner_stall(
                                 runtime_dir,
                                 reason=run.get('terminal_reason'),
                                 run=run,
                                 identity=owned_identity,
                                 rotation_request_id=latest.get('rotation_request_id'),
-                                terminal_evidence=latest.get('terminal_evidence'))
+                                terminal_evidence=evidence)
                         except Exception as exc:
                             print(
                                 f"[hanjuku-stall-audit] status=failed error={type(exc).__name__}",
