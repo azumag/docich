@@ -8215,6 +8215,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1530-boss-card-unused-issue",
             "hanjuku-chart-v1531-boss-card-detect",
             "hanjuku-chart-v1532-sortie-cancel-state",
+            "hanjuku-chart-v1533-egg-unused-measured",
             "hanjuku-chart-v1529-owned-target-settle",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",

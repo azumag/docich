@@ -1284,7 +1284,11 @@ def _battle_resources(record):
     # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
     if metric.get('egg_uses_source') == 'ledger':
-        egg = 0
+        # A ledger value is not a battle-time count. The flow still marks the
+        # measured case (a usable egg observed, no egg battle entered, no egg
+        # used) as egg_available_unused, so a real "lost with an egg left"
+        # keeps being filed (owner 2026-11-26).
+        egg = 1 if metric.get('egg_available_unused') is True else 0
     selected = [card for card in (metric.get('cards_selected') or [])
                 if isinstance(card, str)][:12]
     used = [card for card in (metric.get('cards_used') or [])
@@ -1295,6 +1299,12 @@ def _battle_resources(record):
     remaining = _remaining_cards(selected, used)
     if pending and pending not in remaining and pending not in used:
         remaining.append(pending)
+    # owner 2026-11-26: a battle that never opened the card list carries no
+    # selection history; the flow now records the measured leftover names so
+    # a real "lost with carried cards" still counts.
+    for card in (metric.get('cards_left_unused') or ()):
+        if isinstance(card, str) and card not in remaining and card not in used:
+            remaining.append(card)
     # owner 決定 2026-11-23 (#5117): the live list proved this card missing
     # (battle_card_missing), so it is not carried and not a remaining resource.
     missing = {card for card in (metric.get('cards_missing') or ())
