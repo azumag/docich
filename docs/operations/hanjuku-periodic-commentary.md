@@ -21,7 +21,7 @@ BOTが落ちても、BOTを再起動しても、定期実況の都合で入力�
 enabled = true
 interval_s = 900          # 15分。300〜3600
 retry_s = 300             # 生成失敗・重複時の再試行。60〜1800
-generation_timeout_s = 210 # 1回のLLM呼出しの上限。5〜240
+generation_timeout_s = 300 # 1回のLLM呼出しの上限。5〜360
 max_attempts = 1           # 長文は1回の生成で3候補。失敗時は次の間隔で再試行
 agents = "opencode-go:deepseek-v4.1-flash,..."  # 空なら従来の共通chain
 persona = "ソビエト連邦の放送局から中継しているような、おおらかで少し皮肉屋の実況者。…「同志」「人民」「五カ年計画」…"
@@ -59,7 +59,7 @@ persona = "ソビエト連邦の放送局から中継しているような、お
 | `progress` | クリア済み章、現在章、年、月、chart edition |
 | `window` | 経過分、window内の戦闘数・勝・敗・城の獲得・城の喪失・出撃数 |
 | `events` | 直近の戦闘結果、城の所有変更、出撃、月次計画、購入、補充、chart調整など最大3件（プロンプトでは背景2件まで） |
-| `focus` | この15分の戦略判断を1件。切り札、出撃、防衛、経済、チャート、戦闘のいずれか |
+| `focus` | この15分の戦略判断を1件。切り札、出撃、防衛、経済、チャート、戦闘のいずれか。可能なら後続の `outcome`（出撃/戦闘結果）を付ける |
 | `current` | focusに必要な現在戦闘・現在の狙い・経済だけ。通算成績は出さない |
 
 `current.economy.captured` は現在の所有観測が `own` の城だけを使い、過去の喪失listを
@@ -75,10 +75,15 @@ raw OCR、`reason`、`decision_id`、runtime identity、path、自由文の内�
 単なる事実の列挙ではなく、次の5つを一つの物語としてつなぐ。
 
 1. `focus` の判断（何を狙い、なぜその判断をしたか）
-2. その判断の良かった点と、課題・反省・次に活かせる改善点
+2. その判断の結果（`focus.outcome` があれば必ず触れる）と、良かった点・課題
 3. 他の出来事は背景として最大2個だけ（全部を列挙しない）
 4. 将軍や城のドラマ。ソ連・共産主義の軽いユーモアを1つ（焦点の説明を邪魔しない）
 5. 視聴者への前向きな締め
+
+報告書・評論ではなく、現場リポートか短いコントのように「判断→結果→意味→軽いオチ」の
+4ビートで書く。結果が未観測なら「まだ列車は来ていない」のように未観測自体をオチにする。
+「評価したいのは」「課題は」「見どころです」「楽しみです」「応援しましょう」を定型で
+並べない（最大2回）。抽象評価より、誰が何をしてどうなったかを優先する。
 
 最初の2文で「今回の焦点は…」と、誰が・何を・どう判断したかを明言する。
 `focus.plain` と `focus.choice` を言い換え、`focus.why` を説明する。
@@ -86,8 +91,11 @@ raw OCR、`reason`、`decision_id`、runtime identity、path、自由文の内�
 結果が未観測なら「まだ分からない」と明言する。
 
 `focus` は決定ログから、切り札・出撃・防衛・経済・チャート・戦闘の6カテゴリを
-対象に1件選ぶ。直近12回の `focus_history` で使ったカテゴリを避け、最も古い
-カテゴリを優先する。候補がない場合は `current.order` を「次の狙い」として使う。
+対象に1件選ぶ。後続の `order_launched` / `battle_result` が同じ将軍・城・敵に
+紐づく場合は `focus.outcome` として付け、判断と結果を一つの話にする。
+直近12回の `focus_history` で使ったカテゴリを避け、最も古いカテゴリを優先する。
+同じカテゴリ内では `outcome` のある候補を優先する。候補がない場合は
+`current.order` を「次の狙い」として使う。
 `focus.humor` にはカテゴリ別のソ連ネタの方向（計画経済の配分、五カ年計画の輸送、
 冬将軍と赤旗、集団農場の配給、ペレストロイカ、政治局の前線指揮）を付け、
 毎回同じ小ネタに寄らないようにする。
@@ -137,6 +145,21 @@ LLM出力はJSON `{"texts":["...","...","..."]}` に限定し、各候補を次�
 - focusの具体名（将軍・城・札）が最初の2文にあり、固有名詞が6個以下である。
 - ソ連・共産主義のマーカー（同志、人民、五カ年計画、赤旗、ペレストロイカ等）を
   1〜4回含む。0回はペルソナ未反映、5回以上はネタ過多として拒否する。
+- `style_ok`: 「評価したい」「課題は」「見どころ」「楽しみ」「応援」「でしょう」
+  などの評論定型が4回以上ある候補は、strict/focus/persona tierで拒否する。
+
+候補選別は **strict → focus → persona → grounded** の順で行う。
+
+1. strict: grounding + focus + persona + style をすべて満たす
+2. focus: grounding + focus + style（personaが薄い候補）
+3. persona: grounding + persona + style（焦点が最初の2文にない候補）
+4. grounded: groundingだけ満たす
+
+strictが全滅しても、groundingを満たす生成文が1件でもあれば読み上げる。
+無音になるのは、groundedも全滅した場合、生成失敗、重複だけである。
+ペルソナや焦点の厳密さより「読み上げが止まらないこと」を優先するフォールバックで、
+どのtierを採用したかは `hanjuku_periodic_commentary.jsonl` の
+`validation_fallback` に残す。固定文へのfallbackは行わない。
   箇条書き・番号付き列挙は拒否する。事実だけを並べた文は `invalid_output` と
   して採用しない。
 - 「〜城」の直前の名前、`将軍` の直前の名前も材料に一致させる。
@@ -185,7 +208,7 @@ Sorenの既存 `enqueue_audio_text` に `context=hanjuku_commentary` で渡す�
 `eloop_lib.sh`、`ai_generate_list 'RADIO:hanjuku-commentary'`、
 `BATCH_COMMENTARY_AGENTS` → `RADIO_AGENTS` → `AI_COMMON_AGENTS` の
 実効設定を再利用し、モデル・provider・queue・backoffを新設しない。
-生成は `OwnedSceneProcess` のsubreaper配下で設定上限（既定90秒、長文設定は210秒）に制限し、timeout後は
+生成は `OwnedSceneProcess` のsubreaper配下で設定上限（既定90秒、長文設定は300秒）に制限し、timeout後は
 今回の子孫だけを終了する。入力processは待たない。
 
 ## 配備後の確認

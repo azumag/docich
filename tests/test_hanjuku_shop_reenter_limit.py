@@ -29,3 +29,15 @@ def test_a_purchase_keeps_the_merchant_open(monkeypatch):
     for _ in range(shop_flow.SHOP_EXIT_LIMIT + 1):
         shop_flow._record_shop_exit(mem, mem['shop'], _Screen(), 'nothing_planned')
     assert not mem['shop'].get('closed')
+
+def test_the_loop_record_files_one_issue(monkeypatch):
+    from docich.hanjuku import fault_issue
+
+    calls = []
+    monkeypatch.setattr(fault_issue, 'note_fault',
+                        lambda *a, **kw: calls.append(kw) or {'status': 'ok'})
+    record = {'decision': 'shop_reenter_limit', 'month': '99-5',
+              'observed_metric': {'exits': 2, 'limit': 2, 'reason': 'nothing_planned'}}
+    fault_issue.note_decision_faults('/tmp/unused-runtime', [record])
+    assert [c['signature'] for c in calls] == ['shop_menu_loop']
+

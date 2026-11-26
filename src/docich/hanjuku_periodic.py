@@ -42,8 +42,8 @@ MIN_TEXT = 300
 MAX_CANDIDATES = 3
 RECENT = 24
 MAX_EVENTS = 3
-REQUEST_TTL_S = 360
-PENDING_TIMEOUT_S = 420
+REQUEST_TTL_S = 420
+PENDING_TIMEOUT_S = 480
 DEFER_MAX_S = 180
 DEFER_STEP_S = 30
 RETRY_LIMIT = 2
@@ -141,7 +141,7 @@ def settings(raw):
     for key, default, low, high in (
             ('interval_s', 900, 300, 3600),
             ('retry_s', 300, 60, 1800),
-            ('generation_timeout_s', 90, 5, 240),
+            ('generation_timeout_s', 90, 5, 360),
             ('max_attempts', 2, 1, 3)):
         value = raw.get(key, default)
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -636,17 +636,63 @@ def _focus_fact(record):
     return None
 
 
+def _focus_outcome(fact, at, records):
+    """Attach a later receipt/result so the recap has a landing point."""
+    category = fact.get('category')
+    launched = None
+    for other_at, record in records:
+        if other_at < at:
+            continue
+        kind = record.get('decision')
+        if category in {'sortie', 'chart'} and kind == 'order_launched':
+            general, target = _name(record.get('general')), _name(record.get('target'))
+            wanted = fact.get('general') or (fact.get('orders') or [[None, None]])[0][0]
+            if general and target and (not wanted or general == wanted or target == fact.get('target')):
+                launched = {'kind': 'order_launched', 'general': general, 'target': target}
+        if category in {'sortie', 'card', 'battle'} and kind == 'battle_result':
+            ally, enemy = _name(record.get('ally')), _name(record.get('enemy'))
+            outcome = record.get('outcome')
+            if outcome not in {'win', 'loss'} or not ally or not enemy:
+                continue
+            wanted_ally, wanted_enemy = fact.get('ally'), fact.get('enemy')
+            if category == 'sortie':
+                wanted_ally = fact.get('general')
+            if category == 'card' and not wanted_ally:
+                continue  # an unattributed card is not evidence for this result
+            if wanted_ally and ally != wanted_ally:
+                continue
+            if wanted_enemy and enemy != wanted_enemy:
+                continue
+            result = {'kind': 'battle_result', 'outcome': outcome,
+                      'ally': ally, 'enemy': enemy}
+            for key in ('ally_hp', 'enemy_hp'):
+                if (value := _number(record.get(key))) is not None:
+                    result[key] = value
+                elif (value := _number((record.get('observed_metric') or {}).get(key)
+                                       if isinstance(record.get('observed_metric'), dict) else None)) is not None:
+                    result[key] = value
+            return result
+    return launched
+
+
 def _focus_candidates(runtime_dir, start, end):
     found = []
+    records = []
     for record in _decision_rows(runtime_dir):
         at = record.get('at')
         if (type(at) not in (int, float) or not math.isfinite(at)
                 or not start <= at <= end):
             continue
+        records.append((at, record))
         fact = _focus_fact(record)
         if fact:
             found.append((at, fact))
     found.sort(key=lambda item: item[0])
+    for at, fact in found:
+        outcome = _focus_outcome(fact, at, records)
+        if outcome:
+            fact['outcome'] = outcome
+            fact['not_result'] = False
     return found
 
 
@@ -657,8 +703,10 @@ def _choose_focus(found, history):
     for index, category in enumerate(history[-12:]):
         if category in last:
             last[category] = index
-    _at, fact = min(found, key=lambda item: (last.get(item[1]['category'], -1),
-                                             -item[0]))
+    _at, fact = min(found, key=lambda item: (
+        0 if item[1].get('outcome') and not item[1].get('not_result') else 1,
+        last.get(item[1]['category'], -1),
+        -item[0]))
     return fact
 
 
@@ -849,6 +897,9 @@ def flatten(situation_value):
             facts.append(event)
     if isinstance(situation_value.get('focus'), dict):
         facts.append({'kind': 'focus', **situation_value['focus']})
+        outcome = situation_value['focus'].get('outcome')
+        if isinstance(outcome, dict) and isinstance(outcome.get('kind'), str):
+            facts.append(outcome)
     current = situation_value.get('current') if isinstance(situation_value.get('current'), dict) else {}
     for key in ('battle', 'order', 'economy', 'totals'):
         if isinstance(current.get(key), dict):
@@ -868,6 +919,16 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '500〜800文字で実況してください。',
         '今回は下の「focus」の判断を記事の中心にしてください。ボットが何を見て、何を狙い、'
         'その機能がどう働いたかを、視聴者にわかる言葉で解説します。',
+        '報告書や評論ではなく、現場リポートか短いコントのように書いてください。',
+        '判断→結果→その意味→軽いオチの4ビートで、具体的な行動・結果・数字を使って見せます。'
+        'focus.outcome があれば必ず結果まで触れ、結果が未観測なら「まだ列車は来ていない」のように'
+        '未観測そのものをオチにしてください。',
+        '「評価したいのは」「課題は」「見どころです」「楽しみです」「応援しましょう」を定型で'
+        '並べないでください（最大2回）。抽象的な評価より、誰が何をしてどうなったかを優先します。',
+        '「切り分けられません」「急いで結びつけない」「宿題です」「次の観測で」「答え合わせ」'
+        'のような分析口調を避けてください。focus.outcome があり not_result でなければ、結果は'
+        '材料の範囲で断言してかまいません。結果が未確認なら、焦点の判断を短く認めて、別の'
+        '具体的な場面へ移ってください。',
         '次の5つを自然につなげてください。',
         '1. 焦点の判断（何を狙ったか、なぜその判断をしたか）',
         '2. その判断の良かった点と、課題・反省・次に活かせる改善点',
@@ -884,9 +945,9 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '名前（将軍・城・札）はfocusと背景を合わせて最大6つまで。1文に複数の将軍や城を詰め込まず、'
         '1文1話題にしてください。',
         '比喩は焦点の理解に役立つ場合だけ1つまで。日常の例えや、状況と関係の薄い比喩は使わないでください。',
-        'ソ連・共産主義ネタは、focus.humor の方向を参考に軽い比喩として1〜2回だけ。'
-        '「同志」「人民」「五カ年計画」「集団農場」「ペレストロイカ」「赤旗」「冬将軍」などを、'
-        '毎回同じ言い回しにならないように使ってください。',
+        'ソ連・共産主義ネタは、focus.humor の方向を参考に軽い比喩として2〜4個程度'
+        '（多くても6種類）。「同志」「人民」「五カ年計画」「集団農場」「ペレストロイカ」'
+        '「赤旗」「冬将軍」などを、毎回同じ言い回しにならないように使ってください。',
         '政治的な主張、実在の人物・民族・国への侮辱、粛清・飢餓・収容所などの暗い歴史ネタは使わないでください。',
         '結論→理由→課題→展望の順で、同じ段落に複数の話題を混ぜないでください。',
         '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
@@ -939,6 +1000,21 @@ EVAL_MARKERS = re.compile(
     r'心配|不安|希望|粘り|踏ん張り|教訓|改善|魅力|見どころ|印象|評価|'
     r'上々|順調|難しさ|難しい|苦しい|厳しい|頼もしく|無駄|白星|黒星|滑り出し|'
     r'見え|いい|よい|惡い|惜しい|立派|素晴らしい|たい|ですね')
+
+
+BOILERPLATE = re.compile(
+    r'評価したい|課題は|見どころ|楽しみ|応援|期待し|感じます|に見えます|でしょう|'
+    r'かもしれません|重要です|ポイントです|たいところ|ではないでしょうか')
+
+
+HEDGING = re.compile(
+    r'切り分け|急いで結びつけ|宿題|答え合わせ|次の観測で|判断と結果|慎重さ|'
+    r'正しさを確かめ|当否を')
+
+
+def style_ok(text):
+    """Reject the report/essay formula that made recaps feel like a summary."""
+    return len(BOILERPLATE.findall(text)) <= 3 and len(HEDGING.findall(text)) <= 1
 
 
 def narrative_ok(text):
@@ -1037,7 +1113,7 @@ def _number_in_context(value, before, after, facts):
                        if fact.get('kind') == 'progress')
         return any((fact.get('chapter') == value or fact.get('cleared') == value)
                    for fact in facts if fact.get('kind') == 'progress')
-    if after.startswith('年'):
+    if after.startswith('年') or before.endswith('年'):
         return any(fact.get('year') == value for fact in facts
                    if fact.get('kind') in {'progress', 'month_plan'})
     if after.startswith('月'):
@@ -1150,8 +1226,9 @@ def _number_in_context(value, before, after, facts):
 
 
 def persona_ok(text):
-    """One to four light Soviet/communist riffs; none or too many is off-persona."""
-    return 1 <= len(PERSONA_MARKERS.findall(text)) <= 4
+    """Light Soviet/communist riffs: 1-8 mentions, at most 6 distinct terms."""
+    markers = PERSONA_MARKERS.findall(text)
+    return 1 <= len(markers) <= 8 and len(set(markers)) <= 6
 
 
 def focus_clear(text, focus, facts, max_names=6):
@@ -1248,7 +1325,7 @@ def valid_text(text, facts):
     if re.search(r'出撃(?:した|しました|完了)', normalized) and not any(
             fact.get('kind') == 'order_launched' for fact in facts):
         return False
-    if re.search(r'(?:購入|買(?:った|いました))(?:した|しました|済み)?', normalized) and not any(
+    if re.search(r'(?:購入(?:した|しました|済み)|買(?:った|いました))', normalized) and not any(
             fact.get('kind') == 'buy' for fact in facts):
         return False
     if re.search(r'補充(?:した|しました|済み|完了)', normalized) and not any(

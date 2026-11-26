@@ -243,7 +243,7 @@ def generate_prompt(g, runtime, prompt, timeout):
     root = resolve_soren_root(g)
     if not (root / 'eloop_lib.sh').is_file():
         raise SceneError('unavailable')
-    remaining = min(240.0, max(1.0, float(timeout)))
+    remaining = min(300.0, max(1.0, float(timeout)))
     with tempfile.TemporaryDirectory(prefix='.scene-', dir=runtime) as directory:
         work = Path(directory)
         prompt_path, output_path, last, failure, meta = [work / name for name in

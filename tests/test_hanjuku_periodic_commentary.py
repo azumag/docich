@@ -40,6 +40,9 @@ LONG_B = ('第8章の14年2月、エピィ将軍がミュスカデに勝った�
           'だからこそ、小さな前進を次につなげる采配が問われるのでしょう。'
           'この流れを、次の戦いの準備として一緒に見守りたいと思います。')
 
+LONG_NO_PERSONA = LONG_A.replace('同志たち', '将軍たち')
+
+
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g7-abc123',
             'generation': 7, 'lease_id': 'lease-periodic'}
 RUN = {**IDENTITY, 'playing': True, 'phase': 'field', 'terminal_reason': None,
@@ -237,10 +240,65 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '課題' in prompt and 'ユーモア' in prompt
     assert '列挙' in prompt and 'focus' in prompt
     assert '焦点' in prompt
+    assert '現場リポート' in prompt and '4ビート' in prompt
+    assert '評価したいのは' in prompt
     assert 'ソ連' in prompt and '同志' in prompt and 'focus.humor' in prompt
     assert value['focus']['feature'] in prompt
     assert periodic.DEFAULT_PERSONA in prompt
     assert '"texts"' in prompt
+
+
+def test_purchase_noun_does_not_require_a_completed_receipt(live):
+    facts = _facts(live)
+    assert periodic.valid_text('月次の購入と補充の判断でした。', facts) is True
+    assert periodic.valid_text('クースカンを購入しました。', facts) is False
+
+
+def test_style_rejects_report_formula():
+    report = ('評価したいのは粘りです。課題は守備です。見どころは次です。'
+              '楽しみにしています。')
+    assert periodic.style_ok(report) is False
+    hedging = ('切り分けられません。急いで結びつけない慎重さが必要です。'
+               '宿題です。次の観測で答え合わせをしましょう。')
+    assert periodic.style_ok(hedging) is False
+    assert periodic.style_ok(LONG_A) is True
+
+
+def test_focus_prefers_a_confirmed_outcome_over_a_plan():
+    found = [(3.0, {'category': 'card', 'not_result': True,
+                    'outcome': {'kind': 'battle_result', 'outcome': 'win'}}),
+             (2.0, {'category': 'battle', 'not_result': False,
+                    'outcome': {'kind': 'battle_result', 'outcome': 'win'}})]
+    assert periodic._choose_focus(found, [])['category'] == 'battle'
+
+
+def test_unattributed_card_does_not_take_another_battles_result(tmp_path):
+    runtime = tmp_path / 'runtimes' / IDENTITY['runtime_id']
+    runtime.mkdir(parents=True)
+    _decision(runtime / 'hanjuku_decisions.jsonl',
+              {'decision': 'battle_card', 'card': 'イッテツーン',
+               'enemy': 'プラリネ', 'at': 100, 'step': 1},
+              {'decision': 'battle_result', 'outcome': 'win', 'ally': 'グリッシーニ',
+               'enemy': 'プラリネ', 'at': 200, 'step': 2})
+    found = periodic._focus_candidates(runtime, 0, 300)
+    card = next(fact for _at, fact in found if fact['category'] == 'card')
+    assert 'outcome' not in card
+
+
+def test_focus_candidates_attach_a_later_battle_outcome(tmp_path):
+    runtime = tmp_path / 'runtimes' / IDENTITY['runtime_id']
+    runtime.mkdir(parents=True)
+    _decision(runtime / 'hanjuku_decisions.jsonl',
+              {'decision': 'order_start', 'general': 'コリアンダー',
+               'source': 'あるまむーん', 'target': 'ながはま',
+               'cards': ['フットバース'], 'at': 100, 'step': 1},
+              {'decision': 'battle_result', 'outcome': 'win', 'ally': 'コリアンダー',
+               'enemy': 'ヘーゼル', 'at': 200, 'step': 2})
+    found = periodic._focus_candidates(runtime, 0, 300)
+    order = next(fact for _at, fact in found if fact['category'] == 'sortie')
+    assert order['outcome']['kind'] == 'battle_result'
+    assert order['outcome']['outcome'] == 'win'
+    assert order['not_result'] is False
 
 
 def test_narrative_rejects_a_flat_fact_list():
@@ -254,7 +312,7 @@ def test_narrative_rejects_a_flat_fact_list():
 def test_persona_requires_one_to_four_soviet_riffs():
     assert periodic.persona_ok('今回の焦点は同志の出撃判断です。') is True
     assert periodic.persona_ok('今回の焦点は出撃判断です。') is False
-    assert periodic.persona_ok('同志、人民、赤旗、五カ年計画、政治局、集団農場。') is False
+    assert periodic.persona_ok('同志、人民、赤旗、五カ年計画、政治局、集団農場、ペレストロイカ。') is False
 
 
 def test_focus_clarity_rejects_buried_focus_and_too_many_names():
@@ -449,6 +507,22 @@ def test_worker_sets_the_periodic_agent_override(live, monkeypatch):
                        ensure_ascii=False), 'RADIO_AGENTS'),
         deliver_fn=lambda *args, **kwargs: 'enqueued')
     assert seen == ['opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash']
+
+
+def test_worker_falls_back_to_a_grounded_line_without_persona(live, monkeypatch):
+    delivered = []
+    _write(live.runtime / periodic.REQUEST, _request(live))
+    monkeypatch.setattr(worker, 'load_game', lambda *args: live.game)
+    monkeypatch.setattr(worker, 'current', lambda *args, **kwargs: RUN)
+    status, text, attempts, role = worker.consume(
+        SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime,
+        now=live.now,
+        generate_fn=lambda *args: (json.dumps({'texts': [LONG_NO_PERSONA]},
+                                              ensure_ascii=False), 'RADIO_AGENTS'),
+        deliver_fn=lambda *args, **kwargs: delivered.append(args) or 'enqueued')
+    assert status == 'enqueued' and text == LONG_NO_PERSONA
+    log = (live.runtime / (periodic.LOG + '.jsonl')).read_text(encoding='utf-8')
+    assert 'validation_fallback' in log
 
 
 def test_worker_delivers_the_least_repetitive_grounded_candidate(live, monkeypatch):
