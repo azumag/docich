@@ -32,6 +32,7 @@ FORT_STAGE_OBSERVATION_LIMIT = 12  # a fort stage must progress or release its o
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
+DOME_TEXT_OWNED_STAGES = ('menu', 'fort_menu', 'fort_list', 'fort_status')
 BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
 RELAY_ARRIVE_PX = 32           # a camp this close to the back-half relay cell has finished leg one
@@ -1543,11 +1544,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             and state.get('stage') in ('await_dispatch', 'await_dispatch_stale')):
         _mark_recall_interrupted(mem)
         return None
-    # A dome camp is exempt too — the menu stage's own DOME_SCREEN_WAIT owns
-    # its non-menu screens. Other text frames are held without spending the
-    # field-navigation budget.
+    # A dome camp is exempt only while its menu/fort screens are being read —
+    # the menu stage's own DOME_SCREEN_WAIT owns its non-menu screens, and the
+    # fort stages read text panels. Later move-mode stages hold unrelated text
+    # without spending the field-navigation budget.
+    dome_owned_text = (state.get('camp_kind') == 'dome'
+                       and state.get('stage') in DOME_TEXT_OWNED_STAGES)
     if (screen.kind == 'text' and state.get('stage') != 'await_dispatch'
-            and state.get('camp_kind') != 'dome' and not (
+            and not dome_owned_text and not (
             is_camp_menu(screen) or is_fort_menu(screen)
             or any(word in (screen.text or '')
                    for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
@@ -2356,6 +2360,21 @@ def _abort_camp_recall(mem, state, screen, reason):
     """Record bounded evidence and release a recall that cannot progress."""
     stage = state.get('stage')
     metric = {'stage': stage, 'steps': int(state.get('steps') or 0)}
+    if stage == 'dest':
+        camp = state.get('target')
+        if (isinstance(camp, (list, tuple)) and len(camp) == 2
+                and all(type(value) is int for value in camp)):
+            metric['camp'] = list(camp)
+        target_cell = state.get('target_cell')
+        if (isinstance(target_cell, (list, tuple)) and len(target_cell) == 2
+                and all(type(value) is int for value in target_cell)):
+            metric['target_cell'] = list(target_cell)
+        castle = state.get('goal')
+        if isinstance(castle, str):
+            metric['castle'] = castle[:48]
+        general = state.get('general')
+        if isinstance(general, str):
+            metric['general'] = general[:48]
     if stage in FORT_STAGES:
         metric['fort'] = True
         camp = state.get('target')
@@ -2475,6 +2494,8 @@ def _fort_step(screen, mem, state):
             return []                  # the list is still drawing
         members = [word for x, _, word in _options(screen) if x > 100]
         wanted = state.get('fort_actor')
+        if (not isinstance(wanted, str) or not wanted) and state.get('task_recall') is True:
+            wanted = state.get('general')
         if wanted in members:
             move = menu_to(screen, wanted)
             if move is None:

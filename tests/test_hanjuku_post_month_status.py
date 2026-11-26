@@ -968,6 +968,7 @@ def test_recall_task_starts_the_named_return_on_the_selected_camp(monkeypatch):
                         lambda _screen, _mem, _frame: [pad('a')])
     assert post.step(screen, mem, object()) == [pad('a')]
     assert _flow(mem)['recall']['general'] == 'ヴィーナス'
+    assert _flow(mem)['recall']['fort_actor'] == 'ヴィーナス'
     assert _flow(mem)['recall']['stage'] == 'to_camp'
     assert state['stage'] == 'wait_recall'
 
