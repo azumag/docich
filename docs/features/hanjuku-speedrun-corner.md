@@ -703,3 +703,12 @@ PR 1 の範囲は実装済み。確認済みの内容と、元コーナー側に
 | 9. R2 | バケットの作成はこのセッションの Cloudflare ツールで代行してよい。**`docich-hanjuku-speedrun` を作成済み**（2026-11-25、場所 ENAM）。API トークンの作成と VM の `r2.env` への配置はオーナー作業（`docs/hanjuku-speedrun-r2.md`）。 |
 | 13. Mac での確認 | ローカルドライバをリポジトリに入れる（`tools/hanjuku_local/`）。ROM は入れない。 |
 | 1〜3. 凍結 | 推奨のまま。今のランが「めでたし」まで完走したら凍結。途中でゲームオーバーなら次のランの完走まで待つ。凍結後の元コーナーは手動のみ。監査 Issue の自動起票は凍結の PR で止める。 |
+
+## 付録H: クラウドでの総合動作テスト結果（実コア・実 ROM）
+
+クラウド環境（snes9x 1.61 コア＋実 ROM、ローカルドライバ `tools/hanjuku_local/`）で実施。Mac での確認が最終テスト。
+
+- 通過: コア起動（serialize 往復・SRAM 往復一致）、bot によるタイトル→名前入力→ゲーム開始→第1話の進行、`name_screen` 開始検出とフレーム由来時刻、spool/trace/manifest/segments の生成と gzip、spool 上限、SIGTERM での state/SRAM 保存と DNF 確定、`.state` からの再開（終了済み試走は再開しない）、読み上げキュー（DNF 実測／区間・完走は合成で確認、重複排除）、ローカルのダミー S3（署名検証つき）への退避と `--dry-run`、オーバーレイ表示（計測中・完走・stale・黄/赤/青・DNF）。
+- 未確認: 実 run での区間確定（bot は約4.5ゲーム時間・戦闘83回でも第1話が終わらず、章末セーブに届かなかった。不具合ではなく未到達）、RetroArch＋Xvfb 経路、本物の R2・VM。
+- この試験で直した不具合: ローカルドライバの終了処理、bot が観測しない終端での完走/DNF の読み上げ、DNF 後の再起動による trace の汚染、再起動での `archived` 消失。レビュー指摘の LOW（`--dry-run` の副作用、読み上げ区間の欠落、`need_fullpath`）も修正済み。
+- 注意: ROM を `games/roms/` に置くと `tests/hanjuku_speedrun/test_hanjuku_retro_registration.py` の一部が失敗する（ROM 有無で候補が変わるテストの隔離不足。ROM を置かない CI では通る）。
