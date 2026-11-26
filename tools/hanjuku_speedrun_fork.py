@@ -1239,6 +1239,54 @@ SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
          "                    ('rta_failed', lambda: rta_hook.observe(runtime, records, state, meta, "
          "screenshot=Path(obs['screenshot']))),\n", 1),
     ),
+    # origin/main scans every generation runtime and trusts the game name
+    # recorded inside it.  The copy must never use the original corner's
+    # runtime evidence, so add the copy-specific foreign-game filter here.
+    # (This branch's original corner already filters; the patch is a no-op
+    # when the source ref carries that filter.)
+    'src/docich/hanjuku_resume.py': (
+        ("from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest, identity, matches, read_record\n",
+         "from docich.retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,\n"
+         "                                identity, matches, read_record, runtime_game as _runtime_game)\n", 1),
+        ("    for runtime in runtimes.glob('g*'):\n"
+         "        # RUN_FILE is Hanjuku-specific. Saved states alone also constitute\n",
+         "    for runtime in runtimes.glob('g*'):\n"
+         "        # A copied corner's runtime shares this generation space and these\n"
+         "        # filenames. Never let its evidence select or block this game's start.\n"
+         "        if _runtime_game(runtime) not in (None, 'hanjuku-speedrun'):\n"
+         "            continue\n"
+         "        # RUN_FILE is Hanjuku-specific. Saved states alone also constitute\n", 1),
+    ),
+    'src/docich/hanjuku_resume_recovery.py': (
+        ("from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest\n",
+         "from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest, runtime_game as _runtime_game\n", 1),
+        ("        if not runtime.is_dir():\n"
+         "            continue\n"
+         "        relevant = any((runtime / n).exists() or (runtime / n).is_symlink()\n",
+         "        if not runtime.is_dir():\n"
+         "            continue\n"
+         "        # A copied corner's runtime shares this generation space and these\n"
+         "        # filenames. It is not newer progress of this game.\n"
+         "        if _runtime_game(runtime) not in (None, 'hanjuku-speedrun'):\n"
+         "            continue\n"
+         "        relevant = any((runtime / n).exists() or (runtime / n).is_symlink()\n", 1),
+    ),
+    'src/docich/hanjuku_narration.py': (
+        ("from docich.retroarch_boundary import read_record\n",
+         "from docich.retroarch_boundary import read_record, runtime_game as _runtime_game\n", 1),
+        ("    for runtime_dir in sorted(runtime_root.iterdir()):\n"
+         "        if runtime_dir.is_symlink() or not runtime_dir.is_dir():\n"
+         "            continue\n"
+         "        state_path = runtime_dir / STATE\n",
+         "    for runtime_dir in sorted(runtime_root.iterdir()):\n"
+         "        if runtime_dir.is_symlink() or not runtime_dir.is_dir():\n"
+         "            continue\n"
+         "        # A copied corner's runtime shares this narration layout. Never write\n"
+         "        # this game's delivery outcomes into another game's runtime.\n"
+         "        if _runtime_game(runtime_dir) not in (None, 'hanjuku-speedrun'):\n"
+         "            continue\n"
+         "        state_path = runtime_dir / STATE\n", 1),
+    ),
     # Rotating the decision/event logs overwrites ``.previous``.  The speedrun
     # copy hands the outgoing generation to its attempt spool first; the
     # original source is not changed.  The anchor is the exact line in the
@@ -1269,6 +1317,12 @@ SOURCE_PATCHES: dict[str, tuple[tuple[str, str, int], ...]] = {
 #: check (the real module always has ``append_log`` and is checked normally).
 SOURCE_PATCH_GUARDS = {
     'src/docich/hanjuku_run.py': lambda text: 'def append_log(' in text,
+    # A source ref that already carries the copy-aware isolation filter (for
+    # example the feature branch before the main ref catches up) needs no
+    # patch.  Only the unfiltered upstream shape gets the filter restored.
+    'src/docich/hanjuku_resume.py': lambda text: '_runtime_game(runtime) not in' not in text,
+    'src/docich/hanjuku_resume_recovery.py': lambda text: '_runtime_game(runtime) not in' not in text,
+    'src/docich/hanjuku_narration.py': lambda text: '_runtime_game(runtime_dir) not in' not in text,
 }
 
 
@@ -1277,6 +1331,9 @@ SOURCE_PATCH_GUARDS = {
 #: the checkout that owns this tool must never ship a copy without it.
 REQUIRED_SOURCE_PATCH_MARKERS = {
     'src/docich/hanjuku_speedrun/hanjuku_run.py': 'before_rotate',
+    'src/docich/hanjuku_speedrun/hanjuku_resume.py': '_runtime_game(runtime) not in',
+    'src/docich/hanjuku_speedrun/hanjuku_resume_recovery.py': '_runtime_game(runtime) not in',
+    'src/docich/hanjuku_speedrun/hanjuku_narration.py': '_runtime_game(runtime_dir) not in',
 }
 
 

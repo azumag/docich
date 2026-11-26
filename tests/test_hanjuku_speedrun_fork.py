@@ -930,6 +930,89 @@ def test_real_head_is_a_clean_generated_copy(tmp_path):
         assert hashlib.sha256((out / relative).read_bytes()).hexdigest() == digest
 
 
+MAIN_RESUME_PY = textwrap.dedent('''\
+    from .retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,
+                                    identity, matches, read_record)
+
+
+    def scan(runtimes):
+        for runtime in runtimes.glob('g*'):
+            # RUN_FILE is Hanjuku-specific. Saved states alone also constitute
+            relevant = False
+            if not relevant:
+                continue
+    ''')
+
+MAIN_RECOVERY_PY = textwrap.dedent('''\
+    from .retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest
+
+
+    def scan(base):
+        for runtime in base.glob('g*'):
+            if runtime.is_symlink():
+                return False
+            if not runtime.is_dir():
+                continue
+            relevant = any((runtime / n).exists() or (runtime / n).is_symlink()
+                           for n in ('hanjuku_run.json',))
+            if relevant:
+                return False
+        return True
+    ''')
+
+MAIN_NARRATION_PY = textwrap.dedent('''\
+    from .retroarch_boundary import read_record
+
+    STATE = 'hanjuku_narration.json'
+
+
+    def scan(runtime_root):
+        for runtime_dir in sorted(runtime_root.iterdir()):
+            if runtime_dir.is_symlink() or not runtime_dir.is_dir():
+                continue
+            state_path = runtime_dir / STATE
+            yield state_path
+    ''')
+
+
+def test_runtime_isolation_filters_are_restored_in_the_copy(tmp_path):
+    """The main ref scans every runtime; the copy must not adopt foreign ones."""
+    repo, _sha = _make_repo(tmp_path, {
+        'src/docich/hanjuku_resume.py': MAIN_RESUME_PY,
+        'src/docich/hanjuku_resume_recovery.py': MAIN_RECOVERY_PY,
+        'src/docich/hanjuku_narration.py': MAIN_NARRATION_PY,
+    })
+    out = tmp_path / 'out'
+    result = _run_tool(tmp_path, ['generate', '--source', 'HEAD'],
+                       repo=repo, output_root=out)
+    assert result.returncode == 0, result.stderr
+
+    resume = (out / 'src/docich/hanjuku_speedrun/hanjuku_resume.py').read_text(
+        encoding='utf-8')
+    recovery = (out / 'src/docich/hanjuku_speedrun/hanjuku_resume_recovery.py').read_text(
+        encoding='utf-8')
+    narration = (out / 'src/docich/hanjuku_speedrun/hanjuku_narration.py').read_text(
+        encoding='utf-8')
+    for text, guard in ((resume, '_runtime_game(runtime) not in (None, \'hanjuku-speedrun\')'),
+                        (recovery, '_runtime_game(runtime) not in (None, \'hanjuku-speedrun\')'),
+                        (narration, '_runtime_game(runtime_dir) not in (None, \'hanjuku-speedrun\')')):
+        assert guard in text
+        assert 'runtime_game as _runtime_game' in text
+    assert "hanjuku-hero" not in resume
+
+
+def test_runtime_isolation_filter_patch_is_a_noop_when_already_present():
+    """The feature branch already carries the filter until main catches up."""
+    text = (
+        "from docich.retroarch_boundary import read_record, runtime_game as _runtime_game\n"
+        "for runtime in runtimes.glob('g*'):\n"
+        "    if _runtime_game(runtime) not in (None, 'hanjuku-speedrun'):\n"
+        "        continue\n"
+    )
+    assert tool._apply_source_patches(
+        'src/docich/hanjuku_resume.py', text) == text
+
+
 def test_hotload_dynamic_names_are_patched_to_the_copy(tmp_path):
     """The copy's trampoline must import its own package, not the original's."""
     repo_root = Path(__file__).resolve().parents[1]

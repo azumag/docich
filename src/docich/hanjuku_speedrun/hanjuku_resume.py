@@ -20,7 +20,8 @@ from docich.adapters.base import AdapterError
 from docich.game_switch import atomic_write_json
 from docich.naming import runtime_id_generation
 from docich.hanjuku_speedrun.hanjuku.strategy import card_census as _card_census
-from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest, identity, matches, read_record
+from docich.retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,
+                                identity, matches, read_record, runtime_game as _runtime_game)
 
 REQUEST_FILE = 'hanjuku_resume.json'
 RECEIPT_FILE = 'hanjuku_resume.json'
@@ -108,6 +109,10 @@ def _latest_boundary(g, game, *, explicit_resume=False, _before_generation=None,
                 continue
             choices[runtimes / receipt['runtime_id']] = receipt['generation']
     for runtime in runtimes.glob('g*'):
+        # A copied corner's runtime shares this generation space and these
+        # filenames. Never let its evidence select or block this game's start.
+        if _runtime_game(runtime) not in (None, 'hanjuku-speedrun'):
+            continue
         # RUN_FILE is Hanjuku-specific. Saved states alone also constitute
         # progress, but cannot prove a safe start without the run/boundary.
         relevant = (any((runtime / name).exists() or (runtime / name).is_symlink()

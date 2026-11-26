@@ -22,7 +22,7 @@ from docich.game_switch import GameSwitchStore, atomic_write_json, validate_requ
 from docich.hanjuku_manual_cancel import CancelRefused, DIGEST, _existing_lock, _object, _released_runtime, _ProbeTmux
 from docich.hanjuku_speedrun.hanjuku_resume import REQUEST_FILE, RECEIPT_FILE, START_POLICY, core_digest
 from docich.naming import runtime_directory, runtime_id_generation, runtime_names
-from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest
+from docich.retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest, runtime_game as _runtime_game
 from docich.tmux import SESSION
 from docich.trading.soren_output import resolve_soren_root
 
@@ -48,6 +48,10 @@ def _no_newer_hanjuku_progress(base, store, generation):
         if runtime.is_symlink():
             return False
         if not runtime.is_dir():
+            continue
+        # A copied corner's runtime shares this generation space and these
+        # filenames. It is not newer progress of this game.
+        if _runtime_game(runtime) not in (None, 'hanjuku-speedrun'):
             continue
         relevant = any((runtime / n).exists() or (runtime / n).is_symlink()
                        for n in ('hanjuku_run.json', RECEIPT_FILE, MANUAL_SAVE_FILE, BOUNDARY_FILE))

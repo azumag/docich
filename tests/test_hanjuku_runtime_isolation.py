@@ -50,7 +50,8 @@ def test_resume_ignores_newer_speedrun_runtime(setup):
     assert baseline is not None
     assert baseline['source_boundary']['runtime_id'] == s.source.parent.parent.name
 
-    _speedrun_runtime(s.g.state_dir)
+    copied = _speedrun_runtime(s.g.state_dir)
+    before = _snapshot(copied)
 
     assert resume._latest_boundary(s.g, s.game, explicit_resume=True) == baseline
     resume.prepare(s.g, s.game, s.queue)
@@ -58,14 +59,17 @@ def test_resume_ignores_newer_speedrun_runtime(setup):
                           resume.REQUEST_FILE).read_text(encoding='utf-8'))
     assert receipt['selected_source'].startswith('runtimes/g514-')
     assert receipt['source_boundary'] == baseline['source_boundary']
+    assert _snapshot(copied) == before
 
 
 def test_recovery_ignores_newer_speedrun_runtime(setup):
     s = setup
-    _speedrun_runtime(s.g.state_dir)
+    copied = _speedrun_runtime(s.g.state_dir)
+    before = _snapshot(copied)
     store = SimpleNamespace(receipts=SimpleNamespace(receipts=lambda: []))
     assert recovery._no_newer_hanjuku_progress(
         Path(s.g.state_dir), store, 514) is True
+    assert _snapshot(copied) == before
 
 
 def _narration_candidate(runtime, game):

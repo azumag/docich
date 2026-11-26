@@ -25,7 +25,7 @@ import time
 from docich.game_switch import atomic_write_json
 from docich.hanjuku_speedrun.hanjuku_run import append_log
 from docich.adapters.base import AdapterError
-from docich.retroarch_boundary import read_record
+from docich.retroarch_boundary import read_record, runtime_game as _runtime_game
 
 STATE = 'hanjuku_narration.json'
 TAIL_BYTES = 65536
@@ -586,6 +586,10 @@ def retry_pending_terminal_deliveries(g, *, exclude_key: str = '') -> bool:
     orphaned = []
     for runtime_dir in sorted(runtime_root.iterdir()):
         if runtime_dir.is_symlink() or not runtime_dir.is_dir():
+            continue
+        # A copied corner's runtime shares this narration layout. Never write
+        # this game's delivery outcomes into another game's runtime.
+        if _runtime_game(runtime_dir) not in (None, 'hanjuku-speedrun'):
             continue
         state_path = runtime_dir / STATE
         try:
