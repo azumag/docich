@@ -243,6 +243,7 @@ def test_prompt_contains_situation_and_avoid_list(live):
     assert '短い報告' in prompt and '乾いた' in prompt
     assert '評価したいのは' in prompt
     assert 'ソ連' in prompt and '同志' in prompt and 'focus.humor' in prompt
+    assert '史実' in prompt and '暗い' in prompt and '正確' in prompt
     assert value['focus']['feature'] in prompt
     assert periodic.DEFAULT_PERSONA in prompt
     assert '"texts"' in prompt
@@ -311,6 +312,14 @@ def test_narrative_rejects_a_flat_fact_list():
     assert periodic.narrative_ok(fact_list) is False
     assert periodic.narrative_ok(LONG_A) is True
     assert periodic.narrative_ok(LONG_B) is True
+
+
+def test_history_allows_framed_facts_but_rejects_game_attribution_and_mockery():
+    assert periodic.history_ok('史実では、ソ連の大粛清で多くの人が犠牲になった。') is True
+    assert periodic.history_ok('史実では、ソ連で飢餓が起きた。') is True
+    assert periodic.history_ok('将軍が粛清されました。') is False
+    assert periodic.history_ok('史実ではソ連の大粛清を笑え。') is False
+    assert periodic.history_ok('ソ連の大粛清はなかったという主張は誤りだ。') is False
 
 
 def test_persona_requires_one_to_four_soviet_riffs():

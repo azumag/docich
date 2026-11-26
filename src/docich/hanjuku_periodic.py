@@ -87,7 +87,9 @@ KATAKANA_ALLOWED = frozenset({
     'ソビエト', 'ソ連', 'ペレストロイカ', 'グラスノスチ', 'コルホーズ', 'ソフホーズ',
     'クレムリン', 'スプートニク', 'バラライカ', 'トロイカ', 'ボルシチ', 'ウォッカ',
     'プロレタリア', 'コミンテルン', 'モスクワ', 'レニングラード', 'スターリングラード',
-    'ウラル', 'シベリア', '冬将軍',
+    'ウラル', 'シベリア', '冬将軍', 'スターリン', 'レーニン', 'フルシチョフ',
+    'ブレジネフ', 'ゴルバチョフ', 'チェルノブイリ', 'アフガニスタン', 'ホロドモール',
+    'グラーグ',
 })
 
 FOCUS_CATEGORIES = ('card', 'sortie', 'defense', 'economy', 'chart', 'battle')
@@ -102,12 +104,28 @@ DEFAULT_PERSONA = (
     'ソ連の放送局の現場担当。淡々と事実を伝え、時々乾いた官僚ジョークを一つだけ挟む。'
     '将軍を「同志」、城を「人民の拠点」、兵站を「五カ年計画」と呼ぶが、比喩を重ねない。'
     '感傷的な決め台詞や「〜でしょう」「〜てやりましょう」を言わず、短い文で結果と次の一点だけを話す。'
+    'ソ連史の事実を一つ、現在の判断に重ねる。明るい/暗いを問わず、史実として正確に。'
 )
 
 PERSONA_MARKERS = re.compile(
     r'同志|人民|ソビエト|ソ連|共産|赤旗|五カ年|計画経済|集団農場|配給|政治局|'
     r'最高会議|コルホーズ|ソフホーズ|ペレストロイカ|グラスノスチ|プロレタリア|'
     r'革命|党委員会|社会主義|スプートニク|バラライカ|冬将軍|クレムリン')
+
+HISTORICAL_TERMS = re.compile(
+    r'大粛清|粛清|処刑|飢餓|ホロドモール|虐殺|グラーグ|収容所|強制収容|'
+    r'シベリア送り|チェルノブイリ|アフガニスタン|アフガン戦争|冬戦争|独ソ戦|冷戦|'
+    r'スターリン|レーニン|フルシチョフ|ブレジネフ|ゴルバチョフ|ベルリンの壁')
+
+HISTORY_FRAME = re.compile(
+    r'史実|歴史|当時|ソ連|ソビエト|20世紀|19[0-9]{2}|冷戦|社会主義|共産主義|'
+    r'グラスノスチ|ペレストロイカ')
+
+HISTORY_TABOO = re.compile(
+    r'(?:大粛清|粛清|飢餓|ホロドモール|虐殺|収容所|グラーグ)'
+    r'(?:は|が)?(?:なかった|捏造|嘘|誇張)|ざま|自業自得|当然の報い|笑え|嘲笑|'
+    r'犠牲者を?笑')
+
 
 PERSONA_HUMOR = {
     'card': '計画経済の配分',
@@ -936,7 +954,10 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '比喩は焦点の理解に役立つ場合だけ1つまで。日常の例えや、状況と関係の薄い比喩は使わないでください。',
         'ソ連・共産主義の言葉は1つだけ。同志・人民・五カ年計画などを、乾いた冗談として'
         '一度だけ使ってください。連発しない。',
-        '政治的な主張、実在の人物・民族・国への侮辱、粛清・飢餓・収容所などの暗い歴史ネタは使わないでください。',
+        'ソ連・共産主義の歴史的事実は、明るい/暗いを問わず引用してよい。年号・人名・出来事は'
+        '正確にし、現在のゲームの事実と混同しない。史実は1つだけ、現在の判断への乾いた比喩として使う。',
+        '暗い歴史（大粛清、飢餓、収容所、戦争など）は、犠牲者を嘲笑・侮辱するためではなく、'
+        '事実の否認・矮小化・美化もしない。実在の人物・民族・国への攻撃や政治的主張には使わない。',
         '結論→理由→課題→展望の順で、同じ段落に複数の話題を混ぜないでください。',
         '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
         '事実を曲げないでください。',
@@ -1233,6 +1254,15 @@ def persona_ok(text):
     return 1 <= len(markers) <= 4 and len(set(markers)) <= 3
 
 
+def history_ok(text):
+    """Allow historical facts, but not game-attributed claims, denial or mockery."""
+    if HISTORY_TABOO.search(text):
+        return False
+    if HISTORICAL_TERMS.search(text) and not HISTORY_FRAME.search(text):
+        return False
+    return True
+
+
 def focus_clear(text, focus, facts, max_names=4):
     """The first two sentences must name the focus; keep background names small."""
     if not isinstance(focus, dict):
@@ -1278,8 +1308,7 @@ def valid_text(text, facts):
             continue
         return False
     if re.search(r'死亡|戦死|亡くな|全滅|一撃|瞬殺|必ず|確実に|絶対|ゲームオーバー|'
-                 r'エンディング|倒した|撃破した?|ゲーム(?:を)?クリア|粛清|処刑|飢餓|'
-                 r'虐殺|グラーグ|シベリア送り|収容所', normalized):
+                 r'エンディング|倒した|撃破した?|ゲーム(?:を)?クリア', normalized):
         return False
     for match in re.finditer(r'クリア', normalized):
         if not re.search(r'[0-9]+章', normalized[max(0, match.start() - 16):match.end() + 8]):
