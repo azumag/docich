@@ -1088,9 +1088,7 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
 .hanjuku-gap-toast.tone-battle { border-color: #f0b84d; }
 .hanjuku-gap-toast.tone-month { border-color: #8fa8bb; }
 .hanjuku-gap-toast.tone-general { border-color: #7ee0c4; }
-.hanjuku-gap-toast.tone-plan { border-color: #75daec; font-size: 12px; line-height: 1.2; padding: 4px 6px; }
-.hanjuku-gap-toast.tone-plan .hanjuku-gap-toast-age { display: none; }
-.hanjuku-gap-toasts.has-plan, .hanjuku-gap-toasts.with-progress { min-height: 0; }
+.hanjuku-gap-toasts.with-progress { min-height: 0; }
 .hanjuku-gap-toast.tone-flow { border-color: #a8bdf9; font-size: 12px; padding: 4px 6px; }
 .hanjuku-gap-progress { height: 64px; min-height: 0; overflow: hidden;
   border-left: 3px solid #a8bdf9; background: #0b2232;
@@ -1104,11 +1102,6 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   flex-direction: column; gap: 6px; }
 .hanjuku-gap-flow-head { display: flex; align-items: baseline; justify-content: space-between;
   gap: 8px; color: #bdcdd9; font-size: 15px; font-weight: 700; }
-.hanjuku-gap-current-plan { padding: 6px 8px; border-left: 3px solid #75daec; border-radius: 4px; background: #0b2835; }
-.hanjuku-gap-current-plan-head { color: #75daec; font-size: 12px; font-weight: 700; }
-.hanjuku-gap-current-plan-detail { margin-top: 3px; color: #e6f2f8; font-size: 12px;
-  line-height: 1.3; white-space: pre-wrap; overflow-wrap: anywhere; }
-
 /* An intrinsic square SVG in a fixed-size slot; variable text only clips below.
    The 174px ceiling also fits the 540px game-gap height with progress shown. */
 .hanjuku-gap-minimap { display: block; width: min(100%, 174px); height: auto;
@@ -2227,46 +2220,6 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
     gapLive.toasts.push({id:++gapLive.seq, text, tone, at:now});
     gapLive.toasts = gapLive.toasts.filter(t => now - t.at <= 45000).slice(-5);
   }
-  // A stage ID and the inferred "sortie" pending category are not proof of
-  // a sortie. Only an order with matching step, actor and recorded route
-  // may be labelled planned/issued. Status comes from the persisted policy.
-  function gapPlanInfo(value) {
-    const gap = value?.gap || {};
-    const step = String(value?.plan || '');
-    const intent = String(gap.intent || '').trim();
-    if (intent) {
-      const parts = intent.split(' / ');
-      const read = prefix => parts.find(part => part.startsWith(prefix))?.slice(prefix.length).trim() || '';
-      const intentStep = read('段階 ');
-      const status = read('状態 ');
-      const general = (parts[0] || '').trim();
-      const route = (parts[1] || '').trim();
-      const purpose = (parts[2] || '').trim();
-      const reasonAt = parts.findIndex(p => p.startsWith('理由 '));
-      const reason = reasonAt >= 0 ? parts.slice(reasonAt).join(' / ').slice(3).trim() : '';
-      const labels = {pending:'出撃予定', launched:'出撃命令済み',
-        launched_unconfirmed:'出撃命令済み（成立未確認）'};
-      // An exact stage match prevents J3's action from leaking into J30.
-      if ((!step || intentStep === step) && general && route.includes('→') && labels[status]) {
-        const details = [general, route, purpose, reason ? `理由 ${reason}` : ''].filter(Boolean);
-        return {label:labels[status], detail:details.join(' / '), known:true};
-      }
-    }
-    // A sortie chart row is a persisted, recent issued order, not the next
-    // action to perform. It is only usable as evidence for its exact step.
-    const move = (gap.moves || []).find(m => step && m.step === step && m.general
-      && (m.source || m.target) && ['行軍中','成立未確認','交戦中'].includes(m.status));
-    if (move) {
-      const label = {'行軍中':'出撃命令済み（行軍中）',
-        '成立未確認':'出撃命令済み（成立未確認）',
-        '交戦中':'出撃経過確認中'}[move.status];
-      const route = `${move.source || '未確認'}→${move.target || '未確認'}`;
-      return {label, detail:[move.general, route, move.reason ? `理由 ${move.reason}` : '']
-        .filter(Boolean).join(' / '), known:true};
-    }
-    // The battle plan is rendered separately, not masquerading as a sortie.
-    return {label:'計画確認中', detail:'行動内容未取得', known:false};
-  }
   function gapFlowText(row) {
     const stageNames = {
       processing:'処理中', menu:'メニュー操作中', scan:'一覧確認中',
@@ -2333,10 +2286,7 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
         out.push(['▸ 進行 ' + gapFlowText(row), 'flow']);
     }
     // Owner 2026-11-06: the sortie intent is shown once, in the 出撃意図 line.
-    // The chart no longer repeats it (neither as a live block nor a toast).
-    // "sortie" is only an inferred pending category, not a confirmed order.
-    if (previous && value.pending !== previous.pending && value.pending && value.pending !== '出撃')
-      out.push([`▸ 処理中 ${value.pending}`, 'plan']);
+    // The chart never repeats pending/plan state as a toast.
     return out;
   }
   function gapBuildSkeleton(surface) {
@@ -2541,12 +2491,6 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
     // Update only the toast elements that changed: re-creating them every poll
     // restarted the enter animation and made the strip flicker.
     const live = gapLive.toasts.filter(t => now - t.at <= 45000).slice(-4);
-    const planInfo = gapPlanInfo(value);
-    const currentToast = `▸ ${planInfo.label} ${value.plan || '段階未取得'}\n${planInfo.detail}`;
-    // A historical toast is not the current plan; display the current card
-    // unless the exact same up-to-date details are visible in the toast.
-    const planToastVisible = live.some(t => t.tone === 'plan' && t.text === currentToast);
-    gapDom.toastBox.classList.toggle('has-plan', planToastVisible);
     const ids = new Set(live.map(t => t.id));
     for (const [id, el] of gapDom.toasts) {
       if (!ids.has(id)) { el.remove(); gapDom.toasts.delete(id); }
