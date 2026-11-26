@@ -34,6 +34,29 @@ def read_record(path: Path, *, limit: int = 16384) -> dict:
     return data
 
 
+def runtime_game(runtime_dir: Path) -> str | None:
+    """Name the game recorded by a runtime's run, else boundary record.
+
+    Copied corners (for example hanjuku-speedrun) reuse the same runtime
+    directory layout and generation space. A record naming a different game is
+    foreign to this module's corner and must not join its scans. Missing,
+    unreadable, or game-less records return ``None`` so callers keep their
+    previous handling of incomplete runtimes.
+    """
+    root = Path(runtime_dir)
+    if root.is_symlink():
+        return None
+    for name in ("hanjuku_run.json", BOUNDARY_FILE):
+        try:
+            record = read_record(root / name, limit=256 * 1024)
+        except AdapterError:
+            continue
+        game = record.get("game")
+        if isinstance(game, str) and game:
+            return game
+    return None
+
+
 @contextmanager
 def input_gate(runtime_dir: Path, deadline: float, cancel=None):
     """Serialize boundary confirmation with *all* game input, not the wait."""

@@ -82,8 +82,8 @@ nohup python3 tmp/hanjuku-local/core_driver.py --fast >> tmp/hanjuku-local/prod1
 |---|---|---|
 | `HANJUKU_CODE_ROOT` | `/Users/azumag/work/docich` | bot ソースのルート。**worktree を使うときは必ずここを切り替える**。 |
 | `HANJUKU_RUNTIME` | `run-local/runtimes/<RUNTIME_ID>` | 観測・判断ログ・スクショの出力先。 |
-| `HANJUKU_RUNTIME_ID` | `g1163-42bfb85e` | 実行ID。`hanjuku_run` の identity に載る。 |
-| `HANJUKU_GENERATION` | `1163` | 世代番号。 |
+| `HANJUKU_RUNTIME_ID` | `g1-00000000` | 実行ID。`hanjuku_run` の identity に載る。 |
+| `HANJUKU_GENERATION` | `1` | 世代番号。 |
 | `HANJUKU_LEASE` | サンプル値 | リースID（実行の同一性）。 |
 | `HANJUKU_STATE` | `tmp/hanjuku-local/states/hanjuku-hero.state` | セーブステート（`retro_serialize`）。 |
 | `HANJUKU_SAVE_EVERY` | `10` | 90 フレーム×この値ごとに state を保存（既定で約 900 フレーム毎）。 |

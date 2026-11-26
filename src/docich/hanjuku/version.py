@@ -1,1 +1,1 @@
-BOT_VERSION = 'hanjuku-chart-v1562-ch9-road-and-boss-efficiency'
+BOT_VERSION = 'hanjuku-chart-v1564-speedrun-corner'

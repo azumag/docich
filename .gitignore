@@ -3,6 +3,8 @@ __pycache__/
 run/
 # ローカル実行のランタイム成果物（#4239 で混入 → #4242 で除去）。再混入防止。
 run-local/
+# ローカルドライバのコア・ROM・state/SRAM・ログ。コードは tools/hanjuku_local で追跡する。
+/tmp/hanjuku-local/
 games/roms/*
 !games/roms/README.md
 .env

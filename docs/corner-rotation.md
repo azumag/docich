@@ -835,6 +835,8 @@ queued_manualをpendingへ移す。現在の枠・試合を中断せず、progra
 追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
 固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。
 
+半熟英雄スピードラン（`hanjuku-speedrun`）は、同じ `hanjuku_corner` に `--game hanjuku-speedrun` を渡す固定operator `start-hanjuku-speedrun` で手動予約する。catalog は `manual_only = true` なので自動抽選には入らず、WebUI の開始予約も共通 coordinator の同じ queue を使う。最新セーブからの再開（`--resume-latest`）と第1話からの新規開始は元コーナー専用で、スピードランでは `invalid_value`（終了コード85）として拒否する。
+
 WebUI の半熟英雄には3つの起動方法がある。
 
 - **開始予約**: 従来の境界判定に従う。直前が画面停滞・入力停滞なら検証済みセーブから自動再開する。

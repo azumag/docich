@@ -23,7 +23,7 @@ from .game_switch import atomic_write_json
 SCORE_GAMES = {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"}
 TITLES = {"ninvaders": "NInvaders", "nsnake": "Snake", "bastet": "Bastet",
           "moon-buggy": "Moon Buggy", "pacman4console": "Pacman",
-          "hanjuku-hero": "半熟英雄"}
+          "hanjuku-hero": "半熟英雄"}  # family: original-only
 
 
 def enabled(g) -> bool:
@@ -150,7 +150,7 @@ def confirm(state_dir, soren_root, *, game, metric, value, run_id, sequence,
     A new lower-is-better metric must have its own explicit implementation.
     """
     if ((game not in SCORE_GAMES or metric != "score")
-            and (game != "hanjuku-hero" or metric != "cleared")):
+            and (game != "hanjuku-hero" or metric != "cleared")):  # family: original-only
         raise ValueError("unsupported record metric")
     if (type(value) is not int or value < 0
             or metric == "cleared" and value > 12
@@ -262,7 +262,7 @@ def consider_hanjuku(g, identity):
         if prediction_path.exists() and not ledger_path.exists():
             prior = hanjuku_predictions._load(Path(g.state_dir), seed)
             seed = max(seed, prior["best_cleared"])
-        return confirm(g.state_dir, resolve_soren_root(g), game="hanjuku-hero",
+        return confirm(g.state_dir, resolve_soren_root(g), game="hanjuku-hero",  # family: original-only
                        metric="cleared", value=row["cleared"], baseline=seed,
                        run_id=json.dumps(identity, sort_keys=True), sequence=str(row["cleared"]))
     except Exception:

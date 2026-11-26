@@ -78,6 +78,8 @@ corners = [
   # ROM本体は著作権物のためGit追跡外。自己吸い出しROMはVMにのみ配置し、
   # ROM/core/実行環境が揃ったVMでだけ適格性検査を通過して抽選される。
   { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" },
+  # スピードラン。当面手動のみ（docs/features/hanjuku-speedrun-corner.md §7 Phase 1）。
+  { id = "hanjuku-speedrun", adapter = "game", game = "hanjuku-speedrun", manual_only = true },
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
   # beta.tsuitate.info の1局owner。次局開始可能なWorkerだけを自動抽選候補にする。

@@ -23,6 +23,8 @@ import os
 import stat
 from pathlib import Path
 
+from .hanjuku_family import ORIGINAL, SPEEDRUN
+
 
 def _text(path: Path, limit: int = 65536) -> str:
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
@@ -60,7 +62,8 @@ def _variant(game: str, state_dir: Path, choices: tuple[str, ...]) -> str:
 # unobserved success or improvement.  The wit stays to one short aside so the
 # title still reads as the current game and goal.
 CHALLENGES = {
-    'hanjuku-hero': '私が将軍と卵で城を攻略。次はどの城に赤い旗を立てるか',
+    ORIGINAL: '私が将軍と卵で城を攻略。次はどの城に赤い旗を立てるか',
+    SPEEDRUN: '半熟英雄を最速で走り切る。私の計測に無駄な一秒はない',
     'sorengame': '私の合体計画、小さな国からソ連へ。建国は私の手で',
     'soren91': '僕の合体計画、落とす場所は計算済み。建国まで一直線',
     'nethack': '私が迷宮を探索。罠も空腹も、ソ連式の粘りで突破する',
@@ -94,7 +97,7 @@ def _live_hanjuku_progress(state_dir: Path) -> tuple[str, str] | None:
         return None
     generation = active.get('generation')
     runtime_id = active.get('runtime_id')
-    if (active.get('game') != 'hanjuku-hero' or type(generation) is not int
+    if (active.get('game') != 'hanjuku-hero' or type(generation) is not int  # family: original-only
             or runtime_id_generation(runtime_id) != generation
             or not isinstance(active.get('lease_id'), str) or not active['lease_id']):
         return None
@@ -180,7 +183,7 @@ def progress_phrase(game: str, state_dir: Path, soren_root: Path) -> str | None:
                 f'合体の先に建国あり。最高{best:,}点、私が塗り替える',
                 f'次の一手で連鎖を狙う。私が{best:,}点の先をひらく',
             ))
-        if game == 'hanjuku-hero':
+        if game == 'hanjuku-hero':  # family: original-only
             try:
                 current = _active_hanjuku_progress(state_dir)
                 if current:
