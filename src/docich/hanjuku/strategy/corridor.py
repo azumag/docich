@@ -95,12 +95,18 @@ def _drained(mem, castle, purpose) -> bool:
         return False
     names = _front_names(mem, castle)
     if isinstance(names, list) and len(names) > 1:
-        # The castle has company again: whatever the mark says, it is not
-        # drained. g1163 2026-11-12 21:1x: オシロガ kept a 'hero' mark from an
-        # older month while its page listed どうし+3, and the ドンドン retake
-        # was skipped on every observation.
-        (mem.get(DRAINED) or {}).pop(castle, None)
-        return False
+        if entry.get('kind') == 'hero' and purpose != 'move' and NAME in names:
+            others = [g for g in names if g != NAME]
+            if len(others) >= 2:
+                (mem.get(DRAINED) or {}).pop(castle, None)
+                return False
+        else:
+            # The castle has company again: whatever the mark says, it is not
+            # drained. g1163 2026-11-12 21:1x: オシロガ kept a 'hero' mark from an
+            # older month while its page listed どうし+3, and the ドンドン retake
+            # was skipped on every observation.
+            (mem.get(DRAINED) or {}).pop(castle, None)
+            return False
     if entry.get('month') != mem.get('month'):
         # A new month alone is not news about this castle. Re-probing every
         # drained castle at each month change cost about a fifth of the run's
@@ -258,7 +264,7 @@ def _wave(mem, target, front):
     # measured list counts, and the list has to be thin after this wave's
     # movers left.
     thin = _front_thin(mem, front) if front else False
-    if (front and (thin or (drained.get('kind') == 'empty'
+    if (front and (thin or (drained.get('kind') in ('empty', 'hero')
                             and type(drained.get('tick')) is int
                             and drained['tick'] >= wave['tick']))
             and _moved(mem, wave, front) >= SQUAD
@@ -365,6 +371,19 @@ def orders(mem) -> list[dict]:
                 (mem.get('front_guard_hold') or {}).pop(source, None)
                 (mem.get('front_guard_expired_tick') or {}).pop(source, None)
             _finish = _defender_nearly_dead(mem, target)
+            if (isinstance(_front_names_now, list)
+                    and NAME in _front_names_now
+                    and len(_front_names_now) < 4
+                    and len([g for g in _front_names_now if g != NAME]) <= 1
+                    and not _front_roster_stale(mem, source)):
+                # The hero stands at the front (PR #5255), and deploy refuses
+                # any attack that would leave him alone (_keeps_hero_company).
+                # Skip minting an attack that will immediately close with
+                # drained='hero', so rear supply moves are not starved.
+                _record_only(mem, 'front_guard_held', target=source,
+                             observed_metric={'residents': list(_front_names_now)[:8]},
+                             reason='前線の城に主人公と最後の1人しかいないため、この城から攻撃に出さず増援を優先する')
+                continue
             if (not _finish and _wounded_attack(mem, source)
                     and not _front_guard_expired(mem, source)):
                 # A nearly dead general is a lost sortie, not a wave: g1163
@@ -1094,6 +1113,8 @@ def _front_thin(mem, castle) -> bool:
         names = partial.get(castle) if isinstance(partial, dict) else None
     if not isinstance(names, list):
         return False                       # unread is not thin
+    if NAME in names:
+        return len([g for g in names if g != NAME]) < FRONT_REFILL_MIN
     return len(names) < FRONT_REFILL_MIN
 
 

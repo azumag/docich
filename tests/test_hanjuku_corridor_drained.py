@@ -124,3 +124,23 @@ def test_a_hero_only_mark_still_yields_to_a_page_that_shows_company():
         'どうし', 'キャロット', 'トレビス', 'ソーピニヨン']
     assert corridor._drained(mem, 'ドンドン', 'attack') is False
 
+
+def test_hero_plus_one_companion_keeps_hero_drained_mark_for_attack_and_retake():
+    """With the hero posted at the front (PR #5255), [hero, 1] cannot attack."""
+    mem = memory({}, {}, tick=1000)
+    mem['world']['garrison'] = {'ナッテ': ['どうし', 'ブリオッシュ']}
+    corridor.mark_drained(mem, 'ナッテ', 'hero')
+    assert corridor._drained(mem, 'ナッテ', 'attack') is True
+    assert corridor._drained(mem, 'ナッテ', 'retake') is True
+    assert mem['corridor_drained']['ナッテ']['kind'] == 'hero'
+    assert corridor._drained(mem, 'ナッテ', 'move') is False
+
+
+def test_hero_with_two_companions_clears_hero_drained_mark():
+    mem = memory({}, {}, tick=1000)
+    mem['world']['garrison'] = {'ナッテ': ['どうし', 'ブリオッシュ', 'ココット']}
+    corridor.mark_drained(mem, 'ナッテ', 'hero')
+    assert corridor._drained(mem, 'ナッテ', 'attack') is False
+    assert 'ナッテ' not in mem['corridor_drained']
+
+
