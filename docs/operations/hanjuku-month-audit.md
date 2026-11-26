@@ -128,7 +128,7 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - issue発行はbotのseal時callback（v1257以降）と同じ。
 - **v1402**: `order_failed` のうち、理由文が明示的に「出撃要求が送信・受理されない」を示すものだけ `sortie_order_unaccepted` と分類する。`month_sorties.scope` が現在の章・月と一致し、同月の確定発射が1件以上ある場合は confidence を `medium` にして台帳へ残し、既定の high-confidence filer では起票しない。scope不明・不一致は `high` のまま。発射後の未確認、戦闘retry上限、出撃元メニュー不成立、未知理由は従来どおり `high`。
 
-## 卵・切り札を残した退却/敗北（v1410 / v1558）
+## 卵・切り札を残した退却/敗北（v1410 / v1561）
 
 戦闘結果が退却または敗北なのに、本人の卵を使える証拠があり未使用のまま
 終わった、または切り札が未使用で残っている場合に
@@ -145,9 +145,11 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
 - 将軍・敵・城・side・HP・卵残数・切り札の選択/使用/残り/pending・
   退却選択・理由・直前120秒の決定・計画/在城/flow/statsを1件32KB以内で保存する。
 - 卵は「この戦闘で使える白行を見た」（`egg_white_seen` /
-  `egg_available_unused`）または「この戦闘で卵を選択した」
-  （`egg_selected` / `egg_summon_seen`）を実測として扱う。卵戦に入った戦闘では
-  台帳の正数だけを残存の証拠にしない。
+  `egg_available_unused`）を実測として扱う。選択（`egg_selected`）は
+  使用の実測として扱い、選択後は再度白行を見た場合だけ残存とする。1回の
+  選択が実使用とは限らず、その場合は残存なし＝抑止側に倒れる。`melee_only`
+  の召喚戦（ゾンビ・ウゴカザル）は対象外。卵戦に入った戦闘では台帳の正数
+  だけを残存の証拠にしない。
 - 台帳値しかなく、この戦闘で卵戦にも選択にも入っていない場合は
   `egg_ledger_only=true` として「使わなかった可能性」を残す。台帳値は
   `egg_uses_ledger`、選択回数は `egg_selected` に分けて保存する。

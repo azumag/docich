@@ -33,6 +33,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _egg_drop_tactics,
                                _egg_drop_trace, _egg_plan, _hero_marching,
                                _egg_race_pressure, _score_pressure,
+                               _release_interrupted_card_flow,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
                                _hp1_resource_hold,
@@ -447,7 +448,8 @@ def _card_battle_reading(screen, cur, mem=None):
 
 
 def _card_gate_close(mem, cur, names):
-    cur['card_flow'] = None
+    _release_interrupted_card_flow(
+        mem, cur, '選択済み・消費未確認のまま切り札ゲートが閉じたため中断')
     cur['card_damage_list_blocked'] = {'key': _card_damage_key(mem, cur), 'cards': list(names)}
     rescue = _survival_state(mem, cur)
     # These cards still exist; they are unsafe for this observation.  This
@@ -1750,8 +1752,12 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         return
     from ..os_layer.roster import dirty_status
     dirty_status(mem, [cur.get('ally')])
-    if (cur.get('card_flow') or {}).get('stage') == 'announce':
-        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
+    flow = cur.get('card_flow') or {}
+    selected_interrupted = (isinstance(flow.get('card'), str)
+                            and flow.get('card') in (cur.get('cards_selected') or []))
+    if flow.get('stage') == 'announce' or selected_interrupted:
+        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了',
+                               selected_interrupted=selected_interrupted)
     mem['battle_seen'] = None
     mem.pop('battle', None)
     _plan_region(mem)['attack'] = None

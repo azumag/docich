@@ -15,6 +15,7 @@ import pytest
 from docich.hanjuku import month_audit as audit
 from docich.hanjuku.flows import battle as B
 from docich.hanjuku.flows import battle_menus as BM
+from docich.hanjuku_screen import Screen
 
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g1-eggcase',
             'generation': 1, 'lease_id': 'synthetic-lease'}
@@ -109,6 +110,10 @@ def test_t3_summon_menu_white_row_then_loss_is_a_high_egg_loss(runtime_dir):
     assert incidents[0]['confidence'] == 'high'
     assert incidents[0]['battle_event']['resources'] == ['egg']
     assert incidents[0]['fingerprint'] == egg_fingerprint()
+    # The issue body prints egg_summon_seen; the event must carry the measured
+    # flag rather than a missing key that renders as False.
+    assert incidents[0]['battle_event']['egg_summon_seen'] is True
+    assert 'この戦闘の召喚 True' in audit.render(incidents[0])
 
 
 def test_t4_grey_egg_row_in_summon_battle_is_not_reported(runtime_dir):
@@ -270,3 +275,60 @@ def test_t13_melee_only_summon_loss_is_not_an_egg_loss(runtime_dir):
     mem['egg_uses'] = {'キッシュ': 3}
     incidents = run_battle(runtime_dir, mem)
     assert incidents == []
+
+
+def _egg_battle_screen(**changes):
+    fields = {'kind': 'egg_battle_menu', 'text': 'たまごをつかう こうげき',
+              'hand': None, 'lines': []}
+    fields.update(changes)
+    return Screen(**fields)
+
+
+def test_t14_egg_battle_step_marks_white_row_and_counts_only_a_confirmed_selection():
+    screen = _egg_battle_screen()
+    mem = memory()
+    mem['egg_uses'] = {'キッシュ': 2}
+    # Walking to the egg row is visible evidence, not a selection.
+    assert BM.egg_battle_step(screen, mem) == [BM.pad('down')]
+    assert mem['battle']['egg_summon_seen'] is True
+    assert mem['battle']['egg_white_seen'] is True
+    assert 'egg_selected' not in mem['battle']
+    assert BM.egg_battle_step(screen, mem) == [BM.pad('down')]
+    assert 'egg_selected' not in mem['battle']
+    # Only the frame that returns A on the egg row counts one selection and
+    # clears the white-row latch.
+    assert BM.egg_battle_step(screen, mem) == [BM.pad('a')]
+    assert mem['battle']['egg_selected'] == 1
+    assert mem['battle']['egg_white_seen'] is False
+
+
+def test_t15_disabled_or_empty_egg_row_is_not_white_and_other_owners_stay_separate():
+    disabled = _egg_battle_screen(disabled_item_box=True)
+    mem = memory()
+    mem['egg_uses'] = {'キッシュ': 2}
+    BM.egg_battle_step(disabled, mem)
+    assert mem['battle'].get('egg_white_seen') is not True
+
+    empty = _egg_battle_screen()
+    mem = memory()
+    mem['egg_uses'] = {'キッシュ': 0}
+    BM.egg_battle_step(empty, mem)
+    assert mem['battle'].get('egg_white_seen') is not True
+
+    # The enemy general's command box returns before the summon evidence.
+    from test_hanjuku_enemy_general_command import memory as enemy_memory, native
+    enemy = native(17492)
+    mem = enemy_memory()
+    before = dict(mem['battle'])
+    assert BM.egg_battle_step(enemy, mem) == []
+    assert mem['battle'] == before
+    assert mem['battle'].get('egg_summon_seen') is not True
+    assert mem['battle'].get('egg_white_seen') is not True
+    assert mem['battle'].get('egg_melee_only') is not True
+
+    # A measured zombie is answered by melee; the egg remains untouched.
+    from test_hanjuku_zombie_melee import encounter, with_zombie
+    screen, mem = encounter()
+    with_zombie(screen)
+    BM.egg_battle_step(screen, mem)
+    assert mem['battle']['egg_melee_only'] is True
