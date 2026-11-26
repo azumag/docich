@@ -27,7 +27,7 @@ from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CAR
                                EGG_WALL_DAMAGE, SUMMON_SCROLL_BATCH,
                                _critical_survival_needed, _defender_egg_window, _defender_last_resort, _defender_summon_preempt,
                                _defender_summon_last_resort, _defense_kit_read_unread, _egg_drop_trace,
-                               _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
+                               _egg_attempt_spent, _egg_before_retreat, _egg_rescue_pending, _egg_drop_evidence, _hero_retreat_needed, _hold_melee_egg, _melee_balance,
                                _retreat_cards_to_spend, _retreat_immediate_loss, _retreat_remaining_cards,
                                _healthy_melee_margin_evidence, _melee_continuation_evidence,
                                _stale_army_melee_hold,
@@ -729,7 +729,8 @@ def _survival_menu(screen, mem, cur):
     labels = {word for _, _, word in _options(screen)}
     critical = _critical_survival_needed(cur)
     safe_card = critical and _critical_safe_card(mem, cur, rescue)
-    egg_ready = ('たまごをつかう' in labels and not rescue['egg_attempted']
+    egg_spent = _egg_attempt_spent(rescue, cur.get('ally_hp'))
+    egg_ready = ('たまごをつかう' in labels and not egg_spent
                  and not _own_egg_empty(mem, cur))
     conserving = ('たまごをつかう' in labels and _hold_melee_egg(mem, cur, labels)
                   and ('きりふだ' not in labels or rescue.get('cards_exhausted')
@@ -825,8 +826,7 @@ def _survival_menu(screen, mem, cur):
     elif ('きりふだ' in labels and (safe_card or not rescue.get('cards_exhausted'))
             and rescue['cards_checked'] < 3) or final_read:
         label = 'きりふだ'
-    elif ('たまごをつかう' in labels and not rescue['egg_attempted']
-          and not _own_egg_empty(mem, cur)):
+    elif egg_ready:
         label = 'たまごをつかう'
     elif ('たまごをつかう' in labels and critical
           and cur.get('side') == 'defense'
@@ -870,6 +870,7 @@ def _survival_menu(screen, mem, cur):
         # bounded extra retry (#5143/#5144 owner decision 2026-11-23).
         rescue['egg_attempt_hp'] = cur.get('ally_hp')
         rescue['egg_pending'] = True
+        rescue['egg_wait'] = 0
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
             observed_metric={'label': label, 'melee_balance': _melee_balance(cur)},
             resulting_event='selection_planned_not_yet_confirmed',
