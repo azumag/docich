@@ -41,6 +41,10 @@ from ..strategy.economy import (EGG_RECOVER_COST, EGG_RITUAL_LIMIT, MONTH_SUB_AB
 
 
 MONTH_TEXT_ADVANCE_LIMIT = 6    # A presses per unread message over the month menu
+# An unread recruitment-payment confirmation stays fail-closed, but not forever:
+# after this many observations the bounded transaction aborts instead of owning
+# the monthly scene while the no-input fallback presses around it (#5681).
+MONTH_SUB_UNREAD_CONFIRM_HOLD = 12
 
 
 RECRUIT_READ_DELAY = 40        # ticks after a join before the home roster is read
@@ -1998,7 +2002,7 @@ def _recruit_guard_step(screen, mem, reason):
     return [pad('b')]
 
 
-def month_sub_step(screen: Screen, mem):
+def month_sub_step(screen: Screen, mem, *, boss_dispatch=False):
     """Screens inside measured egg recovery / unmeasured general recruitment.
 
     Recruitment advances with A (first audition candidate, owner
@@ -2091,7 +2095,15 @@ def month_sub_step(screen: Screen, mem):
                 # An unread header is not "no spare cash" (g662). Never confirm
                 # a payment blind; other dialogue advances within the limit.
                 if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
-                    return []
+                    holds = int(sub.get('unread_confirm_holds') or 0) + 1
+                    sub['unread_confirm_holds'] = holds
+                    if holds <= MONTH_SUB_UNREAD_CONFIRM_HOLD:
+                        return []
+                    sub.pop('unread_confirm_holds', None)
+                    sub['aborted'] = True
+                    _record(mem, 'month_sub_unread_confirm_abort', screen=kind,
+                            observed_metric={'held': holds, 'boss_dispatch': bool(boss_dispatch)},
+                            reason='募集費確認の金額を読めないまま保留が上限へ達したため、支払わず月一取引を離脱する')
             elif spare is not True:
                 sub['aborted'] = True
                 if shop:
