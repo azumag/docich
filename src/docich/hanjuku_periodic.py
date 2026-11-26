@@ -42,8 +42,8 @@ MIN_TEXT = 300
 MAX_CANDIDATES = 3
 RECENT = 24
 MAX_EVENTS = 3
-REQUEST_TTL_S = 360
-PENDING_TIMEOUT_S = 420
+REQUEST_TTL_S = 420
+PENDING_TIMEOUT_S = 480
 DEFER_MAX_S = 180
 DEFER_STEP_S = 30
 RETRY_LIMIT = 2
@@ -141,7 +141,7 @@ def settings(raw):
     for key, default, low, high in (
             ('interval_s', 900, 300, 3600),
             ('retry_s', 300, 60, 1800),
-            ('generation_timeout_s', 90, 5, 240),
+            ('generation_timeout_s', 90, 5, 360),
             ('max_attempts', 2, 1, 3)):
         value = raw.get(key, default)
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:

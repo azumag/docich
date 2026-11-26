@@ -9,7 +9,7 @@ case "$scene_budget" in ''|*[!0-9]*) exit 2 ;; esac
 # The scene consumer passes a <=15s semantic budget. The periodic recap
 # passes a longer, still bounded budget because the existing radio provider
 # chain may try several models before one answers.
-[ "$scene_budget" -ge 1 ] && [ "$scene_budget" -le 240 ] || exit 2
+[ "$scene_budget" -ge 1 ] && [ "$scene_budget" -le 300 ] || exit 2
 [ "${DOCICH_ALLOW_REAL_AI:-}" = 1 ] || exit 2
 cd "$scene_root" || exit 2
 [ -f ./eloop_lib.sh ] || exit 2
