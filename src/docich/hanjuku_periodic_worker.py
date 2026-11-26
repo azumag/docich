@@ -186,7 +186,8 @@ def consume(g, runtime, *, generate_fn=None, deliver_fn=None, now=None):
                  and periodic.style_ok(text)),
                 ('grounded', lambda text: True)):
             valid = [text for text in candidates
-                     if periodic.valid_text(text, facts) and predicate(text)]
+                     if periodic.valid_text(text, facts)
+                     and periodic.history_ok(text) and predicate(text)]
             if valid:
                 tier = name
                 break
