@@ -944,7 +944,8 @@ def _recall_dialog_wanted(recall, screen, phase, mem) -> bool:
             and (not mem.get('month_sub')
                  or (recall.get('stage') == 'dest' and kind == 'map_target'))
             and (kind in ('map', 'map_target', 'text')
-                 or (recall.get('stage') == 'await_dispatch' and kind in ('unknown', 'yes_no'))
+                 or (recall.get('stage') in ('await_dispatch', 'await_dispatch_stale')
+                     and kind in ('unknown', 'yes_no'))
                  # docich#5452: a castle menu during destination steering is
                  # mode-loss evidence only the recall's own mis-fired input
                  # could open; route it back so the recall can close it and
@@ -968,7 +969,7 @@ def _recall_after_scene(mem, recall, kind, phase):
     distinguish scene closure from destination-picker acceptance.
     """
     from .state.regions import flow as _flow
-    if recall.get('stage') == 'await_dispatch':
+    if recall.get('stage') in ('await_dispatch', 'await_dispatch_stale'):
         # The A already has a receipt (or is still awaiting one). A concert
         # scene may cover the picker, but it must not erase the request and
         # make a later field map look like picker acceptance.

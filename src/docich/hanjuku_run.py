@@ -498,11 +498,18 @@ def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
         trace = {}
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
-    event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
-                      'buttons':list(action.buttons),'hold_ms':action.hold_ms,
-                      'frame_sha256':state.get('frame_sha256'),'bot_version':_bot_version(),
-                      'decision_id':trace.get('decision_id'),
-                      'decision_frame_sha256':trace.get('frame_sha256')})
+    payload={'event':'input_sent','at':time.time(),'type':action.type,
+             'buttons':list(action.buttons),'hold_ms':action.hold_ms,
+             'frame_sha256':state.get('frame_sha256'),'bot_version':_bot_version(),
+             'decision_id':trace.get('decision_id'),
+             'decision_frame_sha256':trace.get('frame_sha256')}
+    event(runtime_dir,payload)
+    # docich#5665: the send receipt is recorded at send time, independent of any
+    # screen the recall later owns. The dense events journal can evict this row
+    # inside a write burst (card census, sortie events) before the bounded
+    # dispatch check reads its 64 KiB tail; the sparse input-only mirror keeps
+    # the same bounded-rotation policy without competing writes.
+    append_log(runtime_dir,'hanjuku_inputs_sent',payload)
     if state:
         atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1,
                                                 'repetition_input':hanjuku_repetition.add_input(

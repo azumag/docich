@@ -8232,6 +8232,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1545-egg-menu-escape",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
             "hanjuku-chart-v1544-egg-menu-escape",
+            "hanjuku-chart-v1546-recall-dispatch-receipt",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
             "hanjuku-chart-v1478-departure-request-ownership",
             "hanjuku-chart-v1481-boss-camp-recall-followup",

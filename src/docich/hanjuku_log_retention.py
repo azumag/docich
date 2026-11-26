@@ -1,13 +1,14 @@
 """Bounded retention for completed Hanjuku decision/event logs (docich#3132).
 
-Every hanjuku-hero runtime generation writes four append_log files (current
-and ``.previous`` for decisions and events). ``append_log`` already rotates
-each file at MAX_LOG_BYTES, but nothing limits how many completed generations
-stay on disk, so the total grows with every run. ``prune_completed`` keeps the
-newest HANJUKU_LOG_RETENTION_GENERATIONS completed generations and removes only
-the four allowlisted files from older ones. Generation directories, state
-files and every other artifact are left alone. Called from game-switch
-post-terminal housekeeping; the caller treats failures as warnings.
+Every hanjuku-hero runtime generation writes six append_log files (current
+and ``.previous`` for decisions, events and delivered inputs). ``append_log``
+already rotates each file at MAX_LOG_BYTES, but nothing limits how many
+completed generations stay on disk, so the total grows with every run.
+``prune_completed`` keeps the newest HANJUKU_LOG_RETENTION_GENERATIONS
+completed generations and removes only the six allowlisted files from older
+ones. Generation directories, state files and every other artifact are left
+alone. Called from game-switch post-terminal housekeeping; the caller treats
+failures as warnings.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ MAX_RUN_BYTES = 1024 * 1024
 LOG_FILES = (
     'hanjuku_decisions.jsonl', 'hanjuku_decisions.previous.jsonl',
     'hanjuku_events.jsonl', 'hanjuku_events.previous.jsonl',
+    'hanjuku_inputs_sent.jsonl', 'hanjuku_inputs_sent.previous.jsonl',
 )
 RUN_FILE = 'hanjuku_run.json'
 GAME = 'hanjuku-hero'
