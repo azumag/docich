@@ -8242,6 +8242,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1560-residual-card-evidence",
             "hanjuku-chart-v1558-game-over-issue",
             "hanjuku-chart-v1561-camp-resend-scene-reset",
+            "hanjuku-chart-v1562-duel-accept-evidence",
             "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
             "hanjuku-chart-v1563-speedrun-corner",
             "hanjuku-chart-v1552-chapter-end-save-accept",
