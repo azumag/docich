@@ -258,6 +258,7 @@ KEY_OWNERSHIP = {
     'retries_retired': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 退役リトライの戦略記録
     'route_probe_read_tick': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 経路プローブ読み取りtick
     'shop': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 購入計画(戦略economyが書く)
+    'shop_exit_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 商人の空退出回数(flows.shop が書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理
     'site_end_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 目標外の城へ戻ったサイトstepの再武装回数(月内上限)
     'site_unconfirmed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 検証不能なサイト出撃を戻した回数(月内上限)
