@@ -2027,12 +2027,46 @@ def _chikujou_event(record, after, before, records):
     return snapshot
 
 
+def _chikujou_terminal_diagnostic(rows, month):
+    """Keep the last bounded build-list hold that explains an untried candidate."""
+    for row in reversed(rows):
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric')
+        if not isinstance(metric, dict):
+            metric = {}
+        visible = metric.get('visible')
+        if not isinstance(visible, list):
+            visible = []
+        diagnostic = {
+            'deviation_reason': _bounded_text(row.get('deviation_reason'), 80),
+            'reason': _bounded_text(row.get('reason'), 200),
+            'visible': [_bounded_text(item, 48) for item in visible
+                        if isinstance(item, str)][:4],
+            'scrolls': metric.get('scrolls') if type(metric.get('scrolls')) is int else None,
+            'stalled': metric.get('stalled') if type(metric.get('stalled')) is int else None,
+            'castle': _bounded_text(metric.get('castle'), 48),
+            'text': _bounded_text(metric.get('text'), 120),
+            'stage': _bounded_text(metric.get('stage'), 32),
+            'screen_kind': _bounded_text(metric.get('screen_kind'), 32),
+        }
+        return {key: value for key, value in diagnostic.items()
+                if value is not None and value != []}
+    return None
+
+
 def _build_chikujou_incident(runtime, state, after, event, now):
     mem = after.get('policy') or {}
     context = _context(after)
     rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
                            state.get('identity'))
     counts = _decision_counts(rows)
+    terminal_diagnostic = _chikujou_terminal_diagnostic(rows, event.get('month'))
+    if terminal_diagnostic:
+        event = dict(event)
+        event['terminal_diagnostic'] = terminal_diagnostic
     departures, launch_events = _departures(rows)
     month_sorties = (context or {}).get('month_sorties') or {}
     confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
@@ -4625,8 +4659,21 @@ def render(record):
                if chikujou.get('held_for') else []),
             *(['- 築城行の読取り: 不可（有限回の再観測後も未読・docich#5079/#5097）']
                if chikujou.get('menu_unreadable') else []),
-            '',
         ]
+        terminal = chikujou.get('terminal_diagnostic')
+        if terminal:
+            visible = ' / '.join(terminal.get('visible') or []) or '不明'
+            scrolls = terminal.get('scrolls')
+            stalled = terminal.get('stalled')
+            body += [
+                f"- 最終保留理由: {terminal.get('deviation_reason') or '不明'}"
+                f" / {terminal.get('reason') or '不明'}",
+                f"- 最終可視行: {visible} / scrolls: {scrolls if scrolls is not None else '不明'}"
+                f" / stalled: {stalled if stalled is not None else '不明'}",
+                f"- 最終画面: {terminal.get('screen_kind') or '不明'}"
+                f" / {terminal.get('text') or '文言なし'}",
+            ]
+        body.append('')
     if stay:
         body += [
             '### 野営放置',

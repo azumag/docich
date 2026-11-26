@@ -8254,6 +8254,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1559-selected-card-interruption",
             "hanjuku-chart-v1567-sortie-panel-occluded",
             "hanjuku-chart-v1568-launch-priority-house",
+            "hanjuku-chart-v1569-chikujou-scan",
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
