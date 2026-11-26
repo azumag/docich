@@ -657,6 +657,8 @@ def _focus_outcome(fact, at, records):
             wanted_ally, wanted_enemy = fact.get('ally'), fact.get('enemy')
             if category == 'sortie':
                 wanted_ally = fact.get('general')
+            if category == 'card' and not wanted_ally:
+                continue  # an unattributed card is not evidence for this result
             if wanted_ally and ally != wanted_ally:
                 continue
             if wanted_enemy and enemy != wanted_enemy:
@@ -701,9 +703,10 @@ def _choose_focus(found, history):
     for index, category in enumerate(history[-12:]):
         if category in last:
             last[category] = index
-    _at, fact = min(found, key=lambda item: (last.get(item[1]['category'], -1),
-                                             0 if item[1].get('outcome') else 1,
-                                             -item[0]))
+    _at, fact = min(found, key=lambda item: (
+        0 if item[1].get('outcome') and not item[1].get('not_result') else 1,
+        last.get(item[1]['category'], -1),
+        -item[0]))
     return fact
 
 
@@ -922,6 +925,10 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '未観測そのものをオチにしてください。',
         '「評価したいのは」「課題は」「見どころです」「楽しみです」「応援しましょう」を定型で'
         '並べないでください（最大2回）。抽象的な評価より、誰が何をしてどうなったかを優先します。',
+        '「切り分けられません」「急いで結びつけない」「宿題です」「次の観測で」「答え合わせ」'
+        'のような分析口調を避けてください。focus.outcome があり not_result でなければ、結果は'
+        '材料の範囲で断言してかまいません。結果が未確認なら、焦点の判断を短く認めて、別の'
+        '具体的な場面へ移ってください。',
         '次の5つを自然につなげてください。',
         '1. 焦点の判断（何を狙ったか、なぜその判断をしたか）',
         '2. その判断の良かった点と、課題・反省・次に活かせる改善点',
@@ -938,9 +945,9 @@ def build_prompt(situation_value, recent=(), avoid=(), persona=None):
         '名前（将軍・城・札）はfocusと背景を合わせて最大6つまで。1文に複数の将軍や城を詰め込まず、'
         '1文1話題にしてください。',
         '比喩は焦点の理解に役立つ場合だけ1つまで。日常の例えや、状況と関係の薄い比喩は使わないでください。',
-        'ソ連・共産主義ネタは、focus.humor の方向を参考に軽い比喩として1〜2回だけ。'
-        '「同志」「人民」「五カ年計画」「集団農場」「ペレストロイカ」「赤旗」「冬将軍」などを、'
-        '毎回同じ言い回しにならないように使ってください。',
+        'ソ連・共産主義ネタは、focus.humor の方向を参考に軽い比喩として2〜4個程度'
+        '（多くても6種類）。「同志」「人民」「五カ年計画」「集団農場」「ペレストロイカ」'
+        '「赤旗」「冬将軍」などを、毎回同じ言い回しにならないように使ってください。',
         '政治的な主張、実在の人物・民族・国への侮辱、粛清・飢餓・収容所などの暗い歴史ネタは使わないでください。',
         '結論→理由→課題→展望の順で、同じ段落に複数の話題を混ぜないでください。',
         '事実と評価を区別してください。評価は「〜に見えます」「〜が課題です」「〜は見事でした」のように話し、'
@@ -1000,9 +1007,14 @@ BOILERPLATE = re.compile(
     r'かもしれません|重要です|ポイントです|たいところ|ではないでしょうか')
 
 
+HEDGING = re.compile(
+    r'切り分け|急いで結びつけ|宿題|答え合わせ|次の観測で|判断と結果|慎重さ|'
+    r'正しさを確かめ|当否を')
+
+
 def style_ok(text):
     """Reject the report/essay formula that made recaps feel like a summary."""
-    return len(BOILERPLATE.findall(text)) <= 3
+    return len(BOILERPLATE.findall(text)) <= 3 and len(HEDGING.findall(text)) <= 1
 
 
 def narrative_ok(text):
@@ -1214,8 +1226,9 @@ def _number_in_context(value, before, after, facts):
 
 
 def persona_ok(text):
-    """One to four light Soviet/communist riffs; none or too many is off-persona."""
-    return 1 <= len(PERSONA_MARKERS.findall(text)) <= 4
+    """Light Soviet/communist riffs: 1-8 mentions, at most 6 distinct terms."""
+    markers = PERSONA_MARKERS.findall(text)
+    return 1 <= len(markers) <= 8 and len(set(markers)) <= 6
 
 
 def focus_clear(text, focus, facts, max_names=6):
