@@ -32,3 +32,13 @@ def test_a_white_row_from_another_step_does_not_count():
     mem = {'_records': [{'decision': 'battle_egg_white_available',
                          'chart_step': 'A:9:M9'}]}
     assert battle_flow._egg_available_unused(mem, _cur()) is False
+
+def test_the_white_row_latch_counts_as_available():
+    assert battle_flow._egg_available_unused({}, {'ally': 'ビシソワーズ',
+                                               'egg_white_seen': True}) is True
+
+
+def test_the_latch_does_not_override_an_egg_battle():
+    assert battle_flow._egg_available_unused(
+        {}, {'ally': 'ビシソワーズ', 'egg_white_seen': True, 'egg_battle': True}) is False
+
