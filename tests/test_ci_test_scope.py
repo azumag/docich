@@ -31,13 +31,11 @@ def seams():
     ['tests/test_hanjuku_goals.py'],
     # The generated speedrun copy belongs to the Hanjuku suite too.
     ['src/docich/hanjuku_speedrun/hanjuku_run.py'],
-    ['src/docich/hanjuku_speedrun/rta/timer.py', 'tests/hanjuku_speedrun/test_timer.py'],
     ['brains/hanjuku_speedrun/bot.py', 'config/games/hanjuku-speedrun.toml'],
     ['tools/hanjuku_speedrun_fork.py', 'tests/test_hanjuku_speedrun_fork.py'],
     ['tools/hanjuku_speedrun_fork.py'],
     ['tests/test_hanjuku_family.py'],
     # PR2 split-timer recordings (Hanjuku suite name outside the package).
-    ['tests/test_speedrun_rta_timer.py', 'src/docich/hanjuku_speedrun/rta/timer.py'],
     ['tests/test_speedrun_rta_store.py'],
 ])
 def test_hanjuku_only_changes_get_the_hanjuku_suite(changed, seams):
@@ -58,6 +56,11 @@ def test_hanjuku_only_changes_get_the_hanjuku_suite(changed, seams):
     'games/soviet_now',
     'tests/fixtures/other.png',
     'src/docich/hanjukuish/module.py',
+    # The generated speedrun rta package is imported from outside Hanjuku
+    # (src/docich/comment/game_profile.py), so a change there is a seam and
+    # must keep the full suite.
+    'src/docich/hanjuku_speedrun/rta/timer.py',
+    'src/docich/hanjuku_speedrun/rta/store.py',
 ])
 def test_any_change_outside_hanjuku_gets_the_full_suite(outside, seams):
     assert scope.choose_suite([STRATEGY, outside], seams)[0] == 'full'
