@@ -305,7 +305,12 @@ P1b の run history へ委ねる。
 
 **birth window はゲームより長生きする（#4344 以降、#5708）。** runtime session は「素のシェルを開いてから
 ゲームを send-keys で投入する」方式なので、NetHack が終了（死亡開示の完了・通常 save）しても birth window は
-シェルのプロンプトに戻って残り、tmux の automatic rename で名前も `nethack-console` → `bash` などへ変わる。
+残り、tmux の automatic rename で名前も `nethack-console` → `sleep`（旧起動の runtime では `bash`）などへ変わる。
+投入する行は `Tmux.shell_launch_line` が組み立てる `exec bash -c 'set -m; <game>; exec sleep …'` で、
+ゲーム終了後の pane は対話シェルに戻らず `sleep` で待機する。操作AIはゲーム終了後も session へキーを送り続け得るため、
+以前はそのキーが**配信 VM の対話シェルへ打ち込まれ、Enter でコマンドとして実行され得た**（#5708 で実 tmux により
+再現・回帰テスト化）。`set -m` によりゲームは従来どおり端末の前面ジョブで、ウィンドウ名もゲーム名のまま。
+即死したコマンドの出力が残る #4344 の性質も維持する。SIGINT で終了したゲームは pane ごと閉じる（=window 消滅）。
 「window が存在する＝ゲームが動いている」とは読めないため、adapter は birth window が**起動シェルしか
 動かしていないと証明できたとき**も「process window が無い」と同じに扱う（`Tmux.pane_runs_only_launch_shell`）。
 証明の条件は、pane が1つで生存し、tmux がコマンド無し（既定シェル）で起動した pane であること、その leader が

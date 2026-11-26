@@ -540,13 +540,45 @@ class TestRealTmuxShellFirstSession(unittest.TestCase):
             time.sleep(0.05)
         return result
 
+    def _leader_comm(self):
+        state = self.tmux.pane_launch_states_checked(self._birth_target())[0]
+        return Path(f"/proc/{state.pid}/comm").read_text().strip()
+
     def test_the_birth_window_survives_the_game_and_is_then_proven_empty(self):
         self.tmux.create_game_session_owned(
             self.session, ["sleep", "1"], 80, 24, self.ownership
         )
         self.assertIs(self._wait_for(False), False)  # game (sleep) running
-        self.assertIs(self._wait_for(True), True)  # game exited, shell remains
+        self.assertIs(self._wait_for(True), True)  # game exited, pane parked
         self.assertTrue(self.tmux.session_target_exists(self.session))
+        self.assertEqual(self._leader_comm(), "sleep")
+
+    def test_keys_sent_after_the_game_exits_never_reach_a_shell(self):
+        # docich#5708: the agent keeps sending keys to the session; with a
+        # prompt back they would be executed on the host.
+        marker = Path(self.tempdir.name) / "typed-into-a-shell"
+        self.tmux.create_game_session_owned(
+            self.session, ["true"], 80, 24, self.ownership
+        )
+        self.assertIs(self._wait_for(True), True)
+        self.tmux.send_keys(self.session, [f"touch {marker}"], literal=True)
+        self.tmux.send_keys(self.session, ["Enter"])
+        time.sleep(0.5)
+        self.assertFalse(marker.exists())
+        self.assertIs(
+            self.tmux.pane_runs_only_launch_shell(self._birth_target(), self.ownership),
+            True,
+        )
+
+    def test_an_instant_launch_failure_keeps_its_output_and_the_session(self):
+        # Issue #4344 must still hold: the launch error stays readable.
+        self.tmux.create_game_session_owned(
+            self.session, ["docich-no-such-command-5708"], 80, 24, self.ownership
+        )
+        self.assertIs(self._wait_for(True), True)
+        self.assertTrue(self.tmux.session_target_exists(self.session))
+        text = self.tmux.capture_pane_checked(self._birth_target())
+        self.assertIn("docich-no-such-command-5708", text)
 
 
 if __name__ == "__main__":

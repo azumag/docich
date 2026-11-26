@@ -219,6 +219,33 @@ class PaneLaunchState:
 # Process states that are no longer running code (zombie / dead).
 _NOT_RUNNING_STATES = frozenset({"Z", "X"})
 
+# How long a parked launch pane waits once its workload has exited: forever in
+# practice, and a plain integer so BSD ``sleep`` accepts it too.
+LAUNCH_PARK_SECONDS = 2147483647
+
+
+def shell_launch_line(cmd: list[str]) -> str:
+    """The line typed into a bare session shell to launch ``cmd`` (docich#5708).
+
+    Issue #4344 starts game sessions with a persistent shell and types the
+    workload into it, so a command that dies instantly leaves its output
+    behind instead of taking the session down.  Typed as-is, though, the pane
+    falls back to an *interactive shell prompt* once the workload exits -- and
+    the game's agent keeps sending keys to that pane, so its next ``Enter``
+    would run whatever it typed as a shell command on the host.
+
+    The line therefore replaces the interactive shell with a non-interactive
+    ``bash`` that keeps job control (``set -m``: the workload still owns the
+    terminal and tmux keeps naming the window after it), runs the workload,
+    and then parks the pane in ``sleep``: output stays visible, typed keys are
+    inert, and no prompt ever comes back.  A workload killed by ``SIGINT``
+    takes the pane down with it instead of returning to a prompt.
+    """
+
+    bash = procs.which("bash") or "/bin/bash"
+    script = f"set -m; {shlex.join(cmd)}; exec sleep {LAUNCH_PARK_SECONDS}"
+    return "exec " + shlex.join([bash, "-c", script])
+
 
 def ownership_environment(ownership: TmuxOwnership) -> dict[str, str]:
     """Environment tags that mark every process spawned for ``ownership``."""
@@ -393,7 +420,7 @@ class Tmux:
         # Issue #4344: a command passed to new-session that dies instantly
         # takes the whole session down; keep the shell and send the command.
         self._run(["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows)])
-        self._run(["send-keys", "-t", session, shlex.join(cmd), "Enter"])
+        self._run(["send-keys", "-t", session, shell_launch_line(cmd), "Enter"])
         # 配信画面に tmux の緑ステータスバーが映り込むため off にする (architecture.md §4.2)
         self.set_status_off(session)
 
@@ -404,7 +431,9 @@ class Tmux:
             "session作成",
         )
         self._checked(["set-option", "-t", session, "status", "off"], "status設定")
-        self._checked(["send-keys", "-t", session, shlex.join(cmd), "Enter"], "コマンド投入")
+        self._checked(
+            ["send-keys", "-t", session, shell_launch_line(cmd), "Enter"], "コマンド投入"
+        )
 
     def create_game_session_owned(
         self,
@@ -444,7 +473,7 @@ class Tmux:
                 )
             # Launch the workload inside the now-verified session. send-keys
             # keeps the session alive even when the command dies instantly.
-            self._checked(["send-keys", "-t", session_id, shlex.join(cmd), "Enter"],
+            self._checked(["send-keys", "-t", session_id, shell_launch_line(cmd), "Enter"],
                           "コマンド投入")
         except Exception as exc:
             self._rollback_created("session", session_id, exc)
@@ -1406,9 +1435,12 @@ class Tmux:
 
         Since Issue #4344 a game session is opened with a bare persistent
         shell and the game is typed into it, so the pane -- and its window --
-        survive the game: when the game exits the window simply returns to a
-        shell prompt (and tmux's automatic rename relabels it).  "The window
-        still exists" therefore no longer means "the game still runs".
+        survive the game: when the game exits the window stays, parked in
+        ``sleep`` by ``shell_launch_line`` (or, for a runtime launched before
+        that, back at a shell prompt), and tmux's automatic rename relabels
+        it.  "The window still exists" therefore no longer means "the game
+        still runs".  "Launch shell" below covers both: the pane leader the
+        workload was typed into, whatever it has since exec'd into.
 
         ``True`` only when every one of these holds:
 
