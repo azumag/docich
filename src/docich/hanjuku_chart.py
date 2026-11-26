@@ -286,7 +286,12 @@ CH9_BOSS_WAYPOINT = (568, 212)
 # Issue #4861 / #4937: a black impassable cliff line splits chapter 9's イデ！
 # pocket (x < 640, y > 260) and north corridor (x < 640, y <= 260) from the
 # east boss-orbit area (x >= 640); the corridor mouth is the only join.
+# Measured on live g1190 frame-006.png (2026-11-26): south of wy >= 476 the
+# cliff wall curves west to world_x <= 612, so a unit at [620, 484] already
+# stands east of the cliff.
 CH9_CLIFF_EAST_X = 640
+CH9_CLIFF_SOUTH_Y = 476
+CH9_CLIFF_SOUTH_EAST_X = 612
 CH9_CLIFF_POCKET_Y = 260
 CH9_EAST_MOUTH = (674, 212)
 
@@ -298,7 +303,8 @@ def ch9_cliff_detour(unit_world, aim):
         return None
     ux, uy = unit_world
     ax, ay = aim
-    if ux >= CH9_CLIFF_EAST_X or ax < CH9_CLIFF_EAST_X:
+    cliff_x = CH9_CLIFF_SOUTH_EAST_X if uy >= CH9_CLIFF_SOUTH_Y else CH9_CLIFF_EAST_X
+    if ux >= cliff_x or ax < CH9_CLIFF_EAST_X:
         return None
     if uy > CH9_CLIFF_POCKET_Y:
         return CH9_BOSS_WAYPOINT

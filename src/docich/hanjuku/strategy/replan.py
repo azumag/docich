@@ -8,7 +8,9 @@ from __future__ import annotations
 from ..state import egg_memory
 from ..state.regions import world as _world, sorties as _sorties, plan as _plan_region
 
+from collections import Counter
 import hashlib
+from itertools import combinations_with_replacement
 
 from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
                  hanjuku_reference as reference)
@@ -475,6 +477,21 @@ def _known_residents(mem, garrison, castle):
     return _partial_residents(mem, castle)
 
 
+def _freshest_residents(mem, garrison, castle):
+    """Latest measured residents at ``castle`` (newer partial beats stale full)."""
+    full = garrison.get(castle) if isinstance(garrison, dict) else None
+    partial = _partial_residents(mem, castle)
+    if partial:
+        if full is None:
+            return partial
+        world = _world(mem)
+        ftick = (world.get('garrison_tick') or {}).get(castle)
+        ptick = (world.get('garrison_partial_tick') or {}).get(castle)
+        if type(ptick) is int and (type(ftick) is not int or ptick > ftick):
+            return partial
+    return full if full is not None else partial
+
+
 # Owner 2026-11-11: 三人づつとかじゃなくて全員移動するようにしないとだし、主人公も
 # 移動しないと新しく雇った将軍は後方からしか出れない. Chapter 9 sorties only
 # leave the road castle beside the target and recruits join at the hero's
@@ -507,7 +524,7 @@ def _corridor_forward_moves(mem, owned, garrison, busy, road_next, nearest_first
             # (g1190 22-x: イソ kept 17 generals while イデ！ stood empty
             # because the front-adjacent move was skipped).
             continue
-        names = _known_residents(mem, garrison, donor)
+        names = _freshest_residents(mem, garrison, donor)
         if names is None:
             # An unread rear list: open it with one probe move, as before.
             (rest if lead else lead).append({
@@ -517,14 +534,21 @@ def _corridor_forward_moves(mem, owned, garrison, busy, road_next, nearest_first
             continue
         free = [g for g in names if g not in busy and g not in unknown and g not in staged]
         others = _strongest_first(mem, [g for g in free if g != NAME])
-        order = others[:1] + ([NAME] if NAME in free else []) + others[1:]
+        if nearest_first and NAME in free and len(free) >= 2:
+            order = [NAME] + others
+        else:
+            order = others[:1] + ([NAME] if NAME in free else []) + others[1:]
         for general in order:
             staged.add(general)
             label = '主人公' if general == NAME else general
-            (rest if lead else lead).append({
+            entry = {
                 'general': general, 'source': donor, 'target': route[1], 'cards': [],
                 'after': None, 'purpose': 'move',
-                'note': f'暫定: {road_next}への中継として{route[1]}へ{label}を移動'})
+                'note': f'暫定: {road_next}への中継として{route[1]}へ{label}を移動',
+            }
+            if general == NAME and (nearest_first or len(route) > 3):
+                entry['corridor_hero'] = True
+            (rest if lead else lead).append(entry)
     return lead, rest, staged
 
 
@@ -1004,6 +1028,71 @@ def _stock_cards(mem, wanted):
     return [n for n, _ in ranked[:2]]
    # same opener as a lost melee's retry
 
+
+def _boss_stock_cards(mem, wanted=None, *, general=None, reserve=None):
+    """Maximize stocked boss damage under the enemy-egg card ID threshold."""
+    from .kit import CARRY_SLOTS
+
+    stock = mem.get('card_stock')
+    if not isinstance(stock, dict) or not stock:
+        return _stock_cards(mem, wanted)
+    reserved = reserve or {}
+    avail = {
+        name: count - int(reserved.get(name) or 0)
+        for name, count in stock.items()
+        if isinstance(name, str) and type(count) is int
+        and count - int(reserved.get(name) or 0) > 0
+    }
+    if not avail:
+        return [] if reserved else _stock_cards(mem, wanted)
+
+    actor = 'しゅじんこう' if general == NAME else general
+    allow_sacrifice = bool(actor) and reference.sacrifice_general(actor)
+    sacrifice = set(reference.BOSS_SACRIFICE_CARDS)
+    self_harm = sacrifice | {'ファバード'}
+    ids = reference.ALL_CARD_IDS
+    limit = reference.ENEMY_EGG_CARD_ID_SUM
+
+    candidates = []
+    seen = set()
+    for name in reference.BOSS_DAMAGE_CARDS:
+        if avail.get(name, 0) > 0 and name not in seen:
+            candidates.append(name)
+            seen.add(name)
+    if allow_sacrifice:
+        for name in reference.BOSS_SACRIFICE_CARDS:
+            if avail.get(name, 0) > 0 and name not in seen:
+                candidates.append(name)
+                seen.add(name)
+    for name in sorted(avail, key=lambda c: (-reference.boss_damage_card(c), ids.get(c, limit), c)):
+        if name not in seen and name not in sacrifice and reference.boss_damage_card(name) > 0:
+            candidates.append(name)
+            seen.add(name)
+    if not candidates:
+        return [] if reserved else _stock_cards(mem, wanted)
+
+    best_score = None
+    best_combo = ()
+    for r in range(1, CARRY_SLOTS + 1):
+        for combo in combinations_with_replacement(candidates, r):
+            if any(combo.count(c) > avail[c] for c in set(combo)):
+                continue
+            total_id = sum(ids.get(c, limit) for c in combo)
+            if total_id >= limit:
+                continue
+            dmg = sum(reference.boss_damage_card(c) for c in combo)
+            harm = sum(1 for c in combo if c in self_harm)
+            score = (dmg, -harm, -len(combo), -total_id)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_combo = combo
+    if not best_combo:
+        return [] if reserved else _stock_cards(mem, wanted)
+    return sorted(
+        best_combo,
+        key=lambda c: (-reference.boss_damage_card(c), c in self_harm, ids.get(c, limit), c),
+    )
+
 # Generals the hub's latest complete roster must show before the hero joins
 # it: a confirmed staffed hub, so he is never dropped into an unmeasured one.
 HERO_HUB_MOVE_MIN = 1
@@ -1432,6 +1521,7 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 return c, MOVE_ANY_GENERAL
         return None
     wave_target = None
+    boss_card_reserve = Counter()
     for target in targets:
         picked = (_boss_wave_pick(mem, owned, busy | planned_busy, allow_sole)
                   if chart.is_boss_castle(target) else
@@ -1491,11 +1581,17 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         # this castle, else the retry opener (two イッテツーン). Cards out of
         # stock are dropped at the card list (card_drop), never waited for.
         base = chart_orders.get(target) or card_orders.get(target)
-        cards = _stock_cards(mem, list(base['cards']) if base and base.get('cards') else None)
+        wanted = list(base['cards']) if base and base.get('cards') else None
         # Boss waves carry the stock-aware fallback. A source/roster probe
         # is not a committed sortie and remains cardless.
-        if chart.is_boss_castle(target) and general == MOVE_ANY_GENERAL:
-            cards = []
+        if chart.is_boss_castle(target):
+            if general == MOVE_ANY_GENERAL:
+                cards = []
+            else:
+                cards = _boss_stock_cards(mem, wanted, general=general, reserve=boss_card_reserve)
+                boss_card_reserve.update(cards)
+        else:
+            cards = _stock_cards(mem, wanted)
         sorties[purpose].append({
             'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note,
@@ -1533,9 +1629,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                                             for p in _probes.values()))
                 except Exception:
                     roster_probe = False
+            if probe:
+                cards2 = []
+            else:
+                cards2 = _boss_stock_cards(mem, None, general=general2, reserve=boss_card_reserve)
+                boss_card_reserve.update(cards2)
             boss_wave_orders.append({
                 'general': general2, 'target': boss,
-                'cards': [] if probe else _stock_cards(mem, None), 'source': source2,
+                'cards': cards2, 'source': source2,
                 'after': None, 'purpose': 'attack',
                 'note': ((f'暫定: {source2}の将軍一覧を読んでボス出撃の成立を確認する' if roster_probe
                           else f'暫定: {source2}の将軍一覧を読んでボスへ送る' if probe

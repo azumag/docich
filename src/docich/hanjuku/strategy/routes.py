@@ -8,7 +8,7 @@ be retraced to an owned castle to bring a rear garrison back toward the front.
 from ..state.regions import world as _world, sorties as _sorties
 from collections import deque
 
-from ... import hanjuku_chart as chart
+from ... import hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust
 from ..os_layer.world import SORTIE_BUSY_TICKS, _owned
 
 # Owner 2026-11-23: confirmation-only sortie-window probes were opening too
@@ -113,6 +113,21 @@ def path(mem, source, target, owned):
     return None
 
 
+def _move_general_matches(order, sortie) -> bool:
+    """True when ``sortie`` carried out ``order`` despite cursor/substitute picks."""
+    planned = order.get('general')
+    actual = sortie.get('general')
+    if planned == actual or planned in (None, chart_adjust.PROBE_GENERAL):
+        return True
+    binding = order.get('departure_binding')
+    if isinstance(binding, dict) and binding.get('general') == actual:
+        return True
+    evidence = sortie.get('evidence')
+    return (isinstance(evidence, dict)
+            and evidence.get('actual_general') == actual
+            and evidence.get('planned_general') == planned)
+
+
 def _moves_into(mem, castle):
     """Unconfirmed transfers sent into ``castle`` along a chart leg.
 
@@ -133,8 +148,9 @@ def _moves_into(mem, castle):
         tick = sortie.get('tick')
         if (purpose == 'move' and sortie.get('status') in ('en_route', 'overdue')
                 and (not order
-                     or all(order.get(k) == sortie.get(k)
-                            for k in ('source', 'target', 'general')))
+                     or (order.get('source') == sortie.get('source')
+                         and order.get('target') == sortie.get('target')
+                         and _move_general_matches(order, sortie)))
                 and sortie.get('target') == castle and sortie.get('source') != castle
                 and move_leg(mem, sortie.get('source'), castle)
                 and type(tick) is int and 0 <= now - tick):
