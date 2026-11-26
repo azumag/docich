@@ -325,6 +325,15 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         as a real game end: that would turn a tmux probe failure into false
         success.  With the presentation window present, no remaining birth
         window means the NetHack process has genuinely ended.
+
+        Since Issue #4344 the birth window is a persistent launch shell that
+        outlives NetHack: after a death or a save the window stays, back at a
+        shell prompt and renamed by tmux.  Treating that window as the live
+        game wedged every boundary on a corpse (docich#5708: cancel refused
+        with ``prompt_not_pending`` forever).  So a birth window that is
+        *proven* to run nothing but its launch shell
+        (``_birth_window_only_launch_shell``) also means the process ended.
+        An unprovable check keeps returning the window, as before.
         """
         names = self.tmux.list_windows()
         if not names:
@@ -339,7 +348,25 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             raise AdapterError(
                 f"NetHack runtime process windowを一意に特定できません: {candidates}"
             )
-        return f"{self.spec.adapter_session}:{candidates[0]}"
+        target = f"{self.spec.adapter_session}:{candidates[0]}"
+        if self._birth_window_only_launch_shell(target):
+            return None
+        return target
+
+    def _birth_window_only_launch_shell(self, target: str) -> bool:
+        """True only when ``target`` provably hosts nothing but its shell (#5708).
+
+        Any missing capability, probe failure or unprovable proof is
+        ``False`` -- i.e. the window keeps meaning "the game may still run",
+        which is the conservative pre-#5708 reading.  Never sends a key.
+        """
+        probe = getattr(self.tmux, "pane_runs_only_launch_shell", None)
+        if not callable(probe):
+            return False
+        try:
+            return probe(target, self._ownership("adapter")) is True
+        except Exception:  # noqa: BLE001 - an unprovable check is not an exit
+            return False
 
     def readiness(self, deadline: float, cancel) -> None:
         if self.presentation_mode != "tiles":
@@ -954,6 +981,10 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             except Exception as exc:
                 # A failed tmux probe is not evidence that the game exited.
                 raise AdapterError("NetHack runtime processを確認できません") from exc
+            if process_alive and self._birth_window_only_launch_shell(process_target):
+                # The shell-first birth window outlives the saved game
+                # (#4344/#5708); only the proven-empty shell counts as exited.
+                process_alive = False
 
             if process_alive and not save_confirmed:
                 try:
@@ -1070,8 +1101,9 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             )
             raise
         if process_target is None:
-            # Birth window gone + presentation window present means the game
-            # process genuinely ended (see _runtime_process_window_target).
+            # Birth window gone (or proven to be only its launch shell,
+            # #5708) + presentation window present means the game process
+            # genuinely ended (see _runtime_process_window_target).
             # Record the same terminal boundary request_round_boundary derives
             # from this evidence, then acknowledge so the expired drain can be
             # cancelled (#1015 requirement 3). Refuse when the evidence itself

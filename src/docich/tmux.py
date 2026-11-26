@@ -201,6 +201,52 @@ class PaneState:
     pid: int
 
 
+@dataclass(frozen=True)
+class PaneLaunchState:
+    """A pane plus whether tmux started it with an explicit command (#5708).
+
+    ``has_start_command`` is ``False`` for a pane that tmux started with its
+    default shell -- the bare persistent shell ``create_game_session_owned``
+    opens before it types the workload in (Issue #4344).  Such a pane's leader
+    is the launch shell, so the workload is its child and the pane outlives it.
+    """
+
+    dead: bool
+    pid: int
+    has_start_command: bool
+
+
+# Process states that are no longer running code (zombie / dead).
+_NOT_RUNNING_STATES = frozenset({"Z", "X"})
+
+# How long a parked launch pane waits once its workload has exited: forever in
+# practice, and a plain integer so BSD ``sleep`` accepts it too.
+LAUNCH_PARK_SECONDS = 2147483647
+
+
+def shell_launch_line(cmd: list[str]) -> str:
+    """The line typed into a bare session shell to launch ``cmd`` (docich#5708).
+
+    Issue #4344 starts game sessions with a persistent shell and types the
+    workload into it, so a command that dies instantly leaves its output
+    behind instead of taking the session down.  Typed as-is, though, the pane
+    falls back to an *interactive shell prompt* once the workload exits -- and
+    the game's agent keeps sending keys to that pane, so its next ``Enter``
+    would run whatever it typed as a shell command on the host.
+
+    The line therefore replaces the interactive shell with a non-interactive
+    ``bash`` that keeps job control (``set -m``: the workload still owns the
+    terminal and tmux keeps naming the window after it), runs the workload,
+    and then parks the pane in ``sleep``: output stays visible, typed keys are
+    inert, and no prompt ever comes back.  A workload killed by ``SIGINT``
+    takes the pane down with it instead of returning to a prompt.
+    """
+
+    bash = procs.which("bash") or "/bin/bash"
+    script = f"set -m; {shlex.join(cmd)}; exec sleep {LAUNCH_PARK_SECONDS}"
+    return "exec " + shlex.join([bash, "-c", script])
+
+
 def ownership_environment(ownership: TmuxOwnership) -> dict[str, str]:
     """Environment tags that mark every process spawned for ``ownership``."""
 
@@ -374,7 +420,7 @@ class Tmux:
         # Issue #4344: a command passed to new-session that dies instantly
         # takes the whole session down; keep the shell and send the command.
         self._run(["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows)])
-        self._run(["send-keys", "-t", session, shlex.join(cmd), "Enter"])
+        self._run(["send-keys", "-t", session, shell_launch_line(cmd), "Enter"])
         # 配信画面に tmux の緑ステータスバーが映り込むため off にする (architecture.md §4.2)
         self.set_status_off(session)
 
@@ -385,7 +431,9 @@ class Tmux:
             "session作成",
         )
         self._checked(["set-option", "-t", session, "status", "off"], "status設定")
-        self._checked(["send-keys", "-t", session, shlex.join(cmd), "Enter"], "コマンド投入")
+        self._checked(
+            ["send-keys", "-t", session, shell_launch_line(cmd), "Enter"], "コマンド投入"
+        )
 
     def create_game_session_owned(
         self,
@@ -425,7 +473,7 @@ class Tmux:
                 )
             # Launch the workload inside the now-verified session. send-keys
             # keeps the session alive even when the command dies instantly.
-            self._checked(["send-keys", "-t", session_id, shlex.join(cmd), "Enter"],
+            self._checked(["send-keys", "-t", session_id, shell_launch_line(cmd), "Enter"],
                           "コマンド投入")
         except Exception as exc:
             self._rollback_created("session", session_id, exc)
@@ -1339,6 +1387,115 @@ class Tmux:
         if not states:
             raise TmuxError("tmux pane検査でpaneが見つかりません")
         return states
+
+    def pane_launch_states_checked(self, target: str) -> list[PaneLaunchState]:
+        """``pane_states_checked`` plus whether each pane had a start command.
+
+        Only a boolean is read (``#{?pane_start_command,1,0}``), never the
+        command text itself, so no argv can reach a caller or a log.
+        """
+        validate_tmux_target(target)
+        result = self._checked(
+            [
+                "list-panes", "-t", target, "-F",
+                "#{pane_dead}\t#{pane_pid}\t#{?pane_start_command,1,0}",
+            ],
+            "pane起動検査",
+        )
+        states: list[PaneLaunchState] = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if (
+                len(parts) != 3
+                or parts[0] not in {"0", "1"}
+                or parts[2] not in {"0", "1"}
+            ):
+                raise TmuxError("tmux pane起動検査の応答形式が不正です")
+            try:
+                pid = int(parts[1])
+            except ValueError as exc:
+                raise TmuxError("tmux pane起動検査のPIDが不正です") from exc
+            if pid < 1:
+                raise TmuxError("tmux pane起動検査のPIDが不正です")
+            states.append(
+                PaneLaunchState(
+                    dead=parts[0] == "1",
+                    pid=pid,
+                    has_start_command=parts[2] == "1",
+                )
+            )
+        if not states:
+            raise TmuxError("tmux pane起動検査でpaneが見つかりません")
+        return states
+
+    def pane_runs_only_launch_shell(
+        self, target: str, ownership: TmuxOwnership
+    ) -> bool | None:
+        """Whether a shell-first pane provably runs nothing but its shell (#5708).
+
+        Since Issue #4344 a game session is opened with a bare persistent
+        shell and the game is typed into it, so the pane -- and its window --
+        survive the game: when the game exits the window stays, parked in
+        ``sleep`` by ``shell_launch_line`` (or, for a runtime launched before
+        that, back at a shell prompt), and tmux's automatic rename relabels
+        it.  "The window still exists" therefore no longer means "the game
+        still runs".  "Launch shell" below covers both: the pane leader the
+        workload was typed into, whatever it has since exec'd into.
+
+        ``True`` only when every one of these holds:
+
+        * ``target`` has exactly one live pane, started *without* an explicit
+          command (so its leader is the launch shell, not the workload),
+        * that leader is visible and running in a non-empty process table,
+        * it has no running descendant, and
+        * no other running process carries ``ownership``'s tags (an orphan
+          reparented out of the tree), outside the protected shared server
+          and its other panes (Issue #1105).
+
+        ``False`` when the pane was launched with an explicit command (its
+        leader *is* the workload, so the window's existence keeps its old
+        meaning) or something launched from the pane still runs.  ``None``
+        when the proof cannot be completed; callers must never read ``None``
+        as "exited".  Read-only: nothing is signalled.
+        """
+
+        tags = ownership_environment(ownership)
+        try:
+            states = self.pane_launch_states_checked(target)
+            if len(states) != 1:
+                return None
+            pane = states[0]
+            if pane.dead:
+                return None
+            if pane.has_start_command:
+                return False
+            table = process_table()
+            leader = table.get(pane.pid)
+            if not table or leader is None or leader.state in _NOT_RUNNING_STATES:
+                return None
+            descendants = set(descendant_pids([pane.pid]))
+            if any(
+                table[pid].state not in _NOT_RUNNING_STATES
+                for pid in descendants
+                if pid in table
+            ):
+                return False
+            if any(pid not in table for pid in descendants):
+                # Appeared after the snapshot: something is being started.
+                return False
+            protected = self._protected_teardown_pids([pane.pid]).expanded()
+            visible = process_ids()
+            if not visible:
+                return None
+            for pid in processes_with_env(tags, pids=visible):
+                if pid <= 1 or pid == pane.pid or pid in protected:
+                    continue
+                info = table.get(pid)
+                if info is None or info.state not in _NOT_RUNNING_STATES:
+                    return False
+        except Exception:  # noqa: BLE001 - an incomplete proof is no proof
+            return None
+        return True
 
     def send_keys(self, session: str, keys: list[str], literal: bool = False) -> None:
         args = ["send-keys", "-t", session]
