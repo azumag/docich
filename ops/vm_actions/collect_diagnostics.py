@@ -8231,6 +8231,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1544-egg-ledger-loss-option-b",
             "hanjuku-chart-v1545-egg-menu-escape",
             "hanjuku-chart-v1546-cards-left-sortie-fallback",
+            "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
             "hanjuku-chart-v1544-egg-menu-escape",
             "hanjuku-chart-v1501-retreat-cards-unclassified",
