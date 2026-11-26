@@ -8221,6 +8221,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1538-cards-left-plan-fallback",
             "hanjuku-chart-v1539-shop-loop-issue",
             "hanjuku-chart-v1540-egg-white-latch",
+            "hanjuku-chart-v1541-filer-failure-visible",
             "hanjuku-chart-v1533-egg-unused-measured",
             "hanjuku-chart-v1529-owned-target-settle",
             "hanjuku-chart-v1501-retreat-cards-unclassified",

@@ -2745,3 +2745,15 @@ def test_a_used_card_is_not_a_leftover():
                 'ally_hp': 0, 'enemy_hp': 40}, general='バーミセリ'))
     assert record is None
 
+
+def test_a_filer_spawn_failure_is_reported(monkeypatch):
+    # owner 2026-11-26: 子プロセス起動の失敗を握りつぶさず、証拠として残す。
+    notes = []
+    monkeypatch.delenv('DOCICH_DISABLE_ISSUE_FILER', raising=False)
+    monkeypatch.setattr(audit, '_note_filer_problem',
+                        lambda runtime, record, reason: notes.append(reason))
+    monkeypatch.setattr(audit.subprocess, 'Popen',
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError('boom')))
+    record = {'incident_id': 'inc-1', 'kind': 'card_miss', 'auto_file': True}
+    assert audit.spawn_issue_filer('/tmp/unused-runtime', record) is False
+    assert notes == ['spawn_failed']
