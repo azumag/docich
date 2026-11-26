@@ -1787,8 +1787,16 @@ def _expire_spent_sorties(mem):
             # waiting for _arrival_limit. No probe means the launch was
             # already confirmed: a retreat discards only.
             probe = (_flow(mem).get('launch_probe') or {}).get(step) or {}
-            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind'))
-            if unconfirmed and (_plan_region(mem).get('orders') or {}).get(step) == 'launched':
+            order_state = (_plan_region(mem).get('orders') or {}).get(step)
+            # docich#5626: a 'launched_unconfirmed' order is itself an
+            # unconfirmed launch — a measured camp/castle end must reopen it
+            # the same way instead of stranding the step with no record
+            # (live g1342 ch8 14-5: ポワソン->いちじょうだに stayed
+            # launched_unconfirmed; the retry and re-arm paths only cover
+            # chapter-4 sites and boss castles).
+            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind')
+                               or order_state == 'launched_unconfirmed')
+            if unconfirmed and order_state in ('launched', 'launched_unconfirmed'):
                 # Mirrors flows.map.LAUNCH_MISS_LIMIT; strategy must not import
                 # flows (layers test), so the budget lives here.
                 _MISS_LIMIT = 2
@@ -1801,7 +1809,11 @@ def _expire_spent_sorties(mem):
                     (_plan_region(mem).get(key) or {}).pop(step, None)
                 _plan_region(mem).setdefault('order_context', {}).pop(step, None)
                 _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
-                (_world(mem).get('launched_orders') or {}).pop(step, None)
+                if step in {o.get('step') for o in _orders(mem)}:
+                    # An in-plan step re-arms through the plan itself; a
+                    # dead-plan step re-enters only via next_order's retry
+                    # list, which reads this copy (docich#5626).
+                    (_world(mem).get('launched_orders') or {}).pop(step, None)
                 for target, entry in list((_world(mem).get('launched') or {}).items()):
                     if isinstance(entry, dict) and entry.get('step') == step:
                         _world(mem)['launched'].pop(target, None)
