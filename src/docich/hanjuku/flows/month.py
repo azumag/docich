@@ -1122,7 +1122,7 @@ CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and re
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
 CHIKUJOU_SCROLL_SCHEMA = 2     # bidirectional scan state; v1 stopped at the first repeated window
-CHIKUJOU_SCROLL_RECOVER_WAIT = 3  # inputless observations before retrying a dead scroll episode
+CHIKUJOU_SCROLL_RECOVER_WAIT = 2  # inputless observations before retrying a dead scroll episode
 
 
 LEVEL_SCAN_WAIT = 4  # bounded wait for the country-status visit
@@ -1321,9 +1321,13 @@ def _chikujou_scroll(screen, mem, sub, names=None):
     state = sub.setdefault('build_scroll', {})
     direction = _chikujou_scan_direction(labels, rows, names, state.get('direction'))
     if state.get('schema') != CHIKUJOU_SCROLL_SCHEMA:
+        # Keep the press count across the schema change: the launch-pending
+        # deferral (owner 2026-11-27, #5696/#5702) fires after one press, and
+        # a sub that already pressed must not lose that count to the migration.
+        presses = int(state.get('presses') or 0)
         state.clear()
         state.update(schema=CHIKUJOU_SCROLL_SCHEMA, signature=None, direction=direction,
-                     mode='scan', same=0, presses=0, since_new_row=0, input_episodes=0,
+                     mode='scan', same=0, presses=presses, since_new_row=0, input_episodes=0,
                      end_down=False, end_up=False, seen_keys=[], seen=[], wait=0)
     seen_keys = state.get('seen_keys')
     if not isinstance(seen_keys, list):
