@@ -8252,6 +8252,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1552-chapter-end-save-accept",
             "hanjuku-chart-v1552-ch9-sortie-speed",
             "hanjuku-chart-v1559-selected-card-interruption",
+            "hanjuku-chart-v1567-sortie-panel-occluded",
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
