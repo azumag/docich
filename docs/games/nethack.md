@@ -303,6 +303,19 @@ fail closed とし、単に「ゲームが終わった」と推測して切替�
 `suspended` として扱う。processもsaveも無い場合だけ `ended` と記録し、死亡・quit・ascension の分類は
 P1b の run history へ委ねる。
 
+**birth window はゲームより長生きする（#4344 以降、#5708）。** runtime session は「素のシェルを開いてから
+ゲームを send-keys で投入する」方式なので、NetHack が終了（死亡開示の完了・通常 save）しても birth window は
+シェルのプロンプトに戻って残り、tmux の automatic rename で名前も `nethack-console` → `bash` などへ変わる。
+「window が存在する＝ゲームが動いている」とは読めないため、adapter は birth window が**起動シェルしか
+動かしていないと証明できたとき**も「process window が無い」と同じに扱う（`Tmux.pane_runs_only_launch_shell`）。
+証明の条件は、pane が1つで生存し、tmux がコマンド無し（既定シェル）で起動した pane であること、その leader が
+プロセス表で生存し、生存中の子孫が無いこと、そしてこの runtime の adapter 所有タグを持つ生存プロセスが
+共有 tmux server とその他の pane（保護集合）以外に無いこと。コマンド付きで起動した pane（leader が
+ゲーム本体）は従来どおり window の有無で判定する。probe の失敗・証明不能（`None`）は常に「まだ動いている
+かもしれない」側に倒し、キーは送らない。2026-11-26 の事象では、死亡後に残ったシェルを生きた NetHack と
+誤認し、cancel が `prompt_not_pending`（`prompt_class=unknown`、survivor 15件）で拒否され続けて `draining` が
+約3.5時間解除されなかった。
+
 境界の診断結果は generation runtime の `nethack_boundary.json` に `suspended` / `ended` として残す。
 
 cancel が拒否された時・save境界が期限切れになった時も、同じ runtime directory の
