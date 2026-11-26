@@ -64,7 +64,8 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     observe_departure_return(screen, mem)
     # A recall destination picker belongs to the recall, not to an active
     # chart sortie's interrupted target selection.
-    if (_flow(mem).get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
+    if (_flow(mem).get('recall') or {}).get('stage') in ('dest', 'await_dispatch',
+                                                        'await_dispatch_stale'):
         return
     order = _order(mem)
     attempt = _flow(mem).get('sortie_attempt')
@@ -608,7 +609,7 @@ def world_map_step(screen, mem, frame):
         if waits <= RELAY_MENU_WAIT:
             return []
         recall['relay_menu_waits'] = 0
-    if recall and recall.get('stage') == 'await_dispatch':
+    if recall and recall.get('stage') in ('await_dispatch', 'await_dispatch_stale'):
         return _recall_dispatch_step(screen, mem, recall)
     if recall and recall.get('boss') and recall.get('stage') == 'dest':
         # いどう opened a whole-island picker, whose confirmation below sends

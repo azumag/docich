@@ -1746,6 +1746,10 @@ def test_dispatch_terminal_preserves_interrupt_for_monthly_retry_budget():
     _flow(mem)['recall_interrupted'] = 150
 
     recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, dispatch)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, dispatch)
 
     verification = _flow(mem)['recall_verification']
     assert verification['status'] == 'dispatch_unconfirmed'

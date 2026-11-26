@@ -42,6 +42,10 @@ def test_interrupted_unconfirmed_recall_retries_after_the_short_hold():
     mem = mem_with(state)
     mem['flow']['recall_interrupted'] = 100
     recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
     assert mem['flow'].get('recall_skip_ticks') == recall.FORT_RETRY_TICKS
     assert 'recall' not in mem['flow']
 
@@ -55,6 +59,10 @@ def test_targetless_interrupted_dispatch_uses_a_short_global_retry_hold():
     mem = mem_with(state)
     recall._mark_recall_interrupted(mem)
     recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        recall._recall_dispatch_step(SimpleNamespace(kind='map'), mem, state)
     verification = mem['flow']['recall_verification']
     assert verification['status'] == 'dispatch_unconfirmed'
     assert verification['input_sent'] is False
@@ -80,6 +88,10 @@ def test_a_stale_interruption_marker_does_not_shorten_the_next_recalls_hold():
     assert 'recall_interrupted' not in mem['flow']
     screen = SimpleNamespace(kind='map')
     for _ in range(6):
+        recall._recall_dispatch_step(screen, mem, state)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
         recall._recall_dispatch_step(screen, mem, state)
     assert mem['flow'].get('recall_skip_ticks') != recall.FORT_RETRY_TICKS
     assert 'recall' not in mem['flow']
