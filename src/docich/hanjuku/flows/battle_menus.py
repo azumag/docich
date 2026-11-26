@@ -1334,6 +1334,11 @@ def battle_menu_step(screen: Screen, mem):
         # Owner 2026-11-22: the white row is the live evidence; it overrides
         # a stale zero left by a paid recovery and any exhausted survival wait.
         ally = cur.get('ally') if isinstance(cur, dict) else None
+        # owner 2026-11-26: この戦闘で「使える卵」を実際に見た証拠を残す。
+        # 決定ログは卵0の復帰時しか出ないため、これが無いと長い戦闘で
+        # 「卵を残して敗北」を検出できなかった（ビシソワーズ）。
+        if isinstance(cur, dict):
+            cur['egg_white_seen'] = True
         if isinstance(ally, str) and ally in (mem.get('egg_zero_owners') or []):
             mem['egg_zero_owners'] = [n for n in mem['egg_zero_owners'] if n != ally]
             _record(mem, 'battle_egg_white_available', **_battle_labels(cur),

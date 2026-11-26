@@ -1641,7 +1641,7 @@ def _egg_available_unused(mem, cur):
         return False
     if cur.get('egg_battle') or mem.get('egg_battle') or cur.get('egg_used'):
         return False
-    if cur.get('own_egg_positive_observed'):
+    if cur.get('own_egg_positive_observed') or cur.get('egg_white_seen'):
         return True
     step = cur.get('step')
     for row in reversed((mem.get('_records') or [])[-80:]):
