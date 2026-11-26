@@ -258,7 +258,31 @@ def test_style_rejects_report_formula():
     report = ('評価したいのは粘りです。課題は守備です。見どころは次です。'
               '楽しみにしています。')
     assert periodic.style_ok(report) is False
+    hedging = ('切り分けられません。急いで結びつけない慎重さが必要です。'
+               '宿題です。次の観測で答え合わせをしましょう。')
+    assert periodic.style_ok(hedging) is False
     assert periodic.style_ok(LONG_A) is True
+
+
+def test_focus_prefers_a_confirmed_outcome_over_a_plan():
+    found = [(3.0, {'category': 'card', 'not_result': True,
+                    'outcome': {'kind': 'battle_result', 'outcome': 'win'}}),
+             (2.0, {'category': 'battle', 'not_result': False,
+                    'outcome': {'kind': 'battle_result', 'outcome': 'win'}})]
+    assert periodic._choose_focus(found, [])['category'] == 'battle'
+
+
+def test_unattributed_card_does_not_take_another_battles_result(tmp_path):
+    runtime = tmp_path / 'runtimes' / IDENTITY['runtime_id']
+    runtime.mkdir(parents=True)
+    _decision(runtime / 'hanjuku_decisions.jsonl',
+              {'decision': 'battle_card', 'card': 'イッテツーン',
+               'enemy': 'プラリネ', 'at': 100, 'step': 1},
+              {'decision': 'battle_result', 'outcome': 'win', 'ally': 'グリッシーニ',
+               'enemy': 'プラリネ', 'at': 200, 'step': 2})
+    found = periodic._focus_candidates(runtime, 0, 300)
+    card = next(fact for _at, fact in found if fact['category'] == 'card')
+    assert 'outcome' not in card
 
 
 def test_focus_candidates_attach_a_later_battle_outcome(tmp_path):
@@ -288,7 +312,7 @@ def test_narrative_rejects_a_flat_fact_list():
 def test_persona_requires_one_to_four_soviet_riffs():
     assert periodic.persona_ok('今回の焦点は同志の出撃判断です。') is True
     assert periodic.persona_ok('今回の焦点は出撃判断です。') is False
-    assert periodic.persona_ok('同志、人民、赤旗、五カ年計画、政治局、集団農場。') is False
+    assert periodic.persona_ok('同志、人民、赤旗、五カ年計画、政治局、集団農場、ペレストロイカ。') is False
 
 
 def test_focus_clarity_rejects_buried_focus_and_too_many_names():
