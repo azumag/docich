@@ -40,6 +40,9 @@ LONG_B = ('第8章の14年2月、エピィ将軍がミュスカデに勝った�
           'だからこそ、小さな前進を次につなげる采配が問われるのでしょう。'
           'この流れを、次の戦いの準備として一緒に見守りたいと思います。')
 
+LONG_NO_PERSONA = LONG_A.replace('同志たち', '将軍たち')
+
+
 IDENTITY = {'game': 'hanjuku-hero', 'runtime_id': 'g7-abc123',
             'generation': 7, 'lease_id': 'lease-periodic'}
 RUN = {**IDENTITY, 'playing': True, 'phase': 'field', 'terminal_reason': None,
@@ -449,6 +452,22 @@ def test_worker_sets_the_periodic_agent_override(live, monkeypatch):
                        ensure_ascii=False), 'RADIO_AGENTS'),
         deliver_fn=lambda *args, **kwargs: 'enqueued')
     assert seen == ['opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash']
+
+
+def test_worker_falls_back_to_a_grounded_line_without_persona(live, monkeypatch):
+    delivered = []
+    _write(live.runtime / periodic.REQUEST, _request(live))
+    monkeypatch.setattr(worker, 'load_game', lambda *args: live.game)
+    monkeypatch.setattr(worker, 'current', lambda *args, **kwargs: RUN)
+    status, text, attempts, role = worker.consume(
+        SimpleNamespace(repo_root=live.root, state_dir=live.root), live.runtime,
+        now=live.now,
+        generate_fn=lambda *args: (json.dumps({'texts': [LONG_NO_PERSONA]},
+                                              ensure_ascii=False), 'RADIO_AGENTS'),
+        deliver_fn=lambda *args, **kwargs: delivered.append(args) or 'enqueued')
+    assert status == 'enqueued' and text == LONG_NO_PERSONA
+    log = (live.runtime / (periodic.LOG + '.jsonl')).read_text(encoding='utf-8')
+    assert 'validation_fallback' in log
 
 
 def test_worker_delivers_the_least_repetitive_grounded_candidate(live, monkeypatch):

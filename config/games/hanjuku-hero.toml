@@ -86,7 +86,7 @@ generation_timeout_s = 15
 enabled = true
 interval_s = 900
 retry_s = 300
-generation_timeout_s = 210
+generation_timeout_s = 300
 max_attempts = 1
 # 15分実況は既存radio laneを使うが、候補モデルだけを短いchainに絞る。
 # 空なら従来の BATCH_COMMENTARY_AGENTS → RADIO_AGENTS → AI_COMMON_AGENTS。

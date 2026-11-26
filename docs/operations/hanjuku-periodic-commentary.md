@@ -21,7 +21,7 @@ BOTが落ちても、BOTを再起動しても、定期実況の都合で入力�
 enabled = true
 interval_s = 900          # 15分。300〜3600
 retry_s = 300             # 生成失敗・重複時の再試行。60〜1800
-generation_timeout_s = 210 # 1回のLLM呼出しの上限。5〜240
+generation_timeout_s = 300 # 1回のLLM呼出しの上限。5〜360
 max_attempts = 1           # 長文は1回の生成で3候補。失敗時は次の間隔で再試行
 agents = "opencode-go:deepseek-v4.1-flash,..."  # 空なら従来の共通chain
 persona = "ソビエト連邦の放送局から中継しているような、おおらかで少し皮肉屋の実況者。…「同志」「人民」「五カ年計画」…"
@@ -137,6 +137,19 @@ LLM出力はJSON `{"texts":["...","...","..."]}` に限定し、各候補を次�
 - focusの具体名（将軍・城・札）が最初の2文にあり、固有名詞が6個以下である。
 - ソ連・共産主義のマーカー（同志、人民、五カ年計画、赤旗、ペレストロイカ等）を
   1〜4回含む。0回はペルソナ未反映、5回以上はネタ過多として拒否する。
+
+候補選別は **strict → focus → persona → grounded** の順で行う。
+
+1. strict: grounding + focus + persona をすべて満たす
+2. focus: grounding + focus（personaが薄い候補）
+3. persona: grounding + persona（焦点が最初の2文にない候補）
+4. grounded: groundingだけ満たす
+
+strictが全滅しても、groundingを満たす生成文が1件でもあれば読み上げる。
+無音になるのは、groundedも全滅した場合、生成失敗、重複だけである。
+ペルソナや焦点の厳密さより「読み上げが止まらないこと」を優先するフォールバックで、
+どのtierを採用したかは `hanjuku_periodic_commentary.jsonl` の
+`validation_fallback` に残す。固定文へのfallbackは行わない。
   箇条書き・番号付き列挙は拒否する。事実だけを並べた文は `invalid_output` と
   して採用しない。
 - 「〜城」の直前の名前、`将軍` の直前の名前も材料に一致させる。
@@ -185,7 +198,7 @@ Sorenの既存 `enqueue_audio_text` に `context=hanjuku_commentary` で渡す�
 `eloop_lib.sh`、`ai_generate_list 'RADIO:hanjuku-commentary'`、
 `BATCH_COMMENTARY_AGENTS` → `RADIO_AGENTS` → `AI_COMMON_AGENTS` の
 実効設定を再利用し、モデル・provider・queue・backoffを新設しない。
-生成は `OwnedSceneProcess` のsubreaper配下で設定上限（既定90秒、長文設定は210秒）に制限し、timeout後は
+生成は `OwnedSceneProcess` のsubreaper配下で設定上限（既定90秒、長文設定は300秒）に制限し、timeout後は
 今回の子孫だけを終了する。入力processは待たない。
 
 ## 配備後の確認
