@@ -15,6 +15,7 @@ from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import camp_menu
+from docich.hanjuku.flows import recall as recall_flow
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
@@ -257,6 +258,71 @@ def test_a_proven_unsent_dispatch_resends_once_then_still_bounds_itself():
     record = next(row for row in mem['_records']
                   if row['decision'] == 'camp_recall_unconfirmed')
     assert record['observed_metric']['resends'] == 1
+
+
+def scene_interrupted_stale_recall(target_cell=(144, 127)):
+    trace = {'decision_id': 'old-request'}
+    recall = {'stage': 'await_dispatch_stale', 'steps': 0, 'stale_steps': 6,
+              'stale_since_tick': 104, 'target': [96, 111], 'goal': 'オオキク',
+              'a_inputs': 1, 'requested_tick': 90, 'request_trace': trace,
+              'scene_pending': True, 'scene_covered': True, 'scene_covered_tick': 100}
+    if target_cell is not None:
+        recall['target_cell'] = list(target_cell)
+    mem = {'chapter': 9, 'tick': 110,
+           'flow': {'recall': recall, 'recall_interrupted': 100},
+           '_records': []}
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 0,
+                                       'later_inputs': True}
+    return mem, recall
+
+
+def test_scene_interrupted_resend_is_a_fresh_request_and_accepts_picker_close():
+    mem, recall = scene_interrupted_stale_recall()
+    picker_screen = Screen([], None, '', kind='map_target', marker=(144, 127))
+    assert recall_flow._recall_dispatch_step(picker_screen, mem, recall) == [p.pad('a')]
+    assert recall['stage'] == 'await_dispatch' and recall['requested_tick'] == 110
+    assert recall['resends'] == 1
+    assert 'request_trace' not in recall and not recall.get('input_sent')
+    assert 'recall_interrupted' not in _flow(mem)
+    for key in ('scene_covered', 'scene_covered_tick', 'scene_pending'):
+        assert key not in recall
+
+    new_trace = {'decision_id': 'resent-request'}
+    recall['request_trace'] = new_trace
+    _journal(mem)['_recall_inputs'] = {'request_trace': new_trace, 'a_inputs': 1}
+    mem['tick'] = 111
+    assert recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, recall) == []
+    verification = _flow(mem)['recall_verification']
+    assert verification['status'] == 'dispatched'
+    assert verification['input_sent'] is True and verification['picker_closed'] is True
+    assert verification['interrupted'] is False and verification['scene_covered'] is False
+    decisions = [row['decision'] for row in mem['_records']]
+    assert 'camp_recall_dispatch_resent' in decisions
+    assert 'camp_recall_input_sent' in decisions
+    assert 'camp_recall_dispatched' in decisions
+    assert 'camp_recall_unconfirmed' not in decisions
+
+
+@pytest.mark.parametrize('target_cell,marker', [
+    (None, (144, 127)),
+    ((144, 127), (152, 127)),
+])
+def test_scene_interrupted_resend_is_rejected_when_picker_identity_is_unconfirmed(target_cell, marker):
+    mem, recall = scene_interrupted_stale_recall(target_cell=target_cell)
+    picker_screen = Screen([], None, '', kind='map_target', marker=marker)
+    assert recall_flow._recall_dispatch_step(picker_screen, mem, recall) == [p.pad('b')]
+    assert 'recall' not in _flow(mem)
+    assert not any(row['decision'] == 'camp_recall_dispatch_resent' for row in mem['_records'])
+    rejected = next(row for row in mem['_records']
+                    if row['decision'] == 'camp_recall_dispatch_resend_rejected')
+    assert rejected['resulting_event'] == 'picker_identity_unconfirmed'
+    verification = _flow(mem)['recall_verification']
+    assert verification['status'] == 'dispatch_unconfirmed'
+    assert verification['interrupted'] is True
+    terminal = next(row for row in mem['_records']
+                    if row['decision'] == 'camp_recall_unconfirmed')
+    assert terminal['observed_metric']['unsent_proven'] is True
+    assert terminal['observed_metric']['interrupted'] is True
 
 
 def test_action_sent_mirrors_the_receipt_into_the_input_journal(tmp_path):

@@ -70,16 +70,48 @@ def test_all_holdings_receive_distinct_receipts_through_a_four_row_window(chapte
     assert any(r['decision'] == 'chikujou_scroll' for r in mem['_records'])
 
 
-def test_ignored_scroll_inputs_exit_without_confirming_or_marking_hidden_castles():
+def test_a_catalog_end_requires_the_extreme_catalog_row_and_cursor():
+    labels = policy._chikujou_name_labels(1)
+    values = list(labels.values())
+    rows = [(16, 39 + i * 16, values[i]) for i in range(4)]
+    assert policy._chikujou_catalog_end(labels, rows, rows[0], 'up')
+    assert not policy._chikujou_catalog_end(labels, rows, rows[0], 'down')
+    interior = [(16, 39 + i * 16, values[i + 1]) for i in range(4)]
+    assert not policy._chikujou_catalog_end(labels, interior, interior[-1], 'down')
+    bottom = [(16, 39 + i * 16, values[-4 + i]) for i in range(4)]
+    assert policy._chikujou_catalog_end(labels, bottom, bottom[-1], 'down')
+    assert not policy._chikujou_catalog_end(labels, bottom, bottom[0], 'down')
+
+
+def test_the_scan_moves_up_toward_untried_rows_above_the_window():
+    mem = holdings()
+    sub = open_build(mem)
+    visible = [NAMES[1], NAMES[3], NAMES[4], NAMES[5]]  # canonical ch1 rows 2-5
+    sub['rows_tried'] = list(visible)                  # アルマムーン/キカンドン are still untried
+    screen = castles(on=NAMES[5], names=visible)
+    assert policy.month_sub_step(screen, mem) == [policy.pad('up')]
+    record = mem['_records'][-1]
+    assert record['decision'] == 'chikujou_scroll'
+    assert record['month'] == '1-7'
+    assert record['observed_metric']['action'] == 'up'
+    assert not sub.get('aborted')
+
+
+def test_ignored_scroll_inputs_reverse_and_wait_without_confirming_hidden_castles():
     mem = holdings()
     sub = open_build(mem)
     sub['rows_tried'] = list(NAMES[:4])
     screen = castles(on=NAMES[3], names=NAMES[:4])
     for _ in range(policy.MENU_NAV_PRESS_LIMIT):
         assert policy.month_sub_step(screen, mem) == [policy.pad('down')]
-    assert policy.month_sub_step(screen, mem) == [policy.pad('b')]
-    assert sub['aborted'] and not sub.get('chosen') and not sub.get('confirm_sent')
+    for _ in range(policy.MENU_NAV_PRESS_LIMIT):
+        assert policy.month_sub_step(screen, mem) == [policy.pad('up')]
+    assert policy.month_sub_step(screen, mem) == []
+    assert policy.month_sub_step(screen, mem) == []
+    assert policy.month_sub_step(screen, mem) == [policy.pad('down')]
+    assert not sub.get('aborted') and not sub.get('chosen') and not sub.get('confirm_sent')
     assert sub['rows_tried'] == list(NAMES[:4])
+    assert any(r['decision'] == 'chikujou_scroll_stalled' for r in mem['_records'])
     assert not mem['shop'].get('chikujou_upgrades')
 
 
@@ -112,6 +144,11 @@ def test_a_wrapping_list_has_a_total_scroll_bound_even_when_the_hand_moves():
         assert policy.month_sub_step(castles(on=NAMES[i % 4], names=NAMES[:4]), mem) == [policy.pad('down')]
     assert policy.month_sub_step(castles(names=NAMES[:4]), mem) == [policy.pad('b')]
     assert sub['aborted'] and not sub.get('chosen')
+    assert mem['_records'][-1]['decision'] == 'chikujou_held'
+    assert mem['_records'][-1]['month'] == '1-7'
+    assert mem['_records'][-1]['deviation_reason'] == 'castle_scan_exhausted'
+    assert mem['shop']['chikujou_last_hold']['deviation_reason'] == 'castle_scan_exhausted'
+    assert mem['shop']['chikujou_last_hold']['month'] == '1-7'
 
 
 def test_scrolled_selection_still_declines_a_quote_that_spends_reserved_wages():
@@ -123,3 +160,42 @@ def test_scrolled_selection_still_declines_a_quote_that_spends_reserved_wages():
     assert sub['chosen'] == NAMES[4]
     assert policy.month_sub_step(quote(NAMES[4], 45, 18, on='いかんッ!'), mem) == [policy.pad('a')]
     assert sub['declined'] and not sub.get('confirm_sent')
+
+
+def test_a_pending_launch_defers_the_castle_scroll():
+    # owner 2026-11-27 (#5696/#5702): 出撃の開始から発射確認までの間は、
+    # 築城一覧の探索を1回で打ち切って発射確認へ時間を回す。
+    from docich.hanjuku.flows import month as month_flow
+    frame = read_png(FRAME)
+    screen = parse(frame)
+    mem = holdings(key='3-9')
+    mem['month'] = '3-9'
+    step = 'A:3:M1'
+    order = {'step': step, 'purpose': 'retake', 'source': 'ヘリオポリス',
+             'target': 'ラグナグ', 'general': 'デュオニソス', 'cards': [], 'note': '奪還'}
+    mem['sortie_launch_pending'] = step
+    from docich.hanjuku.state.regions import plan as _plan_region
+    _plan_region(mem)['chart_plan'] = {'orders': [order]}
+    _plan_region(mem)['orders'] = {step: 'pending'}
+    _plan_region(mem)['active'] = step
+    sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
+                              'rows_tried': list(NAMES[:4]), 'presses': 1,
+                              'build_scroll': {'presses': 1}, 'left_menu': True}
+    assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('b')]
+    assert sub.get('declined') and sub.get('aborted')
+    record = mem['_records'][-1]
+    assert record['decision'] == 'chikujou_deferred_sortie'
+    assert record['observed_metric']['step'] == 'A:3:M1'
+
+
+def test_without_a_pending_launch_the_scroll_continues():
+    from docich.hanjuku.flows import month as month_flow
+    frame = read_png(FRAME)
+    screen = parse(frame)
+    mem = holdings(key='3-9')
+    mem['month'] = '3-9'
+    sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
+                              'rows_tried': list(NAMES[:4]), 'presses': 1,
+                              'left_menu': True}
+    assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('down')]
+    assert not sub.get('declined')

@@ -1301,6 +1301,51 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_same_month_maxed_evidence_survives_the_history_filter(runtime_dir):
+    value = _chikujou_state()
+    mem = value['policy']
+    home = chart.home_castle(10)
+    other = mem['captured'][0]
+    third = next(c for c in chart.CASTLE_NAMES[10] if c not in (home, other))
+    mem['captured'].append(third)
+    mem['world']['garrison'][third] = ['C']
+    mem['general_statuses']['statuses'][third] = {'location': 'castle', 'castle': third}
+    note(runtime_dir, 999, decision='chikujou_max_level_seen', month='1-1',
+         observed_metric={'castles': [other], 'level': 5},
+         reason='実一覧でレベル5を確認した城は当月の選択を省く')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['chikujou_event']
+    assert event['maxed'] == [other]
+    assert other not in event['candidates']
+    assert third in event['staffed_candidates']
+
+
+def test_chikujou_month_end_renders_last_held_visible_rows(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, decision='chikujou_held', month='1-1',
+         deviation_reason='castle_scan_exhausted',
+         observed_metric={'visible': ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン'],
+                          'scrolls': 9, 'stalled': 3},
+         reason='築城一覧を往復しても候補行を確認できないためBで戻る')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    diagnostic = record['chikujou_event']['terminal_diagnostic']
+    assert diagnostic['deviation_reason'] == 'castle_scan_exhausted'
+    assert diagnostic['visible'] == ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン']
+    assert diagnostic['scrolls'] == 9
+    assert diagnostic['stalled'] == 3
+    rendered = audit.render(record)
+    assert '最終保留理由: castle_scan_exhausted' in rendered
+    assert 'ファルゲ' in rendered
+    assert 'scrolls: 9 / stalled: 3' in rendered
+
 
 def test_chikujou_month_end_uses_live_policy_gold_over_stale_outer_gold(runtime_dir):
     # docich#5465: the last verified upgrade left 30G (the 30G reserve),
@@ -1952,11 +1997,89 @@ def test_non_stall_corner_reason_is_not_recorded(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_game_over_is_recorded_and_titled(runtime_dir):
+    final_state = state(10, '1-1', 88)
+    final_state['policy']['captured'] = ['アルマムーン']
+    final_state['policy']['lost'] = ['スタート']
+    final_state['policy']['home_lost'] = True
+    (runtime_dir / 'hanjuku_bot.json').write_text(
+        json.dumps(final_state, ensure_ascii=False), encoding='utf-8')
+    note(runtime_dir, 999, 'battle_result', chart_step='10-A1', outcome='loss',
+         target='ボス', reason='最終戦に敗北')
+    terminal = {
+        'terminal_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'frame_sha256': 'c' * 64,
+        'observed_at': 1000.0,
+        'observed_monotonic': 200.0,
+        'title_since': 197.0,
+        'title_count': 3,
+        'phase': 'title',
+        'observations': 88,
+        'actions_sent': 70,
+        'battles_started': 4,
+        'battles_finished': 4,
+    }
+    review = {'file': 'hanjuku_chart_review.json', 'proposals': 2,
+              'by_type': {'review_base_step': 2}, 'off_chart_requests': 1,
+              'adjusted_orders': 3, 'battle_outcomes': 4,
+              'unattributed_battles': 1}
+    record = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        rotation_request_id='req-game-over', terminal_evidence=terminal,
+        chart_review=review, now=1000, spawn=False)
+    assert record['kind'] == 'game_over'
+    assert record['auto_file'] is True
+    assert record['chapter'] == 10
+    assert record['month'] == '1-1'
+    over = record['game_over']
+    assert over['observations'] == 88
+    assert over['title_hold_s'] == 3.0
+    assert over['lost'] == ['スタート']
+    assert over['chart_review']['proposals'] == 2
+    assert 'ゲームオーバー' in audit._issue_title(record)
+    body = audit.render(record)
+    assert '### chart review' in body
+    assert 'battle_result' in body
+    assert '最終戦に敗北' in body
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_game_over_is_recorded_once(runtime_dir):
+    terminal = {'terminal_reason': 'game_over', 'frame_sha256': 'd' * 64,
+                'observed_at': 1000.0, 'observations': 10}
+    first = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1000, spawn=False)
+    second = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1100, spawn=False)
+    assert first['incident_id'] == second['incident_id']
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_game_over_files_a_github_issue(runtime_dir):
+    terminal = {'terminal_reason': 'game_over', 'frame_sha256': 'e' * 64,
+                'observed_at': 1000.0, 'observations': 10}
+    audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1000, spawn=False)
+    gh = FakeGh()
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+    create = [call for call in gh.calls if call[:2] == ['issue', 'create']][0]
+    title = create[create.index('--title') + 1]
+    assert title.startswith('[半熟英雄] ゲームオーバー:')
+    assert '--label' in create and 'auto-generated' in create
+
+
 def test_retro_corner_records_screen_stall_before_teardown():
     text = (Path(__file__).resolve().parents[1] / 'src/docich/retro_corner.py').read_text(
         encoding='utf-8')
+    assert 'record_game_over' in text
     assert 'record_corner_stall' in text
     assert "screen_stalled', 'input_stalled'" in text
+    assert 'from .hanjuku import month_audit' in text
 
 
 def _menu_state(menu=True):

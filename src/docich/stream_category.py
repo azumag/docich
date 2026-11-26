@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .config import GlobalConfig, load_game
+from .hanjuku_family import ORIGINAL, SPEEDRUN
 from .naming import NameValidationError, validate_game_name
 from .procs import user_bus_env
 from .special_corner import (
@@ -46,7 +47,7 @@ BACKGROUND_STATE_FRESH_S = 120.0
 BACKGROUND_GAME = "sorengame"
 #: The only game whose viewer title names a measured in-run goal. A chapter
 #: clear changes the title to the next goal (see ``stream_title_context``).
-PROGRESS_TITLE_GAME = "hanjuku-hero"
+PROGRESS_TITLE_GAME = "hanjuku-hero"  # family: original-only
 # A failed announce is retried only after this backoff, so an unreachable
 # platform cannot turn a one-minute tick into a request storm.
 RECONCILE_RETRY_BACKOFF_S = 300.0
@@ -76,7 +77,8 @@ SPECIAL_VIEW_NAME = FLYHOME_VIEW_NAME = "external-video-view"
 # paths or generated/private text to compose an automatic broadcast title.
 VIEWER_GAME_NAMES = {
     "sorengame": "ソ連ゲーム", "soren91": "ソ連ゲーム91",
-    "hanjuku-hero": "半熟英雄", "nethack": "NetHack",
+    ORIGINAL: "半熟英雄", SPEEDRUN: "半熟英雄 スピードラン",
+    "nethack": "NetHack",
     "bastet": "Bastet", "gnurobots": "GNU Robots", "moon-buggy": "Moon Buggy",
     "ninvaders": "Space Invaders", "nsnake": "Snake",
     "pacman4console": "Pac-Man", "robots": "Robots",

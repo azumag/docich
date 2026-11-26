@@ -580,6 +580,12 @@ def yes_no_step(screen: Screen, mem):
         else:
             choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
             variant = 'accept_duel'
+            # owner 2026-11-26 (#5694): 「なぜ断らなかったか」を後から説明できる
+            # よう、判定に使った実測値（読めた/読めないを含む）を残す。
+            metric = {'gold': gold, 'gold_read': type(gold) is int,
+                      'generals': generals, 'generals_read': type(generals) is int,
+                      'gold_floor': DUEL_DECLINE_GOLD,
+                      'generals_floor': DUEL_DECLINE_GENERALS}
     elif _is_general_trade_prompt(text):
         # Owner rule (2026-09-28): the general trade (花いちもんめ) almost
         # always offers an unfair deal (odoru7094: ろくでもないのしか手に

@@ -68,6 +68,7 @@ SEVERITY_TRIGGERS = (
     "retro_corner_recovery_required",
     "corner_rotation_recovery_required",
     "corner_rotation_overdue",
+    "game_switch_in_flight_expired",
     "required_worker_stale",
     "required_worker_down",
     "paused_workers_actionable",

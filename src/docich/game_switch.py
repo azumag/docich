@@ -19,6 +19,7 @@ import contextvars
 import datetime as dt
 import fcntl
 import hashlib
+import importlib
 import inspect
 import json
 import os
@@ -44,7 +45,8 @@ from .naming import (
     validate_runtime_id,
 )
 from .teardown_evidence import TeardownEvidence, bind_recorder
-from .hanjuku_log_retention import prune_completed
+from .hanjuku_family import SPEEDRUN, is_hanjuku, module
+from .hanjuku_log_retention import prune_completed  # family: original-only
 from .retire_marker import RetireMarkerError, write_retire_marker
 from .log_redaction import redact_log_detail
 
@@ -3345,7 +3347,7 @@ class GameSwitchCoordinator:
                       cleanup_pending=recovered.cleanup_pending)
             return recovered
         transition_target = rotate_target if rotate_target is not None else target
-        if acceptance.claimed_from_queue and transition_target == "hanjuku-hero":
+        if acceptance.claimed_from_queue and is_hanjuku(transition_target):
             # A queued/replayed Hanjuku switch runs below the corner's
             # prepare_start(): once its durable boundary decision is gone or
             # bound to another request, claim() can only fail inside
@@ -3357,7 +3359,7 @@ class GameSwitchCoordinator:
             try:
                 spec = self._candidate_spec(acceptance, transition_target)
                 probe_adapter = self._make_adapter(spec, deadline)
-                from .hanjuku_resume import start_claimable
+                start_claimable = module(transition_target, "hanjuku_resume").start_claimable
                 claimable = bool(start_claimable(probe_adapter, request_id))
             except Exception:
                 # An unreadable decision is not proof that this request owns it.
@@ -5049,8 +5051,11 @@ class GameSwitchCoordinator:
             # 遷移し、prepare() で pending 扱いしない。runtime 停止未確認
             # （torn_down=False）は claimed のまま（recovery-required）。
             # 判定は実測値 bool(torn_down) に1元化する。
-            if candidate.get("game") == "hanjuku-hero":
-                from .hanjuku_resume import transition_rollback_claim
+            candidate_game = candidate.get("game")
+            if is_hanjuku(candidate_game):
+                # The claim artefact lives in the candidate's own package.
+                transition_rollback_claim = module(
+                    candidate_game, "hanjuku_resume").transition_rollback_claim
                 from types import SimpleNamespace
                 _g = SimpleNamespace(state_dir=self.store.state_dir)
                 transition_rollback_claim(_g, runtime_stopped=bool(torn_down))
@@ -5514,6 +5519,7 @@ class GameSwitchCoordinator:
         cleanup_pending = False
         retiring = list(state.get("retiring") or [])
         remaining: list[Mapping[str, object]] = []
+        cleaned: list[Mapping[str, object]] = []
         for runtime in retiring:
             self._log(
                 "cleanup_started", phase=str(state.get("phase")),
@@ -5561,6 +5567,7 @@ class GameSwitchCoordinator:
                     detail=_teardown_detail(evidence, runtime),
                 )
             else:
+                cleaned.append(runtime)
                 self._log(
                     "cleaned", phase=str(state.get("phase")),
                     generation=runtime.get("generation"),
@@ -5583,6 +5590,11 @@ class GameSwitchCoordinator:
                     _retiring_label(runtime) for runtime in remaining
                 ),
             )
+        # Only runtimes whose teardown completed (removed from ``retiring``)
+        # may be finalized: a runtime still in ``remaining`` may still have a
+        # live bot whose hook would race this writer, and DNFing it would
+        # discard an attempt that is still running.
+        finalize_speedrun_attempts(self.store.state_dir, cleaned, warnings)
         self._prune_hanjuku_logs(warnings)
         return cleanup_pending
 
@@ -5641,7 +5653,14 @@ class GameSwitchCoordinator:
 
     def _prune_hanjuku_logs(self, warnings: list[str]) -> None:
         """Bounded retention for completed hanjuku decision/event logs (#3132).
-        Failures are warnings, never rollback reasons."""
+
+        Original corner only: ``hanjuku_log_retention.GAME`` names exactly
+        ``hanjuku-hero``.  Speedrun logs are intentionally not pruned for now
+        (until the R2 archival path handles them); passing the canonical state
+        here would have the original retention delete nothing for speedrun.
+
+        Failures are warnings, never rollback reasons.
+        """
         canonical = self.store.canonical
         try:
             result = prune_completed(canonical.state_dir, lambda: canonical.load()[0])
@@ -5931,7 +5950,7 @@ class GameSwitchCoordinator:
             if (isinstance(previous, Mapping) and active is None and not cleanup_pending
                     and state.get("candidate") is None and not state.get("retiring")
                     and previous.get("adapter") == "retroarch"
-                    and previous.get("game") == "hanjuku-hero"):
+                    and is_hanjuku(previous.get("game"))):
                 try:
                     adapter = self._make_adapter(
                         RuntimeSpec.from_runtime(self.store.state_dir, previous), deadline)
@@ -6627,6 +6646,107 @@ def _retiring_targets_detail(runtime: Mapping[str, object]) -> str:
         if isinstance(value, str) and value:
             parts.append(f"{key}={value}")
     return " ".join(parts)
+
+
+def finalize_speedrun_attempts(state_dir, runtimes, warnings=None) -> int:
+    """Finalize RTA attempts for retiring hanjuku-speedrun runtimes only.
+
+    The speedrun copy writes its split timer from a bot side effect; the
+    common teardown closes the attempt when the corner ends for a reason the
+    bot does not observe (operator stop, crash, switch).  ``hanjuku-hero`` is
+    filtered out *before* the module is imported, so the original corner's
+    path never touches the RTA package.
+
+    ``runtimes`` must contain only entries whose teardown completed (already
+    removed from ``retiring``); a runtime whose teardown failed may still have
+    a live bot and must not be finalized.
+
+    ``store.finalize_attempt`` is idempotent and reads the terminal reason
+    from the runtime's own ``hanjuku_run.json``; a missing reason becomes a
+    ``stopped`` DNF.  Failures are warnings, never rollback reasons.  After a
+    successful finalize, the attempt's spool is collected and summarized by
+    ``rta.spool.finalize_logs``; ended attempts of the same runtime whose
+    manifest is still missing (a previous teardown stopped between the two
+    steps) are collected too.  That is a side channel too, so a failure is
+    reported as a warning and never stops the teardown.
+    """
+    targets = [
+        runtime for runtime in (runtimes or ())
+        if isinstance(runtime, Mapping) and runtime.get("game") == SPEEDRUN
+    ]
+    if not targets:
+        return 0
+    try:
+        rta = module(SPEEDRUN, "rta")
+        store = importlib.import_module(f"{rta.__name__}.store")
+    except Exception as exc:  # pragma: no cover - packaging failure
+        if warnings is not None:
+            warnings.append(f"speedrun RTA store import failed: {_safe_detail(exc)}")
+        return 0
+    finalized = 0
+    for runtime in targets:
+        try:
+            runtime_id = runtime.get("runtime_id")
+            if not isinstance(runtime_id, str) or not runtime_id:
+                raise ValueError("invalid runtime_id")
+            runtime_dir = runtime_directory(Path(state_dir), runtime_id)
+            result = store.finalize_attempt(runtime_dir)
+            if result is not None:
+                finalized += 1
+            spool = importlib.import_module(f"{rta.__name__}.spool")
+            # The spool collection runs after the attempt is durable.  It is a
+            # side channel: a failure is a warning, never a rollback reason.
+            attempts = []
+            attempt_id = (result.get("attempt_id")
+                          if isinstance(result, Mapping) else None)
+            if (isinstance(attempt_id, str) and attempt_id
+                    and result.get("runtime_id") == runtime_id
+                    and result.get("status") in {"finished", "dnf"}):
+                attempts.append(attempt_id)
+            # A previous teardown may have finalized an attempt but died
+            # before writing its manifest.  Collect only this runtime's
+            # attempts; another runtime's logs are never touched.
+            for row in store.load_attempts(runtime_dir):
+                if not isinstance(row, Mapping):
+                    continue
+                if row.get("runtime_id") != runtime_id:
+                    continue
+                if row.get("status") not in {"finished", "dnf"}:
+                    continue
+                recovered_id = row.get("attempt_id")
+                if not isinstance(recovered_id, str) or not recovered_id:
+                    continue
+                if recovered_id in attempts:
+                    continue
+                manifest_path = spool.attempt_dir(runtime_dir, recovered_id) / "manifest.json"
+                if manifest_path.exists():
+                    continue
+                attempts.append(recovered_id)
+            for target_attempt in attempts:
+                try:
+                    finalized_logs = spool.finalize_logs(runtime_dir, target_attempt)
+                    if finalized_logs is False and warnings is not None:
+                        warnings.append(
+                            "speedrun RTA spool finalize returned False: "
+                            f"{runtime_id} {target_attempt}")
+                except Exception as exc:
+                    if warnings is not None:
+                        warnings.append(
+                            f"speedrun RTA spool failed: {_safe_detail(exc)}")
+            # Hand the ended attempts to the detached R2 archiver.  It is a
+            # side channel: never wait for it and never fail the teardown.
+            try:
+                archive = importlib.import_module(f"{rta.__name__}.archive")
+                archive.launch_pending(runtime_dir)
+            except Exception as exc:
+                if warnings is not None:
+                    warnings.append(
+                        f"speedrun RTA archive launch failed: {_safe_detail(exc)}")
+        except Exception as exc:
+            if warnings is not None:
+                warnings.append(
+                    f"speedrun RTA finalize failed: {_safe_detail(exc)}")
+    return finalized
 
 
 def _evidence_from_exception(exc: BaseException) -> TeardownEvidence:

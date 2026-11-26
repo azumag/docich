@@ -40,6 +40,19 @@ def test_a_hold_that_gave_up_names_the_hold_not_unexplained():
     assert 'chikujou_skip_unexplained' not in decisions
 
 
+def test_a_hold_survives_the_observation_record_buffer_reset():
+    # docich#5704: chikujou_held と月終了は別観測になりうる。永続化した同月の
+    # hold があれば、観測バッファが空でも unexplained と誤記しない。
+    mem = _mem({'key': '1-1', 'chikujou': 'skipped', 'chikujou_tried': ['A'],
+                'chikujou_last_hold': {'month': '1-1',
+                                       'deviation_reason': 'castle_scan_exhausted'}})
+    m._note_chikujou_skip_unexplained(mem, mem['shop'])
+    decisions = [r.get('decision') for r in mem['_records']]
+    assert 'chikujou_skip_after_hold' in decisions
+    assert 'chikujou_skip_unexplained' not in decisions
+    assert mem['_records'][-1]['observed_metric']['held_reason'] == 'castle_scan_exhausted'
+
+
 def test_a_built_month_is_not_called_unexplained():
     mem = _mem({'key': '1-1', 'chikujou': 'done'})
     m._note_chikujou_skip_unexplained(mem, mem['shop'])

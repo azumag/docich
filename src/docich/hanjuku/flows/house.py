@@ -14,6 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
+from ..strategy.orders import active_sortie_launch_priority
 from ..state import egg_memory
 from ..state.regions import (world as _world, flow as _flow, journal as _journal,
                               sorties as _sorties, plan as _plan_region)
@@ -1466,6 +1467,14 @@ def _step_once(screen, mem, frame):
         field_count, legacy_monthly = _field_budget(mem, scope)
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
         if not monthly and _corridor_march(mem):
+            return None
+        # owner 2026-11-27 (#5702): 出撃の開始から発射確認までの間は、家来一覧や
+        # 状態確認の探索より発射確認を優先する（メニューを開くとマップの▲が見えない）。
+        launch_step = active_sortie_launch_priority(mem)
+        if launch_step:
+            _record(mem, 'deferred_sortie',
+                    observed_metric={'step': launch_step},
+                    reason='出撃の開始から発射確認までのため、家来・状態の探索を見送る')
             return None
         # An explicit month-end inspection now owns returns and repairs.
         # Once it finishes, field surveys must not steal the next map plan.

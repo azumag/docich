@@ -750,7 +750,8 @@ def _probe_spend(mem, decision, idle=False, budgeted=True):
 
 
 MINTED_ORDER_KEYS = ('step', 'general', 'source', 'target', 'cards', 'after',
-                     'purpose', 'source_probe', 'corridor', 'corridor_hero', 'note')
+                     'purpose', 'source_probe', 'corridor', 'corridor_hero',
+                     'corridor_strong_kit', 'note')
 # A minted probe that is still pending this long is reused instead of minting
 # (and budgeting) a second visit while the first is still being executed.
 PROBE_MINT_TTL = 120
@@ -1483,11 +1484,23 @@ def _record_only(mem, decision, **fields):
 
 
 def _order(mem, source, hop, target, purpose, hero=False):
+    cards = []
+    strong_kit = False
+    if not hero and purpose in ('attack', 'retake') and mem.get('chapter') == 9:
+        stock = mem.get('card_stock')
+        if isinstance(stock, dict) and stock:
+            from .replan import _strong_stock_kit
+            strong = _strong_stock_kit(mem, stock)
+            if strong:
+                cards = list(strong)
+                strong_kit = True
     order = {'step': _step(mem, source, hop, 'h' if hero else ''), 'general': chart_adjust.PROBE_GENERAL,
-             'source': source, 'target': hop, 'cards': [], 'after': None,
+             'source': source, 'target': hop, 'cards': cards, 'after': None,
              'purpose': purpose, 'source_probe': True, 'corridor': True,
              'note': (f'第9話: {source}から{target}へ最大{SQUAD}人' if hop == target
                       else f'第9話: {target}の手前{hop}へ{source}から最大{SQUAD}人移動')}
+    if strong_kit:
+        order['corridor_strong_kit'] = True
     if hero:
         order.update(corridor_hero=True, note=f'第9話: 城を取ったため主人公を{source}から{hop}へ進める')
     return order

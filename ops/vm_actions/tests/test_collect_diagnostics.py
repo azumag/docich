@@ -663,6 +663,14 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert output['end_reason']=='screen_stalled'
     assert output['bot_phase']=='battle' and output['bot_actions_sent']==17
     assert output['battles_finished']==1
+    state['bot_version']='hanjuku-chart-v1457-empty-kit-cancel'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1457-empty-kit-cancel'
+    state['bot_version']='hanjuku-chart-v1458-merchant-mickey-priority'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1458-merchant-mickey-priority'
+    state['bot_version']='hanjuku-chart-v1567-sortie-panel-occluded'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1567-sortie-panel-occluded'
+    state['bot_version']='hanjuku-chart-v1569-chikujou-scan'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1569-chikujou-scan'
     assert 'SECRET' not in json.dumps(output)
     state.update(end_reason='SECRET-OUTCOME',bot_phase='SECRET-PHASE',bot_actions_sent='SECRET-COUNT',screen_unchanged_seconds=float('nan'))
     output=module._project_corner_state(state)
@@ -1724,6 +1732,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
     module = load_collector()
     versions = (BOT_VERSION, "hanjuku-script-v1", "hanjuku-chart-v2",
                 "hanjuku-chart-v129-battle-card-progress",
+                "hanjuku-chart-v1570-launch-priority-start",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
                 "hanjuku-chart-v132-card-damage-gate",
@@ -1928,9 +1937,17 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
                  "hanjuku-chart-v1485-camp-watch-identity-subset",
                  "hanjuku-chart-v1551-boss-month-phase-guard",
+                 "hanjuku-chart-v1561-camp-resend-scene-reset",
+                 "hanjuku-chart-v1566-egg-attempt-retry",
+                 "hanjuku-chart-v1569-chikujou-scan",
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
                  "hanjuku-chart-v1557-ch9-front-reinforce",
+                 "hanjuku-chart-v1557-order-start-proof",
+                 "hanjuku-chart-v1559-selected-card-interruption",
+                 "hanjuku-chart-v1558-game-over-issue",
+                 "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
+                 "hanjuku-chart-v1565-camp-recall-dome-text-hold",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

@@ -32,6 +32,7 @@ FORT_STAGE_OBSERVATION_LIMIT = 12  # a fort stage must progress or release its o
 MENU_OPEN_WAIT = 3             # bare map observations after A on the tent before pressing again
 MENU_REOPEN_LIMIT = 3          # presses again per recall
 DOME_SCREEN_WAIT = 6           # other-screen observations after A on a dome before B
+DOME_TEXT_OWNED_STAGES = ('menu', 'fort_menu', 'fort_list', 'fort_status')
 BOSS_RETRY_TICKS = 120         # first wait before a camp is sent at the moving boss again
 BOSS_JUMP_LIMIT = 2            # Y jumps to the boss per redirect
 RELAY_ARRIVE_PX = 32           # a camp this close to the back-half relay cell has finished leg one
@@ -1543,11 +1544,14 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
             and state.get('stage') in ('await_dispatch', 'await_dispatch_stale')):
         _mark_recall_interrupted(mem)
         return None
-    # A dome camp is exempt too — the menu stage's own DOME_SCREEN_WAIT owns
-    # its non-menu screens. Other text frames are held without spending the
-    # field-navigation budget.
+    # A dome camp is exempt only while its menu/fort screens are being read —
+    # the menu stage's own DOME_SCREEN_WAIT owns its non-menu screens, and the
+    # fort stages read text panels. Later move-mode stages hold unrelated text
+    # without spending the field-navigation budget.
+    dome_owned_text = (state.get('camp_kind') == 'dome'
+                       and state.get('stage') in DOME_TEXT_OWNED_STAGES)
     if (screen.kind == 'text' and state.get('stage') != 'await_dispatch'
-            and state.get('camp_kind') != 'dome' and not (
+            and not dome_owned_text and not (
             is_camp_menu(screen) or is_fort_menu(screen)
             or any(word in (screen.text or '')
                    for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
@@ -2356,6 +2360,21 @@ def _abort_camp_recall(mem, state, screen, reason):
     """Record bounded evidence and release a recall that cannot progress."""
     stage = state.get('stage')
     metric = {'stage': stage, 'steps': int(state.get('steps') or 0)}
+    if stage == 'dest':
+        camp = state.get('target')
+        if (isinstance(camp, (list, tuple)) and len(camp) == 2
+                and all(type(value) is int for value in camp)):
+            metric['camp'] = list(camp)
+        target_cell = state.get('target_cell')
+        if (isinstance(target_cell, (list, tuple)) and len(target_cell) == 2
+                and all(type(value) is int for value in target_cell)):
+            metric['target_cell'] = list(target_cell)
+        castle = state.get('goal')
+        if isinstance(castle, str):
+            metric['castle'] = castle[:48]
+        general = state.get('general')
+        if isinstance(general, str):
+            metric['general'] = general[:48]
     if stage in FORT_STAGES:
         metric['fort'] = True
         camp = state.get('target')
@@ -2475,6 +2494,8 @@ def _fort_step(screen, mem, state):
             return []                  # the list is still drawing
         members = [word for x, _, word in _options(screen) if x > 100]
         wanted = state.get('fort_actor')
+        if (not isinstance(wanted, str) or not wanted) and state.get('task_recall') is True:
+            wanted = state.get('general')
         if wanted in members:
             move = menu_to(screen, wanted)
             if move is None:
@@ -2619,6 +2640,21 @@ def _dispatch_unsent_proven(state, receipt, trace):
                 and receipt.get('a_inputs', 0) < int(state.get('a_inputs') or 1))
 
 
+def _resend_picker_identity_confirmed(state, screen):
+    if screen.kind != 'map_target':
+        return False
+    target = state.get('target_cell')
+    marker = getattr(screen, 'marker', None)
+    if not (isinstance(target, (list, tuple)) and len(target) == 2
+            and isinstance(marker, (list, tuple)) and len(marker) == 2):
+        return False
+    values = tuple(target) + tuple(marker)
+    if any(type(value) not in (int, float) for value in values):
+        return False
+    return (abs(target[0] - marker[0]) <= RECALL_CONFIRM_PX
+            and abs(target[1] - marker[1]) <= RECALL_CONFIRM_PX)
+
+
 def _recall_dispatch_step(screen, mem, state):
     # Once a scene covered the sent A, only field/picker observations can
     # advance the bounded check. Text and transition frames belong to their
@@ -2665,7 +2701,9 @@ def _recall_dispatch_step(screen, mem, state):
     # policy state. If the matching receipt arrives later, promote that earlier
     # interruption to scene coverage rather than charging the destination.
     interrupted_tick = _flow(mem).get('recall_interrupted')
-    if state.get('input_sent') and type(interrupted_tick) is int:
+    requested_tick = state.get('requested_tick')
+    if (state.get('input_sent') and type(interrupted_tick) is int
+            and type(requested_tick) is int and interrupted_tick >= requested_tick):
         state['scene_covered'] = True
         state.setdefault('scene_covered_tick', interrupted_tick)
     if (state.get('input_sent') and screen.kind == 'map'
@@ -2697,6 +2735,7 @@ def _recall_dispatch_step(screen, mem, state):
                 return []
         else:
             resends = int(state.get('resends') or 0)
+            resend_rejected = False
             if (unsent_proven and resends < DISPATCH_RESEND_MAX
                     and screen.kind in ('map_target', 'world_map')):
                 # The sender journaled other inputs after this request while
@@ -2704,22 +2743,42 @@ def _recall_dispatch_step(screen, mem, state):
                 # destination picker is still on screen: send the confirm
                 # once under a fresh request trace (persist re-stamps it for
                 # this observation's batch) instead of staying unconfirmed.
-                state.update(stage='await_dispatch', steps=0, a_inputs=1,
-                             requested_tick=int(mem.get('tick') or 0),
-                             resends=resends + 1)
-                for key in ('request_trace', 'input_sent', 'picker_closed'):
-                    state.pop(key, None)
-                _record(mem, 'camp_recall_dispatch_resent', chart_step=None,
-                        observed_metric={'castle': state.get('goal'),
-                                         'camp': state.get('target'),
-                                         'resends': state['resends']},
-                        resulting_event='dispatch_unsent_proven_resent',
-                        reason='帰還Aの送信記録がなく後続入力の記録があるため未送信と証明し、開いたピッカーへAを一度だけ補送する')
-                return [pad('a')]
+                scene_interrupted = ((type(interrupted_tick) is int
+                                      and (type(requested_tick) is not int
+                                           or interrupted_tick >= requested_tick))
+                                     or bool(state.get('scene_covered'))
+                                     or bool(state.get('scene_pending')))
+                if scene_interrupted and not _resend_picker_identity_confirmed(state, screen):
+                    resend_rejected = True
+                    marker = getattr(screen, 'marker', None)
+                    _record(mem, 'camp_recall_dispatch_resend_rejected', chart_step=None,
+                            observed_metric={'castle': state.get('goal'),
+                                             'camp': state.get('target'),
+                                             'target_cell': state.get('target_cell'),
+                                             'marker': list(marker) if marker else None,
+                                             'screen': screen.kind},
+                            resulting_event='picker_identity_unconfirmed',
+                            reason='場面後のピッカーが元の帰還先選択と同一と確認できないため、別のピッカーへAを送らず未確認終端へ進める')
+                else:
+                    state.update(stage='await_dispatch', steps=0, a_inputs=1,
+                                 requested_tick=int(mem.get('tick') or 0),
+                                 resends=resends + 1)
+                    for key in ('request_trace', 'input_sent', 'picker_closed',
+                                'scene_covered', 'scene_covered_tick', 'scene_pending'):
+                        state.pop(key, None)
+                    _flow(mem).pop('recall_interrupted', None)
+                    _record(mem, 'camp_recall_dispatch_resent', chart_step=None,
+                            observed_metric={'castle': state.get('goal'),
+                                             'camp': state.get('target'),
+                                             'resends': state['resends']},
+                            resulting_event='dispatch_unsent_proven_resent',
+                            reason='帰還Aの送信記録がなく後続入力の記録があるため未送信と証明し、開いたピッカーへAを一度だけ補送する')
+                    return [pad('a')]
             stale_since = state.get('stale_since_tick')
             now = mem.get('tick')
             stale_done = (
-                int(state.get('stale_steps') or 0) >= DISPATCH_STALE_STEP_LIMIT
+                resend_rejected
+                or int(state.get('stale_steps') or 0) >= DISPATCH_STALE_STEP_LIMIT
                 or (unsent_proven and screen.kind == 'map')
                 or (type(stale_since) is int and type(now) is int
                     and now - stale_since >= DISPATCH_STALE_TICK_LIMIT))

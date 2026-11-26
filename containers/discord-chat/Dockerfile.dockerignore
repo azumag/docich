@@ -13,6 +13,7 @@
 !src/docich/reply_research_egress.py
 !src/docich/reply_research_web.py
 !src/docich/reply_research_diagnostic.py
+!src/docich/hanjuku_family.py
 !src/docich/comment_classifier/__init__.py
 !src/docich/comment_classifier/heuristic.py
 !src/docich/comment_classifier/active_game.py

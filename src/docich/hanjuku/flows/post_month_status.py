@@ -2381,6 +2381,7 @@ def step(screen, mem, frame, *, boss_dispatch=False):
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
                 'general': name, 'camp_kind': camp.get('kind'),
+                'fort_actor': name,
                 'task_recall': True,
                 # #4901: without the measured body cell the menu stage's
                 # flag->body retry can never arm on a task recall, so a tent
