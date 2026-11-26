@@ -371,6 +371,18 @@ def observation_interval_ms(state, actions=None):
         # for a readable frame — so re-reading sooner is safe and cuts the
         # post-open wait the user sees.
         return 500
+    if isinstance(policy.get('castle_jump'), dict):
+        return 500
+    plan = policy.get('plan') if isinstance(policy.get('plan'), dict) else {}
+    flow = policy.get('flow') if isinstance(policy.get('flow'), dict) else {}
+    if (isinstance(plan.get('active'), str) and plan.get('active')
+            and not flow.get('departure_request')
+            and not policy.get('boss_card_hold')
+            and not policy.get('boss_stock_cancelled')
+            and (state.get('screen_kind') in {'castle_menu', 'general_list', 'card_select',
+                                              'sortie_confirm', 'map_target'}
+                 or policy.get('expect_menu') is True)):
+        return 500
     if state.get('screen_kind') == 'battle' and not battle and policy.get('battle_seen'):
         # g749 Quiche: the first complete HP17 panel still awaits the second
         # name reading. A 1500ms observation gap let HP fall to8 before B,
