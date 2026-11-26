@@ -91,6 +91,11 @@ CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
+# A boss phase needs a fair window inside the closed month before the audit
+# can claim a missing boss sortie: the order dispatcher alone allows ~90 s
+# (ORDER_DISPATCH_STARVE_TICKS) for a pending order to reach order_start.
+MIN_BOSS_PHASE_SECONDS = 90
+MIN_BOSS_PHASE_OBSERVATIONS = 20
 MAX_READ_BYTES = 2 * 1024 * 1024
 MAX_RECORD_BYTES = 32 * 1024
 MAX_STATE_BYTES = 128 * 1024
@@ -3864,6 +3869,46 @@ def _seal_if_due(runtime, state, now, on_sealed=None):
     return _seal(runtime, state, now, on_sealed)
 
 
+def _boss_month_coverage(state, boss_phase, observed, close_at):
+    """Boss-phase coverage inside the closed month (docich#5120).
+
+    state['boss'] is the tracker as of the last in-month observation (the
+    boundary observation updates it after the close).  A phase that spans
+    the boundary covers the whole month; one that began inside it only
+    covers [started_at, close_at].  A tracker for a different episode, or
+    none at all, means the current phase was first seen at the boundary,
+    so its in-month coverage is not provable.  Coverage below the floor
+    cannot prove a missing boss sortie — the bot had no fair window to
+    launch one — so such months downgrade to unverified.
+    """
+    info = {'in_month_s': None, 'in_month_observations': None,
+            'phase_sufficient': False}
+    tracker = state.get('boss') if isinstance(state.get('boss'), dict) else None
+    if tracker is not None and (
+            tracker.get('chapter') != boss_phase.get('chapter')
+            or sorted(tracker.get('bosses') or []) != sorted(boss_phase.get('bosses') or [])):
+        tracker = None
+    started = tracker.get('started_at') if tracker is not None else None
+    first_at = observed.get('first_at')
+    if type(started) in (int, float) and type(first_at) in (int, float):
+        info['in_month_s'] = round(
+            max(0.0, float(close_at) - max(float(started), float(first_at))), 1)
+        if float(started) >= float(first_at):
+            info['in_month_observations'] = _bounded_int(
+                tracker.get('observations'), 0, 10 ** 9)
+        else:
+            # The phase covers the whole month, so every in-month
+            # observation is also a boss-phase observation.
+            info['in_month_observations'] = _bounded_int(
+                observed.get('observations'), 0, 10 ** 9)
+    if (info['in_month_s'] is not None
+            and info['in_month_s'] >= MIN_BOSS_PHASE_SECONDS
+            and info['in_month_observations'] is not None
+            and info['in_month_observations'] >= MIN_BOSS_PHASE_OBSERVATIONS):
+        info['phase_sufficient'] = True
+    return info
+
+
 def _close_month(runtime, state, before, after, now, on_sealed=None):
     observed = state.get('observed')
     if not isinstance(observed, dict):
@@ -3916,9 +3961,21 @@ def _close_month(runtime, state, before, after, now, on_sealed=None):
             'started_at': tracker.get('started_at'),
             'observations': tracker.get('observations'),
         }
+        boss_month.update(_boss_month_coverage(state, boss_phase, observed, close_at))
     duration_s = max(0.0, until - since)
     confidence, reasons = _confidence(observed, context, ledger_ok, chapter_changed,
                                       irregular, coverage, duration_s)
+    # A phase that began moments before the month closed never gave the bot
+    # a window to launch a boss sortie, so zero departures is not evidence
+    # of a stall (docich#5120).  Downgrade like any other weak-evidence
+    # month; the phase carries into the next month's judgment.  Months that
+    # did produce a boss departure keep their classification — the coverage
+    # fields stay in boss_month as diagnostics only.
+    if (boss_month is not None and boss_departures == 0
+            and not boss_month.get('phase_sufficient')):
+        if 'short_boss_phase' not in reasons:
+            reasons.append('short_boss_phase')
+        confidence = 'low'
     if not observed.get('started_clean'):
         kind = 'skipped'
     elif chapter_changed:
@@ -4333,6 +4390,10 @@ def render(record):
             f" / launch_events {boss_month.get('launch_events')}",
             f"- フェーズ開始: {boss_month.get('started_at')}"
             f" / 観測 {boss_month.get('observations')}回",
+            f"- 月内フェーズ: {boss_month.get('in_month_s')}秒"
+            f" / 観測 {boss_month.get('in_month_observations')}回"
+            + ('' if boss_month.get('phase_sufficient')
+               else '（出撃猶予不足・docich#5120）'),
             '',
         ]
     if chikujou:

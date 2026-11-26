@@ -1927,6 +1927,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1442-adjusted-plan-stock-cards",
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
                  "hanjuku-chart-v1485-camp-watch-identity-subset",
+                 "hanjuku-chart-v1551-boss-month-phase-guard",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

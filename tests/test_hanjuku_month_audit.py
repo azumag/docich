@@ -1742,6 +1742,10 @@ def test_boss_phase_month_with_zero_boss_sorties_is_recorded(runtime_dir):
     assert record['auto_file'] is True
     assert record['boss_month']['boss_name'] == chart.BOSSES[9]
     assert record['boss_month']['departures'] == 0
+    # A phase that began before the month covers it whole (docich#5120).
+    assert record['boss_month']['phase_sufficient'] is True
+    assert record['boss_month']['in_month_s'] >= audit.MIN_BOSS_PHASE_SECONDS
+    assert record['boss_month']['in_month_observations'] >= audit.MIN_BOSS_PHASE_OBSERVATIONS
     assert 'ボスフェーズで月内ボス出撃ゼロ' in audit._issue_title(record)
     assert '### ボスフェーズ月次' in audit.render(record)
 
@@ -1755,6 +1759,77 @@ def test_boss_phase_month_with_a_boss_sortie_is_not_flagged(runtime_dir):
     saved = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())
     assert saved['last_close']['kind'] == 'ok'
     assert saved['pending'] is None
+
+
+def run_boss_month_tail(runtime, chapter, month, start, count, tail, *,
+                        tail_step=0.2):
+    """A month that enters the boss phase only for its last observations."""
+    last = None
+    for index in range(count):
+        at = start + index * STEP
+        last = state(chapter, month, index)
+        audit.observe(runtime, audit.capture(last), last, [], now=at)
+        note(runtime, at)
+    tail_start = start + count * STEP + 0.5
+    for index in range(tail):
+        at = tail_start + index * tail_step
+        last = boss_state(chapter, month, 1000 + index)
+        audit.observe(runtime, audit.capture(last), last, [], now=at)
+        note(runtime, at)
+    return last, tail_start + (tail - 1) * tail_step
+
+
+def test_boss_phase_beginning_at_the_month_end_is_unverified(runtime_dir):
+    # docich#5120: the phase began ~7 s before the month closed with dozens
+    # of dense observations, so zero boss departures proved nothing.
+    old = run_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, state(9, '1-2', 200), 1200)
+    last, tail_at = run_boss_month_tail(runtime_dir, 9, '1-2', 1200, 100, 30)
+    boundary(runtime_dir, last, boss_state(9, '1-3', 400), tail_at + 10)
+    record = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())['pending']['incident']
+    assert record['kind'] == 'boss_month_zero_unverified'
+    assert record['confidence'] == 'low'
+    assert 'short_boss_phase' in record['confidence_reasons']
+    assert record['auto_file'] is False
+    month = record['boss_month']
+    assert month['phase_sufficient'] is False
+    assert month['in_month_s'] < audit.MIN_BOSS_PHASE_SECONDS
+    assert month['in_month_observations'] >= audit.MIN_BOSS_PHASE_OBSERVATIONS
+
+
+def test_boss_phase_first_seen_at_the_boundary_is_unverified(runtime_dir):
+    # No in-month tracker: the phase cannot be proven to have given the
+    # bot any window at all, so the month is unverified, not zero.
+    old = run_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, state(9, '1-2', 200), 1200)
+    old = run_month(runtime_dir, 9, '1-2', 1200, 100)
+    boundary(runtime_dir, old, boss_state(9, '1-3', 400), 1380)
+    record = json.loads((runtime_dir / audit.AUDIT_FILE).read_text())['pending']['incident']
+    assert record['kind'] == 'boss_month_zero_unverified'
+    assert 'short_boss_phase' in record['confidence_reasons']
+    assert record['auto_file'] is False
+    assert record['boss_month']['phase_sufficient'] is False
+    assert record['boss_month']['in_month_s'] is None
+    assert record['boss_month']['in_month_observations'] is None
+
+
+def test_the_month_guard_does_not_suppress_boss_no_battle(runtime_dir):
+    old = run_month(runtime_dir, 9, '1-1', 1000, 100)
+    boundary(runtime_dir, old, state(9, '1-2', 200), 1200)
+    last, tail_at = run_boss_month_tail(runtime_dir, 9, '1-2', 1200, 100, 30)
+    boundary(runtime_dir, last, boss_state(9, '1-3', 400), tail_at + 10)
+    # The guard downgrades the closed month, but the phase tracker keeps
+    # running into the next month, so a later stall still reports.
+    at = tail_at + 10
+    while at < tail_at + audit.BOSS_NO_BATTLE_SECONDS + 30:
+        at += STEP
+        value = boss_state(9, '1-3', int(at))
+        audit.observe(runtime_dir, audit.capture(value), value, [], now=at)
+        note(runtime_dir, at)
+    kinds = [record['kind'] for record in audit.load_incidents(runtime_dir)]
+    assert 'boss_phase_no_battle' in kinds
+    assert 'boss_month_zero_unverified' in kinds
+    assert 'boss_month_zero_sortie' not in kinds
 
 
 def _kikan_record(choice='きかん', move='here'):
