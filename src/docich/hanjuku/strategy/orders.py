@@ -1002,6 +1002,70 @@ def _with_hero_hub_permission(mem, order):
     return {**order, 'hero_hub_move': True}
 
 
+LAUNCH_PRIORITY_PURPOSES = frozenset({'attack', 'retake', 'boss', 'invade'})
+LAUNCH_PRIORITY_TERMINAL = frozenset({'done', 'failed', 'launched', 'launched_unconfirmed'})
+
+
+def _launch_priority_order(order):
+    """Enemy-directed dispatch whose pre-launch screens outrank housekeeping."""
+    return (isinstance(order, dict)
+            and order.get('purpose') in LAUNCH_PRIORITY_PURPOSES
+            and order.get('roster_probe') is not True
+            and order.get('source_probe') is not True)
+
+
+def arm_sortie_launch_priority(mem, order):
+    """Mark an enemy-directed order as occupying the start-to-launch window."""
+    if _launch_priority_order(order) and order.get('step'):
+        mem['sortie_launch_pending'] = order['step']
+
+
+def active_sortie_launch_priority(mem):
+    """Return the latched step only while its launch is still genuinely in flight.
+
+    The latch is a hint for housekeeping flows, not independent truth.  It is
+    armed at ``order_start`` and again when the departure commits; after that
+    the world-map/roster launch probe carries the confirmation window.  Before
+    the commit the active plan step, target-selection attempt, or departure
+    reservation proves the attempt is still in flight.  Anything else (order
+    failed/cancelled, launch confirmed, rollback before the next start, or a
+    kept portrait march whose map survey cannot help) clears the hint so house
+    and monthly scans are not deferred for the rest of the chapter.
+    """
+    step = mem.get('sortie_launch_pending')
+    if not step:
+        return None
+    # Only the purpose/probe flags are needed here.  Resolve the plan row
+    # directly instead of _order_for_step: a receipt-bound execution may be
+    # intentionally hidden while it owns the picker, but it is still the
+    # in-flight launch this latch describes.
+    order = (next((o for o in _orders(mem) if isinstance(o, dict) and o.get('step') == step), None)
+             or (_world(mem).get('launched_orders') or {}).get(step))
+    if not _launch_priority_order(order):
+        mem.pop('sortie_launch_pending', None)
+        return None
+    probe = (_flow(mem).get('launch_probe') or {}).get(step)
+    if isinstance(probe, dict):
+        if probe.get('kept'):
+            mem.pop('sortie_launch_pending', None)
+            return None
+        return step
+    plan = _plan_region(mem)
+    status = (plan.get('orders') or {}).get(step)
+    if status in LAUNCH_PRIORITY_TERMINAL:
+        mem.pop('sortie_launch_pending', None)
+        return None
+    flow_state = _flow(mem)
+    attempt = flow_state.get('sortie_attempt') or {}
+    departure = flow_state.get('departure_request') or {}
+    if (plan.get('active') == step
+            or attempt.get('step') == step
+            or departure.get('step') == step):
+        return step
+    mem.pop('sortie_launch_pending', None)
+    return None
+
+
 def _plan_pending(mem) -> bool:
     """An adopted plan still has an order that can run, or one waiting on a
     capture that a marching unit is making.

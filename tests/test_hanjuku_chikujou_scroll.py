@@ -170,7 +170,14 @@ def test_a_pending_launch_defers_the_castle_scroll():
     screen = parse(frame)
     mem = holdings(key='3-9')
     mem['month'] = '3-9'
-    mem['sortie_launch_pending'] = 'A:3:M1'
+    step = 'A:3:M1'
+    order = {'step': step, 'purpose': 'retake', 'source': 'ヘリオポリス',
+             'target': 'ラグナグ', 'general': 'デュオニソス', 'cards': [], 'note': '奪還'}
+    mem['sortie_launch_pending'] = step
+    from docich.hanjuku.state.regions import plan as _plan_region
+    _plan_region(mem)['chart_plan'] = {'orders': [order]}
+    _plan_region(mem)['orders'] = {step: 'pending'}
+    _plan_region(mem)['active'] = step
     sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
                               'rows_tried': list(NAMES[:4]), 'presses': 1,
                               'build_scroll': {'presses': 1}, 'left_menu': True}
