@@ -1290,7 +1290,7 @@ def _battle_resources(record):
         # 実測（egg_available_unused）がある場合を除き、台帳のみの場合は
         # egg_ledger_only を立てて判別できるようにする。
         measured = metric.get('egg_available_unused') is True
-        ledger_only = (not measured and egg > 0
+        ledger_only = (not measured and (egg or 0) > 0
                        and metric.get('egg_battle') is not True)
         egg = 1 if (measured or ledger_only) else 0
     selected = [card for card in (metric.get('cards_selected') or [])
