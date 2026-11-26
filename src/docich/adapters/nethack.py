@@ -368,6 +368,27 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         except Exception:  # noqa: BLE001 - an unprovable check is not an exit
             return False
 
+    def _runtime_process_survivors(self) -> tuple[int, ...] | None:
+        """NetHack death proof, including an operator-removed session (#5708).
+
+        The generic proof walks the adapter session and therefore becomes
+        unprovable exactly after the approved remediation drops that session.
+        For NetHack, a strictly missing session may instead use the tmux
+        ownership-tag scan for reparented leftovers.  Any missing capability,
+        live-session ambiguity or probe failure stays ``None`` (fail closed).
+        """
+        try:
+            if not self.tmux.session_target_exists(self.spec.adapter_session):
+                probe = getattr(
+                    self.tmux, "owned_processes_alive_after_session_loss", None
+                )
+                if not callable(probe):
+                    return None
+                return probe(self._ownership("adapter"))
+        except Exception:  # noqa: BLE001 - an unprovable check fails closed
+            return None
+        return super()._runtime_process_survivors()
+
     def readiness(self, deadline: float, cancel) -> None:
         if self.presentation_mode != "tiles":
             return super().readiness(deadline, cancel)
@@ -1053,7 +1074,11 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         recycled PID cannot forge the proof.  A live game that merely left
         the save prompt (stalled-but-live), any surviving orphan and any
         unprovable check keep refusing; the refusal records the live owned
-        count as ``orphan_processes_present`` for the owner.
+        count as ``orphan_processes_present`` for the owner.  When the runtime
+        session itself has already been removed (docich#5708), the same zero-
+        process proof is repeated with the session-loss orphan scan before the
+        missing session may be acknowledged as a dead runtime; otherwise it
+        remains the historical hard refusal.
 
         Every refusal path records a bounded observation first (#1015) so the
         owner can classify *why* the cancel was refused without pane text.
@@ -1074,8 +1099,27 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             )
             raise
         if not self.tmux.session_target_exists(self.spec.adapter_session):
+            # A missing session cannot have a pending save prompt, but only a
+            # completed ownership-tag death proof may turn that operational
+            # fact into an acknowledgement (docich#5708).  A survivor or an
+            # unprovable scan keeps the historical hard refusal.
+            survivors = self._runtime_process_survivors()
+            if survivors == ():
+                return self._ack_dead_runtime_cancel(
+                    request_id,
+                    present=False,
+                    alive=False,
+                    prompt_class="unknown",
+                    refuse_reason="session_missing",
+                )
             self._refuse_cancel(
-                "session_missing", present=None, alive=None, prompt_class="unknown"
+                "session_missing",
+                present=None,
+                alive=None,
+                prompt_class="unknown",
+                orphan_processes_present=(
+                    None if survivors is None else len(survivors)
+                ),
             )
             return False
         try:

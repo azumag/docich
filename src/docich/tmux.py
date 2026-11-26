@@ -1137,6 +1137,83 @@ class Tmux:
                 live.append(pid)
         return tuple(live)
 
+    def owned_processes_alive_after_session_loss(
+        self, ownership: TmuxOwnership
+    ) -> tuple[int, ...] | None:
+        """Live tagged PIDs after this exact session is gone; ``None`` if unproven.
+
+        The normal death proof walks the session's panes, so it becomes
+        unprovable once an operator has removed a wedged runtime session
+        (docich#5708).  A *strictly missing* session has no pane tree left to
+        walk, but reparented runtime processes still carry the runtime and
+        generation tags.  This proof therefore scans exactly those tags while
+        protecting the tmux server and every remaining pane on it, so shared
+        infrastructure that merely inherited the tags is never counted as the
+        missing runtime.  The server itself is protected, but its descendant
+        tree is not blankly protected: a target pane leader that survives
+        session removal can temporarily remain a direct child of the server,
+        and hiding that survivor would fabricate death.  This proof is valid
+        only after the strict session probe says the target is absent;
+        otherwise remaining target panes would be indistinguishable from the
+        other protected panes.  ``None`` remains fail-closed: a live session,
+        an enumeration failure or an unverifiable PID is never evidence of
+        death.
+        """
+
+        tags = {
+            OWNERSHIP_RUNTIME_ID_ENV: ownership.runtime_id,
+            OWNERSHIP_GENERATION_ENV: str(ownership.generation),
+        }
+        try:
+            validate_tmux_session_ref(self.session)
+            exists = self._run(["has-session", "-t", self.session])
+            if exists.returncode == 0:
+                return None
+            detail = (exists.stderr or "").replace("\n", " ").strip().lower()
+            if not any(marker in detail for marker in _STRICT_MISSING_MARKERS):
+                return None
+            protected = set(ancestor_pids())
+            if "no server running" not in detail:
+                # Every pane still visible on the server is shared
+                # infrastructure or another runtime.  Protect those leaders
+                # and their descendant trees, plus the server/ancestor chain
+                # itself.  Unlike a teardown sweep, the server is not a
+                # dynamic protection root: a survivor of the removed target
+                # session may still be its direct child and must stay visible
+                # to the exact ownership-tag scan below.  A pane created
+                # concurrently can only be misread as a survivor (safe
+                # refusal), never as dead evidence.
+                leaders = self._server_pane_leaders()
+                if leaders is None:
+                    return None
+                server_pid = self._server_pid()
+                if server_pid is not None:
+                    protected.add(server_pid)
+                    protected.update(ancestor_pids(server_pid))
+                protected.update(pid for pid in leaders if pid > 1)
+                if leaders:
+                    protected.update(descendant_pids(leaders))
+            visible = process_ids()
+            if not visible or not process_table():
+                return None
+            candidates = {
+                pid
+                for pid in processes_with_env(tags, pids=visible)
+                if pid not in protected
+            }
+        except Exception:  # noqa: BLE001 - an incomplete proof is no proof
+            return None
+        live: list[int] = []
+        for pid in sorted(candidates):
+            if pid <= 1 or pid in protected:
+                continue
+            verdict = pidfd_tagged_process_running(pid, tags)
+            if verdict is None:
+                return None
+            if verdict:
+                live.append(pid)
+        return tuple(live)
+
     def _reap_escaped_processes(
         self,
         ownership: TmuxOwnership | None,
