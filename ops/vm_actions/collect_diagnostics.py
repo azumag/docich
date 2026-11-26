@@ -8245,6 +8245,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1562-duel-accept-evidence",
             "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
             "hanjuku-chart-v1563-speedrun-corner",
+            "hanjuku-chart-v1564-speedrun-corner",
             "hanjuku-chart-v1552-chapter-end-save-accept",
             "hanjuku-chart-v1552-ch9-sortie-speed",
             "hanjuku-chart-v1559-selected-card-interruption",
