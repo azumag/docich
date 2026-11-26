@@ -1467,6 +1467,13 @@ def _step_once(screen, mem, frame):
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
         if not monthly and _corridor_march(mem):
             return None
+        # owner 2026-11-27 (#5702): 出撃の開始から発射確認までの間は、家来一覧や
+        # 状態確認の探索より発射確認を優先する（メニューを開くとマップの▲が見えない）。
+        if mem.get('sortie_launch_pending'):
+            _record(mem, 'deferred_sortie',
+                    observed_metric={'step': mem.get('sortie_launch_pending')},
+                    reason='出撃の開始から発射確認までのため、家来・状態の探索を見送る')
+            return None
         # An explicit month-end inspection now owns returns and repairs.
         # Once it finishes, field surveys must not steal the next map plan.
         if (not monthly and (mem.get('post_month_status_last') or {}).get('scope') == scope):
