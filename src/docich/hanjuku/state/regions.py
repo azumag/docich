@@ -261,6 +261,7 @@ KEY_OWNERSHIP = {
     'shop_exit_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 商人の空退出回数(flows.shop が書く)
     'egg_menu_escape': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 卵メニュー脱出の試行記録(flows.battle_menus が書く)
     'victory_menu_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 勝利メニューの連続保持回数(orchestrator が書く)
+    'chapter_end_save_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 章末セーブ確認の連続保持回数(flows が書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理
     'site_end_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 目標外の城へ戻ったサイトstepの再武装回数(月内上限)
     'site_unconfirmed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 検証不能なサイト出撃を戻した回数(月内上限)

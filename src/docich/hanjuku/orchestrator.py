@@ -1331,6 +1331,35 @@ def victory_menu_advance(screen, mem, kind, phase, actions):
     return [pad('a')]
 
 
+CHAPTER_END_SAVE_HOLD = 3
+
+
+def chapter_end_save_accept(screen, mem, kind, phase, actions):
+    """Accept a chapter-end save prompt the choice rows cannot resolve.
+
+    Measured chapter 8 end (6ねん12のつき): 「セーブをしゅうりょうして
+    よろしいですか?」 held for minutes while the no-input fallback sent B in the
+    shop phase, cancelling the save and re-asking. The prompt opens on the
+    upper (うむッ!) row, so A is the wanted answer; bounded per episode.
+    """
+    if actions or kind not in ('yes_no', 'text'):
+        mem.pop('chapter_end_save_holds', None)
+        return None
+    text = ''.join((screen.text or '').split())
+    if 'セーブ' not in text or 'よろし' not in text:
+        mem.pop('chapter_end_save_holds', None)
+        return None
+    n = int(mem.get('chapter_end_save_holds') or 0) + 1
+    if n < CHAPTER_END_SAVE_HOLD:
+        mem['chapter_end_save_holds'] = n
+        return None
+    mem['chapter_end_save_holds'] = 0
+    decision_log._record(mem, 'chapter_end_save_accept', screen=screen.kind, phase=phase,
+                         observed_metric={'holds': n, 'text': text[:40]},
+                         reason='章末セーブ確認の選択行を読めないため、既定（うむッ!）でAを送る')
+    return [pad('a')]
+
+
 def field_fallback_actions(kind):
     """The no-input fallback's input for a frozen ``field``-phase screen."""
     if kind in {'unknown', 'map'}:
@@ -2748,6 +2777,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         _victory = victory_menu_advance(screen, mem, kind, phase, actions)
         if _victory is not None:
             actions = _victory
+    if not actions:
+        _save = chapter_end_save_accept(screen, mem, kind, phase, actions)
+        if _save is not None:
+            actions = _save
     if not actions and kind == 'egg_battle_menu':
         escape = battle_menus_flow.egg_menu_escape(screen, mem)
         if escape is not None:
