@@ -867,6 +867,25 @@ def _ready(order, mem) -> bool:
             and routes.staging_blocks(mem, order,
                                       _source(order, mem) if 'step' in order else order.get('source'))):
         return False
+    # Owner 2026-11-27: in chapter 12 the hero's castle must keep three
+    # people (the hero included). An order that would empty it out waits
+    # until the garrison grows again.
+    if (mem.get('chapter') or 0) == 12:
+        _home = chart.home_castle(12)
+        _src = _source(order, mem)
+        if _home and _src == _home:
+            _names = (_world(mem).get('garrison') or {}).get(_home)
+            if isinstance(_names, list):
+                _uniq = {n for n in _names if isinstance(n, str)}
+                if len(_uniq) <= 3:
+                    _step = str(order.get('step'))
+                    _marks = mem.setdefault('ch12_home_keep_three', {})
+                    if isinstance(_marks, dict) and _marks.get(_step) != len(_uniq):
+                        _marks[_step] = len(_uniq)
+                        _record(mem, 'ch12_home_keep_three', chart_step=order.get('step'),
+                                observed_metric={'castle': _home, 'names': sorted(_uniq)},
+                                reason='第12話では主人公の城に主人公含め3人を残すため、この注文を保留する')
+                    return False
     if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
         # runtime must never navigate either endpoint from that old plan.
@@ -946,6 +965,34 @@ def _mark_order_failed(mem, step):
     drop_retired_step_context(mem)
 
 
+CAVALRY_PREFIX = '騎馬'
+
+
+def _ch9_strip_cavalry(orders, mem):
+    """Owner 2026-11-27: chapter 9 has no cavalry condition.
+
+    The chart's ch9 orders name 騎馬A/騎馬B, which the live roster does not
+    always contain; any general standing at the source may take the order.
+    Applied to every ch9 order, not just the boss one.
+    """
+    if (mem.get('chapter') or 0) != 9:
+        return orders
+    garrison = (mem.get('world') or {}).get('garrison') or {}
+    out = []
+    for order in orders:
+        if isinstance(order, dict):
+            general = order.get('general')
+            if isinstance(general, str) and general.startswith(CAVALRY_PREFIX):
+                source = order.get('source')
+                names = garrison.get(source) if isinstance(source, str) else None
+                pick = next((n for n in (names or ())
+                             if isinstance(n, str) and n != NAME), None)
+                if pick:
+                    order = {**order, 'general': pick}
+        out.append(order)
+    return out
+
+
 def _orders(mem):
     """The order list in force: an adopted adjusted plan, else the base chart.
 
@@ -962,6 +1009,7 @@ def _orders(mem):
     # An interim order only exists when no plan order is waiting (see
     # ``_off_chart``), so it may follow an exhausted plan as well as the base.
     base = plan['orders'] if plan.get('orders') else chart.orders(mem.get('chapter') or 0)
+    base = _ch9_strip_cavalry(base, mem)
     return (*base, *((interim,) if interim else ()))
 
 
@@ -1843,8 +1891,33 @@ def _expire_spent_sorties(mem):
                 continue
         if not measured:
             _queue_overdue_location_recheck(mem, sortie)
-        sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
+        target = sortie.get('target')
+        order = (_world(mem).get('launched_orders') or {}).get(step) or {}
+        rows = (mem.get('general_statuses') or {}).get('statuses') or {}
+        row = rows.get(general) if isinstance(rows, dict) else None
+        arrived_move = bool(
+            measured and target and target in _owned(mem)
+            and (sortie.get('purpose') or order.get('purpose')) == 'move'
+            and isinstance(row, dict) and row.get('location') == 'castle'
+            and row.get('location_observed') is True and row.get('castle') == target)
+        if arrived_move:
+            # A move into our own castle draws neither a unit marker nor an
+            # entry message; the general's status naming the destination is
+            # the successful arrival, not proof that the launch never happened.
+            sortie['status'] = 'arrived'
+            sortie['launch_confirmed'] = True
+            (_flow(mem).get('launch_probe') or {}).pop(step, None)
+            (_flow(mem).get('launch_miss') or {}).pop(step, None)
+            order_state = (_plan_region(mem).get('orders') or {}).get(step)
+            if order_state in ('launched', 'launched_unconfirmed'):
+                _mark_order_failed(mem, step)
+            _record(mem, 'sortie_move_arrival_observed', chart_step=step, general=general,
+                    observed_metric={'general': general, 'source': source, 'target': target,
+                                     'castle': row.get('castle'), 'status_tick': row.get('tick')},
+                    reason='自城への移動で本人のステータスが行先の在城を示したため到着を確認し、未発射として巻き戻さない')
+            continue
+        sorties.pop(step, None)
         if measured:
             # docich#3515: a camp/castle reading for a kept/blind launch
             # proves the general never left (or never confirmed). Reopen the

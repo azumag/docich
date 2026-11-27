@@ -1954,6 +1954,15 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1575-ch9-ambush-x-offset",
                  "hanjuku-chart-v1575-ch9-cliff-camp-recall",
                  "hanjuku-chart-v1576-stale-wave-fresh-cell",
+                 "hanjuku-chart-v1577-boss-redirect-y-jump",
+                 "hanjuku-chart-v1581-move-arrival-observed",
+                 "hanjuku-chart-v1582-mechanical-boss-purpose",
+                 "hanjuku-chart-v1583-ch9-cavalry-and-ch12-keep-three",
+                 "hanjuku-chart-v1583-card-miss-evidence",
+                 "hanjuku-chart-v1584-stepless-card-ledger",
+                 "hanjuku-chart-v1585-card-row-unread",
+                 "hanjuku-chart-v1586-corridor-probe-count",
+                 "hanjuku-chart-v1586-announce-interrupt-settle",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

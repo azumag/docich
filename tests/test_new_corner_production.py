@@ -1,9 +1,9 @@
 """Offline wiring contracts for the #5584 common new-corner production adapter.
 
-Covers: the geography-world catalog row, the ``DOCICH_NEW_CORNER_ENABLED``
-flag gate, theme-candidate selection, record production through injected
-(fake) material collection + generation (the recorded-response contract —
-the same ``build_draft``/``render_overlay``/``progress_frames``/
+Covers: the geography-world / international-politics catalog rows, the
+``DOCICH_NEW_CORNER_ENABLED`` flag gate, theme-candidate selection, record
+production through injected (fake) material collection + generation (the
+recorded-response contract — the same ``build_draft``/``render_overlay``/``progress_frames``/
 ``validate_status`` validation applies to the synthetic fixture and to a
 produced record), the loopback view, and the GameSwitch-integrated bounded
 lifecycle. No network, no real LLM, no Twitch.
@@ -72,6 +72,8 @@ from docich.web_material import VerifiedWebBundle, VerifiedWebMaterial  # noqa: 
 
 CORNER_ID = "geography-world"
 VIEW_NAME = "geography-world-view"
+INTERNATIONAL_ID = "international-politics"
+INTERNATIONAL_VIEW = "international-politics-view"
 
 
 def _global(tmp_path, config_text=""):
@@ -87,6 +89,16 @@ def test_production_catalog_registers_geography_world_flag_gated():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     row = next(c for c in load_catalog(g) if c.id == CORNER_ID)
     assert (row.adapter, row.game) == ("newcorner", VIEW_NAME)
+    assert row.enabled is True and row.manual_only is False
+    assert row.live_eligible is False and row.paused is False
+    assert row.duration_minutes == 4 and row.audio_enabled is False
+    assert row.fetch_on_start is False and row.target_matches is None
+
+
+def test_production_catalog_registers_international_politics_flag_gated():
+    g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
+    row = next(c for c in load_catalog(g) if c.id == INTERNATIONAL_ID)
+    assert (row.adapter, row.game) == ("newcorner", INTERNATIONAL_VIEW)
     assert row.enabled is True and row.manual_only is False
     assert row.live_eligible is False and row.paused is False
     assert row.duration_minutes == 4 and row.audio_enabled is False
@@ -146,6 +158,22 @@ def test_adapter_is_flag_gated_and_uses_the_catalog_duration(tmp_path, monkeypat
         NewCornerManager(g, CORNER_ID, duration_minutes=MAX_DURATION_MINUTES + 1)
 
 
+def test_international_adapter_uses_the_catalog_identity_and_flag_gate(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    monkeypatch.delenv(ENABLE_ENV, raising=False)
+    corner = Corner(
+        INTERNATIONAL_ID, "newcorner", INTERNATIONAL_VIEW,
+        duration_minutes=4, audio_enabled=False,
+    )
+    adapter = NewCornerAdapter(g, corner)
+    assert adapter.manager.corner_id == INTERNATIONAL_ID
+    assert adapter.manager.view_name == INTERNATIONAL_VIEW
+    assert adapter.manager.duration_minutes == 4
+    assert adapter.manager.eligible() is False
+    monkeypatch.setenv(ENABLE_ENV, "1")
+    assert adapter.manager.eligible() is True
+
+
 def test_run_rotation_fails_closed_when_the_flag_is_off(tmp_path, monkeypatch):
     g = _global(tmp_path)
     monkeypatch.delenv(ENABLE_ENV, raising=False)
@@ -168,16 +196,32 @@ def test_theme_candidates_load_and_select_for_geography_world():
     assert pick_theme_id(CORNER_ID, generation=len(ids) + 1) == ids[0]
 
 
+def test_theme_candidates_load_and_select_for_international_politics():
+    candidates = list_theme_candidates(INTERNATIONAL_ID)
+    assert len(candidates) >= 5
+    ids = [c["id"] for c in candidates]
+    assert len(set(ids)) == len(ids)
+    assert "maritime-boundary-dialogue" in ids
+    assert "international-court-arbitration-dispute" in ids
+    theme = select_theme("maritime-boundary-dialogue", INTERNATIONAL_ID)
+    assert theme["fixtureId"] == "fixed-international-politics-deepdive-001"
+    assert pick_theme_id(INTERNATIONAL_ID, generation=1) == ids[0]
+    assert pick_theme_id(INTERNATIONAL_ID, generation=len(ids) + 1) == ids[0]
+
+
 # --- record production (fake material + recorded generation) ------------------
 
 
-def _material(url="https://geo.example/verified/singapore"):
+def _material(
+    url="https://geo.example/verified/singapore",
+    excerpt="Verified excerpt about Singapore and the Strait of Malacca.",
+):
     return VerifiedWebMaterial(
         url=url,
         body_sha256="a" * 64,
         text_sha256="b" * 64,
         excerpt_sha256="c" * 64,
-        excerpt="Verified excerpt about Singapore and the Strait of Malacca.",
+        excerpt=excerpt,
         query_indexes=(0,),
     )
 
@@ -190,8 +234,8 @@ def _bundle(status="ok", items=None):
     )
 
 
-def _generation_payload():
-    return {key: ("項目 " + key) for key in generated_keys(CORNER_ID)}
+def _generation_payload(corner_id=CORNER_ID):
+    return {key: ("項目 " + key) for key in generated_keys(corner_id)}
 
 
 def _env(**extra):
@@ -279,6 +323,38 @@ def test_produced_record_passes_the_same_contract_as_the_fixture():
     fixture = load_corner_fixture(CORNER_ID)
     fixture_entry = validate_record(fixture, CORNER_ID)
     assert fixture_entry["corner"] == CORNER_ID
+
+
+def test_international_produced_record_passes_the_same_contract_as_the_fixture():
+    material = _material(
+        url="https://example.org/international-politics/verified-material",
+        excerpt="Verified excerpt about maritime boundary negotiations.",
+    )
+    result = produce_record(
+        INTERNATIONAL_ID, env=_env(), agents=AGENTS, generation=1,
+        collector=_collector(_bundle(items=[material])),
+        generator=_generator(output=_generation_payload(INTERNATIONAL_ID)),
+        clock=lambda: 1000.0,
+    )
+    assert result.status == "ok" and result.record is not None
+    record = dict(result.record)
+    assert record["corner"] == INTERNATIONAL_ID
+    assert record["isSyntheticFixture"] is False
+    topic = record["topic"]
+    assert topic["topicId"] == f"{INTERNATIONAL_ID}-maritime-boundary-dialogue"
+    assert topic["url"] == "https://example.org/international-politics/verified-material"
+    assert topic["primarySources"] == [
+        "https://example.org/international-politics/verified-material"
+    ]
+    assert topic["citationKeepUrl"] is True
+    assert topic["segmentLabels"] == ["fact", "analysis", "forecast"]
+    assert topic["whatHappened"] == "項目 whatHappened"
+    entry = validate_record(record, INTERNATIONAL_ID)
+    assert entry["corner"] == INTERNATIONAL_ID and entry["totalFrames"] == 10
+
+    fixture = load_corner_fixture(INTERNATIONAL_ID)
+    fixture_entry = validate_record(fixture, INTERNATIONAL_ID)
+    assert fixture_entry["corner"] == INTERNATIONAL_ID
 
 
 def test_produce_record_rejects_bad_model_output():
@@ -417,6 +493,8 @@ def test_view_rejects_unknown_paths_and_non_loopback_hosts(served):
 def test_view_identity_helpers_and_handler_bounds():
     assert view_name_for(CORNER_ID) == VIEW_NAME
     assert port_for(CORNER_ID) == 8811
+    assert view_name_for(INTERNATIONAL_ID) == INTERNATIONAL_VIEW
+    assert port_for(INTERNATIONAL_ID) == 8812
     with pytest.raises(NewCornerViewError, match="runtime id"):
         handler_for({}, "../etc/passwd")
     with pytest.raises(NewCornerViewError, match="generation"):
@@ -662,9 +740,9 @@ def test_shared_state_file_blocks_a_second_newcorner_owner(tmp_path, monkeypatch
     }
     Path(g.state_dir).mkdir(parents=True, exist_ok=True)
     adapter.state_path.write_text(json.dumps(state))
-    # A different newcorner row (physics) must not take over the shared file.
+    # The other production newcorner row must not take over the shared file.
     other = NewCornerManager(
-        g, "physics",
+        g, INTERNATIONAL_ID,
         duration_minutes=1, coordinator=adapter.manager.coordinator,
         clock=lambda: now[0], sleep=sleep,
     )

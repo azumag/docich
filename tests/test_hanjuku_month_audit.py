@@ -529,6 +529,17 @@ def test_camp_terminal_decisions_are_classified():
         metric={'stage': 'menu', 'steps': 91}))
     assert failed['kind'] == 'camp_recall_failed'
     assert failed['reason_code'] == 'camp_recall_limit'
+    redirect = audit._camp_event(_camp_record(
+        'camp_boss_redirect_aborted', event='boss_jump_failed',
+        reason='ボスのセルへマーカーを合わせられないため再出撃を取り消す',
+        metric={'camp': [60, 60], 'target_cell': [70, 70], 'camp_world': [500, 500],
+                'boss_cell': [500, 300], 'castle': 'ボス', 'stage': 'dest', 'steps': 1,
+                'screen_kind': 'map_target',
+                'y_jump': {'attempt': 2, 'active': False, 'seen': None,
+                           'moves': 0, 'wait': 0, 'age': 1, 'last_result': 'view_closed'}}))
+    assert redirect['reason_code'] == 'camp_boss_redirect'
+    assert redirect['camp_world'] == [500, 500] and redirect['boss_cell'] == [500, 300]
+    assert redirect['y_jump']['attempt'] == 2 and redirect['y_jump']['last_result'] == 'view_closed'
     cancelled = audit._camp_event(_camp_record(
         'camp_recall_skipped', reason='可視範囲に自軍城の屋根がなく帰還先を選べない'))
     assert cancelled['kind'] == 'camp_recall_cancelled'
@@ -2693,6 +2704,35 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
                 'summon_card_exhausted_tick': 900,
                 'card_flow': {'card': 'ミックミー', 'stage': 'announce',
                               'selection_planned': True},
+                'outcome': 'loss',
+                'ally_hp_at_open': 70, 'enemy_hp_at_open': 80,
+                'ally_hp_at_end': 0, 'enemy_hp_at_end': 30,
+                'start_ally_hp': 90, 'start_enemy_hp': 90,
+                'card_opened': True, 'card_open_card': 'ノリウツール',
+                'card_open_stage': 'list', 'card_open_source': 'summon_menu',
+                'critical_survival': {
+                    'needed': True, 'needed_now': False, 'needed_observed': True,
+                    'ally_critical_hp': False, 'enemy_summon': True, 'boss': True,
+                    'behind': True, 'behind_now': False, 'card_hp_unread': False,
+                    'card_damage_rescue_needed': False, 'melee_balance': {}},
+                'carried_cards': [{
+                    'card': 'ノリウツール', 'provenance': ['sortie_record'],
+                    'state': 'leftover', 'remaining': True,
+                    'usable_in_battle': True}],
+                'damage_gate': {
+                    'card': 'ノリウツール', 'allowed': True,
+                    'role': 'single_card_lethal', 'source': 'evaluation',
+                    'ally_hp': 10, 'enemy_hp': 30, 'tick': 990, 'seq': 2},
+                'card_flow_opens': [{
+                    'card': 'ノリウツール', 'stage': 'list', 'source': 'summon_menu',
+                    'tick': 980, 'ally_hp': 70, 'enemy_hp': 80}],
+                'card_flow_history': [
+                    {'seq': 1, 'tick': 980, 'event': 'open', 'card': 'ノリウツール',
+                     'stage': 'list', 'source': 'summon_menu',
+                     'ally_hp': 70, 'enemy_hp': 80},
+                    {'seq': 2, 'tick': 990, 'event': 'gate_evaluation',
+                     'card': 'ノリウツール', 'stage': 'announce', 'allowed': True,
+                     'role': 'single_card_lethal', 'ally_hp': 10, 'enemy_hp': 30}],
             }, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
@@ -2711,6 +2751,14 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert battle['cards_left'] == ['ノリウツール']
     assert battle['card_flow'] == {'card': 'ミックミー', 'stage': 'announce',
                                    'selection_planned': True}
+    assert battle['outcome'] == 'loss'
+    assert battle['ally_hp_at_open'] == 70 and battle['enemy_hp_at_open'] == 80
+    assert battle['ally_hp_at_end'] == 0 and battle['enemy_hp_at_end'] == 30
+    assert battle['critical_survival']['needed'] is True
+    assert battle['carried_cards'][0]['provenance'] == ['sortie_record']
+    assert battle['damage_gate']['role'] == 'single_card_lethal'
+    assert [row['event'] for row in battle['card_flow_history']] == [
+        'open', 'gate_evaluation']
     # docich#5632: the re-arm state is projected so a first exhaustion, a
     # re-arm wait and a final exhaustion are distinguishable in the issue.
     assert battle['rearms'] == 1
@@ -2754,7 +2802,11 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     sealed = []
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
-    battle = sealed[0]['battle_event']
+    incident = sealed[0]
+    assert incident['confidence'] == 'low'
+    assert incident['auto_file'] is False
+    assert incident['confidence_reasons'][0].startswith('missing_evidence:')
+    battle = incident['battle_event']
     assert battle['side'] is None
     assert battle['cards_left'] is None
     assert battle['scrolls'] is None and battle['cursor'] is None

@@ -1057,6 +1057,14 @@ def _move_general_pick(screen, mem, order):
     # (owner 2026-11-09 / 2026-11-11).
     road_walk = chart.guard_free(mem.get('chapter'))
     if (len(present) < 2 and not road_walk) or not spare:
+        # owner 2026-11-27: 同じ移動（例: アルマムーン>スペンソニア）が毎回
+        # 新しい step 名で再計画され、月内に何度も失敗していた。失敗した leg を
+        # 月単位で覚え、次回の計画から外す。
+        leg = f"{_source(order, mem)}>{order.get('target')}"
+        legs = mem.get('move_leg_failed')
+        legs = legs if isinstance(legs, dict) else {}
+        legs[leg] = mem.get('month')
+        mem['move_leg_failed'] = legs
         _finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない',
                       observed_metric=present[:8], source=_source(order, mem),
                       reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')
@@ -1993,6 +2001,13 @@ def _keep_sortie_defender(screen, mem, order):
             {'present': present[:8], 'available': sorted(available),
              'location_recheck_attempts': recheck['attempts']})
     (mem.get('source_location_rechecks') or {}).pop(source, None)
+    # owner 2026-11-27: 守備を残せない城は、その月の出撃元として使えない。
+    # 記録して次の計画で別の城（将軍2人以上）を選ばせる。同じ城で毎回
+    # キャンセルを繰り返すと、月の予算を捨てて出撃0のまま終わる。
+    depleted = mem.get('sortie_source_depleted')
+    depleted = depleted if isinstance(depleted, dict) else {}
+    depleted[source] = mem.get('month')
+    mem['sortie_source_depleted'] = depleted
     _refute_unplaced(mem, order)
     _record_source_defender_cancel(mem, order, present=present, available=sorted(available))
     return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',

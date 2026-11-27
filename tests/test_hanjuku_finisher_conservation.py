@@ -173,9 +173,16 @@ def test_decision_does_not_invent_stock_consumption_or_change_health():
     mem = memory()
     before = deepcopy(mem)
     assert choose(mem, ['キャトルミュー', 'ゼンマイン']) == 'キャトルミュー'
-    # Existing assessment fields are the only side effect of evaluating gates.
+    # Existing assessment fields are the only side effect of evaluating gates,
+    # plus the bounded evidence records from docich#5749 (gate history, flow
+    # history and its sequence). Those are audit-only: nothing reads them
+    # back into stock or health decisions, so they do not invent consumption.
     mem.pop('last_card_assessment', None)
     mem['battle'].pop('card_assessment', None)
+    for key in ('card_gate_history', 'card_flow_history', 'card_flow_seq'):
+        mem['battle'].pop(key, None)
     before.pop('last_card_assessment', None)
     before['battle'].pop('card_assessment', None)
+    for key in ('card_gate_history', 'card_flow_history', 'card_flow_seq'):
+        before['battle'].pop(key, None)
     assert mem == before

@@ -115,12 +115,8 @@ def test_survival_list_reoffers_the_second_copy_after_confirmed_use():
     assert cur['card_assessment']['reason'] == 'no_autonomous_egg_trigger'
 
 
-def test_unselected_nonlethal_list_is_closed_at_critical_hp():
-    """未選択の非致死一覧は危険HPで閉じる (battle_hero_retreat_cancel_card)。
-
-    この経路では2枚目が cards_selected に載らないため監査シグネチャは出ない。
-    今回のシグネチャが出た以上、2枚目はこの経路ではなかったことの裏付け。
-    """
+def test_retreat_no_longer_closes_the_card_list():
+    """owner 2026-11-28: 退却は完全廃止したため、危険HPでも一覧を閉じない。"""
     mem = memory('ミックミー', enemy='アニス', enemy_hp=37, ally='シャルドネ',
                  ally_hp=6, soldiers=(0, 3))
     cur = mem['battle']
@@ -128,6 +124,5 @@ def test_unselected_nonlethal_list_is_closed_at_critical_hp():
                survival={'listed_cards': ['ミックミー'], 'cards_attempted': ['ミックミー'],
                          'card_counts_at_selection': {'ミックミー': 2}},
                card_flow={'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0})
-    assert p.card_list_step(cards(['ミックミー']), mem) == [p.pad('b')]
-    assert any(r['decision'] == 'battle_hero_retreat_cancel_card' for r in mem['_records'])
-    assert cur['cards_selected'] == ['ミックミー']
+    assert p.card_list_step(cards(['ミックミー']), mem) != [p.pad('b')]
+    assert not any(r['decision'] == 'battle_hero_retreat_cancel_card' for r in mem.get('_records', []))

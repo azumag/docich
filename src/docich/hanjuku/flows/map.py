@@ -645,7 +645,8 @@ def world_map_step(screen, mem, frame):
         # it and keep the camp where it is. Unmeasured: the event names the screen.
         from .recall import _abort_boss_redirect
         return _abort_boss_redirect(mem, recall, 'boss_picker_is_world_map',
-                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す')
+                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す',
+                                    screen=screen)
     if recall and recall.get('stage') == 'dest':
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
@@ -2732,6 +2733,9 @@ def map_step(screen: Screen, mem, frame):
         # the later departure commit. Housekeeping otherwise keeps preempting
         # the long source/cards/target walk before sortie_departure_requested.
         arm_sortie_launch_priority(mem, order)
+        # owner 2026-11-28: 月内に一度でも出撃が始まったかを月単位で記録する
+        # （月一メニューの処理が月を食い尽くすのを防ぐ判断に使う）。
+        mem['sortie_started_month'] = mem.get('month')
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),

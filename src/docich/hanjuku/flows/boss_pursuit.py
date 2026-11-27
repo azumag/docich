@@ -183,6 +183,7 @@ def _evict_unreachable_waves(mem, wave):
     """Owner 2026-11-27: a stale wave general stranded west of the ch9 cliff
     can never reach the boss area; evict it so a fresh wave launches from a
     reachable castle (イデ！ and the east). Recall to イデ！ is not assumed --
+    reachable castle. Recall to the last corridor castle is not assumed --
     the general may not be able to enter it at all."""
     now = int(mem.get('tick') or 0)
     for general, entry in list(wave.items()):

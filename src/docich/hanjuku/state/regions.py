@@ -127,6 +127,7 @@ KEY_OWNERSHIP = {
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'boss_wave_evicted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},
     'boss_wave_evicted_retired': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追放済み将軍のボス注文を失敗にした記録  # 崖の向こう側で帰還させ追撃対象から外した将軍
+    'ch12_home_keep_three': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 第12話で主人公の城に3人残すための保留記録  # 崖の向こう側で帰還させ追撃対象から外した将軍
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
     'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)
     'generals_lost_at': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時刻 (garrison_observed_at と同じ時計, v998/#4415)
@@ -266,6 +267,12 @@ KEY_OWNERSHIP = {
     'shop_exit_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 商人の空退出回数(flows.shop が書く)
     'egg_menu_escape': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 卵メニュー脱出の試行記録(flows.battle_menus が書く)
     'sortie_launch_pending': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 出撃開始〜発射確認の間だけ立つ(flows.map が書く)
+    'chikujou_defer': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内で築城探索を出撃へ譲った回数(flows.month が書く)
+    'move_leg_failed': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に失敗した移動 leg
+    'sortie_source_depleted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に守備を残せず出撃を取り消した城
+    'month_sub_opens': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に開いた月一サブメニュー数
+    'sortie_started_month': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃開始を記録した月
+    'month_sub_deferred_noted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 打ち切り記録の重複防止
     'victory_menu_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 勝利メニューの連続保持回数(orchestrator が書く)
     'chapter_end_save_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 章末セーブ確認の連続保持回数(flows が書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理

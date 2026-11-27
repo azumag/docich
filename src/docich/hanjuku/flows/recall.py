@@ -6,7 +6,7 @@ from ..os_layer.screen import Screen, camp_body_target, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer.commands import fort_list_batch, menu_to, pad
-from ..os_layer.navigation import _start_y_jump
+from ..os_layer.navigation import _drop_stale_y_jump, _start_y_jump
 from ..os_layer.readers import (_canonical_general, _current, _cursor, _options,
                                 fort_list_open, is_camp_menu, is_fort_menu)
 from ..os_layer.world import NAME, _owned
@@ -2025,6 +2025,9 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
         mem['uncertain'] = True
         return [pad('b')] if screen.kind == 'world_map' else []
     if stage == 'dest':
+        transition = recall_y_jump_transition_step(screen, mem)
+        if transition is not None:
+            return transition
         if screen.kind != 'map_target':
             if screen.kind == 'map' and state.get('move_visible'):
                 return _visible_move_dest_step(screen, mem, frame, state)
@@ -2187,6 +2190,24 @@ def _camp_recall_step(screen: Screen, mem, frame, *, observed_camps=None):
     return []
 
 
+def recall_y_jump_transition_step(screen, mem):
+    """Own a target-picker frame while its RECALL Y jump is opening.
+
+    Y toggles the whole-map view: another press while the old picker is still
+    visible can close the view the first press just opened.  This frame is
+    therefore never reprocessed as a picker.  ``_drop_stale_y_jump`` applies
+    the existing grace and, once that grace is exceeded, closes the jump as
+    view_closed/interrupted; the next picker observation may start one fresh
+    attempt instead of overwriting the live one.
+    """
+    jump = mem.get('y_jump')
+    if (screen.kind != 'map_target' or not isinstance(jump, dict)
+            or jump.get('step') != 'RECALL' or jump.get('mode') != 'target'):
+        return None
+    _drop_stale_y_jump(screen, mem)
+    return []
+
+
 def _boss_redirect_dest_step(screen, mem, frame, state, marker):
     """Aim the destination marker at the moving boss's measured cell and confirm.
 
@@ -2196,6 +2217,9 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
     Never snaps to an own roof: the goal is the boss, not a castle.
     """
     from . import map as _map
+    transition = recall_y_jump_transition_step(screen, mem)
+    if transition is not None:
+        return transition
     goal = chart.boss_castle(mem.get('chapter') or 0)
     state['goal'] = goal
     if not marker or frame is None or not chart.moving_boss_cell(mem.get('chapter')):
@@ -2204,7 +2228,8 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
         if state['boss_lost'] < 3:
             return []
         return _abort_boss_redirect(mem, state, 'boss_position_lost',
-                                    'ボスの現在位置を確認できないため再出撃を取り消す')
+                                    'ボスの現在位置を確認できないため再出撃を取り消す',
+                                    screen=screen, marker=marker)
     pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
     # #4937: chapter 9's RECALL jump must also measure the unit's position on
     # the Y view so _ch9_cliff_detour can pick the north corridor / east mouth
@@ -2217,7 +2242,8 @@ def _boss_redirect_dest_step(screen, mem, frame, state, marker):
     if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:
         return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
     return _abort_boss_redirect(mem, state, 'boss_jump_failed',
-                                'ボスのセルへマーカーを合わせられないため再出撃を取り消す')
+                                'ボスのセルへマーカーを合わせられないため再出撃を取り消す',
+                                screen=screen, marker=marker)
 
 
 def _site_king_down(mem, name):
@@ -2279,6 +2305,9 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
     measured on the cell, never a blind confirm.
     """
     from . import map as _map
+    transition = recall_y_jump_transition_step(screen, mem)
+    if transition is not None:
+        return transition
     goal = _boss_move_goal(mem, state, marker)
     state['goal'] = goal
     if not goal or not marker or frame is None:
@@ -2286,7 +2315,8 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
         if state['boss_lost'] < 3:
             return []
         return _abort_boss_redirect(mem, state, 'boss_position_lost',
-                                    'ボスの位置を確認できないため再移動を取り消す')
+                                    'ボスの位置を確認できないため再移動を取り消す',
+                                    screen=screen, marker=marker)
     pseudo = {'step': 'RECALL', 'target': goal, 'source': None}
     # #4922: chapter 10's White House requires a Y-jump receipt so _y_jump_step
     # measures the camp's actual position on the ring and picks the walkable leg;
@@ -2299,7 +2329,8 @@ def _boss_move_dest_step(screen, mem, frame, state, marker):
     if (mem.get('y_jumps') or {}).get('RECALL:target', 0) < BOSS_JUMP_LIMIT:
         return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
     return _abort_boss_redirect(mem, state, 'boss_jump_failed',
-                                'ボス城へマーカーを合わせられないため再移動を取り消す')
+                                'ボス城へマーカーを合わせられないため再移動を取り消す',
+                                screen=screen, marker=marker)
 
 
 def _reset_boss_jump(mem):
@@ -2312,13 +2343,69 @@ def _reset_boss_jump(mem):
     (mem.get('y_jumped') or {}).pop('RECALL', None)
 
 
-def _abort_boss_redirect(mem, state, event, reason):
+def _boss_redirect_boss_cell(mem, goal):
+    """The measured boss cell this redirect was aiming at, when known."""
+    chapter = mem.get('chapter') or 0
+    reading = mem.get('boss_cell')
+    cell = (reading.get('cell')
+            if isinstance(reading, dict) and reading.get('chapter') == chapter else None)
+    if not _camp_target(cell):
+        cell = chart.moving_boss_cell(chapter)
+    if not _camp_target(cell) and isinstance(goal, str):
+        cell = (chart.castles(chapter) or {}).get(goal)
+    return list(cell) if _camp_target(cell) else None
+
+
+def _boss_redirect_jump_evidence(mem):
+    """Snapshot the RECALL target jump before the abort clears its budget."""
+    jump = mem.get('y_jump')
+    active = (isinstance(jump, dict) and jump.get('step') == 'RECALL'
+              and jump.get('mode') == 'target')
+    if not active:
+        jump = None
+    attempts = int((mem.get('y_jumps') or {}).get('RECALL:target') or 0)
+    evidence = {'attempt': attempts, 'active': active,
+                'seen': bool(jump.get('seen')) if jump else None,
+                'moves': int(jump.get('moves') or 0) if jump else None,
+                'wait': int(jump.get('wait') or 0) if jump else None}
+    if jump and type(jump.get('tick')) is int:
+        evidence['age'] = int(mem.get('tick') or 0) - jump['tick']
+    last = mem.get('y_jump_last')
+    if (jump is None and isinstance(last, dict) and last.get('step') == 'RECALL'
+            and last.get('mode') == 'target'):
+        evidence['moves'] = int(last.get('moves') or 0)
+        evidence['last_result'] = last.get('why')
+    return evidence
+
+
+def _abort_boss_redirect(mem, state, event, reason, screen=None, marker=None):
+    goal = state.get('goal')
+    target_cell = state.get('target_cell')
+    if not _camp_target(target_cell) and _camp_target(marker):
+        # Boss redirects abort before the picker is confirmed; the current
+        # marker is still the target candidate the failed jump was placing.
+        target_cell = marker
+    metric = {'camp': state.get('target'), 'goal': goal,
+              'castle': goal if isinstance(goal, str) else None,
+              'stage': state.get('stage'), 'steps': int(state.get('steps') or 0),
+              'target_cell': list(target_cell) if _camp_target(target_cell) else None,
+              'camp_world': list(state['camp_world']) if _camp_target(state.get('camp_world')) else None,
+              'boss_cell': _boss_redirect_boss_cell(mem, goal),
+              'y_jump': _boss_redirect_jump_evidence(mem),
+              'screen_kind': getattr(screen, 'kind', None)}
+    general = state.get('general')
+    if isinstance(general, str) and general:
+        metric['general'] = general[:48]
+    jump = mem.get('y_jump')
+    if (isinstance(jump, dict) and jump.get('step') == 'RECALL'
+            and jump.get('mode') == 'target'):
+        mem.pop('y_jump', None)
     _reset_boss_jump(mem)
     _flow(mem).pop('recall', None)
     mem['uncertain'] = True
     _arm_recall_skip(mem, state, BOSS_RETRY_TICKS)
     _record(mem, 'camp_boss_redirect_aborted', resulting_event=event,
-            observed_metric={'camp': state.get('target'), 'goal': state.get('goal')},
+            observed_metric=metric,
             reason=reason)
     return [pad('b')]
 

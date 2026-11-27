@@ -32,6 +32,7 @@ from .new_corner_runtime import (
 #: free port explicitly; the mapping is part of the reviewed broadcast surface.
 PORTS = {
     "geography-world": 8811,
+    "international-politics": 8812,
 }
 DEFAULT_PORT = 8811
 PAGE_SECONDS = 12

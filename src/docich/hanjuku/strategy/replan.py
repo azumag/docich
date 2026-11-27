@@ -77,6 +77,39 @@ CH10_APPROACH = {
 }
 
 
+def _drop_depleted_sources(mem, owned):
+    """Skip castles that already failed to keep a defender this month.
+
+    Owner 2026-11-27: a chart attack from a one-general castle is cancelled by
+    the defender rule every time, and the month ends with zero launches. Drop
+    such a source while another castle can still send one; if every castle is
+    depleted the set is left as-is (never starve the planner completely).
+    """
+    raw = mem.get('sortie_source_depleted')
+    if not isinstance(raw, dict):
+        return set(owned)
+    blocked = {castle for castle, month in raw.items() if month == mem.get('month')}
+    remaining = {castle for castle in owned if castle not in blocked}
+    return remaining or set(owned)
+
+
+def _filter_failed_move_legs(mem, moves):
+    """Drop move legs that already failed this month (owner 2026-11-27).
+
+    The same 移動 (アルマムーン>スペンソニア) used to be re-planned under a fresh
+    step name after every cancel, so a month could spend its whole budget on one
+    impossible transfer. A failed leg is remembered per month.
+    """
+    raw = mem.get('move_leg_failed')
+    if not isinstance(raw, dict):
+        return list(moves)
+    failed = {leg for leg, month in raw.items() if month == mem.get('month')}
+    if not failed:
+        return list(moves)
+    return [m for m in moves
+            if f"{m.get('source')}>{m.get('target')}" not in failed]
+
+
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -115,6 +148,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                        and chart.corridor_next(chapter, owned) is None)
     if boss_gather:
         owned = {c for c in owned if c == road[-1]}
+    # owner 2026-11-27: その月に守備を残せず出撃を取り消した城は、別の城が
+    # 使えるなら出撃元から外す（同じ城で毎回キャンセルすると出撃0で月が終わる）。
+    owned = _drop_depleted_sources(mem, owned)
     free = {c: [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             for c in owned}
     if routes.is_road(chapter):
@@ -2035,6 +2071,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # first direction only.
     pairs = set()
     unique_moves = []
+    # owner 2026-11-27: この月に「移動元に残す将軍がいない」で失敗した leg は
+    # 再計画しない（毎回新しい step 名で同じ失敗を繰り返していた）。
+    moves = _filter_failed_move_legs(mem, moves)
     for move_order in moves:
         key = (move_order.get('source'), move_order.get('target'))
         if (key[1], key[0]) in pairs:
@@ -2725,6 +2764,17 @@ def _grant_stored_hero_permission(mem, stored):
     return changed
 
 
+def _mechanical_plan_order(order):
+    copied = {**order, 'cards': list(order.get('cards') or ()),
+              'after': order.get('after')}
+    if (chart.is_boss_castle(copied.get('target'))
+            and copied.get('purpose') is None
+            and copied.get('roster_probe') is not True
+            and copied.get('source_probe') is not True):
+        copied['purpose'] = 'attack'
+    return copied
+
+
 def _mechanical_boss_plan(mem, rid):
     """A deterministic boss plan once every non-boss castle is owned.
 
@@ -2824,8 +2874,7 @@ def _mechanical_boss_plan(mem, rid):
     plan_region = _plan_region(mem)
     plan_region['chart_plan'] = {
         'request_id': rid, 'source': 'mechanical',
-        'orders': [{**o, 'cards': list(o.get('cards') or ()),
-                    'after': o.get('after')} for o in chosen],
+        'orders': [_mechanical_plan_order(o) for o in chosen],
         'purchases': None, 'recruitment': None,
     }
     status = plan_region.setdefault('orders', {})
