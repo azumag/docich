@@ -16,7 +16,7 @@ from ..state.regions import plan as _plan_region
 from . import egg_bait
 from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, _remember_general_for_summon
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
-                               CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
+                               CARD_SPEND_ATTEMPT_LIMIT, _card_refusal_retired, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
                                _begin_card_flow, _card_miss_evidence, _card_usable_here,
                                _note_card_flow_event,
@@ -973,7 +973,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
             return [pad('b')]
         return _emit_moves(move)
     gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-    if not gate['allowed']:
+    if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur):
         _card_gate_refused(mem, cur, card, gate, listed_cards=names)
         return _card_gate_close(mem, cur, names)
     flow.update(card=card, stage='announce', selection_planned=True)
@@ -2140,27 +2140,9 @@ def card_list_step(screen: Screen, mem):
         return [pad('b')]  # an unselected list closes unused: the next push wins
     names = [w for _, _, w in _options(screen) if w in ALL_CARD_NAMES]
     rescue = {**(cur.get('survival') or {}), 'listed_cards': names}
-    if (cur.get('side') != 'defense' and _hero_retreat_needed(cur)
-            and flow and flow.get('stage') == 'list'
-            and not flow.get('announce_retried')
-            # docich#4999: retreat now defers to any listed card the gate
-            # permits (for_retreat) and to a survival list still spending
-            # the remaining selections; the immediate-loss floor keeps the
-            # g460 emergency close inside both rules.
-            and not _critical_safe_card(mem, cur, rescue, for_retreat=True)
-            and not (flow.get('survival') and not _retreat_immediate_loss(cur)
-                     and _retreat_cards_to_spend(cur))
-            and not (cur.get('hero_retreat') or {}).get('unavailable')
-            and not (cur.get('hero_retreat') or {}).get('exhausted')):
-        selected_interrupted = (isinstance(flow.get('card'), str)
-                                and flow.get('card') in (cur.get('cards_selected') or []))
-        _release_interrupted_card_flow(
-            mem, cur, '選択済み・消費未確認のまま緊急退却へ切り替えるため一覧を閉じる')
-        cur['card_retreat_cancels'] = int(cur.get('card_retreat_cancels') or 0) + 1
-        _record(mem, 'battle_hero_retreat_cancel_card', **_battle_labels(cur),
-                reason=('選択済み・消費未確認の切り札一覧を閉じ、どうしの緊急退却を優先'
-                        if selected_interrupted else '未選択の切り札一覧を閉じ、どうしの緊急退却を優先'))
-        return [pad('b')]
+    # owner 2026-11-28: 退却は完全に廃止したため、退却のために切り札一覧を閉じる
+    # 分岐（battle_hero_retreat_cancel_card）は不要。一覧は札を選ぶために開いたまま
+    # 使い切る（持ったまま負ける方が悪い）。
     # Recognition follows the real catalogue; tactic/rescue selection retains
     # its own planning and damage gates. A held event card must be visible.
     if not flow:
@@ -2232,7 +2214,7 @@ def card_list_step(screen: Screen, mem):
             cur['card_flow'] = None
             return [pad('b'), pad('b')]
         gate = _card_damage_gate(mem, cur, flow['card'], listed_cards=names)
-        if not gate['allowed']:
+        if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur):
             rejected = flow['card']
             _card_gate_refused(mem, cur, rejected, gate, listed_cards=names)
             alternate = _card_gate_choice(mem, cur,

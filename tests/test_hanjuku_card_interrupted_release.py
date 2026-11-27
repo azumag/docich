@@ -60,7 +60,9 @@ def test_one_hit_close_books_a_selected_interrupted_flow():
     assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
 
 
-def test_retreat_cancel_books_a_selected_interrupted_flow(monkeypatch):
+def test_retreat_never_closes_the_card_list(monkeypatch):
+    # owner 2026-11-28: 退却は完全に廃止したため、退却のために一覧を閉じる分岐は無い。
+    # 危険な戦況でも一覧は札を選ぶために開いたまま使う。
     mem = _interrupted_memory()
     cur = mem['battle']
     cur['card_flow']['announce_retried'] = False
@@ -69,14 +71,11 @@ def test_retreat_cancel_books_a_selected_interrupted_flow(monkeypatch):
     monkeypatch.setattr(menus, '_hero_retreat_needed', lambda cur: True)
     monkeypatch.setattr(menus, '_critical_safe_card', lambda *a, **kw: None)
 
-    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
+    assert p.card_list_step(cards(['ゼンマイン']), mem) != [p.pad('b')]
 
-    assert cur['card_flow'] is None
-    assert cur['cards_unclassified'] == ['ゼンマイン']
-    assert cur['card_retreat_cancels'] == 1
-    assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
-    assert any(r['decision'] == 'battle_hero_retreat_cancel_card' for r in mem['_records'])
-
+    assert cur['card_flow'] is not None
+    assert not any(r['decision'] == 'battle_hero_retreat_cancel_card' for r in mem['_records'])
+    assert not cur.get('card_retreat_cancels')
 
 def test_unclassified_close_uses_the_selection_ledger_after_a_retry_reset():
     mem = _interrupted_memory()
