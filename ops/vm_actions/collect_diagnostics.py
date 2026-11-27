@@ -8269,6 +8269,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1580-depleted-source",
             "hanjuku-chart-v1581-move-arrival-observed",
             "hanjuku-chart-v1582-ch1-blocked-legs",
+            "hanjuku-chart-v1583-month-sub-budget",
             "hanjuku-chart-v1582-mechanical-boss-purpose",
             "hanjuku-chart-v1575-ch9-cliff-camp-recall",
             "hanjuku-chart-v1576-stale-wave-fresh-cell",
