@@ -3455,8 +3455,11 @@ def egg_battle_step(screen: Screen, mem):
         if not isinstance(resume, dict) or resume.get('card') not in cards_left:
             resume = None
             battle.pop('summon_card_resume', None)
-        if (cards_left and 'きりふだ' in (screen.text or '')
-                and not battle.get('card_flow')):
+        card_row_gate = (cards_left and 'きりふだ' in (screen.text or '')
+                         and not battle.get('card_flow'))
+        if not card_row_gate:
+            battle.pop('summon_card_row_unread_stall', None)
+        if card_row_gate:
             target = _battle_menu_to(screen, 'きりふだ')
             move = _menu_move_batch(screen, 'きりふだ', target) if target is not None else None
             if move == 'here':
@@ -3474,6 +3477,8 @@ def egg_battle_step(screen: Screen, mem):
                 battle.pop('summon_card_exhausted_tick', None)
                 battle.pop('summon_card_scroll_out', None)
                 battle.pop('summon_card_reveal_failed', None)
+                battle.pop('summon_card_row_unread_stall', None)
+                battle.pop('summon_card_row_unread', None)
                 battle['summon_card_opens'] = int(battle.get('summon_card_opens') or 0) + 1
                 battle.pop('summon_card_resume', None)
                 _record(mem, 'battle_summon_card_open', **_battle_labels(battle),
@@ -3486,7 +3491,41 @@ def egg_battle_step(screen: Screen, mem):
                                 if resume else '敵が召喚獣でこちらが将軍のため、通常攻撃より先に切り札を開く'))
                 return [pad('a')]
             if move is not None:
+                battle.pop('summon_card_row_unread_stall', None)
+                battle.pop('summon_card_row_unread', None)
                 return _emit_moves(move)
+            if not battle.get('summon_card_row_unread'):
+                card = resume['card'] if resume else cards_left[0]
+                scope = [card]
+                stall = battle.get('summon_card_row_unread_stall')
+                observations = (int(stall.get('observations') or 0) + 1
+                                if isinstance(stall, dict)
+                                and stall.get('scope') == scope else 1)
+                battle['summon_card_row_unread_stall'] = {'scope': scope,
+                                                          'observations': observations}
+                if observations >= SUMMON_CARD_ROW_UNREAD_LIMIT:
+                    battle.pop('summon_card_row_unread_stall', None)
+                    battle['summon_card_row_unread'] = True
+                    release_flow = {'card': card, 'stage': 'menu',
+                                    'tactic_id': f'summon_row_unread:{card}'}
+                    if resume and resume.get('tactic_id'):
+                        release_flow['tactic_id'] = resume['tactic_id']
+                    battle['card_flow'] = release_flow
+                    _card_use_unclassified(
+                        mem, battle,
+                        'きりふだ行への移動を再観測上限まで解決できないため、未選択の開札操作を解放する')
+                    _record(mem, 'battle_summon_card_row_unread', **_battle_labels(battle),
+                            card=card,
+                            observed_metric={'observations': observations,
+                                             'limit': SUMMON_CARD_ROW_UNREAD_LIMIT,
+                                             'cards_left': list(cards_left),
+                                             'cursor_y': screen.menu_cursor,
+                                             'visible': sorted({w for _, _, w in _options(screen)}),
+                                             'screen_kind': screen.kind,
+                                             'text': (screen.text or '')[:60]},
+                            reason='きりふだ行が表示文言にあるのにカーソル/対象行を上限まで解決できないため、攻撃への復帰を切り札不使用の起票ではなく行未読の証拠として記録する')
+                else:
+                    return []
         # g498: B did not leave the turn menu, yet the next observation
         # immediately chose A and Venus lost. Require a bounded return flow,
         # and actually request retreat if the normal command menu is reached.
@@ -3602,7 +3641,8 @@ def egg_battle_step(screen: Screen, mem):
             # duplicates (live: ミックミー used, ノリウツール left, 3 issues).
             if (missed and cards_left and not battle.get('cards_used')
                     and not battle.get('boss_card_missed_noted')
-                    and not battle.get('summon_card_reveal_failed')):
+                    and not battle.get('summon_card_reveal_failed')
+                    and not battle.get('summon_card_row_unread')):
                 battle['boss_card_missed_noted'] = True
                 parked_flow = battle.get('card_flow')
                 _record(mem, 'battle_boss_card_missed', **_battle_labels(battle), card=missed,
@@ -3719,6 +3759,7 @@ SUMMON_CARD_OPEN_LIMIT = 2      # reopen attempts per battle before giving up   
 # the remaining carried cards (card_miss #5612).  The bound only rides out a
 # misread frame; the attack is held rather than confirmed during the look.
 SUMMON_CARD_FLOW_STALL_LIMIT = 3
+SUMMON_CARD_ROW_UNREAD_LIMIT = 3
 # Owner 2026-11-22: do not return a summon that is finishing a nearly-dead
 # enemy (or is far ahead in HP).  The bounded stall was returning at 6 turns
 # even at enemy HP 27 with the summon at 515, which looked like throwing a
