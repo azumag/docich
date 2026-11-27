@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "corner": "international-politics",
+  "fixtureId": "fixed-international-politics-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Theme candidate list for the international-politics deep-dive corner. Candidates are planning seeds only: a candidate title selects the topic area the production runner collects verified public-Web material for; the titles themselves are not verified political data, current-event claims, or external distribution text.",
+  "candidates": [
+    {
+      "id": "maritime-boundary-dialogue",
+      "title": "海洋境界交渉と領有権主張：制度・歴史・航路から読む",
+      "domain": "territorial-maritime-disputes",
+      "description": "海洋法・基線・EEZ解釈、歴史的利用、資源開発と航路安全が絡む紛争を、一次文書と複数視点で整理する対象。",
+      "fixtureId": "fixed-international-politics-deepdive-001"
+    },
+    {
+      "id": "election-government-formation",
+      "title": "選挙後の政権樹立と連立交渉：制度が政治日程をどう決めるか",
+      "domain": "elections-government-formation",
+      "description": "選挙制度、議席配分、連立協議、首相指名や信任手続きが政権発足の条件と政策方向を形づくる構造。",
+      "fixtureId": null
+    },
+    {
+      "id": "sanctions-export-controls-supply-chain",
+      "title": "制裁・輸出管理とサプライチェーン移動：経済安保の連鎖を読む",
+      "domain": "sanctions-trade-security",
+      "description": "制裁措置・輸出管理・関税や投資規制が企業活動と供給網へ波及する経路を、制度文書と貿易条件から追う対象。",
+      "fixtureId": null
+    },
+    {
+      "id": "alliance-treaty-security-framework",
+      "title": "同盟・条約・安全保障枠組みの変更：抑止と義務の構造を読む",
+      "domain": "alliances-security-frameworks",
+      "description": "同盟義務、条約改正、共同演習、防衛分担や拡大抑止の変更が地域安全保障へ与える影響を整理する対象。",
+      "fixtureId": null
+    },
+    {
+      "id": "humanitarian-refugee-institutional-response",
+      "title": "人道危機と難民対応：国際機関・国内制度の役割分担を読む",
+      "domain": "humanitarian-refugee-response",
+      "description": "避難民発生、国際機関の保護枠組み、受入国制度、資金・物流の制約が人道対応を左右する構造。",
+      "fixtureId": null
+    },
+    {
+      "id": "energy-food-critical-minerals-security",
+      "title": "エネルギー・食料・重要鉱物の安全保障：供給網依存を読む",
+      "domain": "resource-supply-security",
+      "description": "輸入依存、生産地集中、備蓄、輸送路、価格変動が国家政策と国際関係へ与える影響を追う対象。",
+      "fixtureId": null
+    },
+    {
+      "id": "international-court-arbitration-dispute",
+      "title": "国際裁判・仲裁手続き：法的判断が政治へ与える影響を読む",
+      "domain": "international-law-dispute-settlement",
+      "description": "国際司法・仲裁手続きの管轄権、判断の法的効果、履行問題と政治的反応を一次文書中心に整理する対象。",
+      "fixtureId": null
+    },
+    {
+      "id": "constitutional-legal-reform-international-impact",
+      "title": "憲法・法制度改正の国際的影響：国内改革と対外関係を読む",
+      "domain": "constitutional-legal-reform",
+      "description": "憲法改正、緊急事態法制、司法制度や人権規範の変更が条約・投資・外交関係へ波及する構造。",
+      "fixtureId": null
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustNotClaimRealEvent": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryDocuments": true,
+    "mustIncludeMultiplePerspectives": true
+  }
+}

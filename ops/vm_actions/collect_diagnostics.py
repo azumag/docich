@@ -14600,6 +14600,7 @@ PROGRAM_ADMISSION_OWNERS = {
     'mystery': 'mystery_corner',
     'communist-law-simulator': 'lawsim_corner',
     'geography-world': 'new_corner',
+    'international-politics': 'new_corner',
 }
 PROGRAM_ADMISSION_QUEUE_STATUSES = frozenset({
     'waiting', 'waiting_turn', 'waiting_boundary', 'running', 'done', 'error',
