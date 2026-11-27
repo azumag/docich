@@ -8,7 +8,7 @@
 - `flows/map.py`：`observe_sortie_transition` で戦闘割り込み時に台帳を arm し、予算切れなら `exhausted` を記録。マーカー復帰は予算を消費せず `resumed`（driven=False）、再駆動の再オープンは予算を 1 消費して `resumed`（driven=True）。未確認出撃の検証は resume 対象を優先。
 - `flows/deploy.py`：`_verify_sortie_source` でキャンセル時に resume が owed なら step を active のまま維持し、再駆動が直後に同じ将軍・切り札で再送する。発射が確定した場合は `established` を記録。
 - `state/regions.py`：`sortie_resume` を FLOW / chapter 寿命として宣言。
-- `version.py`：`v1396-sortie-picker-resume`（v1393〜v1395 は他 PR が使用中のため次空番）。allowlist・固定値テストも同期。
+- `version.py`：`v1572-sortie-picker-resume`（rebase 時に main v1571 を確認した次空番）。allowlist・固定値テストも同期。
 
 ## DSH 条件への対応
 
@@ -16,7 +16,7 @@
 2. 同一月内のみ・最大 2 回。2 回失敗したら `launched_unconfirmed` 終端へ（`exhausted` を記録）。`sortie_target_resumed` 経路は維持（予算非消費）。
 3. 回帰テスト：割り込み→再開→成立／2 回で打ち切り／月を跨がない／マーカー復帰は予算非消費（`tests/test_hanjuku_sortie_interruption.py` に 4 件追加）。
 4. `launch_interrupted_by_battle` に `resumed` / `established` / `exhausted` を持たせた。
-5. バージョンは v1396（着手時の次空番）。
+5. バージョンは v1572（rebase 時の次空番）。
 
 ## 検品ゲートでの追加修正（Muse）
 
