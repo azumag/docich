@@ -858,7 +858,8 @@ def _ready(order, mem) -> bool:
         cells = chart.castles(mem.get('chapter') or 0)
         return _source(order, mem) in cells and order.get('target') in cells
     if unreadable_card_block.order_blocked(
-            mem, order, source=_source(order, mem) if 'step' in order else order.get('source')):
+            mem, order, source=_source(order, mem) if ('step' in order and 'source' in order)
+            else order.get('source')):
         return False
     if (routes.is_road(mem.get('chapter')) and not chart.is_boss_castle(order.get('target'))
             and not routes.order_allowed(mem, order,
