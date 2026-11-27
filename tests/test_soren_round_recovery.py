@@ -617,9 +617,10 @@ def test_incomplete_schema_drops_untrusted_values_and_extra_fields():
                     reason="real pidfd/process-tree contract requires Linux")
 def test_real_pidfd_stops_bound_child_tree_and_leaves_supervisor_alive(tmp_path):
     script = tmp_path / "strategy_runner.py"
-    script.write_text("import subprocess,time\n"
+    script.write_text("import os,subprocess,time\n"
                       "p=subprocess.Popen(['python3','-c','import time; time.sleep(60)'])\n"
-                      "open('child.pid','w').write(str(p.pid))\n"
+                      "with open('child.pid.tmp','w') as f: f.write(str(p.pid))\n"
+                      "os.replace('child.pid.tmp','child.pid')\n"
                       "time.sleep(60)\n")
     process = subprocess.Popen(["python3", "-u", str(script)], cwd=tmp_path)
     unrelated = subprocess.Popen(["python3", "-c", "import time; time.sleep(60)"])

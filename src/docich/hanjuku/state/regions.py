@@ -49,6 +49,9 @@ KEY_OWNERSHIP = {
     '_departure_input':  {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
     # --- 出撃 FlowSession (段階2へ宣言) ---
     'sortie_attempt':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    # docich#5020: 戦闘割り込みで閉じた出撃先ピッカーの同月再オープン台帳。
+    # 中断・検証・再駆動をまたぐため chapter 寿命（月フィールドで同一月に限定）。
+    'sortie_resume':     {'region': FLOW, 'lifetime': 'chapter', 'migrated': True},
     # Chapter lifetime: the departure survey that proves the unit left runs
     # after the deploy transaction ends (g1190 2026-11-19 run 5: three
     # phantom launches sat for five months because the probe had been

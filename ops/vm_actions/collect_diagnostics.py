@@ -8114,6 +8114,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1388-crying-egg-battle-menu",
             "hanjuku-chart-v1389-idou-y-route-recall-hold",
             "hanjuku-chart-v1392-dispatch-starve-measure",
+            "hanjuku-chart-v1572-sortie-picker-resume",
             "hanjuku-chart-v1393-roster-due-consume",
             "hanjuku-chart-v1397-recall-map-hold",
             "hanjuku-chart-v1398-egg-retry-on-hp-loss",
