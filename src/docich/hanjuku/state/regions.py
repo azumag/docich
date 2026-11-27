@@ -268,6 +268,9 @@ KEY_OWNERSHIP = {
     'chikujou_defer': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内で築城探索を出撃へ譲った回数(flows.month が書く)
     'move_leg_failed': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に失敗した移動 leg
     'sortie_source_depleted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に守備を残せず出撃を取り消した城
+    'month_sub_opens': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に開いた月一サブメニュー数
+    'sortie_started_month': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 出撃開始を記録した月
+    'month_sub_deferred_noted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 打ち切り記録の重複防止
     'victory_menu_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 勝利メニューの連続保持回数(orchestrator が書く)
     'chapter_end_save_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 章末セーブ確認の連続保持回数(flows が書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理

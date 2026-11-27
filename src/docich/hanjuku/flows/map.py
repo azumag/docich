@@ -2733,6 +2733,9 @@ def map_step(screen: Screen, mem, frame):
         # the later departure commit. Housekeeping otherwise keeps preempting
         # the long source/cards/target walk before sortie_departure_requested.
         arm_sortie_launch_priority(mem, order)
+        # owner 2026-11-28: 月内に一度でも出撃が始まったかを月単位で記録する
+        # （月一メニューの処理が月を食い尽くすのを防ぐ判断に使う）。
+        mem['sortie_started_month'] = mem.get('month')
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
