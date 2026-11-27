@@ -2764,6 +2764,17 @@ def _grant_stored_hero_permission(mem, stored):
     return changed
 
 
+def _mechanical_plan_order(order):
+    copied = {**order, 'cards': list(order.get('cards') or ()),
+              'after': order.get('after')}
+    if (chart.is_boss_castle(copied.get('target'))
+            and copied.get('purpose') is None
+            and copied.get('roster_probe') is not True
+            and copied.get('source_probe') is not True):
+        copied['purpose'] = 'attack'
+    return copied
+
+
 def _mechanical_boss_plan(mem, rid):
     """A deterministic boss plan once every non-boss castle is owned.
 
@@ -2863,8 +2874,7 @@ def _mechanical_boss_plan(mem, rid):
     plan_region = _plan_region(mem)
     plan_region['chart_plan'] = {
         'request_id': rid, 'source': 'mechanical',
-        'orders': [{**o, 'cards': list(o.get('cards') or ()),
-                    'after': o.get('after')} for o in chosen],
+        'orders': [_mechanical_plan_order(o) for o in chosen],
         'purchases': None, 'recruitment': None,
     }
     status = plan_region.setdefault('orders', {})

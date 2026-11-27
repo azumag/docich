@@ -1,4 +1,6 @@
 """docich#5702: launch priority lasts from order_start until real confirmation."""
+from docich import hanjuku_chart as chart
+from docich.hanjuku.strategy import replan
 from docich.hanjuku.strategy.orders import (active_sortie_launch_priority,
                                             arm_sortie_launch_priority)
 from docich.hanjuku.state.regions import flow as _flow, plan as _plan_region
@@ -13,6 +15,24 @@ def memory():
     _plan_region(mem)['chart_plan'] = {'orders': [ORDER]}
     _plan_region(mem)['orders'] = {STEP: 'pending'}
     return mem
+
+
+def ch12_mechanical_memory():
+    chapter = 12
+    home = chart.home_castle(chapter)
+    normal = [c for c in chart.castles(chapter) if not chart.is_boss_castle(c) and c != home]
+    return {'chapter': chapter, 'captured': normal, 'tick': 1000,
+            '_records': [], 'plan': {'orders': {}},
+            'world': {'garrison': {}, 'garrison_tick': {}, 'sorties': {}}}
+
+
+def test_ch12_mechanical_boss_order_owns_the_priority_window():
+    mem = ch12_mechanical_memory()
+    assert replan._mechanical_boss_plan(mem, 'rid') is True
+    order = next(o for o in mem['plan']['chart_plan']['orders'] if o['step'] == '12-B1')
+    arm_sortie_launch_priority(mem, order)
+    _plan_region(mem)['active'] = '12-B1'
+    assert active_sortie_launch_priority(mem) == '12-B1'
 
 
 def test_order_start_keeps_priority_before_the_departure_commit():
