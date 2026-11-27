@@ -17,6 +17,7 @@ from ... import (hanjuku_chart as chart, hanjuku_chart_adjust as chart_adjust,
 from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
+from . import unreadable_card_block
 from .orders import (RETIRED_ORDER_STATES, BOSS_SOLE_CONSOLIDATION_LIMIT,
                                _arrival_castle, _boss_companion_source, _boss_consolidation_book,
                                _boss_egg_depleted, boss_sole_consolidation_used,
@@ -2103,6 +2104,11 @@ def interim_candidates(mem, allow_sole=False) -> dict:
         front, tail = lead[:1], lead[1:]
     for order in (*due_orders, *front, *staffing, *waves, *boss_wave_orders,
                   *tail, *attacks, *stage_more, *rotation, *wave_orders):
+        if unreadable_card_block.order_blocked(mem, order):
+            # A blocked source must not receive a fresh mechanical step name
+            # either: otherwise the wave re-enters the same unreadable-list /
+            # empty-kit cancellation with only its step id changed.
+            continue
         if order.get('purpose') == 'move':
             leg = (order.get('source'), order.get('target'))
             if (leg[1], leg[0]) in pairs:
@@ -2671,6 +2677,8 @@ def _release_stale_failures(mem, orders, rid):
         at = recent.get(order['step'])
         if type(at) is int and 0 <= now - at < PLAN_STALE_TICKS:
             continue          # just failed: the suppression window spaces it
+        if unreadable_card_block.order_blocked(mem, order):
+            continue          # wait for card-list evidence; re-arming now repeats the same cancel
         entry = book.get(step)
         if not isinstance(entry, dict) or entry.get('month') != month:
             entry = {'month': month, 'count': 0}
