@@ -77,6 +77,23 @@ CH10_APPROACH = {
 }
 
 
+def _filter_failed_move_legs(mem, moves):
+    """Drop move legs that already failed this month (owner 2026-11-27).
+
+    The same 移動 (アルマムーン>スペンソニア) used to be re-planned under a fresh
+    step name after every cancel, so a month could spend its whole budget on one
+    impossible transfer. A failed leg is remembered per month.
+    """
+    raw = mem.get('move_leg_failed')
+    if not isinstance(raw, dict):
+        return list(moves)
+    failed = {leg for leg, month in raw.items() if month == mem.get('month')}
+    if not failed:
+        return list(moves)
+    return [m for m in moves
+            if f"{m.get('source')}>{m.get('target')}" not in failed]
+
+
 def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
     """(source, general) for an interim sortie to ``target``, or None.
 
@@ -2035,6 +2052,9 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     # first direction only.
     pairs = set()
     unique_moves = []
+    # owner 2026-11-27: この月に「移動元に残す将軍がいない」で失敗した leg は
+    # 再計画しない（毎回新しい step 名で同じ失敗を繰り返していた）。
+    moves = _filter_failed_move_legs(mem, moves)
     for move_order in moves:
         key = (move_order.get('source'), move_order.get('target'))
         if (key[1], key[0]) in pairs:

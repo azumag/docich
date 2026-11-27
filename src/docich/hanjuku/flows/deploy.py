@@ -1057,6 +1057,14 @@ def _move_general_pick(screen, mem, order):
     # (owner 2026-11-09 / 2026-11-11).
     road_walk = chart.guard_free(mem.get('chapter'))
     if (len(present) < 2 and not road_walk) or not spare:
+        # owner 2026-11-27: 同じ移動（例: アルマムーン>スペンソニア）が毎回
+        # 新しい step 名で再計画され、月内に何度も失敗していた。失敗した leg を
+        # 月単位で覚え、次回の計画から外す。
+        leg = f"{_source(order, mem)}>{order.get('target')}"
+        legs = mem.get('move_leg_failed')
+        legs = legs if isinstance(legs, dict) else {}
+        legs[leg] = mem.get('month')
+        mem['move_leg_failed'] = legs
         _finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない',
                       observed_metric=present[:8], source=_source(order, mem),
                       reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')

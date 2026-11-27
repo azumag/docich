@@ -8265,6 +8265,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1576-commentary-desumasu",
             "hanjuku-chart-v1577-stale-wave-fresh-cell",
             "hanjuku-chart-v1578-chikujou-defer-bounded",
+            "hanjuku-chart-v1579-move-leg-once",
             "hanjuku-chart-v1575-ch9-cliff-camp-recall",
             "hanjuku-chart-v1576-stale-wave-fresh-cell",
             "hanjuku-chart-v1577-boss-redirect-y-jump",
