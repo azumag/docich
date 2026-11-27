@@ -16,6 +16,7 @@ from ..exchanges.bitbank_ccxt import BitbankPublicGateway
 from .contract import Artifact, StrategyError, decode, read_source
 from .evaluation import evaluate, public_summary
 from .generation import generate, request_text
+from .improve import DEFAULT_BRIEF, DEFAULT_DAYS, run_improve
 from .service import run_cycle
 from .store import LabStore
 
@@ -61,6 +62,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     generated.add_argument("--capital", default="10000")
     generated.add_argument("--days", type=int, default=30)
 
+    improved = sub.add_parser("improve", help="定期改善: 停止中候補の整理・昇格判定・成績を踏まえた新候補の生成")
+    improved.add_argument("--image", required=True, metavar="SHA256")
+    improved.add_argument("--symbols", required=True, metavar="CSV")
+    improved.add_argument("--brief", default=DEFAULT_BRIEF)
+    improved.add_argument("--capital", default="10000")
+    improved.add_argument("--days", type=int, default=DEFAULT_DAYS)
     cycle = sub.add_parser("cycle", help="隔離PAPER cycleを1回実行する")
     cycle.add_argument("--image", required=True, metavar="SHA256")
 
@@ -99,6 +106,18 @@ def run_args(
 
     if action == "generate":
         return generate(
+            trading_dir,
+            image=args.image,
+            symbols=_symbols(args.symbols),
+            brief=args.brief,
+            capital=args.capital,
+            days=args.days,
+            now_fn=now_fn,
+            text_fn=text_fn,
+        )
+
+    if action == "improve":
+        return run_improve(
             trading_dir,
             image=args.image,
             symbols=_symbols(args.symbols),
