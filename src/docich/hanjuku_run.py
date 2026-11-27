@@ -311,12 +311,21 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
     clear_ending = old.get('clear_ending_seen') is True
-    if not clear_ending and phase in ('title', 'plain', 'unknown', 'title_or_intro'):
+    # The clear ending's めでたし line can appear on the ending scenes
+    # (event/dialogue/transition) before the title; scanning only the title
+    # frames missed it and the run was recorded as a plain game_over.
+    if not clear_ending and phase in ('title', 'plain', 'unknown', 'title_or_intro',
+                                      'event', 'dialogue', 'transition', 'concert'):
         try:
             from .hanjuku_screen import parse as _parse
-            clear_ending = CLEAR_ENDING_TEXT in ((_parse(frame).text or ''))
+            _ending_text = _parse(frame).text or ''
+            clear_ending = CLEAR_ENDING_TEXT in _ending_text
+            _title_text = _ending_text[:40] if phase == 'title' and _ending_text else old.get('title_text')
         except Exception:
             clear_ending = False
+            _title_text = old.get('title_text')
+    else:
+        _title_text = old.get('title_text')
     terminal = 'game_clear' if clear_ending else 'game_over'
     reason=terminal if candidate and title_count>=3 and now-title_since>=2 else None
     # A manual "this was not a game over" release earns a grace window: the
@@ -434,6 +443,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,
            'name_entered':named,'gameplay_seen':played,'clear_ending_seen':clear_ending,
+           'title_text':_title_text,
            'checkpoint_started':restored,'checkpoint_start_request':checkpoint_bound,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
            'terminal_evidence':'title_return_after_clear_ending' if reason=='game_clear'
