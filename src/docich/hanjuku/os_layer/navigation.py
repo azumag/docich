@@ -12,7 +12,7 @@ from ..decision_log import _record, _tally
 from .commands import pad
 from .readers import UNDER_CURSOR_PX, _cursor, world_cursor, world_flags
 from .world import _apply_world_flags, _hero_castle, update_world
-from ..state.regions import plan as _plan_region
+from ..state.regions import flow as _flow, plan as _plan_region
 
 
 MAX_HOLD_FRAMES = 28          # 1 px/frame below 30 frames; beyond it accelerates
@@ -715,11 +715,28 @@ def _y_jump_step(mem, frame):
                     if leg is not None:
                         gx, gy = leg
                 elif chapter == 9:
-                    # Issue #4937: ch9 boss redirects west of the central cliff
-                    # line must climb out through the north corridor and east mouth.
-                    leg = chart.ch9_cliff_detour(origin, (gx, gy))
-                    if leg is not None:
-                        gx, gy = leg
+                    if not chart.ch9_boss_approachable(origin):
+                        from .world import _owned
+                        recall_castle = chart.ch9_unreachable_recall_castle(origin, _owned(mem))
+                        rc_cell = ((chart.castles(9) or {}).get(recall_castle)
+                                   if recall_castle else None)
+                        if recall_castle and rc_cell:
+                            gx, gy = rc_cell
+                            jump['goal'] = recall_castle
+                            rstate = _flow(mem).get('recall')
+                            if isinstance(rstate, dict) and rstate.get('boss'):
+                                rstate.pop('boss', None)
+                                rstate['goal'] = recall_castle
+                            _record(mem, 'camp_boss_redirect_recalled_home',
+                                    castle=recall_castle,
+                                    observed_metric={'origin': list(origin), 'goal': recall_castle},
+                                    reason='イデ！より手前の崖の向こう側で野営しているためボス向かいをやめ、最寄りの自軍城へ帰還させる')
+                    else:
+                        # Issue #4937: ch9 boss redirects west of the central cliff
+                        # line must climb out through the north corridor and east mouth.
+                        leg = chart.ch9_cliff_detour(origin, (gx, gy))
+                        if leg is not None:
+                            gx, gy = leg
             jump['goal_cell'] = [gx, gy]
         gx, gy = jump['goal_cell']
     elif (chapter == 10 and jump.get('step') == 'RECALL'

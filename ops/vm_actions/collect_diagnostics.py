@@ -8260,6 +8260,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1571-duel-melee-only",
             "hanjuku-chart-v1573-recall-preempt",
             "hanjuku-chart-v1574-clear-ending-scene-scan",
+            "hanjuku-chart-v1575-ch9-cliff-camp-recall",
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
