@@ -24,6 +24,7 @@ from ..os_layer.world import NAME, _en_route, _owned
 from ..state import egg_memory
 from ..strategy.bargains import forget_picked, note_card_carried
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
+from ..strategy import card_census as card_census_booking, unreadable_card_block
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                            NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
@@ -2750,6 +2751,13 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
+        cleared_blocks = unreadable_card_block.clear(mem, source=_source(order, mem))
+        if cleared_blocks:
+            _record(mem, 'unreadable_card_block_cleared',
+                    observed_metric={'count': len(cleared_blocks),
+                                     'routes': [[row.get('purpose'), row.get('source'), row.get('target')]
+                                                for row in cleared_blocks]},
+                    reason='この出撃元の切り札一覧を構造読みできたため、読み不可出撃で止めていた経路を解除する')
         if _observe_card_stock(mem, inventory):
             wanted = _deploy_cards(order, mem)
             for card in picked:
@@ -2943,6 +2951,21 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                     # for a later sortie instead of leaving unarmed.
                     if _empty_kit_blocks_departure(want, carried):
                         misses.pop(order['step'], None)
+                        unreadable_attempt = int((mem.get('card_skip_departure') or {}).get(order['step']) or 0)
+                        if unreadable_attempt:
+                            row, created = unreadable_card_block.mark(
+                                mem, order, source=_source(order, mem), cards=want, step=order['step'])
+                            card_census_booking.book(mem, 'unreadable_card_loop')
+                            _record(mem, 'unreadable_card_loop_blocked',
+                                    **_deploy_context(order, mem, expected_metric=want),
+                                    observed_metric={
+                                        'purpose': order.get('purpose'), 'source': row.get('source'),
+                                        'target': row.get('target'), 'planned': want,
+                                        'unreadable_depart_attempt': unreadable_attempt,
+                                        'blocked_steps': row.get('steps') or [],
+                                        'created': created,
+                                        'census_due': card_census_booking.due(mem) is not None},
+                                    reason='切り札一覧を読めない出撃が空携行で取消されたため、全所持読みで台帳を確定しつつ、この出撃元から札を携行する波を同じ出撃元の一覧再読まで停止する')
                         _record(mem, 'sortie_kit_empty_cancel',
                                 **_deploy_context(order, mem, expected_metric=want),
                                 carried=carried,

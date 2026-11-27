@@ -80,6 +80,7 @@ KEY_OWNERSHIP = {
     'plan_step_rearm':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'source_override':  {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     'card_override':    {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
+    'unreadable_card_block': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 切り札一覧を読めない出撃元の停止 (v1592)
     'attack':           {'region': PLAN, 'lifetime': 'chapter', 'migrated': True},
     # --- 出撃/帰還が観測する WorldState ---
     'garrison':        {'region': WORLD, 'lifetime': 'chapter', 'migrated': True},

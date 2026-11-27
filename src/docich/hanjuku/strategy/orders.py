@@ -18,6 +18,7 @@ from ..os_layer.world import (NAME, SORTIE_BUSY_TICKS, _en_route, _owned,
 from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
+from . import unreadable_card_block
 from .execution import bound_fields, execution_claimed, execution_order
 from ..state import egg_memory
 from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
@@ -856,6 +857,9 @@ def _ready(order, mem) -> bool:
             and order.get('general') == chart_adjust.PROBE_GENERAL):
         cells = chart.castles(mem.get('chapter') or 0)
         return _source(order, mem) in cells and order.get('target') in cells
+    if unreadable_card_block.order_blocked(
+            mem, order, source=_source(order, mem) if 'step' in order else order.get('source')):
+        return False
     if (routes.is_road(mem.get('chapter')) and not chart.is_boss_castle(order.get('target'))
             and not routes.order_allowed(mem, order,
                                          _source(order, mem) if 'step' in order else order.get('source'))):

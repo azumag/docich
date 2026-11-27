@@ -1964,6 +1964,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1587-sortie-launch-latch",
                  "hanjuku-chart-v1586-corridor-probe-count",
                  "hanjuku-chart-v1586-announce-interrupt-settle",
+                 "hanjuku-chart-v1592-unreadable-card-loop",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
