@@ -8270,6 +8270,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1581-move-arrival-observed",
             "hanjuku-chart-v1582-ch1-blocked-legs",
             "hanjuku-chart-v1582-mechanical-boss-purpose",
+            "hanjuku-chart-v1583-card-miss-evidence",
             "hanjuku-chart-v1575-ch9-cliff-camp-recall",
             "hanjuku-chart-v1576-stale-wave-fresh-cell",
             "hanjuku-chart-v1577-boss-redirect-y-jump",

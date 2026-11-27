@@ -93,6 +93,249 @@ def _battle_labels(cur):
             'deviation_reason': cur.get('deviation_reason')}
 
 
+CARD_FLOW_HISTORY_LIMIT = 32
+CARD_FLOW_OPEN_LIMIT = 8
+CARD_GATE_HISTORY_LIMIT = 12
+
+
+def _flow_value(value):
+    """One small JSON-safe value for persisted card-flow evidence."""
+    if value is None or type(value) in (bool, int):
+        return value
+    if isinstance(value, str):
+        return value[:80]
+    if isinstance(value, (list, tuple)):
+        return [item[:48] for item in value[:8] if isinstance(item, str)]
+    return None
+
+
+def _note_card_flow_event(mem, cur, event, card=None, **fields):
+    """Append one bounded, ordered card-flow evidence entry to this battle.
+
+    Decision rows only live for the current observation, while a boss fight can
+    span many observations.  The battle record is therefore the only place where
+    open/evaluate/refuse/select outcomes can survive until ``battle_end``.
+    """
+    if not isinstance(cur, dict):
+        return None
+    flow = cur.get('card_flow') if isinstance(cur.get('card_flow'), dict) else {}
+    try:
+        seq = int(cur.get('card_flow_seq') or 0) + 1
+    except (TypeError, ValueError):
+        seq = 1
+    cur['card_flow_seq'] = seq
+    tick = mem.get('tick') if isinstance(mem, dict) else None
+    entry = {'seq': seq,
+             'tick': tick if type(tick) is int else None,
+             'event': event,
+             'card': card if isinstance(card, str) else flow.get('card'),
+             'stage': flow.get('stage')}
+    for key, value in fields.items():
+        compact = _flow_value(value)
+        if compact is not None:
+            entry[key] = compact
+    history = cur.get('card_flow_history')
+    if not isinstance(history, list):
+        history = []
+        cur['card_flow_history'] = history
+    history.append(entry)
+    del history[:-CARD_FLOW_HISTORY_LIMIT]
+    return entry
+
+
+def _begin_card_flow(mem, cur, flow, *, source):
+    """Install a card flow and keep its opening HP/provenance for battle_end."""
+    flow = dict(flow)
+    flow.setdefault('ally_hp_at_open', cur.get('ally_hp'))
+    flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
+    flow.setdefault('enemy_soldiers_at_open', cur.get('enemy_soldiers'))
+    cur['card_flow'] = flow
+    tick = mem.get('tick') if isinstance(mem, dict) else None
+    opening = {'card': flow.get('card'), 'stage': flow.get('stage'), 'source': source,
+               'tick': tick if type(tick) is int else None,
+               'ally_hp': flow.get('ally_hp_at_open'),
+               'enemy_hp': flow.get('enemy_hp_at_open'),
+               'enemy_soldiers': flow.get('enemy_soldiers_at_open')}
+    opens = cur.get('card_flow_opens')
+    if not isinstance(opens, list):
+        opens = []
+        cur['card_flow_opens'] = opens
+    opens.append(opening)
+    del opens[:-CARD_FLOW_OPEN_LIMIT]
+    _note_card_flow_event(mem, cur, 'open', card=flow.get('card'), source=source,
+                          note=flow.get('note'), ally_hp=flow.get('ally_hp_at_open'),
+                          enemy_hp=flow.get('enemy_hp_at_open'))
+    return flow
+
+
+def _remember_card_gate(cur, card, entry):
+    if not isinstance(cur, dict) or not isinstance(card, str) or not card:
+        return
+    gates = cur.get('card_gate_history')
+    if not isinstance(gates, dict):
+        gates = {}
+        cur['card_gate_history'] = gates
+    if card not in gates and len(gates) >= CARD_GATE_HISTORY_LIMIT:
+        gates.pop(next(iter(gates)), None)
+    gates[card] = dict(entry)
+
+
+def _carried_card_provenance(mem, cur):
+    """Actual carried-card candidates and where each carry claim came from."""
+    if not isinstance(cur, dict):
+        return []
+    step = cur.get('step')
+    order = _order_for_step(mem, step)
+    entries = {}
+
+    def add(cards, source):
+        if not isinstance(cards, (list, tuple)):
+            return
+        for card in cards:
+            if not isinstance(card, str) or not card:
+                continue
+            row = entries.setdefault(card, {'card': card, 'provenance': []})
+            if source not in row['provenance']:
+                row['provenance'].append(source)
+
+    add(cur.get('planned_cards'), 'planned_cards')
+    if isinstance(order, dict):
+        add(order.get('cards'), 'order_plan')
+        binding = order.get('departure_binding')
+        if isinstance(binding, dict):
+            add(binding.get('cards'), 'departure_binding')
+            roles = binding.get('roles') if isinstance(binding.get('roles'), dict) else {}
+            add(roles.get('rare'), 'departure_role:rare')
+            strong = roles.get('strong')
+            add([strong] if isinstance(strong, str) else [], 'departure_role:strong')
+            add(roles.get('override'), 'departure_role:override')
+    sortie = _sorties(mem).get(step) if step else None
+    if isinstance(sortie, dict):
+        add(sortie.get('cards'), 'sortie_record')
+    try:
+        add(_confirmed_carried_kit(mem, cur), 'confirmed_kit_remaining')
+    except Exception:
+        pass
+    defense = cur.get('defense_card_menu')
+    if isinstance(defense, dict):
+        add(defense.get('cards'), 'defense_menu_read')
+    for key, source in (('rare_card_kit', 'rare_card_kit'),
+                        ('strong_card_kit', 'strong_card_kit'),
+                        ('dropper_card_kit', 'dropper_card_kit')):
+        ledger = mem.get(key)
+        raw = ledger.get(step) if isinstance(ledger, dict) and step else None
+        if isinstance(raw, dict):
+            raw = [raw.get('card')]
+        elif isinstance(raw, str):
+            raw = [raw]
+        add(raw, source)
+
+    attempted = {*(cur.get('cards_selected') or []), *(cur.get('cards_used') or []),
+                 *(cur.get('cards_unclassified') or []), *(cur.get('cards_missing') or [])}
+    rows = []
+    for card, row in entries.items():
+        if card in (cur.get('cards_used') or []):
+            state = 'used'
+        elif card in (cur.get('cards_selected') or []):
+            state = 'selected'
+        elif card in (cur.get('cards_unclassified') or []):
+            state = 'unclassified'
+        elif card in (cur.get('cards_missing') or []):
+            state = 'missing'
+        else:
+            state = 'leftover'
+        rows.append({**row,
+                     'state': state,
+                     'remaining': card not in attempted,
+                     'usable_in_battle': bool(card not in reference.BOSS_ONLY_CARDS
+                                              or _boss_tactics_allowed(mem, cur))})
+    return rows[:8]
+
+
+def _card_flow_snapshot(flow):
+    if not isinstance(flow, dict):
+        return None
+    return {'card': flow.get('card'), 'stage': flow.get('stage'),
+            'selection_planned': bool(flow.get('selection_planned'))}
+
+
+def _critical_survival_evidence(mem, cur):
+    """Compact inputs behind the critical-card exception, including history."""
+    ally_hp = cur.get('ally_hp')
+    enemy_summon = bool(cur.get('egg_battle') or mem.get('egg_battle')
+                        or cur.get('card_summon_observed') or cur.get('enemy_summon_observed')
+                        or cur.get('summon_scene'))
+    boss = bool(cur.get('enemy') in chart.BOSSES.values()
+                or cur.get('enemy') in reference.BOSS_GENERALS
+                or cur.get('boss_battle') or cur.get('boss')
+                or chart.is_boss_castle(cur.get('castle')))
+    critical_now = _critical_survival_needed(cur)
+    critical = bool(cur.get('critical_survival_needed_observed') or critical_now)
+    behind_now = _behind(cur)
+    behind = bool(cur.get('survival_needed_observed') or behind_now
+                  or cur.get('card_damage_rescue_needed') is True)
+    balance = _melee_balance(cur)
+    return {'needed': critical,
+            'needed_now': critical_now,
+            'needed_observed': bool(cur.get('critical_survival_needed_observed')),
+            'ally_critical_hp': bool(type(ally_hp) is int and 0 < ally_hp <= GENERAL_CRITICAL_RETREAT_HP),
+            'enemy_summon': enemy_summon,
+            'boss': boss,
+            'behind': behind,
+            'behind_now': behind_now,
+            'card_hp_unread': bool(cur.get('card_hp_unread')),
+            'card_damage_rescue_needed': bool(cur.get('card_damage_rescue_needed')),
+            'melee_balance': {key: balance.get(key) for key in
+                              ('ally_combat', 'enemy_combat', 'ally_melee_score',
+                               'enemy_melee_score', 'soldiers_current')}}
+
+
+def _card_miss_evidence(mem, cur, card, *, outcome=None):
+    """Self-contained evidence for judging one unused carried boss card."""
+    opens = [dict(row) for row in (cur.get('card_flow_opens') or [])
+             if isinstance(row, dict)]
+    opening = next((row for row in reversed(opens) if row.get('card') == card), None)
+    gates = cur.get('card_gate_history') if isinstance(cur.get('card_gate_history'), dict) else {}
+    gate = gates.get(card)
+    if gate is None and isinstance(cur.get('card_assessment'), dict) and cur['card_assessment'].get('card') == card:
+        assessment = cur['card_assessment']
+        gate = {'card': card, 'allowed': assessment.get('allowed'),
+                'role': assessment.get('reason'), 'source': 'current_assessment',
+                'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')}
+    if isinstance(gate, dict):
+        gate = {key: gate.get(key) for key in
+                ('card', 'allowed', 'role', 'source', 'ally_hp', 'enemy_hp', 'tick', 'seq')
+                if key in gate}
+    else:
+        gate = None
+    flow = cur.get('card_flow') if isinstance(cur.get('card_flow'), dict) else {}
+    history = [dict(row) for row in (cur.get('card_flow_history') or [])
+               if isinstance(row, dict)][-CARD_FLOW_HISTORY_LIMIT:]
+    return {'outcome': outcome,
+            'ally_hp_at_open': (opening or {}).get('ally_hp'),
+            'enemy_hp_at_open': (opening or {}).get('enemy_hp'),
+            'enemy_soldiers_at_open': (opening or {}).get('enemy_soldiers'),
+            'card_opened': bool(opening),
+            'any_card_opened': bool(opens),
+            'card_open_card': (opening or {}).get('card'),
+            'card_open_stage': (opening or {}).get('stage'),
+            'card_open_source': (opening or {}).get('source'),
+            'ally_hp_at_end': cur.get('ally_hp'),
+            'enemy_hp_at_end': cur.get('enemy_hp'),
+            'start_ally_hp': cur.get('start_ally_hp'),
+            'start_enemy_hp': cur.get('start_enemy_hp'),
+            'critical_survival': _critical_survival_evidence(mem, cur),
+            'enemy_summon_observed': bool(cur.get('egg_battle') or mem.get('egg_battle')
+                                          or cur.get('card_summon_observed')
+                                          or cur.get('enemy_summon_observed')
+                                          or cur.get('summon_scene')),
+            'carried_cards': _carried_card_provenance(mem, cur),
+            'damage_gate': gate,
+            'card_flow': _card_flow_snapshot(flow),
+            'card_flow_opens': opens[-CARD_FLOW_OPEN_LIMIT:],
+            'card_flow_history': history}
+
+
 def _bind_battle_strategy(mem, cur):
     if 'strategy_variant' in cur:
         return
@@ -178,6 +421,8 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
                                  'stage': flow.get('stage'), 'cause': reason,
                                  'retry_allowed': bool(tid and count < CARD_OPEN_ATTEMPTS)},
                 reason='札の選択前に操作が戻ったため携行札を差し引かず、有限回だけ再試行')
+        _note_card_flow_event(mem, cur, 'open_unclassified', card=card,
+                              selection_planned=False, attempts=count, cause=reason)
         cur['card_flow'] = None
         return
     if card:
@@ -204,6 +449,8 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
                              **({'selected_interrupted': True,
                                  'stage': flow.get('stage')} if selected_interrupted else {})},
             reason=reason)
+    _note_card_flow_event(mem, cur, 'use_unclassified', card=card,
+                          selection_planned=True, cause=reason)
     if flow.get('egg_drop_only'):
         _egg_drop_trace(mem, cur, 'unclassified', card=card,
                         tactic_id=flow.get('tactic_id'), reason=reason)
@@ -659,6 +906,20 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         'allowed': result['allowed'], 'reason': result['role'],
         **({'melee_followup': result['melee_followup']} if result.get('melee_followup') else {})}
     mem['last_card_assessment'] = {**cur['card_assessment'], 'tick': mem.get('tick')}
+    gate_entry = {'card': card, 'allowed': result['allowed'], 'role': result['role'],
+                  'source': 'evaluation', 'ally_hp': cur.get('ally_hp'),
+                  'enemy_hp': cur.get('enemy_hp'), 'tick': mem.get('tick')}
+    _remember_card_gate(cur, card, gate_entry)
+    event = _note_card_flow_event(mem, cur, 'gate_evaluation', card=card,
+                                  allowed=result['allowed'], role=result['role'],
+                                  needs_live_list=result.get('needs_live_list'),
+                                  lethal=estimate.get('lethal'),
+                                  target_kind=estimate.get('target_kind'),
+                                  ally_hp=cur.get('ally_hp'), enemy_hp=cur.get('enemy_hp'))
+    if event and type(event.get('seq')) is int:
+        gates = cur.get('card_gate_history')
+        if isinstance(gates, dict) and isinstance(gates.get(card), dict):
+            gates[card]['seq'] = event['seq']
     return result
 
 
@@ -673,6 +934,10 @@ def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
                 resulting_event='card_not_selected',
                 reason='単発で倒し切れる保証がなく、次の接触・壁判定で敵に召喚される危険があるため実一覧の代替手段を確認')
     refused[card] = signature
+    _note_card_flow_event(mem, cur, 'gate_refused', card=card,
+                          allowed=gate.get('allowed'), role=gate.get('role'),
+                          listed_cards=listed_cards,
+                          ally_hp=cur.get('ally_hp'), enemy_hp=cur.get('enemy_hp'))
     # #2896: suppress rescue-needed latch in favourable battles (branch-local).
     if not _full_hp_melee_advantage(cur):
         cur['card_damage_rescue_needed'] = True
@@ -1444,6 +1709,7 @@ def _survival_needed(cur):
             'だいじん', 'どうし', 90, 90, None):
         return False
     if _critical_survival_needed(cur):
+        cur['survival_needed_observed'] = True
         return True  # current danger is known; historical HP is not required
     if type(start) is not int or start <= 0:
         return False
@@ -1468,11 +1734,14 @@ def _survival_needed(cur):
     # #4606: a summon-class opponent's live panel HP out-scales the stale
     # general reading; compare the observed summon value, never an inferred one.
     threat = (_summon_enemy_hp(cur) or enemy) if _summon_class_enemy(cur) else enemy
-    return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= threat * BEHIND_EGG_RATIO_TENTHS or behind_start
-            or cur.get('card_damage_rescue_needed') is True
-            or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur)
-            or (not cur.get('planned_cards') and _combat_behind(cur)))
+    needed = (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
+              or hp * 10 <= threat * BEHIND_EGG_RATIO_TENTHS or behind_start
+              or cur.get('card_damage_rescue_needed') is True
+              or _unarmed_clash_risk(cur) or _unarmed_wall_risk(cur)
+              or (not cur.get('planned_cards') and _combat_behind(cur)))
+    if needed:
+        cur['survival_needed_observed'] = True
+    return needed
 
 
 # Open a measured, one-shot rescue before the ordinary low-HP/retreat gates.
@@ -1754,9 +2023,12 @@ def _summoner_return_risk(mem, owner, ally, enemy):
 
 def _critical_survival_needed(cur):
     hp, enemy = cur.get('ally_hp'), cur.get('enemy_hp')
-    return (not cur.get('card_hp_unread') and type(hp) is int
-            and 0 < hp <= GENERAL_CRITICAL_RETREAT_HP
-            and type(enemy) is int and enemy > 0)
+    needed = (not cur.get('card_hp_unread') and type(hp) is int
+              and 0 < hp <= GENERAL_CRITICAL_RETREAT_HP
+              and type(enemy) is int and enemy > 0)
+    if needed:
+        cur['critical_survival_needed_observed'] = True
+    return needed
 
 
 GENERAL_EGG_REOPEN_LIMIT = 2
