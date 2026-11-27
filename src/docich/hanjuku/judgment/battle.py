@@ -954,6 +954,23 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     return result
 
 
+# owner 2026-11-28: ダメージ判定による札の拒否を廃止する。判定（role/estimate）は
+# 札を選ぶ順序の材料として残すが、拒否して一覧を閉じることはしない。
+# 退却も完全に廃止済みのため、札を持ったまま負ける方が悪い。
+# 一撃で倒せる保証がないことを理由にした拒否は廃止する。
+# 画面の読めない・HP0パネルなど、データの整合性を守る拒否は残す。
+CARD_REFUSAL_RETIRED_ROLES = frozenset({'nonlethal_egg_risk'})
+
+
+def _card_refusal_retired(role=None, cur=None):
+    if role not in CARD_REFUSAL_RETIRED_ROLES:
+        return False
+    if not isinstance(cur, dict):
+        return True
+    enemy = cur.get('enemy')
+    return bool(enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS)
+
+
 def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
     """Remember a refusal without consuming the card or looping B unchanged."""
     signature = _card_damage_key(mem, cur)
