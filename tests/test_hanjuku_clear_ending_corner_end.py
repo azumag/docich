@@ -57,6 +57,18 @@ class ClearEndingTest(unittest.TestCase):
             self.assertTrue(state.get("clear_ending_seen"))
             self.assertIsNone(state.get("terminal_reason"))
 
+    def test_an_ending_scene_before_the_title_marks_the_clear_ending(self):
+        # The めでたし line can appear on the ending scenes before the title.
+        with tempfile.TemporaryDirectory() as raw:
+            runtime = Path(raw)
+            self._prime(runtime, terminal_candidate=False, title_count=0, phase='event')
+            fake = mock.Mock(text='めでたし　めでたし')
+            with mock.patch.object(hanjuku_run, 'classify', return_value='event'), \
+                    mock.patch('docich.hanjuku_screen.parse', return_value=fake):
+                state = hanjuku_run.observe(runtime, IDENTITY, _frame(3),
+                                            now=1001.0, wall=1001.0)
+            self.assertTrue(state.get('clear_ending_seen'))
+
     def test_a_normal_title_return_still_latches_game_over(self):
         with tempfile.TemporaryDirectory() as raw:
             runtime = Path(raw)
