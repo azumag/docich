@@ -896,7 +896,8 @@ def battle_step(screen: Screen, mem):
             # A panel at zero is the end of the fight: drop the opening card
             # that has not reached the command menu yet instead of pushing B
             # after a resolution the chart cannot follow up on.
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま戦闘終了パネルへ進んだため中断')
         return []
     # The opening taunt can coexist with a complete HP panel. B is ignored
     # while it is visible, so do not spend any opening budget or pending wait.
@@ -934,7 +935,8 @@ def battle_step(screen: Screen, mem):
             if flow.get('stage') == 'announce':
                 _card_use_unclassified(mem, cur, '一騎打ちにコマンドメニューはなく、未確認の切り札使用を待てない')
             else:
-                cur['card_flow'] = None
+                _release_interrupted_card_flow(
+                    mem, cur, '選択済み・消費未確認のまま一騎打ちへ置き換わったため中断')
         return _melee_step(mem, cur)
     # Card selection and subsequent damage do not prove that the card hit:
     # the A input may not have reached the game, and melee also lowers HP.
@@ -965,7 +967,8 @@ def battle_step(screen: Screen, mem):
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
         else:
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま本人卵の救済確認へ置き換わったため中断')
         rescue = _survival_state(mem, cur)
         rescue.update(egg_priority=True, opens=rescue['opens'] + 1,
                       pending_opens=rescue.get('pending_opens', 0) + 1, menu_ticks=0)
@@ -1286,7 +1289,8 @@ def _hp1_hold_step(mem, cur):
             _card_use_unclassified(
                 mem, cur, '相手HP1で資源を使わないため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
         else:
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま相手HP1の資源温存へ切り替わったため中断')
     cur['melee_holds'] = 0
     if not cur.get('hp1_hold'):
         cur['hp1_hold'] = True
@@ -1305,7 +1309,8 @@ def _one_hit_finish_step(mem, cur):
         if flow.get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '敵が一撃で倒れるため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
         else:
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま一撃撃破の白兵へ切り替わったため中断')
     cur['melee_holds'] = 0
     if not cur.get('one_hit_finish'):
         cur['one_hit_finish'] = True
@@ -1534,6 +1539,8 @@ def _hero_retreat_open(mem, cur):
                 general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
                 observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
                                  'card_confirmation': 'unclassified',
+                                 'cards_selected': cur.get('cards_selected', []),
+                                 'cards_used': cur.get('cards_used', []),
                                  # docich#5192/#5194: export the unclassified
                                  # selection so the audit's cards_unconfirmed_only
                                  # downgrade fires on the retreat path too. #5158/
@@ -1561,7 +1568,26 @@ def _hero_retreat_open(mem, cur):
             return _human_menu_open(cur, 'survival', mem)
     flow = cur.setdefault('hero_retreat', {})
     flow['opens'] = flow.get('opens', 0) + 1
-    cur['card_flow'] = None  # supersede an unselected chart card intention
+    interrupted_card_flow = cur.get('card_flow') or {}
+    selected_interrupted = (isinstance(interrupted_card_flow.get('card'), str)
+                            and interrupted_card_flow.get('card') in (cur.get('cards_selected') or []))
+    pending_card = interrupted_card_flow.get('card') if selected_interrupted else None
+    if selected_interrupted:
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま退却確認へ置き換わったため中断')
+        _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
+                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
+                                 'card_confirmation': 'unclassified',
+                                 'selected_interrupted': True,
+                                 'cards_selected': cur.get('cards_selected', []),
+                                 'cards_used': cur.get('cards_used', []),
+                                 'cards_unclassified': cur.get('cards_unclassified', [])},
+                resulting_event='retreat_preempted_card_use',
+                reason='選択済み・消費未確認の切り札 flow を抱えたまま退却を優先')
+    else:
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま退却確認へ置き換わったため中断')
     _record(mem, 'battle_hero_retreat_open', **_battle_labels(cur),
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'),

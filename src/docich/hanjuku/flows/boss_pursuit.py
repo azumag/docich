@@ -155,9 +155,34 @@ def _mark_lost(mem, general):
     mem.setdefault('generals_lost_at', {})[general] = time.time()
 
 
+def _retire_evicted_orders(mem):
+    """Retire the plan orders of already-evicted wave generals.
+
+    The eviction can happen before the order is retired (or the wave is
+    already empty), and a pending boss order whose general was evicted can
+    never launch, which keeps the イデ！->ボス sortie from being planned.
+    """
+    evicted = mem.get('boss_wave_evicted') or {}
+    if not isinstance(evicted, dict) or not evicted:
+        return
+    orders = mem.setdefault('plan', {}).setdefault('orders', {})
+    if not isinstance(orders, dict):
+        return
+    retired = mem.setdefault('boss_wave_evicted_retired', {})
+    for general, step in list(evicted.items()):
+        if not isinstance(step, str) or not step or retired.get(general) == step:
+            continue
+        if orders.get(step) in ('pending', None):
+            orders[step] = 'failed'
+            retired[general] = step
+            _record(mem, 'boss_order_retired_evicted', general=general, chart_step=step,
+                    reason='追放済み将軍のボス注文は出撃できないため失敗にし、到達可能な城から新しいボス注文を作らせる')
+
+
 def _evict_unreachable_waves(mem, wave):
     """Owner 2026-11-27: a stale wave general stranded west of the ch9 cliff
     can never reach the boss area; evict it so a fresh wave launches from a
+    reachable castle (イデ！ and the east). Recall to イデ！ is not assumed --
     reachable castle. Recall to the last corridor castle is not assumed --
     the general may not be able to enter it at all."""
     now = int(mem.get('tick') or 0)
@@ -171,6 +196,15 @@ def _evict_unreachable_waves(mem, wave):
                 and not chart.ch9_boss_approachable(uw)):
             wave.pop(general, None)
             mem.setdefault('boss_wave_evicted', {})[general] = entry.get('step')
+            # The evicted general's boss order can never launch: retire it so
+            # the planner builds a fresh boss wave from a reachable castle
+            # (live 2026-11-27: the stale pending orders kept the イデ！->ボス
+            # sortie from ever being planned).
+            step = entry.get('step')
+            if isinstance(step, str) and step:
+                orders = mem.setdefault('plan', {}).setdefault('orders', {})
+                if isinstance(orders, dict) and orders.get(step) in ('pending', None):
+                    orders[step] = 'failed'
             _record(mem, 'boss_wave_unreachable_evicted', general=general,
                     observed_metric={'unit_world': list(uw), 'step': entry.get('step')},
                     reason='崖の西に取り残された古いウェーブ将軍は到達不能のため追放し、到達可能な城から新しいウェーブを出す')
@@ -205,6 +239,7 @@ def track(mem):
                 and isinstance(general, str) and general:
             wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
     _evict_unreachable_waves(mem, wave)
+    _retire_evicted_orders(mem)
     home = {g for residents in garrison.values()
             if isinstance(residents, list) for g in residents}
     stale = mem.get('generals_lost_garrison') or {}

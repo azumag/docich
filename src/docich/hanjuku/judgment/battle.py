@@ -171,6 +171,9 @@ def _note_card_flow_event(mem, cur, event, card=None, **fields):
 
 def _begin_card_flow(mem, cur, flow, *, source):
     """Install a card flow and keep its opening HP/provenance for battle_end."""
+    if isinstance(cur.get('card_flow'), dict):
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま後続の切り札/救済フローへ置き換わったため中断')
     flow = dict(flow)
     flow.setdefault('ally_hp_at_open', cur.get('ally_hp'))
     flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
@@ -423,8 +426,8 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
     card = flow.get('card')
     selected = (selected_interrupted
                 or flow.get('selection_planned') is True
-                or (flow.get('stage') == 'announce'
-                    and card in cur.get('cards_selected', [])))
+                or (isinstance(card, str)
+                    and card in (cur.get('cards_selected') or [])))
     if not selected:
         # g496: the B/menu opening expired before any list selection, but the
         # old path consumed an イッテツーン and counted it for after_card.
@@ -952,6 +955,27 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
         if isinstance(gates, dict) and isinstance(gates.get(card), dict):
             gates[card]['seq'] = event['seq']
     return result
+
+
+# owner 2026-11-28: ダメージ判定による札の拒否を廃止する。判定（role/estimate）は
+# 札を選ぶ順序の材料として残すが、拒否して一覧を閉じることはしない。
+# 退却も完全に廃止済みのため、札を持ったまま負ける方が悪い。
+# 一撃で倒せる保証がないことを理由にした拒否は廃止する。
+# 画面の読めない・HP0パネルなど、データの整合性を守る拒否は残す。
+CARD_REFUSAL_RETIRED_ROLES = frozenset({'nonlethal_egg_risk'})
+
+
+def _card_refusal_retired(role=None, cur=None):
+    if role not in CARD_REFUSAL_RETIRED_ROLES:
+        return False
+    if not isinstance(cur, dict):
+        return True
+    # 死ぬ実例は「負けるボス戦」だった。HPに余裕がある間は従来の評価を保つ。
+    ally_hp = cur.get('ally_hp')
+    start_hp = cur.get('start_ally_hp')
+    if type(ally_hp) is not int or type(start_hp) is not int or start_hp <= 0:
+        return False
+    return ally_hp * 3 <= start_hp
 
 
 def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
