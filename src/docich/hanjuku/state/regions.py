@@ -266,6 +266,7 @@ KEY_OWNERSHIP = {
     'egg_menu_escape': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 卵メニュー脱出の試行記録(flows.battle_menus が書く)
     'sortie_launch_pending': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 出撃開始〜発射確認の間だけ立つ(flows.map が書く)
     'chikujou_defer': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内で築城探索を出撃へ譲った回数(flows.month が書く)
+    'move_leg_failed': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内に失敗した移動 leg
     'victory_menu_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 勝利メニューの連続保持回数(orchestrator が書く)
     'chapter_end_save_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 章末セーブ確認の連続保持回数(flows が書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理
