@@ -99,7 +99,7 @@ def test_an_east_unit_keeps_the_ambush_aim(monkeypatch):
     mem = memory(boss_pursuit=_probe(unit_world=list(EAST)),
                  boss_cell_track=_orbit_track())
     _dest_step(mem, monkeypatch)
-    assert mem['pursuit_aim'] == [700, 300]
+    assert mem['pursuit_aim'] == [700 + bp.CH9_AMBUSH_X_OFFSET, 300]
 
 
 def test_the_lead_aim_also_detours_for_a_pocket_unit(monkeypatch):
