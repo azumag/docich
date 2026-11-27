@@ -199,3 +199,25 @@ def test_without_a_pending_launch_the_scroll_continues():
                               'left_menu': True}
     assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('down')]
     assert not sub.get('declined')
+
+
+def test_the_deferral_count_is_bounded_per_month(monkeypatch):
+    # owner 2026-11-27 (#5733): 出撃の多い月に毎回築城を譲ると「築城可能なまま月一終了」
+    # になるため、月内の打ち切り回数に上限を置く。
+    from docich.hanjuku.flows import month as month_flow
+    monkeypatch.setattr(month_flow, 'active_sortie_launch_priority', lambda mem: 'A:3:M1')
+    frame = read_png(FRAME)
+    screen = parse(frame)
+    mem = holdings(key='3-9')
+    mem['month'] = '3-9'
+    sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
+                              'rows_tried': list(NAMES[:4]), 'presses': 1,
+                              'build_scroll': {'presses': 1}, 'left_menu': True}
+    for _ in range(month_flow.CHIKUJOU_DEFER_LIMIT):
+        assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('b')]
+        sub['declined'] = False
+        sub['aborted'] = False
+        sub['build_scroll'] = {'presses': 1}
+    # 上限に達したら、発射待ちでも通常の探索へ戻る
+    assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('down')]
+    assert mem['chikujou_defer']['count'] == month_flow.CHIKUJOU_DEFER_LIMIT
