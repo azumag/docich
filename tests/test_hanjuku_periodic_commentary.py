@@ -640,3 +640,13 @@ def test_delivery_uses_the_fenced_audio_queue_and_posts_no_chat(live, monkeypatc
     assert kwargs['context'] == 'hanjuku_commentary'
     assert kwargs['runtime_fence'] == {**IDENTITY, 'expires_at': live.now + 60}
     assert json.loads((live.runtime / 'hanjuku_narration.jsonl').read_text())['status'] == 'enqueued'
+
+def test_prompt_requires_desumasu_tone(live):
+    # owner 2026-11-27: 15分実況は「です・ます」調にする（だ・である調は不可）。
+    value = periodic.situation(live.runtime, RUN, _state(live), live.now)
+    prompt = periodic.build_prompt(value)
+    assert 'です・ます' in prompt
+    assert '常体は使わない' in prompt
+    # 以前の「〜でしょう」「〜ですね」禁止は、丁寧な語尾として許可に変わった。
+    assert '「〜でしょう」「〜ですね」「〜てやりましょう」' not in prompt
+
