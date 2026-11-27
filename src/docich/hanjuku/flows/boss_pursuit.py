@@ -56,6 +56,7 @@ PURSUIT_STALE_TICKS = 21600
 # march takes about six). Aim one measured displacement ahead instead, clamped
 # so the lead cell stays on the island.
 PURSUIT_LEAD_TICKS = 360      # march time the lead covers (~6 min)
+PURSUIT_CELL_FRESH_TICKS = 600  # a measured boss cell this fresh licenses a stale re-aim
 CH9_AMBUSH_X_OFFSET = 8       # owner 2026-11-27: track cells sit a little left
 PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # A general placed on the orbit must be allowed to wait for the boss to come
@@ -154,6 +155,27 @@ def _mark_lost(mem, general):
     mem.setdefault('generals_lost_at', {})[general] = time.time()
 
 
+def _evict_unreachable_waves(mem, wave):
+    """Owner 2026-11-27: a stale wave general stranded west of the ch9 cliff
+    can never reach the boss area; evict it so a fresh wave launches from a
+    reachable castle. Recall to the last corridor castle is not assumed --
+    the general may not be able to enter it at all."""
+    now = int(mem.get('tick') or 0)
+    for general, entry in list(wave.items()):
+        if not isinstance(entry, dict):
+            continue
+        uw = entry.get('unit_world')
+        launched = entry.get('launched')
+        if (isinstance(uw, (list, tuple)) and len(uw) == 2
+                and type(launched) is int and now - launched >= PURSUIT_STALE_TICKS
+                and not chart.ch9_boss_approachable(uw)):
+            wave.pop(general, None)
+            mem.setdefault('boss_wave_evicted', {})[general] = entry.get('step')
+            _record(mem, 'boss_wave_unreachable_evicted', general=general,
+                    observed_metric={'unit_world': list(uw), 'step': entry.get('step')},
+                    reason='崖の西に取り残された古いウェーブ将軍は到達不能のため追放し、到達可能な城から新しいウェーブを出す')
+
+
 def track(mem):
     """Merge boss-target sorties into the remembered pursuit list (owner rule).
 
@@ -182,6 +204,7 @@ def track(mem):
         if target == chart.boss_castle(ch) \
                 and isinstance(general, str) and general:
             wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
+    _evict_unreachable_waves(mem, wave)
     home = {g for residents in garrison.values()
             if isinstance(residents, list) for g in residents}
     stale = mem.get('generals_lost_garrison') or {}
@@ -495,6 +518,9 @@ def _candidate(mem):
     """The oldest boss-bound general that has marched long enough to re-aim."""
     now = int(mem.get('tick') or 0)
     wave = mem.get(LIST_KEY) or {}
+    fresh_any = any(isinstance(e, dict) and type(e.get('launched')) is int
+                    and now - e['launched'] < PURSUIT_STALE_TICKS
+                    for e in wave.values())
     best = None
     for general, e in wave.items():
         launched = e.get('launched')
@@ -505,7 +531,15 @@ def _candidate(mem):
         # generals were re-aimed again (live g1288 2026-11-20 15:33: エストラゴン
         # launched, カシス from tick 1475 was still selected first).
         if type(launched) is int and now - launched >= PURSUIT_STALE_TICKS:
-            continue
+            if fresh_any:
+                # A fresh wave always wins; stale entries are only the fallback
+                # when the whole wave is old (owner 2026-11-27).
+                continue
+            _cell = mem.get('boss_cell') or {}
+            _fresh = (type(_cell.get('tick')) is int
+                      and 0 <= now - _cell['tick'] <= PURSUIT_CELL_FRESH_TICKS)
+            if not _fresh:
+                continue
         unit_world = e.get('unit_world')
         unreachable = (unit_world is not None and not chart.ch9_boss_approachable(unit_world))
         streak = int(e.get('no_move_streak') or 0)
@@ -632,8 +666,20 @@ def step(screen, mem, frame):
         # _candidate still needs a marched wave general, so non-ch9 phases
         # never reach this code anyway.
         if wave_stale(mem):
-            _note_stale_wave(mem)
-            return None
+            # Owner 2026-11-27: a stale wave with a freshly measured boss cell
+            # must still re-place the camped general on the track; otherwise
+            # the bot measures the skull forever and never pursues.
+            _cell = mem.get('boss_cell') or {}
+            _now = int(mem.get('tick') or 0)
+            _fresh = (type(_cell.get('tick')) is int
+                      and 0 <= _now - _cell['tick'] <= PURSUIT_CELL_FRESH_TICKS)
+            if not _fresh:
+                _note_stale_wave(mem)
+                return None
+            _record(mem, 'boss_wave_stale_fresh_cell',
+                    observed_metric={'cell': list(_cell.get('cell') or ()),
+                                     'cell_tick': _cell.get('tick'), 'tick': _now},
+                    reason='ウェーブは古いがボスセルが新しいため、追撃を再開して軌道へ置き直す')
         mem.pop('boss_wave_stale_noted', None)
         pick = _candidate(mem)
         if pick is None:
