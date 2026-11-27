@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the free-strategy PAPER improvement once daily
+
+[Timer]
+# 06:40 JST: after the regular PAPER improvement (06:20 JST).
+OnCalendar=*-*-* 06:40:00 Asia/Tokyo
+Persistent=true
+AccuracySec=1min
+Unit=docich-free-strategy-improve.service
+
+[Install]
+WantedBy=timers.target

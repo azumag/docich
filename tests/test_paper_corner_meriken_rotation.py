@@ -135,7 +135,7 @@ def test_rotation_paper_real_entries_keep_meriken_and_delivery_identity(
     assert state["status"] == "completed"
     assert state["date"] == date
     assert {key for key in state["reports"] if key.startswith("script:")} == {
-        f"script:{slot}" for slot in range(1, 9)
+        f"script:{slot}" for slot in range(1, 10)
     }
     keys = {f"corner-rotation:{request_id}:{date}:{key}" for key in state["reports"]}
     assert {key for key, _, _ in deliveries} == keys
@@ -144,9 +144,9 @@ def test_rotation_paper_real_entries_keep_meriken_and_delivery_identity(
     assert sum(dedup for _, _, dedup in deliveries) == int(crash_after_publish)
     queue = tmp_path / "soren/tmp/.comment_queue"
     audio = list(queue.glob("*_crypto_paper.txt"))
-    assert len(audio) == len(keys) == 10  # opening + eight slots + end
+    assert len(audio) == len(keys) == 11  # opening + nine slots + end
     assert all(Path(str(path) + ".speaker").read_text() == "14" for path in audio)
-    assert all(state["reports"][f"script:{slot}"]["drained"] for slot in range(1, 9))
+    assert all(state["reports"][f"script:{slot}"]["drained"] for slot in range(1, 10))
     before = {str(path.relative_to(queue)): path.read_bytes() for path in queue.rglob("*") if path.is_file()}
     # A terminal request replays without another transition or queue write.
     manager = (FastPaperCornerManager if entry == "scheduled" else paper_corner_manual.ManualPaperCornerManager)(g)

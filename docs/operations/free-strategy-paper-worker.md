@@ -144,3 +144,34 @@ sudo systemctl disable --now docich-free-strategy-worker.service
 
 このworkerから実注文へ切り替える設定はありません。`live` / `promote` コマンドもありません。
 本運用を作る場合は別設計・別レビュー・別承認が必要です。
+
+## 定期改善と昇格判定（2026-11-27 オーナー決定）
+
+自由戦略も通常のPAPERと同じく、毎日改善する。`docich free-strategy improve`
+（[`improve.py`](../../src/docich/trading/free_strategy/improve.py)）を
+`docich-free-strategy-improve.timer`（毎日 06:40 JST、`Persistent=true`）が1回実行する。
+
+1. `free-strategies/improve.disabled` があれば何もしない（停止スイッチ）。
+2. 損失ストップ（`drawdown_limit`）で止まった候補は、期限を今に縮めて次のcycleで清算させ、観測枠を空ける。
+3. 全候補の昇格判定を `free-strategies/promotion.json`（0600）へ書く（下記）。
+4. 観測枠（最大2）に空きがあれば、過去の候補の成績（費用込みの損益・最大ドローダウン・約定数・停止理由、最大8件）を
+   プロンプトに入れて新しい候補を1件だけ作る。プロバイダーへの依頼は従来どおりUTCの1日1回まで。新しい候補の期間は7日。
+
+**昇格判定（ルール `free-v1`）**：候補のPAPER評価額の日次リターン（日本時間の日ごとに、その日の最後の評価額を前日と比べる。
+作成日と当日は使わない）を、通常PAPERのルールv3と同じ e-process に通す（E ≥ 5、日ブロック5以上、1日0.2%の帰無）。
+隔離（quarantined）・評価が古い候補は対象外。LIVEで自由戦略が動いているときは、同じ日でそのLIVEの日次リターンを上回ることも要る。
+判定は報告を書くだけで、LIVEへの反映はLIVE側が行う。
+
+**AIの呼び出し**：生成は従来どおり、道具を使わない文章専用のHTTPS窓口だけを使う（コーディングエージェントは使わない）。
+窓口の設定は `~/.config/docich/free-strategy-ai.env`（0600、Gitに入れない。例は `scripts/systemd/free-strategy-ai.env.example`）。
+候補に渡す銘柄は `free-strategy-worker.env` の `DOCICH_FREE_STRATEGY_SYMBOLS`（JPY建て最大8）。
+
+導入（workerの導入後、VM上で）:
+
+```sh
+sed "s|__DOCICH_ROOT__|$(pwd)|g" scripts/systemd/docich-free-strategy-improve.service \
+  | sudo tee /etc/systemd/system/docich-free-strategy-improve.service >/dev/null
+sudo cp scripts/systemd/docich-free-strategy-improve.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now docich-free-strategy-improve.timer
+```

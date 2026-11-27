@@ -22,7 +22,7 @@ ROWS = 24
 _SPARK_LEVELS = "▁▂▃▄▅▆▇█"
 _MISSING = "―"
 
-HEADER_TITLE = "PAPER 暗号資産コーナー"
+HEADER_TITLE = "暗号通貨コーナー PAPER"
 
 
 def _width(text: str) -> int:

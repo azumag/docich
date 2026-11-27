@@ -128,7 +128,7 @@ def test_prefetch_generates_each_slot_exactly_once(tmp_path, monkeypatch):
     assert calls == list(SEGMENT_KEYS)
     saved = json.loads(mgr.path.read_text())
     assert all(saved["reports"][f"script:{index}"]["source"] == "ai"
-               for index in range(1, 9))
+               for index in range(1, 10))
 
 
 def test_prefetch_starts_after_announce_and_before_the_wait(tmp_path):
@@ -147,16 +147,16 @@ def test_prefetch_starts_after_announce_and_before_the_wait(tmp_path):
     assert mgr._run_locked(_starting_state()) == "completed"
 
     assert order[:2] == [("prefetch", 2), ("wait",)]
-    assert order.count(("wait",)) == 9
+    assert order.count(("wait",)) == 10
     # The loop asks for the slot after each announced segment; the real
-    # _start_prefetch declines the out-of-range index 9 (see the unit test).
+    # _start_prefetch declines the out-of-range index 10 (see the unit test).
     assert [entry for entry in order if entry[0] == "prefetch"] == [
-        ("prefetch", index) for index in range(2, 10)]
+        ("prefetch", index) for index in range(2, 11)]
 
 
 def test_start_prefetch_declines_when_not_useful(tmp_path):
     mgr, _coord = _manager(tmp_path)
-    assert mgr._start_prefetch({}, 9, None) is None
+    assert mgr._start_prefetch({}, 10, None) is None
     assert mgr._start_prefetch({"reports": {"script:2": {"text": "既存"}}}, 2, None) is None
 
     disabled, _coord = _manager(tmp_path, script_agents="")

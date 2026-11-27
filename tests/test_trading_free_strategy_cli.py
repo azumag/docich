@@ -45,7 +45,7 @@ def test_register_status_evaluate_pause_and_resume_are_paper_only(tmp_path):
 
     report = run_args(_args(trading_dir, "evaluate", identity), now_fn=lambda: 1_100.0)
     assert report["live_eligible"] is False
-    assert "live_broker_not_implemented" in report["blockers"]
+    assert "promotion_judgement_required" in report["blockers"]
 
     paused = run_args(_args(trading_dir, "pause", identity), now_fn=lambda: 1_101.0)
     assert paused == {"mode": "PAPER", "status": "paused", "experiment": identity}
