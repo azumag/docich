@@ -24,9 +24,10 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
                                RETREAT_CARD_GRACE_LIMIT, _retreat_cards_to_spend, _retreat_immediate_loss,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
-                               MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _bind_battle_strategy,
+                               MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _begin_card_flow, _bind_battle_strategy,
                                _bind_event_duel, _bind_substitute_defender, _boss_tactics_allowed,
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
+                               _card_miss_evidence,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _defender_summon_preempt, _defense_kit_read_unread, _defense_kit_read_window,
@@ -1168,11 +1169,12 @@ def battle_step(screen: Screen, mem):
                 if not cur.get('deviation_reason'):
                     cur['strategy_variant'] = 'after_card_unconfirmed'
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
-            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
-                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
-                                'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
-                                'egg_drop_only': bool(tactic.get('egg_drop_only')),
-                                'kit_source': egg_plan.get('kit_source')}
+            _begin_card_flow(mem, cur, {'card': tactic['card'], 'stage': 'menu', 'note': note,
+                                        'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
+                                        'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
+                                        'egg_drop_only': bool(tactic.get('egg_drop_only')),
+                                        'kit_source': egg_plan.get('kit_source')},
+                             source='chart_tactic')
             # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
             # どの札が落ちさせても同じなので、チャート札も同じ根拠で監視する。
             drop_evidence = _egg_drop_evidence(cur, tactic['card'])
@@ -1626,8 +1628,9 @@ def _defense_kit_read_open(mem, cur):
     guard['opens'] += 1
     # A read-only flow: card is None, so no tactic/list selection can consume a
     # card. The existing card_flow branch sends the bounded B to open the menu.
-    cur['card_flow'] = {'card': None, 'stage': 'menu', 'read_kit': True,
-                        'enemy_hp_at_open': cur.get('enemy_hp')}
+    _begin_card_flow(mem, cur, {'card': None, 'stage': 'menu', 'read_kit': True,
+                                'enemy_hp_at_open': cur.get('enemy_hp')},
+                     source='defense_kit_read')
     _record(mem, 'battle_defense_kit_read_open', **_battle_labels(cur),
             observed_metric={**window, 'open_attempt': guard['opens'],
                              'limit': DEFENDER_EGG_OPEN_LIMIT},
@@ -2046,7 +2049,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 side=cur.get('side'), screen_kind='battle_end',
                 observed_metric={'cards_left': [card for card in (cur.get('planned_cards') or ())
                                                if isinstance(card, str)],
-                                 'screen': 'battle_end'},
+                                 'screen': 'battle_end',
+                                 **_card_miss_evidence(mem, cur, _boss_card, outcome=outcome)},
                 reason='ボス戦で携行切り札を使わないまま戦闘が終了した')
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
