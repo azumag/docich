@@ -460,32 +460,38 @@ def _card_gate_close(mem, cur, names):
 
 
 def _observe_clash_gauge(mem, cur, screen):
-    """Keep the measured 連打ゲージ beside the battle, and contrast it with
-    the predicted egg state the first time a calibrated blue window appears.
+    """Keep the measured 連打ゲージ beside the battle, and contrast its first
+    visible timing cue with the predicted egg state.
 
     対比は記録だけ (docich#1553): 青窓と卵落予測の一致・矛盾の判定は、青の
     実機校正が済むまで 'unclassified' に留める。測定が予測を書き換えることは
     なく、power_mash / egg_safe_hold の切替も ASSIST_PULSE も追加しない
     (#1180 Phase 1 の契約)。confidence 基準: state 'blue' は校正済み
     CLASH_GAUGE_BLUE のパレットが枠内の最頻色であることだけを根拠にする。
-    未校正 (表が空) の間は blue は一度も立たない。
+    未校正 (表が空) の間は blue は一度も立たない。2章以降の実窓である dim
+    も同じ記録に残し、連打タイミングを後から実画面と照合できるようにする。
     """
     gauges = getattr(screen, 'clash_gauges', None) or []
     cur['clash_gauge'] = ({g.side: {'state': g.state, 'filled': g.filled,
                                     'box': list(g.box), 'tones': [list(t) for t in g.tones]}
                            for g in gauges} or None)
-    blue = next((g for g in gauges if g.state == 'blue'), None)
-    if blue is None or cur.get('clash_gauge_blue_seen'):
+    cue = next((g for g in gauges if g.state == 'blue'), None)
+    cue_state = 'blue'
+    if cue is None:
+        cue = next((g for g in gauges if g.state == 'dim'), None)
+        cue_state = 'dim'
+    if cue is None or cur.get('clash_gauge_cue_seen'):
         return
-    cur['clash_gauge_blue_seen'] = True
+    cur['clash_gauge_cue_seen'] = True
     _record(mem, 'battle_clash_gauge_cross_check', **_battle_labels(cur),
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
-            observed_metric={'clash_gauge': cur['clash_gauge'], 'blue_side': blue.side},
+            observed_metric={'clash_gauge': cur['clash_gauge'],
+                             'cue_state': cue_state, f'{cue_state}_side': cue.side},
             expected_metric={'enemy_egg_drop_expected': cur.get('enemy_egg_drop_expected') is True,
                              'egg_drop_watch': cur.get('egg_drop_watch'),
                              'dropper_plan': (cur.get('plan') or {}).get('egg_drop')},
             verdict='unclassified',
-            reason='接触の青ゲージを実測した。卵落予測との一致・矛盾は青の校正後に判定し、制御は変更しない')
+            reason='接触ゲージの実測タイミング窓を記録した。卵落予測との一致・矛盾は校正後に判定し、制御は変更しない')
 
 
 def _observe_defender(mem, cur):
@@ -800,7 +806,7 @@ def battle_step(screen: Screen, mem):
                     reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         _bind_substitute_defender(mem, cur, b)
         _bind_event_duel(mem, cur)
-        planned = _planned_battle_cards(mem, cur, b.enemy)
+        planned = [] if cur.get('event_duel') is True else _planned_battle_cards(mem, cur, b.enemy)
         cur['planned_cards'] = list(planned)
         if isinstance(b.ally, str) and type(b.ally_hp) is int:
             # The HP this general brought into the fight is the only measured
@@ -904,6 +910,21 @@ def battle_step(screen: Screen, mem):
                     reason='開始台詞の保留が上限に達したため、既存の戦闘判断へ戻す')
     else:
         cur.pop('opening_dialogue_waits', None)
+    if cur.get('event_duel') is True:
+        # A monthly event duel has no command menu.  Cards/eggs/retreat all
+        # begin with B, and the card planner can otherwise reuse a stale
+        # sortie kit snapshot: in the g1342 Cassis duel the opening plan sent
+        # B for eight seconds while どうし fell 90 -> 25, then he lost 0 -> 3.
+        # Drop only an unopened menu flow and keep any already-announced use
+        # unclassified; the duel itself must spend every controllable frame
+        # on the clash A burst.
+        flow = cur.get('card_flow')
+        if flow:
+            if flow.get('stage') == 'announce':
+                _card_use_unclassified(mem, cur, '一騎打ちにコマンドメニューはなく、未確認の切り札使用を待てない')
+            else:
+                cur['card_flow'] = None
+        return _melee_step(mem, cur)
     # Card selection and subsequent damage do not prove that the card hit:
     # the A input may not have reached the game, and melee also lowers HP.
     _observe_egg_drop_candidate(mem, cur)
@@ -1322,11 +1343,13 @@ def _melee_step(mem, cur):
     cur['melee_holds'] = 0 if safe else holds + 1
     if probe:
         cur['card_damage_probe_ticks'] = probe_ticks + 1
-    if safe and not probe and _hero_losing_melee(cur):
+    if safe and not probe and not duel and _hero_losing_melee(cur):
         # Mashing a hero trade we are measurably losing ends the run: after
         # the hold budget the melee would push to HP 0 (g749 hero/Athena).
         # The command menu is the only way out of a defense, so reopen it
-        # while its result is still unobserved, bounded per fight.
+        # while its result is still unobserved, bounded per fight.  A monthly
+        # event duel has no B menu at all, so this recheck must not displace
+        # its A input there.
         rescue = _survival_state(mem, cur)
         reopens = int(rescue.get('hero_reopens') or 0)
         if (rescue.get('menu_ticks', 0) == 0 and not rescue.get('egg_attempted')

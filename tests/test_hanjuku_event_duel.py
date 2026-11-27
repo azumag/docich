@@ -126,3 +126,44 @@ def test_duel_dim_window_is_recorded_and_uses_the_single_window_press():
                for a in pads)
     melee = [r for r in mem['_records'] if r['decision'] == 'battle_melee']
     assert melee and melee[-1]['duel_gauge_dim'] is True
+
+
+def test_losing_event_duel_never_substitutes_the_absent_survival_menu():
+    mem = {'chapter': 9, 'tick': 100, 'egg_uses': {'どうし': 1}}
+    policy.note_duel_event(
+        Screen([], None, '59ねん4のつき9993Gいってごあいてねがえぬか?うむッ!いかんッ!', kind='yes_no'),
+        mem,
+    )
+    outputs = []
+    for ally_hp in (90, 60):
+        mem['tick'] += 1
+        screen = Screen(lines=[], hand=None, text='', kind='battle',
+                        battle=Battle(ENEMY, 92, 'どうし', ally_hp))
+        outputs.append(policy.battle_step(screen, mem))
+    assert any(a.get('buttons') == ['a'] for a in outputs[-1])
+    assert not any(a.get('buttons') == ['b'] for acts in outputs for a in acts)
+    decisions = {r['decision'] for r in mem.get('_records', [])}
+    assert 'battle_hero_survival_recheck' not in decisions
+
+
+def test_event_duel_ignores_a_stale_carried_card_snapshot_and_mashes_immediately():
+    """g1342/Cassis regression: a stale launched-order kit made the opening
+    decision press B for イッテツーン.  Event duels have no command menu, so
+    even a confirmed carried card must not displace the first A burst."""
+    mem = {'chapter': 9, 'tick': 100,
+           'world': {'launched_orders': {
+               'stale-sortie': {'general': 'どうし', 'cards': ['イッテツーン'],
+                                'confirmation_tick': 90}}}}
+    policy.note_duel_event(
+        Screen([], None, '19ねん10のつき8433Gわたしとはたしあいをしてそなたが', kind='text'),
+        mem,
+    )
+    screen = Screen(lines=[], hand=None, text='', kind='battle',
+                    battle=Battle('カシス', 73, 'どうし', 90))
+    acts = policy.battle_step(screen, mem)
+    assert any(a.get('buttons') == ['a'] for a in acts)
+    assert not any(a.get('buttons') == ['b'] for a in acts)
+    decisions = {r['decision'] for r in mem.get('_records', [])}
+    assert 'battle_event_duel' in decisions
+    assert 'battle_card' not in decisions
+    assert mem['battle']['planned_cards'] == []

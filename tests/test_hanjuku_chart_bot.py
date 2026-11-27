@@ -4694,3 +4694,4 @@ def test_ample_army_duel_is_declined_with_ikan():
     mem = {'country_general_count': {'count': 20}}
     assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
     assert mem['_records'][-1]['strategy_variant'] == 'decline_duel_army'
+
