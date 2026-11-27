@@ -8114,6 +8114,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1388-crying-egg-battle-menu",
             "hanjuku-chart-v1389-idou-y-route-recall-hold",
             "hanjuku-chart-v1392-dispatch-starve-measure",
+            "hanjuku-chart-v1572-sortie-picker-resume",
+            "hanjuku-chart-v1574-audit-reissue-dedupe",
             "hanjuku-chart-v1393-roster-due-consume",
             "hanjuku-chart-v1397-recall-map-hold",
             "hanjuku-chart-v1398-egg-retry-on-hp-loss",
@@ -8143,10 +8145,10 @@ def _project_corner_state(data):
             "hanjuku-chart-v1460-password-entered-field",
             "hanjuku-chart-v1461-melee-only-ugokazaru",
             "hanjuku-chart-v1462-status-panel-owner-guard",
+            "hanjuku-chart-v1465-unowned-screen-review-guards",
             "hanjuku-chart-v1464-verified-month-blind-nav",
             "hanjuku-chart-v1463-battle-menu-scrolled-bottom",
             "hanjuku-chart-v1464-status-panel-owner-followups",
-            "hanjuku-chart-v1465-unowned-screen-review-guards",
             "hanjuku-chart-v1466-status-panel-owner-name",
             "hanjuku-chart-v1467-status-panel-owner-unreadable-egg",
             "hanjuku-chart-v1470-interim-order-purpose",
@@ -8235,11 +8237,45 @@ def _project_corner_state(data):
             "hanjuku-chart-v1549-victory-menu-hold",
             "hanjuku-chart-v1550-camp-dispatch-receipt",
             "hanjuku-chart-v1551-boss-month-phase-guard",
+<<<<<<< HEAD
             "hanjuku-chart-v1552-chapter-end-save-accept",
             "hanjuku-chart-v1552-ch9-sortie-speed",
             "hanjuku-chart-v1553-chapter-end-save",
             "hanjuku-chart-v1554-chapter-end-save",
             "hanjuku-chart-v1555-spend-eggs-and-cards",
+=======
+            "hanjuku-chart-v1553-chapter-end-save",
+            "hanjuku-chart-v1554-chapter-end-save",
+            "hanjuku-chart-v1556-boss-dispatch-recovery",
+            "hanjuku-chart-v1557-order-start-proof",
+            "hanjuku-chart-v1560-residual-card-evidence",
+            "hanjuku-chart-v1558-game-over-issue",
+            "hanjuku-chart-v1561-camp-resend-scene-reset",
+            "hanjuku-chart-v1562-duel-accept-evidence",
+            "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
+            "hanjuku-chart-v1563-speedrun-corner",
+            "hanjuku-chart-v1564-speedrun-corner",
+            "hanjuku-chart-v1565-camp-recall-dome-text-hold",
+            "hanjuku-chart-v1566-egg-attempt-retry",
+            "hanjuku-chart-v1567-sortie-launch-priority",
+            "hanjuku-chart-v1552-chapter-end-save-accept",
+            "hanjuku-chart-v1552-ch9-sortie-speed",
+            "hanjuku-chart-v1559-selected-card-interruption",
+            "hanjuku-chart-v1567-sortie-panel-occluded",
+            "hanjuku-chart-v1568-launch-priority-house",
+            "hanjuku-chart-v1569-chikujou-scan",
+            "hanjuku-chart-v1570-launch-priority-start",
+            "hanjuku-chart-v1571-duel-melee-only",
+            "hanjuku-chart-v1573-recall-preempt",
+            "hanjuku-chart-v1574-clear-ending-scene-scan",
+            "hanjuku-chart-v1575-ch9-ambush-x-offset",
+            "hanjuku-chart-v1576-commentary-desumasu",
+            "hanjuku-chart-v1577-stale-wave-fresh-cell",
+            "hanjuku-chart-v1578-chikujou-defer-bounded",
+            "hanjuku-chart-v1575-ch9-cliff-camp-recall",
+            "hanjuku-chart-v1576-stale-wave-fresh-cell",
+            "hanjuku-chart-v1577-boss-redirect-y-jump",
+>>>>>>> origin/main
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
@@ -9549,13 +9585,19 @@ def _collect_corner_files(state_dir, payload, now):
         last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
         deadline_at = data.get("deadline_at")
         deadline_expired = None
+        deadline_overdue_sec = None
         if isinstance(deadline_at, str) and deadline_at:
             try:
                 from datetime import datetime, timezone
                 deadline_dt = datetime.fromisoformat(deadline_at.replace('Z', '+00:00'))
                 deadline_expired = deadline_dt.timestamp() < now
-            except (ValueError, TypeError):
+                if deadline_expired:
+                    deadline_overdue_sec = min(
+                        7 * 86400, max(0, int(now - deadline_dt.timestamp()))
+                    )
+            except (ValueError, TypeError, OverflowError):
                 deadline_expired = None
+                deadline_overdue_sec = None
         entry.update(
             {
                 "phase": _bounded_str(data.get("phase"), 32),
@@ -9570,6 +9612,7 @@ def _collect_corner_files(state_dir, payload, now):
                 "updated_at": _bounded_str(data.get("updated_at"), 40),
                 "deadline_at": _bounded_str(deadline_at, 40),
                 "deadline_expired": deadline_expired,
+                "deadline_overdue_sec": deadline_overdue_sec,
             }
         )
     payload["game_switch"] = entry
@@ -12068,6 +12111,7 @@ SEVERITY_TRIGGERS = (
     "retro_corner_recovery_required",
     "corner_rotation_recovery_required",
     "corner_rotation_overdue",
+    "game_switch_in_flight_expired",
     "required_worker_stale",
     "required_worker_down",
     "paused_workers_actionable",
@@ -12085,6 +12129,27 @@ SEVERITY_TRIGGERS = (
     "improvement_persist_failure",
     "improvement_persist_clone_disappeared",
 )
+
+# docich#5708: canonical phases in which a switch waits on the old runtime
+# (round boundary / quiesce / stop).  Holding one past ``deadline_at`` means
+# the driver could not finish *or* cancel it -- the 2026-11-26 NetHack drain
+# sat there ~3.5 h with no alert.  A short grace absorbs the seconds a live
+# driver legitimately needs to notice the deadline and cancel.
+GAME_SWITCH_WAITING_PHASES = frozenset({"draining", "quiescing", "stopping"})
+GAME_SWITCH_EXPIRED_GRACE_SEC = 120
+
+
+def _game_switch_in_flight_expired(game_switch):
+    if not isinstance(game_switch, dict) or game_switch.get("readable") is not True:
+        return False
+    overdue = game_switch.get("deadline_overdue_sec")
+    return (
+        game_switch.get("phase") in GAME_SWITCH_WAITING_PHASES
+        and game_switch.get("deadline_expired") is True
+        and isinstance(overdue, int)
+        and not isinstance(overdue, bool)
+        and overdue >= GAME_SWITCH_EXPIRED_GRACE_SEC
+    )
 
 
 def _positive_count(value):
@@ -12133,6 +12198,9 @@ def _severity_report(workers, queues, ai, improvement, corners=None, hanjuku_res
     # reason itself is ambiguous, so the projection pre-ages it.
     triggers["corner_rotation_overdue"] = (
         isinstance(rotation, dict) and rotation.get("waiting_overdue") is True
+    )
+    triggers["game_switch_in_flight_expired"] = _game_switch_in_flight_expired(
+        corners.get("game_switch") if isinstance(corners, dict) else None
     )
     triggers["paused_workers_actionable"] = _paused_workers_actionable(workers)
     triggers["unregistered_workers_actionable"] = _unregistered_workers_actionable(workers)
@@ -13920,6 +13988,7 @@ HANJUKU_CAMP_DECISIONS = frozenset({
     'camp_found', 'camp_enter', 'camp_menu_not_opened', 'camp_menu_unread',
     'camp_position_unconfirmed', 'camp_recall_aborted', 'camp_recall_skipped',
     'camp_recall_unconfirmed', 'camp_recall_requested', 'camp_recall_input_sent',
+    'camp_recall_preempted',
     'camp_recall_picker_not_open', 'camp_recall_scene_abandoned',
     'camp_recall_battle_reset',
     'hero_recall_skipped', 'retreat_recheck_pending', 'retreat_recheck_unconfirmed',

@@ -261,6 +261,17 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
         self.assertEqual(self.run_auth(INPUT_OPERATION="start-hanjuku").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku",GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku;id").returncode, 0)
+        speedrun = self.run_auth(INPUT_OPERATION="start-hanjuku-speedrun")
+        self.assertEqual(speedrun.returncode, 0, speedrun.stderr)
+        self.assertEqual(
+            json.loads(speedrun.stdout),
+            {"operation": "start-hanjuku-speedrun", "target": "production", "ref": "main"},
+        )
+        self.assertNotEqual(self.run_auth(
+            INPUT_OPERATION="start-hanjuku-speedrun",
+            GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
+        self.assertNotEqual(self.run_auth(
+            INPUT_OPERATION="start-hanjuku-speedrun;id").returncode, 0)
         cleared = self.run_auth(INPUT_OPERATION="clear-hanjuku-clock-quarantine")
         self.assertEqual(cleared.returncode, 0, cleared.stderr)
         self.assertEqual(
@@ -495,7 +506,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-cancel-queued-hanjuku, cancel-queued-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner, check-rotation-owner, consolidate-rotation-owner]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, start-hanjuku-speedrun, resume-hanjuku-latest, clear-hanjuku-clock-quarantine, recover-runtime, check-cancel-hanjuku, cancel-hanjuku, check-cancel-queued-hanjuku, cancel-queued-hanjuku, check-admin-release-hanjuku, admin-release-hanjuku, check-recover-hanjuku-resume, recover-hanjuku-resume, recover-hanjuku-retry, check-cancel-prediction, cancel-prediction, check-sync-prediction, sync-prediction, check-release-stale-failed-owner, release-stale-failed-owner, check-rotation-owner, consolidate-rotation-owner]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -507,6 +518,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/recover_corner_rotation.sh",
             "control/ops/vm_actions/rollback_corner_rotation_timer.sh",
             "control/ops/vm_actions/start_hanjuku_corner.sh",
+            "control/ops/vm_actions/start_hanjuku_speedrun_corner.sh",
             "control/ops/vm_actions/clear_hanjuku_clock_quarantine.sh",
             "control/ops/vm_actions/recover_hanjuku_runtime.sh",
             "control/ops/vm_actions/admin_release_hanjuku_manual.sh",
@@ -524,6 +536,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "if: steps.auth.outputs.operation == 'recover-failed'",
             "if: steps.auth.outputs.operation == 'restart-service'",
             "if: steps.auth.outputs.operation == 'rollback-timer'",
+            "if: steps.auth.outputs.operation == 'start-hanjuku-speedrun'",
             "if: steps.auth.outputs.operation == 'recover-runtime'",
             "if: steps.auth.outputs.operation == 'clear-hanjuku-clock-quarantine'",
             "if: steps.auth.outputs.operation == 'check-release-stale-failed-owner' || steps.auth.outputs.operation == 'release-stale-failed-owner'",
@@ -716,5 +729,45 @@ def test_fixed_hanjuku_script_launches_only_owned_service(tmp_path):
     launches=[json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
     assert len(launches)==1
     assert launches[0]['argv']==['-m','docich.hanjuku_corner']
+    assert launches[0]['cwd']==str(root)
+    assert launches[0]['pythonpath']==str(root/'src')
+
+
+def test_speedrun_operator_rejects_extra_arguments_before_any_launch():
+    script=ROOT/'ops/vm_actions/start_hanjuku_speedrun_corner.sh'
+    result=subprocess.run(['bash',str(script),'arbitrary-command'],capture_output=True,text=True)
+    assert result.returncode==64
+    assert 'accepts no arguments' in result.stderr
+
+
+def test_fixed_hanjuku_speedrun_script_launches_only_the_speedrun_game(tmp_path):
+    import json
+    import os
+    script=(ROOT/'ops/vm_actions/start_hanjuku_speedrun_corner.sh').read_text(encoding='utf-8')
+    # Fixed production root launch path: no unit manager, no service verbs, and
+    # the only game selector is the reviewed speedrun name.
+    assert 'DOCICH_HANJUKU_ROOT=/home/ubuntu/docich' in script
+    assert '-m docich.hanjuku_corner --game hanjuku-speedrun' in script
+    assert 'systemd-run' not in script
+    root=tmp_path/'docich'
+    launcher=root/'.venv-trading'/'bin'/'python3'
+    launcher.parent.mkdir(parents=True)
+    log=tmp_path/'launches.jsonl'
+    launcher.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+        'open(os.environ["STUB_LOG"],"a").write(json.dumps({"argv":sys.argv[1:],'
+        '"cwd":os.getcwd(),"pythonpath":os.environ.get("PYTHONPATH")})+"\\n")\n')
+    launcher.chmod(0o755)
+    assert script.count('DOCICH_HANJUKU_ROOT=/home/ubuntu/docich')==1
+    probe=tmp_path/'start_hanjuku_speedrun_corner.sh'
+    probe.write_text(script.replace('DOCICH_HANJUKU_ROOT=/home/ubuntu/docich',
+        f'DOCICH_HANJUKU_ROOT={root}'))
+    probe.chmod(0o755)
+    result=subprocess.run(['bash',str(probe)],env={**os.environ,'STUB_LOG':str(log)},
+        capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert result.stdout.splitlines()==['queued Hanjuku Speedrun through common corner coordinator']
+    launches=[json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+    assert len(launches)==1
+    assert launches[0]['argv']==['-m','docich.hanjuku_corner','--game','hanjuku-speedrun']
     assert launches[0]['cwd']==str(root)
     assert launches[0]['pythonpath']==str(root/'src')

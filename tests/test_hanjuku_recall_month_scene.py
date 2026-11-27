@@ -17,7 +17,7 @@ from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from test_hanjuku_chart_bot import camp_menu
+from test_hanjuku_chart_bot import camp_menu, complete_recall_y_jump
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'hanjuku'
@@ -193,7 +193,7 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
                                                    'clipped': False}])
     target = Screen([], None, '', kind='map_target', marker=(163, 115))
     assert recall_flow._camp_recall_step(target, mem, frame) == [pad('y')]
-    mem['y_jumped'] = {'RECALL': _flow(mem)['recall']['goal']}
+    complete_recall_y_jump(mem)
     assert recall_flow._camp_recall_step(target, mem, frame) == [pad('a')]
     done = _flow(mem)['recall']
     assert done['stage'] == 'await_dispatch' and done['target_cell'] == [163, 115]

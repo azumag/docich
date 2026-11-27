@@ -183,6 +183,51 @@ def test_the_named_general_is_the_one_who_leaves():
     assert _flow(mem)['recall']['stage'] == 'fort_list'
 
 
+def test_a_monthly_task_recall_without_fort_actor_still_selects_its_named_general():
+    mem = memory(recall=fort_recall(stage='fort_list', task_recall=True, general='エピィ'))
+    assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('down')]
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'fort_list' and state['general'] == 'エピィ'
+
+
+def test_a_non_task_recall_does_not_use_general_as_the_fort_selection_fallback():
+    mem = memory(recall=fort_recall(stage='fort_list', general='エピィ'))
+    assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('a')]
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'fort_status' and state['general'] == 'ヴィーナス'
+
+
+def test_dome_menu_text_still_belongs_to_the_dome_screen_wait():
+    mem = memory(recall=fort_recall(stage='menu', steps=0))
+    text = Screen([], None, 'ドームの中の案内文', kind='text')
+    assert p.camp_recall_step(text, mem, object()) == []
+    state = _flow(mem)['recall']
+    assert state['steps'] == 1 and state['menu_other'] == 1
+
+
+def test_dome_dest_text_is_held_without_spending_the_recall_budget():
+    mem = memory(recall=fort_recall(stage='dest', fort=True, general='エピィ',
+                                    steps=recall.RECALL_LIMIT))
+    text = Screen([], None, '戦闘後の長い案内文', kind='text')
+    assert p.camp_recall_step(text, mem, object()) is None
+    state = _flow(mem)['recall']
+    assert state['steps'] == recall.RECALL_LIMIT
+    assert state['hold_since'] == mem['tick']
+    assert not decisions(mem, 'camp_recall_aborted')
+
+
+def test_dest_abort_projects_camp_goal_and_the_selected_fort_member():
+    mem = memory(recall=fort_recall(stage='dest', fort=True, general='エピィ',
+                                    goal='アルマムーン', target_cell=[12, 34],
+                                    steps=recall.RECALL_LIMIT))
+    assert p.camp_recall_step(MAP, mem, object()) == []
+    metric = decisions(mem, 'camp_recall_aborted')[-1]['observed_metric']
+    assert metric['camp'] == [131, 110]
+    assert metric['target_cell'] == [12, 34]
+    assert metric['castle'] == 'アルマムーン'
+    assert metric['general'] == 'エピィ'
+
+
 def test_the_picker_opens_the_y_jump_because_a_fort_has_no_castle_in_view(monkeypatch):
     monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
     monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])

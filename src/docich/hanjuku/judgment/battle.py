@@ -210,6 +210,21 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
     cur['card_flow'] = None
 
 
+def _release_interrupted_card_flow(mem, cur, reason):
+    """Release a card flow without erasing selected-but-unconfirmed evidence.
+
+    Menu interruptions historically dropped pre-selection flows silently.  Keep
+    that clean-kit behaviour until the selection input exists in the ledger;
+    after it, the same interruption is consumption-unconfirmed evidence.
+    """
+    flow = cur.get('card_flow') or {}
+    card = flow.get('card')
+    if isinstance(card, str) and card in (cur.get('cards_selected') or []):
+        _card_use_unclassified(mem, cur, reason, selected_interrupted=True)
+    else:
+        cur['card_flow'] = None
+
+
 def reset_battle_controls(mem):
     mem['egg_battle'] = False
     mem.pop('battle_menu_pending_ticks', None)
@@ -1509,7 +1524,7 @@ def _early_resource_rescue_needed(mem, cur):
             or opens < 0 or pending < 0 or opens >= 12 or pending >= 3):
         return False
 
-    egg_spent = _egg_attempts_spent(rescue, cur)
+    egg_spent = _egg_attempt_spent(rescue, hp)
     egg_ready = (not rescue.get('egg_pending') and not egg_spent
                  and _own_egg_positive(mem, cur) and not _own_egg_empty(mem, cur))
 
@@ -2374,16 +2389,13 @@ EGG_ATTEMPT_LIMIT = 2      # summon-menu selections per battle before melee resu
 EGG_ATTEMPT_HARD_LIMIT = 4
 
 
-def _egg_attempts_spent(rescue, cur) -> bool:
-    """Whether summon-menu egg retries are exhausted for this battle."""
-    if not isinstance(rescue, dict):
-        return False
+def _egg_attempt_spent(rescue, hp):
+    """True when the counted egg-selection budget for this battle is spent."""
     attempts = rescue.get('egg_attempts', 0)
     if type(attempts) is not int or attempts < 0:
         attempts = EGG_ATTEMPT_HARD_LIMIT
     limit = EGG_ATTEMPT_LIMIT
     last_hp = rescue.get('egg_attempt_hp')
-    hp = cur.get('ally_hp') if isinstance(cur, dict) else None
     if (type(last_hp) is int and type(hp) is int and hp < last_hp
             and attempts < EGG_ATTEMPT_HARD_LIMIT):
         # The general lost more HP after the failed selection: the egg is still
@@ -2391,7 +2403,7 @@ def _egg_attempts_spent(rescue, cur) -> bool:
         limit = EGG_ATTEMPT_HARD_LIMIT
     # A legacy flag without the counter means the menu was already used: only
     # the counted attempts (v726) may retry.
-    return attempts >= limit or (bool(rescue.get('egg_attempted')) and not attempts)
+    return attempts >= limit or (rescue.get('egg_attempted') and not attempts)
 
 
 def _egg_before_retreat(mem, cur, *, menu=False):
@@ -2406,7 +2418,8 @@ def _egg_before_retreat(mem, cur, *, menu=False):
     if (rescue.get('conserving_melee') is True
             and _hold_melee_egg(mem, cur, set(rescue.get('conserved_labels') or ()))):
         return False
-    spent = _egg_attempts_spent(rescue, cur)
+    hp = cur.get('ally_hp')
+    spent = _egg_attempt_spent(rescue, hp)
     return (not cur.get('egg_battle') and not cur.get('event_duel')
             and _survival_needed(cur)
             # #4606: against an observed summon/large enemy the retreat must not

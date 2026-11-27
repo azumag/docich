@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -140,13 +141,30 @@ def send_overlay(g: GlobalConfig, payload: dict[str, object]) -> None:
 
 
 def _retry_pending_hanjuku_terminal(g: GlobalConfig, *, exclude_key: str = "") -> None:
-    """Drain validated terminal recaps before publishing later audio."""
-    from ..hanjuku_narration import retry_pending_terminal_deliveries
+    """Drain validated terminal recaps before publishing later audio.
 
-    if not retry_pending_terminal_deliveries(g, exclude_key=exclude_key):
-        raise HanjukuTerminalPendingError(
-            "A prior Hanjuku terminal recap is still pending in the audio outbox"
-        )
+    Both corners share the Soren outbox, so a pending recap of either family
+    member blocks later audio.  The original runs first and behaves exactly as
+    before; a speedrun failure other than "still pending" never blocks it.
+    """
+    from ..hanjuku_family import FAMILY, ORIGINAL, module
+
+    for game in (ORIGINAL, *sorted(FAMILY - {ORIGINAL})):
+        if game == ORIGINAL:
+            drained = module(game, "hanjuku_narration").retry_pending_terminal_deliveries(
+                g, exclude_key=exclude_key)
+        else:
+            try:
+                drained = module(game, "hanjuku_narration").retry_pending_terminal_deliveries(
+                    g, exclude_key=exclude_key)
+            except Exception:  # noqa: BLE001 - the original corner must keep its audio
+                logging.getLogger(__name__).warning(
+                    "%s terminal recap retry failed", game, exc_info=True)
+                continue
+        if not drained:
+            raise HanjukuTerminalPendingError(
+                "A prior Hanjuku terminal recap is still pending in the audio outbox"
+            )
 
 
 def enqueue_paper_corner_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:

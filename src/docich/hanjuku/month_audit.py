@@ -185,6 +185,7 @@ SIGNAL_LABELS = {
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
     'corner_stalled': '画面停滞でコーナー停止',
+    'game_over': 'ゲームオーバー',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
@@ -254,6 +255,7 @@ PRIMARY_LABELS = {
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
     'corner_stalled': '画面停滞でコーナー停止',
+    'game_over': 'ゲームオーバー',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
@@ -907,6 +909,25 @@ def _camp_reason_code(decision, event, reason):
     return 'other'
 
 
+def _bounded_cell(value):
+    return list(value) if (isinstance(value, (list, tuple)) and len(value) == 2
+                           and all(type(item) is int for item in value)) else None
+
+
+def _bounded_jump_evidence(value):
+    if not isinstance(value, dict):
+        return None
+    active, seen = value.get('active'), value.get('seen')
+    evidence = {'attempt': _bounded_int(value.get('attempt'), 0, 10 ** 6),
+                'active': active if type(active) is bool else None,
+                'seen': seen if type(seen) is bool else None,
+                'moves': _bounded_int(value.get('moves'), 0, 10 ** 6),
+                'wait': _bounded_int(value.get('wait'), 0, 10 ** 6),
+                'age': _bounded_int(value.get('age'), 0, 10 ** 6),
+                'last_result': _bounded_text(value.get('last_result'), 64)}
+    return evidence if any(item is not None for item in evidence.values()) else None
+
+
 def _camp_event(record):
     """One terminal camp-recall or cliff-escape incident, or None."""
     if not isinstance(record, dict):
@@ -930,12 +951,11 @@ def _camp_event(record):
     else:
         kind, outcome = 'camp_recall_cancelled', 'cancelled'
     reason = record.get('reason') if isinstance(record.get('reason'), str) else None
-    camp = metric.get('camp')
-    camp = list(camp) if (isinstance(camp, list) and len(camp) == 2
-                          and all(type(value) is int for value in camp)) else None
-    target_cell = metric.get('target_cell')
-    target_cell = list(target_cell) if (isinstance(target_cell, list) and len(target_cell) == 2
-                                        and all(type(value) is int for value in target_cell)) else None
+    camp = _bounded_cell(metric.get('camp'))
+    target_cell = _bounded_cell(metric.get('target_cell'))
+    camp_world = _bounded_cell(metric.get('camp_world'))
+    boss_cell = _bounded_cell(metric.get('boss_cell'))
+    y_jump = _bounded_jump_evidence(metric.get('y_jump'))
     castle = _bounded_text(metric.get('castle'), 48)
     general = _bounded_text(record.get('general') or metric.get('general'), 48)
     return {
@@ -948,6 +968,9 @@ def _camp_event(record):
         'general': general,
         'camp': camp,
         'target_cell': target_cell,
+        'camp_world': camp_world,
+        'boss_cell': boss_cell,
+        'y_jump': y_jump,
         'castle': castle,
         'stage': _bounded_text(metric.get('stage'), 32),
         'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
@@ -1441,12 +1464,16 @@ def _battle_resource_event(record):
         # docich#5198: a remaining card the survival list already tried is the
         # same unconfirmed signature even when the settle never reached the
         # cards_unclassified ledger (e.g. the flow was dropped or the battle
-        # ended mid-attempt).
+        # ended mid-attempt). docich#5676: an announce retry's re-selection
+        # leaves the same detection-limit remnant when measured use confirms
+        # only one of the intentional duplicate selected entries.
         'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
             resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
-            resources['cards_unclassified'], resources['cards_attempted']),
+            resources['cards_unclassified'], resources['cards_attempted'],
+            resources['cards_spend_retry']),
         'cards_unclassified': resources['cards_unclassified'],
         'cards_attempted': resources['cards_attempted'],
+        'cards_spend_retry': resources['cards_spend_retry'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -2021,12 +2048,46 @@ def _chikujou_event(record, after, before, records):
     return snapshot
 
 
+def _chikujou_terminal_diagnostic(rows, month):
+    """Keep the last bounded build-list hold that explains an untried candidate."""
+    for row in reversed(rows):
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_held':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric')
+        if not isinstance(metric, dict):
+            metric = {}
+        visible = metric.get('visible')
+        if not isinstance(visible, list):
+            visible = []
+        diagnostic = {
+            'deviation_reason': _bounded_text(row.get('deviation_reason'), 80),
+            'reason': _bounded_text(row.get('reason'), 200),
+            'visible': [_bounded_text(item, 48) for item in visible
+                        if isinstance(item, str)][:4],
+            'scrolls': metric.get('scrolls') if type(metric.get('scrolls')) is int else None,
+            'stalled': metric.get('stalled') if type(metric.get('stalled')) is int else None,
+            'castle': _bounded_text(metric.get('castle'), 48),
+            'text': _bounded_text(metric.get('text'), 120),
+            'stage': _bounded_text(metric.get('stage'), 32),
+            'screen_kind': _bounded_text(metric.get('screen_kind'), 32),
+        }
+        return {key: value for key, value in diagnostic.items()
+                if value is not None and value != []}
+    return None
+
+
 def _build_chikujou_incident(runtime, state, after, event, now):
     mem = after.get('policy') or {}
     context = _context(after)
     rows = _read_decisions(runtime, max(0.0, float(now) - 120), now,
                            state.get('identity'))
     counts = _decision_counts(rows)
+    terminal_diagnostic = _chikujou_terminal_diagnostic(rows, event.get('month'))
+    if terminal_diagnostic:
+        event = dict(event)
+        event['terminal_diagnostic'] = terminal_diagnostic
     departures, launch_events = _departures(rows)
     month_sorties = (context or {}).get('month_sorties') or {}
     confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
@@ -3390,6 +3451,81 @@ def _fingerprint(chapter, kind, signals):
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
 
+def _month_key(record):
+    """The exact game-month instance used for cross-issue duplicate suppression."""
+    if not isinstance(record, dict):
+        return None
+    summary = record.get('month_summary')
+    summary = summary if isinstance(summary, dict) else {}
+    fingerprint = record.get('fingerprint')
+    month = record.get('month') or summary.get('month')
+    first_tick = summary.get('first_tick')
+    if (not isinstance(fingerprint, str) or not fingerprint
+            or not isinstance(month, str) or not month
+            or type(first_tick) is not int):
+        return None
+    return (fingerprint, month, first_tick)
+
+
+def _month_key_marker(key):
+    if key is None:
+        return None
+    fingerprint, month, first_tick = key
+    if not re.fullmatch(r'[0-9a-f]{8,64}', fingerprint):
+        return None
+    if not re.fullmatch(r'[0-9]+-[0-9]+', month):
+        return None
+    return f'<!-- hanjuku-month-audit key={fingerprint}/{month}/{first_tick} -->'
+
+
+def _issue_markers(record):
+    lines = [
+        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+    ]
+    marker = _month_key_marker(_month_key(record))
+    if marker:
+        lines.append(marker)
+    return lines
+
+
+def _body_has_month_key(body, key):
+    """True when an issue body records this exact fingerprint/month/first_tick.
+
+    New bodies carry a compact marker. Bodies filed before that marker existed
+    still embed the incident JSON, so fall back to the bounded month_summary
+    fields instead of treating every same-fingerprint issue as a duplicate.
+    """
+    if not isinstance(body, str) or key is None:
+        return False
+    marker = _month_key_marker(key)
+    if marker and marker in body:
+        return True
+    fingerprint, month, first_tick = key
+    if f'hanjuku-month-audit fingerprint={fingerprint}' not in body:
+        return False
+    match = re.search(r'"month_summary"\s*:\s*\{(.*?)\n\s*\}', body, re.S)
+    if match is None:
+        return False
+    summary = match.group(1)
+    tick_match = re.search(r'"first_tick"\s*:\s*(-?[0-9]+)', summary)
+    month_match = re.search(r'"month"\s*:\s*"((?:\\.|[^"\\])*)"', summary)
+    if tick_match is None or month_match is None:
+        return False
+    try:
+        body_month = json.loads(f'"{month_match.group(1)}"')
+    except ValueError:
+        return False
+    return body_month == month and int(tick_match.group(1)) == first_tick
+
+
+def _find_month_key_issue(issues, key):
+    for issue in issues:
+        if _body_has_month_key(issue.get('body'), key):
+            return issue
+    return None
+
+
 def _shrink(record):
     """Drop the largest optional evidence until the record fits the bound."""
     while len(json.dumps(record, ensure_ascii=False).encode('utf-8')) > MAX_RECORD_BYTES:
@@ -4075,6 +4211,153 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
 
 
 
+def _bounded_seconds(value):
+    return round(float(value), 1) if type(value) in (int, float) and 0 <= value <= 10 ** 7 else None
+
+
+def _terminal_bot_state(runtime):
+    """Best-effort bounded final bot state for terminal incident evidence."""
+    try:
+        from ..retroarch_boundary import read_record
+        state = read_record(Path(runtime) / 'hanjuku_bot.json', limit=256 * 1024)
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _bounded_chart_review(value):
+    if not isinstance(value, dict):
+        return None
+    by_type = value.get('by_type') if isinstance(value.get('by_type'), dict) else {}
+    types = {}
+    for key, count in list(by_type.items())[:8]:
+        name = _bounded_text(key, 64)
+        if name and type(count) is int and 0 <= count <= 10 ** 6:
+            types[name] = count
+    out = {
+        'file': _bounded_text(value.get('file'), 64),
+        'proposals': _bounded_int(value.get('proposals'), 0, 10 ** 6),
+        'by_type': types or None,
+        'off_chart_requests': _bounded_int(value.get('off_chart_requests'), 0, 10 ** 6),
+        'adjusted_orders': _bounded_int(value.get('adjusted_orders'), 0, 10 ** 6),
+        'battle_outcomes': _bounded_int(value.get('battle_outcomes'), 0, 10 ** 6),
+        'unattributed_battles': _bounded_int(value.get('unattributed_battles'), 0, 10 ** 6),
+    }
+    return {key: item for key, item in out.items() if item is not None} or None
+
+
+def record_game_over(runtime, *, run, identity, rotation_request_id=None,
+                     terminal_evidence=None, chart_review=None, now=None, spawn=True):
+    """Append one game-over incident and file it as a follow-up issue.
+
+    A game over is a normal terminal state for the game, but for the automated
+    run it is the loss report that must feed the next chart/policy improvement.
+    The corner calls this after durable terminal evidence exists and before the
+    runtime is torn down. The incident id is deterministic for that terminal
+    frame, so a repeated corner tick cannot append duplicates; filing itself
+    remains the detached, secret-scanned monthly-audit pipeline.
+    """
+    now = time.time() if now is None else float(now)
+    runtime = Path(runtime)
+    run = run if isinstance(run, dict) else {}
+    identity = identity if isinstance(identity, dict) else {}
+    bot_state = _terminal_bot_state(runtime)
+    context_state = bot_state if isinstance(bot_state.get('policy'), dict) else run
+    context = _context(context_state)
+    mem = context_state.get('policy') if isinstance(context_state.get('policy'), dict) else {}
+    chapter = (context or {}).get('chapter')
+    if type(chapter) is not int:
+        chapter = mem.get('chapter') if type(mem.get('chapter')) is int else None
+    month = (context or {}).get('month')
+    if not isinstance(month, str) or not month:
+        month = mem.get('month') if isinstance(mem.get('month'), str) else None
+    evidence = terminal_evidence if isinstance(terminal_evidence, dict) else run
+    evidence = evidence if isinstance(evidence, dict) else {}
+    frame = evidence.get('frame_sha256') or run.get('frame_sha256')
+    frame = frame if isinstance(frame, str) else ''
+    observed_at = evidence.get('observed_at') if type(evidence.get('observed_at')) in (int, float) else now
+    runtime_id = identity.get('runtime_id') or run.get('runtime_id') or runtime.name
+    generation = identity.get('generation') if type(identity.get('generation')) is int else run.get('generation')
+    raw_id = f"{runtime_id}|{generation}|game_over|{frame or observed_at}"
+    incident_id = hashlib.sha256(raw_id.encode('utf-8')).hexdigest()[:20]
+    for existing in load_incidents(runtime):
+        if existing.get('incident_id') == incident_id:
+            return existing
+    rows = _read_decisions(runtime, 0.0, now, identity)
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    title_hold = None
+    if (type(evidence.get('observed_monotonic')) in (int, float)
+            and type(evidence.get('title_since')) in (int, float)):
+        title_hold = _bounded_seconds(evidence['observed_monotonic'] - evidence['title_since'])
+    bot_version = bot_state.get('bot_version') or run.get('bot_version')
+    record = {
+        'schema': SCHEMA,
+        'event': 'game_over',
+        'kind': 'game_over',
+        'confidence': 'high',
+        'confidence_reasons': [
+            'ゲームプレイ後のタイトル復帰を連続確認し、terminal_reason=game_over が永続化された',
+        ],
+        'chapter': chapter,
+        'month': month,
+        'game_over': {
+            'runtime_id': _bounded_text(runtime_id, 64),
+            'generation': _bounded_int(generation, 0, 10 ** 9),
+            'observed_at': float(observed_at),
+            'phase': _bounded_text(evidence.get('phase') or run.get('phase'), 32),
+            'terminal_evidence': _bounded_text(evidence.get('terminal_evidence'), 64),
+            'frame_sha256': _bounded_text(frame, 64),
+            'title_count': _bounded_int(evidence.get('title_count'), 0, 10 ** 6),
+            'title_hold_s': title_hold,
+            'observations': _bounded_int(evidence.get('observations'), 0, 10 ** 9),
+            'actions_sent': _bounded_int(evidence.get('actions_sent'), 0, 10 ** 9),
+            'battles_started': _bounded_int(evidence.get('battles_started'), 0, 10 ** 6),
+            'battles_finished': _bounded_int(evidence.get('battles_finished'), 0, 10 ** 6),
+            'captured': _names(mem.get('captured')),
+            'lost': _names(mem.get('lost')),
+            'home_lost': mem.get('home_lost') if type(mem.get('home_lost')) is bool else None,
+            'rotation_request_id': _bounded_text(rotation_request_id, 64),
+            'chart_review': _bounded_chart_review(chart_review),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': ['game_over'],
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'sorties': {'departures': departures, 'launch_events': launch_events},
+        'evidence': {
+            'runtime_dir': str(runtime.name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': bot_version,
+            'identity': identity,
+        },
+        'created_at': now,
+    }
+    record['incident_id'] = incident_id
+    record['signature'] = 'game_over'
+    record['fingerprint'] = _fingerprint(chapter, 'game_over', [
+        str(runtime_id), str(generation), frame or str(observed_at)])
+    record['auto_file'] = True
+    record = _shrink(record)
+    _append_incident(runtime, record)
+    if spawn:
+        spawn_issue_filer(runtime, record)
+    return record
+
+
 def record_corner_stall(runtime, *, reason, run, identity, rotation_request_id=None,
                         terminal_evidence=None, now=None, spawn=True):
     """Append one screen/input-stall corner stop incident and file it.
@@ -4243,8 +4526,7 @@ def _render_card_at_hp1(record):
     soldiers = (battle.get('enemy_soldiers')
                 if type(battle.get('enemy_soldiers')) is int else '不明')
     return '\n'.join([
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **battle_card_at_hp1** (confidence: {BT}{record.get('confidence')}{BT})",
@@ -4272,8 +4554,7 @@ def _render_card_miss(record):
     evidence = record.get('evidence') or {}
     identity = evidence.get('identity') or {}
     return '\n'.join([
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **card_miss** (confidence: {BT}{record.get('confidence')}{BT})",
@@ -4302,10 +4583,125 @@ def _render_card_miss(record):
     ])
 
 
+def _render_soren_deadline_misplacement(record):
+    """Compact deterministic body for a Soren deadline misplacement."""
+    event = record.get('soren_event') or {}
+    actual = event.get('actual_new_piece') or {}
+    chosen = event.get('chosen_estimate') or {}
+    lower = event.get('best_lower_alternative') or {}
+    merge = event.get('best_merge_alternative') or {}
+    evidence = record.get('evidence') or {}
+    lines = [
+        *_issue_markers(record),
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **{record.get('kind')}** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- turn: {event.get('turn')} → {event.get('next_turn')} / score {event.get('score')}",
+        f"- ドロップ: x={event.get('decision_x')} / piece type={actual.get('type')}"
+        f" / 実着地 top={actual.get('top_y')} / deadline={event.get('deadline_y')}",
+        f"- 選択位置の独立推定: x={chosen.get('x')} / top={chosen.get('top_y')}",
+        f"- 検証: {BT}{event.get('verification') or '不明'}{BT}"
+        f" / candidates={event.get('candidate_count')}"
+        f" / lower={event.get('lower_candidate_count')}",
+    ]
+    if event.get('decision_reason'):
+        lines.append(f"- 戦略理由: {_md(event.get('decision_reason'))}")
+    lines += ['', '### 安全だった代替', '']
+    if lower:
+        lines.append(f"- デッドライン内: x={lower.get('x')} / top={lower.get('top_y')}"
+                     f" / support={lower.get('support_id')}")
+    if merge:
+        lines.append(f"- 同type併合候補: x={merge.get('x')} / top={merge.get('top_y')}"
+                     f" / target={merge.get('target_id')} / gap={merge.get('contact_gap')}")
+    if not lower and not merge:
+        lines.append('- 代替候補の内訳は JSON 証拠を参照')
+    lines += [
+        '',
+        '### 証拠',
+        '',
+        f"- monitor: {BT}{evidence.get('events')}{BT} / history: {BT}{evidence.get('frames')}{BT}",
+        f"- 盤面: prev {event.get('prev_piece_count')} pieces / curr {event.get('curr_piece_count')} pieces",
+        f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        '',
+        '<details><summary>JSON</summary>',
+        '',
+        f"{BT * 3}json",
+        json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1)[:24000],
+        f"{BT * 3}",
+        '',
+        '</details>',
+        '',
+        '実着地したピースがデッドラインを超え、前盤面に安全な代替配置または有効な同type併合候補があった場合だけ記録しています。'
+        '代替がない局面は対象外です。strategy_runner / enforce_deadline_safety が安全候補を実行前に退避できなかった経路を調べてください。',
+    ]
+    return '\n'.join(lines)
+
+
+def _render_game_over(record):
+    over = record.get('game_over') or {}
+    evidence = record.get('evidence') or {}
+    identity = evidence.get('identity') or {}
+    review = over.get('chart_review') or {}
+    counts = ((record.get('decisions') or {}).get('counts') or {})
+    rows = ((record.get('decisions') or {}).get('before') or [])[-8:]
+    lines = [
+        *_issue_markers(record),
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **game_over** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{evidence.get('bot_version')}{BT}",
+        f"- 章/月: ch{record.get('chapter')} {record.get('month') or ''}",
+        f"- 終端: {_clock(over.get('observed_at'))} / phase {BT}{over.get('phase') or '不明'}{BT}"
+        f" / title_count {over.get('title_count')} / evidence {BT}{over.get('terminal_evidence') or '不明'}{BT}",
+        f"- 観測: {over.get('observations')}回 / 入力 {over.get('actions_sent')}回"
+        f" / 戦闘開始 {over.get('battles_started')} / 戦闘終了 {over.get('battles_finished')}",
+        f"- 出撃: departure {((record.get('sorties') or {}).get('departures'))}"
+        f" / launch_events {((record.get('sorties') or {}).get('launch_events'))}",
+        f"- 城: captured={over.get('captured') or '不明'} / lost={over.get('lost') or '不明'}"
+        f" / home_lost={over.get('home_lost')}",
+        '',
+        '### chart review',
+        '',
+        f"- file: {BT}{review.get('file') or 'hanjuku_chart_review.json'}{BT}"
+        f" / proposals {review.get('proposals', 0)}"
+        f" / by_type {review.get('by_type') or {}}",
+        f"- battle_outcomes {review.get('battle_outcomes', 0)}"
+        f" / unattributed_battles {review.get('unattributed_battles', 0)}"
+        f" / off_chart_requests {review.get('off_chart_requests', 0)}",
+        '',
+        '### 直近の判断',
+        '',
+    ]
+    if counts:
+        top = ' / '.join(f'{name}={count}' for name, count in list(counts.items())[:8])
+        lines.append(f"- 件数: {top}")
+    else:
+        lines.append('- 件数: 記録なし')
+    for row in rows:
+        detail = ' '.join(part for part in (
+            f"{_clock(row.get('at'))}",
+            f"{BT}{row.get('decision')}{BT}" if row.get('decision') else '',
+            f"step={_md(row.get('chart_step'))}" if row.get('chart_step') else '',
+            f"target={_md(row.get('target'))}" if row.get('target') else '',
+            f"reason={_md(row.get('reason'))}" if row.get('reason') else '',
+        ) if part)
+        lines.append(f"- {detail}")
+    lines += [
+        '',
+        'ゲーム側の終了として検出されました。直近の敗北・防衛・出撃判断と chart review の提案を確認し、'
+        '次回のランで直すべきチャートまたは policy の改善対象を決めてください。',
+    ]
+    return '\n'.join(lines)
+
+
 def render(record):
     """Deterministic Markdown for one incident."""
     if not isinstance(record, dict):
         raise AuditError('invalid_incident')
+    if record.get('kind') == 'game_over':
+        return _render_game_over(record)
+    if record.get('kind') == 'soren_deadline_misplacement':
+        return _render_soren_deadline_misplacement(record)
     if record.get('kind') == 'card_miss':
         return _render_card_miss(record)
     if record.get('kind') == 'battle_card_at_hp1':
@@ -4331,8 +4727,7 @@ def render(record):
     battle_menu = record.get('battle_menu') or {}
     sortie_cards = record.get('sortie_event') or {}
     body = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **{kind}** (confidence: {BT}{confidence}{BT})",
@@ -4412,8 +4807,21 @@ def render(record):
                if chikujou.get('held_for') else []),
             *(['- 築城行の読取り: 不可（有限回の再観測後も未読・docich#5079/#5097）']
                if chikujou.get('menu_unreadable') else []),
-            '',
         ]
+        terminal = chikujou.get('terminal_diagnostic')
+        if terminal:
+            visible = ' / '.join(terminal.get('visible') or []) or '不明'
+            scrolls = terminal.get('scrolls')
+            stalled = terminal.get('stalled')
+            body += [
+                f"- 最終保留理由: {terminal.get('deviation_reason') or '不明'}"
+                f" / {terminal.get('reason') or '不明'}",
+                f"- 最終可視行: {visible} / scrolls: {scrolls if scrolls is not None else '不明'}"
+                f" / stalled: {stalled if stalled is not None else '不明'}",
+                f"- 最終画面: {terminal.get('screen_kind') or '不明'}"
+                f" / {terminal.get('text') or '文言なし'}",
+            ]
+        body.append('')
     if stay:
         body += [
             '### 野営放置',
@@ -4475,6 +4883,8 @@ def render(record):
               if battle.get('cards_unclassified') else []),
             *([f"- 消費未確認の使用試行: {battle.get('cards_attempted')}"]
               if battle.get('cards_attempted') else []),
+            *([f"- 消費未確認の再選択: {battle.get('cards_spend_retry')}"]
+              if battle.get('cards_spend_retry') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]
@@ -4501,9 +4911,17 @@ def render(record):
             f" / status: {camp.get('resulting_event') or '不明'}"
             f" / escape_move: {bool(camp.get('escape_move'))}"
             f" / target_cell: {camp.get('target_cell')}"
+            f" / camp_world: {camp.get('camp_world')}"
+            f" / boss_cell: {camp.get('boss_cell')}"
+            f" / screen: {camp.get('screen') or '不明'}"
             f" / input_receipt_confirmed: {bool(camp.get('input_receipt_confirmed'))}"
             f" / picker_closed: {bool(camp.get('picker_closed'))}"
             f" / interrupted: {bool(camp.get('interrupted'))}",
+            *([f"- Yジャンプ: attempt {camp['y_jump'].get('attempt')} / active {camp['y_jump'].get('active')}"
+               f" / seen {camp['y_jump'].get('seen')} / moves {camp['y_jump'].get('moves')}"
+               f" / wait {camp['y_jump'].get('wait')} / age {camp['y_jump'].get('age')}"
+               f" / last_result {camp['y_jump'].get('last_result') or 'なし'}"]
+              if isinstance(camp.get('y_jump'), dict) else []),
             *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
                f" / status {camp.get('fort_status_observations') or 0} / status一致 {camp.get('fort_status_reads') or 0}",
                f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"
@@ -4593,11 +5011,32 @@ def render(record):
 
 def render_comment(record):
     """Compact recurrence comment for an existing open issue."""
+    if record.get('kind') == 'soren_deadline_misplacement':
+        event = record.get('soren_event') or {}
+        actual = event.get('actual_new_piece') or {}
+        lower = event.get('best_lower_alternative') or {}
+        merge = event.get('best_merge_alternative') or {}
+        alternative = ''
+        if lower:
+            alternative = f"安全x={lower.get('x')} top={lower.get('top_y')}"
+        elif merge:
+            alternative = f"併合x={merge.get('x')} top={merge.get('top_y')}"
+        else:
+            alternative = '代替詳細は本文JSON参照'
+        return '\n'.join([
+            *_issue_markers(record),
+            '### 再発: 安全な配置先があるのにデッドライン超過へドロップ',
+            '',
+            f"- turn: {event.get('turn')} / x={event.get('decision_x')}"
+            f" / piece type={actual.get('type')} / top={actual.get('top_y')}",
+            f"- 代替: {alternative}",
+            f"- 検証: {event.get('verification') or '不明'}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     if record.get('kind') == 'battle_card_at_hp1':
         battle = record.get('battle_event') or {}
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             '### 再発: ボス戦以外の相手HP1で切り札を使用',
             '',
             f"- 札: {record.get('card')}",
@@ -4610,8 +5049,7 @@ def render_comment(record):
     if record.get('kind') == 'card_miss':
         battle = record.get('battle_event') or {}
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             f"### 再発: 敵召喚獣戦/ボス戦で切り札未使用",
             '',
             f"- 札: {record.get('card')}",
@@ -4626,8 +5064,7 @@ def render_comment(record):
         label = ('brain例外' if record.get('kind') == 'brain_error'
                  else '帰還Yジャンプ失敗')
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             f"### 再発: {label}",
             '',
             f"- 署名: {fault.get('signature') or '不明'}",
@@ -4643,8 +5080,7 @@ def render_comment(record):
     after = record.get('after') or {}
     boss = record.get('boss_phase') or {}
     lines = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"### 再発: ch{record.get('chapter')} {record.get('month')}",
         '',
         f"- 判定: **{record.get('kind')}** ({BT}{record.get('confidence')}{BT})",
@@ -4713,6 +5149,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'soren_deadline_misplacement':
+        event = record.get('soren_event') or {}
+        turn = event.get('turn')
+        where = f"turn{turn}" if turn is not None else 'turn不明'
+        return f"[ソ連ゲーム] 安全な配置先があるのにデッドライン超過へドロップ ({where})"[:100]
     if kind == 'battle_card_at_hp1':
         battle = record.get('battle_event') or {}
         where = battle.get('enemy') or battle.get('castle') or '戦闘'
@@ -4735,6 +5176,12 @@ def _issue_title(record):
         menu = record.get('battle_menu') or {}
         who = menu.get('general') or menu.get('step') or '将軍不明'
         return (f"[半熟英雄] 戦闘Bメニューを無駄に開閉: ch{record.get('chapter')} {who}")[:100]
+    if kind == 'game_over':
+        over = record.get('game_over') or {}
+        runtime_id = over.get('runtime_id') or 'runtime不明'
+        chapter = record.get('chapter')
+        where = f"ch{chapter} " if type(chapter) is int else ''
+        return (f"[半熟英雄] ゲームオーバー: {where}{runtime_id}")[:100]
     if kind == 'corner_stalled':
         stall = record.get('corner_stall') or {}
         label = ('画面停滞' if stall.get('reason') == 'screen_stalled' else '入力停滞')
@@ -4869,9 +5316,13 @@ def _gh_auth(gh=None):
     _run_gh(['auth', 'status'], gh=gh)
 
 
-def _issues(repo, *, gh=None):
-    data = _gh_json(['issue', 'list', '--repo', repo, '--state', 'open',
-                     '--limit', str(MAX_ISSUES), '--json', 'number,title,body'], gh=gh)
+def _issues(repo, *, gh=None, state='open', search=None):
+    fields = 'number,title,body' + (',state' if state != 'open' else '')
+    args = ['issue', 'list', '--repo', repo, '--state', state,
+            '--limit', str(MAX_ISSUES), '--json', fields]
+    if search:
+        args += ['--search', search]
+    data = _gh_json(args, gh=gh)
     return data if isinstance(data, list) else []
 
 
@@ -4936,6 +5387,15 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
                                                      COMMENT_COOLDOWN_SECONDS)
             if age is not None and 0 <= age < cooldown:
                 return {**result, 'status': 'cooldown', 'issue': number}
+    else:
+        key = _month_key(record)
+        if key is not None:
+            candidates = _issues(repo, gh=gh, state='all', search=str(fingerprint))
+            duplicate = _find_month_key_issue(candidates, key)
+            if duplicate is not None:
+                return {**result, 'status': 'duplicate_month',
+                        'issue': duplicate.get('number'),
+                        'month': key[1], 'first_tick': key[2]}
     with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False,
                                      encoding='utf-8') as stream:
         stream.write(text)

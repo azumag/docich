@@ -1722,7 +1722,7 @@ def state_is_current(mem, state):
             and state.get('identity') == receipts.run_identity(mem.get('_run_identity')))
 
 
-def step(screen, mem, frame):
+def step(screen, mem, frame, *, boss_dispatch=False):
     """Return actions/[] while owned; None when unrelated foreground wins."""
     state = mem.get('post_month_status')
     if not isinstance(state, dict):
@@ -1828,6 +1828,13 @@ def step(screen, mem, frame):
         if screen.kind == 'map':
             from . import map as map_flow
             from ..strategy import orders as _orders
+            if boss_dispatch:
+                if not state.get('boss_dispatch_floor_logged'):
+                    state['boss_dispatch_floor_logged'] = True
+                    _log(mem, 'post_month_boss_dispatch_floor',
+                         observed_metric={'stage': state['stage'], 'month': mem.get('month')},
+                         reason='ボスフェーズの出撃指示が月次確認の後ろで枯渇しているため、マップを出撃計画へ明け渡す')
+                return None
             # The moving boss's waves outrank the monthly roster scan: while
             # they are in flight and the cell is measured, yield the map so
             # boss_pursuit/map_step can re-aim them (live g1288 2026-11-20:
@@ -2374,6 +2381,7 @@ def step(screen, mem, frame):
                 'stage': 'to_camp', 'target': list(camp['target']),
                 'last_seen': list(camp['target']), 'steps': 0,
                 'general': name, 'camp_kind': camp.get('kind'),
+                'fort_actor': name,
                 'task_recall': True,
                 # #4901: without the measured body cell the menu stage's
                 # flag->body retry can never arm on a task recall, so a tent

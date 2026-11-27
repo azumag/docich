@@ -529,6 +529,17 @@ def test_camp_terminal_decisions_are_classified():
         metric={'stage': 'menu', 'steps': 91}))
     assert failed['kind'] == 'camp_recall_failed'
     assert failed['reason_code'] == 'camp_recall_limit'
+    redirect = audit._camp_event(_camp_record(
+        'camp_boss_redirect_aborted', event='boss_jump_failed',
+        reason='ボスのセルへマーカーを合わせられないため再出撃を取り消す',
+        metric={'camp': [60, 60], 'target_cell': [70, 70], 'camp_world': [500, 500],
+                'boss_cell': [500, 300], 'castle': 'ボス', 'stage': 'dest', 'steps': 1,
+                'screen_kind': 'map_target',
+                'y_jump': {'attempt': 2, 'active': False, 'seen': None,
+                           'moves': 0, 'wait': 0, 'age': 1, 'last_result': 'view_closed'}}))
+    assert redirect['reason_code'] == 'camp_boss_redirect'
+    assert redirect['camp_world'] == [500, 500] and redirect['boss_cell'] == [500, 300]
+    assert redirect['y_jump']['attempt'] == 2 and redirect['y_jump']['last_result'] == 'view_closed'
     cancelled = audit._camp_event(_camp_record(
         'camp_recall_skipped', reason='可視範囲に自軍城の屋根がなく帰還先を選べない'))
     assert cancelled['kind'] == 'camp_recall_cancelled'
@@ -1301,6 +1312,51 @@ def test_chikujou_month_end_with_resources_is_recorded(runtime_dir):
     assert len(seen) == 1
 
 
+def test_chikujou_same_month_maxed_evidence_survives_the_history_filter(runtime_dir):
+    value = _chikujou_state()
+    mem = value['policy']
+    home = chart.home_castle(10)
+    other = mem['captured'][0]
+    third = next(c for c in chart.CASTLE_NAMES[10] if c not in (home, other))
+    mem['captured'].append(third)
+    mem['world']['garrison'][third] = ['C']
+    mem['general_statuses']['statuses'][third] = {'location': 'castle', 'castle': third}
+    note(runtime_dir, 999, decision='chikujou_max_level_seen', month='1-1',
+         observed_metric={'castles': [other], 'level': 5},
+         reason='実一覧でレベル5を確認した城は当月の選択を省く')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['chikujou_event']
+    assert event['maxed'] == [other]
+    assert other not in event['candidates']
+    assert third in event['staffed_candidates']
+
+
+def test_chikujou_month_end_renders_last_held_visible_rows(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, decision='chikujou_held', month='1-1',
+         deviation_reason='castle_scan_exhausted',
+         observed_metric={'visible': ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン'],
+                          'scrolls': 9, 'stalled': 3},
+         reason='築城一覧を往復しても候補行を確認できないためBで戻る')
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    diagnostic = record['chikujou_event']['terminal_diagnostic']
+    assert diagnostic['deviation_reason'] == 'castle_scan_exhausted'
+    assert diagnostic['visible'] == ['アトランチス', 'ファルゲ', 'リグア', 'アルマムーン']
+    assert diagnostic['scrolls'] == 9
+    assert diagnostic['stalled'] == 3
+    rendered = audit.render(record)
+    assert '最終保留理由: castle_scan_exhausted' in rendered
+    assert 'ファルゲ' in rendered
+    assert 'scrolls: 9 / stalled: 3' in rendered
+
 
 def test_chikujou_month_end_uses_live_policy_gold_over_stale_outer_gold(runtime_dir):
     # docich#5465: the last verified upgrade left 30G (the 30G reserve),
@@ -1952,11 +2008,89 @@ def test_non_stall_corner_reason_is_not_recorded(runtime_dir):
     assert audit.load_incidents(runtime_dir) == []
 
 
+def test_game_over_is_recorded_and_titled(runtime_dir):
+    final_state = state(10, '1-1', 88)
+    final_state['policy']['captured'] = ['アルマムーン']
+    final_state['policy']['lost'] = ['スタート']
+    final_state['policy']['home_lost'] = True
+    (runtime_dir / 'hanjuku_bot.json').write_text(
+        json.dumps(final_state, ensure_ascii=False), encoding='utf-8')
+    note(runtime_dir, 999, 'battle_result', chart_step='10-A1', outcome='loss',
+         target='ボス', reason='最終戦に敗北')
+    terminal = {
+        'terminal_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'frame_sha256': 'c' * 64,
+        'observed_at': 1000.0,
+        'observed_monotonic': 200.0,
+        'title_since': 197.0,
+        'title_count': 3,
+        'phase': 'title',
+        'observations': 88,
+        'actions_sent': 70,
+        'battles_started': 4,
+        'battles_finished': 4,
+    }
+    review = {'file': 'hanjuku_chart_review.json', 'proposals': 2,
+              'by_type': {'review_base_step': 2}, 'off_chart_requests': 1,
+              'adjusted_orders': 3, 'battle_outcomes': 4,
+              'unattributed_battles': 1}
+    record = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        rotation_request_id='req-game-over', terminal_evidence=terminal,
+        chart_review=review, now=1000, spawn=False)
+    assert record['kind'] == 'game_over'
+    assert record['auto_file'] is True
+    assert record['chapter'] == 10
+    assert record['month'] == '1-1'
+    over = record['game_over']
+    assert over['observations'] == 88
+    assert over['title_hold_s'] == 3.0
+    assert over['lost'] == ['スタート']
+    assert over['chart_review']['proposals'] == 2
+    assert 'ゲームオーバー' in audit._issue_title(record)
+    body = audit.render(record)
+    assert '### chart review' in body
+    assert 'battle_result' in body
+    assert '最終戦に敗北' in body
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_game_over_is_recorded_once(runtime_dir):
+    terminal = {'terminal_reason': 'game_over', 'frame_sha256': 'd' * 64,
+                'observed_at': 1000.0, 'observations': 10}
+    first = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1000, spawn=False)
+    second = audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1100, spawn=False)
+    assert first['incident_id'] == second['incident_id']
+    assert len(audit.load_incidents(runtime_dir)) == 1
+
+
+def test_game_over_files_a_github_issue(runtime_dir):
+    terminal = {'terminal_reason': 'game_over', 'frame_sha256': 'e' * 64,
+                'observed_at': 1000.0, 'observations': 10}
+    audit.record_game_over(
+        runtime_dir, run=terminal, identity=IDENTITY,
+        terminal_evidence=terminal, now=1000, spawn=False)
+    gh = FakeGh()
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+    create = [call for call in gh.calls if call[:2] == ['issue', 'create']][0]
+    title = create[create.index('--title') + 1]
+    assert title.startswith('[半熟英雄] ゲームオーバー:')
+    assert '--label' in create and 'auto-generated' in create
+
+
 def test_retro_corner_records_screen_stall_before_teardown():
     text = (Path(__file__).resolve().parents[1] / 'src/docich/retro_corner.py').read_text(
         encoding='utf-8')
+    assert 'record_game_over' in text
     assert 'record_corner_stall' in text
     assert "screen_stalled', 'input_stalled'" in text
+    assert 'from .hanjuku import month_audit' in text
 
 
 def _menu_state(menu=True):
@@ -2254,8 +2388,10 @@ def test_render_puts_the_noise_note_before_the_table(runtime_dir):
 def test_render_contains_markers_and_evidence(runtime_dir):
     record = sealed_zero(runtime_dir)
     text = audit.render(record)
+    key = audit._month_key(record)
     assert 'hanjuku-month-audit fingerprint=' in text
     assert f'occurrence={record["incident_id"]}' in text
+    assert f'hanjuku-month-audit key={key[0]}/{key[1]}/{key[2]}' in text
     assert audit.TITLE_PREFIX in text
     assert '月内の決定' in text
     assert record['incident_id'] in text
@@ -2271,8 +2407,10 @@ def test_issue_title_uses_the_primary_signal():
 def test_render_comment_is_compact(runtime_dir):
     record = sealed_zero(runtime_dir)
     text = audit.render_comment(record)
+    key = audit._month_key(record)
     assert '### 再発' in text
     assert f'occurrence={record["incident_id"]}' in text
+    assert f'hanjuku-month-audit key={key[0]}/{key[1]}/{key[2]}' in text
     assert len(text) < 4000
 
 
@@ -2293,7 +2431,15 @@ class FakeGh:
         if args[:2] == ['auth', 'status']:
             return 0, '', ''
         if args[:2] == ['issue', 'list']:
-            return 0, json.dumps(self.issues), ''
+            state = args[args.index('--state') + 1] if '--state' in args else 'open'
+            issues = list(self.issues)
+            if state != 'all':
+                issues = [issue for issue in issues
+                          if str(issue.get('state') or 'open').lower() == state]
+            if '--search' in args:
+                query = args[args.index('--search') + 1]
+                issues = [issue for issue in issues if query in (issue.get('body') or '')]
+            return 0, json.dumps(issues), ''
         if args[:2] == ['issue', 'view']:
             return 0, json.dumps({'comments': self.comments}), ''
         if args[:2] == ['issue', 'create']:
@@ -2334,6 +2480,82 @@ def test_file_does_not_repeat_the_same_occurrence(runtime_dir):
     gh = FakeGh(issues=[issue], comments=comments)
     result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
     assert result['status'] == 'already_commented'
+
+
+def test_file_suppresses_same_month_key_in_a_closed_issue(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    key = audit._month_key(record)
+    issue = {'number': 12, 'state': 'CLOSED', 'body': audit.render(record)}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'duplicate_month'
+    assert result['issue'] == 12
+    assert result['month'] == key[1]
+    assert result['first_tick'] == key[2]
+    assert not any(call[:2] == ['issue', 'create'] for call in gh.calls)
+    assert not any(call[:2] == ['issue', 'comment'] for call in gh.calls)
+    searches = [call for call in gh.calls
+                if call[:2] == ['issue', 'list'] and '--search' in call]
+    assert len(searches) == 1
+    assert 'all' in searches[0]
+    assert record['fingerprint'] in searches[0]
+
+
+def test_file_suppresses_same_month_key_in_legacy_issue_json(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    body = '\n'.join(line for line in audit.render(record).splitlines()
+                     if 'hanjuku-month-audit key=' not in line)
+    assert 'hanjuku-month-audit key=' not in body
+    issue = {'number': 13, 'state': 'CLOSED', 'body': body}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'duplicate_month'
+    assert result['issue'] == 13
+    assert not any(call[:2] == ['issue', 'create'] for call in gh.calls)
+
+
+def test_file_still_comments_on_open_issue_with_same_month_key(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    key = audit._month_key(record)
+    body = '\n'.join([
+        f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->",
+        audit._month_key_marker(key),
+    ])
+    gh = FakeGh(issues=[{'number': 7, 'state': 'OPEN', 'body': body}], comments=[])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'commented'
+    assert result['issue'] == 7
+    assert '### 再発' in gh.comment_body
+
+
+def test_file_does_not_suppress_a_different_first_tick(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    other = json.loads(json.dumps(record))
+    other['month_summary']['first_tick'] += 1
+    issue = {'number': 14, 'state': 'CLOSED', 'body': audit.render(other)}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+
+
+def test_file_does_not_suppress_a_different_month(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    other = json.loads(json.dumps(record))
+    other['month'] = '1-3'
+    other['month_summary']['month'] = '1-3'
+    issue = {'number': 15, 'state': 'CLOSED', 'body': audit.render(other)}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+
+
+def test_month_key_match_requires_the_same_fingerprint(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    other = json.loads(json.dumps(record))
+    other['fingerprint'] = '0' * len(record['fingerprint'])
+    if other['fingerprint'] == record['fingerprint']:
+        other['fingerprint'] = '1' * len(record['fingerprint'])
+    assert not audit._body_has_month_key(audit.render(other), audit._month_key(record))
 
 
 def test_file_respects_comment_cooldown(runtime_dir):

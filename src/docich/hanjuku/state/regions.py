@@ -49,6 +49,9 @@ KEY_OWNERSHIP = {
     '_departure_input':  {'region': JOURNAL, 'lifetime': 'run', 'migrated': True},
     # --- 出撃 FlowSession (段階2へ宣言) ---
     'sortie_attempt':    {'region': FLOW, 'lifetime': 'procedure', 'migrated': True},
+    # docich#5020: 戦闘割り込みで閉じた出撃先ピッカーの同月再オープン台帳。
+    # 中断・検証・再駆動をまたぐため chapter 寿命（月フィールドで同一月に限定）。
+    'sortie_resume':     {'region': FLOW, 'lifetime': 'chapter', 'migrated': True},
     # Chapter lifetime: the departure survey that proves the unit left runs
     # after the deploy transaction ends (g1190 2026-11-19 run 5: three
     # phantom launches sat for five months because the probe had been
@@ -122,6 +125,7 @@ KEY_OWNERSHIP = {
     'boss_pursuit_misses': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃のメニュー未出現回数
     'password_sweep': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # パスワード掃引の有界カウンタ (v1268)
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
+    'boss_wave_evicted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 崖の向こう側で帰還させ追撃対象から外した将軍
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
     'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)
     'generals_lost_at': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時刻 (garrison_observed_at と同じ時計, v998/#4415)
@@ -260,6 +264,8 @@ KEY_OWNERSHIP = {
     'shop': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 購入計画(戦略economyが書く)
     'shop_exit_counts': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 商人の空退出回数(flows.shop が書く)
     'egg_menu_escape': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 卵メニュー脱出の試行記録(flows.battle_menus が書く)
+    'sortie_launch_pending': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 出撃開始〜発射確認の間だけ立つ(flows.map が書く)
+    'chikujou_defer': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月内で築城探索を出撃へ譲った回数(flows.month が書く)
     'victory_menu_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 勝利メニューの連続保持回数(orchestrator が書く)
     'chapter_end_save_holds': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 章末セーブ確認の連続保持回数(flows が書く)
     'site_failed_rearm': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # 失敗サイトstep再武装の戦略管理
@@ -300,6 +306,7 @@ KEY_OWNERSHIP = {
     'phase_a_escape': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 既定Aが効かない同一文面の有限エスケープ  # 戦闘メニュー停滞監視の自己消去型カウンタ
     'battle_menu_pending_ticks': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 戦闘メニューpending手順の待機tick
     'bijin_gift_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 美女贈物プロンプト手順のホールド
+    'gift_selection_pending': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 通常贈物の未読カーソル選択所有権
     'bijin_gift_waits': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上の待機カウンタ
     'bijin_guard': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 美女イベントのプロンプトガード
     'boss_camp_exempt': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # ラン同一性リセットリスト(orchestrator:586)で管理される月次免除

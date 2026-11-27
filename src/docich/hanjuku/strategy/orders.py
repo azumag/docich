@@ -1002,6 +1002,70 @@ def _with_hero_hub_permission(mem, order):
     return {**order, 'hero_hub_move': True}
 
 
+LAUNCH_PRIORITY_PURPOSES = frozenset({'attack', 'retake', 'boss', 'invade'})
+LAUNCH_PRIORITY_TERMINAL = frozenset({'done', 'failed', 'launched', 'launched_unconfirmed'})
+
+
+def _launch_priority_order(order):
+    """Enemy-directed dispatch whose pre-launch screens outrank housekeeping."""
+    return (isinstance(order, dict)
+            and order.get('purpose') in LAUNCH_PRIORITY_PURPOSES
+            and order.get('roster_probe') is not True
+            and order.get('source_probe') is not True)
+
+
+def arm_sortie_launch_priority(mem, order):
+    """Mark an enemy-directed order as occupying the start-to-launch window."""
+    if _launch_priority_order(order) and order.get('step'):
+        mem['sortie_launch_pending'] = order['step']
+
+
+def active_sortie_launch_priority(mem):
+    """Return the latched step only while its launch is still genuinely in flight.
+
+    The latch is a hint for housekeeping flows, not independent truth.  It is
+    armed at ``order_start`` and again when the departure commits; after that
+    the world-map/roster launch probe carries the confirmation window.  Before
+    the commit the active plan step, target-selection attempt, or departure
+    reservation proves the attempt is still in flight.  Anything else (order
+    failed/cancelled, launch confirmed, rollback before the next start, or a
+    kept portrait march whose map survey cannot help) clears the hint so house
+    and monthly scans are not deferred for the rest of the chapter.
+    """
+    step = mem.get('sortie_launch_pending')
+    if not step:
+        return None
+    # Only the purpose/probe flags are needed here.  Resolve the plan row
+    # directly instead of _order_for_step: a receipt-bound execution may be
+    # intentionally hidden while it owns the picker, but it is still the
+    # in-flight launch this latch describes.
+    order = (next((o for o in _orders(mem) if isinstance(o, dict) and o.get('step') == step), None)
+             or (_world(mem).get('launched_orders') or {}).get(step))
+    if not _launch_priority_order(order):
+        mem.pop('sortie_launch_pending', None)
+        return None
+    probe = (_flow(mem).get('launch_probe') or {}).get(step)
+    if isinstance(probe, dict):
+        if probe.get('kept'):
+            mem.pop('sortie_launch_pending', None)
+            return None
+        return step
+    plan = _plan_region(mem)
+    status = (plan.get('orders') or {}).get(step)
+    if status in LAUNCH_PRIORITY_TERMINAL:
+        mem.pop('sortie_launch_pending', None)
+        return None
+    flow_state = _flow(mem)
+    attempt = flow_state.get('sortie_attempt') or {}
+    departure = flow_state.get('departure_request') or {}
+    if (plan.get('active') == step
+            or attempt.get('step') == step
+            or departure.get('step') == step):
+        return step
+    mem.pop('sortie_launch_pending', None)
+    return None
+
+
 def _plan_pending(mem) -> bool:
     """An adopted plan still has an order that can run, or one waiting on a
     capture that a marching unit is making.
@@ -1091,6 +1155,7 @@ SITE_STEP_REARM_COOLDOWN = 300              # between two re-arms of the same st
 # cycles. Keep an unentered attempt bindable after its step is sent again, so
 # a late 「ボスじょうにせめこんだ!!」 is not orphaned by the overwritten record.
 SITE_LATE_ENTRY_TICKS = 8 * SORTIE_BUSY_TICKS
+MOVING_BOSS_LATE_ENTRY_TICKS = 21600
 RETIRED_SORTIES_PER_STEP = 3
 
 
@@ -2262,7 +2327,21 @@ def next_order(mem):
     base = [o for o in chart.orders(mem.get('chapter') or 0)
             if o['step'] not in steps and o['target'] not in owned] if _plan_region(mem).get('chart_plan') else []
     chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
-    for order in (*current, *retries, *base):
+    order_sequence = (*current, *retries, *base)
+    # A resumed picker that closed without a verified target leaves an owed
+    # same-month retry. Keep that exact step ahead of newer chart work; it
+    # still passes every ordinary readiness/source/defender gate below.
+    resume_steps = {
+        step for step, row in (_flow(mem).get('sortie_resume') or {}).items()
+        if isinstance(row, dict) and row.get('owed') is True
+        and row.get('month') == mem.get('month')
+    }
+    if resume_steps:
+        order_sequence = (
+            *(order for order in order_sequence if order.get('step') in resume_steps),
+            *(order for order in order_sequence if order.get('step') not in resume_steps),
+        )
+    for order in order_sequence:
         if ((order['step'] in chart_steps or _is_boss_order(order, mem))
                 and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)):
@@ -2789,6 +2868,162 @@ def drop_retired_step_context(mem):
             plan.pop(key, None)
 
 
+# docich#5020: a defense/boss battle that closes the destination picker before
+# the target commits ends the order as launched_unconfirmed. Within the same
+# month the picker may be re-opened by driving the same order again -- the
+# general and the carried cards stay as planned and the picker screen is read
+# for real -- at most SORTIE_PICKER_RESUME_LIMIT times per step. Once the
+# budget is spent the incident returns to the launched_unconfirmed terminal.
+SORTIE_PICKER_RESUME_LIMIT = 2    # same-month driven picker re-opens per step
+
+
+def _sortie_resume_row(mem, step):
+    row = (_flow(mem).get('sortie_resume') or {}).get(step)
+    return row if isinstance(row, dict) else None
+
+
+def _sortie_resume_arm(mem, step):
+    """Arm this interruption's same-month picker re-open budget.
+
+    Returns ``(armed, used)``: whether a resume drive may run and how many
+    driven re-opens this step already spent in the observed month. A month the
+    policy never read cannot prove the same-month bound, so it does not arm.
+    """
+    month = mem.get('month')
+    ledger = _flow(mem).setdefault('sortie_resume', {})
+    row = ledger.get(step)
+    if not isinstance(row, dict) or row.get('month') != month:
+        row = {'month': month, 'used': 0}
+        ledger[step] = row
+    row.pop('owed', None)
+    row.pop('picker_active', None)
+    used = int(row.get('used') or 0)
+    row['armed'] = month is not None and used < SORTIE_PICKER_RESUME_LIMIT
+    return row['armed'], used
+
+
+def _sortie_resume_due(mem, step):
+    """A driven re-open is still owed and the month has not moved."""
+    row = _sortie_resume_row(mem, step)
+    return bool(row and row.get('armed') is True
+                and mem.get('month') is not None
+                and row.get('month') == mem.get('month')
+                and int(row.get('used') or 0) < SORTIE_PICKER_RESUME_LIMIT)
+
+
+def _sortie_resume_owe(mem, step):
+    """The cancelled sortie's re-dispatch owes one picker re-open."""
+    row = _sortie_resume_row(mem, step)
+    if isinstance(row, dict):
+        row.pop('armed', None)
+        row.pop('picker_active', None)
+        row['owed'] = True
+
+
+def _sortie_resume_resumed(mem, step, *, driven):
+    """The picker re-opened for this interruption: record ``resumed``.
+
+    A driven re-open spends the same-month budget; the game's own marker
+    return (``sortie_target_resumed``) does not. Repeated frames of an already
+    open picker spend nothing.
+    """
+    row = _sortie_resume_row(mem, step)
+    if not isinstance(row, dict):
+        return
+    if driven and not row.get('owed'):
+        return
+    if not driven and not row.get('armed'):
+        return
+    row.pop('armed', None)
+    row.pop('owed', None)
+    row['picker_active'] = True
+    if driven:
+        row['used'] = int(row.get('used') or 0) + 1
+    # docich#5020: a resumed interruption made progress, so the cancellation
+    # that opened it must not count toward the retry guard's failure budget
+    # (``SORTIE_CANCELLED_OBSERVED_LIMIT``). Otherwise the guard would kill
+    # the order on the third cancellation even though the resume mechanism
+    # already handled the first two, and the exhausted order could never
+    # return to the ordinary unconfirmed path.
+    counts = mem.get('sortie_cancelled_observed_counts') or {}
+    counts.pop(step, None)
+    _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+            resulting_event='resumed',
+            observed_metric={'resume': {'outcome': 'resumed',
+                                        'driven': bool(driven),
+                                        'used': int(row.get('used') or 0),
+                                        'limit': SORTIE_PICKER_RESUME_LIMIT}},
+            reason=('再駆動で行き先ピッカーが再オープンしたため再開を記録' if driven
+                    else 'ゲーム側が出撃先マーカーを戻したため再開を記録'))
+
+
+def _sortie_resume_target_unverified(mem, step):
+    """Count a resumed picker that closed without a verified target.
+
+    Keep this budget separate from ordinary target-cancel limits: a failed
+    resumed picker may be reopened once more, but the second failure returns
+    the order to its original launched_unconfirmed terminal state.
+    """
+    row = _sortie_resume_row(mem, step)
+    if not isinstance(row, dict) or row.get('picker_active') is not True:
+        return None
+    row.pop('picker_active', None)
+    used = int(row.get('used') or 0)
+    result = {'used': used, 'limit': SORTIE_PICKER_RESUME_LIMIT}
+    if used >= SORTIE_PICKER_RESUME_LIMIT:
+        _sortie_resume_outcome(
+            mem, step, 'exhausted',
+            reason='再開した出撃先ピッカーで目標を確認できない状態が上限に達したため、通常の取消回数とは分離して再開を終了')
+        result['outcome'] = 'exhausted'
+    else:
+        row['owed'] = True
+        result['outcome'] = 'retry'
+    return result
+
+
+def _sortie_resume_outcome(mem, step, outcome, *, reason):
+    """Close the interruption incident with ``established``/``exhausted``."""
+    row = _sortie_resume_row(mem, step)
+    if row is None:
+        return
+    used = int(row.get('used') or 0)
+    (_flow(mem).get('sortie_resume') or {}).pop(step, None)
+    _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+            resulting_event=outcome,
+            observed_metric={'resume': {'outcome': outcome,
+                                        'used': used,
+                                        'limit': SORTIE_PICKER_RESUME_LIMIT}},
+            reason=reason)
+
+
+def _sortie_resume_reconcile(mem):
+    """Settle open resume ledgers from the facts this observation holds.
+
+    A ledger whose month passed can never resume again (the bound is
+    same-month only) and a step that reached a terminal state no longer owes a
+    picker, so both drop their drive flags. A ``launched`` step is the
+    interruption incident's ``established`` outcome.
+    """
+    ledger = _flow(mem).get('sortie_resume') or {}
+    if not ledger:
+        return
+    status = _plan_region(mem).get('orders') or {}
+    month = mem.get('month')
+    for step, row in list(ledger.items()):
+        if not isinstance(row, dict):
+            ledger.pop(step, None)
+            continue
+        if month is not None and row.get('month') != month:
+            ledger.pop(step, None)
+            continue
+        if status.get(step) == 'launched':
+            _sortie_resume_outcome(mem, step, 'established',
+                reason='割り込まれた出撃の発射が別経路で確定したため再開の帰結を成立として記録')
+        elif status.get(step) in ('failed', 'done'):
+            row.pop('armed', None)
+            row.pop('owed', None)
+
+
 def _finish_order(mem, state, **fields):
     step = _plan_region(mem).get('active')
     if step and state in ('failed', 'done', 'launched', 'launched_unconfirmed'):
@@ -2812,6 +3047,8 @@ def _finish_order(mem, state, **fields):
                 fields[key] = value[:32 if key == 'purpose' else 48]
         _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':
+            _sortie_resume_outcome(mem, step, 'established',
+                reason='出撃の発射が確定したため、割り込み再開の帰結を成立として記録')
             # A new sortie carries a fresh kit: attempted uses from the
             # previous one must not shrink it (``kit_spent`` is per sortie).
             (mem.get('kit_spent') or {}).pop(step, None)
@@ -2994,6 +3231,10 @@ def _recall_owned(mem, chapter, owned, origin=None):
             return sorted([*kept, *([hub] if hub in universe and hub not in kept else [])])
     if (not road or not measured):
         return owned
+    if chapter == 9 and not chart.ch9_boss_approachable(origin):
+        last = road[-1]
+        owned = [c for c in owned if c != last] or owned
+        road = [c for c in road if c != last] or road
     entry = min((c for c in road if c in cells),
                 key=lambda c: (cells[c][0] - origin[0]) ** 2 + (cells[c][1] - origin[1]) ** 2,
                 default=None)
@@ -3246,7 +3487,10 @@ def _match_sortie(mem, castle, general):
     if candidates:
         return None, 'ambiguous'
     launched = (_world(mem).get('launched') or {}).get(castle) or {}
-    step = _long_march(sorties, castle, general, now, retired)
+    step = _long_march(
+        sorties, castle, general, now, retired,
+        moving_boss=(mem.get('chapter') == chart.MOVING_BOSS_CHAPTER),
+    )
     if step is not None:
         return step, 'matched'
     if launched.get('general') == general and launched.get('step') not in sorties:
@@ -3259,7 +3503,7 @@ def _arrival_limit(mem, sortie):
     return march_arrival_limit(mem, sortie)
 
 
-def _long_march(sorties, castle, general, now, retired=None):
+def _long_march(sorties, castle, general, now, retired=None, *, moving_boss=False):
     """A march longer than SORTIE_BUSY_TICKS: the general's newest sortie.
 
     g1075 2026-10-29 12:45: ポセイドン took 677 observations from グリン to リグア.
@@ -3287,7 +3531,9 @@ def _long_march(sorties, castle, general, now, retired=None):
     boss = chart.is_boss_castle(castle)
     site = castle in chart.boss_sites(4)
     statuses = ('en_route', 'launched_unconfirmed', 'overdue') if boss else ('en_route', 'launched_unconfirmed')
-    limit = SITE_LATE_ENTRY_TICKS if site else LONG_MARCH_TICKS
+    limit = (SITE_LATE_ENTRY_TICKS if site else
+             MOVING_BOSS_LATE_ENTRY_TICKS if (boss and moving_boss) else
+             LONG_MARCH_TICKS)
     if (sortie.get('status') not in statuses
             or not (target == castle or (target is None and sortie.get('planned_target') == castle))
             or not 0 <= now - newest < limit):

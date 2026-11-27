@@ -63,7 +63,12 @@ def test_no_safe_card_returns_to_parent_menu_and_uses_egg(cards):
     assert p.battle_menu_step(menu(selected=1), mem) == [p.pad('up')]
     assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
     assert mem['battle']['survival']['egg_attempted']
-    # Allow the menu to fade after selection; a failed summon is bounded.
+    # Allow the menu to fade after selection; one failed summon gets the
+    # bounded second selection before the menu is treated as spent.
+    for _ in range(3):
+        assert p.battle_menu_step(menu(), mem) == []
+    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
+    assert mem['battle']['survival']['egg_attempts'] == 2
     for _ in range(3):
         assert p.battle_menu_step(menu(), mem) == []
     assert p.battle_menu_step(menu(), mem) == [p.pad('b')]

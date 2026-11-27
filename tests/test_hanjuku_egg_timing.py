@@ -76,7 +76,8 @@ def test_hp3_defense_uses_a_real_egg_without_an_unmeasured_card_scout(stale):
     for _ in range(20):
         p.battle_menu_step(menu(), mem)
     assert rescue['egg_attempted'] is True
-    assert rescue['exhausted'] is True  # no reset loop or second egg selection
+    assert rescue['egg_attempts'] == 2  # bounded second selection, then no reset loop
+    assert rescue['exhausted'] is True
 
 
 @pytest.mark.parametrize('card', ['エンジェリン', 'ゼンマイン'])

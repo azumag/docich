@@ -663,6 +663,14 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert output['end_reason']=='screen_stalled'
     assert output['bot_phase']=='battle' and output['bot_actions_sent']==17
     assert output['battles_finished']==1
+    state['bot_version']='hanjuku-chart-v1457-empty-kit-cancel'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1457-empty-kit-cancel'
+    state['bot_version']='hanjuku-chart-v1458-merchant-mickey-priority'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1458-merchant-mickey-priority'
+    state['bot_version']='hanjuku-chart-v1567-sortie-panel-occluded'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1567-sortie-panel-occluded'
+    state['bot_version']='hanjuku-chart-v1569-chikujou-scan'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1569-chikujou-scan'
     assert 'SECRET' not in json.dumps(output)
     state.update(end_reason='SECRET-OUTCOME',bot_phase='SECRET-PHASE',bot_actions_sent='SECRET-COUNT',screen_unchanged_seconds=float('nan'))
     output=module._project_corner_state(state)
@@ -1928,9 +1936,29 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1443-boss-companion-stage-timeout",
                  "hanjuku-chart-v1485-camp-watch-identity-subset",
                  "hanjuku-chart-v1551-boss-month-phase-guard",
+                 "hanjuku-chart-v1561-camp-resend-scene-reset",
+                 "hanjuku-chart-v1566-egg-attempt-retry",
+                 "hanjuku-chart-v1569-chikujou-scan",
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
+<<<<<<< HEAD
                  "hanjuku-chart-v1555-spend-eggs-and-cards",
+=======
+                 "hanjuku-chart-v1557-order-start-proof",
+                 "hanjuku-chart-v1559-selected-card-interruption",
+                 "hanjuku-chart-v1558-game-over-issue",
+                 "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
+                 "hanjuku-chart-v1565-camp-recall-dome-text-hold",
+                 "hanjuku-chart-v1571-duel-melee-only",
+                 "hanjuku-chart-v1572-sortie-picker-resume",
+                 "hanjuku-chart-v1573-recall-preempt",
+                 "hanjuku-chart-v1574-audit-reissue-dedupe",
+                 "hanjuku-chart-v1574-clear-ending-scene-scan",
+                 "hanjuku-chart-v1575-ch9-ambush-x-offset",
+                 "hanjuku-chart-v1575-ch9-cliff-camp-recall",
+                 "hanjuku-chart-v1576-stale-wave-fresh-cell",
+                 "hanjuku-chart-v1577-boss-redirect-y-jump",
+>>>>>>> origin/main
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

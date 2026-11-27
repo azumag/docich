@@ -56,6 +56,8 @@ PURSUIT_STALE_TICKS = 21600
 # march takes about six). Aim one measured displacement ahead instead, clamped
 # so the lead cell stays on the island.
 PURSUIT_LEAD_TICKS = 360      # march time the lead covers (~6 min)
+PURSUIT_CELL_FRESH_TICKS = 600  # a measured boss cell this fresh licenses a stale re-aim
+CH9_AMBUSH_X_OFFSET = 8       # owner 2026-11-27: track cells sit a little left
 PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # A general placed on the orbit must be allowed to wait for the boss to come
 # round: re-aiming it every PURSUIT_COOLDOWN (4 min) would move it before the
@@ -102,6 +104,9 @@ FORT_LIST_SEEK_LIMIT = 8      # list steps spent looking for the boss general in
 CH9_CLIFF_EAST_X = chart.CH9_CLIFF_EAST_X
 CH9_CLIFF_POCKET_Y = chart.CH9_CLIFF_POCKET_Y
 CH9_EAST_MOUTH = chart.CH9_EAST_MOUTH   # the east area's north entrance off the corridor
+FAILED_AIMS_LIMIT = 6
+PURSUIT_STUCK_STREAK = 4
+PURSUIT_STUCK_COOLDOWN = 960
 
 
 def _drop_probe(mem):
@@ -150,6 +155,27 @@ def _mark_lost(mem, general):
     mem.setdefault('generals_lost_at', {})[general] = time.time()
 
 
+def _evict_unreachable_waves(mem, wave):
+    """Owner 2026-11-27: a stale wave general stranded west of the ch9 cliff
+    can never reach the boss area; evict it so a fresh wave launches from a
+    reachable castle. Recall to the last corridor castle is not assumed --
+    the general may not be able to enter it at all."""
+    now = int(mem.get('tick') or 0)
+    for general, entry in list(wave.items()):
+        if not isinstance(entry, dict):
+            continue
+        uw = entry.get('unit_world')
+        launched = entry.get('launched')
+        if (isinstance(uw, (list, tuple)) and len(uw) == 2
+                and type(launched) is int and now - launched >= PURSUIT_STALE_TICKS
+                and not chart.ch9_boss_approachable(uw)):
+            wave.pop(general, None)
+            mem.setdefault('boss_wave_evicted', {})[general] = entry.get('step')
+            _record(mem, 'boss_wave_unreachable_evicted', general=general,
+                    observed_metric={'unit_world': list(uw), 'step': entry.get('step')},
+                    reason='崖の西に取り残された古いウェーブ将軍は到達不能のため追放し、到達可能な城から新しいウェーブを出す')
+
+
 def track(mem):
     """Merge boss-target sorties into the remembered pursuit list (owner rule).
 
@@ -159,6 +185,10 @@ def track(mem):
     sorties = _world(mem).get('sorties') or {}
     garrison = _world(mem).get('garrison') or {}
     lost = set(mem.get('generals_lost') or ())
+    ch = mem.get('chapter') or 0
+    road = chart.corridor(ch) or ()
+    boss_source = road[-1] if (ch == 9 and road) else None
+    evicted = mem.get('boss_wave_evicted') or {}
     wave = mem.setdefault(LIST_KEY, {})
     for step, s in sorties.items():
         general = (s or {}).get('general')
@@ -166,9 +196,15 @@ def track(mem):
         # stays None until the march is bound): ch9 2026-11-17 main line, two
         # boss launches never reached this list and no pursuit ever started.
         target = (s or {}).get('target') or (s or {}).get('planned_target')
-        if target == chart.boss_castle(mem.get('chapter') or 0) \
+        source = (s or {}).get('source')
+        if boss_source and isinstance(source, str) and source and source != boss_source:
+            continue
+        if isinstance(general, str) and general and evicted.get(general) == step:
+            continue
+        if target == chart.boss_castle(ch) \
                 and isinstance(general, str) and general:
             wave.setdefault(general, {'step': step, 'launched': s.get('tick')})
+    _evict_unreachable_waves(mem, wave)
     home = {g for residents in garrison.values()
             if isinstance(residents, list) for g in residents}
     stale = mem.get('generals_lost_garrison') or {}
@@ -316,6 +352,17 @@ def ambush_contact(mem):
                 reason='ボスが待ち伏せの狙いセルに到達（将軍との接触とは別）')
 
 
+def _aim_failed(entry, cell) -> bool:
+    """True when ``cell`` sits within 16 px of an aim that produced no move."""
+    if not (isinstance(entry, dict) and isinstance(cell, (list, tuple)) and len(cell) == 2):
+        return False
+    for failed in entry.get('failed_aims') or ():
+        if (isinstance(failed, (list, tuple)) and len(failed) == 2
+                and abs(failed[0] - cell[0]) + abs(failed[1] - cell[1]) <= 16):
+            return True
+    return False
+
+
 def _note_redirect_move(mem, entry, probe, metric):
     """Remember the unit's measured cell and drop an aim the いどう never moved.
 
@@ -331,15 +378,29 @@ def _note_redirect_move(mem, entry, probe, metric):
         return
     prior = entry.get('move_from')
     entry['unit_world'] = list(unit)
-    if (isinstance(prior, (list, tuple)) and len(prior) == 2
-            and abs(unit[0] - prior[0]) + abs(unit[1] - prior[1]) < 8
-            and entry.get('ambush_cell')):
-        entry.pop('ambush_cell', None)
-        metric['no_move'] = True
-        _record(mem, 'boss_pursuit_no_move', chart_step=probe.get('step'),
-                general=probe.get('general'),
-                observed_metric={'unit_world': list(unit), 'prior': list(prior)},
-                reason='いどう後も将軍の実位置が変わらないため、この待ち伏せセルを諦めて別セルへ再照準する')
+    if isinstance(prior, (list, tuple)) and len(prior) == 2:
+        moved = abs(unit[0] - prior[0]) + abs(unit[1] - prior[1])
+        if moved >= 8:
+            entry.pop('failed_aims', None)
+            entry.pop('ambush_offset', None)
+            entry.pop('no_move_streak', None)
+        elif entry.get('ambush_cell'):
+            failed_aim = list(entry['ambush_cell'])
+            failed_aims = entry.setdefault('failed_aims', [])
+            if not any(isinstance(f, (list, tuple)) and len(f) == 2
+                       and abs(f[0] - failed_aim[0]) + abs(f[1] - failed_aim[1]) <= 8
+                       for f in failed_aims):
+                failed_aims.append(failed_aim)
+                if len(failed_aims) > FAILED_AIMS_LIMIT:
+                    del failed_aims[:-FAILED_AIMS_LIMIT]
+            entry['ambush_offset'] = int(entry.get('ambush_offset') or 0) + 1
+            entry['no_move_streak'] = int(entry.get('no_move_streak') or 0) + 1
+            entry.pop('ambush_cell', None)
+            metric['no_move'] = True
+            _record(mem, 'boss_pursuit_no_move', chart_step=probe.get('step'),
+                    general=probe.get('general'),
+                    observed_metric={'unit_world': list(unit), 'prior': list(prior)},
+                    reason='いどう後も将軍の実位置が変わらないため、この待ち伏せセルを諦めて別セルへ再照準する')
     entry['move_from'] = list(unit)
 
 
@@ -363,14 +424,23 @@ def _ambush(mem, general=None):
     distinct = sorted(set(cells))
     if len(distinct) < 3:
         return None
+    shift = CH9_AMBUSH_X_OFFSET if (mem.get('chapter') or 0) == 9 else 0
     far = max(distinct, key=lambda c: abs(c[0] - cur[0]) + abs(c[1] - cur[1]))
     if abs(far[0] - cur[0]) + abs(far[1] - cur[1]) < 160:
         return None
     if general is None:
-        return far
-    names = sorted((mem.get(LIST_KEY) or {}).keys())
+        return (far[0] + shift, far[1])
+    wave = mem.get(LIST_KEY) or {}
+    names = sorted(wave.keys())
     index = names.index(general) if general in names else 0
-    return distinct[index % len(distinct)]
+    entry = wave.get(general) or {}
+    offset = int(entry.get('ambush_offset') or 0) if isinstance(entry, dict) else 0
+    for k in range(len(distinct)):
+        cand = distinct[(index + offset + k) % len(distinct)]
+        if not _aim_failed(entry, cand):
+            return (cand[0] + shift, cand[1])
+    cand = distinct[(index + offset) % len(distinct)]
+    return (cand[0] + shift, cand[1])
 
 
 def _lead(mem, probe):
@@ -411,6 +481,23 @@ def _ch9_cliff_detour(unit_world, aim):
     return chart.ch9_cliff_detour(unit_world, aim)
 
 
+def _next_cliff_detour(entry, unit_world, aim):
+    """Non-failed ch9 cliff detour leg, falling back when an earlier leg stalled."""
+    detour = _ch9_cliff_detour(unit_world, aim)
+    if detour is not None and _aim_failed(entry, detour):
+        if detour == chart.CH9_BOSS_WAYPOINT and not _aim_failed(entry, CH9_EAST_MOUTH):
+            detour = CH9_EAST_MOUTH
+        else:
+            detour = None
+    return detour
+
+
+def _unreachable_recall_castle(mem, unit_world):
+    """Nearest owned non-イデ！ castle for a ch9 camp trapped behind the cliff."""
+    from ..os_layer.world import _owned
+    return chart.ch9_unreachable_recall_castle(unit_world, _owned(mem))
+
+
 def _note_stale_wave(mem):
     now = int(mem.get('tick') or 0)
     if mem.get('boss_wave_stale_noted') is not None:
@@ -431,6 +518,9 @@ def _candidate(mem):
     """The oldest boss-bound general that has marched long enough to re-aim."""
     now = int(mem.get('tick') or 0)
     wave = mem.get(LIST_KEY) or {}
+    fresh_any = any(isinstance(e, dict) and type(e.get('launched')) is int
+                    and now - e['launched'] < PURSUIT_STALE_TICKS
+                    for e in wave.values())
     best = None
     for general, e in wave.items():
         launched = e.get('launched')
@@ -441,9 +531,23 @@ def _candidate(mem):
         # generals were re-aimed again (live g1288 2026-11-20 15:33: エストラゴン
         # launched, カシス from tick 1475 was still selected first).
         if type(launched) is int and now - launched >= PURSUIT_STALE_TICKS:
-            continue
+            if fresh_any:
+                # A fresh wave always wins; stale entries are only the fallback
+                # when the whole wave is old (owner 2026-11-27).
+                continue
+            _cell = mem.get('boss_cell') or {}
+            _fresh = (type(_cell.get('tick')) is int
+                      and 0 <= now - _cell['tick'] <= PURSUIT_CELL_FRESH_TICKS)
+            if not _fresh:
+                continue
+        unit_world = e.get('unit_world')
+        unreachable = (unit_world is not None and not chart.ch9_boss_approachable(unit_world))
+        streak = int(e.get('no_move_streak') or 0)
+        cooldown = (PURSUIT_STUCK_COOLDOWN
+                    if (streak >= PURSUIT_STUCK_STREAK and not unreachable)
+                    else PURSUIT_COOLDOWN)
         last = e.get('pursuit_tick')
-        if type(last) is int and now - last < PURSUIT_COOLDOWN:
+        if type(last) is int and now - last < cooldown:
             continue
         wait = e.get('ambush_until')
         if type(wait) is int and now < wait:
@@ -451,7 +555,9 @@ def _candidate(mem):
         # Round-robin by least-recent pursuit attempt (unpursued generals first,
         # then oldest pursuit_tick, breaking ties by oldest launch) so a few
         # repeatedly failing veterans cannot starve fresh waves (#4857).
-        key = (last if type(last) is int else -1, launched or 0)
+        key = (streak >= PURSUIT_STUCK_STREAK and not unreachable,
+               last if type(last) is int else -1,
+               launched or 0)
         if best is None or key < best[0]:
             best = (key, (general, e))
     return best[1] if best is not None else None
@@ -560,8 +666,20 @@ def step(screen, mem, frame):
         # _candidate still needs a marched wave general, so non-ch9 phases
         # never reach this code anyway.
         if wave_stale(mem):
-            _note_stale_wave(mem)
-            return None
+            # Owner 2026-11-27: a stale wave with a freshly measured boss cell
+            # must still re-place the camped general on the track; otherwise
+            # the bot measures the skull forever and never pursues.
+            _cell = mem.get('boss_cell') or {}
+            _now = int(mem.get('tick') or 0)
+            _fresh = (type(_cell.get('tick')) is int
+                      and 0 <= _now - _cell['tick'] <= PURSUIT_CELL_FRESH_TICKS)
+            if not _fresh:
+                _note_stale_wave(mem)
+                return None
+            _record(mem, 'boss_wave_stale_fresh_cell',
+                    observed_metric={'cell': list(_cell.get('cell') or ()),
+                                     'cell_tick': _cell.get('tick'), 'tick': _now},
+                    reason='ウェーブは古いがボスセルが新しいため、追撃を再開して軌道へ置き直す')
         mem.pop('boss_wave_stale_noted', None)
         pick = _candidate(mem)
         if pick is None:
@@ -804,22 +922,37 @@ def step(screen, mem, frame):
                             entry = (mem.get(LIST_KEY) or {}).get(probe.get('general'))
                             if isinstance(entry, dict):
                                 entry['unit_world'] = list(origin_world)
-                            current_aim = (probe.get('pre_detour_aim')
-                                           or mem.get('pursuit_aim')
-                                           or jump.get('goal_cell')
-                                           or (mem.get('boss_cell') or {}).get('cell'))
-                            detour = _ch9_cliff_detour(origin_world, current_aim)
-                            if detour is not None:
-                                mem['pursuit_aim'] = list(detour)
-                                probe['aim_cell'] = list(detour)
-                                mem.pop('pursuit_lead', None)
-                                jump['goal_cell'] = list(detour)
-                            elif probe.get('pre_detour_aim') is not None:
-                                # Cached origin was stale (unit already east of cliff):
-                                # restore the original pre-detour aim.
-                                mem['pursuit_aim'] = list(current_aim)
-                                probe['aim_cell'] = list(current_aim)
-                                jump['goal_cell'] = list(current_aim)
+                            if not chart.ch9_boss_approachable(origin_world):
+                                recall_castle = _unreachable_recall_castle(mem, origin_world)
+                                rc_cell = ((chart.castles(9) or {}).get(recall_castle)
+                                           if recall_castle else None)
+                                if recall_castle and rc_cell:
+                                    probe['recall_castle'] = recall_castle
+                                    jump['goal'] = recall_castle
+                                    jump['goal_cell'] = list(rc_cell)
+                                    mem.pop('pursuit_aim', None)
+                                    mem.pop('pursuit_lead', None)
+                            else:
+                                had_recall_castle = bool(probe.pop('recall_castle', None))
+                                if had_recall_castle:
+                                    jump['goal'] = chart.boss_castle(9)
+                                current_aim = (probe.get('pre_detour_aim')
+                                               or mem.get('pursuit_aim')
+                                               or jump.get('goal_cell')
+                                               or (mem.get('boss_cell') or {}).get('cell'))
+                                detour = _next_cliff_detour(entry, origin_world, current_aim)
+                                if detour is not None:
+                                    mem['pursuit_aim'] = list(detour)
+                                    probe['aim_cell'] = list(detour)
+                                    mem.pop('pursuit_lead', None)
+                                    jump['goal_cell'] = list(detour)
+                                elif (probe.get('pre_detour_aim') is not None or had_recall_castle) \
+                                        and current_aim is not None:
+                                    # Cached origin was stale (unit already east of cliff):
+                                    # restore the original pre-detour aim.
+                                    mem['pursuit_aim'] = list(current_aim)
+                                    probe['aim_cell'] = list(current_aim)
+                                    jump['goal_cell'] = list(current_aim)
                     return _y_jump_step(mem, frame)
                 return [pad('b')]
             if kind == 'map':
@@ -827,9 +960,10 @@ def step(screen, mem, frame):
                 return [pad('b')]
             return []
         from . import map as _map
-        goal = chart.boss_castle(9)
+        recall_castle = probe.get('recall_castle')
+        goal = recall_castle or chart.boss_castle(9)
         marker = screen.marker
-        if not marker or frame is None or not chart.moving_boss_cell(9):
+        if not marker or frame is None or (not recall_castle and not chart.moving_boss_cell(9)):
             probe['lost'] = int(probe.get('lost') or 0) + 1
             if probe['lost'] < 3:
                 return []
@@ -838,8 +972,25 @@ def step(screen, mem, frame):
         if probe.get('unit_cell') is None and screen.cursor is not None:
             # The picker opens on the unit that is being re-aimed.
             probe['unit_cell'] = list(screen.cursor)
-        pseudo = {'step': 'PURSUIT', 'target': goal, 'source': None}
-        if _map._target_roof_under_marker(screen, mem, frame, pseudo):
+        pseudo = {'step': PURSUIT_STEP, 'target': goal, 'source': None}
+        if recall_castle:
+            if (mem.get('y_jumped') or {}).get(PURSUIT_STEP) == recall_castle:
+                (mem.get(LIST_KEY) or {}).pop(probe['general'], None)
+                mem.setdefault('boss_wave_evicted', {})[probe['general']] = probe.get('step')
+                mem['boss_pursuit_fail_streak'] = 0
+                mem['boss_pursuit_suspended'] = None
+                mem.pop('pursuit_lead', None)
+                mem.pop('pursuit_aim', None)
+                _record(mem, 'boss_pursuit_unreachable_recall', chart_step=probe.get('step'),
+                        general=probe['general'], castle=recall_castle,
+                        observed_metric={'unit_world': probe.get('unit_world'),
+                                         'recall_castle': recall_castle,
+                                         'target_cell': list(marker)},
+                        reason='イデ！より手前の崖の向こう側で野営しているためボス追撃対象から外し、最寄りの自軍城へ帰還させる')
+                probe['phase'] = 'close'
+                probe['outcome'] = 'recalled'
+                return [pad('a')]
+        elif _map._target_roof_under_marker(screen, mem, frame, pseudo):
             entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
             if entry is not None:
                 entry['pursuit_tick'] = int(mem.get('tick') or 0)
@@ -847,16 +998,17 @@ def step(screen, mem, frame):
             mem['boss_pursuit_suspended'] = None
             mem.pop('pursuit_lead', None)
             placed = mem.pop('pursuit_aim', None)
+            metric = _redirect_metric(mem, probe, marker)
+            if placed:
+                metric['aim'] = list(placed)
+            _note_redirect_move(mem, entry, probe, metric)
             if placed:
                 if entry is None:
                     entry = (mem.get(LIST_KEY) or {}).get(probe['general'])
                 if entry is not None:
                     entry['ambush_until'] = int(mem.get('tick') or 0) + AMBUSH_WAIT_TICKS
-                    entry['ambush_cell'] = list(placed)
-            metric = _redirect_metric(mem, probe, marker)
-            if placed:
-                metric['aim'] = list(placed)
-            _note_redirect_move(mem, entry, probe, metric)
+                    if not metric.get('no_move') or not _aim_failed(entry, placed):
+                        entry['ambush_cell'] = list(placed)
             _record(mem, 'boss_pursuit_redirected', chart_step=probe.get('step'),
                     general=probe['general'],
                     observed_metric=metric,
@@ -865,6 +1017,21 @@ def step(screen, mem, frame):
             probe['outcome'] = 'redirected'
             return [pad('a')]
         from ..os_layer.navigation import _start_y_jump
+        entry = (mem.get(LIST_KEY) or {}).get(probe.get('general')) or {}
+        unit_world = probe.get('unit_world') or entry.get('unit_world')
+        if unit_world is not None and not chart.ch9_boss_approachable(unit_world):
+            rc = _unreachable_recall_castle(mem, unit_world)
+            if rc:
+                probe['recall_castle'] = rc
+                probe['unit_world_from_cache'] = bool(
+                    probe.get('unit_world') is None and entry.get('unit_world') is not None
+                )
+                mem.pop('pursuit_aim', None)
+                mem.pop('pursuit_lead', None)
+                if (mem.get('y_jumps') or {}).get('PURSUIT:target', 0) < 3:
+                    return _start_y_jump(mem, {'step': PURSUIT_STEP, 'target': rc, 'source': None}, rc, 'target')
+                _close(mem, probe, 'boss_jump_failed')
+                return [pad('b')]
         aim = _ambush(mem, probe.get('general'))
         lead = None
         if aim is None:
@@ -875,13 +1042,11 @@ def step(screen, mem, frame):
             cell = (mem.get('boss_cell') or {}).get('cell')
             if lead and isinstance(cell, (list, tuple)) and len(cell) == 2:
                 aim = (cell[0] + lead[0], cell[1] + lead[1])
-        entry = (mem.get(LIST_KEY) or {}).get(probe.get('general')) or {}
-        unit_world = probe.get('unit_world') or entry.get('unit_world')
         probe['pre_detour_aim'] = list(aim) if aim is not None else None
         probe['unit_world_from_cache'] = bool(
             probe.get('unit_world') is None and entry.get('unit_world') is not None
         )
-        detour = _ch9_cliff_detour(unit_world, aim)
+        detour = _next_cliff_detour(entry, unit_world, aim)
         if detour is not None:
             # The unit stands west of the ch9 cliff line and the aim is east
             # of it: the next leg is the corridor, not the boss (#4861).

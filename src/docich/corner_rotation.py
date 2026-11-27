@@ -34,6 +34,7 @@ from .corner_adapters import (
     RetiredCornerObserver,
 )
 from .game_switch import TERMINAL_RECEIPT_STATUSES, atomic_write_json
+from .hanjuku_family import ORIGINAL, is_hanjuku, is_original, module
 
 DAY = 86400.0
 MANUAL_CAPTURE_PROFILE_TTL = 60.0
@@ -683,15 +684,18 @@ class CornerRotationManager:
         continues normally before that time. Eligibility and pauses apply at
         reservation and again at dispatch; cooldown is bypassed.
         """
-        if type(resume_latest) is not bool or (resume_latest and (game != 'hanjuku-hero' or trigger_at is not None)):
+        # resume/new-game are original-corner-only features (checkpoint
+        # transfer and a fresh chapter 1); speedrun does not use them.
+        if type(resume_latest) is not bool or (resume_latest and (
+                not is_original(game) or trigger_at is not None)):
             raise RotationError('invalid resume request', reason_code='invalid_value')
         if resume_from is not None and (
-                game != 'hanjuku-hero' or not isinstance(resume_from, str)
+                not is_original(game) or not isinstance(resume_from, str)
                 or resume_latest or new_game or trigger_at is not None
                 or not resume_from.startswith('g')):
             raise RotationError('invalid explicit resume request', reason_code='invalid_value')
         if type(new_game) is not bool or (new_game and (
-                game != 'hanjuku-hero' or resume_latest or trigger_at is not None)):
+                not is_original(game) or resume_latest or trigger_at is not None)):
             raise RotationError('invalid new game request', reason_code='invalid_value')
         if not rotation_enabled(self.g):
             raise RotationError(
@@ -781,15 +785,15 @@ class CornerRotationManager:
                 if resume_from is not None:
                     queued['resume_from'] = resume_from
                 if resume_latest or resume_from is not None:
-                    from .hanjuku_resume import prepare, recover_prepared
+                    # Original-only by the queue_manual gate above.
+                    resume = module(game, 'hanjuku_resume')
                     from .config import load_game
-                    queued = recover_prepared(self.g, chosen) or dict(
+                    queued = resume.recover_prepared(self.g, chosen) or dict(
                         queued, resume_latest=resume_latest or resume_from is not None)
-                    prepare(self.g, load_game(self.g, game), queued)
+                    resume.prepare(self.g, load_game(self.g, game), queued)
                 atomic_write_json(self._manual_queue_path, queued)
             if resume_latest or resume_from is not None:
-                from .hanjuku_resume import publish
-                publish(self.g, queued)
+                module(game, 'hanjuku_resume').publish(self.g, queued)
             result = {"status": ("scheduled" if requested_trigger is not None
                                   and requested_trigger > now else "queued"),
                       "corner": chosen, "request_id": queued["request_id"]}
@@ -797,7 +801,7 @@ class CornerRotationManager:
                 result["trigger_at"] = requested_trigger
             return result
 
-    def clear_manual_clock_quarantine(self, game='hanjuku-hero'):
+    def clear_manual_clock_quarantine(self, game=ORIGINAL):
         """Clear a clock-gap hold for one already-queued manual corner.
 
         The hold is a downtime safety, not a game switch. This operator only
@@ -806,7 +810,7 @@ class CornerRotationManager:
         durable queue names this corner. The normal tick then processes the
         queue through the existing reservation/game-boundary gates.
         """
-        if game != 'hanjuku-hero':
+        if not is_original(game):
             raise RotationError(
                 'unsupported manual clock quarantine', reason_code='invalid_value'
             )
@@ -923,7 +927,9 @@ class CornerRotationManager:
         if request.get("resume_latest") is not True:
             return None
         from .adapters.base import AdapterError
-        from .hanjuku_resume import discard_unclaimed
+        # Original-only: only the original corner can queue a resume request
+        # (the queue_manual gate refuses it for speedrun).
+        from .hanjuku_resume import discard_unclaimed  # family: original-only
         try:
             return discard_unclaimed(self.g, request_id)
         except AdapterError as exc:
@@ -1159,7 +1165,7 @@ class CornerRotationManager:
         hotload generation gate belong to the absent owner), so it records a
         bounded anomaly the operator can act on instead.
         """
-        if (raw.get("status") != "active" or raw.get("game") != "hanjuku-hero"):
+        if raw.get("status") != "active" or not is_hanjuku(raw.get("game")):
             return
         reason = raw.get("end_reason")
         if reason not in {"game_over", "screen_stalled", "input_stalled", "game_clear"}:
@@ -2429,7 +2435,7 @@ class CornerRotationManager:
         # run it behaves exactly like the old identity-less settlement tick.
         # Resolved through the hot-load trampoline (#3838) so a predictions
         # deploy reaches the long-lived corner worker without a restart.
-        from . import hanjuku_hotload
+        from . import hanjuku_hotload  # family: original-only
         from .soren_predictions import tick as soren_prediction_tick
         prediction_module = hanjuku_hotload.module('hanjuku_predictions')
         prediction_tick = getattr(prediction_module, 'tick_active', None)

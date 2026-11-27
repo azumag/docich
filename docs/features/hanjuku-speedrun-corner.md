@@ -1,0 +1,714 @@
+# 半熟英雄スピードランコーナー 設計書（ドラフト v2）
+
+- 状態: 設計のみ。コード・設定・本番は未変更。
+- 対象: 新コーナー `hanjuku-speedrun`。既存の半熟英雄コーナー `hanjuku-hero`（以下「元コーナー」）を元にする。
+- 方針: 個人プロダクトなので、まず動くものを出すことを優先する。厳格なデプロイガードは新しく足さない。
+  そのかわり、凍結後の元コーナーには触れない、ゲームの入力をスピードラン機能で止めない、の2点は必ず守る。
+- `handoff.md` は `DOCICH_HANDOFF_PATH` が未設定のため読んでいない（AGENTS.md §1）。
+
+改訂履歴:
+
+- v1（2026-11-25）初版。判断ロジックを両コーナーで共有する案だった。
+- v2（2026-11-25）オーナー回答を反映した。
+  - ロジックは共有せず、別コピーにする。元コーナーは今のランの完走時点で凍結し、そこでスピードラン側のロジックを最新に揃える。以降は元コーナーに触れない。
+  - R2への送信はランの終了時だけにする。
+  - ゲームオーバーと画面停滞で試走は終わる。次回のコーナー開始で再走になる。
+  - 自動ローテーションに入れた後も、試走が終わるまで枠を占有する。
+  - 以上により、試走の中断・再開とセーブとの時間の結び付けは不要になった。
+
+## 0. やりたいこと（オーナー依頼 2026-11-25）
+
+1. 半熟英雄コーナーの構成とボットを変えずにコピーし、それを元に新コーナー「半熟英雄スピードラン」を登録する。
+2. 元コーナーは今のランを完走したら凍結し、動く状態のまま保存する。その時点でスピードランのボットのロジックを元コーナーの最新に揃え、以降は元コーナーに触れない。
+3. 起動は最初は手動だけにする。問題がなければ自動ローテーションに入れる。枠は試走が終わるまで占有する。
+4. 最初は普通にゲームクリアまで遊ばせる。目的はクリアまでの時間短縮。改善できるように、数ラン分の詳細なログを残す。
+5. ログでVMの容量を圧迫しない。ランが終わったらR2へ送る。
+6. ゲームオーバーまたは画面停滞で試走は終わる。次のコーナー開始が再走になる。
+7. コメントプロンプトにも対応する。
+8. 配信画面上部の4分割ステータス欄にタイマーを出す。12話ごとのスプリットタイマーにし、ミリ秒まで表示する。
+   自己ベスト（PB）、区間ベスト（gold）、PB時の区間タイムを保存する。色分けと、PB時の区間タイムとの差分を表示する。
+
+## 1. 現状調査で分かったこと（根拠）
+
+| 項目 | 現状 | 根拠 |
+|---|---|---|
+| ゲーム設定 | `config/games/hanjuku-hero.toml`（retroarch adapter, command brain `brains/hanjuku/bot.py`, `[hanjuku]` 各種） | 同ファイル |
+| コーナー登録 | `config/docich.soren-live.toml` の `[corner_rotation].corners` に `{ id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" }` | 80行目 |
+| 手動のみの仕組み | catalog行の `manual_only = true` で自動抽選から外れ、手動予約だけ受け付ける（puyo/trpg/chart で実績あり） | `src/docich/corner_catalog.py`, `corner_rotation.py` の `_eligible(include_manual_only=)` |
+| 手動起動経路 | `python3 -m docich.hanjuku_corner`（`queue_manual('hanjuku-hero')`）、owner-only `corner-rotation-operator.yml` の `start-hanjuku`、WebUI の `_CORNER_QUEUED_MANUAL_GAMES` | `src/docich/hanjuku_corner.py`, `webui.py:1871` |
+| 判断ロジックの規模 | 半熟モジュール127個（`src/docich/hanjuku_*.py` 51個・約1.6万行、`src/docich/hanjuku/` 76個・約6.4万行）、`brains/hanjuku/` 約1.5千行。テストは `tests/test_hanjuku*.py` 667ファイル・約11.5万行 | `wc` 実測 |
+| 共通基盤から半熟への依存 | 半熟モジュールを import する共通側モジュールは13個（`retro_corner`, `adapters.retroarch`, `agent.loop`, `agent.brains`, `game_switch`, `corner_rotation`, `webui` ほか） | import 解析 |
+| ゲーム名の決め打ち | `'hanjuku-hero'` の文字列が src/brains に134箇所（うち半熟モジュール内91箇所）。`config/games/hanjuku-hero.toml` の直読みが6箇所 | `grep` 実測 |
+| コピー時に書き換えが要る箇所 | `Path(__file__).parents[N]` 13箇所、`docich.hanjuku…` の絶対参照61箇所、動的import 2箇所 | `grep` 実測 |
+| セーブの分離 | RetroArch の `saves/` `states/` は世代（runtime）ごとのディレクトリ。新しいruntimeはバッテリーセーブなしで始まる | `src/docich/adapters/retroarch.py` `retroarch_cfg_lines` |
+| 共有の学習データ | `run/hanjuku_experience.json` を全世代で読み書きする | `brains/hanjuku/bot.py` `experience_path` |
+| ログ | 世代ごとに `hanjuku_decisions.jsonl` / `hanjuku_events.jsonl`。4MiBで `.previous` に1回だけ回すので、長いランでは古い部分が消える | `hanjuku_run.py` `append_log`/`MAX_LOG_BYTES` |
+| 章の区切り | 章末の「セーブをしゅうりょうして よろしいですかな?」を読むと `prompt` 記録（`strategy_variant='chapter_end_save'`）が出る。直後の先発隊画面で `chapter_seen`（evidence `chapter_end_save_party`）が出る | `hanjuku/flows/prompts.py`, `flows/starter.py`, `strategy/campaign.py` |
+| クリア判定 | エンディングの「めでたし」を読むと `clear_ending_seen`。その後タイトルに戻ると `terminal_reason='game_clear'` | `hanjuku_run.py` `CLEAR_ENDING_TEXT` |
+| 上部ステータス欄 | `overlays/direct_broadcast_overlay.html` の `#top-rail`（960×90、内側の `#summary` は2×2の4行・高さ73px）。作業中バナー > コメント生成中 > 4行サマリの順で出し分ける | `renderTopRail()` |
+| 表示データの経路 | Soren側サーバーが `/__soren_overlay/broadcast/state` を1秒ごとに返す。中身は docich の `overlays/direct_broadcast_overlay_state.mjs` が組み立てる。docich側のファイルは `next_corner.json` と同じく既定パスで読める | `DEFAULT_NEXT_CORNER_FILE` |
+| コメントプロンプト | ゲームごとのプロンプト差し替えは `src/docich/comment/game_profile.py` が持つ（`HANJUKU = "hanjuku-hero"`） | 同ファイル |
+| R2 | §5.1 に調査結果。docich/Soren 用のR2設定は見当たらない | §5.1 |
+| クリア所要時間 | 現行BOTの1回のクリア挑戦は数日単位（例: g1190 は 2026-11-16 に第1話から始め、11-24 時点で第12話） | `VERIFY-5448.md` ほか |
+
+最後の行が設計に効く。**1回の試走が数日かかる**前提で、ログ量とタイマーの桁数（100時間超）を設計する。
+
+## 2. 複製と凍結
+
+### 2.1 全体の流れ
+
+```
+今                                  元コーナーの今のランが完走                     以後
+│ スピードランコーナーを作る          │ 凍結                                         │
+│ ・ロジックを元コーナーから          │ ・元コーナーのファイルを固定（CIで変更を拒否）│ 改善はスピードラン側だけ
+│   自動生成でコピー（初回）          │ ・その時点の元コーナーからコピーを作り直す   │ 元コーナーには触れない
+│ ・タイマー・ログ・表示・コメント    │ ・コピーを手で直せる通常のコードに切り替える │
+│ ・手動起動で試走できる              │                                              │
+│ 元コーナーは今まで通り開発を続ける  │                                              │
+```
+
+- 凍結までは、元コーナーへの修正を今まで通り続けてよい。スピードラン側のロジックは**生成物**なので手で直さない。必要なら途中で何度でも生成し直せる。
+- 凍結の時点で、元コーナーの最終版から1回だけ生成し直す。これがオーナーの言う「スピードランのボットのロジックを更新」に当たる。以後スピードラン側は普通のソースコードになり、時間短縮の改善はここに入れる。
+- 凍結後の元コーナーのファイルは変更しない。元コーナーは凍結時点のコードのまま動く。
+
+### 2.2 何をコピーするか
+
+| 元（凍結後は変更しない） | コピー先（スピードラン用） |
+|---|---|
+| `src/docich/hanjuku_*.py`（51個） | `src/docich/hanjuku_speedrun/hanjuku_*.py` |
+| `src/docich/hanjuku/`（76個） | `src/docich/hanjuku_speedrun/hanjuku/` |
+| `brains/hanjuku/bot.py` ほか | `brains/hanjuku_speedrun/bot.py` ほか |
+| `config/games/hanjuku-hero.toml` | `config/games/hanjuku-speedrun.toml`（§2.5 の差分を当てる） |
+| `tests/test_hanjuku*.py` と半熟モジュールを import する他のテスト | `tests/hanjuku_speedrun/test_*.py` |
+| `tests/fixtures/` の半熟用データ | コピーしない（読み取り専用なので両方から使う） |
+
+コピー先はパッケージを1段深くするだけで、モジュール名は元と同じにする。元とコピーをファイル単位で `diff` できるので、
+凍結時の作り直しと、後で「元からどこを変えたか」を見るのが楽になる。
+
+スピードランで新しく書くコード（タイマー・ログ退避・分析）は、生成物と混ざらないように `src/docich/hanjuku_speedrun/rta/` に置く。
+
+### 2.3 コピーの自動生成ツール
+
+`tools/hanjuku_speedrun_fork.py --source <gitの参照>` を作る。指定したコミットのファイルを `git show` で読み、決まった書き換えをしてコピー先へ書き出す。
+同じコミットからは毎回同じ結果になる。
+
+| 書き換え | 内容 | 件数の目安 |
+|---|---|---|
+| 相対import | コピーしない共通モジュール（`game_switch`, `naming`, `adapters.base` など）への相対importを1段上へ直す。半熟モジュールどうしの相対importはそのまま | AST で機械的に |
+| 絶対参照 | `docich.hanjuku…` → `docich.hanjuku_speedrun.hanjuku…`（import文、`monkeypatch` の文字列、動的import） | 61＋2箇所 |
+| パスの深さ | `Path(__file__).resolve().parents[N]` → `parents[N+1]` | 13箇所 |
+| ゲーム名 | `'hanjuku-hero'` → `'hanjuku-speedrun'`、`hanjuku-hero.toml` → `hanjuku-speedrun.toml` | 91箇所＋設定6箇所 |
+| 共有ファイル名 | 世代ディレクトリの外にあるファイル名を変える（例 `hanjuku_experience.json` → `hanjuku_speedrun_experience.json`）。対象は表で持ち、実装時に全部洗い出す | 表で管理 |
+| スピードラン用の追加 | タイマー記録とログ退避のフック（§3.4, §4.2）を、小さなパッチとして最後に当てる | 2〜3個 |
+| 印 | 生成したファイルの先頭に「`<コミット>` から生成。凍結まで手で直さない」と書く | 全ファイル |
+
+世代ディレクトリの中のファイル名（`hanjuku_run.json`, `hanjuku_bot.json`, `hanjuku_decisions.jsonl` など）は変えない。
+ゲーム名で世代が分かれるので衝突しない。表示や診断の読み取り側も同じ名前のまま使える。
+
+生成元と生成結果は `src/docich/hanjuku_speedrun/FORK.json`（生成元コミット、生成日時、凍結済みか）に残す。
+凍結前は CI で `--check` を流し、コピーが手で直されていないことを確かめる。
+
+### 2.4 共通基盤からの呼び分け
+
+共通基盤（ゲーム切替・コーナー管理・表示・WebUI）は両コーナーで共有する。ここはコピーしない。
+
+`src/docich/hanjuku_family.py` を新しく作り、ゲーム名から「どちらのロジックを使うか」を返す。
+
+```python
+ORIGINAL = "hanjuku-hero"
+SPEEDRUN = "hanjuku-speedrun"
+PACKAGES = {ORIGINAL: "docich", SPEEDRUN: "docich.hanjuku_speedrun"}
+def is_hanjuku(game) -> bool: ...
+def module(game, name):      # module("hanjuku-hero", "hanjuku_run") は今と同じ docich.hanjuku_run を返す
+    ...
+```
+
+- 共通側の13モジュールの半熟importと、共通側の `'hanjuku-hero'` 判定（`retro_corner.py` 20箇所、`corner_rotation.py`、`game_switch.py`、`webui.py`、`soren_corner_stats.py`、`agent/` など）を、
+  `module(game, …)` と `is_hanjuku(game)` に置き換える。
+- 元コーナーに対しては今と同じモジュールを返すので、元コーナーの動きは変わらない。元コーナーのテストを書き換えずに通すことで確かめる。
+- 元コーナーにしか無い機能（チャネルポイント予想、新記録クリップ、セーブからの再開、手動の取消・管理解除）は `'hanjuku-hero'` のまま残す。スピードランでは使わない。
+- 共通基盤は凍結後も変わり続ける。元コーナーが壊れていないことは、凍結した元コーナーのテストを CI で流し続けて確かめる（§2.6）。
+
+### 2.5 スピードラン用の設定（`hanjuku-speedrun.toml`）
+
+元の設定をそのままコピーし、次だけ変える。
+
+| 項目 | 元 | スピードラン |
+|---|---|---|
+| `[game] name` / `title` | `hanjuku-hero` / 半熟英雄 (SFC) | `hanjuku-speedrun` / 半熟英雄 スピードラン (SFC) |
+| `[agent] command` | `brains/hanjuku/bot.py` | `brains/hanjuku_speedrun/bot.py` |
+| `[hanjuku] chart_edition` | `ab` | **`speedrun` に固定するのを推奨**（意味は §2.7） |
+| `[hanjuku.predictions]` | 有効 | `enabled = false` |
+| `[twitch] title_prefix` | `[半熟英雄]` | `[半熟英雄RTA]`（カテゴリは同じ 21236） |
+| ROM | `games/roms/hanjuku-hero.sfc` | 同じファイルを読むだけ。コピーしない |
+
+表示名は `corner_notice.py` の表示名表、`stream_category.VIEWER_GAME_NAMES`、`stream_title_context.py` の説明文に「半熟英雄スピードラン」を足す。
+左余白の観測カードとGAME STATSの半熟カードは、元コーナーと同じものを出す。AGENTS.md の「半熟英雄は…他ゲームへ広げない」に `hanjuku-speedrun` を同じゲームとして追記する（要オーナー承認）。
+
+### 2.6 凍結の手順（元コーナーの今のランが完走したとき）
+
+1つのPRで次を行う。
+
+1. 完走したときにVMで動いていた docich のコミットを確かめ、`hanjuku-hero-frozen` タグを付ける。
+2. そのタグから `tools/hanjuku_speedrun_fork.py` でコピーを作り直す。`FORK.json` を凍結済みにし、生成物の印と `--check` をやめる。以後のコピーは普通のソースコードになる。
+3. 元コーナーのファイル（§2.2 の左列とそのテスト）の SHA-256 一覧を `tests/frozen/hanjuku-hero.sha256` に書く。`tests/test_hanjuku_hero_frozen.py` が一覧と照合し、1バイトでも変わればCIを落とす。
+4. CIの範囲（`.github/scripts/ci_test_scope.py`）を変える。スピードランだけを変えたPRはスピードランのテストを流す。元コーナーのテストは、共通基盤を変えたPR（フルスイート）と毎晩の実行で流す。
+5. AGENTS.md に書く: 元コーナーは凍結済みで変更しない。半熟の改善はすべてスピードラン側に入れる。
+6. 元コーナーの扱いを決めて反映する（§10 の確認事項1〜3）。自動の監査Issue起票を止める場合は、このPRが元コーナーへの最後の変更になる。
+
+### 2.7 チャート版（`chart_edition`）とは
+
+半熟BOTは「チャート」と呼ぶ攻略手順書に従って動く。チャートには、どの城をどの順に攻めるか、誰を出撃させるか、どのカードを使うかが書いてある。
+今は手順書が2版ある。
+
+| 版 | 中身 |
+|---|---|
+| `speedrun` | 従来の速攻チャート（既定）。前進するとき、出撃元の城に守りを残さない |
+| `steady` | 堅実チャート。基礎チャートで前進するときも、出撃元に守備の将軍を1人残す |
+
+元コーナーの `ab` は、新しいゲームを始めるたびに、どちらの版を使うかを世代IDのハッシュで半々に割り当てる（A/Bテスト）。
+スピードランに `ab` のままコピーすると、試走ごとに版が入れ替わり、タイムの差が版の違いなのか改善の効果なのか分からなくなる。
+そのため、スピードランでは `speedrun` 版に固定するのを推奨する。版の名前の「speedrun」は、このコーナーの名前とは別の意味（速攻の手順）である。
+
+## 3. スプリットタイマー
+
+### 3.1 試走（attempt）の始まりと終わり
+
+- コーナーの開始で新しい試走が始まる。新しい世代なのでバッテリーセーブは無く、ゲームは「はじめから」になる。
+- 試走は次のどれかで終わり、そのコーナーも終わる。次のコーナー開始で、新しい試走（再走）になる。
+
+| 終わり方 | 結果 |
+|---|---|
+| エンディングの「めでたし」 | 完走（`finished`）。PB・区間ベストを更新する |
+| ゲームオーバー | 未完走（`dnf: game_over`） |
+| 画面停滞（`screen_stalled`）・入力停滞（`input_stalled`） | 未完走（`dnf: stalled`） |
+| 運用者による停止・コーナーの異常終了 | 未完走（`dnf: stopped`）（§10 確認事項7） |
+
+- 未完走でも、確定した区間の区間ベストは保存する（そこまでの区間も改善の材料になるため）。PBは完走した試走だけで更新する。
+- 試走の再開はしない。コーナーは試走が終わるまで枠を占有するので、計時は止めない。
+
+### 3.2 区間の定義（12話）
+
+| 区切り | 判定（既存のボット記録・観測を使う） | 時刻 |
+|---|---|---|
+| 計測開始 | 新規ゲームで名前入力画面を初めて観測した時（「はじめから」確定の直後） | その観測の画像取得時刻 |
+| 第1〜11話の終了 | `prompt` 記録の `strategy_variant == 'chapter_end_save'`（章末セーブ確認を実画面で読んだ） | 同上 |
+| 　（予備） | 上を取り逃して先発隊画面で次章が確定した（`chapter_seen`, evidence `chapter_end_save_party`） | 同上。`source=fallback` と記録 |
+| 第12話の終了＝計測終了 | エンディングの「めでたし」を初めて読んだ（`clear_ending_seen` が初めて true） | 同上 |
+
+- 区切りの章番号は、走行中の区間と一致するときだけ確定する。2つ飛んだら間の区間は「結合」として扱う。
+  結合した区間は区間ベストの更新に使わない。合計タイムは有効なので、PBの対象にはなる。
+- 電源ON・タイトル・名前入力の時刻も全部ログに残す（§4）。開始や区切りの基準を後で変えても、過去の試走をログから計算し直せる。
+
+### 3.3 計時の方式
+
+- 時計はVMの壁時計（ミリ秒）。計測開始から計測終了までの実時間をそのまま数える。オーバーレイの Chromium も同じVM上にあるので、同じ時計を使える。
+- 壁時計なので NTP の前方ジャンプで区間が伸びる。単調時計は使えない（プロセスをまたぐため）。
+- 定期セーブにかかる時間、BOTの待ち時間、LLMの応答待ちも、実際の損失なので時間に含める。
+- 精度: 表示はミリ秒だが、判定は観測の間隔（通常1.5秒、速い場面で0.5秒）に依存する。記録するのは「区切りが写った最初の画像の取得時刻」。
+  同じ方式で比べ続ける限り、試走どうしの比較には使える。この限界はコメントのルールメモにも書く。
+
+### 3.4 データの置き場所と形式
+
+`run-soren-live/speedrun/hanjuku-speedrun/` に置く。どれも小さなJSONで、原子的に書き換える。
+
+| ファイル | 中身 | 更新タイミング |
+|---|---|---|
+| `timer.json` | 表示用の現在状態（下記）。オーバーレイはこれだけ読めば描ける | 状態が変わった時と、観測ごとの生存確認（約1.5秒ごと、数百バイト） |
+| `records.json` | PB（合計・各区間・各累計・試走ID・BOT版）、区間ベスト12個（ms・試走ID・日時）、区間ベストの合計（Sum of Best） | 区間の確定時・試走の終了時 |
+| `attempts.jsonl` | 試走1回1行の履歴（ID、結果、各区間、BOT版の一覧、チャート版） | 試走の終了時 |
+| `attempts/<attempt_id>/` | 試走ごとの manifest・区間要約・ログの一時置き場（§4） | 随時 |
+
+`timer.json` の形（案）:
+
+```json
+{
+  "schema": 1, "game": "hanjuku-speedrun",
+  "runtime_id": "g1300-abcdef", "attempt_id": "a0007-…", "attempt_no": 7,
+  "status": "running",              // pending | running | finished | dnf
+  "started_at_ms": 1795000000000,   // 計測開始の時刻。表示側は now - started_at_ms で合計を描く
+  "ended_at_ms": null,
+  "current_index": 3,               // 0始まり。走行中の区間
+  "splits": [
+    {"index": 0, "segment_ms": 2533111, "cumulative_ms": 2533111,
+     "verdict": "gold", "delta_ms": -61022, "source": "chapter_end_save"}
+  ],
+  "comparison": {"pb_total_ms": 0, "pb_segments_ms": [], "pb_cumulative_ms": [],
+                 "gold_segments_ms": [], "sum_of_best_ms": 0},
+  "heartbeat_at_ms": 1795000001234
+}
+```
+
+色の判定（`verdict`）は、記録を書くPython側が区間の確定時に決めてファイルに書く。表示側では計算しない
+（走行中の区間と合計の色だけは、表示側が `comparison` を見て決める。§3.6）。
+
+試走の識別と後からの再構築用に、次のキーを持つ（後続PR用の追加のみ。既存キーの意味は変えない）。
+
+- `splits[].end_index`: 結合区間の終端（0始まり）。結合でなければ `index` と同じ。
+- `generation`: `runtime_id` から取れる世代番号。
+- `start_source`: 計測開始の根拠（今は `name_screen` のみ）。
+- `name_seen_at_ms`: 名前入力画面を観測した時刻。
+- `pb_attempt_id`: 比較したPBの試走ID（無ければ `null`）。
+- `pb_eligible`: PB更新の対象か。第10話までの区間が揃っていないのに終端を検出した試走は `false`（PBは更新しない。確定した非結合区間の区間ベストは更新する）。
+- `attempts.jsonl` の行には上記に加えて `archived`（R2退避の目印。初期値 `false`）。
+
+`records.json` が壊れて `.corrupt-*` へ退避されたときは、`attempts.jsonl` から
+`next_attempt_no`・PB・区間ベストを再構築し、`rebuilt: true` を付けて書き戻す。
+
+### 3.5 記録を書く場所
+
+- スピードラン用のコード `src/docich/hanjuku_speedrun/rta/`（`timer.py` 区間判定とPB/区間ベスト、`store.py` ファイル入出力、`archive.py` R2送信、`report.py` 分析）を新しく書く。
+- 記録は、スピードラン版 `brains/hanjuku_speedrun/bot.py` が判断の後に実行する副作用（`persist` / `month_audit` などと同じ並び）に1つ足して書く。
+  例外は他の副作用と同じくstderrに1行出すだけにし、**入力は絶対に止めない**。ネットワーク処理はしない。
+  凍結まではこのフックを生成ツールのパッチとして当てる（§2.3）。
+- 試走の終了（`finished` / `dnf`）は、ゲーム切替後の片付け（今 `hanjuku_log_retention` を呼んでいる場所）で確定する。
+  終了理由は既存の `terminal_reason` などをそのまま使う。
+
+### 3.6 色と差分のルール
+
+ユーザー指定をそのまま判定表にする。「PB時の区間」は、現在のPB（最速で完走した試走）の同じ区間のタイム。
+
+| 表示 | 条件 | 色 |
+|---|---|---|
+| 確定した区間 | 今回の区間タイムが、それまでの区間ベストより速い（初めての計測を含む） | **黄** |
+| 確定した区間 | 区間ベストではないが、PB時の区間より速い | **青** |
+| 確定した区間 | PB時の区間より遅い | **赤** |
+| 確定した区間 | PB時の区間と同タイム、またはPBがまだ無く区間ベストでもない | 白 |
+| 走行中の区間 | 経過がPB時の区間を超えた | 赤（超えるまでは白） |
+| 合計（走行中） | 直前に確定した区間までの累計、または現在の経過が、PBの同じ時点の累計より遅い | 赤。先行中は青（提案）、PBなしは白 |
+| 合計（完走時） | PBを更新した（初完走を含む） | **黄** |
+| 合計（完走時） | PBより遅く完走した | 赤 |
+| 未到達の区間 | PB時の区間タイムを灰色で表示 | 灰 |
+
+- 差分は各区間で「今回の区間タイム − PB時の区間タイム」を表示する（例 `−1:02.345` / `+0:15.210`）。PBが無い間は `—`。
+- 結合した区間は、2区間分の和をPBの同じ2区間の和と比べる。区間ベストの判定はしない。
+
+### 3.7 画面レイアウト（上部 960×90、内側 約944×73）
+
+スピードランの実行中は、`#top-rail` の4行サマリをタイマー表示に置き換える。枠の位置と大きさは変えない（AGENTS.md の共通枠規則）。
+
+```
+┌──────────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+│ 半熟英雄RTA  #7   │1話  42:13.111│2話  38:01.500│3話 1:05:22.0│4話 ▶12:03.4  │5話   PB 51:10│6話   PB 48:22│
+│  73:12:45.678    │  −1:01.022 黄│  +0:15.210 赤│  −0:40.002 青│              │              │              │
+│ PB 81:00:12.345  ├─────────────┼─────────────┼─────────────┼─────────────┼─────────────┼─────────────┤
+│ SoB 70:01:00.000 │7話   PB 55:01│8話   PB 1:10:│9話   PB 59:30│10話  PB 44:00│11話  PB 1:20:│12話  PB 2:05:│
+│  ⚙作業中(小)      │              │              │              │              │              │              │
+└──────────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
+  左: 約220px                         右: 12区間を 6列×2行（1セル 約120×34px、等幅11〜12px）
+```
+
+- 左の大きな数字が合計タイマー（`h:mm:ss.mmm`。時間の桁は可変で、100時間超も出せる）。下に PB合計 と Sum of Best。
+- 各セルは1行目に「話番号＋区間タイム」、2行目に差分。色は §3.6。走行中のセルは枠を強調し、区間タイムが動く。
+- 作業中バナーとコメント生成中の表示は、スピードラン中はタイマーを隠さず、左下の小さなチップに縮める
+  （優先順位: スピードランタイマー ＞ 作業中 ＞ コメント生成中 ＞ 4行サマリ）。
+- ミリ秒の描画: 状態は今まで通り1秒ごとに取得し、時刻の表示だけを `requestAnimationFrame` で約30fpsに間引いて更新する。
+  書き換えるのは合計と走行中セルの2か所のテキストだけにして、VM（2 OCPU）の描画負荷を抑える。
+- 表示する条件: `run-soren-live/game_switch.json` の active が `hanjuku-speedrun` で、`timer.json` の `runtime_id` と一致するときだけ。
+  コーナーが終わったら4行サマリに戻す（AGENTS.md「状態表示は現在のゲームに紐づける」）。
+- 色: 黄 `#facc15`、青 `#60a5fa`、赤 `#f87171`、白 `#e5e7eb`、灰 `#64748b`（配信上で読めるかは実機で確かめて調整する）。
+
+実装する場所:
+
+- `overlays/direct_broadcast_overlay_state.mjs`: `DEFAULT_SPEEDRUN_TIMER_FILE`（`next_corner.json` と同じ docich の既定パス）を読み、`speedrunTimer` として state に入れる。Soren側サーバーの改修は要らない見込み。
+- `overlays/direct_broadcast_overlay.html`: `#top-rail` に `#speedrun-timer` を足し、`renderTopRail()` の優先順位に入れる。
+- 反映は既存のオーバーレイ再読込経路（`ops/vm_actions/restart_direct_stream_overlay.sh` / shared overlay reload）を使う。
+
+## 4. 詳細ログ
+
+### 4.1 残すもの（試走ごと）
+
+| ログ | 中身 | 目安 |
+|---|---|---|
+| 判断・イベントログの全量 | 既存の `hanjuku_decisions` / `hanjuku_events`。**4MiBの回転で消えていた部分も含めて全部** | 1回転4MiB。gzipで1/10程度 |
+| 観測トレース（新規） `speedrun_trace.jsonl` | 観測1回につき1行: 試走内の経過ms・話・年月・phase・画面の種類・送った入力・保留の理由・観測間隔・判断にかかった時間 | 1行150B程度。1週間で約60MB（gzipで数MB） |
+| 区間要約（新規） `segments.json` | 区間ごとの内訳: phase別の時間、戦闘数・出撃数・ゲーム内の月数、保留・停滞・LLM待ちの時間、BOT版 | 小さい |
+| 画像 | 区切りの瞬間の画像、既存の `hanjuku_frames` リング、定期の画像（既定で10分に1枚） | 1枚100KB程度 |
+| manifest | 試走ID、BOT版の一覧、チャート版、設定のハッシュ、docichのコミットSHA、開始・終了・結果 | 小さい |
+
+時間短縮で見たいのは「どこで時間を使ったか」なので、観測トレースと区間要約を新しく足す。
+既存の判断ログは「なぜそうしたか」の根拠として全量残す。
+
+### 4.2 試走中の扱い（VMの容量を守る）
+
+- ログの回転（`hanjuku_run.append_log`）で、`.previous` を上書きする前に、古い `.previous` を `attempts/<id>/spool/` へ移す。
+  移した後、低い優先度（`nice 19`）の切り離したプロセスで gzip する。BOTと観測側は圧縮を待たない。
+  スピードラン版のコードなので、元コーナーには影響しない。
+- spool の上限を既定 1GiB とする（設定で変えられる）。上限を超えたら、定期画像 → 観測トレース → 古い判断ログの順に捨てる。ゲームは止めない。捨てた量は manifest に残す。
+  区切りの画像も「画像」に含め、定期画像の次・観測トレースより前に同じ順で捨てる。
+- R2へは試走中に送らない（§5）。
+
+### 4.3 分析
+
+- `python3 -m docich.hanjuku_speedrun.rta.report --attempt <id> [--compare <id>]` で、R2から取ってきたログを区間ごとの内訳と2試走の差にまとめ、Markdown で出す。
+  改善の目星（長い保留、繰り返す出撃の失敗、月数の多い章）を一覧にする。
+- 後で owner-only の workflow から実行できるようにする。
+
+## 5. R2への退避
+
+### 5.1 既存の設定の調査結果（2026-11-25）
+
+| 確認したもの | 結果 |
+|---|---|
+| docich リポジトリ | R2・S3・rclone の設定やコードは無い。あるのは Workers AI などに使う `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`（名前だけ確認。権限の範囲は不明） |
+| soviet_now（Soren）リポジトリ | ラジオ原稿の退避 `tools/radio_archive_push.sh` が rclone を使うが、送り先は Oracle の Object Storage（`oci:`）の想定で、既定は無効（`RADIO_ARCHIVE_RCLONE_ENABLED=0`、送り先は空） |
+| Cloudflare アカウント | R2は有効。バケットは8個（agentic-inbox, blmf-chat-relay, smkc, twica 系）あるが、docich・Soren 用のものは無い |
+| VM本体 | 確認できていない（このセッションからはVMに入れない） |
+
+結論: 見える範囲では、VMにR2の設定は無い。新しいバケットと、そのバケットだけを読み書きできるR2のAPIトークンが必要。
+VMで `rclone listremotes` を実行すれば、rclone の設定があるかを確かめられる。
+
+### 5.2 送り方
+
+- 試走が終わったら、ゲーム切替後の片付けから `python3 -m docich.hanjuku_speedrun.rta.archive upload --attempt <id>` を切り離して起動する。
+  次のコーナーの開始や配信は、送信を待たない。同時に2つ動かないようにファイルロックをかける。
+- 送信の内容: spool の圧縮済みログ、観測トレース、区間要約、manifest、画像（章ごとに tar にまとめる）。
+- S3互換APIへの署名付きPUT（SigV4）を標準ライブラリだけで書く（約100行）。新しい依存は足さない。
+  rclone がVMに既にあれば、それを使ってもよい（§10 確認事項9）。
+- 送った後に HEAD でサイズを確かめてから、VMのファイルを消す。VMに残すのは `records.json`、`attempts.jsonl`、直近3試走の manifest と区間要約だけ。
+- 送れなかったら、ファイルはVMに残す。次のコーナー開始時に、送れていない試走をもう一度送る。手で送る CLI も用意する。
+  送れていない試走が spool の上限を超えたら、§4.2 の順で捨てる。
+- 置き場所: `<bucket>/hanjuku-speedrun/attempts/<attempt_no>-<attempt_id>/…`。PBの試走と、区間ベストを持っている試走は `<bucket>/hanjuku-speedrun/keep/` にもコピーする。
+- 保持: `attempts/` は直近20試走（R2のライフサイクル規則でも90日で消す）。`keep/` は消さない。
+  1試走（約1週間）で数百MB以内を目安にする。R2の無料枠（保存10GB/月）に収まる想定だが、料金は着手時に公式で確かめる。
+
+### 5.3 資格情報
+
+- オーナーがR2のバケット（例 `docich-hanjuku-speedrun`）と、そのバケットだけを読み書きできるAPIトークンを作る。
+  バケットの作成は、このセッションに接続済みの Cloudflare ツールで代行できる（承認があれば）。トークンはダッシュボードで作る。
+- VMの `~/.config/docich/r2.env`（権限600）に `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` を置く。
+  リポジトリ・ログ・Issue・Actions出力には書かない（AGENTS.md §3）。送信プロセスのログは固定のコードだけを出す。
+- 未設定のときは送らずに spool の上限管理だけをする。試走とタイマーは普通に動く。
+- 既存の twica 用のR2トークンを使い回すのは、権限の範囲が混ざるので推奨しない。
+
+## 6. コメントプロンプト
+
+`src/docich/comment/game_profile.py` に `hanjuku-speedrun` のプロフィールを足す。
+
+| 差し替える枠 | 中身 |
+|---|---|
+| 一言説明（blurb） | 「半熟英雄スピードラン（SFCエミュレータ、BOTがクリアタイムの短縮に挑戦中）」 |
+| ゲーム状態 | `timer.json` / `records.json` から作る、計測した事実だけの短い文。例: 「第5話を走行中。経過 73:12:45。第4話終了時点でPB比 −4:12。直前の第4話は区間ベストを更新」。古い・読めないときは何も書かない |
+| ルールのメモ | 12話の区切り方（章末のセーブ確認で区切り、最後は「めでたし」）、PB・区間ベストの意味、色の意味（黄=区間ベスト/PB更新、青=PBの区間より速い、赤=遅い）、ゲームオーバーや画面停滞でその試走は終わり次回は最初から走り直すこと、計測精度は約1秒であること |
+| BOTの仕組み | 元コーナーの `HANJUKU_HOW_IT_WORKS` をそのまま使い、「このコーナーは、BOTがクリアタイムを縮めるために改善を重ねていく計測コーナー」を1行足す（元のBOTを複製した、という開発上の経緯は視聴者向けの説明に含めない） |
+
+あわせて `comment_classifier/active_game.py` の `GAME_KINDS` と `comment/sorengame_context.py` の blurb 対応表に追加する。
+数字は推測で補わない。タイマーのファイルが無いときは「計測情報なし」として扱う。
+
+## 7. 起動とローテーション
+
+### Phase 1: 手動のみ
+
+- catalog 行: `{ id = "hanjuku-speedrun", adapter = "game", game = "hanjuku-speedrun", manual_only = true }`
+- 手動起動の経路:
+  - CLI: `python3 -m docich.hanjuku_corner --game hanjuku-speedrun`（既存CLIにゲーム指定を足す。既定は今まで通り `hanjuku-hero`）
+  - owner-only workflow: `corner-rotation-operator.yml` に `start-hanjuku-speedrun` を足す
+  - WebUI: `_CORNER_QUEUED_MANUAL_GAMES` と `_MANUAL_RESERVATION_CORNERS` に追加
+- 停止は元コーナーと同じ経路を使う。止めた試走は `dnf: stopped` になる。再開の経路は作らない。
+
+### Phase 2: 自動ローテーション
+
+- 確認すること: 1回以上の完走、または数日分の連続走行で、タイマー・ログ・R2送信・表示が崩れないこと。
+- `manual_only` を外す。元コーナーと同じく、試走が終わるまで枠を占有する。その間は他のコーナーは回らない（今の元コーナーと同じ）。
+
+## 8. 本番以外での動作確認
+
+本番の配信に出す前に、次の3段階で確かめる。段階A・Bは配信に何も出ない。
+
+### 段階A: クラウド・CI（ROM不要。開発セッションで回せる）
+
+ROMは著作権物なので、VMとオーナーの手元以外には置かない（`games/roms/README.md`）。この段階では実際のゲームは動かさない。
+
+| 確かめること | 方法 |
+|---|---|
+| コピーしたロジックが元と同じに動く | コピーしたテスト（`tests/hanjuku_speedrun/`）と元のテストを両方流す。テストは保存済みの実画面（`tests/fixtures/`）を使う |
+| 元コーナーの共有ファイルに書かない | スピードランを一時ディレクトリで動かし、元の学習データ・予想・記録が変わらないことを確かめる |
+| タイマーの判定 | 合成した判断記録で、12区間・結合・DNF・初回・PB更新・区間ベスト更新を流し、色と差分を確かめる |
+| タイマーの見た目 | Chromium（Playwright）で実際の `direct_broadcast_overlay.html` を1280×720で開き、状態のURLを合成データに差し替えて画像を撮る。シナリオは「初回で全区間が黄」「青と赤が混ざる」「PB更新で完走」「PBより遅く完走」「100時間超」など。上部の枠に収まること、上部の枠以外が元の画像と1ピクセルも変わらないことを比べる。撮った画像はオーナーに見てもらう |
+| コーナー登録と手動起動 | catalog の読み込み、`manual_only` で自動抽選に出ないこと、手動予約から偽のゲームでゲーム切替まで進むこと（既存の半熟テストと同じ作り） |
+| R2送信 | テスト内の偽のS3サーバーへ送り、署名・HEADでの確認・送れなかったときに残すこと・資格情報がログに出ないことを確かめる |
+| コメントプロンプト | 合成の `timer.json` から、決まった文だけが出ることを確かめる |
+
+### 段階B: オーナーのMac（ROMあり・配信なし）
+
+Macには、半熟をローカルで回す仕組みが既にある（`docs/operations/hanjuku-local-driver-viewer.md`）。
+snes9x のコアを直接動かし、本番と同じ観測とボットの判断で入力を送る。`--fast` で実時間より速く回せ、読み取り専用のビューア（127.0.0.1:8765）で画面を見られる。
+
+これをスピードラン用にも使えるようにする。
+
+| 追加すること | 内容 |
+|---|---|
+| ボットの切り替え | ドライバに、スピードランのコピー（`brains/hanjuku_speedrun/bot.py` と `docich.hanjuku_speedrun` の観測）を使う指定を足す |
+| ゲーム内の時計 | `--fast` では実時間が縮むので、ローカルではエミュレータのフレーム数から時間を出す（1秒＝約60.1フレーム）。タイマーは観測が渡す時刻を使い、無いときだけ壁時計を使う作りにする |
+| 記録の置き場所 | `run-local/speedrun/` に分け、`env=local` と記録する。本番のPB・区間ベストと混ぜない |
+| タイマーの見え方 | `python3 -m docich.hanjuku_speedrun.rta.preview --root run-local` で、本物のオーバーレイHTMLをローカルの `timer.json` で表示する小さなサーバーを用意する。ブラウザでビューアと並べて、スプリットが進むのを見る |
+| R2 | 既定は送らずに、送るはずのファイル一覧をローカルに書くだけにする。試すときはテスト用の接頭辞（`hanjuku-speedrun-test/`）へ送る |
+
+確かめること: タイトルから新規ゲームが始まる／名前入力で計測が始まる／第1話の終わりでスプリットが入る／ログの回転で spool に移り圧縮される／
+ゲームオーバーで `dnf` になり記録が残る。時間があれば `--fast` で完走まで回す。
+
+注意:
+
+- ドライバとビューアは今リポジトリの外（Macの `tmp/hanjuku-local/`）にあり、この開発セッションからは見えない。
+  スピードラン対応を入れるには、(a) ドライバをリポジトリ（例 `tools/hanjuku_local/`）に入れる、(b) Macをこのセッションにつなぐ、(c) Mac側の作業で入れる、のどれかが要る（§10 確認事項13）。
+- ローカルのタイムは本番と比べられない。観測の間隔や入力の遅れが違うため。ローカルは「正しく動くか」を見るためだけに使う。
+- 開発用のMacは他の作業と共有しているので、長く回すときは負荷に気をつける（AGENTS.md §13）。
+
+### 段階C: 本番VMで手動起動（Phase 1）
+
+- 段階AとBが通ったら、都合のよい時間に本番で手動起動する。いつでも既存の停止で止められる。
+- 本番の配信で、上部の枠・左余白のカード・周りの枠が崩れないことと、試走の終わりでR2に届くことを確かめる。
+
+VMの中に配信に出さない2つ目の環境を作る案は推奨しない。
+VMは2 OCPUで配信と取り合うこと、RetroArch の操作ポートが固定（55355）で本番と衝突すること、ゲーム切替の仕組みが1つのゲームしか持たないことが理由。
+
+## 9. 段階計画（PRの分け方）
+
+ローンチ優先なので、PR 1〜3 は1本にまとめてもよい（まとめれば、手動起動の初回からタイマーが出る）。
+
+| PR | 内容 | 完了の確認 |
+|---|---|---|
+| 1. 複製 | 生成ツール、初回のコピー（今のmainから）、`hanjuku_family.py` と共通側の呼び分け、`hanjuku-speedrun.toml`、catalog（manual_only）、手動起動の3経路、表示名・Twitchタイトル、CIの範囲に `tests/hanjuku_speedrun/` を追加 | 元コーナーのテストが無修正で通る。コピーしたテストが通る。スピードランを手動で起動すると、新規ゲームでプレイが進む |
+| 2. タイマー記録 | `rta/timer.py`・`store.py`、bot のフック（生成パッチ）、試走の終了処理、PB・区間ベストの更新 | 合成した判断記録で、12区間・結合・DNF・初回・PB更新の単体テスト |
+| 3. タイマー表示 | mjs の state 追加、上部の描画、色・差分、優先順位、rAF | 合成 `timer.json` での表示テスト。実機で上部の枠内に収まり、ゲーム枠と周りの枠が変わらないこと |
+| 4. ログとR2 | 観測トレース、区間要約、回転時の退避と圧縮、spool上限、試走終了時の送信、送り直し、R2の手順書 | 退避・上限・送り直しの単体テスト、SigV4署名の固定ベクタ、資格情報がログに出ないこと。実機で1試走分がR2に届き、VMから消えること |
+| 5. コメント・実況 | game_profile のプロフィール、区間確定の通知（「第3話 区間ベスト更新」など。読み上げを既存の場面実況に乗せるかは別途判断） | profile の単体テスト |
+| 凍結 | §2.6 の手順（元コーナーの今のランの完走後） | 凍結テストが通る。作り直したコピーのテストが通る |
+| 6. 自動ローテーション | `manual_only` を外す | 自動抽選で開始・終了・復帰すること |
+| 以後 | 時間短縮の改善をスピードラン側のコードに直接入れる（例: 新規ゲームなのにタイトルで「つづき」を試す手順を省く、15分ごとの定期セーブをやめる） | report の比較で区間が縮むこと |
+
+## 10. オーナーに決めてほしいこと
+
+| # | 質問 | 推奨 |
+|---|---|---|
+| 1 | 凍結のきっかけ: 今のランが「めでたし」まで行ったときだけか。途中でゲームオーバーになった場合は、次のランの完走まで待つか、そこで凍結するか | 完走まで待つ |
+| 2 | 凍結後の元コーナー: 自動ローテーションに残す／手動のみ／ローテーションから外す（動く状態では残す） | 手動のみ |
+| 3 | 凍結後の元コーナーの監査Issueの自動起票: 凍結のPRで止めるか。止めないと、直さないコードへのIssueが増え続ける | 止める |
+| 4 | チャート版: `speedrun` に固定するか、元と同じ `ab` のままにするか（§2.7） | `speedrun` に固定 |
+| 5 | 計測開始: 名前入力画面の出現／電源ON／タイトルで「はじめから」を押した入力 | 名前入力画面 |
+| 6 | 区間の終わり: 章末のセーブ確認／ボス撃破 | 章末のセーブ確認 |
+| 7 | 運用者による停止も、その試走の終わり（DNF）でよいか | DNF |
+| 8 | 試走中にスピードラン側のコードを配備した場合: 新しいコードが試走の途中から効く今の仕組みのままにし、区間ごとにBOT版を記録する／次の試走から効くようにする | 今のまま＋記録（配備はなるべく試走の合間に） |
+| 9 | R2: バケットの作成を代行してよいか。トークンの作成とVMへの配置はオーナー作業。VMに rclone があれば使ってよいか | — |
+| 10 | AGENTS.md の半熟専用の例外（左余白カード等）に `hanjuku-speedrun` を含めてよいか | 含める |
+| 11 | 走行中の合計タイマーが先行しているときの色: 青（提案）／白 | 青 |
+| 12 | CIの時間: コピーしたテストの分だけ、半熟のテストが凍結までは約2倍になる。凍結後は元コーナーのテストをフルスイートと毎晩だけで流す（§2.6） | この運用でよい |
+| 13 | Macでの確認（§8 段階B）: ローカルドライバをリポジトリに入れてよいか、またはMacをこの開発セッションにつなぐか | ドライバをリポジトリに入れる |
+
+## 11. リスクと対策
+
+| リスク | 対策 |
+|---|---|
+| 生成ツールの書き換え漏れで、スピードランが元コーナーのファイルや設定を読み書きする | コピーしたテストを通す。スピードランを一時ディレクトリで動かし、元コーナーの共有ファイル（学習データ・予想・記録）に書かないことをテストで確かめる |
+| 共通側の呼び分けの漏れで、元コーナーの動きが変わる | 元コーナーのテストを無修正で通す。共通側の変更は呼び分けの置き換えだけにする |
+| 凍結後、共通基盤の変更で元コーナーが動かなくなる | 元コーナーのテストをフルスイートと毎晩の実行で流し続ける。落ちたら共通基盤側を直す（元コーナーのファイルは直さない） |
+| 凍結前にスピードラン側を手で直して、作り直しで消える | 生成物の印と CI の `--check` で手直しを拒否する。スピードラン専用の追加はパッチか `rta/` に置く |
+| 試走中の配備でBOT版が変わる | 区間ごとにBOT版を記録する。比べるときは同じ版どうしを選べるようにする |
+| ミリ秒表示だが精度は約1秒 | 記録方式を固定して比較に使う。コメントのルールメモにも書く |
+| ログ量が予想より多い | spool の上限で必ず止まる。最初の試走の1日目で実測し、定期画像の間隔とトレースの項目を調整する |
+| R2が使えない・資格情報が無い | 送らずに上限管理だけをする。ゲームとタイマーは影響を受けない |
+| 1試走が数日かかり、他のコーナーが回らない | Phase 1 は手動なので、オーナーが起動を決める。自動化後は元コーナーと同じ扱い |
+
+## 付録A. クラウド専用環境の検討（2026-11-25、検討のみ）
+
+開発セッションのクラウド環境に、エミュレータ・ROM・LLMの仕組みを入れて、本番以外の作業を全部クラウドで進められるかを検討した。何も作っていない。
+
+### A.1 要素ごとの可否
+
+| 要素 | 可否 | 根拠・注意 |
+|---|---|---|
+| エミュレータ | 可 | Ubuntu 24.04 のパッケージに RetroArch 1.18.0（本番と同じ版）、snes9x コア 1.61（Macと同じ版）、xdotool がある。Xvfb・dbus・ffmpeg・node・Chromium は導入済み。今の環境は4コア・メモリ15GB・ディスク空き約60GB（x86_64。本番VMはARM） |
+| docich 本体 | 可 | `config/docich.toml`（自前のXvfb :98、配信なし）で、手動予約 → ゲーム切替 → RetroArch → ボット → 終了処理の本番に近い経路を回せる。配信オーバーレイはSoren側のサーバーの代わりに §8 のプレビューサーバーで見る |
+| ROM | 技術的には可。判断はオーナー | 今の規則は「自己吸い出しROMはVMにのみ配置」（`config/games/hanjuku-hero.toml`）なので、変更が要る。Gitには入れない、成果物・ログ・画像の公開物に出さない、作業後に消す。私的複製の範囲として扱えるかはオーナーの判断（法的な助言はできない） |
+| LLM（opencode と DeepSeek などのモデル） | 可 | opencode CLI を入れ、VMにあるエージェント定義（`soren-lite` など。リポジトリには無い）を写す。鍵は環境のネットワークシークレットに保存し、送信時にプロキシが付ける。CLIにはダミーの鍵を渡す。JEV は `TYPESAFE_API_KEY` の経路。LLMはボットの入力経路の外にあるので、最初は無しでも動く（チャートの無い場面で弱くなるだけ） |
+| R2 | 工夫が要る | S3互換APIは秘密鍵で署名する方式（SigV4）なので、プロキシが決まったヘッダーを足す方式の秘密の渡し方では使えない。秘密を環境変数に置くのは平文になるので不可。→ Bearerトークンで受ける小さな Cloudflare Worker を1つ置き、R2にはWorkerから書く。このWorkerのホストにネットワークシークレットを保存する。ROMの取得、試走ログの保管、セーブの退避に使い回せる |
+| 長い連続走行 | 不向き | セッションのコンテナは一時的で、操作が無い時間が続くと回収される。バックグラウンドのコマンドにも上限がある（最大2時間）。数日かかる完走は1セッションでは回せない |
+
+### A.2 使い方の案
+
+| 用途 | 方式 | クラウド向きか |
+|---|---|---|
+| 本番に近い受け入れ確認 | RetroArch＋Xvfb を実時間で回す。開始 → 第1〜2話のスプリット → ゲームオーバー時の処理、タイマー、ログ、R2送信、実画面入りのオーバーレイ画像 | 向く（数時間で終わる） |
+| ボット改善の試行・完走の確認 | libretro コアを直接動かす高速ドライバ（Macの `core_driver.py` と同じ方式） | 一部向く。数時間〜1日以上かかるので、セーブ一式を定期的にR2へ退避し、次のセッションで再開する作りが要る（本番の試走は再開しない方針とは別の、開発用の仕組み） |
+| ログの分析・比較 | R2から試走ログを取ってきて `report` を回す | 向く |
+
+結論: クラウド専用環境は「受け入れ確認・改善の試行・ログ分析」に使い、数日の連続走行は本番VM（手動起動）に任せるのがよい。
+クラウドだけで長時間走らせ続けたいなら、一時的なセッションではなく常時起動の検証用VMを別に用意する方が確実（例: 本番と同じ Oracle の無料枠に空きがあればそこに作る。無料枠の上限は要確認）。
+
+### A.3 作る場合の手順
+
+1. 個人用のクラウド環境を新しく作る（例 `docich-hanjuku-lab`）。セットアップスクリプトで `retroarch` `libretro-snes9x` `xdotool`、opencode CLI、テスト用のPythonパッケージを入れる。
+2. R2のバケットと、Bearerトークンで受けるWorkerを作る（Cloudflareの接続で代行できる）。
+3. ネットワークシークレットを保存する: Workerのホスト、LLMの各プロバイダのホスト、JEVのホスト。
+4. オーナーがROMを一度だけバケットへ置く。セッションの開始後に取得する（セットアップスクリプトは秘密を読めないため）。
+5. 高速ドライバをリポジトリに入れる（Macのものを持ってくるか、新しく書く）。
+
+## 付録B. 開発の進め方（2026-11-25 オーナー指示）
+
+### B.1 役割
+
+| 役割 | 担当 | 中身 |
+|---|---|---|
+| オーケストレーション | Claude（開発セッション） | 作業を分けて指示を書く、dshとadvisorを呼ぶ、結果を自分で確かめる、コミット・push・PR、オーナーへの報告 |
+| 調査・実装（重い処理） | dsh（DeepSeek Harness。OpenCode Go の `deepseek-v4.1-flash`） | コードの調査、実装、テストの実行、指摘の修正 |
+| 設計・レビュー | advisor（Opus のサブエージェント） | 設計判断の検討、差分のレビュー（独立レビュー） |
+
+### B.2 1つの作業の流れ
+
+1. Claude が作業指示を書く（目的、対象ファイル、守ること、完了条件、流すテスト）。
+2. 設計判断を含む作業は、advisor が指示と設計を確かめる。
+3. dsh が作業ごとの git worktree で調査・実装する。調査は `read-only`、実装は `workspace-write`。
+4. Claude が差分を読み、テストを自分で流し直す。dsh の報告をそのまま信じない。
+5. advisor が差分をレビューする。指摘は dsh が直し、4に戻る。
+6. Claude がコミット・push・PRを作る。PR本文に「実装: dsh／レビュー: advisor（独立レビュー）／検証: Claude」を分けて書く（AGENTS.md の、独立レビューを自己レビュー・CIと区別する規則）。
+
+### B.3 dsh の呼び方と制約
+
+```bash
+git worktree add /home/user/wt/<作業名> -b dsh/<作業名> <基点>
+cd /home/user/wt/<作業名>
+OPENCODE_API_KEY=proxy-injected dsh --profile headless --approval-policy never --json "<作業指示>" > <ログ>.jsonl
+# 続きの指示: --session-id <id>。調査だけなら --permission-mode read-only
+```
+
+- 鍵: opencode.ai への通信に、環境のネットワークシークレットが自動で付く。`OPENCODE_API_KEY` はダミー値でよい。
+- 設定: `~/.dsh/profiles/headless/cordis.patch.yml`（既定モデル、送信テレメトリ無効、コマンド上限10分）。環境 `full` のセットアップスクリプトが新しいセッションで同じものを作る。
+- Git: worktree の中では、dsh はファイルを書けるが、Gitの記録（add/commit）には書き込めない（実測）。コミットは Claude が行う。
+- 作業が終わった worktree は `git worktree remove` で片付ける。
+
+## 付録C. PR 1 の実装状況（2026-11-25）
+
+PR 1 の範囲は実装済み。確認済みの内容と、元コーナー側に入れた変更を残す。
+
+- 生成ツール `tools/hanjuku_speedrun_fork.py`（`generate` / `check`）。コピーは `src/docich/hanjuku_speedrun/`、`brains/hanjuku_speedrun/`、`config/games/hanjuku-speedrun.toml`、`tests/hanjuku_speedrun/`（テスト661本）。`hanjuku_family` と運用者専用モジュールはコピーしない。
+- 共通側の呼び分け: `src/docich/hanjuku_family.py`。元コーナーの経路は同じ名前束縛・同じ呼び出しのまま。
+- 起動: カタログに `manual_only` で登録。`hanjuku_corner --game hanjuku-speedrun`、`start-hanjuku-speedrun`（VM 操作・認可・workflow）、WebUI。再開系（resume-latest / new-game）は元コーナーのみ。
+- 検証: 元の半熟テストとコピーしたテストを同じ pytest セッションで流して 25,745 件が通過（スキップ45）。コピー側のスキップは `TEST_SKIPS` に理由付きで持つ。
+- **元コーナー側に入れた変更（挙動は同じ。スピードランの runtime が同じ `runtimes/` に並ぶための分離）**:
+  - `hanjuku_resume.py` / `hanjuku_resume_recovery.py` / `hanjuku_narration.py`: 別ゲームの runtime を走査から除外（`retroarch_boundary.runtime_game`）。入れないと、スピードランの後に元コーナーが開始できなくなる。
+  - `retro_corner.py`: `manual_only` の game 行を共通の抽選リストと周期から外す。
+  - `hanjuku_hotload.py` は元のまま。コピー側の動的モジュール名は生成ツールの完全一致パッチで直す。
+- 残り（後続 PR / 凍結時に扱う）: `check` は FORK.json の `source_commit` から作り直して比べるため、squash merge するとコミットが無くなる。マージ後に main のコミットから再生成すること。生成対象外の余分なファイルは検出しない。スピードランのログは R2 退避まで prune しない。`cancel-hanjuku` などの運用者向け操作はスピードラン未対応（停止は WebUI）。コメント用プロフィールは PR 5。
+
+## 付録D. PR 2 の実装状況（2026-11-25）
+
+スプリットタイマーの**記録**（画面表示は PR 3）。実機（ROM）では未確認で、合成データのテストで確かめている。
+
+- `src/docich/hanjuku_speedrun/rta/`（手書き。生成ツールは触らない）: `timer.py`（純粋な状態機械）、`store.py`（`timer.json` / `records.json` / `attempts.jsonl`。原子的書き込み、壊れたら退避して `attempts.jsonl` から再構築）、`hook.py`（ボットから呼ぶ入口。例外を外へ出さない）。
+- ボットへのフックは `tools/hanjuku_speedrun_fork.py` の `SOURCE_PATCHES` で `brains/hanjuku_speedrun/bot.py` にだけ当てる（`persist` の直後）。元の `brains/hanjuku/bot.py` は変えない。
+- 試走の終了（完走・DNF）は `game_switch._finalize_locked` のコーナー終了処理で確定する（`finalize_speedrun_attempts`。`hanjuku-hero` では rta を import しない）。teardown に成功した runtime だけが対象。
+- 計測開始は「今の画面が名前入力画面で、ゲームプレイ前」。取り逃した runtime は試走を作らず `pending / no_start_seen`。完走の合計は、第10話までの区間が揃っていないとPBにしない（`pb_eligible`）。
+- 独立レビューの指摘（別 runtime の試走の誤終了、途中開始、一時的な読み込みエラーでの PB 消失、teardown 失敗 runtime の誤終了、再起動後の回収先の取り違え）は修正済み。
+- **PR 3 への申し送り**: ボットは終端フレームでは動かないので、ゲームオーバー・停滞の DNF はコーナー終了時まで確定しない（それまで `timer.json` は `running`）。表示側は `heartbeat_at_ms` の古さと `hanjuku_run.json` の終端状態を見て止める。完走の時刻は `clear_ending_seen` が初めて立った観測の画像時刻（誤読は `pb_eligible` で防ぐ）。
+
+## 付録E. PR 3 の実装状況（2026-11-25）
+
+スプリットタイマーの**表示**。実際の配信画面・実機では未確認で、合成した `timer.json` とヘッドレス Chromium で確かめている。
+
+- `overlays/direct_broadcast_overlay_state.mjs`: `speedrunTimer` を state に追加。`game_switch.json` の active が `hanjuku-speedrun` で、`active.runtime_id` と `timer.json` の `runtime_id` が**一致するときだけ**出す（runtime が取れない旧形式は出さない）。schema・status・数値を検証し、公開項目を絞る。`running` のまま `heartbeat_at_ms` が30秒より古ければ `stale`（時計を止め、「計測停止中」を出す）。`finished` / `dnf` は終了10分後に消えて4行サマリへ戻る。
+- `overlays/direct_broadcast_overlay.html`: `#top-rail`（960×90）の中に `#speedrun-timer`。左に合計・PB・SoB・試走番号、右に12区間（6×2）。色は確定区間は writer の `verdict`、走行中の区間と合計だけ表示側で判定（合計は、確定累計か現在の経過のどちらかがPBより遅ければ赤、先行なら青、比較できなければ白。完走時は writer の `total_verdict` を優先）。優先順位は タイマー ＞ 作業中 ＞ コメント生成中 ＞ 4行サマリ（作業中とコメントは左下のチップに縮小）。
+- ミリ秒は `requestAnimationFrame`（約30fps）で合計と走行中セルの2か所だけ更新。上部レールが見えない領域（`full` / `top` 以外）、非表示の iframe、stale、タイマー無しでは回さない。判定と書式の純関数は `speedrun-timer-pure` のマーカーで囲み、`node --test` から評価する。
+- CI: `overlays/**/*.html` / `*.mjs` と `tests/**/*.mjs` を `ci_test_scope` の対象に追加（共有 UI なので変更は full）。Playwright のテストは CI に Chromium が無いため skip される。色・書式の判定は `tests/test_speedrun_timer_view.mjs`（node）で CI でも検証される。
+- 残り: 反映は共有オーバーレイの再読込経路で行う。`direct_broadcast_overlay_state.mjs` だけを変える PR は、`vm-operations` の自動再読込の対象にならない（`.html` の差分だけを見ている）。実際の配信画面での見え方（色・文字の切れ）は実機で確かめて調整する。
+
+## 付録F. PR 4 の実装状況（R2 退避、2026-11-26）
+
+根拠は実際のコード（`src/docich/hanjuku_speedrun/rta/`）と `tests/test_speedrun_rta*.py`。
+**実 R2・実ネットワーク・VM・ROM では未確認**。確認はローカルのダミー S3 サーバーと
+合成データだけで行っている。
+
+### PR 4a（spool・trace・manifest・segments）
+
+- `rta/spool.py`: `hanjuku_decisions` / `hanjuku_events` の `.previous` を試走の `spool/` へ移し、
+  切り離した `nice 19 gzip` で圧縮する。spool の上限（既定 1 GiB、
+  `DOCICH_SPEEDRUN_SPOOL_MAX_BYTES`）を超えたら定期画像 → 画像 → トレース → 古いログの順に捨てる。
+- `rta/trace.py`: 観測 1 回につき 1 行（400B 以内）。8 MiB で回転。定期画像（既定 10 分）と
+  区間確定時の画像を `spool/frames/` にコピーする。
+- `rta/manifest.py` / `rta/report_segments.py`: 試走終了時に `manifest.json` と
+  `segments.json` を書く。manifest の `spool_files_at_build` は圧縮前のスナップショット
+  （`inventory: "pre-compression snapshot"`）であり、送信時の一覧としては使わない。
+- `rta/store.py`: `timer.json` / `records.json` / `attempts.jsonl`。原子的書き込み。
+  `attempts.jsonl` が壊れたら退避して読み直す。
+- `game_switch.finalize_speedrun_attempts`: teardown が完了した speedrun runtime だけを対象に
+  `store.finalize_attempt` → `spool.finalize_logs` を呼ぶ。`hanjuku-hero` では rta を import しない。
+- `rta/hook.py`: ボットの `persist` 直後に呼ばれ、タイマー・トレース・画像を記録する。
+  失敗は外へ出さない。
+
+### PR 4b（R2 への退避）
+
+- `rta/sigv4.py`: S3 互換（R2、リージョン `auto`、サービス `s3`、path-style）の SigV4
+  ヘッダ署名。ペイロードはファイルをストリーミングして SHA-256 を計算し、
+  `x-amz-content-sha256` に入れる。PUT / HEAD / CopyObject のみ。
+  AWS 公式ドキュメントの IAM `ListUsers` と S3 `GET` の既知ベクタで署名を検証している。
+- `rta/archive.py`:
+  - 設定は `~/.config/docich/r2.env`（`DOCICH_R2_ENV_FILE` で上書き）。`KEY=VALUE` だけを読み、
+    シェル評価はしない。未設定なら `status: unconfigured` で何も送らない。権限が 600 より
+    緩いファイルは拒否する（`insecure_permissions`）。
+  - `upload_attempt`: spool の実ファイルを再走査し、1 ファイルずつ PUT → HEAD でサイズ照合。
+    全一致でだけ、**実際に送ったファイルと tar に入れたフレーム**をローカルから削除する
+    （送っていないファイルは残す）。manifest と `attempts.jsonl` に `archived` を記録する。
+    画像は `spool/frames.tar` に 1 つにまとめる。圧縮中のファイル（`.gz.lock` が生きている）
+    は切り離し送信内で最大 10 分・数秒間隔で待ち、死んだロック（`/proc/<pid>/stat` が
+    `Z` のゾンビを含む）は引き取って未圧縮のまま送る。待っても解けなければ
+    `gzip_pending` として次回に回し、失敗回数・バックオフには数えない。
+  - `sigv4.py` の canonical URI は生パスから 1 回だけエンコードする（送信 URL と署名で
+    同じ規則）。キーに日本語・空白・`+`・`:` を含む PUT / HEAD / Copy を、ダミー
+    サーバーが独立に署名を再計算して検証する（不一致は 403）。
+  - 送信本文はハッシュと同じ fd から `Content-Length` の `size` バイトで打ち切り、
+    送信中に伸びたら `local_changed` としてローカルを残す。
+  - 失敗時はローカルを残し、`attempts/<id>/archive_state.json` に回数・固定コード・次回時刻を
+    書く（指数バックオフ）。同じキーへの再 PUT で冪等。
+  - `fcntl.flock`（`<data_dir>/archive.lock`）で同時実行を防ぐ。取れなければ即終了。
+  - `attempts.jsonl` の読み書きは `attempts.jsonl.lock` の `fcntl.flock` でプロセス間
+    直列化する（最大 5 秒待ち、取れなければその更新をスキップしてボットを止めない）。
+  - PB と区間ベストの試走は `hanjuku-speedrun/keep/` にもコピーする（失敗は本体の成功を
+    取り消さない。`keep_copied` / `keep_failed` に残す。manifest 再 PUT の失敗も同様）。
+  - `upload --pending` の先頭で試走全体の上限 `DOCICH_SPEEDRUN_ATTEMPTS_MAX_BYTES`
+    （既定 4 GiB）を守る。超えたら未送信の古い試走の spool を捨て、`dropped_for_cap` を
+    `archive_state.json` と `manifest.json` に記録する。`running` の試走は消さない。
+    `attempt_no` 不明の試走を先に消さず、`attempts/<id>` の mtime が古い順に処理する。
+    行も manifest も無い孤児の `attempts/<id>/` も合計と削除対象に含める。
+    この上限処理は `launch_pending` から分離して呼び、R2 未設定でも送信せずに適用する。
+  - 送信済みで直近 3 試走より古いものは、ローカルの manifest / segments も整理する。
+    archived でない古い試走は、この整理では消さない（再送の状態を残す）。
+  - `launch_pending`: 切り離した `python -m ...archive upload --pending` を起動する。
+    `.env` が無ければ起動しない（中身は読まない）。例外は外へ出さない。
+    起動元は `game_switch.finalize_speedrun_attempts` の `finalize_logs` 後と、
+    `hook.observe` の runtime ごとの最初の観測（マーカーファイルで 1 回）。最初の観測で
+    `timer.json` が `running` なら新たな送信は始めない（走行中の試走中は送らない。
+    すでに走っている送信は止めない）。
+  - CLI: `upload --attempt <id>` / `upload --pending` / `status`。終了コード 0/1/2、
+    出力は固定コードと数値だけ。資格情報はログ・例外・manifest・archive_state に出さない。
+    アカウント ID も `R2Config` の repr・エラー・CLI・`archive_state.json` に出さない
+    （bucket 名だけ）。
+- 手順書: `docs/hanjuku-speedrun-r2.md`（バケット・トークン・`r2.env`・ライフサイクル・
+  料金・固定コードの意味）。
+- R2 側の保持はライフサイクル規則（`attempts/` を 90 日で削除）だけ。**「直近 20 試走」の
+  ような R2 側の件数整理は実装していない。** `keep/` は削除対象にしない。
+- テスト: `tests/test_speedrun_rta_sigv4.py`（公式ベクタ・段階ごとの署名）、
+  `tests/test_speedrun_rta_archive.py`（ダミー S3 サーバーが受け取ったリクエストの署名を
+  独立に再計算して検証。PUT/HEAD/COPY、特殊文字キー、サイズ不一致・500・HEAD 失敗・
+  接続拒否・タイムアウト・冪等再送・gzip 待機/ゾンビロック・tar・keep・直近 3 保持・
+  全体上限・ロック・launcher・資格情報とアカウント ID の非漏えい）、
+  `tests/test_speedrun_rta_store_lock.py`（attempts.jsonl のプロセス間直列化）。
+  実 R2 は使っていない。
+
+## 付録G. オーナー決定（2026-11-25）
+
+§10 のうち、別判断としていた項目を決めた。
+
+| # | 決定 |
+|---|---|
+| 区間確定の通知 | **場面実況で読み上げる**。区間確定ごとに短い1文を既存の場面実況の経路で流す（PR 5b）。 |
+| 9. R2 | バケットの作成はこのセッションの Cloudflare ツールで代行してよい。**`docich-hanjuku-speedrun` を作成済み**（2026-11-25、場所 ENAM）。API トークンの作成と VM の `r2.env` への配置はオーナー作業（`docs/hanjuku-speedrun-r2.md`）。 |
+| 13. Mac での確認 | ローカルドライバをリポジトリに入れる（`tools/hanjuku_local/`）。ROM は入れない。 |
+| 1〜3. 凍結 | 推奨のまま。今のランが「めでたし」まで完走したら凍結。途中でゲームオーバーなら次のランの完走まで待つ。凍結後の元コーナーは手動のみ。監査 Issue の自動起票は凍結の PR で止める。 |
+
+## 付録H: クラウドでの総合動作テスト結果（実コア・実 ROM）
+
+クラウド環境（snes9x 1.61 コア＋実 ROM、ローカルドライバ `tools/hanjuku_local/`）で実施。Mac での確認が最終テスト。
+
+- 通過: コア起動（serialize 往復・SRAM 往復一致）、bot によるタイトル→名前入力→ゲーム開始→第1話の進行、`name_screen` 開始検出とフレーム由来時刻、spool/trace/manifest/segments の生成と gzip、spool 上限、SIGTERM での state/SRAM 保存と DNF 確定、`.state` からの再開（終了済み試走は再開しない）、読み上げキュー（DNF 実測／区間・完走は合成で確認、重複排除）、ローカルのダミー S3（署名検証つき）への退避と `--dry-run`、オーバーレイ表示（計測中・完走・stale・黄/赤/青・DNF）。
+- 未確認: 実 run での区間確定（bot は約4.5ゲーム時間・戦闘83回でも第1話が終わらず、章末セーブに届かなかった。不具合ではなく未到達）、RetroArch＋Xvfb 経路、本物の R2・VM。
+- この試験で直した不具合: ローカルドライバの終了処理、bot が観測しない終端での完走/DNF の読み上げ、DNF 後の再起動による trace の汚染、再起動での `archived` 消失。レビュー指摘の LOW（`--dry-run` の副作用、読み上げ区間の欠落、`need_fullpath`）も修正済み。
+- 注意: ROM を `games/roms/` に置くと `tests/hanjuku_speedrun/test_hanjuku_retro_registration.py` の一部が失敗する（ROM 有無で候補が変わるテストの隔離不足。ROM を置かない CI では通る）。

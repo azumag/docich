@@ -42,6 +42,7 @@ GAME_BLURBS = {
     "robots": "Robots(bsdgames)。ロボットの追跡を避けるターン制パズル(いまは手動操作)",
     "nethack": "NetHack(CLIローグライク)",
     "hanjuku-hero": game_profile.HANJUKU_BLURB,
+    game_profile.SPEEDRUN: game_profile.SPEEDRUN_BLURB,
     "paper-view": paper_corner_profile.BLURB,
     DOUSHI_VIEW: game_profile.DOUSHI_BLURB,
     "external-video-view": (
@@ -69,6 +70,7 @@ SOREN_CONTEXT_ENV_KEYS = (
     "COMMENT_OPS_CONTEXT_MAX_CHARS",
     "DOCICH_GAME_SWITCH_CANONICAL_FILE",
     "DOCICH_HANJUKU_CONFIG_FILE",
+    "DOCICH_HANJUKU_SPEEDRUN_CONFIG_FILE",
     "GAME_STATE",
     "IMPROVE_STATE_FILE",
     "MIN_GAMES_BEFORE_IMPROVE",
@@ -577,7 +579,12 @@ class SorenGameContextProvider:
     def _game_profile(self, game: str, *, state_dir: Path | None = None) -> dict | None:
         """The docich-owned replacement profile for ``game`` (``None`` when it has none)."""
         # The provider's env is an allowlist: pass the config path explicitly, never via os.environ.
-        config = self._path("DOCICH_HANJUKU_CONFIG_FILE", str(game_profile.REPO_HANJUKU_CONFIG))
+        # Each Hanjuku corner reads its own config; other profiles ignore the value.
+        if game == game_profile.SPEEDRUN:
+            config = self._path("DOCICH_HANJUKU_SPEEDRUN_CONFIG_FILE",
+                                str(game_profile.REPO_SPEEDRUN_CONFIG))
+        else:
+            config = self._path("DOCICH_HANJUKU_CONFIG_FILE", str(game_profile.REPO_HANJUKU_CONFIG))
         return game_profile.build(game, config=config, state_dir=state_dir)
 
     def _celebration_history_context(self) -> str:

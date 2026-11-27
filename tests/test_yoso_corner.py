@@ -143,7 +143,8 @@ def test_production_catalog_enables_yosou_oh_for_the_automatic_rotation():
     # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本（13+ぷよ+mystery+lawsim）。
     # 2026-11-18: chart-659 (#659) 追加 → 18本（manual-only）。
     # #5584: geography-world (newcorner, DOCICH_NEW_CORNER_ENABLED ゲート) → 19本。
-    assert len(catalog) == 19
+    # 2026-11-25: hanjuku-speedrun 追加 → 20本（manual-only）。
+    assert len(catalog) == 20
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
     # 2026-10-15 オーナー判断: 手動専用を解除し、自動抽選＋手動予約の両方を使う。

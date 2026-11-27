@@ -56,7 +56,7 @@ def test_survival_menu_allows_bounded_egg_retry_after_first_unconfirmed_pick():
         'opens': 1, 'menu_ticks': 0, 'cards_checked': 0, 'cards_attempted': [],
         'egg_attempted': True, 'egg_attempts': 0,
     }
-    assert rules._egg_attempts_spent(legacy_cur['survival'], legacy_cur) is True
+    assert rules._egg_attempt_spent(legacy_cur['survival'], legacy_cur.get('ally_hp')) is True
     assert p._survival_menu(menu(('たまごをつかう', 'たいきゃく')), legacy_mem, legacy_cur) == [p.pad('b')]
 
 

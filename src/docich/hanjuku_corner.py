@@ -6,16 +6,25 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_global
+from .hanjuku_family import ORIGINAL, SPEEDRUN
 
 
-def clear_clock_quarantine():
+def clear_clock_quarantine(game=ORIGINAL):
     root = Path(__file__).resolve().parents[2]
     config = load_global(root, root / 'config/docich.soren-live.toml')
     from .corner_rotation import CornerRotationManager
-    return CornerRotationManager(config).clear_manual_clock_quarantine('hanjuku-hero')
+    return CornerRotationManager(config).clear_manual_clock_quarantine(game)
 
 
-def start(*, resume_latest=False):
+def start(*, game=ORIGINAL, resume_latest=False):
+    # Latest-checkpoint resume is an original-corner feature (checkpoint
+    # transfer); the speedrun copy always starts a fresh attempt.  Refuse
+    # before touching the original-corner recovery path so a speedrun request
+    # can never consume or rewrite the original's prepared checkpoint.
+    if resume_latest and game != ORIGINAL:
+        from .corner_rotation import RotationError
+        raise RotationError('latest checkpoint resume is original-only',
+                            reason_code='invalid_value')
     root = Path(__file__).resolve().parents[2]
     config = load_global(root, root / 'config/docich.soren-live.toml')
     from .corner_rotation import CornerRotationManager
@@ -32,8 +41,8 @@ def start(*, resume_latest=False):
     # Durable next-slot priority: the timer finishes the current reservation
     # and uses the normal execution/program-slot/game-boundary gates.
     manager = CornerRotationManager(config)
-    return (manager.queue_manual('hanjuku-hero', resume_latest=True) if resume_latest
-            else manager.queue_manual('hanjuku-hero'))
+    return (manager.queue_manual(game, resume_latest=True) if resume_latest
+            else manager.queue_manual(game))
 
 
 ROTATION_FAILURE_EXIT = {
@@ -157,13 +166,20 @@ def _fixed_failure_exit(exc):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--game', choices=(ORIGINAL, SPEEDRUN), default=ORIGINAL)
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--resume-latest', action='store_true')
     group.add_argument('--clear-clock-quarantine', action='store_true')
     args = parser.parse_args(argv)
     try:
-        result = (clear_clock_quarantine() if args.clear_clock_quarantine
-                  else start(resume_latest=True) if args.resume_latest else start())
+        if args.clear_clock_quarantine:
+            result = (clear_clock_quarantine() if args.game == ORIGINAL
+                      else clear_clock_quarantine(args.game))
+        elif args.resume_latest:
+            result = (start(resume_latest=True) if args.game == ORIGINAL
+                      else start(game=args.game, resume_latest=True))
+        else:
+            result = start() if args.game == ORIGINAL else start(game=args.game)
     except Exception as exc:
         exit_code = _fixed_failure_exit(exc)
         # stderr is retained only in the owner-only VM operation log. Keep it

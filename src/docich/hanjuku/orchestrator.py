@@ -17,7 +17,7 @@ from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     prompts as prompts_flow, recall as recall_flow, shop as shop_flow,
                     status_panel)
 from .judgment import battle as battle_judgment
-from .strategy import campaign, card_census as card_census_booking, edition, goals
+from .strategy import campaign, card_census as card_census_booking, edition, goals, orders as strategy_orders
 from .os_layer import readers
 from .os_layer.navigation import observe_jump_foreground
 from .os_layer.phase import classify, shop_exit_confirmation
@@ -248,18 +248,25 @@ def shop_exit_unowned_input(kind, streak, *, guarded=False, army_owned=False,
     return 'a'
 
 
+def _shop_list_plan_pending(mem):
+    shop = mem.get('shop')
+    return isinstance(shop, dict) and bool(shop.get('items') or shop.get('want'))
+
+
 def shop_list_unowned_input(kind, streak, *, guarded=False, army_owned=False,
                             map_registration_hold=False,
-                            orphan_battle_menu=False):
-    '''docich#4650: the key an unowned shop list should get.
+                            orphan_battle_menu=False,
+                            shop_plan_pending=False):
+    '''docich#4650: leave only a genuinely unowned merchant list.
 
-    Returns 'b' (leave the shop) past a short settle and None otherwise. The
-    shop flow owns the list while it plans purchases; when no flow owns it the
-    no-input backstop waited NO_INPUT_HOLD_MAX. Guarded scenes stay fail-closed.
+    A remaining purchase row or quote is still owned by the shop flow even when
+    its cursor is unreadable. Do not let the early B fallback discard that plan.
+    Guarded scenes and pending purchases stay fail-closed.
     '''
     if kind != 'shop_list' or streak <= SHOP_LIST_HOLD_MAX:
         return None
-    if guarded or army_owned or map_registration_hold or orphan_battle_menu:
+    if (guarded or army_owned or map_registration_hold or orphan_battle_menu
+            or shop_plan_pending):
         return None
     return 'b'
 
@@ -267,17 +274,17 @@ def shop_list_unowned_input(kind, streak, *, guarded=False, army_owned=False,
 def gift_request_unowned_input(kind, streak, *, guarded=False,
                               bijin_gift_hold=False, army_owned=False,
                               map_registration_hold=False,
-                              orphan_battle_menu=False):
-    '''docich#4650: the key an unowned gift request should get.
+                              orphan_battle_menu=False,
+                              gift_selection_pending=False):
+    '''docich#4650: accept only a genuinely unowned gift request.
 
-    Returns 'a' (accept the default) past a short settle and None otherwise.
-    The bijin gift flow owns the screen while it decides; guarded scenes and an
-    active bijin gift hold stay fail-closed.
+    A parsed gift row with an unread cursor is still owned by gift_step; it must
+    not be confirmed by the default-A fallback. Guarded scenes stay fail-closed.
     '''
     if kind != 'gift_request' or streak <= GIFT_REQUEST_HOLD_MAX:
         return None
     if (guarded or bijin_gift_hold or army_owned or map_registration_hold
-            or orphan_battle_menu):
+            or orphan_battle_menu or gift_selection_pending):
         return None
     return 'a'
 
@@ -300,6 +307,24 @@ def map_unowned_input(kind, streak, *, guarded=False, army_owned=False,
     # (g1288 2026-11-20 13:57: streak 24..29, 19 records in one frozen map).
     # The streak is not reset by this key, so gate on its period instead.
     return 'select' if streak % (MAP_UNOWNED_HOLD_MAX + 1) == 0 else None
+
+
+def _mark_unowned_map_recenter(mem):
+    '''Invalidate the old route estimate after the fallback SELECT.
+
+    SELECT moves the field cursor to the hero. Keep the old cell unusable until
+    the next map observation consumes the same select_centered receipt used by
+    map_step's normal focus path.
+    '''
+    tick = int(mem.get('tick') or 0)
+    mem['nav_last'] = None
+    mem['uncertain'] = True
+    mem['select_focus_tick'] = tick
+    if mem.get('chapter'):
+        mem['select_centered'] = tick
+    else:
+        mem.pop('select_centered', None)
+
 
 FIELD_IDLE_WORLD_MAP_STREAK = 1       # the field hold itself: one no-input observation
 FIELD_IDLE_WORLD_MAP_INTERVAL = 200   # ~5 min between whole-map observations
@@ -1843,6 +1868,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # frame and the read starts only when the map is actually free.
     card_census_flow.wait_step(screen, mem)
     kind=screen.kind
+    if kind != 'gift_request':
+        mem.pop('gift_selection_pending', None)
+    # Measure dispatch starvation before any foreground owner runs: battles,
+    # monthly scenes, recalls and jumps otherwise keep the check itself from
+    # ever being evaluated, which is exactly the #5155/#5681 blind spot.
+    boss_dispatch_starved = strategy_orders.order_dispatch_starved(mem)
     month_sub = mem.get('month_sub')
     # docich#5046: a live egg recovery owns its own quote screen. The priest's
     # 「NこでNGになりまんな! よろしでっか?」 classifies as shop_quantity too, but
@@ -2259,7 +2290,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # S3: an open census owns its map/menu/list frames before every other
     # owner. It returns None on anything else (a battle, a message), so the
     # screen goes to its real owner and the census never holds input.
-    actions = card_census_flow.resume_step(screen, mem, frame)
+    recall_y_transition = (recall_flow.recall_y_jump_transition_step(screen, mem)
+                           if kind == 'map_target' else None)
+    # A RECALL Y press owns the picker fade before every other owner: another
+    # input on the old picker can toggle the opening whole-map view closed.
+    actions = (recall_y_transition if recall_y_transition is not None
+               else card_census_flow.resume_step(screen, mem, frame))
     if isinstance(recall_in_flight, dict):
         stage = recall_in_flight.get('stage')
         camp_menu = (stage == 'menu'
@@ -2277,7 +2313,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # 178836 camp_enter -> 178838 castle_jump_confirm).
         field_picker = ((stage in ('to_camp', 'dest', 'menu')
                          and kind in ('map', 'map_target') and phase != 'concert'))
-        if camp_menu or fort_route or fort_picker or field_picker:
+        if (recall_y_transition is None
+                and (camp_menu or fort_route or fort_picker or field_picker)):
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:
         actions = map_flow.general_jump_step(screen, mem, frame)
@@ -2335,11 +2372,11 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # month_sub answered them with its own keys (and a B), so the scan
         # saw the menu for one frame and never reached roster.
         from .flows import post_month_status as _pm_flow
-        actions = _pm_flow.step(screen, mem, frame)
+        actions = _pm_flow.step(screen, mem, frame, boss_dispatch=boss_dispatch_starved)
     if actions is None:
         actions = (recall_flow.camp_recall_step(screen, mem, frame)
                    if _recall_owns_dialog(kind, recall_dialog, ch9_field_recall)
-                   else month_flow.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
+                   else month_flow.month_sub_step(screen, mem, boss_dispatch=boss_dispatch_starved) if mem.get('month_sub') and (kind != 'month_menu' or month_dialog)
                    else None)
     # No house phase expects a red-curtain screen (concert/merchant backdrop):
     # every branch answers such a text frame with [] or B, which advances
@@ -2353,7 +2390,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         mem.get('house') is not None and phase == 'concert' and kind == 'text')
     if actions is None:
         from .flows import post_month_status
-        actions = post_month_status.step(screen, mem, frame)
+        actions = post_month_status.step(screen, mem, frame, boss_dispatch=boss_dispatch_starved)
         monthly = mem.get('post_month_status') or {}
         # Only this owner's freshly entered status stage may accelerate A.
         # A generic confirm, a pending/retried read, or another flow cannot
@@ -2740,7 +2777,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
                      or event_guarded),
             army_owned=army_owned,
             map_registration_hold=bool(mem.get('_map_registration_hold')),
-            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
+            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict),
+            shop_plan_pending=_shop_list_plan_pending(mem))
         if hint:
             decision_log._record(mem, 'shop_list_unowned_exit', screen=kind,
                 phase=phase, observed_metric={'streak': streak},
@@ -2754,7 +2792,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             bijin_gift_hold=mem.get('bijin_gift_hold') is True,
             army_owned=army_owned,
             map_registration_hold=bool(mem.get('_map_registration_hold')),
-            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
+            orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict),
+            gift_selection_pending=bool(mem.get('gift_selection_pending')))
         if hint:
             decision_log._record(mem, 'gift_request_unowned_accept', screen=kind,
                 phase=phase, observed_metric={'streak': streak},
@@ -2769,6 +2808,7 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             map_registration_hold=bool(mem.get('_map_registration_hold')),
             orphan_battle_menu=isinstance(mem.get('orphan_battle_menu'), dict))
         if hint:
+            _mark_unowned_map_recenter(mem)
             decision_log._record(mem, 'map_unowned_recenter', screen=kind,
                 phase=phase, observed_metric={'streak': streak},
                 reason='戦闘後の地図を所有者なしで検出したため、SELECTで再フォーカスして再観測する')
@@ -2787,6 +2827,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
             actions = escape
     if (not actions and streak>hold_max and not trade_guard_hold and not bijin_guard_hold
             and not (kind == 'gift_request' and mem.get('bijin_gift_hold') is True)
+            and not (kind == 'gift_request' and bool(mem.get('gift_selection_pending')))
+            and not (kind == 'shop_list' and _shop_list_plan_pending(mem))
             and not (sortie_cancel_hold or (kind == 'sortie_confirm'
                      and isinstance(mem.get('boss_stock_cancelled'), dict)))
             and not mem.get('_map_registration_hold')

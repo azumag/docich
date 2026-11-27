@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 import sys
 import unittest
@@ -173,7 +174,32 @@ class TestNewGameSession(unittest.TestCase):
 
         calls = [c.args[0] for c in mock_run.call_args_list]
         self.assertNotIn("nethack", calls[0])  # new-session carries no command
-        self.assertIn(["tmux", "send-keys", "-t", "docich-game", "nethack", "Enter"], calls)
+        self.assertIn(
+            ["tmux", "send-keys", "-t", "docich-game",
+             tmux_mod.shell_launch_line(["nethack"]), "Enter"],
+            calls,
+        )
+
+    def test_launch_line_parks_the_pane_instead_of_returning_to_a_prompt(self):
+        # docich#5708: typed as-is, the workload's exit left an interactive
+        # prompt that the still-running agent would type commands into.
+        with mock.patch("docich.tmux.procs.which", return_value="/usr/bin/bash"):
+            line = tmux_mod.shell_launch_line(["/usr/games/nethack", "-u", "docich"])
+        argv = shlex.split(line)
+        self.assertEqual(argv[:3], ["exec", "/usr/bin/bash", "-c"])
+        self.assertEqual(len(argv), 4)
+        self.assertEqual(
+            argv[3],
+            "set -m; /usr/games/nethack -u docich; exec sleep 2147483647",
+        )
+
+    def test_launch_line_keeps_the_workload_argv_quoted(self):
+        with mock.patch("docich.tmux.procs.which", return_value=None):
+            line = tmux_mod.shell_launch_line(["/opt/my game", "--name", "a'b; rm -rf ~"])
+        argv = shlex.split(line)
+        self.assertEqual(argv[1], "/bin/bash")
+        inner = shlex.split(argv[3].split("; ", 1)[1].rsplit("; exec sleep", 1)[0])
+        self.assertEqual(inner, ["/opt/my game", "--name", "a'b; rm -rf ~"])
 
 
 class TestCheckedOperations(unittest.TestCase):

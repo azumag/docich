@@ -23,9 +23,12 @@ from .hanjuku_manual_cancel import (
 )
 from .hanjuku_resume import REQUEST_FILE, RECEIPT_FILE, START_POLICY, core_digest
 from .naming import runtime_directory, runtime_id_generation, runtime_names
-from .retroarch_boundary import BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest
+from .retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest,
+                                 runtime_game as _runtime_game)
 from .tmux import SESSION
 from .trading.soren_output import resolve_soren_root
+
+GAME = 'hanjuku-hero'
 
 
 def fingerprint(value):
@@ -49,6 +52,10 @@ def _no_newer_hanjuku_progress(base, store, generation):
         if runtime.is_symlink():
             return False
         if not runtime.is_dir():
+            continue
+        # A copied corner's runtime shares this generation space and these
+        # filenames. It is not newer progress of this game.
+        if _runtime_game(runtime) not in (None, GAME):
             continue
         relevant = any((runtime / n).exists() or (runtime / n).is_symlink()
                        for n in ('hanjuku_run.json', RECEIPT_FILE, MANUAL_SAVE_FILE, BOUNDARY_FILE))

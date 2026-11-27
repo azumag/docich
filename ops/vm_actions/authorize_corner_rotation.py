@@ -25,7 +25,8 @@ WORKFLOWS = (
     ".github/workflows/retro-corner-operator.yml",
 )
 ALLOWED_OPERATIONS = {
-    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku", "resume-hanjuku-latest",
+    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku",
+    "start-hanjuku-speedrun", "resume-hanjuku-latest",
     "clear-hanjuku-clock-quarantine", "recover-runtime",
     "check-cancel-hanjuku", "cancel-hanjuku",
     "check-cancel-queued-hanjuku", "cancel-queued-hanjuku",
@@ -36,7 +37,8 @@ ALLOWED_OPERATIONS = {
     "check-release-stale-failed-owner", "release-stale-failed-owner",
     "check-rotation-owner", "consolidate-rotation-owner",
 }
-CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "resume-hanjuku-latest", "clear-hanjuku-clock-quarantine",
+CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "start-hanjuku-speedrun", "resume-hanjuku-latest",
+                             "clear-hanjuku-clock-quarantine",
                              "recover-runtime", "check-cancel-hanjuku", "cancel-hanjuku",
                              "check-cancel-queued-hanjuku", "cancel-queued-hanjuku",
                              "check-admin-release-hanjuku", "admin-release-hanjuku",
