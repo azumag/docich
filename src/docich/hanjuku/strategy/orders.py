@@ -3231,6 +3231,10 @@ def _recall_owned(mem, chapter, owned, origin=None):
             return sorted([*kept, *([hub] if hub in universe and hub not in kept else [])])
     if (not road or not measured):
         return owned
+    if chapter == 9 and not chart.ch9_boss_approachable(origin):
+        last = road[-1]
+        owned = [c for c in owned if c != last] or owned
+        road = [c for c in road if c != last] or road
     entry = min((c for c in road if c in cells),
                 key=lambda c: (cells[c][0] - origin[0]) ** 2 + (cells[c][1] - origin[1]) ** 2,
                 default=None)
