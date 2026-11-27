@@ -160,6 +160,9 @@ def test_event_duel_ignores_a_stale_carried_card_snapshot_and_mashes_immediately
     )
     screen = Screen(lines=[], hand=None, text='', kind='battle',
                     battle=Battle('カシス', 73, 'どうし', 90))
+    # The battle panel needs two identical readings before the battle record
+    # is built, so the first step only stores the reading and returns [].
+    policy.battle_step(screen, mem)
     acts = policy.battle_step(screen, mem)
     assert any(a.get('buttons') == ['a'] for a in acts)
     assert not any(a.get('buttons') == ['b'] for a in acts)
