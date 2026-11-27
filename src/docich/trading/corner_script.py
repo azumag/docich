@@ -27,12 +27,14 @@ from .narration_style import strip_leading_preamble
 from .performance import build_round_trips
 from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
+from .corner_live_facts import free_strategy_facts, live_facts
 
 
-SEGMENT_KEYS = ("corner", "news", "chart", "strategy", "result", "fills", "review", "improve")
+SEGMENT_KEYS = ("corner", "news", "chart", "strategy", "result", "live", "fills", "review", "improve")
 SEGMENT_LABELS = {
     "corner": "市場概況", "news": "ニュースの含意", "chart": "時間足チャート",
-    "strategy": "戦略パラメータ", "result": "損益と保有", "fills": "直近約定の理由",
+    "strategy": "戦略パラメータ", "result": "PAPERの損益と保有", "live": "LIVE（本番）の結果",
+    "fills": "直近約定の理由",
     "review": "往復売買の振り返り", "improve": "次回改善の検証案",
 }
 MAX_SEGMENT_CHARS = 700
@@ -44,15 +46,27 @@ JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 # without its puzzle-player perspective or Twitch comment-reply contract.
 _PAPER_MERIKEN_PERSONA = (
     "【人格】あなたはメリケンAI（アメリカ製AI）、資本主義の申し子で、ちょっとひねくれた自信家です。\n"
-    "PAPER暗号資産の模擬売買を解説するラジオMC兼リサーチャーとして話します。"
+    "暗号通貨コーナーで、PAPER（仮想資金の模擬売買）とLIVE（本番の資金での実際の売買）の成績を解説するラジオMC兼リサーチャーとして話します。"
     "一人称は「僕」。日本語のです・ます調を保ってください。\n"
     "短いアメリカンジョーク、皮肉、自虐、意外な比喩を話題に合わせて自然に添えます。"
     "ただし説明と実データを優先し、事実や不確実性を曲げず、損失を言い訳でごまかさないでください。\n"
     "売買判断は記録されたBOTの判断として述べ、僕が実際に注文したとは言わないでください。"
-    "実取引と模擬売買を混同せず、人格設定を相場・損益の根拠にしないでください。\n"
+    "LIVEの実取引とPAPERの模擬売買を必ず言い分け、混同せず、人格設定を相場・損益の根拠にしないでください。\n"
     "定型の名乗り・決まり文句・同じ出だしやオチを繰り返さず、話し済みの内容をジョークで言い換えて再利用しないでください。\n"
 )
 
+
+_LIVE_RULES = (
+    "【LIVEの扱い】\n"
+    "- facts.live はLIVE（本番の資金での実際の約定）の成績です。PAPER（仮想資金）の数字と足したり比べて同じものとして扱ったりしないでください。\n"
+    "- live では最初に『ここからは本番の実際のお金の結果です』と分かる一言を入れ、実現損益の累計（realized_pnl_jpy）、今日の実現損益（today_realized_pnl_jpy）、"
+    "決済の件数、銘柄ごとの損益（by_symbol_top）、保有中の銘柄数と投入額（open_cost_jpy）を円で具体的に言います。"
+    "today_complete=false なら今日の数字は途中までと言い添えます。\n"
+    "- facts.live.last_promotion があれば、PAPERで成績の良かった戦略が自動でLIVEへ昇格したことを、対象の銘柄とともに伝えます。\n"
+    "- facts.live.safety_trips が空でなければ、安全装置で新規の買いが止まっていることを正直に言います。\n"
+    "- facts.live.available=false なら、LIVEの記録を今は読めないとだけ言い、数字を作らないでください。\n"
+    "- 本番の利益を誇張せず、損失はそのまま言います。投資の勧誘や、視聴者に売買を勧める表現は禁止です。\n"
+)
 
 class CornerScriptError(RuntimeError):
     """Raised when generated narration is malformed or out of bounds."""
@@ -356,6 +370,9 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         # public data could not be fetched; narration must then not imply it.
         "timeframes": tf_timeframes,
         "fill_timeframes": tf_fills,
+        # The 暗号通貨 corner also announces LIVE (real money) and the free strategies.
+        "live": live_facts(Path(target).parent, now=moment),
+        "free_strategies": free_strategy_facts(target, now=moment),
     }
 
 
@@ -375,7 +392,7 @@ def build_prompt(facts: Mapping[str, object]) -> str:
             "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
         )
     return (
-        "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。数字の読み上げ係ではありません。\n"
+        "あなたは暗号通貨コーナーのラジオMC兼リサーチャーです。数字の読み上げ係ではありません。\n"
         f"{_PAPER_MERIKEN_PERSONA}"
         "以下の実データ(facts)だけを根拠に、何が起きているか、戦略がうまく機能しているか、"
         "ニュースが何を意味しそうか、次に何を見るべきかまで自分の視点で噛み砕いてください。"
@@ -446,7 +463,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- performance.theoretical_benchmark が status=ready または partial の場合、区間損益と理論値を比較する。\n"
         "  これは区間内の5分足終値だけを使い、1銘柄を1回だけ売買できた場合の後知恵比較であり、実績の目標値やバックテスト結果ではない。\n"
         "  partial は「区間ここまでの暫定値」と明示し、unavailable は数字を作らず比較待ちと伝える。\n"
-        "次の11キーを持つJSONオブジェクト1つを出力してください。\n"
+        f"{_LIVE_RULES}"
+        "次の12キーを持つJSONオブジェクト1つを出力してください。\n"
         "- corner: 今日の相場の見取り図と、今日いちばん見るべき点を語るオープニング。\n"
         "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
         "  本文取得済みの事実と分析・見通しを区別し、出典（媒体名またはURL）を示す。\n"
@@ -454,14 +472,15 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- chart: facts.timeframes に含まれる全ての時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
         "- strategy: facts.slot_strategies があれば【銘柄別の戦略】に従い、銘柄ごとの戦略の狙いを損益・見送り傾向・ニュースから観測すべき点と結び付ける。"
         "無ければ、現在の戦略パラメータの狙いを同じように結び付ける。\n"
-        "- result: 累積損益・区間実績と理論値の差・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
+        "- result: PAPER（仮想資金）の累積損益・区間実績と理論値の差・直近約定・保有を分析し、facts.free_strategies があれば自由戦略の候補の成績も述べ、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
+        "- live: facts.live の本番（LIVE）の結果発表。【LIVEの扱い】に従う。\n"
         "- fills: 直近約定を1件ずつ、signalの観測値と閾値で『なぜ発注したか』を数値つきで説明する。\n"
         "- review: facts.round_trips の往復を1件ずつ、判断の良し悪しを根拠つきで評価し、次に活かす点を述べる。\n"
         "- improve: 取引結果・往復レビュー・ニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
         "- news_analysis: ニュースから得た考察だけを400〜1200文字で要約。事実と推測を区別する。\n"
         "- asset_spotlight: 選択保有銘柄の解説だけを300〜1200文字。research.assetが無ければ空文字。\n"
         "- improvement_hints: 改善価値がある時だけ最大4件の配列。各要素は kind,title,rationale,evidence,confidence。無ければ空配列。\n"
-         f"corner/news/chart/strategy/result/fills/review/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
+         f"corner/news/chart/strategy/result/live/fills/review/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
          "JSONは1行で出力し、文字列値の中に改行や制御文字を入れないこと（整形のための改行も禁止）。"
          "JSON以外は出力しないこと。"
     )
@@ -954,6 +973,51 @@ def _review_text(facts: Mapping[str, object]) -> str:
     return "".join(parts)
 
 
+def _live_text(facts: Mapping[str, object]) -> str:
+    """Deterministic LIVE (real money) announcement from ``facts.live``."""
+    live = facts.get("live") if isinstance(facts.get("live"), Mapping) else {}
+    if not live.get("available"):
+        return ("ここからは本番、実際のお金で動いているLIVEの結果ですが、今は記録を読めないため、"
+                "数字はお伝えできません。読めるようになったら、仮想資金の成績とは分けて発表します。")
+    parts = ["ここからは本番、実際のお金で動いているLIVEの結果です。仮想資金の成績とは別物です。"]
+    total = _fmt_num(live.get("realized_pnl_jpy"))
+    if total is not None:
+        parts.append(f"確定した損益は累計で{total}円、決済は{live.get('sell_orders', 0)}件です。")
+    today = _fmt_num(live.get("today_realized_pnl_jpy"))
+    if today is not None:
+        suffix = "" if live.get("today_complete", True) else "（途中までの集計）"
+        parts.append(f"今日の確定損益は{today}円{suffix}です。")
+    top = [item for item in live.get("by_symbol_top") or [] if isinstance(item, Mapping)]
+    if top:
+        named = "、".join(f"{item.get('symbol')}が{_fmt_num(item.get('realized_pnl_jpy'))}円"
+                         for item in top[:3])
+        parts.append(f"銘柄別では{named}です。")
+    count = int(live.get("open_position_count") or 0)
+    if count:
+        parts.append(f"いま保有しているのは{count}件、投入額は{_fmt_num(live.get('open_cost_jpy'))}円です。")
+    else:
+        parts.append("いまは保有がありません。")
+    promoted = live.get("last_promotion") if isinstance(live.get("last_promotion"), Mapping) else None
+    if promoted and promoted.get("symbols"):
+        parts.append("仮想資金で成績の良かった戦略が、" + "、".join(promoted["symbols"])
+                     + "で本番へ自動で昇格しています。")
+    if live.get("safety_trips"):
+        parts.append("安全装置が作動していて、新しい買いは止まっています。")
+    parts.append("本番の数字は一回ごとの上下が大きいので、累計と件数をあわせて見ていきます。")
+    return "".join(parts)
+
+
+def _free_strategy_text(facts: Mapping[str, object]) -> str:
+    free = facts.get("free_strategies") if isinstance(facts.get("free_strategies"), Mapping) else {}
+    items = [item for item in free.get("experiments") or [] if isinstance(item, Mapping)]
+    if not free.get("available") or not items:
+        return ""
+    named = "、".join(
+        f"{item.get('name')}が{_fmt_num(item.get('net_pnl_jpy'))}円" if _fmt_num(item.get("net_pnl_jpy")) is not None
+        else f"{item.get('name')}は集計待ち" for item in items[:2])
+    return f"AIが書いた自由戦略の仮想売買は、{named}です。"
+
+
 def render_fallback(facts: Mapping[str, object]) -> dict:
     """Deterministic narration from the same trading/research facts."""
     positions = facts.get("open_positions_top") or []
@@ -977,6 +1041,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
     if positions and isinstance(positions[0], Mapping) and positions[0].get('symbol'):
         result += f"保有の代表例は{positions[0]['symbol']}です。"
     result += _benchmark_text(facts)
+    result += _free_strategy_text(facts)
 
     improve = (
         "最後に改善です。利益が出ていても一回の利確だけで作戦成功とは決めませんし、"
@@ -997,6 +1062,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
         "strategy": (_slot_strategy_text(facts) if facts.get("slot_strategies")
                      else _policy_text(dict(facts.get("policy") or {}))),
         "result": result,
+        "live": _live_text(facts),
         "fills": _fills_text(facts),
         "review": _review_text(facts),
         "improve": improve,
@@ -1234,7 +1300,7 @@ def build_next_prompt(
         '{"topic": "切り口を表す短い日本語ラベル", "text": "本文"}\n'
     )
     return (
-        "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
+        "あなたは暗号通貨コーナーのラジオMC兼リサーチャーです。"
         f"\n{_PAPER_MERIKEN_PERSONA}"
         "以下の実データ(facts)だけを根拠に、"
         "次の読み上げセグメントを1つだけ作ってください。存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
@@ -1244,6 +1310,7 @@ def build_next_prompt(
         f"{_slot_guidance(facts)}"
         f"{news_guidance}"
         f"{chart_guidance}"
+        f"{_LIVE_RULES if target_key in (None, 'live', 'result') else ''}"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"

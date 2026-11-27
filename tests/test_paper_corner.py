@@ -224,7 +224,7 @@ def test_released_prestart_paper_owner_rejects_unproven_slot(tmp_path, monkeypat
     assert json.loads(mgr.path.read_text())['status'] == 'starting'
 
 
-def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
+def test_delayed_boundary_runs_all_nine_narrations(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     due=now[0]; output=[]; voice=[]
@@ -242,12 +242,12 @@ def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
     assert mgr.tick() == 'completed'
     saved=json.loads(mgr.path.read_text())
     assert saved['status']=='completed'
-    assert saved['end_reason']=='eight-slots-drained'
+    assert saved['end_reason']=='all-slots-drained'
     assert saved['started_at']==due+2100
-    # opening + eight finite fallback segments + end (no AI configured)
-    assert len(output)==len(voice)==10
+    # opening + nine finite fallback segments + end (no AI configured)
+    assert len(output)==len(voice)==11
     delivered={key for key in saved['reports'] if key.startswith('script:')}
-    assert delivered=={f'script:{i}' for i in range(1,9)}
+    assert delivered=={f'script:{i}' for i in range(1,10)}
     assert all(saved['reports'][key]['source']=='fallback' and saved['reports'][key]['drained']
                for key in delivered)
     assert all(p['body'] for p in output)
@@ -403,9 +403,9 @@ def test_restart_retries_only_failed_sink_and_preserves_completed_items(tmp_path
     now[0]+=10
     assert mgr.tick()=='completed'
     saved=json.loads(mgr.path.read_text())
-    assert saved['end_reason']=='eight-slots-drained'
-    # eight fallback items + the closing announcement; overlay:1 is not repeated.
-    assert len(overlay)==9 and len(speech)==9
+    assert saved['end_reason']=='all-slots-drained'
+    # nine fallback items + the closing announcement; overlay:1 is not repeated.
+    assert len(overlay)==10 and len(speech)==10
     assert saved['reports']['script:1']['overlay'] is True
 
 

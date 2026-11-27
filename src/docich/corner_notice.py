@@ -65,7 +65,7 @@ CORNER_LABELS = {
     "nethack": "NetHack",
     ORIGINAL: "半熟英雄",
     SPEEDRUN: "半熟英雄 スピードラン",
-    "paper": "ペーパートレード",
+    "paper": "暗号通貨",
     "meriken": "ソ連ゲーム91",
     "tsuitate": "ついたて将棋",
     "weather": "天気予報",

@@ -94,7 +94,7 @@ def test_notice_is_published_after_a_slot_and_spoken_once(tmp_path):
     assert record["when"] == "23:46"            # 1_003_600 epoch in JST
     assert record["source"] == "auto"
     assert record["hold"] is None
-    assert spoken == ["次のコーナーはペーパートレード、23時46分からの予定です。"]
+    assert spoken == ["次のコーナーは暗号通貨、23時46分からの予定です。"]
 
     # One line per ended slot, not one per tick.
     manager.tick()
@@ -342,11 +342,11 @@ def test_labels_and_spoken_time_phrases(tmp_path):
     assert corner_notice.format_when(now + 86400, now) == "明日 22:46"
     assert corner_notice.format_when(now + 5 * 86400, now).startswith("1/17 ")
 
-    record = {"corner": "paper", "label": "ペーパートレード", "due_at": int(now + 3600)}
+    record = {"corner": "paper", "label": "暗号通貨", "due_at": int(now + 3600)}
     assert corner_notice.speech_text(record, now) == (
-        "次のコーナーはペーパートレード、23時46分からの予定です。"
+        "次のコーナーは暗号通貨、23時46分からの予定です。"
     )
-    daily = {"corner": "paper", "label": "ペーパートレード", "due_at": int(now + 86400)}
+    daily = {"corner": "paper", "label": "暗号通貨", "due_at": int(now + 86400)}
     assert corner_notice.speech_text(daily, now).endswith("明日22時46分からの予定です。")
 
 

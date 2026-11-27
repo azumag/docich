@@ -82,7 +82,7 @@ VIEWER_GAME_NAMES = {
     "bastet": "Bastet", "gnurobots": "GNU Robots", "moon-buggy": "Moon Buggy",
     "ninvaders": "Space Invaders", "nsnake": "Snake",
     "pacman4console": "Pac-Man", "robots": "Robots",
-    "paper-view": "ペーパートレード",
+    "paper-view": "暗号通貨",
     MYSTERY_VIEW_NAME: "AI探偵ミステリー",
     FLYHOME_VIEW_NAME: "Fly Me To The Home!",
 }
