@@ -33,6 +33,8 @@ from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_U
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_OBSERVED_LIMIT,
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
                                _boss_companion_wait_expired,
+                               _boss_egg_depleted, _boss_sole_consolidation_permitted,
+                               _boss_target_unlocked, _broken_hero_order,
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
                                clear_sortie_launch_priority,
                                _continue_transit_sorties, _defense_move_pick, _few_castles,
@@ -1055,9 +1057,11 @@ def _move_general_pick(screen, mem, order):
     busy = _en_route(mem)[0]
     spare = sorted((g for g in present if g not in busy), key=lambda g: g == NAME)
     # Chapter 9 may empty a rear castle and walks the hero forward too
-    # (owner 2026-11-09 / 2026-11-11).
+    # (owner 2026-11-09 / 2026-11-11). The boss-only consolidation is the
+    # separate bounded exception minted by the mechanical plan (#5769).
     road_walk = chart.guard_free(mem.get('chapter'))
-    if (len(present) < 2 and not road_walk) or not spare:
+    sole_consolidation = _boss_sole_consolidation_permitted(order, mem)
+    if (len(present) < 2 and not road_walk and not sole_consolidation) or not spare:
         # owner 2026-11-27: 同じ移動（例: アルマムーン>スペンソニア）が毎回
         # 新しい step 名で再計画され、月内に何度も失敗していた。失敗した leg を
         # 月単位で覚え、次回の計画から外す。
@@ -1079,7 +1083,8 @@ def _move_general_pick(screen, mem, order):
         # to another general and the hero never arrived (g1190 2026-11-18
         # 15:12: the order named どうし and ラビオリ departed instead — #4546).
         if planned in spare and (planned != NAME or road_walk
-                                 or order.get('hero_hub_move') is True):
+                                 or order.get('hero_hub_move') is True
+                                 or sole_consolidation):
             general = planned
             reason = '計画が名指しした将軍をそのまま移動させる'
         else:

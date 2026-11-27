@@ -216,6 +216,8 @@ KEY_OWNERSHIP = {
     'boss_cell_probe': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスセルプローブ割当(リセット登録のみ・兄弟のboss_step_probeに同じ)
     'boss_companion_source_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5276 出撃元のボス同行待ち時計(step別)
     'boss_companion_source_wait_expired': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5276 出撃元待ちの満了証票(step別)
+    'boss_sole_starved': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5769 ボス単独残りで全城1将軍以下になった連続時計
+    'boss_sole_consolidation': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # #5769 単独将軍集約の章内発行簿記(上限2回)
     'boss_egg_wait': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # replan戦略層のボス卵待ち計画
     'boss_probe_rotation': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボスプローブ割当の戦略管理
     'boss_relaunch': {'region': PLAN, 'lifetime': 'chapter', 'migrated': False},  # ボス再出撃の戦略管理

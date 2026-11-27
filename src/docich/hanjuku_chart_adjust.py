@@ -211,7 +211,8 @@ def startable(order, request) -> str | None:
                                       and (chart.guard_free(request.get('chapter'))
                                            # Owner 2026-11-18: the hero moves to
                                            # the chapter-11 hub to recruit there.
-                                           or order.get('hero_hub_move') is True)):
+                                           or order.get('hero_hub_move') is True
+                                           or order.get('boss_sole_consolidation') is True)):
         # Chapter 9 walks the hero toward the front so recruits join there
         # (owner 2026-11-11); he still never attacks.
         return 'hero_not_dispatchable'
@@ -230,8 +231,12 @@ def startable(order, request) -> str | None:
         if order.get('hero_hub_move') is True:
             return None
         # A measured singleton cannot dispatch its last defender (chapter 9
-        # excepted, owner 2026-11-09: ``chart.sender_min`` is 1 there).
-        if len(set(present) - marching) < chart.sender_min(request.get('chapter')):
+        # excepted, owner 2026-11-09: ``chart.sender_min`` is 1 there). The
+        # mechanical boss consolidation carries its own execution-time
+        # revalidation; validation never accepts this flag from external plans.
+        if (len(set(present) - marching) < chart.sender_min(request.get('chapter'))
+                and not (order.get('boss_sole_consolidation') is True
+                         and order.get('purpose') == 'move')):
             return 'source_last_defender'
         if not chart.is_boss_castle(order['target']) and hero_guard_short(
                 present, general, marching, sole_castle=_sole_castle(request)):
