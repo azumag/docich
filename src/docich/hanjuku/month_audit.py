@@ -4562,6 +4562,60 @@ def _render_card_miss(record):
     ])
 
 
+def _render_soren_deadline_misplacement(record):
+    """Compact deterministic body for a Soren deadline misplacement."""
+    event = record.get('soren_event') or {}
+    actual = event.get('actual_new_piece') or {}
+    chosen = event.get('chosen_estimate') or {}
+    lower = event.get('best_lower_alternative') or {}
+    merge = event.get('best_merge_alternative') or {}
+    evidence = record.get('evidence') or {}
+    lines = [
+        *_issue_markers(record),
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **{record.get('kind')}** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- turn: {event.get('turn')} → {event.get('next_turn')} / score {event.get('score')}",
+        f"- ドロップ: x={event.get('decision_x')} / piece type={actual.get('type')}"
+        f" / 実着地 top={actual.get('top_y')} / deadline={event.get('deadline_y')}",
+        f"- 選択位置の独立推定: x={chosen.get('x')} / top={chosen.get('top_y')}",
+        f"- 検証: {BT}{event.get('verification') or '不明'}{BT}"
+        f" / candidates={event.get('candidate_count')}"
+        f" / lower={event.get('lower_candidate_count')}",
+    ]
+    if event.get('decision_reason'):
+        lines.append(f"- 戦略理由: {_md(event.get('decision_reason'))}")
+    lines += ['', '### 安全だった代替', '']
+    if lower:
+        lines.append(f"- デッドライン内: x={lower.get('x')} / top={lower.get('top_y')}"
+                     f" / support={lower.get('support_id')}")
+    if merge:
+        lines.append(f"- 同type併合候補: x={merge.get('x')} / top={merge.get('top_y')}"
+                     f" / target={merge.get('target_id')} / gap={merge.get('contact_gap')}")
+    if not lower and not merge:
+        lines.append('- 代替候補の内訳は JSON 証拠を参照')
+    lines += [
+        '',
+        '### 証拠',
+        '',
+        f"- monitor: {BT}{evidence.get('events')}{BT} / history: {BT}{evidence.get('frames')}{BT}",
+        f"- 盤面: prev {event.get('prev_piece_count')} pieces / curr {event.get('curr_piece_count')} pieces",
+        f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        '',
+        '<details><summary>JSON</summary>',
+        '',
+        f"{BT * 3}json",
+        json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1)[:24000],
+        f"{BT * 3}",
+        '',
+        '</details>',
+        '',
+        '実着地したピースがデッドラインを超え、前盤面に安全な代替配置または有効な同type併合候補があった場合だけ記録しています。'
+        '代替がない局面は対象外です。strategy_runner / enforce_deadline_safety が安全候補を実行前に退避できなかった経路を調べてください。',
+    ]
+    return '\n'.join(lines)
+
+
 def _render_game_over(record):
     over = record.get('game_over') or {}
     evidence = record.get('evidence') or {}
@@ -4625,6 +4679,8 @@ def render(record):
         raise AuditError('invalid_incident')
     if record.get('kind') == 'game_over':
         return _render_game_over(record)
+    if record.get('kind') == 'soren_deadline_misplacement':
+        return _render_soren_deadline_misplacement(record)
     if record.get('kind') == 'card_miss':
         return _render_card_miss(record)
     if record.get('kind') == 'battle_card_at_hp1':
@@ -4926,6 +4982,28 @@ def render(record):
 
 def render_comment(record):
     """Compact recurrence comment for an existing open issue."""
+    if record.get('kind') == 'soren_deadline_misplacement':
+        event = record.get('soren_event') or {}
+        actual = event.get('actual_new_piece') or {}
+        lower = event.get('best_lower_alternative') or {}
+        merge = event.get('best_merge_alternative') or {}
+        alternative = ''
+        if lower:
+            alternative = f"安全x={lower.get('x')} top={lower.get('top_y')}"
+        elif merge:
+            alternative = f"併合x={merge.get('x')} top={merge.get('top_y')}"
+        else:
+            alternative = '代替詳細は本文JSON参照'
+        return '\n'.join([
+            *_issue_markers(record),
+            '### 再発: 安全な配置先があるのにデッドライン超過へドロップ',
+            '',
+            f"- turn: {event.get('turn')} / x={event.get('decision_x')}"
+            f" / piece type={actual.get('type')} / top={actual.get('top_y')}",
+            f"- 代替: {alternative}",
+            f"- 検証: {event.get('verification') or '不明'}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     if record.get('kind') == 'battle_card_at_hp1':
         battle = record.get('battle_event') or {}
         return '\n'.join([
@@ -5042,6 +5120,11 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'soren_deadline_misplacement':
+        event = record.get('soren_event') or {}
+        turn = event.get('turn')
+        where = f"turn{turn}" if turn is not None else 'turn不明'
+        return f"[ソ連ゲーム] 安全な配置先があるのにデッドライン超過へドロップ ({where})"[:100]
     if kind == 'battle_card_at_hp1':
         battle = record.get('battle_event') or {}
         where = battle.get('enemy') or battle.get('castle') or '戦闘'
