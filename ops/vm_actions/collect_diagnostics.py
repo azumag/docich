@@ -8264,6 +8264,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1575-ch9-ambush-x-offset",
             "hanjuku-chart-v1576-commentary-desumasu",
             "hanjuku-chart-v1575-ch9-cliff-camp-recall",
+            "hanjuku-chart-v1577-boss-redirect-y-jump",
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
