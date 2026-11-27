@@ -48,8 +48,10 @@ def allowed(mem, source, target):
         return (chart.is_boss_castle(target) or (source, target) in legs(9))
     if chapter == 1:
         known = legs(1)
-        return ((source, target) in known
-                or (target in _owned(mem) and (target, source) in known))
+        # A measured leg is marchable in both directions (the same road), so a
+        # lost castle can be retaken from its neighbour. This still refuses a
+        # leg that was never measured (アルマムーン→スペンソニア).
+        return (source, target) in known or (target, source) in known
     if chapter == 3:
         return (chart.is_boss_castle(target)
                 or (source, target) in legs(3)

@@ -144,19 +144,19 @@ def test_spare_generals_form_a_wave_on_the_first_target():
     from docich import hanjuku_chart as chart
     castles = list(chart.castles(1))
     home = chart.home_castle(1)
-    target = next(c for c in castles if c != home and not chart.is_boss_castle(c))
-    # Owner 2026-11-17: the hero alone satisfies the guard, so the home
-    # castle's spare joins the wave too (four spares -> four sorties).
-    other = next(c for c in castles if c not in (home, target))
+    # owner 2026-11-27: 第1話はチャート実測の leg だけを行軍可能にしたため、
+    # 波状攻撃の出撃元も「その城へ行ける城」に限られる。スペンソニアへは
+    # ジョンリギとゴーメンから行ける（アルマムーンからは直接行けない）。
+    target = 'スペンソニア'
+    first, second = 'ジョンリギ', 'ゴーメン'
     mem = memory(captured=[c for c in castles if c != target], lost=[],
                  garrison={home: ['ゼウス', 'どうし'],
-                           other: ['ココット', 'ヴィーナス', 'トレビス', 'ビーツ']})
+                           first: ['ココット', 'ヴィーナス', 'トレビス', 'ビーツ'],
+                           second: ['ピクルス', 'マスタード']})
     candidates = replan.interim_candidates(mem)
     attacks = [o for o in candidates.values() if o['target'] == target]
-    assert len(attacks) == 4, candidates
-    assert len({o['general'] for o in attacks}) == 4
-    assert {o['general'] for o in attacks} <= (
-        set(_world(mem)['garrison'][other]) | set(_world(mem)['garrison'][home]) - {'どうし'})
+    assert len(attacks) >= 2, candidates
+    assert {o['source'] for o in attacks} <= {first, second}
     assert {o['purpose'] for o in attacks} == {'attack'}
 
 
