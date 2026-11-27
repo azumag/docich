@@ -2001,6 +2001,13 @@ def _keep_sortie_defender(screen, mem, order):
             {'present': present[:8], 'available': sorted(available),
              'location_recheck_attempts': recheck['attempts']})
     (mem.get('source_location_rechecks') or {}).pop(source, None)
+    # owner 2026-11-27: 守備を残せない城は、その月の出撃元として使えない。
+    # 記録して次の計画で別の城（将軍2人以上）を選ばせる。同じ城で毎回
+    # キャンセルを繰り返すと、月の予算を捨てて出撃0のまま終わる。
+    depleted = mem.get('sortie_source_depleted')
+    depleted = depleted if isinstance(depleted, dict) else {}
+    depleted[source] = mem.get('month')
+    mem['sortie_source_depleted'] = depleted
     _refute_unplaced(mem, order)
     _record_source_defender_cancel(mem, order, present=present, available=sorted(available))
     return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',

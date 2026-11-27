@@ -77,6 +77,22 @@ CH10_APPROACH = {
 }
 
 
+def _drop_depleted_sources(mem, owned):
+    """Skip castles that already failed to keep a defender this month.
+
+    Owner 2026-11-27: a chart attack from a one-general castle is cancelled by
+    the defender rule every time, and the month ends with zero launches. Drop
+    such a source while another castle can still send one; if every castle is
+    depleted the set is left as-is (never starve the planner completely).
+    """
+    raw = mem.get('sortie_source_depleted')
+    if not isinstance(raw, dict):
+        return set(owned)
+    blocked = {castle for castle, month in raw.items() if month == mem.get('month')}
+    remaining = {castle for castle in owned if castle not in blocked}
+    return remaining or set(owned)
+
+
 def _filter_failed_move_legs(mem, moves):
     """Drop move legs that already failed this month (owner 2026-11-27).
 
@@ -132,6 +148,9 @@ def _interim_source(mem, target, chart_order, owned, busy, allow_sole=False):
                        and chart.corridor_next(chapter, owned) is None)
     if boss_gather:
         owned = {c for c in owned if c == road[-1]}
+    # owner 2026-11-27: その月に守備を残せず出撃を取り消した城は、別の城が
+    # 使えるなら出撃元から外す（同じ城で毎回キャンセルすると出撃0で月が終わる）。
+    owned = _drop_depleted_sources(mem, owned)
     free = {c: [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
             for c in owned}
     if routes.is_road(chapter):
