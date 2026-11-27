@@ -31,6 +31,13 @@ def legs(chapter):
         # (a lost castle is retaken from either neighbour).
         road = chart.corridor(9)
         return {pair for a, b in zip(road, road[1:]) for pair in ((a, b), (b, a))}
+    # owner 2026-11-27: 第1話も城同士は一直線でつながっていない。チャートが実測した
+    # leg だけが行軍可能（アルマムーン→スペンソニアは不可、ジョンリギ経由）。
+    # ボスも アルマムーン/ジョンリギ からは直接行けず、スペンソニア経由になる。
+    if chapter == 1:
+        # 第1話はチャートの実測 leg だけ。ボス(けっかい)への leg も実測どおり
+        # （スペンソニア→けっかい のみ。アルマムーン/ジョンリギからは直接行けない）。
+        return {(o['source'], o['target']) for o in chart.measured_orders(1)}
     return {(o['source'], o['target']) for o in chart.measured_orders(chapter)
             if not chart.is_boss_castle(o['target'])} if chapter == 3 else set()
 
@@ -39,9 +46,15 @@ def allowed(mem, source, target):
     chapter = mem.get('chapter')
     if chapter == 9:
         return (chart.is_boss_castle(target) or (source, target) in legs(9))
-    return (chapter != 3 or chart.is_boss_castle(target)
-            or (source, target) in legs(3)
-            or (target in _owned(mem) and (target, source) in legs(3)))
+    if chapter == 1:
+        known = legs(1)
+        return ((source, target) in known
+                or (target in _owned(mem) and (target, source) in known))
+    if chapter == 3:
+        return (chart.is_boss_castle(target)
+                or (source, target) in legs(3)
+                or (target in _owned(mem) and (target, source) in legs(3)))
+    return True
 
 
 def move_leg(mem, source, target, owned=None):
