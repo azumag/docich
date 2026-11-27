@@ -1949,6 +1949,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1571-duel-melee-only",
                  "hanjuku-chart-v1572-sortie-picker-resume",
                  "hanjuku-chart-v1573-recall-preempt",
+                 "hanjuku-chart-v1574-audit-reissue-dedupe",
                  "hanjuku-chart-v1574-clear-ending-scene-scan",
                  "hanjuku-chart-v1575-ch9-ambush-x-offset",
 )

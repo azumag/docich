@@ -2377,8 +2377,10 @@ def test_render_puts_the_noise_note_before_the_table(runtime_dir):
 def test_render_contains_markers_and_evidence(runtime_dir):
     record = sealed_zero(runtime_dir)
     text = audit.render(record)
+    key = audit._month_key(record)
     assert 'hanjuku-month-audit fingerprint=' in text
     assert f'occurrence={record["incident_id"]}' in text
+    assert f'hanjuku-month-audit key={key[0]}/{key[1]}/{key[2]}' in text
     assert audit.TITLE_PREFIX in text
     assert '月内の決定' in text
     assert record['incident_id'] in text
@@ -2394,8 +2396,10 @@ def test_issue_title_uses_the_primary_signal():
 def test_render_comment_is_compact(runtime_dir):
     record = sealed_zero(runtime_dir)
     text = audit.render_comment(record)
+    key = audit._month_key(record)
     assert '### 再発' in text
     assert f'occurrence={record["incident_id"]}' in text
+    assert f'hanjuku-month-audit key={key[0]}/{key[1]}/{key[2]}' in text
     assert len(text) < 4000
 
 
@@ -2416,7 +2420,15 @@ class FakeGh:
         if args[:2] == ['auth', 'status']:
             return 0, '', ''
         if args[:2] == ['issue', 'list']:
-            return 0, json.dumps(self.issues), ''
+            state = args[args.index('--state') + 1] if '--state' in args else 'open'
+            issues = list(self.issues)
+            if state != 'all':
+                issues = [issue for issue in issues
+                          if str(issue.get('state') or 'open').lower() == state]
+            if '--search' in args:
+                query = args[args.index('--search') + 1]
+                issues = [issue for issue in issues if query in (issue.get('body') or '')]
+            return 0, json.dumps(issues), ''
         if args[:2] == ['issue', 'view']:
             return 0, json.dumps({'comments': self.comments}), ''
         if args[:2] == ['issue', 'create']:
@@ -2457,6 +2469,82 @@ def test_file_does_not_repeat_the_same_occurrence(runtime_dir):
     gh = FakeGh(issues=[issue], comments=comments)
     result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
     assert result['status'] == 'already_commented'
+
+
+def test_file_suppresses_same_month_key_in_a_closed_issue(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    key = audit._month_key(record)
+    issue = {'number': 12, 'state': 'CLOSED', 'body': audit.render(record)}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'duplicate_month'
+    assert result['issue'] == 12
+    assert result['month'] == key[1]
+    assert result['first_tick'] == key[2]
+    assert not any(call[:2] == ['issue', 'create'] for call in gh.calls)
+    assert not any(call[:2] == ['issue', 'comment'] for call in gh.calls)
+    searches = [call for call in gh.calls
+                if call[:2] == ['issue', 'list'] and '--search' in call]
+    assert len(searches) == 1
+    assert 'all' in searches[0]
+    assert record['fingerprint'] in searches[0]
+
+
+def test_file_suppresses_same_month_key_in_legacy_issue_json(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    body = '\n'.join(line for line in audit.render(record).splitlines()
+                     if 'hanjuku-month-audit key=' not in line)
+    assert 'hanjuku-month-audit key=' not in body
+    issue = {'number': 13, 'state': 'CLOSED', 'body': body}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'duplicate_month'
+    assert result['issue'] == 13
+    assert not any(call[:2] == ['issue', 'create'] for call in gh.calls)
+
+
+def test_file_still_comments_on_open_issue_with_same_month_key(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    key = audit._month_key(record)
+    body = '\n'.join([
+        f"<!-- hanjuku-month-audit fingerprint={record['fingerprint']} -->",
+        audit._month_key_marker(key),
+    ])
+    gh = FakeGh(issues=[{'number': 7, 'state': 'OPEN', 'body': body}], comments=[])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'commented'
+    assert result['issue'] == 7
+    assert '### 再発' in gh.comment_body
+
+
+def test_file_does_not_suppress_a_different_first_tick(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    other = json.loads(json.dumps(record))
+    other['month_summary']['first_tick'] += 1
+    issue = {'number': 14, 'state': 'CLOSED', 'body': audit.render(other)}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+
+
+def test_file_does_not_suppress_a_different_month(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    other = json.loads(json.dumps(record))
+    other['month'] = '1-3'
+    other['month_summary']['month'] = '1-3'
+    issue = {'number': 15, 'state': 'CLOSED', 'body': audit.render(other)}
+    gh = FakeGh(issues=[issue])
+    result = audit.file_issue(runtime_dir, gh=gh, scanner=lambda path: True, now=time.time())
+    assert result['status'] == 'created'
+
+
+def test_month_key_match_requires_the_same_fingerprint(runtime_dir):
+    record = sealed_zero(runtime_dir)
+    other = json.loads(json.dumps(record))
+    other['fingerprint'] = '0' * len(record['fingerprint'])
+    if other['fingerprint'] == record['fingerprint']:
+        other['fingerprint'] = '1' * len(record['fingerprint'])
+    assert not audit._body_has_month_key(audit.render(other), audit._month_key(record))
 
 
 def test_file_respects_comment_cooldown(runtime_dir):

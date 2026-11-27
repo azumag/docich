@@ -3430,6 +3430,81 @@ def _fingerprint(chapter, kind, signals):
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
 
+def _month_key(record):
+    """The exact game-month instance used for cross-issue duplicate suppression."""
+    if not isinstance(record, dict):
+        return None
+    summary = record.get('month_summary')
+    summary = summary if isinstance(summary, dict) else {}
+    fingerprint = record.get('fingerprint')
+    month = record.get('month') or summary.get('month')
+    first_tick = summary.get('first_tick')
+    if (not isinstance(fingerprint, str) or not fingerprint
+            or not isinstance(month, str) or not month
+            or type(first_tick) is not int):
+        return None
+    return (fingerprint, month, first_tick)
+
+
+def _month_key_marker(key):
+    if key is None:
+        return None
+    fingerprint, month, first_tick = key
+    if not re.fullmatch(r'[0-9a-f]{8,64}', fingerprint):
+        return None
+    if not re.fullmatch(r'[0-9]+-[0-9]+', month):
+        return None
+    return f'<!-- hanjuku-month-audit key={fingerprint}/{month}/{first_tick} -->'
+
+
+def _issue_markers(record):
+    lines = [
+        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+    ]
+    marker = _month_key_marker(_month_key(record))
+    if marker:
+        lines.append(marker)
+    return lines
+
+
+def _body_has_month_key(body, key):
+    """True when an issue body records this exact fingerprint/month/first_tick.
+
+    New bodies carry a compact marker. Bodies filed before that marker existed
+    still embed the incident JSON, so fall back to the bounded month_summary
+    fields instead of treating every same-fingerprint issue as a duplicate.
+    """
+    if not isinstance(body, str) or key is None:
+        return False
+    marker = _month_key_marker(key)
+    if marker and marker in body:
+        return True
+    fingerprint, month, first_tick = key
+    if f'hanjuku-month-audit fingerprint={fingerprint}' not in body:
+        return False
+    match = re.search(r'"month_summary"\s*:\s*\{(.*?)\n\s*\}', body, re.S)
+    if match is None:
+        return False
+    summary = match.group(1)
+    tick_match = re.search(r'"first_tick"\s*:\s*(-?[0-9]+)', summary)
+    month_match = re.search(r'"month"\s*:\s*"((?:\\.|[^"\\])*)"', summary)
+    if tick_match is None or month_match is None:
+        return False
+    try:
+        body_month = json.loads(f'"{month_match.group(1)}"')
+    except ValueError:
+        return False
+    return body_month == month and int(tick_match.group(1)) == first_tick
+
+
+def _find_month_key_issue(issues, key):
+    for issue in issues:
+        if _body_has_month_key(issue.get('body'), key):
+            return issue
+    return None
+
+
 def _shrink(record):
     """Drop the largest optional evidence until the record fits the bound."""
     while len(json.dumps(record, ensure_ascii=False).encode('utf-8')) > MAX_RECORD_BYTES:
@@ -4430,8 +4505,7 @@ def _render_card_at_hp1(record):
     soldiers = (battle.get('enemy_soldiers')
                 if type(battle.get('enemy_soldiers')) is int else '不明')
     return '\n'.join([
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **battle_card_at_hp1** (confidence: {BT}{record.get('confidence')}{BT})",
@@ -4459,8 +4533,7 @@ def _render_card_miss(record):
     evidence = record.get('evidence') or {}
     identity = evidence.get('identity') or {}
     return '\n'.join([
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **card_miss** (confidence: {BT}{record.get('confidence')}{BT})",
@@ -4497,8 +4570,7 @@ def _render_game_over(record):
     counts = ((record.get('decisions') or {}).get('counts') or {})
     rows = ((record.get('decisions') or {}).get('before') or [])[-8:]
     lines = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **game_over** (confidence: {BT}{record.get('confidence')}{BT})",
@@ -4578,8 +4650,7 @@ def render(record):
     battle_menu = record.get('battle_menu') or {}
     sortie_cards = record.get('sortie_event') or {}
     body = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **{kind}** (confidence: {BT}{confidence}{BT})",
@@ -4858,8 +4929,7 @@ def render_comment(record):
     if record.get('kind') == 'battle_card_at_hp1':
         battle = record.get('battle_event') or {}
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             '### 再発: ボス戦以外の相手HP1で切り札を使用',
             '',
             f"- 札: {record.get('card')}",
@@ -4872,8 +4942,7 @@ def render_comment(record):
     if record.get('kind') == 'card_miss':
         battle = record.get('battle_event') or {}
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             f"### 再発: 敵召喚獣戦/ボス戦で切り札未使用",
             '',
             f"- 札: {record.get('card')}",
@@ -4888,8 +4957,7 @@ def render_comment(record):
         label = ('brain例外' if record.get('kind') == 'brain_error'
                  else '帰還Yジャンプ失敗')
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             f"### 再発: {label}",
             '',
             f"- 署名: {fault.get('signature') or '不明'}",
@@ -4905,8 +4973,7 @@ def render_comment(record):
     after = record.get('after') or {}
     boss = record.get('boss_phase') or {}
     lines = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"### 再発: ch{record.get('chapter')} {record.get('month')}",
         '',
         f"- 判定: **{record.get('kind')}** ({BT}{record.get('confidence')}{BT})",
@@ -5137,9 +5204,13 @@ def _gh_auth(gh=None):
     _run_gh(['auth', 'status'], gh=gh)
 
 
-def _issues(repo, *, gh=None):
-    data = _gh_json(['issue', 'list', '--repo', repo, '--state', 'open',
-                     '--limit', str(MAX_ISSUES), '--json', 'number,title,body'], gh=gh)
+def _issues(repo, *, gh=None, state='open', search=None):
+    fields = 'number,title,body' + (',state' if state != 'open' else '')
+    args = ['issue', 'list', '--repo', repo, '--state', state,
+            '--limit', str(MAX_ISSUES), '--json', fields]
+    if search:
+        args += ['--search', search]
+    data = _gh_json(args, gh=gh)
     return data if isinstance(data, list) else []
 
 
@@ -5204,6 +5275,15 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
                                                      COMMENT_COOLDOWN_SECONDS)
             if age is not None and 0 <= age < cooldown:
                 return {**result, 'status': 'cooldown', 'issue': number}
+    else:
+        key = _month_key(record)
+        if key is not None:
+            candidates = _issues(repo, gh=gh, state='all', search=str(fingerprint))
+            duplicate = _find_month_key_issue(candidates, key)
+            if duplicate is not None:
+                return {**result, 'status': 'duplicate_month',
+                        'issue': duplicate.get('number'),
+                        'month': key[1], 'first_tick': key[2]}
     with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False,
                                      encoding='utf-8') as stream:
         stream.write(text)
