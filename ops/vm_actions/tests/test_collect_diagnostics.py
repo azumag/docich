@@ -1946,6 +1946,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1558-game-over-issue",
                  "hanjuku-chart-v1562-ch9-road-and-boss-efficiency",
                  "hanjuku-chart-v1565-camp-recall-dome-text-hold",
+                 "hanjuku-chart-v1571-duel-melee-only",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version

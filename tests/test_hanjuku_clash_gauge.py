@@ -140,7 +140,7 @@ def test_blue_calibration_refuses_tones_the_measured_tables_explain(tmp_path):
 def gauge_screen(enemy_gauge='red', enemy_hp=32, ally_hp=90):
     """戦闘パネル Screen に実測相当のゲージ観測を付けた状態を作る。"""
     mem = memory(hp=ally_hp, enemy=enemy_hp)
-    state = {'red': 'red', 'green': 'green', 'blue': 'blue'}[enemy_gauge]
+    state = {'red': 'red', 'green': 'green', 'blue': 'blue', 'dim': 'dim'}[enemy_gauge]
     gauge = ClashGauge('enemy', MEASURED_BOXES['enemy'], 1.0, ((57, 121, 189),), state)
     screen = battle(mem)
     screen.clash_gauges = [gauge]
@@ -172,7 +172,25 @@ def test_melee_record_carries_the_gauge_and_blue_never_flips_the_prediction():
     policy.battle_step(screen, mem)
     assert len(records(mem, 'battle_clash_gauge_cross_check')) == 1   # 戦闘中1回だけ
     assert cur['enemy_egg_drop_expected'] is True                    # 予測は維持
-    # 青以外の観測では対比を記録しない。
+    # blue/dim のタイミング窓が無い観測では対比を記録しない。
     mem, screen = gauge_screen('red')
     policy.battle_step(screen, mem)
     assert records(mem, 'battle_clash_gauge_cross_check') == []
+
+
+def test_dim_window_is_cross_checked_once_without_changing_control():
+    # 2章以降では青ではなく赤の dim が実窓。連打精度の検証には、この実測値を
+    # 同じ cross-check 記録へ残す必要がある (#5694)。記録は対比だけで、
+    # 卵落予測や制御を書き換えない #1553 契約は変えない。
+    mem, screen = gauge_screen('dim')
+    cur = mem['battle']
+    cur['enemy_egg_drop_expected'] = True
+    policy.battle_step(screen, mem)
+    cross = records(mem, 'battle_clash_gauge_cross_check')
+    assert len(cross) == 1
+    assert cross[0]['verdict'] == 'unclassified'
+    assert cross[0]['observed_metric']['cue_state'] == 'dim'
+    assert cross[0]['observed_metric']['dim_side'] == 'enemy'
+    policy.battle_step(screen, mem)
+    assert len(records(mem, 'battle_clash_gauge_cross_check')) == 1
+    assert cur['enemy_egg_drop_expected'] is True

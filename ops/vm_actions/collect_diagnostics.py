@@ -8256,6 +8256,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1568-launch-priority-house",
             "hanjuku-chart-v1569-chikujou-scan",
             "hanjuku-chart-v1570-launch-priority-start",
+            "hanjuku-chart-v1571-duel-melee-only",
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
