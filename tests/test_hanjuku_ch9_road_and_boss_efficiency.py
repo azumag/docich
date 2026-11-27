@@ -293,7 +293,7 @@ def test_ch9_cliff_detour_boundary_and_pursuit_avoids_stuck_loop():
         },
     }
     first = bp._ambush(mem, 'コンポート')
-    assert first == (700, 300)
+    assert first == (708, 300)  # owner 2026-11-27: ch9 の軌道セルは左に寄るため +8px
 
     entry = mem[bp.LIST_KEY]['コンポート']
     metric = {'unit_world': [620, 484]}

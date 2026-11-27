@@ -56,6 +56,7 @@ PURSUIT_STALE_TICKS = 21600
 # march takes about six). Aim one measured displacement ahead instead, clamped
 # so the lead cell stays on the island.
 PURSUIT_LEAD_TICKS = 360      # march time the lead covers (~6 min)
+CH9_AMBUSH_X_OFFSET = 8       # owner 2026-11-27: track cells sit a little left
 PURSUIT_LEAD_MAX = 240        # px, total offset cap
 # A general placed on the orbit must be allowed to wait for the boss to come
 # round: re-aiming it every PURSUIT_COOLDOWN (4 min) would move it before the
@@ -400,11 +401,12 @@ def _ambush(mem, general=None):
     distinct = sorted(set(cells))
     if len(distinct) < 3:
         return None
+    shift = CH9_AMBUSH_X_OFFSET if (mem.get('chapter') or 0) == 9 else 0
     far = max(distinct, key=lambda c: abs(c[0] - cur[0]) + abs(c[1] - cur[1]))
     if abs(far[0] - cur[0]) + abs(far[1] - cur[1]) < 160:
         return None
     if general is None:
-        return far
+        return (far[0] + shift, far[1])
     wave = mem.get(LIST_KEY) or {}
     names = sorted(wave.keys())
     index = names.index(general) if general in names else 0
@@ -413,8 +415,9 @@ def _ambush(mem, general=None):
     for k in range(len(distinct)):
         cand = distinct[(index + offset + k) % len(distinct)]
         if not _aim_failed(entry, cand):
-            return cand
-    return distinct[(index + offset) % len(distinct)]
+            return (cand[0] + shift, cand[1])
+    cand = distinct[(index + offset) % len(distinct)]
+    return (cand[0] + shift, cand[1])
 
 
 def _lead(mem, probe):
