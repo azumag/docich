@@ -36,6 +36,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _egg_race_pressure, _score_pressure,
                                _release_interrupted_card_flow,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
+                               _launched_carried_snapshot,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
                                _hp1_resource_hold,
                                _early_resource_rescue_needed, _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
@@ -581,6 +582,7 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
     tactic that has not come due yet.
     """
     step = cur.get('step')
+    ledger_step = step
     if _dying_with_egg(mem, cur):
         if not cur.get('egg_opening_preempt_recorded'):
             cur['egg_opening_preempt_recorded'] = True
@@ -602,6 +604,7 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
                 and isinstance(snapshot.get('cards'), list) and snapshot['cards']):
             # The launched snapshot carries the measured actor and carried kit.
             bound = {'general': snapshot['general'], 'cards': list(snapshot['cards'])}
+            ledger_step = snapshot.get('step') or ledger_step
         else:
             context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
             observed = context.get('observed_metric')
@@ -609,6 +612,7 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
             if (snapshot.get('corridor') is True and isinstance(cards, list) and cards
                     and context.get('actual_general') == cur.get('ally')):
                 bound = {'general': context['actual_general'], 'cards': list(cards)}
+                ledger_step = snapshot.get('step') or ledger_step
             else:
                 # The battle's step and the sortie's launch step can disagree
                 # (a retry mints a new step; the march context may not be set
@@ -622,13 +626,11 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
                 if cur.get('side') == 'defense':
                     return []
                 ally = cur.get('ally')
-                recent = [(snap.get('confirmation_tick') or 0, snap) for snap in
-                          (_world(mem).get('launched_orders') or {}).values()
-                          if isinstance(snap, dict) and snap.get('general') == ally
-                          and isinstance(snap.get('cards'), list) and snap['cards']]
-                if not recent:
+                snapshot_step, chosen = _launched_carried_snapshot(mem, ally)
+                if (chosen is None or not isinstance(chosen.get('cards'), list)
+                        or not chosen['cards']):
                     return []
-                chosen = max(recent, key=lambda item: item[0])[1]
+                ledger_step = snapshot_step or ledger_step
                 bound = {'general': ally, 'cards': list(chosen['cards'])}
     boss_entry = _boss_tactics_allowed(mem, cur)
     if _is_boss_order(order, mem) and not boss_entry:
@@ -638,10 +640,11 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
         card = tactic['card']
         covered[card] = covered.get(card, 0) + 1
     carried = list(bound['cards'])
-    for card in (mem.get('kit_spent') or {}).get(step) or ():
+    for card in (mem.get('kit_spent') or {}).get(ledger_step) or ():
         if card in carried:
             carried.remove(card)
     added = []
+    ledger_tag = ledger_step or step
     for slot, card in enumerate(carried):
         if card in reference.BOSS_ONLY_CARDS and not boss_entry:
             continue
@@ -654,15 +657,21 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
             covered[card] -= 1
             if not (pressure and not applies):
                 continue
-            added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
-                          'step': step, 'egg_race': True,
-                          'tactic_id': f'pressure:{step}:{card}:{slot}',
-                          'note': f'{pressure_reason or "切り札の押し込み"}のため、'
-                                  'チャートの対象外でも携行札を開幕に使用'})
+            tactic = {'enemy': cur.get('enemy'), 'card': card, 'open': True,
+                      'step': step, 'egg_race': True,
+                      'tactic_id': f'pressure:{ledger_tag}:{card}:{slot}',
+                      'note': f'{pressure_reason or "切り札の押し込み"}のため、'
+                              'チャートの対象外でも携行札を開幕に使用'}
+            if ledger_step:
+                tactic['kit_step'] = ledger_step
+            added.append(tactic)
             continue
-        added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
-                      'step': step, 'tactic_id': f'carried:{step}:{card}:{slot}',
-                      'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'})
+        tactic = {'enemy': cur.get('enemy'), 'card': card, 'open': True,
+                  'step': step, 'tactic_id': f'carried:{ledger_tag}:{card}:{slot}',
+                  'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'}
+        if ledger_step:
+            tactic['kit_step'] = ledger_step
+        added.append(tactic)
     return added
 
 
@@ -1112,8 +1121,9 @@ def battle_step(screen: Screen, mem):
         # later chart; another carried copy remains eligible.
         inventory = next((row for row in egg_plan.get('cards', [])
                           if row['name'] == tactic['card']), None)
+        ledger_step = tactic.get('kit_step') or cur.get('step')
         consumed = [*(cur.get('cards_selected') or []),
-                    *((mem.get('kit_spent') or {}).get(cur.get('step')) or [])]
+                    *((mem.get('kit_spent') or {}).get(ledger_step) or [])]
         if (tactic['card'] in consumed and egg_plan.get('kit_known')
                 and (inventory is None or inventory.get('available') == 0)):
             continue
@@ -1173,7 +1183,8 @@ def battle_step(screen: Screen, mem):
                                         'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
                                         'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
                                         'egg_drop_only': bool(tactic.get('egg_drop_only')),
-                                        'kit_source': egg_plan.get('kit_source')},
+                                        'kit_source': egg_plan.get('kit_source'),
+                                        **({'kit_step': tactic['kit_step']} if tactic.get('kit_step') else {})},
                              source='chart_tactic')
             # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
             # どの札が落ちさせても同じなので、チャート札も同じ根拠で監視する。
