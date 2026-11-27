@@ -364,7 +364,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
         gate = lambda: read_control(state_dir, now=clock())
         executor = OrderExecutor(ledger, lease, reader=reader, sender=sender,
                                  enable_check=gate, clock=clock,
-                                 symbols=tuple(sorted(ps.policies)),
+                                 symbols=ps.all_symbols(),
                                  config=ExecutorConfig())
 
         # 6. restart reconciliation: unrecorded fills and sent intents are ingested FIRST ---
@@ -401,7 +401,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                          market_data=market_data, gate=gate, policy_set=ps,
                          symbols=executor.symbols, clock=clock,
                          stop_requested=stop_requested, decide=act.decide_and_act,
-                         config=config)
+                         config=config, state_dir=state_dir)
         last_report = None
         next_promotion = None if promotion_interval_s is None else 0.0
         while True:
@@ -413,7 +413,7 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                     return EXIT_LEASE_LOST
                 if promoted is not ps:
                     ps = promoted
-                    executor.symbols = tuple(sorted(ps.policies))
+                    executor.symbols = ps.all_symbols()
                     deps = dataclasses.replace(deps, policy_set=ps, symbols=executor.symbols)
             # At most one retry per cycle while some watched currency still needs an
             # opening balance.  It runs before the cycle so the cycle sees the cashflow.

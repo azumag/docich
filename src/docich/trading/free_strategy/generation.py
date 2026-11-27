@@ -92,7 +92,7 @@ def generate(trading_dir: Path, *, image: str, symbols: list[str], brief: str,
             # Paused experiments still consume depth/status monitoring budget.
             # Reject before the provider call so a full observation queue does
             # not spend generation tokens on an experiment that cannot start.
-            if len(store.observed_ids()) >= MAX_OBSERVED_EXPERIMENTS:
+            if len(store.research_observed_ids()) >= MAX_OBSERVED_EXPERIMENTS:
                 return {"status": "skipped", "reason": "experiment_capacity"}
             if store.db.execute("SELECT 1 FROM generations WHERE day=?", (day,)).fetchone():
                 return {"status": "skipped", "reason": "generation_daily_budget"}

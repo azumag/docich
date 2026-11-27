@@ -20,7 +20,14 @@ e-process as rule v3 (``promotion_shadow.e_process``: E >= 5 with at least 5 day
 that is quarantined, or whose evaluation is stale, is never eligible.  When a free
 strategy is already LIVE, the challenger must also beat that LIVE strategy's day returns
 on the same days (0 on a day without a LIVE record).  The judgement only writes the
-report; LIVE reads it (``live/free_promotion``).
+report and, for the best eligible candidate, starts its LIVE mirror (below).
+
+LIVE mirror: the promoted artifact is kept running as one more PAPER experiment (365 days,
+outside the two research slots, ``store.create(mirror=True)``).  Each worker cycle writes
+its position weights to ``live_weights.json``; the LIVE worker follows them
+(``trading/live/free_mirror.py``) and never runs the code.  A new candidate replaces the
+mirror only when it beats the mirror's own day returns on the same days and the mirror is
+at least ``MIRROR_MIN_HOLD_S`` (7 days) old.
 """
 from __future__ import annotations
 
@@ -42,6 +49,9 @@ RULE_ID = "free-v1"
 DISABLED_FILENAME = "improve.disabled"
 PROMOTION_FILENAME = "promotion.json"
 DEFAULT_DAYS = 7
+MIRROR_DAYS = 365
+MIRROR_CAPITAL = "10000"
+MIRROR_MIN_HOLD_S = 7 * 86400
 DEFAULT_BRIEF = ("暗号資産の現物を対象に、5分足の値動きと出来高から検証可能な仮説を1つ立てる。"
                  "往復の費用（約0.3%）を上回る値幅を狙い、取引が全く起きない設計は避ける。")
 JST = dt.timezone(dt.timedelta(hours=9), "JST")
@@ -106,8 +116,11 @@ def judge_promotion(store: LabStore, *, now: float,
     rows = store.db.execute("""SELECT e.id, e.artifact, e.phase, e.created_at, e.policy, v.report
         FROM experiments e LEFT JOIN evaluations v ON e.id=v.experiment
         ORDER BY e.created_at, e.id""").fetchall()
+    mirrors = store.mirror_ids()
     judged = []
     for identity, artifact, phase, created_at, policy, report in rows:
+        if identity in mirrors:
+            continue   # a LIVE mirror is the champion, not a challenger
         data = decode(report) if report else {}
         capital = Decimal(decode(policy)["capital_jpy"])
         blocks = equity_day_returns(store, identity, capital=capital,
@@ -138,6 +151,34 @@ def judge_promotion(store: LabStore, *, now: float,
     return {"schema_version": 1, "rule": RULE_ID, "judged_at": now,
             "threshold": shadow.THRESHOLD, "min_blocks": shadow.MIN_BLOCKS,
             "candidate": eligible[0] if eligible else None, "experiments": judged[-12:]}
+
+
+def mirror_day_returns(store: LabStore, mirror: Mapping, *, now: float) -> dict[str, float]:
+    exp = store.experiment(mirror["experiment"])
+    return dict(equity_day_returns(store, mirror["experiment"],
+                                   capital=Decimal(exp["policy"]["capital_jpy"]),
+                                   created_at=float(exp["created_at"]), now=now))
+
+
+def update_mirror(store: LabStore, report: Mapping, *, now: float) -> dict | None:
+    """Start the LIVE mirror of the promoted candidate; ``None`` when nothing changes.
+
+    The current mirror is replaced at most once per ``MIRROR_MIN_HOLD_S``; the judgement
+    already required the challenger to beat it on the same days.
+    """
+    candidate = report.get("candidate")
+    if not isinstance(candidate, Mapping):
+        return None
+    current = store.mirror()
+    if current is not None:
+        if current["artifact"] == candidate["artifact"] or now - current["promoted_at"] < MIRROR_MIN_HOLD_S:
+            return None
+        store.end_now(current["experiment"], now=now)
+    identity = store.create(candidate["artifact"], now=now, capital=MIRROR_CAPITAL,
+                            days=MIRROR_DAYS, mirror=True)
+    return {"experiment": identity, "artifact": candidate["artifact"], "promoted_at": now,
+            "from_experiment": candidate["experiment"],
+            "replaced": None if current is None else current["experiment"]}
 
 
 def write_report(directory: Path, payload: Mapping) -> None:
@@ -174,13 +215,21 @@ def run_improve(trading_dir, *, image: str, symbols: list[str], brief: str = DEF
     store = LabStore(directory / "lab.sqlite3")
     try:
         retired = retire_risk_stopped(store, now=now)
+        mirror = store.mirror()
+        if mirror is not None and live_returns is None:
+            live_returns = mirror_day_returns(store, mirror, now=now)
+            live_artifact = mirror["artifact"]
         report = judge_promotion(store, now=now, live_returns=live_returns, live_artifact=live_artifact)
+        report["mirror"] = update_mirror(store, report, now=now) or (
+            None if mirror is None else {"experiment": mirror["experiment"], "artifact": mirror["artifact"],
+                                         "promoted_at": mirror["promoted_at"]})
         write_report(directory, report)
         prior = _results(store)
-        room = len(store.observed_ids()) < MAX_OBSERVED_EXPERIMENTS
+        room = len(store.research_observed_ids()) < MAX_OBSERVED_EXPERIMENTS
     finally:
         store.close()
     summary = {"mode": "PAPER", "retired": retired,
+               "mirror": None if report.get("mirror") is None else report["mirror"]["experiment"],
                "promotion_candidate": None if report["candidate"] is None
                else report["candidate"]["experiment"]}
     if not room:

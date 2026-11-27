@@ -51,8 +51,14 @@ def live_facts(state_dir, *, now: float) -> dict:
         if not layout.ledger_path.is_file():
             return {"available": False, "reason": "no_ledger"}
         ledger = LiveLedger.open_readonly(layout)
+        free_live = None
         try:
             view = live_overview(ledger, now=now)
+            digest = ledger.active_policy_set_digest()
+            if digest is not None:
+                active = ledger.load_policy_set(digest)
+                if active.free is not None:
+                    free_live = {"symbols": list(active.free.symbols)[:MAX_SYMBOLS]}
         finally:
             ledger.close()
         if not view.get("ledger_readable"):
@@ -99,6 +105,8 @@ def live_facts(state_dir, *, now: float) -> dict:
             "policy_symbol_count": len((view.get("policy") or {}).get("symbols") or []),
             "safety_trips": list((view.get("safety") or {}).get("trips") or [])[:3],
             "last_promotion": last_promotion,
+            # A promoted free (AI-written) strategy trading LIVE by following its PAPER mirror.
+            "free_strategy": free_live,
             "since": pnl.get("since"),
         }
     except Exception:

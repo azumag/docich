@@ -63,6 +63,7 @@ _LIVE_RULES = (
     "決済の件数、銘柄ごとの損益（by_symbol_top）、保有中の銘柄数と投入額（open_cost_jpy）を円で具体的に言います。"
     "today_complete=false なら今日の数字は途中までと言い添えます。\n"
     "- facts.live.last_promotion があれば、PAPERで成績の良かった戦略が自動でLIVEへ昇格したことを、対象の銘柄とともに伝えます。\n"
+    "- facts.live.free_strategy があれば、AIが書いた自由戦略もPAPERでの成績が認められて本番で動いていることを、対象の銘柄とともに伝えます。\n"
     "- facts.live.safety_trips が空でなければ、安全装置で新規の買いが止まっていることを正直に言います。\n"
     "- facts.live.available=false なら、LIVEの記録を今は読めないとだけ言い、数字を作らないでください。\n"
     "- 本番の利益を誇張せず、損失はそのまま言います。投資の勧誘や、視聴者に売買を勧める表現は禁止です。\n"

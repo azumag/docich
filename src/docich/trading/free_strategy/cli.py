@@ -1,6 +1,7 @@
 """Operator CLI for the isolated free-strategy PAPER lab.
 
-This module intentionally has no live mode or promotion command. It can be
+This module has no live mode: it never sends an order.  ``improve`` judges promotion and
+starts the PAPER mirror of a promoted candidate, whose weights LIVE follows.  It can be
 invoked directly with ``python -m docich.trading.free_strategy.cli``; routing
 through the main ``docich trading`` CLI can remain a thin follow-up change.
 """

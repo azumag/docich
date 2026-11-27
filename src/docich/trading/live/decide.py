@@ -170,7 +170,8 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
     rules = deps.executor.rules()
     if inputs is None:
         inputs = build_cycle_inputs(deps.ledger, rules=rules, balance=ctx.balance,
-                                    policy_set=deps.policy_set)
+                                    policy_set=deps.policy_set,
+                                    free_digests=deps.ledger.free_policy_digests())
     keys = state.dedupe if dedupe is None else dedupe
 
     def attempts_for(exits):

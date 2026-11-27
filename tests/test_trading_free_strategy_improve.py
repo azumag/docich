@@ -162,3 +162,44 @@ def test_run_improve_respects_the_stop_file_and_capacity(tmp_path):
                                  now_fn=lambda: START + DAY, text_fn=never)
     assert result["reason"] == "experiment_capacity"
     assert improve.read_report(tmp_path) is not None
+
+
+# ---- LIVE mirror ------------------------------------------------------------------------------
+def test_a_promoted_candidate_becomes_the_live_mirror_outside_the_research_slots(tmp_path):
+    lab = tmp_path / "free-strategies"
+    store = LabStore(lab / "lab.sqlite3")
+    try:
+        strong = _create(store, 1)
+        _create(store, 2)
+        _equity(store, strong, _growth(0.02, 7))
+    finally:
+        store.close()
+    result = improve.run_improve(tmp_path, image=IMAGE, symbols=["BTC/JPY"],
+                                 now_fn=lambda: START + 12 * DAY, text_fn=lambda prompt: "")
+    store = LabStore(lab / "lab.sqlite3")
+    try:
+        mirror = store.mirror()
+        assert mirror is not None and result["mirror"] == mirror["experiment"]
+        assert mirror["artifact"] == store.experiment(strong)["artifact"]
+        assert mirror["experiment"] in store.observed_ids()
+        assert mirror["experiment"] not in store.research_observed_ids()
+        # Within the 7-day hold a new candidate never replaces the mirror.
+        assert improve.update_mirror(store, {"candidate": {"artifact": "b" * 64, "experiment": "x"}},
+                                     now=START + 13 * DAY) is None
+    finally:
+        store.close()
+    report = improve.read_report(tmp_path)
+    assert report["mirror"]["experiment"] == mirror["experiment"]
+
+
+def test_the_mirror_weights_are_position_value_over_equity(tmp_path):
+    from decimal import Decimal
+    from docich.trading.free_strategy.service import write_live_weights
+
+    artifact = _artifact(1)
+    exp = {"id": "m1", "artifact": artifact.digest,
+           "account": {"cash_jpy": "7000", "positions": {"BTC/JPY": "0.0002"}}}
+    write_live_weights(tmp_path, exp, artifact, {"BTC/JPY": Decimal("15000000")}, now=START)
+    data = json.loads((tmp_path / "live_weights.json").read_text())
+    assert data["weights"] == {"BTC/JPY": "0.30000000"}
+    assert data["symbols"] == ["BTC/JPY"] and data["experiment"] == "m1"

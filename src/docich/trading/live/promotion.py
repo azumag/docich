@@ -45,8 +45,8 @@ from ..symbol_slots import slot_dir
 from . import views
 from .canonical import canonical_json, sha256_hex
 from .paths import live_layout
-from .policy import (LivePolicy, LivePolicyError, LivePolicySet, build_policy,
-                     policy_set_from_policies, strict_experiment)
+from .policy import (FreePolicy, LivePolicy, LivePolicyError, LivePolicySet, build_free_policy,
+                     build_policy, policy_set_from_policies, strict_experiment)
 
 RULE_ID = "promotion-v1"
 STOP_FILENAME = "promotion.disabled"
@@ -91,13 +91,15 @@ class PromotionDecision:
     judged_at: float = 0.0
     reason: str | None = None
     extra: dict = field(default_factory=dict)
+    free: FreePolicy | None = None           # a free strategy to adopt (its PAPER mirror)
 
     def evidence(self) -> dict:
         return {"rule": RULE_ID, "shadow_rule": shadow.RULE_VERSION,
                 "threshold": _num(shadow.THRESHOLD), "min_blocks": shadow.MIN_BLOCKS,
                 "min_hold_s": MIN_HOLD_S, "base_digest": self.base_digest,
                 "judged_at": _num(self.judged_at),
-                "changes": [change.evidence() for change in self.changes]}
+                "changes": [change.evidence() for change in self.changes],
+                "free": None if self.free is None else self.free.payload()}
 
     def evidence_digest(self) -> str:
         return sha256_hex(canonical_json(self.evidence()))
@@ -107,6 +109,8 @@ class PromotionDecision:
                 "reason": self.reason, "judged_at": self.judged_at,
                 "base_digest": None if self.base_digest is None else self.base_digest[:12],
                 "changes": [change.evidence() for change in self.changes],
+                "free": None if self.free is None else {"artifact": self.free.artifact[:12],
+                                                        "symbols": list(self.free.symbols)},
                 "rejected": list(self.rejected)[:20], **self.extra}
 
 
@@ -293,7 +297,30 @@ def judge(state_dir, ledger, active: LivePolicySet, *, now: float, safety_blocke
             best[symbol] = change
     changes = tuple(best[symbol] for symbol in sorted(best))
     return PromotionDecision("ok", changes=changes, rejected=tuple(rejected),
-                             base_digest=base, judged_at=now)
+                             base_digest=base, judged_at=now,
+                             free=free_adoption(state_dir, active, now=now, rejected=rejected))
+
+
+def free_adoption(state_dir, active: LivePolicySet, *, now: float, rejected: list) -> FreePolicy | None:
+    """The free strategy to adopt: the PAPER mirror's artifact, when it is new to LIVE.
+
+    The PAPER side promotes (rule ``free-v1``, beat the current mirror, 7-day hold) and
+    publishes the mirror's weights; LIVE follows the artifact in the fresh weights file.
+    """
+    from .free_mirror import read_weights
+
+    weights = read_weights(state_dir, now=now)
+    if weights is None:
+        return None
+    current = active.free
+    if current is not None and (current.artifact, current.experiment) == (weights.artifact, weights.experiment):
+        return None
+    try:
+        return build_free_policy(artifact=weights.artifact, experiment=weights.experiment,
+                                 symbols=weights.symbols, promoted_at=str(int(now)))
+    except LivePolicyError:
+        _reject(rejected, "*free*", weights.experiment, "free_policy_invalid")
+        return None
 
 
 # ---- apply ------------------------------------------------------------------------------
@@ -301,7 +328,8 @@ def promoted_set(active: LivePolicySet, decision: PromotionDecision) -> LivePoli
     policies = dict(active.policies)
     for change in decision.changes:
         policies[change.symbol] = change.policy
-    return policy_set_from_policies(policies)
+    free = decision.free if decision.free is not None else active.free
+    return policy_set_from_policies(policies, free)
 
 
 def apply(ledger, lease, active: LivePolicySet, decision: PromotionDecision, *,
@@ -313,7 +341,7 @@ def apply(ledger, lease, active: LivePolicySet, decision: PromotionDecision, *,
     (reason ``promotion``, actor ``promotion_judge``, the changed symbols and the evidence
     digest) is the record; the evidence itself goes to the status file.
     """
-    if decision.status != "ok" or not decision.changes:
+    if decision.status != "ok" or not (decision.changes or decision.free is not None):
         return None
     if decision.base_digest != active.digest or ledger.active_policy_set_digest() != active.digest:
         return None
