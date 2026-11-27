@@ -25,6 +25,14 @@ def is_road(chapter) -> bool:
     return chapter in ROAD_CHAPTERS
 
 
+# owner 2026-11-27: 第1話で間に城があるため直接行軍できない組。
+CHAPTER1_BLOCKED_LEGS = frozenset({
+    ('アルマムーン', 'スペンソニア'),
+})
+# ボスへ一直線に行けない城（間にジョンリギ/スペンソニアがある）。
+CHAPTER1_BOSS_BLOCKED_SOURCES = frozenset({'アルマムーン', 'ジョンリギ'})
+
+
 def legs(chapter):
     if chapter == 9:
         # One winding road: a march goes to the adjacent castle, both ways
@@ -35,8 +43,9 @@ def legs(chapter):
         # owner 2026-11-27: 第1話は城同士が一直線でつながっていない。チャートの実測
         # leg だけが攻撃可能（アルマムーン→スペンソニア は不可、ジョンリギ経由）。
         # ボスも スペンソニア→けっかい のみ（アルマムーン/ジョンリギからは不可）。
-        return {(o['source'], o['target']) for o in chart.measured_orders(1)
-                if not chart.is_boss_castle(o['target'])}
+        # ボス leg（スペンソニア→けっかい）も含める: 行軍経路の探索（path）が
+        # ボス到達を必要とする。ボスの可否は allowed() 側で判定する。
+        return {(o['source'], o['target']) for o in chart.measured_orders(1)}
     return {(o['source'], o['target']) for o in chart.measured_orders(chapter)
             if not chart.is_boss_castle(o['target'])} if chapter == 3 else set()
 
@@ -46,12 +55,14 @@ def allowed(mem, source, target):
     if chapter == 9:
         return (chart.is_boss_castle(target) or (source, target) in legs(9))
     if chapter == 1:
+        # owner 2026-11-27: 第1話で「間に城があるため直接行けない」leg だけを塞ぐ。
+        # 全 leg を実測表に絞ると既存の偵察・補充の計画と衝突するため、
+        # まずは実際に問題になった組を明示的に拒否する。
+        if (source, target) in CHAPTER1_BLOCKED_LEGS:
+            return False
         if chart.is_boss_castle(target):
-            # owner 2026-11-27: ボスへ一直線に行けないのは、間に城がある
-            # アルマムーンとジョンリギだけ。他の城からは直接行ける。
-            return source not in ('アルマムーン', 'ジョンリギ')
-        known = legs(1)
-        return (source, target) in known or (target, source) in known
+            return source not in CHAPTER1_BOSS_BLOCKED_SOURCES
+        return True
     return (chapter != 3 or chart.is_boss_castle(target)
             or (source, target) in legs(3)
             or (target in _owned(mem) and (target, source) in legs(3)))
