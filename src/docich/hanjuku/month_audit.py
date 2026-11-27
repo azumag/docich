@@ -5486,12 +5486,92 @@ def _scan_clean(path, *, scanner=None):
     raise AuditError('secret_scan_failed')
 
 
+
+STALE_ISSUE_MARKER = 'hanjuku-month-audit fingerprint='
+STALE_RUN_RE = re.compile(r'ラン: `([^`]+)`')
+STALE_CLOSE_COMMENT = (
+    'この issue は旧ラン（{run}）の観測に基づくものです。'
+    '現行ラン（{current}）では再現していないため、陳腐化として自動クローズしました。'
+    '現行ランで同じ症状が出た場合は、新しい fingerprint で再度起票されます。'
+)
+
+
+def _issue_run(body):
+    match = STALE_RUN_RE.search(body or '')
+    return match.group(1) if match else None
+
+
+def _issue_age_hours(created_at, now):
+    if not isinstance(created_at, str):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return None
+    delta = dt.datetime.fromtimestamp(now, dt.timezone.utc) - stamp
+    return delta.total_seconds() / 3600
+
+
+def current_run_id(runtime):
+    path = Path(runtime) / 'hanjuku_decisions.jsonl'
+    try:
+        with path.open(encoding='utf-8', errors='ignore') as stream:
+            last = None
+            for line in stream:
+                if line.strip():
+                    last = line
+    except OSError:
+        return None
+    if not last:
+        return None
+    try:
+        record = json.loads(last)
+    except ValueError:
+        return None
+    decision_id = record.get('decision_id')
+    if not isinstance(decision_id, str) or ':' not in decision_id:
+        return None
+    return decision_id.split(':', 1)[0]
+
+
+def close_stale_issues(runtime, *, repo=DEFAULT_REPO, hours=24, limit=20, now=None, gh=None, dry_run=False):
+    now = time.time() if now is None else float(now)
+    current = current_run_id(runtime)
+    if not current:
+        return {'status': 'no_run'}
+    issues = _issues(repo, gh=gh, state='open', fields='number,title,body,createdAt')
+    closed = []
+    for issue in issues:
+        if len(closed) >= limit:
+            break
+        body = issue.get('body') or ''
+        if STALE_ISSUE_MARKER not in body:
+            continue
+        run = _issue_run(body)
+        if not run or run == current:
+            continue
+        age = _issue_age_hours(issue.get('createdAt'), now)
+        if age is None or age < hours:
+            continue
+        number = issue.get('number')
+        comment = STALE_CLOSE_COMMENT.format(run=run, current=current)
+        if dry_run:
+            closed.append({'number': number, 'run': run, 'dry_run': True})
+            continue
+        _run_gh(['issue', 'comment', str(number), '--repo', repo, '--body', comment], gh=gh)
+        _run_gh(['issue', 'close', str(number), '--repo', repo], gh=gh)
+        closed.append({'number': number, 'run': run})
+    return {'status': 'closed' if closed else 'nothing', 'current_run': current, 'closed': closed}
+
+
 def _gh_auth(gh=None):
     _run_gh(['auth', 'status'], gh=gh)
 
 
-def _issues(repo, *, gh=None, state='open', search=None):
-    fields = 'number,title,body' + (',state' if state != 'open' else '')
+def _issues(repo, *, gh=None, state='open', search=None, fields=None):
+    fields = fields or ('number,title,body' + (',state' if state != 'open' else ''))
     args = ['issue', 'list', '--repo', repo, '--state', state,
             '--limit', str(MAX_ISSUES), '--json', fields]
     if search:
@@ -5671,6 +5751,11 @@ def main(argv=None):
     watch_cmd.add_argument('--interval', type=float, default=60.0)
     watch_cmd.add_argument('--once', action='store_true')
     watch_cmd.add_argument('--dry-run', action='store_true')
+    stale_cmd = sub.add_parser('stale-issues')
+    stale_cmd.add_argument('--repo', default=DEFAULT_REPO)
+    stale_cmd.add_argument('--hours', type=float, default=24.0)
+    stale_cmd.add_argument('--limit', type=int, default=20)
+    stale_cmd.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     if args.command == 'watch':
         state_dir = args.state_dir
@@ -5686,6 +5771,18 @@ def main(argv=None):
         except (AuditError, GhError) as exc:
             print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
             return 2
+    if args.command == 'stale-issues':
+        if not args.runtime:
+            parser.error('--runtime or HANJUKU_RUNTIME is required')
+        try:
+            result = close_stale_issues(Path(args.runtime), repo=args.repo,
+                                       hours=args.hours, limit=args.limit,
+                                       dry_run=args.dry_run)
+        except (AuditError, GhError) as exc:
+            print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if not args.runtime:
         parser.error('--runtime or HANJUKU_RUNTIME is required')
     runtime = Path(args.runtime)
