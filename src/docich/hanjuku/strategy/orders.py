@@ -1020,6 +1020,50 @@ def arm_sortie_launch_priority(mem, order):
         mem['sortie_launch_pending'] = order['step']
 
 
+def _launch_probe_matches_live_sortie(probe, sortie):
+    """Whether a launch probe still describes the live sortie for its step."""
+    if (not isinstance(probe, dict) or not isinstance(sortie, dict)
+            or sortie.get('status') not in ('en_route', 'launched_unconfirmed')):
+        return False
+    for key in ('general', 'source'):
+        expected, actual = probe.get(key), sortie.get(key)
+        if expected and actual and expected != actual:
+            return False
+    expected_target = probe.get('target')
+    actual_target = sortie.get('target') or sortie.get('planned_target')
+    if expected_target and actual_target and expected_target != actual_target:
+        return False
+    probe_tick = probe.get('confirmation_tick')
+    sortie_tick = sortie.get('confirmation_tick')
+    if (type(probe_tick) is int and type(sortie_tick) is int
+            and probe_tick != sortie_tick):
+        return False
+    return True
+
+
+def clear_sortie_launch_priority(mem, step):
+    """Drop launch-priority artifacts whose sortie is settled or reopened.
+
+    A retry that has already started owns the latch now; only its stale probe
+    is discarded here.
+    """
+    if not step:
+        return
+    flow_state = _flow(mem)
+    plan = _plan_region(mem)
+    attempt = flow_state.get('sortie_attempt') or {}
+    departure = flow_state.get('departure_request') or {}
+    status = (plan.get('orders') or {}).get(step)
+    retry_in_flight = ((plan.get('active') == step and status not in LAUNCH_PRIORITY_TERMINAL)
+                       or (attempt.get('step') == step and not attempt.get('interrupted'))
+                       or departure.get('step') == step)
+    if mem.get('sortie_launch_pending') == step and not retry_in_flight:
+        mem.pop('sortie_launch_pending', None)
+    (flow_state.get('launch_probe') or {}).pop(step, None)
+    if attempt.get('step') == step and attempt.get('interrupted'):
+        flow_state.pop('sortie_attempt', None)
+
+
 def active_sortie_launch_priority(mem):
     """Return the latched step only while its launch is still genuinely in flight.
 
@@ -1044,22 +1088,25 @@ def active_sortie_launch_priority(mem):
     if not _launch_priority_order(order):
         mem.pop('sortie_launch_pending', None)
         return None
-    probe = (_flow(mem).get('launch_probe') or {}).get(step)
+    flow_state = _flow(mem)
+    probe = (flow_state.get('launch_probe') or {}).get(step)
     if isinstance(probe, dict):
-        if probe.get('kept'):
+        if not _launch_probe_matches_live_sortie(probe, _sorties(mem).get(step)):
+            (flow_state.get('launch_probe') or {}).pop(step, None)
+        elif probe.get('kept'):
             mem.pop('sortie_launch_pending', None)
             return None
-        return step
+        else:
+            return step
     plan = _plan_region(mem)
     status = (plan.get('orders') or {}).get(step)
     if status in LAUNCH_PRIORITY_TERMINAL:
         mem.pop('sortie_launch_pending', None)
         return None
-    flow_state = _flow(mem)
     attempt = flow_state.get('sortie_attempt') or {}
     departure = flow_state.get('departure_request') or {}
     if (plan.get('active') == step
-            or attempt.get('step') == step
+            or (attempt.get('step') == step and not attempt.get('interrupted'))
             or departure.get('step') == step):
         return step
     mem.pop('sortie_launch_pending', None)
@@ -1783,7 +1830,7 @@ def _rearm_site_step_after_return(mem, step, sortie, general):
     for name, launch in list((_world(mem).get('launched') or {}).items()):
         if isinstance(launch, dict) and launch.get('step') == step:
             _world(mem)['launched'].pop(name, None)
-    (_flow(mem).get('launch_probe') or {}).pop(step, None)
+    clear_sortie_launch_priority(mem, step)
     _record(mem, 'site_step_ended_rearmed', chart_step=step, general=general,
             observed_metric={'site': target, 'landed': landed,
                              'count': entry['count'], 'month': month},
@@ -1907,7 +1954,7 @@ def _expire_spent_sorties(mem):
                 for target, entry in list((_world(mem).get('launched') or {}).items()):
                     if isinstance(entry, dict) and entry.get('step') == step:
                         _world(mem)['launched'].pop(target, None)
-                (_flow(mem).get('launch_probe') or {}).pop(step, None)
+                clear_sortie_launch_priority(mem, step)
                 rows = (mem.get('general_statuses') or {}).get('statuses') or {}
                 row = rows.get(general) if isinstance(rows, dict) else None
                 observed = {'general': general, 'source': source, 'target': sortie.get('target'),
@@ -3672,6 +3719,7 @@ def _continue_transit_sorties(mem, castle, names):
             _plan_region(mem)['active'] = None
         if (_flow(mem).get('sortie_attempt') or {}).get('step') == step:
             _flow(mem).pop('sortie_attempt', None)
+        clear_sortie_launch_priority(mem, step)
         _record(mem, 'sortie_transit_continue', chart_step=step, general=sortie['general'],
                 castle=castle, expected_metric={'target': planned},
                 observed_metric=listed[:8],

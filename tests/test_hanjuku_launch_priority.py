@@ -2,8 +2,9 @@
 from docich import hanjuku_chart as chart
 from docich.hanjuku.strategy import replan
 from docich.hanjuku.strategy.orders import (active_sortie_launch_priority,
-                                            arm_sortie_launch_priority)
-from docich.hanjuku.state.regions import flow as _flow, plan as _plan_region
+                                            arm_sortie_launch_priority,
+                                            clear_sortie_launch_priority)
+from docich.hanjuku.state.regions import flow as _flow, plan as _plan_region, world as _world
 
 STEP = 'A:3:M1'
 ORDER = {'step': STEP, 'purpose': 'retake', 'source': 'ヘリオポリス',
@@ -61,11 +62,67 @@ def test_confirmed_or_settled_probe_does_not_defer_scans_forever():
 
 def test_an_unconfirmed_probe_still_owns_the_priority_window():
     mem = memory()
+    mem['tick'] = 1000
     arm_sortie_launch_priority(mem, ORDER)
     _plan_region(mem)['orders'][STEP] = 'launched'
+    _world(mem)['sorties'] = {STEP: {'general': ORDER['general'], 'source': ORDER['source'],
+                                     'target': ORDER['target'], 'status': 'en_route',
+                                     'tick': 810, 'confirmation_tick': 800}}
     _flow(mem)['launch_probe'] = {STEP: {'general': ORDER['general'], 'source': ORDER['source'],
-                                         'target': ORDER['target'], 'reads': 1}}
+                                         'target': ORDER['target'], 'reads': 1,
+                                         'confirmation_tick': 800}}
     assert active_sortie_launch_priority(mem) == STEP
+
+
+def test_an_interrupted_attempt_does_not_make_a_retry_pending_step_in_flight():
+    mem = memory()
+    arm_sortie_launch_priority(mem, ORDER)
+    _world(mem)['launched_orders'] = {STEP: dict(ORDER)}
+    _flow(mem)['sortie_attempt'] = {'step': STEP, 'target_seen': True,
+                                    'confirmation_tick': 800, 'interrupted': True}
+    assert active_sortie_launch_priority(mem) is None
+    assert 'sortie_launch_pending' not in mem
+
+
+def test_stale_probe_cleanup_preserves_an_active_retry_priority():
+    mem = memory()
+    arm_sortie_launch_priority(mem, ORDER)
+    _plan_region(mem)['active'] = STEP
+    _flow(mem)['launch_probe'] = {STEP: {'general': ORDER['general'], 'source': ORDER['source'],
+                                         'target': ORDER['target'], 'reads': 1,
+                                         'confirmation_tick': 800}}
+    clear_sortie_launch_priority(mem, STEP)
+    assert mem.get('sortie_launch_pending') == STEP
+    assert STEP not in (_flow(mem).get('launch_probe') or {})
+
+
+def test_a_probe_whose_sortie_already_settled_does_not_own_the_priority_window():
+    mem = memory()
+    mem['tick'] = 1000
+    arm_sortie_launch_priority(mem, ORDER)
+    _world(mem)['launched_orders'] = {STEP: dict(ORDER)}
+    _flow(mem)['launch_probe'] = {STEP: {'general': ORDER['general'], 'source': ORDER['source'],
+                                         'target': ORDER['target'], 'reads': 1,
+                                         'confirmation_tick': 800}}
+    assert active_sortie_launch_priority(mem) is None
+    assert 'sortie_launch_pending' not in mem
+    assert STEP not in (_flow(mem).get('launch_probe') or {})
+
+
+def test_a_probe_from_another_departure_does_not_own_the_priority_window():
+    mem = memory()
+    mem['tick'] = 1000
+    arm_sortie_launch_priority(mem, ORDER)
+    _plan_region(mem)['orders'][STEP] = 'pending'
+    _world(mem)['sorties'] = {STEP: {'general': 'シナモン', 'source': ORDER['source'],
+                                     'target': ORDER['target'], 'status': 'en_route',
+                                     'tick': 900, 'confirmation_tick': 900}}
+    _flow(mem)['launch_probe'] = {STEP: {'general': ORDER['general'], 'source': ORDER['source'],
+                                         'target': ORDER['target'], 'reads': 1,
+                                         'confirmation_tick': 800}}
+    assert active_sortie_launch_priority(mem) is None
+    assert 'sortie_launch_pending' not in mem
+    assert STEP not in (_flow(mem).get('launch_probe') or {})
 
 
 def test_read_only_and_move_orders_do_not_arm_launch_priority():

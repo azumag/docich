@@ -34,6 +34,7 @@ from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_O
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
                                _boss_companion_wait_expired,
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
+                               clear_sortie_launch_priority,
                                _continue_transit_sorties, _defense_move_pick, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
                                _site_king_down, drop_retired_step_context,
@@ -114,7 +115,7 @@ def _rearm_unconfirmed_site_step(mem, order, sortie):
         (_plan_region(mem).get(key) or {}).pop(step, None)
     (_plan_region(mem).get('order_context') or {}).pop(step, None)
     (_plan_region(mem).get('sortie_general') or {}).pop(step, None)
-    (_flow(mem).get('launch_probe') or {}).pop(step, None)
+    clear_sortie_launch_priority(mem, step)
     (_plan_region(mem).setdefault('orders', {}))[step] = 'pending'
     (mem.get('sortie_verify_open') or {}).pop(step, None)
     forget_picked(mem)
