@@ -929,7 +929,8 @@ def _survival_card_list(screen, mem, cur, flow, names):
             return []
         rescue['cards_exhausted'] = True
         cur.pop('card_damage_list_blocked', None)  # absence/uncertain copies, not damage refusal
-        cur['card_flow'] = None
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま救済切り札一覧を閉じたため中断')
         if flow['list_ticks'] > 10 and counts:
             rescue['cards_uncertain'] = True
         if uncertain:
@@ -967,7 +968,8 @@ def _survival_card_list(screen, mem, cur, flow, names):
             rescue['cards_exhausted'] = True
             rescue['cards_uncertain'] = bool(counts)
             cur.pop('card_damage_list_blocked', None)
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま救済切り札一覧のカーソル確認が尽きたため中断')
             return [pad('b')]
         return _emit_moves(move)
     gate = _card_damage_gate(mem, cur, card, listed_cards=names)
@@ -1454,7 +1456,8 @@ def battle_menu_step(screen: Screen, mem):
             _card_use_unclassified(mem, cur, '実使用告知を確認できないまま戦闘メニューへ復帰')
         else:
             cur['survival']['cards_exhausted'] = True
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま救済メニューへ巻き戻ったため中断')
         return _survival_menu(screen, mem, cur)
     if flow:
         flow['command_menu_ticks'] = flow.get('command_menu_ticks', 0) + 1
@@ -3907,6 +3910,15 @@ def monster_menu_step(screen: Screen, mem):
     cur_battle = mem.get('battle')
     if not isinstance(cur_battle, dict):
         cur_battle = None
+    if cur_battle is not None:
+        interrupted_flow = cur_battle.get('card_flow')
+        interrupted_card = (interrupted_flow.get('card')
+                            if isinstance(interrupted_flow, dict) else None)
+        if (isinstance(interrupted_card, str)
+                and interrupted_card in (cur_battle.get('cards_selected') or [])):
+            _release_interrupted_card_flow(
+                mem, cur_battle,
+                '選択済み・消費未確認のまま召喚獣の技メニューへ置き換わったため中断')
     choices = 0
     if cur_battle is not None:
         try:

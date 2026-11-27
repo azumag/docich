@@ -1,7 +1,10 @@
 """Regression coverage for selected card flows interrupted outside the list-open path."""
+from types import SimpleNamespace
+
 from docich import hanjuku_policy as p
 from docich.hanjuku.flows import battle as battle_flow
 from docich.hanjuku.flows import battle_menus as menus
+from docich.hanjuku.judgment import battle as battle_rules
 
 from test_hanjuku_card_damage_gate import cards, memory
 
@@ -73,3 +76,85 @@ def test_retreat_cancel_books_a_selected_interrupted_flow(monkeypatch):
     assert cur['card_retreat_cancels'] == 1
     assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
     assert any(r['decision'] == 'battle_hero_retreat_cancel_card' for r in mem['_records'])
+
+
+def test_unclassified_close_uses_the_selection_ledger_after_a_retry_reset():
+    mem = _interrupted_memory()
+    cur = mem['battle']
+
+    battle_rules._card_use_unclassified(mem, cur, 'テスト用の巻き戻し中断')
+
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['ゼンマイン']
+    assert _unclassified(mem)['observed_metric']['confirmation'] == 'unclassified'
+    assert not any(r['decision'] == 'battle_card_open_unclassified' for r in mem['_records'])
+
+
+def test_replacing_a_retry_reset_flow_books_the_selection():
+    mem = _interrupted_memory()
+    cur = mem['battle']
+
+    battle_rules._begin_card_flow(
+        mem, cur, {'card': 'ノリウツール', 'stage': 'list', 'survival': True},
+        source='survival_menu')
+
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    assert cur['cards_unclassified'] == ['ゼンマイン']
+    assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
+
+
+def test_monster_skill_menu_settles_the_interrupted_selected_flow():
+    mem = _interrupted_memory()
+    cur = mem['battle']
+    cur['monster_menu_choices'] = menus.MONSTER_MENU_TOTAL_CHOICES + 1
+    screen = SimpleNamespace(
+        menu_rows=[SimpleNamespace(known=s, y=160 + i * 16)
+                   for i, s in enumerate(['ふくらむ', 'シャウト', 'たまごに もどれ'])],
+        egg_rows=[], menu_cursor=160)
+
+    assert menus.monster_menu_step(screen, mem) == [menus.pad('b')]
+
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['ゼンマイン']
+    assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
+
+
+def test_retreat_supersede_books_retry_reset_flow_and_audit_downgrades(tmp_path, monkeypatch):
+    mem = _interrupted_memory()
+    cur = mem['battle']
+    cur['cards_selected'].append('ゼンマイン')
+    cur['cards_unclassified'].append('ゼンマイン')
+    cur['survival'] = {'opens': 12, 'pending_opens': 3, 'menu_ticks': 0}
+    monkeypatch.setattr(battle_flow, '_hero_retreat_needed', lambda cur: True)
+    monkeypatch.setattr(battle_flow, '_critical_safe_card', lambda *a, **kw: None)
+    monkeypatch.setattr(battle_flow, '_egg_before_retreat', lambda *a: False)
+
+    assert battle_flow._hero_retreat_open(mem, cur) is not None
+
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['ゼンマイン', 'ゼンマイン']
+    assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
+    preempted = next(r for r in reversed(mem['_records'])
+                     if r['decision'] == 'battle_retreat_preempted_card')
+    metric = preempted['observed_metric']
+    assert metric['card_confirmation'] == 'unclassified'
+    assert metric['selected_interrupted'] is True
+    assert metric['cards_selected'] == ['ゼンマイン', 'ゼンマイン']
+    assert metric['cards_used'] == []
+    assert metric['cards_unclassified'] == ['ゼンマイン', 'ゼンマイン']
+
+    from docich.hanjuku import month_audit as audit
+    from test_hanjuku_month_audit import FakeGh, state as audit_state
+
+    value = audit_state(5, '5-3', 0)
+    audit.observe(tmp_path, audit.capture(value), value, [preempted], now=1000)
+    incident = audit.load_incidents(tmp_path)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    battle = incident['battle_event']
+    assert battle['cards_unconfirmed_only'] is True
+    assert battle['cards_selected'] == ['ゼンマイン', 'ゼンマイン']
+    assert battle['cards_remaining'] == ['ゼンマイン', 'ゼンマイン']
+    assert battle['cards_unclassified'] == ['ゼンマイン', 'ゼンマイン']
+    assert audit.file_issue(tmp_path, gh=FakeGh(),
+                            scanner=lambda path: True)['status'] == 'no_incident'
