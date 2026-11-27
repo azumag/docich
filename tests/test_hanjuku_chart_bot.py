@@ -2889,6 +2889,13 @@ def camp_menu(selected):
                   ''.join(rows), kind='text')
 
 
+def complete_recall_y_jump(mem):
+    jump = mem.get('y_jump') or {}
+    goal = jump.get('goal') or _flow(mem)['recall']['goal']
+    mem.pop('y_jump', None)
+    mem.setdefault('y_jumped', {})['RECALL'] = goal
+
+
 def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': []}
@@ -2920,7 +2927,7 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     far = Screen(lines=[], hand=None, text='', kind='map_target', marker=(160, 110))
     assert policy.camp_recall_step(far, mem, frame) == [policy.pad('y')]
     assert mem['y_jumps']['RECALL:target'] == 1
-    mem['y_jumped'] = {'RECALL': _flow(mem)['recall']['goal']}
+    complete_recall_y_jump(mem)
     near = Screen(lines=[], hand=None, text='', kind='map_target', marker=(163, 115))
     assert policy.camp_recall_step(near, mem, frame) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'
@@ -2941,6 +2948,18 @@ def test_camp_recall_y_jumps_to_the_goal_when_no_own_castle_is_visible():
     assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('y')]
     assert _flow(mem)['recall']['goal'] == 'アルマムーン'
     assert mem['y_jump']['goal'] == 'アルマムーン'
+
+
+def test_camp_recall_does_not_reopen_an_active_y_jump_while_the_picker_fades():
+    frame = _camp_frame()
+    mem = {'chapter': 1, 'tick': 100, '_records': [],
+           'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
+    marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
+    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('y')]
+    mem['tick'] = 101
+    assert policy.camp_recall_step(marker_only, mem, frame) == []
+    assert mem['y_jumps']['RECALL:target'] == 1
+    assert mem['y_jump']['step'] == 'RECALL'
 
 
 def test_camp_recall_still_confirms_anywhere_once_the_jump_budget_is_spent():
