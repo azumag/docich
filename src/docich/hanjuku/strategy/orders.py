@@ -1843,8 +1843,33 @@ def _expire_spent_sorties(mem):
                 continue
         if not measured:
             _queue_overdue_location_recheck(mem, sortie)
-        sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
+        target = sortie.get('target')
+        order = (_world(mem).get('launched_orders') or {}).get(step) or {}
+        rows = (mem.get('general_statuses') or {}).get('statuses') or {}
+        row = rows.get(general) if isinstance(rows, dict) else None
+        arrived_move = bool(
+            measured and target and target in _owned(mem)
+            and (sortie.get('purpose') or order.get('purpose')) == 'move'
+            and isinstance(row, dict) and row.get('location') == 'castle'
+            and row.get('location_observed') is True and row.get('castle') == target)
+        if arrived_move:
+            # A move into our own castle draws neither a unit marker nor an
+            # entry message; the general's status naming the destination is
+            # the successful arrival, not proof that the launch never happened.
+            sortie['status'] = 'arrived'
+            sortie['launch_confirmed'] = True
+            (_flow(mem).get('launch_probe') or {}).pop(step, None)
+            (_flow(mem).get('launch_miss') or {}).pop(step, None)
+            order_state = (_plan_region(mem).get('orders') or {}).get(step)
+            if order_state in ('launched', 'launched_unconfirmed'):
+                _mark_order_failed(mem, step)
+            _record(mem, 'sortie_move_arrival_observed', chart_step=step, general=general,
+                    observed_metric={'general': general, 'source': source, 'target': target,
+                                     'castle': row.get('castle'), 'status_tick': row.get('tick')},
+                    reason='自城への移動で本人のステータスが行先の在城を示したため到着を確認し、未発射として巻き戻さない')
+            continue
+        sorties.pop(step, None)
         if measured:
             # docich#3515: a camp/castle reading for a kept/blind launch
             # proves the general never left (or never confirmed). Reopen the

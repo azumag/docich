@@ -288,3 +288,32 @@ def test_a_pending_order_state_is_not_reopened_by_a_measured_camp():
     assert 'A:x:M1' not in _world(mem)['sorties']
     assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
     assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_a_move_status_at_the_owned_target_is_arrival_not_a_failed_launch():
+    # docich#5737: a move into our own castle draws no unit marker and no
+    # entry message. The monthly status naming that destination is the
+    # successful arrival; treating it as "the general never left" reopens and
+    # eventually fails a completed transfer.
+    mem = observed(age=200, location='castle', delta=50)
+    mem['captured'] = ['キカンドン']
+    mem['general_statuses']['statuses']['ヘルメス']['castle'] = 'キカンドン'
+    _world(mem)['sorties']['A:x:M1'].update(
+        status='en_route', target='キカンドン', purpose='move')
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched'}
+    from docich.hanjuku.state.regions import flow as _flow
+    _flow(mem)['launch_probe'] = {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+                   'target': 'キカンドン', 'reads': 1, 'blind': True, 'tick': 49900}}
+    _flow(mem)['launch_miss'] = {'A:x:M1': 1}
+    O._expire_spent_sorties(mem)
+    sortie = _world(mem)['sorties']['A:x:M1']
+    assert sortie['status'] == 'arrived'
+    assert sortie['launch_confirmed'] is True
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'failed'
+    assert 'A:x:M1' not in (_flow(mem).get('launch_probe') or {})
+    assert 'A:x:M1' not in (_flow(mem).get('launch_miss') or {})
+    assert 'ヘルメス' not in _world(mem)['garrison']['アルマムーン']
+    assert any(r['decision'] == 'sortie_move_arrival_observed' for r in mem['_records'])
+    assert not any(r['decision'] == 'sortie_record_observed_ended' for r in mem['_records'])
+    assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+    assert not any(r['decision'] == 'sortie_launch_failed' for r in mem['_records'])
