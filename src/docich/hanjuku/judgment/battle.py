@@ -56,6 +56,32 @@ def _battle_context(mem, ally):
     return {'castle': None, 'side': None, 'step': None, 'context': 'unclassified'}
 
 
+def _launched_carried_snapshot(mem, ally):
+    """Newest launched snapshot for this actor, keyed by its sortie step.
+
+    A road/intermediate-castle battle can have no ``cur['step']`` even though
+    its actor's measured launch kit is known.  The key is part of the result
+    because ``kit_spent`` is per sortie: subtracting or booking a card against
+    the battle's missing step would lose the consumption evidence.
+    """
+    if not isinstance(ally, str) or not ally:
+        return None, None
+    recent = []
+    for step, snap in (_world(mem).get('launched_orders') or {}).items():
+        if (not isinstance(step, str) or not step or not isinstance(snap, dict)
+                or snap.get('general') != ally):
+            continue
+        binding = snap.get('departure_binding') or {}
+        tick = snap.get('confirmation_tick')
+        if type(tick) is not int:
+            tick = binding.get('confirm_tick') if isinstance(binding, dict) else 0
+        recent.append((tick if type(tick) is int else 0, len(recent), step, snap))
+    if not recent:
+        return None, None
+    _, _, step, snap = max(recent, key=lambda item: (item[0], item[1]))
+    return step, snap
+
+
 def _boss_tactics_allowed(mem, cur):
     """Gate carried boss cards on entry text or a measured chapter-boss name.
 
@@ -435,7 +461,12 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
                                            'tick': int(mem.get('tick') or 0)}
         # A selected card with no calibrated receipt still leaves the kit for
         # this sortie: re-planning it would open an empty list next battle.
-        step = cur.get('step')
+        # An intermediate-castle/chain battle may carry no step of its own;
+        # use the launch-snapshot key carried by the card flow (or the same
+        # actor's newest launched snapshot) instead of dropping the ledger.
+        step = cur.get('step') or flow.get('kit_step')
+        if not step and cur.get('side') != 'defense':
+            step, _snapshot = _launched_carried_snapshot(mem, cur.get('ally'))
         if step:
             spent = mem.setdefault('kit_spent', {}).setdefault(step, [])
             spent.append(card)
