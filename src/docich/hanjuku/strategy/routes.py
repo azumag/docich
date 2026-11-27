@@ -31,6 +31,12 @@ def legs(chapter):
         # (a lost castle is retaken from either neighbour).
         road = chart.corridor(9)
         return {pair for a, b in zip(road, road[1:]) for pair in ((a, b), (b, a))}
+    if chapter == 1:
+        # owner 2026-11-27: 第1話は城同士が一直線でつながっていない。チャートの実測
+        # leg だけが攻撃可能（アルマムーン→スペンソニア は不可、ジョンリギ経由）。
+        # ボスも スペンソニア→けっかい のみ（アルマムーン/ジョンリギからは不可）。
+        return {(o['source'], o['target']) for o in chart.measured_orders(1)
+                if not chart.is_boss_castle(o['target'])}
     return {(o['source'], o['target']) for o in chart.measured_orders(chapter)
             if not chart.is_boss_castle(o['target'])} if chapter == 3 else set()
 
@@ -39,9 +45,29 @@ def allowed(mem, source, target):
     chapter = mem.get('chapter')
     if chapter == 9:
         return (chart.is_boss_castle(target) or (source, target) in legs(9))
+    if chapter == 1:
+        if chart.is_boss_castle(target):
+            # owner 2026-11-27: ボスへ一直線に行けないのは、間に城がある
+            # アルマムーンとジョンリギだけ。他の城からは直接行ける。
+            return source not in ('アルマムーン', 'ジョンリギ')
+        known = legs(1)
+        return (source, target) in known or (target, source) in known
     return (chapter != 3 or chart.is_boss_castle(target)
             or (source, target) in legs(3)
             or (target in _owned(mem) and (target, source) in legs(3)))
+
+
+def transfer_allowed(mem, source, target):
+    """Whether a transfer (move) may march from source to target.
+
+    owner 2026-11-27: 攻撃と移動で第1話の扱いを分ける。攻撃・奪還は実測 leg のみ
+    （allowed）だが、自城への将軍移動は所有城を経由する relay を許す。
+    """
+    if mem.get('chapter') != 1:
+        return True
+    if allowed(mem, source, target):
+        return True
+    return bool(path(mem, source, target, _owned(mem)))
 
 
 def move_leg(mem, source, target, owned=None):

@@ -532,7 +532,9 @@ def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
     candidates = policy.interim_candidates(mem)
     purposes = [c['purpose'] for c in candidates.values()]
     assert purposes[0] == 'retake' and purposes[1] == 'move'
-    assert set(purposes[2:]) == {'attack', 'retake'}
+    # owner 2026-11-27: 第1話の攻撃はチャート実測の leg のみ。失った城への追加
+    # retake は「その城へ行ける城」からしか提案しない。
+    assert set(purposes[2:]) == {'attack'}
     move = candidates['move_2']
     # #3266: ゼウス is already booked by the retake and クミン/タルタル by the attacks.
     assert (move['general'], move['source'], move['target']) == ('ジェラート', 'キカンドン', 'アルマムーン')
