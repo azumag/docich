@@ -326,6 +326,78 @@ def _bounded_card_flow(value):
             'selection_planned': planned if type(planned) is bool else None}
 
 
+def _bounded_bool(value):
+    return value if type(value) is bool else None
+
+
+def _bounded_card_gate(value):
+    if not isinstance(value, dict):
+        return None
+    return {'card': _bounded_text(value.get('card'), 48),
+            'allowed': _bounded_bool(value.get('allowed')),
+            'role': _bounded_text(value.get('role'), 80),
+            'source': _bounded_text(value.get('source'), 32),
+            'ally_hp': _bounded_int(value.get('ally_hp'), 0, 10 ** 6),
+            'enemy_hp': _bounded_int(value.get('enemy_hp'), 0, 10 ** 6),
+            'tick': _bounded_int(value.get('tick'), 0, 10 ** 9),
+            'seq': _bounded_int(value.get('seq'), 0, 10 ** 6)}
+
+
+def _bounded_carried_cards(value):
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value[:8]:
+        if not isinstance(row, dict):
+            continue
+        rows.append({'card': _bounded_text(row.get('card'), 48),
+                     'provenance': _names(row.get('provenance'), limit=6),
+                     'state': _bounded_text(row.get('state'), 24),
+                     'remaining': _bounded_bool(row.get('remaining')),
+                     'usable_in_battle': _bounded_bool(row.get('usable_in_battle'))})
+    return rows
+
+
+def _bounded_flow_events(value, limit=16):
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        out = {}
+        for key in ('seq', 'tick'):
+            out[key] = _bounded_int(row.get(key), 0, 10 ** 9)
+        for key in ('event', 'card', 'stage', 'source', 'role', 'cause', 'note'):
+            out[key] = _bounded_text(row.get(key), 80)
+        for key in ('allowed', 'selection_planned', 'needs_live_list', 'lethal'):
+            out[key] = _bounded_bool(row.get(key))
+        for key in ('ally_hp', 'enemy_hp', 'enemy_soldiers'):
+            out[key] = _bounded_int(row.get(key), 0, 10 ** 6)
+        rows.append({key: value for key, value in out.items() if value is not None})
+    return rows
+
+
+def _bounded_critical_survival(value):
+    if not isinstance(value, dict):
+        return None
+    balance = value.get('melee_balance') if isinstance(value.get('melee_balance'), dict) else {}
+    return {'needed': _bounded_bool(value.get('needed')),
+            'needed_now': _bounded_bool(value.get('needed_now')),
+            'needed_observed': _bounded_bool(value.get('needed_observed')),
+            'ally_critical_hp': _bounded_bool(value.get('ally_critical_hp')),
+            'enemy_summon': _bounded_bool(value.get('enemy_summon')),
+            'boss': _bounded_bool(value.get('boss')),
+            'behind': _bounded_bool(value.get('behind')),
+            'behind_now': _bounded_bool(value.get('behind_now')),
+            'card_hp_unread': _bounded_bool(value.get('card_hp_unread')),
+            'card_damage_rescue_needed': _bounded_bool(value.get('card_damage_rescue_needed')),
+            'melee_balance': {key: _bounded_int(balance.get(key), 0, 10 ** 9)
+                              if key != 'soldiers_current' else _bounded_bool(balance.get(key))
+                              for key in ('ally_combat', 'enemy_combat', 'ally_melee_score',
+                                          'enemy_melee_score', 'soldiers_current')}}
+
+
 def _text_map(value, limit=12):
     if not isinstance(value, dict):
         return None
@@ -3652,6 +3724,62 @@ def _after_summary(rows, close_at, window_end):
     }
 
 
+def _card_miss_confidence(card, battle):
+    """Evidence-aware confidence for a carried-card-miss incident.
+
+    `high` is reserved for rows whose self-contained battle evidence both is
+    complete enough to audit and independently shows that use was needed: the
+    fight was lost, the damage gate had allowed this card, and a measured
+    critical/behind survival state existed.  Rows that merely prove a leftover
+    card are detection-limit or design signals, not high-confidence defects.
+    """
+    missing = []
+    if battle.get('outcome') not in ('win', 'loss', 'in_progress', 'unclassified'):
+        missing.append('outcome')
+    if type(battle.get('ally_hp_at_end')) is not int or type(battle.get('enemy_hp_at_end')) is not int:
+        missing.append('end_hp')
+    if type(battle.get('card_opened')) is not bool:
+        missing.append('card_opened')
+    elif (battle.get('card_opened')
+          and (type(battle.get('ally_hp_at_open')) is not int
+               or type(battle.get('enemy_hp_at_open')) is not int)):
+        missing.append('open_hp')
+    if type(battle.get('enemy_summon_observed')) is not bool:
+        missing.append('enemy_summon_observed')
+    critical = battle.get('critical_survival') if isinstance(battle.get('critical_survival'), dict) else {}
+    if any(type(critical.get(key)) is not bool
+           for key in ('needed', 'enemy_summon', 'boss', 'behind')):
+        missing.append('critical_survival')
+    carried = battle.get('carried_cards') if isinstance(battle.get('carried_cards'), list) else []
+    carried_row = next((row for row in carried
+                        if isinstance(row, dict) and row.get('card') == card), None)
+    if not (carried_row and carried_row.get('provenance')):
+        missing.append('carried_card_provenance')
+    elif not any(source not in ('planned_cards', 'order_plan')
+                 for source in carried_row.get('provenance')):
+        missing.append('carried_card_actual_provenance')
+    gate = battle.get('damage_gate') if isinstance(battle.get('damage_gate'), dict) else {}
+    if type(gate.get('allowed')) is not bool or not gate.get('role'):
+        missing.append('damage_gate')
+    history = battle.get('card_flow_history')
+    if not isinstance(history, list) or (battle.get('card_opened') is True and not history):
+        missing.append('card_flow_history')
+    if missing:
+        return 'low', ['missing_evidence:' + ','.join(missing)]
+
+    outcome = battle.get('outcome')
+    allowed = gate.get('allowed') is True
+    need = bool(critical.get('needed_observed') or critical.get('needed')
+                or critical.get('behind'))
+    if outcome != 'loss':
+        return 'medium', ['evidence_complete_but_outcome_not_loss']
+    if not allowed:
+        return 'medium', ['evidence_complete_but_damage_gate_not_allowed']
+    if not need:
+        return 'medium', ['evidence_complete_but_survival_need_unproven']
+    return 'high', ['loss_with_allowed_card_and_survival_need']
+
+
 def _track_card_miss(runtime, state, after, records, now, on_sealed):
     """Seal a card_miss incident when a carried card was left unused.
 
@@ -3703,6 +3831,23 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             'summon_card_exhausted_tick': _bounded_int(
                 metric.get('summon_card_exhausted_tick'), 0, 10 ** 9),
             'card_flow': _bounded_card_flow(metric.get('card_flow')),
+            'outcome': _bounded_text(metric.get('outcome'), 24),
+            'ally_hp_at_open': _bounded_int(metric.get('ally_hp_at_open'), 0, 10 ** 6),
+            'enemy_hp_at_open': _bounded_int(metric.get('enemy_hp_at_open'), 0, 10 ** 6),
+            'ally_hp_at_end': _bounded_int(metric.get('ally_hp_at_end'), 0, 10 ** 6),
+            'enemy_hp_at_end': _bounded_int(metric.get('enemy_hp_at_end'), 0, 10 ** 6),
+            'start_ally_hp': _bounded_int(metric.get('start_ally_hp'), 0, 10 ** 6),
+            'start_enemy_hp': _bounded_int(metric.get('start_enemy_hp'), 0, 10 ** 6),
+            'card_opened': _bounded_bool(metric.get('card_opened')),
+            'any_card_opened': _bounded_bool(metric.get('any_card_opened')),
+            'card_open_card': _bounded_text(metric.get('card_open_card'), 48),
+            'card_open_stage': _bounded_text(metric.get('card_open_stage'), 24),
+            'card_open_source': _bounded_text(metric.get('card_open_source'), 48),
+            'critical_survival': _bounded_critical_survival(metric.get('critical_survival')),
+            'carried_cards': _bounded_carried_cards(metric.get('carried_cards')),
+            'damage_gate': _bounded_card_gate(metric.get('damage_gate')),
+            'card_flow_opens': _bounded_flow_events(metric.get('card_flow_opens'), limit=8),
+            'card_flow_history': _bounded_flow_events(metric.get('card_flow_history')),
             'cursor': _bounded_int(metric.get('cursor'), 0, 224),
             'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
             'summon_egg_unavailable': (metric.get('summon_egg_unavailable')
@@ -3712,11 +3857,12 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
                                       if type(metric.get('enemy_summon_observed')) is bool
                                       else None),
         }
+        confidence, confidence_reasons = _card_miss_confidence(card, battle)
         record = {
             'schema': SCHEMA,
             'kind': 'card_miss',
-            'confidence': 'high',
-            'confidence_reasons': ['carried_card_unused_in_boss_or_summon_battle'],
+            'confidence': confidence,
+            'confidence_reasons': confidence_reasons,
             'chapter': mem.get('chapter'),
             'month': mem.get('month'),
             'card': card,
@@ -3734,7 +3880,7 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
         record['signature'] = 'card_miss'
         record['fingerprint'] = _fingerprint(mem.get('chapter'), 'card_miss',
                                              [card, str(row.get('castle') or '')])
-        record['auto_file'] = True
+        record['auto_file'] = confidence == 'high'
         _append_incident(runtime, record, on_sealed)
         sealed = True
     return sealed
@@ -4553,6 +4699,19 @@ def _render_card_miss(record):
     battle = record.get('battle_event') or {}
     evidence = record.get('evidence') or {}
     identity = evidence.get('identity') or {}
+    critical = battle.get('critical_survival') if isinstance(battle.get('critical_survival'), dict) else {}
+    gate = battle.get('damage_gate') if isinstance(battle.get('damage_gate'), dict) else {}
+    carried = next((row for row in (battle.get('carried_cards') or [])
+                    if isinstance(row, dict) and row.get('card') == record.get('card')), {})
+    provenance = ','.join(carried.get('provenance') or []) or '不明'
+    events = []
+    for row in (battle.get('card_flow_history') or [])[-6:]:
+        if not isinstance(row, dict):
+            continue
+        detail = row.get('role') or row.get('cause') or row.get('source') or ''
+        events.append(f"{row.get('seq')}:{row.get('event')}:{row.get('card') or '-'}"
+                      f"{'/' + detail if detail else ''}")
+    flow_history = ' / '.join(events) or '未記録'
     return '\n'.join([
         *_issue_markers(record),
         f"## {_issue_title(record)}",
@@ -4571,6 +4730,21 @@ def _render_card_miss(record):
         f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
         f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
         f"- card_flow: {_card_miss_flow(battle.get('card_flow'))}",
+        f"- 戦闘結果: {battle.get('outcome') or '不明'}"
+        f" / 開封HP: 自 {battle.get('ally_hp_at_open') if type(battle.get('ally_hp_at_open')) is int else '不明'}"
+        f" vs 敵 {battle.get('enemy_hp_at_open') if type(battle.get('enemy_hp_at_open')) is int else '不明'}"
+        f" / 終了HP: 自 {battle.get('ally_hp_at_end') if type(battle.get('ally_hp_at_end')) is int else '不明'}"
+        f" vs 敵 {battle.get('enemy_hp_at_end') if type(battle.get('enemy_hp_at_end')) is int else '不明'}",
+        f"- 瀕死/劣勢: needed={_card_miss_bool(critical.get('needed'))}"
+        f" / observed={_card_miss_bool(critical.get('needed_observed'))}"
+        f" / behind={_card_miss_bool(critical.get('behind'))}"
+        f" / enemy_summon={_card_miss_bool(critical.get('enemy_summon'))}"
+        f" / boss={_card_miss_bool(critical.get('boss'))}",
+        f"- damage gate: allowed={_card_miss_bool(gate.get('allowed'))}"
+        f" / role={BT}{gate.get('role') or '不明'}{BT}"
+        f" / source={BT}{gate.get('source') or '不明'}{BT}",
+        f"- 携行 provenance: {BT}{provenance}{BT} / state={BT}{carried.get('state') or '不明'}{BT}",
+        f"- card_flow履歴: {BT}{flow_history}{BT}",
         f"- 切り札行揭示: rearms={battle.get('rearms') if type(battle.get('rearms')) is int else '不明'}"
         f" / scroll_out={_card_miss_bool(battle.get('summon_card_scroll_out'))}"
         f" / exhausted_tick={battle.get('summon_card_exhausted_tick') if type(battle.get('summon_card_exhausted_tick')) is int else '不明'}",

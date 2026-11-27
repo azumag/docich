@@ -18,7 +18,8 @@ from .battle import _card_battle_reading, _card_gate_close, _hero_retreat_open, 
 from ..judgment.battle import (BEHIND_EGG_RATIO_TENTHS, CARD_ANNOUNCE_LIMIT, CARD_LIST_CURSOR_LIMIT,
                                CARD_SPEND_ATTEMPT_LIMIT, _card_spend_attempts, _note_card_spend_attempt,
                                OKUNOTE_MAX_SELF_DAMAGE, SURVIVAL_CARDS, _available_rare_tactic, _battle_labels,
-                               _card_usable_here,
+                               _begin_card_flow, _card_miss_evidence, _card_usable_here,
+                               _note_card_flow_event,
                                _behind, _boss_tactics_allowed, _card_damage_gate,
                                _card_gate_alternatives, _card_gate_choice,
                                _card_gate_refused, _card_use_unclassified, _command_open_wait, _confirmed_carried_kit, _critical_safe_card,
@@ -857,7 +858,8 @@ def _survival_menu(screen, mem, cur):
         if rescue['cards_checked'] >= 3:
             rescue['final_card_read'] = True
         rescue['cards_checked'] += 1
-        cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
+        _begin_card_flow(mem, cur, {'card': None, 'stage': 'list', 'survival': True,
+                                    'list_ticks': 0}, source='survival_menu')
     else:
         _egg_recheck(mem)
         rescue['egg_attempted'] = True
@@ -986,6 +988,9 @@ def _survival_card_list(screen, mem, cur, flow, names):
     rescue['cards_uncertain'] = False
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
+    _note_card_flow_event(mem, cur, 'select', card=card, allowed=gate.get('allowed'),
+                          role=gate.get('role'), ally_hp=cur.get('ally_hp'),
+                          enemy_hp=cur.get('enemy_hp'))
     _watch_card_melee(mem, cur, gate)
     egg_drop = _egg_drop_evidence(cur, card)
     _watch_egg_drop(cur, card, cur.get('enemy_hp'), egg_drop)
@@ -1494,9 +1499,10 @@ def battle_menu_step(screen: Screen, mem):
                 cur.setdefault('tactics_done', []).append(tid)
             else:
                 card, tid = carried, None
-            cur['card_flow'] = {'card': card, 'stage': 'list' if move == 'here' else 'down',
-                                'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp'),
-                                'enemy_soldiers_at_open': cur.get('enemy_soldiers')}
+            _begin_card_flow(mem, cur, {'card': card, 'stage': 'list' if move == 'here' else 'down',
+                                        'tactic_id': tid, 'enemy_hp_at_open': cur.get('enemy_hp'),
+                                        'enemy_soldiers_at_open': cur.get('enemy_soldiers')},
+                             source='battle_menu_carried')
             _record(mem, 'battle_card', **_battle_labels(cur), card=card,
                     observed_metric={'enemy_hp': cur.get('enemy_hp'), 'egg_battle': True},
                     reason=('実携行のキャトルミューをボスへ使用し90ダメージを狙う'
@@ -2262,6 +2268,9 @@ def card_list_step(screen: Screen, mem):
         cur['card_damage_rescue_needed'] = False
         cur['card_consumption_complete'] = False
         cur.setdefault('cards_selected', []).append(flow['card'])
+        _note_card_flow_event(mem, cur, 'select', card=flow['card'],
+                              allowed=gate.get('allowed'), role=gate.get('role'),
+                              ally_hp=cur.get('ally_hp'), enemy_hp=cur.get('enemy_hp'))
         _watch_card_melee(mem, cur, gate)
         _watch_egg_drop(cur, flow['card'], cur.get('enemy_hp'),
                         _egg_drop_evidence(cur, flow['card']))
@@ -3452,10 +3461,11 @@ def egg_battle_step(screen: Screen, mem):
             move = _menu_move_batch(screen, 'きりふだ', target) if target is not None else None
             if move == 'here':
                 card = resume['card'] if resume else cards_left[0]
-                battle['card_flow'] = {'card': card, 'stage': 'list',
-                                       'note': ('召喚会話で中断された携行切り札を再開'
-                                                if resume else '敵召喚獣戦の携行切り札を開幕使用'),
-                                       'enemy_hp_at_open': battle.get('enemy_hp')}
+                _begin_card_flow(mem, battle, {'card': card, 'stage': 'list',
+                                               'note': ('召喚会話で中断された携行切り札を再開'
+                                                        if resume else '敵召喚獣戦の携行切り札を開幕使用'),
+                                               'enemy_hp_at_open': battle.get('enemy_hp')},
+                                 source='summon_menu')
                 # A later card in the same fight needs its own bounded look at
                 # the box, which returns to the top page after the list closes
                 # (owner 2026-11-24: 2枚目以降の切り札も開く).
@@ -3630,7 +3640,9 @@ def egg_battle_step(screen: Screen, mem):
                                          'enemy_summon_observed': bool(
                                              battle.get('enemy_summon_observed')
                                              or battle.get('card_summon_observed')),
-                                         'cursor': screen.menu_cursor},
+                                         'cursor': screen.menu_cursor,
+                                         **_card_miss_evidence(mem, battle, missed,
+                                                               outcome='in_progress')},
                         reason='敵召喚獣戦で携行切り札を開けず、こうげきへ進んだ')
         return [pad('a')] if move == 'here' else _emit_moves(move)
     _egg_recheck(mem)
