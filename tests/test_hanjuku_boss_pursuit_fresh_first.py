@@ -40,12 +40,15 @@ def test_the_fresh_entry_wins_over_an_abandoned_one(monkeypatch):
     assert mem['boss_pursuit']['step'] == 'B'
 
 
-def test_with_only_stale_entries_the_wave_gate_still_stops_everything(monkeypatch):
+def test_with_only_stale_entries_a_fresh_cell_still_re_aims(monkeypatch):
+    # Owner 2026-11-27: a stale wave with a freshly measured boss cell must
+    # re-place the camped general instead of measuring the skull forever.
     monkeypatch.setattr(bp.chart, 'moving_boss_cell', lambda ch: (810, 645))
     mem = memory()
     mem[bp.LIST_KEY] = {'カシス': {'step': 'A', 'launched': -20000}}
-    assert bp.step(map_screen(), mem, None) is None
-    assert mem.get('boss_wave_stale_noted') == 10000
+    assert bp.step(map_screen(), mem, None) == []
+    assert mem['boss_pursuit']['general'] == 'カシス'
+    assert any(r['decision'] == 'boss_wave_stale_fresh_cell' for r in mem.get('_records') or [])
 
 
 def test_stale_boss_cell_still_queues_the_pursuit(monkeypatch):
