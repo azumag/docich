@@ -2655,6 +2655,29 @@ def _resend_picker_identity_confirmed(state, screen):
             and abs(target[1] - marker[1]) <= RECALL_CONFIRM_PX)
 
 
+def _dispatch_owner_foreign(mem):
+    """A sortie procedure owns the field frames right now.
+
+    The recall's own await_dispatch screens are the destination picker
+    ('map_target'), the field after it closes ('map') and fades. While a
+    departure request or a live sortie confirmation is in flight, map frames
+    belong to that procedure instead, so a picker that died under it is
+    preemption evidence — not the recall's refused dispatch. The tick bound
+    mirrors orchestrator.RECALL_YIELD_TO_SORTIE: a sortie attempt only owns
+    the field while its yield is fresh.
+    """
+    if _flow(mem).get('departure_request') is not None:
+        return True
+    attempt = _flow(mem).get('sortie_attempt')
+    if not isinstance(attempt, dict) or attempt.get('interrupted'):
+        return False
+    tick = attempt.get('confirmation_tick')
+    if type(tick) is not int:
+        tick = attempt.get('tick')
+    now = mem.get('tick')
+    return type(tick) is int and type(now) is int and 0 <= now - tick <= 300
+
+
 def _recall_dispatch_step(screen, mem, state):
     # Once a scene covered the sent A, only field/picker observations can
     # advance the bounded check. Text and transition frames belong to their
@@ -2796,8 +2819,22 @@ def _recall_dispatch_step(screen, mem, state):
         # (mem['uncertain']) that the accepted dispatch never needed.
         accepted = (bool(state.get('input_sent')) and bool(state.get('picker_closed'))
                     and not interrupted and not state.get('scene_covered'))
+        # docich#5086: while a departure request or a live sortie confirmation
+        # owns the field, map frames belong to that procedure instead, so a
+        # picker that died under it is preemption evidence — not the recall's
+        # refused dispatch (g1190 2026-11-21 ch3: the sortie flow's survey
+        # frames counted toward this wait, the recall's A never journaled, and
+        # the terminal misfiled a refused castle as camp_recall_unconfirmed).
+        # The screen kind alone cannot separate the two: the recall's own
+        # destination picker is itself a 'world_map' frame. That is a
+        # preemption, not a refusal: keep the recall retryable like an
+        # interruption and do not block the castle on evidence that was never
+        # the recall's to read.
+        preempted = (not interrupted and not state.get('input_sent')
+                     and _dispatch_owner_foreign(mem))
         status = ('dispatched' if accepted
                   else 'arrival_unconfirmed' if state.get('input_sent')
+                  else 'dispatch_preempted' if preempted
                   else 'dispatch_unconfirmed')
         goal = state.get('goal')
         escape_move = state.get('escape_move') is True
@@ -2838,9 +2875,14 @@ def _recall_dispatch_step(screen, mem, state):
         else:
             _flow(mem)['recall_verification'] = verification
         _flow(mem).pop('recall', None)
+        if preempted:
+            # Same marker a scene cut leaves (orchestrator._mark_recall_
+            # interrupted): the camp still waits, so the next request retries
+            # soon instead of serving the long refused-castle hold.
+            _flow(mem)['recall_interrupted'] = int(mem.get('tick') or 0)
         _arm_recall_skip(mem, state,
                          BOSS_RETRY_TICKS if state.get('boss')
-                         else FORT_RETRY_TICKS if (state.get('fort') or interrupted
+                         else FORT_RETRY_TICKS if (state.get('fort') or interrupted or preempted
                                                    or state.get('scene_covered')
                                                    or mode_lost) else None)
         camp_target = state.get('target')
@@ -2896,6 +2938,11 @@ def _recall_dispatch_step(screen, mem, state):
                         observed_metric=terminal_metric,
                         resulting_event='field_move_unconfirmed',
                         reason='崖離脱のフィールド移動の送信・画面遷移を確認できず、次回観測へ未確認として保持')
+            elif preempted:
+                _record(mem, 'camp_recall_preempted', chart_step=None,
+                        observed_metric=terminal_metric,
+                        resulting_event=status,
+                        reason='帰還先選択の確認読み取りが他の手順の画面で終わったため、拒否とは断定せず中断として短期保留する')
             else:
                 reason = ('帰還Aの送信receiptを確認できず、送信段階で未確認として保持'
                           if status == 'dispatch_unconfirmed' else
