@@ -294,6 +294,49 @@ CH9_CLIFF_SOUTH_Y = 476
 CH9_CLIFF_SOUTH_EAST_X = 612
 CH9_CLIFF_POCKET_Y = 260
 CH9_EAST_MOUTH = (674, 212)
+# Measured on g1190-ch9-y-view-flags.png: an unbroken black cliff wall
+# separates the west/central intermediate corridor castles (オシロガ/
+# ドンドン/タオ/オオキク/...) from the イデ！ pocket + north corridor.
+# South of y >= 560 (west of the east cliff wall), イソ/カラ sit south of
+# イデ！ and cannot bypass イデ！ directly to the moving boss.
+CH9_CLIFF_SOUTH_POCKET_Y = 560
+CH9_CLIFF_WEST_BANDS = (
+    (200, 400),  # north edge..wy=199: wall <= 384 (east of オシロガ/オレガノ)
+    (370, 448),  # wy=200..369: wall <= 432 (east of アルファルファ)
+    (560, 504),  # wy=370..559: wall <= 496 (east of ドンドン/アテナ/タオ, west of イデ！ 536)
+)
+
+
+def ch9_boss_approachable(unit_world) -> bool:
+    """True when a ch9 unit stands in the east boss area, north corridor, or イデ！ pocket."""
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2):
+        return True
+    ux, uy = unit_world
+    east_x = CH9_CLIFF_SOUTH_EAST_X if uy >= CH9_CLIFF_SOUTH_Y else CH9_CLIFF_EAST_X
+    if ux >= east_x:
+        return True
+    if uy >= CH9_CLIFF_SOUTH_POCKET_Y:
+        return False
+    for max_y, min_x in CH9_CLIFF_WEST_BANDS:
+        if uy < max_y:
+            return ux >= min_x
+    return False
+
+
+def ch9_unreachable_recall_castle(unit_world, owned):
+    """Nearest owned non-イデ！ corridor castle for a cliff-isolated ch9 unit."""
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2):
+        return None
+    road = corridor(9) or ()
+    cells = castles(9) or {}
+    last = road[-1] if road else None
+    pool = [c for c in owned if c in cells and c != last and not is_boss_castle(c)]
+    if not pool:
+        pool = [c for c in owned if c in cells and not is_boss_castle(c)]
+    if not pool:
+        return None
+    ux, uy = unit_world
+    return min(pool, key=lambda c: ((cells[c][0] - ux) ** 2 + (cells[c][1] - uy) ** 2, c))
 
 
 def ch9_cliff_detour(unit_world, aim):
@@ -303,6 +346,8 @@ def ch9_cliff_detour(unit_world, aim):
         return None
     ux, uy = unit_world
     ax, ay = aim
+    if not ch9_boss_approachable(unit_world):
+        return None
     cliff_x = CH9_CLIFF_SOUTH_EAST_X if uy >= CH9_CLIFF_SOUTH_Y else CH9_CLIFF_EAST_X
     if ux >= cliff_x or ax < CH9_CLIFF_EAST_X:
         return None
