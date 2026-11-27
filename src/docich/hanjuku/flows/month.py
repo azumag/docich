@@ -1293,6 +1293,9 @@ def _chikujou_wait(screen, mem, sub, reason):
     return [pad('b')]
 
 
+CHIKUJOU_DEFER_LIMIT = 2   # 月内で築城探索を出撃へ譲る回数の上限(owner 2026-11-27 #5733)
+
+
 def _chikujou_scroll(screen, mem, sub, names=None):
     """Reveal off-screen holdings in the observed four-row castle list.
 
@@ -1366,13 +1369,24 @@ def _chikujou_scroll(screen, mem, sub, names=None):
     # owner 2026-11-27 (#5696/#5702): 出撃の開始から発射確認までの間は、築城一覧の
     # 探索を1回で打ち切って月一メニューを閉じ、発射確認へ時間を回す。
     launch_step = active_sortie_launch_priority(mem)
-    if launch_step and int(state.get('presses') or 0) >= 1:
+    # owner 2026-11-27 (#5733): 発射待ちのたびに築城を打ち切ると、出撃の多い月に
+    # 「築城可能なまま月一終了」になる。月内の打ち切り回数に上限を置き、超えたら
+    # 通常どおり築城一覧を探索する。
+    defer_key = [mem.get('chapter'), mem.get('month')]
+    defer_state = mem.get('chikujou_defer') if isinstance(mem.get('chikujou_defer'), dict) else {}
+    if defer_state.get('key') != defer_key:
+        defer_state = {'key': defer_key, 'count': 0}
+    if (launch_step and int(state.get('presses') or 0) >= 1
+            and int(defer_state.get('count') or 0) < CHIKUJOU_DEFER_LIMIT):
+        defer_state['count'] = int(defer_state.get('count') or 0) + 1
+        mem['chikujou_defer'] = defer_state
         sub['declined'] = True
         sub['aborted'] = True
         _record(mem, 'chikujou_deferred_sortie',
                 observed_metric={'visible': [r[2] for r in rows],
                                  'scrolls': int(state.get('presses') or 0),
-                                 'step': launch_step},
+                                 'step': launch_step,
+                                 'deferrals': defer_state['count']},
                 reason='出撃の開始から発射確認までのため、築城一覧の探索を打ち切る')
         return [pad('b')]
     if (state.get('end_down') and state.get('end_up')
