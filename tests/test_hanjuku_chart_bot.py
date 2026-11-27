@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich import hanjuku_commentary, hanjuku_narration, hanjuku_policy as policy
 from docich import pulse_volume
+from docich.hanjuku.flows import shop as shop_flow
 from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_font import UNKNOWN, read_lines
 from docich.hanjuku_screen import Screen
@@ -992,6 +993,28 @@ def test_battle_end_records_independent_choice_outcome_into_experience():
     assert result['experience_action'] == 'use_egg' and result['outcome'] == 'win'
 
 
+def test_shop_list_with_unread_cursor_keeps_the_purchase_plan_owned(monkeypatch):
+    c = Canvas()
+    c.text(48, 15, '1ねん 4のつき 100G')
+    c.text(24, 39, 'しょうにん')
+    c.text(168, 167, 'バグストーム 10G')
+    c.text(168, 183, 'クースカン 20G')
+    c.text(168, 199, 'ノリウツール 30G')
+    screen = parse(c.frame())
+    assert screen.kind == 'shop_list'
+    key = shop_flow._month_key(screen.header)
+    shop = {'key': key, 'items': [['バグストーム', 1]], 'want': None}
+    mem = {'shop': shop}
+    monkeypatch.setattr(shop_flow, '_merchant_spendable', lambda *args: 100)
+    monkeypatch.setattr(shop_flow, 'plan_bargains', lambda *args, **kwargs: None)
+    monkeypatch.setattr(shop_flow, 'hold_room', lambda *args: 99)
+    monkeypatch.setattr(shop_flow, 'merchant_card_spendable', lambda *args: 100)
+    monkeypatch.setattr(shop_flow, 'menu_to', lambda *args, **kwargs: None)
+    assert shop_flow.shop_step(screen, mem) == []
+    assert shop['want'] == ['バグストーム', 1, 10]
+    assert shop['unread_selection'] == 'バグストーム'
+
+
 def test_gift_request_buys_the_cheapest_and_declines_extra_money():
     c = Canvas()
     c.text(48, 15, '1ねん 4のつき 100G')
@@ -1008,6 +1031,20 @@ def test_gift_request_buys_the_cheapest_and_declines_extra_money():
     d.text(184, 199, 'いかんッ!')
     d.hand(162, 177)
     assert policy.yes_no_step(parse(d.frame()), mem)[0]['buttons'] == ['down']
+
+
+def test_regular_gift_with_unread_cursor_keeps_selection_owned():
+    c = Canvas()
+    c.text(48, 15, '1ねん 4のつき 100G')
+    c.text(24, 39, 'なにを かいあたえますか?')
+    c.text(168, 167, 'ゆびわ 10G')
+    c.text(168, 183, 'ペンダント 5G')
+    c.text(168, 199, 'コート 20G')
+    mem = {}
+    screen = parse(c.frame())
+    assert screen.kind == 'gift_request'
+    assert policy.gift_step(screen, mem) == []
+    assert mem['gift_selection_pending'] == {'item': 'ペンダント', 'price': 5}
 
 
 def test_unaffordable_gift_request_is_recognised_and_answered():

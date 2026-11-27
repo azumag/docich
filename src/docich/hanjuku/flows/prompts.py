@@ -1058,6 +1058,7 @@ def _bijin_gift_bound(screen: Screen, mem, gold, items):
 
 def gift_step(screen: Screen, mem):
     """美女は1000G以上で家を選ぶ。それ以外の贈り物は従来の方針。"""
+    pending_selection = mem.get('gift_selection_pending')
     mem.pop('bijin_gift_hold', None)
     items = []
     for line in screen.lines:
@@ -1070,6 +1071,7 @@ def gift_step(screen: Screen, mem):
     bijin = ('どれかほしい' in screen.text.replace(' ', '')
              or any(name in ('こうすい', 'くるま', 'いえ') for _, name in items))
     if bijin:
+        mem.pop('gift_selection_pending', None)
         mem['bijin_gift_hold'] = True
         gold = _bijin_gold(screen)
         if gold is None or gold < BIJIN_MIN_GOLD:
@@ -1116,6 +1118,17 @@ def gift_step(screen: Screen, mem):
         return []
     price, name = min(items)
     move = menu_to(screen, name, exact=False)    # the price can abut the name
+    if move is None:
+        if not (isinstance(pending_selection, dict)
+                and pending_selection.get('item') == name):
+            _record(mem, 'situation_held', screen=screen.kind,
+                    strategy_variant='gift_selection_unread', item=name, price=price,
+                    observed_metric={'items_seen': len(items),
+                                     'hand_visible': screen.hand is not None},
+                    reason='最安品は読めたがカーソル位置が未読のため購入を確定せず贈り物メニューの所有を保持')
+        mem['gift_selection_pending'] = {'item': name, 'price': price}
+        return []
+    mem.pop('gift_selection_pending', None)
     if move == 'here':
         _record(mem, 'gift', strategy_variant='cheapest_gift', item=name, price=price,
                 gold=(screen.header or {}).get('gold'), deviation_reason='reset_forbidden',

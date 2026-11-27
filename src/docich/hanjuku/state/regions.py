@@ -301,6 +301,7 @@ KEY_OWNERSHIP = {
     'phase_a_escape': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 既定Aが効かない同一文面の有限エスケープ  # 戦闘メニュー停滞監視の自己消去型カウンタ
     'battle_menu_pending_ticks': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 戦闘メニューpending手順の待機tick
     'bijin_gift_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 美女贈物プロンプト手順のホールド
+    'gift_selection_pending': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 通常贈物の未読カーソル選択所有権
     'bijin_gift_waits': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 同上の待機カウンタ
     'bijin_guard': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 美女イベントのプロンプトガード
     'boss_camp_exempt': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # ラン同一性リセットリスト(orchestrator:586)で管理される月次免除
