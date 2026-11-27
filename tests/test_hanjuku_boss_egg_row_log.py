@@ -180,13 +180,64 @@ def test_an_opened_card_resets_the_scroll_and_rearm_budget(monkeypatch):
     assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
 
 
+def test_an_unread_visible_card_row_holds_then_releases_without_card_miss(monkeypatch):
+    mem = memory()
+    battle = mem['battle']
+    battle.update(planned_cards=['エンジェリン'])
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch',
+                        lambda s, label, target: None if label == 'きりふだ' else 'here')
+
+    for expected in range(1, B.SUMMON_CARD_ROW_UNREAD_LIMIT):
+        assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == []
+        assert battle['summon_card_row_unread_stall']['observations'] == expected
+        assert not any(r['decision'] == 'battle_egg_general_attack' for r in mem['_records'])
+        assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+
+    assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
+    assert battle['summon_card_row_unread'] is True
+    assert 'summon_card_row_unread_stall' not in battle
+    assert battle['card_flow'] is None
+    assert (battle.get('cards_unclassified') or []) == []
+    assert not mem.get('kit_spent')
+    unread = [r for r in mem['_records'] if r['decision'] == 'battle_summon_card_row_unread']
+    assert len(unread) == 1
+    assert unread[0]['card'] == 'エンジェリン'
+    assert unread[0]['observed_metric']['observations'] == B.SUMMON_CARD_ROW_UNREAD_LIMIT
+    opened = [r for r in mem['_records'] if r['decision'] == 'battle_card_open_unclassified']
+    assert len(opened) == 1
+    assert opened[0]['card'] == 'エンジェリン'
+    assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+    assert not battle.get('boss_card_missed_noted')
+
+    assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
+    assert len([r for r in mem['_records']
+                if r['decision'] == 'battle_summon_card_row_unread']) == 1
+    assert not any(r['decision'] == 'battle_boss_card_missed' for r in mem['_records'])
+
+
+def test_a_resolved_card_row_walk_clears_the_unread_latch(monkeypatch):
+    mem = memory()
+    battle = mem['battle']
+    battle.update(planned_cards=['エンジェリン'], summon_card_row_unread=True)
+    monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: 'here')
+    monkeypatch.setattr(B, '_menu_move_batch', lambda *a, **k: 'here')
+
+    assert B.egg_battle_step(screen(text='こうげききりふだ'), mem) == [B.pad('a')]
+    assert battle['card_flow']['card'] == 'エンジェリン'
+    assert 'summon_card_row_unread' not in battle
+    assert 'summon_card_row_unread_stall' not in battle
+    assert any(r['decision'] == 'battle_summon_card_open' for r in mem['_records'])
+
+
 def test_the_missed_card_record_carries_the_battle_identity(monkeypatch):
     # #5398 was filed as 戦闘: 不明 / 城: 不明 / 画面: None because the emit
-    # omitted the battle identity the month audit projects.  docich#5632:
-    # a scroll exhaustion now holds the attack, so card_miss only files when
-    # the row was visible yet still unopened (こうげき confirmed past it).
+    # omitted the battle identity the month audit projects.  An unrecognized
+    # parked flow keeps the reopen gate closed here, so the emitter can still
+    # be checked without exercising the bounded row-unread hold.
     mem = memory()
-    mem['battle'].update(planned_cards=['ノリウツール'])
+    mem['battle'].update(planned_cards=['ノリウツール'],
+                         card_flow={'card': None, 'stage': 'unknown'})
     monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: (160, 176))
     monkeypatch.setattr(B, '_menu_move_batch',
                         lambda s, label, target: 'here' if label == 'こうげき' else None)
@@ -203,13 +254,14 @@ def test_the_missed_card_record_carries_the_battle_identity(monkeypatch):
 
 def test_a_post_exhaustion_attack_with_a_visible_row_still_files_card_miss(monkeypatch):
     # docich#5632: a first reveal exhaustion leaves summon_card_scroll_out.
-    # If the きりふだ row then reads but the turn still confirms こうげき,
-    # that IS a skipped card -- card_miss stays, and the metric lets the
-    # audit tell it from a mid-re-arm wait and a final reveal failure.
+    # If an unrecognized flow keeps the reopen path closed and the turn still
+    # confirms こうげき, card_miss stays; the metric lets the audit tell it
+    # from a mid-re-arm wait and a final reveal failure.
     mem = memory()
     mem['battle'].update(planned_cards=['ノリウツール'], summon_card_scroll=3,
                          summon_card_scroll_out=True,
-                         summon_card_exhausted_tick=0)
+                         summon_card_exhausted_tick=0,
+                         card_flow={'card': None, 'stage': 'unknown'})
     monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: (160, 176))
     monkeypatch.setattr(B, '_menu_move_batch',
                         lambda s, label, target: 'here' if label == 'こうげき' else None)
@@ -368,10 +420,12 @@ def test_boss_only_card_is_not_reported_as_missed_before_boss_entry(monkeypatch)
 
 
 def test_ordinary_carried_card_is_still_reported_when_boss_only_card_is_filtered(monkeypatch):
-    # docich#5632: scroll exhaustion now holds instead of emitting, so the
-    # miss path is a visible-but-unopened きりふだ row.
+    # docich#5632: scroll exhaustion now holds instead of emitting.  This
+    # emitter check uses an unrecognized parked flow so it does not exercise
+    # the bounded visible-row hold.
     mem = memory(castle='セレーネ')
-    mem['battle'].update(enemy='ニンフ', planned_cards=['バルムンク', 'エンジェリン'])
+    mem['battle'].update(enemy='ニンフ', planned_cards=['バルムンク', 'エンジェリン'],
+                         card_flow={'card': None, 'stage': 'unknown'})
     monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: (160, 176))
     monkeypatch.setattr(B, '_menu_move_batch',
                         lambda s, label, target: 'here' if label == 'こうげき' else None)
@@ -385,7 +439,8 @@ def test_ordinary_carried_card_is_still_reported_when_boss_only_card_is_filtered
 
 def test_boss_only_card_remains_eligible_after_measured_boss_entry(monkeypatch):
     mem = memory()
-    mem['battle'].update(planned_cards=['バルムンク'], entry_evidence='measured_boss_entry')
+    mem['battle'].update(planned_cards=['バルムンク'], entry_evidence='measured_boss_entry',
+                         card_flow={'card': None, 'stage': 'unknown'})
     monkeypatch.setattr(B, '_battle_menu_to', lambda *a, **k: (160, 176))
     monkeypatch.setattr(B, '_menu_move_batch',
                         lambda s, label, target: 'here' if label == 'こうげき' else None)

@@ -702,6 +702,10 @@ def _probe_spend(mem, decision, idle=False, budgeted=True):
     """
     state = mem.setdefault(PROBE, {})
     names = _garrison_names(mem)
+    # A persisted probe state from before the budget counter existed (or one
+    # cleared mid-month) must not crash the whole decision: the bot exited 2 on
+    # KeyError('count') and sent no input (live 2026-11-28 04:3x).
+    state.setdefault('count', 0)
     if state.get('month') != mem.get('month'):
         state.clear()
         state.update(month=mem.get('month'), count=0, seen=len(names),
@@ -715,7 +719,7 @@ def _probe_spend(mem, decision, idle=False, budgeted=True):
     state['seen_names'] = sorted(names)
     state.pop('exhausted', None)
     _record_only(mem, decision,
-                 observed_metric={'probe_count': state['count'],
+                 observed_metric={'probe_count': int(state.get('count') or 0),
                                   'probe_budget': PROBE_BUDGET,
                                   'idle': idle,
                                   'budgeted': budgeted,

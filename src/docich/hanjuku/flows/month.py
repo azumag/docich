@@ -461,8 +461,41 @@ def _month_soldier_budget(mem, shop, header, gold):
     return budget
 
 
+MONTH_SUB_OPEN_LIMIT = 6   # 出撃未着手の月で月一メニューに使う上限(owner 2026-11-28)
+
+
+def _month_sub_opens(mem):
+    counts = mem.get('month_sub_opens')
+    return counts if isinstance(counts, dict) else {}
+
+
+def _note_month_sub_open(mem):
+    key = mem.get('month')
+    counts = _month_sub_opens(mem)
+    count = int(counts.get('count') or 0) + 1 if counts.get('month') == key else 1
+    mem['month_sub_opens'] = {'month': key, 'count': count}
+
+
+def _month_sub_over_budget(mem):
+    """この月、出撃がまだ始まっていないのに月一メニューを開きすぎたか。"""
+    key = mem.get('month')
+    if mem.get('sortie_started_month') == key:
+        return False
+    counts = _month_sub_opens(mem)
+    return counts.get('month') == key and int(counts.get('count') or 0) >= MONTH_SUB_OPEN_LIMIT
+
+
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
+    # owner 2026-11-28: 出撃がまだ始まっていない月で月一メニューの処理が続くと、
+    # 出撃0のまま月が終わる。上限を超えたらメニューを閉じてマップへ戻す。
+    if _month_sub_over_budget(mem):
+        if mem.get('month_sub_deferred_noted') != mem.get('month'):
+            mem['month_sub_deferred_noted'] = mem.get('month')
+            _record(mem, 'month_sub_deferred_sortie', month=mem.get('month'),
+                    observed_metric=_month_sub_opens(mem),
+                    reason='出撃が未着手のため、月一メニューの続きを打ち切ってマップへ戻る')
+        return [pad('b')]
     body = _month_dialog_body(screen)
     # The amount-setting overlay draws the hand on the gold and the
     # 「じゅうじキー…ケタ…すうじ…」 hint over the month menu (measured g1190
@@ -1540,6 +1573,7 @@ def _month_chikujou(screen, mem, shop):
                         'left_menu': False, 'chikujou_version': 2, 'rows_tried': list(tried),
                         'chikujou_identity': run_identity(mem.get('_run_identity')),
                         'chikujou_chapter': mem.get('chapter')}
+    _note_month_sub_open(mem)
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
             observed_metric={'reserve': reserve, 'tried': list(tried)},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')
