@@ -50,6 +50,7 @@ from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_c
 from ..strategy.kit import _is_boss_order
 from ..strategy.execution import bound_fields
 from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
+                                clear_sortie_launch_priority,
                                 drop_retired_step_context,
                                 _garrison_move, _match_sortie, _order_for_step, _tactics)
 
@@ -2156,6 +2157,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         if castle and target and castle == target and (won_battle or lost_battle):
             result = 'won' if won_battle else ('retreated' if retreat else 'lost')
             _sorties(mem).pop(step, None)
+            clear_sortie_launch_priority(mem, step)
             history = mem.setdefault('sortie_history', [])
             history.append({'step': step, 'general': sortie.get('general'),
                             'source': sortie.get('source'), 'target': target,
@@ -2185,6 +2187,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed')
                 and type(sortie.get('road_defeat')) is not int):
             sortie['road_defeat'] = int(mem.get('tick') or 0)
+            clear_sortie_launch_priority(mem, step)
             # The outcome ledger is what the march and the attack rules read
             # (``sortie_history`` consumers). A road defeat
             # that only lived on the sortie record was invisible to them:

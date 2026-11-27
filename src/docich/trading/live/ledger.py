@@ -131,6 +131,9 @@ _TRANSITIONS = {
 }
 _OPEN_STATES = ("PLANNED", "SUBMITTING", "UNKNOWN_SUBMISSION", "ACKED", "PARTIALLY_FILLED")
 
+# ``changed_symbols`` token for a change of the free-strategy slot (never a pair name).
+FREE_CHANGE_MARK = "*free*"
+
 LIVE_EVENT_KINDS = frozenset({"live_decision", "shadow_fill", "shadow_residual",
                               "worker_state", "cashflow_check"})
 
@@ -409,7 +412,8 @@ class LiveLedger:
         if lease is None:
             raise ValueError("a writer lease is required")
         with self._tx(lease) as cur:
-            for policy in ps.policies.values():
+            stored = list(ps.policies.values()) + ([ps.free] if ps.free is not None else [])
+            for policy in stored:
                 cur.execute("INSERT OR IGNORE INTO policies(policy_digest, payload, created_at) VALUES (?,?,?)",
                             (policy.digest, canonical_json_text(policy.payload()), float(now)))
             cur.execute("INSERT OR IGNORE INTO policy_sets(set_digest, payload, created_at) VALUES (?,?,?)",
@@ -417,7 +421,22 @@ class LiveLedger:
             self._emit(cur, "policy_set_stored", "policy_set", ps.digest, {"symbols": sorted(ps.policies)}, now)
         return ps.digest
 
-    def load_policy(self, digest: str) -> LivePolicy:
+    def free_policy_digests(self) -> frozenset[str]:
+        """Digests of every stored free-strategy policy (their positions are mirrored apart)."""
+        import json
+        with self.read_cursor() as cur:
+            rows = cur.execute("SELECT policy_digest, payload FROM policies").fetchall()
+        digests = set()
+        for digest, payload in rows:
+            try:
+                if json.loads(payload).get("kind") == "free":
+                    digests.add(digest)
+            except (ValueError, AttributeError):
+                continue
+        return frozenset(digests)
+
+    def load_policy(self, digest: str):
+        """The stored policy: a per-symbol ``LivePolicy`` or a ``FreePolicy``."""
         with self.read_cursor() as cur:
             row = cur.execute("SELECT payload FROM policies WHERE policy_digest=?", (digest,)).fetchone()
         if row is None:
@@ -434,8 +453,17 @@ class LiveLedger:
             row = cur.execute("SELECT payload FROM policy_sets WHERE set_digest=?", (set_digest,)).fetchone()
         if row is None:
             raise LiveLedgerError("unknown policy set digest")
-        mapping = json.loads(row[0])["symbols"]
-        ps = policy_set_from_policies({sym: self.load_policy(pol) for sym, pol in mapping.items()})
+        payload = json.loads(row[0])
+        mapping = payload["symbols"]
+        policies = {sym: self.load_policy(pol) for sym, pol in mapping.items()}
+        if any(getattr(pol, "kind", None) == "free" for pol in policies.values()):
+            raise LiveLedgerError("a per-symbol slot holds a free policy")
+        free = None
+        if payload.get("free") is not None:
+            free = self.load_policy(payload["free"])
+            if getattr(free, "kind", None) != "free":
+                raise LiveLedgerError("the free slot holds a per-symbol policy")
+        ps = policy_set_from_policies(policies, free)
         if ps.digest != set_digest:
             raise LiveLedgerError("stored policy set does not match its digest")
         return ps
@@ -461,9 +489,14 @@ class LiveLedger:
             if prev:
                 old = cur.execute("SELECT payload FROM policy_sets WHERE set_digest=?", (prev[0],)).fetchone()
                 import json
-                old_map = json.loads(old[0])["symbols"]
+                old_payload = json.loads(old[0])
+                old_map = old_payload["symbols"]
                 changed = sorted(s for s in set(old_map) | set(ps.policies)
                                  if old_map.get(s) != (ps.policies[s].digest if s in ps.policies else None))
+                if old_payload.get("free") != (None if ps.free is None else ps.free.digest):
+                    changed.append(FREE_CHANGE_MARK)
+            elif ps.free is not None:
+                changed.append(FREE_CHANGE_MARK)
             cur.execute("INSERT INTO policy_activations(set_digest, previous_set_digest, reason, actor, "
                         "changed_symbols, evidence_digest, enable_digest, lease_epoch, activated_at, note) "
                         "VALUES (?,?,?,?,?,?,?,?,?,?)",

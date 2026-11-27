@@ -127,7 +127,7 @@ def test_stale_status_is_marked_as_reference(tmp_path):
 def test_missing_status_still_states_paper_without_inventing_money(tmp_path):
     profile = game_profile.build("paper-view", state_dir=tmp_path / "empty", now=time.time())
     text = profile["game_state"]
-    assert "PAPER暗号資産コーナー" in text and "PAPER取引" in text
+    assert "暗号通貨コーナー" in text and "PAPER取引" in text
     assert "損益ステータスはまだ取得できていない" in text
     assert "推測で金額を作らない" in text
     assert "円" not in text.replace("金額", "")
@@ -216,7 +216,7 @@ def test_provider_uses_the_paper_corner_status_for_its_game_state(tmp_path):
     assert "累積損益 +123円で、元手より増えている" in context.game_state_context
     assert "PAPER取引" in context.game_state_context
     assert "paper-view" in context.comment_ops_context
-    assert "PAPER暗号資産コーナー" in context.comment_ops_context
+    assert "暗号通貨コーナー" in context.comment_ops_context
 
 
 def test_launcher_prints_the_paper_profile_from_the_state_dir(tmp_path):

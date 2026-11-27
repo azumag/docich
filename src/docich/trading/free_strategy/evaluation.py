@@ -38,9 +38,10 @@ def evaluate(store: LabStore, identity: str, *, now: float) -> dict:
         "net_pnl_jpy": None if last is None else decimal_text(last - capital),
         "cash_benchmark_jpy": decimal_text(capital), "max_drawdown_fraction": decimal_text(drawdown),
         "research_review_due": now >= exp["end_at"],
+        # LIVE eligibility is decided only by the daily promotion judgement (rule free-v1,
+        # ``improve.judge_promotion``); this per-experiment report never grants it.
         "live_eligible": False,
-        "blockers": ["independent_holdout_required", "multiple_testing_adjustment_required",
-                     "live_risk_policy_required", "live_broker_not_implemented"],
+        "blockers": ["promotion_judgement_required"],
     }
     if now < exp["end_at"]:
         report["blockers"].append("forward_window_incomplete")

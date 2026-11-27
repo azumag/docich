@@ -122,6 +122,9 @@ class CycleDeps:
     stop_requested: Callable[[], bool]
     decide: Callable[["CycleDeps", "CycleState", "CycleContext"], None] = _decide_and_act
     config: CycleConfig = CycleConfig()
+    # The state dir (the free strategy's mirror weights and loss-stop state live under it).
+    # ``None`` in tests and tools that do not run a free strategy.
+    state_dir: object = None
 
     def __post_init__(self) -> None:
         if getattr(self.executor, "enable_check", None) is not self.gate:

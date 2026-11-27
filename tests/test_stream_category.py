@@ -125,7 +125,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "私の売買判断を観察。仮想資金で資本主義の綻びを検証",
+                "--activity", "暗号通貨", "--strategy", "私の売買判断を観察。仮想資金と本番資金で資本主義の綻びを検証",
             ],
         )
         self.assertNotIn("--game", call["argv"])
@@ -301,7 +301,7 @@ class TestRunningView(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "私の売買判断を観察。仮想資金で資本主義の綻びを検証",
+                "--activity", "暗号通貨", "--strategy", "私の売買判断を観察。仮想資金と本番資金で資本主義の綻びを検証",
             ],
         )
 

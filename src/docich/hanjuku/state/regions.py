@@ -126,6 +126,7 @@ KEY_OWNERSHIP = {
     'password_sweep': {'region': FLOW, 'lifetime': 'run', 'migrated': False},  # パスワード掃引の有界カウンタ (v1268)
     'boss_wave_generals': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス行軍将軍の追撃対象リスト
     'boss_wave_evicted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},
+    'boss_wave_evicted_retired': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追放済み将軍のボス注文を失敗にした記録  # 崖の向こう側で帰還させ追撃対象から外した将軍
     'ch12_home_keep_three': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 第12話で主人公の城に3人残すための保留記録  # 崖の向こう側で帰還させ追撃対象から外した将軍
     'generals_lost': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 名簿一巡で不在と確認した将軍 (v985)
     'generals_lost_garrison': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 喪失確定時にその将軍を載せていた守備隊の城 (v994)

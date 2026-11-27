@@ -8,7 +8,7 @@ from docich import hanjuku_policy as policy
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import parse
 from test_hanjuku_multi_chikujou import castles, memory, month, open_build, quote, result
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import flow as _flow, world as _world
 
 NAMES = ('アルマムーン', 'ナキューメラ', 'キカンドン', 'ジョンリギ', 'ゴーメン', 'スペンソニア')
 FRAME = Path(__file__).parent / 'fixtures/hanjuku/g684-chikujou-four-rows.png'
@@ -186,6 +186,36 @@ def test_a_pending_launch_defers_the_castle_scroll():
     record = mem['_records'][-1]
     assert record['decision'] == 'chikujou_deferred_sortie'
     assert record['observed_metric']['step'] == 'A:3:M1'
+
+
+def test_a_settled_sortie_retry_does_not_defer_the_castle_scroll():
+    from docich.hanjuku.flows import month as month_flow
+    frame = read_png(FRAME)
+    screen = parse(frame)
+    mem = holdings(key='3-9')
+    mem['month'] = '3-9'
+    mem['tick'] = 1000
+    step = 'A:3:M1'
+    order = {'step': step, 'purpose': 'retake', 'source': 'ヘリオポリス',
+             'target': 'ラグナグ', 'general': 'デュオニソス', 'cards': [], 'note': '奪還'}
+    mem['sortie_launch_pending'] = step
+    from docich.hanjuku.state.regions import plan as _plan_region
+    _plan_region(mem)['chart_plan'] = {'orders': [order]}
+    _plan_region(mem)['orders'] = {step: 'pending'}
+    _world(mem)['launched_orders'] = {step: dict(order)}
+    _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True,
+                                    'confirmation_tick': 800, 'interrupted': True}
+    _flow(mem)['launch_probe'] = {step: {'general': order['general'], 'source': order['source'],
+                                         'target': order['target'], 'reads': 1,
+                                         'confirmation_tick': 800}}
+    sub = mem['month_sub'] = {'kind': 'chikujou', 'key': '3-9', 'chikujou_version': 2,
+                              'rows_tried': list(NAMES[:4]), 'presses': 1,
+                              'build_scroll': {'presses': 1}, 'left_menu': True}
+    assert month_flow._chikujou_scroll(screen, mem, sub) == [policy.pad('down')]
+    assert not sub.get('declined') and not sub.get('aborted')
+    assert not any(r['decision'] == 'chikujou_deferred_sortie' for r in mem.get('_records') or [])
+    assert 'sortie_launch_pending' not in mem
+    assert step not in (_flow(mem).get('launch_probe') or {})
 
 
 def test_without_a_pending_launch_the_scroll_continues():
