@@ -18,8 +18,10 @@ from ..decision_log import _record, _tally
 from ..os_layer.world import NAME, SORTIE_BUSY_TICKS, _en_route, _owned
 from . import routes
 from . import unreadable_card_block
-from .orders import (RETIRED_ORDER_STATES,
-                               _arrival_castle, _boss_companion_source, _boss_egg_depleted,
+from .orders import (RETIRED_ORDER_STATES, BOSS_SOLE_CONSOLIDATION_LIMIT,
+                               _arrival_castle, _boss_companion_source, _boss_consolidation_book,
+                               _boss_egg_depleted, boss_sole_consolidation_used,
+                               note_boss_sole_starved,
                                _whitehouse_open,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
@@ -2783,6 +2785,99 @@ def _mechanical_plan_order(order):
     return copied
 
 
+BOSS_SOLE_STARVED_TICKS = 300       # observations (~7.5 min) before the bounded exception
+
+
+def _boss_sole_recovery_due(mem):
+    row = mem.get('boss_sole_starved')
+    return (isinstance(row, dict) and row.get('chapter') == (mem.get('chapter') or 0)
+            and type(row.get('since')) is int
+            and int(mem.get('tick') or 0) - row['since'] >= BOSS_SOLE_STARVED_TICKS)
+
+
+def _boss_source_consolidation(mem, rid, chapter, owned, boss_orders):
+    """One bounded transfer that makes a boss source usable again.
+
+    Only when the measured boss-only endgame has stayed sole-starved for
+    BOSS_SOLE_STARVED_TICKS may one singleton donor empty its castle; that
+    exception is chapter-scoped, starts at most BOSS_SOLE_CONSOLIDATION_LIMIT
+    times, and is revalidated at the pre-flight and list gates. The boss source
+    is the castle that keeps a defender after the boss wave leaves, so the
+    bounded cost is the donor castle alone rather than an unconditional
+    relaxation of "never empty a castle" (owner 2026-11-06). A castle with a
+    real spare never needs this exception and remains with the ordinary planner.
+    """
+    if not boss_orders or chart.guard_free(chapter):
+        return None
+    if note_boss_sole_starved(mem) is None:
+        return None   # ordinary boss-phase reinforcement remains with the normal planner
+    garrison = _world(mem).get('garrison') or {}
+    busy, inbound = _en_route(mem)
+    busy = busy | set(_world(mem).get('general_location_unknown') or ())
+
+    def free_at(castle):
+        names = _known_residents(mem, garrison, castle)
+        if names is None:
+            return None
+        return [g for g in dict.fromkeys(names or ()) if g not in busy]
+
+    for boss in boss_orders:
+        source = boss.get('source')
+        if source not in owned or source in inbound:
+            continue
+        source_free = free_at(source)
+        if source_free is None or len(source_free) >= 2:
+            continue
+        options = []
+        for donor in sorted(owned - {source}):
+            free = free_at(donor)
+            if not free:
+                continue
+            leg = {'purpose': 'move', 'source': donor, 'target': source}
+            if not routes.order_allowed(mem, leg, donor):
+                continue
+            distance = _distance(chapter, donor, source)
+            if len(free) == 1:
+                general = free[0]
+                # A non-hero donor is preferred; the hero remains the last resort
+                # because the mechanical boss plan already expects him at the source.
+                options.append((1 if general != NAME else 2, distance, donor, general))
+        if not options:
+            continue
+        options.sort()
+        row = mem.get('boss_sole_starved') or {}
+        now = int(mem.get('tick') or 0)
+        due = (type(row.get('since')) is int
+               and now - row['since'] >= BOSS_SOLE_STARVED_TICKS)
+        if not due or boss_sole_consolidation_used(mem, chapter) >= BOSS_SOLE_CONSOLIDATION_LIMIT:
+            continue
+        _, _, donor, general = options[0]
+        order = {'step': f"C:{rid}:sole:{donor}>{source}",
+                 'general': general, 'source': donor, 'target': source,
+                 'cards': [], 'after': None, 'purpose': 'move',
+                 'boss_consolidation': True,
+                 'note': (f'暫定: ボス出撃元{source}を2将軍にするため'
+                          f'{donor}から{_general_label(general)}を集める')}
+        probe = dict(order)
+        if not routes.order_allowed(mem, probe, donor):
+            continue
+        order['boss_sole_consolidation'] = True
+        book = _boss_consolidation_book(mem, chapter)
+        if order['step'] not in book['steps']:
+            book['steps'].append(order['step'])
+            del book['steps'][:-8]
+            row = mem.get('boss_sole_starved') or {}
+            _record(mem, 'boss_sole_consolidation', chart_step=order['step'],
+                    general=general, source=donor, target=source,
+                    observed_metric={'wait': int(mem.get('tick') or 0) - int(row.get('since') or 0),
+                                     'used': boss_sole_consolidation_used(mem, chapter),
+                                     'limit': BOSS_SOLE_CONSOLIDATION_LIMIT},
+                    reason='ボスフェーズで全城が1将軍以下の膠着が上限時間を超えたため、'
+                           '章内2回までの集約移動でボス出撃元を2将軍に戻す')
+        return order
+    return None
+
+
 def _mechanical_boss_plan(mem, rid):
     """A deterministic boss plan once every non-boss castle is owned.
 
@@ -2840,6 +2935,7 @@ def _mechanical_boss_plan(mem, rid):
             status[step] = 'pending'
     boss_actors = {o.get('general') for o in boss_orders if o.get('general')}
     boss_sources = {o.get('source') for o in boss_orders}
+    consolidation = _boss_source_consolidation(mem, rid, chapter, owned, boss_orders)
     moves = [o for o in base
              if o.get('purpose') == 'move'
              and o.get('target') in boss_sources
@@ -2879,6 +2975,14 @@ def _mechanical_boss_plan(mem, rid):
             chosen.append(order)
     if not any(chart.is_boss_castle(o.get('target')) for o in chosen):
         return False
+    if consolidation is not None:
+        # The consolidation itself supplies the hero move when the hero is the
+        # only singleton left to move; do not queue the same leg twice.
+        duplicate = (consolidation.get('general'), consolidation.get('source'),
+                     consolidation.get('target'), 'move')
+        chosen = [o for o in chosen
+                  if (o.get('general'), o.get('source'), o.get('target'), o.get('purpose')) != duplicate]
+        chosen.insert(0, consolidation)
     plan_region = _plan_region(mem)
     plan_region['chart_plan'] = {
         'request_id': rid, 'source': 'mechanical',
@@ -2968,6 +3072,8 @@ def _mechanical_chart(mem, state, rid, digest):
     # ``local_step`` — the execution id is derived from the request and never
     # equals the local id the rebuild produces (#3729).
     previous_local = [o.get('local_step') for o in stored.get('orders') or ()]
+    if _boss_sole_recovery_due(mem) and _mechanical_boss_plan(mem, rid):
+        return   # boss progress outranks rear-castle shuffles once the exception is due
     candidates = interim_candidates(mem, allow_sole=allow_sole)
     if not candidates:
         if _mechanical_boss_plan(mem, rid):
@@ -3365,7 +3471,10 @@ def _drop_stale_plan(mem):
     if not plan.get('orders') or type(adopted) is not int:
         return
     now = int(mem.get('tick') or 0)
-    if now - adopted < PLAN_STALE_TICKS:
+    recovery_missing = (_boss_sole_recovery_due(mem)
+                        and not any(isinstance(o, dict) and o.get('boss_sole_consolidation') is True
+                                    for o in plan.get('orders') or ()))
+    if not recovery_missing and now - adopted < PLAN_STALE_TICKS:
         return
     status = _plan_region(mem).get('orders') or {}
     # docich#4642: an all-failed (or completed) plan must rebuild the same

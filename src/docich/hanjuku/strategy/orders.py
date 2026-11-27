@@ -2312,6 +2312,117 @@ def boss_only_phase(mem) -> bool:
     return bool(normal) and normal <= owned and bool(bosses - owned)
 
 
+BOSS_SOLE_CONSOLIDATION_LIMIT = 2   # singleton consolidation moves started per chapter
+
+
+def boss_sole_starved(mem) -> bool:
+    """Boss-only endgame with no measured castle able to keep a defender.
+
+    Unknown rosters are not evidence of starvation: their read-only probes
+    must run before the bounded one-castle exception below is even considered.
+    Chapter 9 is excluded because its owner-approved guard-free rule already
+    lets the road send a singleton.
+    """
+    chapter = mem.get('chapter') or 0
+    if not boss_only_phase(mem) or chart.guard_free(chapter):
+        return False
+    owned = _owned(mem) & set(chart.castles(chapter) or ())
+    if not owned:
+        return False
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    counts = []
+    for castle in owned:
+        names = _known_roster(mem, garrison, castle)
+        if names is None:
+            return False
+        counts.append(len(set(names or ()) - busy))
+    return all(count <= 1 for count in counts) and any(count == 1 for count in counts)
+
+
+def note_boss_sole_starved(mem):
+    """Maintain the continuous starvation clock used by the bounded recovery."""
+    key = 'boss_sole_starved'
+    chapter = mem.get('chapter') or 0
+    if not boss_sole_starved(mem):
+        mem.pop(key, None)
+        return None
+    now = mem.get('tick')
+    now = int(now) if type(now) is int else 0
+    row = mem.get(key)
+    if (not isinstance(row, dict) or row.get('chapter') != chapter
+            or type(row.get('since')) is not int):
+        row = {'chapter': chapter, 'since': now}
+        mem[key] = row
+    return row
+
+
+def _boss_consolidation_book(mem, chapter):
+    book = mem.get('boss_sole_consolidation')
+    if not isinstance(book, dict) or book.get('chapter') != chapter:
+        book = {'chapter': chapter, 'steps': []}
+        mem['boss_sole_consolidation'] = book
+    if not isinstance(book.get('steps'), list):
+        book['steps'] = []
+    return book
+
+
+def boss_sole_consolidation_used(mem, chapter=None):
+    """Started/finished singleton consolidations in this chapter."""
+    chapter = chapter if chapter is not None else (mem.get('chapter') or 0)
+    book = mem.get('boss_sole_consolidation')
+    if not isinstance(book, dict) or book.get('chapter') != chapter:
+        return 0
+    steps = [step for step in book.get('steps') or () if isinstance(step, str)]
+    started = mem.get('order_start_tick') or {}
+    status = _plan_region(mem).get('orders') or {}
+    return len({step for step in steps
+                if step in started or status.get(step) in
+                ('launched', 'launched_unconfirmed', 'done', 'failed')})
+
+
+def _boss_sole_consolidation_permitted(order, mem):
+    """Revalidate the narrow singleton-transfer exception at execution time.
+
+    The flag is trusted only for the exact mechanically minted step, in the
+    boss-only endgame, while the donor is still a singleton and the boss source
+    still lacks a two-general list.  It is never a general relaxation of the
+    owner rule that a castle keeps one defender.
+    """
+    if (not isinstance(order, dict) or order.get('boss_sole_consolidation') is not True
+            or order.get('purpose') != 'move' or not boss_sole_starved(mem)):
+        return False
+    chapter = mem.get('chapter') or 0
+    book = mem.get('boss_sole_consolidation') or {}
+    step = order.get('step')
+    if step not in (book.get('steps') or ()):
+        return False
+    used = boss_sole_consolidation_used(mem, chapter)
+    status = (_plan_region(mem).get('orders') or {}).get(step)
+    if step in (mem.get('order_start_tick') or {}) or status in (
+            'launched', 'launched_unconfirmed', 'done', 'failed'):
+        used -= 1       # the order being revalidated is not its own extra attempt
+    if used >= BOSS_SOLE_CONSOLIDATION_LIMIT:
+        return False
+    target = order.get('target')
+    boss_sources = {o.get('source') for o in chart.all_orders(chapter)
+                    if chart.is_boss_castle(o.get('target'))}
+    if target not in boss_sources:
+        return False
+    source = _source(order, mem)
+    if source not in (_owned(mem) & set(chart.castles(chapter) or ())):
+        return False
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    source_names = _known_roster(mem, garrison, source)
+    target_names = _known_roster(mem, garrison, target)
+    if source_names is None or target_names is None:
+        return False
+    source_free = set(source_names or ()) - busy
+    target_free = set(target_names or ()) - busy
+    return len(source_free) == 1 and len(target_free) < 2
+
+
 def _dispatch_pending(mem):
     """Pending or boss-retry order steps the dispatch block could start."""
     status = _plan_region(mem).get('orders') or {}
@@ -2379,6 +2490,7 @@ def order_dispatch_starved(mem) -> bool:
 def next_order(mem):
     # A measured しんぐんちゅうです reading restarts the age of a live march
     # before the fixed windows can relaunch it while it is still walking.
+    note_boss_sole_starved(mem)
     _refresh_live_marches(mem)
     _rearm_phantom_site_steps(mem)
     _rearm_failed_site_steps(mem)
@@ -2907,7 +3019,8 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     if (_plan_region(mem).get('active') != order.get('step')
             and not chart.guard_free(mem.get('chapter'))
             and isinstance(present, (list, tuple)) and present
-            and len(set(present) - unavailable) < 2):
+            and len(set(present) - unavailable) < 2
+            and not _boss_sole_consolidation_permitted(order, mem)):
         return True  # pre-flight only: never reopen a plan for the last defender
     # The hero's castle must keep HERO_CASTLE_GUARD generals beside the hero.
     # g1163 2026-11-09 04:39: a plan order sent a general from アルマムーン
