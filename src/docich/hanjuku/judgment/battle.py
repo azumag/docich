@@ -171,6 +171,9 @@ def _note_card_flow_event(mem, cur, event, card=None, **fields):
 
 def _begin_card_flow(mem, cur, flow, *, source):
     """Install a card flow and keep its opening HP/provenance for battle_end."""
+    if isinstance(cur.get('card_flow'), dict):
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま後続の切り札/救済フローへ置き換わったため中断')
     flow = dict(flow)
     flow.setdefault('ally_hp_at_open', cur.get('ally_hp'))
     flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
@@ -423,8 +426,8 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
     card = flow.get('card')
     selected = (selected_interrupted
                 or flow.get('selection_planned') is True
-                or (flow.get('stage') == 'announce'
-                    and card in cur.get('cards_selected', [])))
+                or (isinstance(card, str)
+                    and card in (cur.get('cards_selected') or [])))
     if not selected:
         # g496: the B/menu opening expired before any list selection, but the
         # old path consumed an イッテツーン and counted it for after_card.
