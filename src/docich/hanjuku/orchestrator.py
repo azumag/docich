@@ -2290,7 +2290,12 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     # S3: an open census owns its map/menu/list frames before every other
     # owner. It returns None on anything else (a battle, a message), so the
     # screen goes to its real owner and the census never holds input.
-    actions = card_census_flow.resume_step(screen, mem, frame)
+    recall_y_transition = (recall_flow.recall_y_jump_transition_step(screen, mem)
+                           if kind == 'map_target' else None)
+    # A RECALL Y press owns the picker fade before every other owner: another
+    # input on the old picker can toggle the opening whole-map view closed.
+    actions = (recall_y_transition if recall_y_transition is not None
+               else card_census_flow.resume_step(screen, mem, frame))
     if isinstance(recall_in_flight, dict):
         stage = recall_in_flight.get('stage')
         camp_menu = (stage == 'menu'
@@ -2308,7 +2313,8 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
         # 178836 camp_enter -> 178838 castle_jump_confirm).
         field_picker = ((stage in ('to_camp', 'dest', 'menu')
                          and kind in ('map', 'map_target') and phase != 'concert'))
-        if camp_menu or fort_route or fort_picker or field_picker:
+        if (recall_y_transition is None
+                and (camp_menu or fort_route or fort_picker or field_picker)):
             actions = recall_flow.camp_recall_step(screen, mem, frame)
     if actions is None:
         actions = map_flow.general_jump_step(screen, mem, frame)

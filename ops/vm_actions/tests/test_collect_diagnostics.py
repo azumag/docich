@@ -1954,6 +1954,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1575-ch9-ambush-x-offset",
                  "hanjuku-chart-v1575-ch9-cliff-camp-recall",
                  "hanjuku-chart-v1576-stale-wave-fresh-cell",
+                 "hanjuku-chart-v1577-boss-redirect-y-jump",
 )
     for version in versions:
         assert module._project_corner_state({'bot_version': version})['bot_version'] == version
