@@ -967,8 +967,12 @@ def _card_refusal_retired(role=None, cur=None):
         return False
     if not isinstance(cur, dict):
         return True
-    enemy = cur.get('enemy')
-    return bool(enemy in chart.BOSSES.values() or enemy in reference.BOSS_GENERALS)
+    # 死ぬ実例は「負けるボス戦」だった。HPに余裕がある間は従来の評価を保つ。
+    ally_hp = cur.get('ally_hp')
+    start_hp = cur.get('start_ally_hp')
+    if type(ally_hp) is not int or type(start_hp) is not int or start_hp <= 0:
+        return False
+    return ally_hp * 3 <= start_hp
 
 
 def _card_gate_refused(mem, cur, card, gate, *, listed_cards):
