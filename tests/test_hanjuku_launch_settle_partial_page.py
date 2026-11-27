@@ -67,3 +67,25 @@ def test_a_complete_roster_still_confirms_by_absence():
     settle_launch_probes_from_roster(mem, 'オシロガ', ['オレガノ'])
     confirmed = decided(mem, 'sortie_launch_confirmed')
     assert confirmed and confirmed[0]['observed_metric']['complete'] is True
+
+
+def test_a_probe_whose_sortie_settled_is_discarded_not_confirmed():
+    mem = memory()
+    _world(mem)['sorties'] = {}
+    mem['sortie_launch_pending'] = STEP
+    settle_launch_probes_from_roster(mem, 'オシロガ', ['オレガノ'])
+    assert STEP not in (_flow(mem).get('launch_probe') or {})
+    assert 'sortie_launch_pending' not in mem
+    assert not decided(mem, 'sortie_launch_confirmed')
+    assert not decided(mem, 'sortie_launch_unverified')
+
+
+def test_a_probe_from_another_departure_is_not_applied_to_the_live_sortie():
+    mem = memory()
+    (_flow(mem).get('launch_probe') or {})[STEP]['confirmation_tick'] = 800
+    _world(mem)['sorties'][STEP]['confirmation_tick'] = 900
+    settle_launch_probes_from_roster(mem, 'オシロガ', ['オレガノ'])
+    assert STEP not in (_flow(mem).get('launch_probe') or {})
+    assert 'launch_confirmed' not in _world(mem)['sorties'][STEP]
+    assert not decided(mem, 'sortie_launch_confirmed')
+    assert not decided(mem, 'sortie_launch_unverified')

@@ -4,7 +4,7 @@ The record used to stay 'en_route' after a defeat, so the left status chart
 kept showing a march that was already over and the ledger never closed it.
 """
 from docich.hanjuku.flows import battle
-from docich.hanjuku.state.regions import world as _world
+from docich.hanjuku.state.regions import flow as _flow, world as _world
 
 
 def memory(ally_hp, enemy_hp, castle='ボス', target='ボス', side='attack', retreat=False):
@@ -33,6 +33,20 @@ def test_a_loss_at_the_target_closes_the_sortie():
     assert 'A:x:M1' not in (_world(mem).get('sorties') or {})
     assert mem['sortie_history'][-1]['outcome'] == 'lost'
     assert outcomes(mem)
+
+
+def test_a_loss_at_the_target_clears_launch_priority_artifacts():
+    mem = memory(0, 500)
+    step = 'A:x:M1'
+    mem['sortie_launch_pending'] = step
+    _flow(mem)['launch_probe'] = {step: {'general': 'ペコリーノ', 'source': 'アルマムーン',
+                                         'target': 'ボス', 'reads': 1}}
+    _flow(mem)['sortie_attempt'] = {'step': step, 'target_seen': True,
+                                    'confirmation_tick': 900, 'interrupted': True}
+    battle.battle_end(mem, 'field')
+    assert 'sortie_launch_pending' not in mem
+    assert step not in (_flow(mem).get('launch_probe') or {})
+    assert 'sortie_attempt' not in _flow(mem)
 
 
 def test_a_retreat_is_tracked_as_retreated():

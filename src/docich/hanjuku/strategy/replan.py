@@ -3100,8 +3100,8 @@ def _release_stale_steps(mem, steps):
     2026-11-05: plan_step_released for ポセイドン's boss march at age 872,
     then ブレッツェル was sent on the same step).
     """
-    from .orders import (_arrival_limit, _drop_spent_sortie_attempt,
-                         _queue_overdue_location_recheck)
+    from .orders import (_arrival_limit, clear_sortie_launch_priority,
+                         _drop_spent_sortie_attempt, _queue_overdue_location_recheck)
     now = int(mem.get('tick') or 0)
     status = _plan_region(mem).setdefault('orders', {})
     for step in steps:
@@ -3119,6 +3119,7 @@ def _release_stale_steps(mem, steps):
         _plan_region(mem).setdefault('order_context', {}).pop(step, None)
         _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
         _drop_spent_sortie_attempt(mem, step)
+        clear_sortie_launch_priority(mem, step)
         # Owner 2026-11-05: a released attempt must not leave its march behind.
         # グレナデン stayed launched_unconfirmed for 5971 observations while
         # every plan kept the step, so the expiry's "planned" guard never let

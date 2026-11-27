@@ -37,8 +37,10 @@ from ..strategy.execution import departure_snapshot
 from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT,
                                _boss_companion_wait_expired, _broken_hero_order,
+                               clear_sortie_launch_priority,
                                drop_retired_step_context, _finish_order,
-                               _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
+                               _garrison_move, _give_up_source, _launch_probe_matches_live_sortie,
+                               _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie,
                                _sortie_general, _sortie_resume_arm, _sortie_resume_due,
                                _sortie_resume_reconcile, _sortie_resume_resumed,
@@ -196,6 +198,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     previous = _sorties(mem).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
+    (_flow(mem).get('launch_probe') or {}).pop(step, None)
     _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
@@ -3064,6 +3067,7 @@ def _commit_departure(mem, order, context, snapshot):
     previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
+    (_flow(mem).get('launch_probe') or {}).pop(order['step'], None)
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     _world(mem).setdefault('sorties', {})[order['step']] = {
@@ -3088,7 +3092,9 @@ def _commit_departure(mem, order, context, snapshot):
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
-            'tick': int(mem.get('tick') or 0), 'roster_read': False}
+            'tick': int(mem.get('tick') or 0), 'roster_read': False,
+            **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
+               if 'departure_binding' in snapshot else {})}
         # owner 2026-11-27 (#5696/#5702): 出撃を開始したが発射を確認できていない
         # 間は、築城一覧・家来確認などの割り込みより発射確認を優先する。
         arm_sortie_launch_priority(mem, order)
@@ -3174,8 +3180,9 @@ def _probe_launch_markers(mem, markers):
     now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
         sortie = _sorties(mem).get(step)
-        if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
+        if not _launch_probe_matches_live_sortie(probe, sortie):
             probes.pop(step, None)
+            clear_sortie_launch_priority(mem, step)
             continue
         if probe.get('blind'):
             if probe.get('kept'):
@@ -3306,6 +3313,11 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
         return
     roster = list(generals)
     for step, probe in list(probes.items()):
+        sortie = _sorties(mem).get(step)
+        if not _launch_probe_matches_live_sortie(probe, sortie):
+            probes.pop(step, None)
+            clear_sortie_launch_priority(mem, step)
+            continue
         if probe.get('source') != castle:
             continue
         general = probe.get('general')
@@ -3319,7 +3331,6 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
             # find the unit, a name that merely scrolled off proves nothing.
             continue
         probes.pop(step, None)
-        sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
@@ -3355,6 +3366,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
     _sorties(mem).pop(step, None)
+    clear_sortie_launch_priority(mem, step)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)
