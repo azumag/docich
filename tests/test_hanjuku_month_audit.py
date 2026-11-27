@@ -529,6 +529,17 @@ def test_camp_terminal_decisions_are_classified():
         metric={'stage': 'menu', 'steps': 91}))
     assert failed['kind'] == 'camp_recall_failed'
     assert failed['reason_code'] == 'camp_recall_limit'
+    redirect = audit._camp_event(_camp_record(
+        'camp_boss_redirect_aborted', event='boss_jump_failed',
+        reason='ボスのセルへマーカーを合わせられないため再出撃を取り消す',
+        metric={'camp': [60, 60], 'target_cell': [70, 70], 'camp_world': [500, 500],
+                'boss_cell': [500, 300], 'castle': 'ボス', 'stage': 'dest', 'steps': 1,
+                'screen_kind': 'map_target',
+                'y_jump': {'attempt': 2, 'active': False, 'seen': None,
+                           'moves': 0, 'wait': 0, 'age': 1, 'last_result': 'view_closed'}}))
+    assert redirect['reason_code'] == 'camp_boss_redirect'
+    assert redirect['camp_world'] == [500, 500] and redirect['boss_cell'] == [500, 300]
+    assert redirect['y_jump']['attempt'] == 2 and redirect['y_jump']['last_result'] == 'view_closed'
     cancelled = audit._camp_event(_camp_record(
         'camp_recall_skipped', reason='可視範囲に自軍城の屋根がなく帰還先を選べない'))
     assert cancelled['kind'] == 'camp_recall_cancelled'

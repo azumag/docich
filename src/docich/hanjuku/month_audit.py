@@ -909,6 +909,25 @@ def _camp_reason_code(decision, event, reason):
     return 'other'
 
 
+def _bounded_cell(value):
+    return list(value) if (isinstance(value, (list, tuple)) and len(value) == 2
+                           and all(type(item) is int for item in value)) else None
+
+
+def _bounded_jump_evidence(value):
+    if not isinstance(value, dict):
+        return None
+    active, seen = value.get('active'), value.get('seen')
+    evidence = {'attempt': _bounded_int(value.get('attempt'), 0, 10 ** 6),
+                'active': active if type(active) is bool else None,
+                'seen': seen if type(seen) is bool else None,
+                'moves': _bounded_int(value.get('moves'), 0, 10 ** 6),
+                'wait': _bounded_int(value.get('wait'), 0, 10 ** 6),
+                'age': _bounded_int(value.get('age'), 0, 10 ** 6),
+                'last_result': _bounded_text(value.get('last_result'), 64)}
+    return evidence if any(item is not None for item in evidence.values()) else None
+
+
 def _camp_event(record):
     """One terminal camp-recall or cliff-escape incident, or None."""
     if not isinstance(record, dict):
@@ -932,12 +951,11 @@ def _camp_event(record):
     else:
         kind, outcome = 'camp_recall_cancelled', 'cancelled'
     reason = record.get('reason') if isinstance(record.get('reason'), str) else None
-    camp = metric.get('camp')
-    camp = list(camp) if (isinstance(camp, list) and len(camp) == 2
-                          and all(type(value) is int for value in camp)) else None
-    target_cell = metric.get('target_cell')
-    target_cell = list(target_cell) if (isinstance(target_cell, list) and len(target_cell) == 2
-                                        and all(type(value) is int for value in target_cell)) else None
+    camp = _bounded_cell(metric.get('camp'))
+    target_cell = _bounded_cell(metric.get('target_cell'))
+    camp_world = _bounded_cell(metric.get('camp_world'))
+    boss_cell = _bounded_cell(metric.get('boss_cell'))
+    y_jump = _bounded_jump_evidence(metric.get('y_jump'))
     castle = _bounded_text(metric.get('castle'), 48)
     general = _bounded_text(record.get('general') or metric.get('general'), 48)
     return {
@@ -950,6 +968,9 @@ def _camp_event(record):
         'general': general,
         'camp': camp,
         'target_cell': target_cell,
+        'camp_world': camp_world,
+        'boss_cell': boss_cell,
+        'y_jump': y_jump,
         'castle': castle,
         'stage': _bounded_text(metric.get('stage'), 32),
         'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
@@ -4890,9 +4911,17 @@ def render(record):
             f" / status: {camp.get('resulting_event') or '不明'}"
             f" / escape_move: {bool(camp.get('escape_move'))}"
             f" / target_cell: {camp.get('target_cell')}"
+            f" / camp_world: {camp.get('camp_world')}"
+            f" / boss_cell: {camp.get('boss_cell')}"
+            f" / screen: {camp.get('screen') or '不明'}"
             f" / input_receipt_confirmed: {bool(camp.get('input_receipt_confirmed'))}"
             f" / picker_closed: {bool(camp.get('picker_closed'))}"
             f" / interrupted: {bool(camp.get('interrupted'))}",
+            *([f"- Yジャンプ: attempt {camp['y_jump'].get('attempt')} / active {camp['y_jump'].get('active')}"
+               f" / seen {camp['y_jump'].get('seen')} / moves {camp['y_jump'].get('moves')}"
+               f" / wait {camp['y_jump'].get('wait')} / age {camp['y_jump'].get('age')}"
+               f" / last_result {camp['y_jump'].get('last_result') or 'なし'}"]
+              if isinstance(camp.get('y_jump'), dict) else []),
             *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
                f" / status {camp.get('fort_status_observations') or 0} / status一致 {camp.get('fort_status_reads') or 0}",
                f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"

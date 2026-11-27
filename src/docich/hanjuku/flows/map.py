@@ -645,7 +645,8 @@ def world_map_step(screen, mem, frame):
         # it and keep the camp where it is. Unmeasured: the event names the screen.
         from .recall import _abort_boss_redirect
         return _abort_boss_redirect(mem, recall, 'boss_picker_is_world_map',
-                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す')
+                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す',
+                                    screen=screen)
     if recall and recall.get('stage') == 'dest':
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
