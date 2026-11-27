@@ -33,13 +33,14 @@ stops it.  Every exit path releases the lease (best effort) and closes the ledge
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
 
-from ..live import act, reconcile, views
+from ..live import act, promotion, reconcile, views
 from ..live.control import read_control
 from ..live.cycle import CycleConfig, CycleDeps, CycleOutcome, CycleState, next_wait, run_cycle
 from ..live.executor import SENDER_KINDS_ALLOWED, OrderExecutor
@@ -48,6 +49,7 @@ from ..live.lease import (LeaseHeld, LeaseLost, acquire_writer_lease, release_wr
 from ..live.ledger import LiveLedger, LiveLedgerError
 from ..live.opening import record_auto_opening
 from ..live.paths import LiveLayoutError, live_layout
+from ..live.safety import read_safety_state
 from .status import write_status
 
 EXIT_OK = 0
@@ -260,12 +262,44 @@ def _opening_attempt(ledger, lease, executor, clock) -> bool:
         return True
 
 
+
+def _promotion_step(state_dir, ledger, lease, ps, clock):
+    """Judge and, when due, record one automatic promotion (Issue #3623 §2.6).
+
+    Returns the policy set to use from now on (``ps`` unchanged when nothing was promoted).
+    ``LeaseLost`` propagates; any other failure is reported in the status file and leaves
+    the active set as it was: a broken judge never stops trading.
+    """
+    now = _safe_now(clock)
+    try:
+        blocked = read_safety_state(ledger).block_new_buys
+        decision = promotion.judge(state_dir, ledger, ps, now=now, safety_blocked=blocked)
+        new_set = promotion.apply(ledger, lease, ps, decision, now=now)
+        payload = decision.status_payload()
+        payload["applied"] = new_set is not None
+        if new_set is not None:
+            payload["set_digest"] = new_set.digest[:12]
+            payload["evidence_digest"] = decision.evidence_digest()
+        promotion.write_status(state_dir, payload)
+        return new_set or ps
+    except LeaseLost:
+        raise
+    except Exception as exc:
+        promotion.write_status(state_dir, {"schema_version": 1, "rule": promotion.RULE_ID,
+                                           "status": "failed", "judged_at": now,
+                                           "reason": type(exc).__name__, "applied": False})
+        return ps
+
+
 def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requested,
-               sleep, interval_s=60.0, config=CycleConfig(), open_pair=None) -> int:
+               sleep, interval_s=60.0, config=CycleConfig(), open_pair=None,
+               promotion_interval_s: float | None = promotion.CHECK_INTERVAL_S) -> int:
     """Run the LIVE worker until a stop, a terminal outcome or a configuration failure.
 
     ``open_pair`` is the explicit paired-session hook: it returns ``(reader, sender)`` from the
     one account.  With no ``open_pair`` the worker uses ``open_reader`` and ``sender=None``.
+    ``promotion_interval_s`` is how often the automatic promotion is judged between cycles
+    (``None`` disables it); the first judgement runs before the first cycle.
     """
     started_at = _safe_now(clock)
     ledger = None
@@ -369,7 +403,18 @@ def run_worker(*, state_dir, open_reader, make_market_data, clock, stop_requeste
                          stop_requested=stop_requested, decide=act.decide_and_act,
                          config=config)
         last_report = None
+        next_promotion = None if promotion_interval_s is None else 0.0
         while True:
+            if next_promotion is not None and _safe_now(clock) >= next_promotion:
+                next_promotion = _safe_now(clock) + float(promotion_interval_s)
+                try:
+                    promoted = _promotion_step(state_dir, ledger, lease, ps, clock)
+                except LeaseLost:
+                    return EXIT_LEASE_LOST
+                if promoted is not ps:
+                    ps = promoted
+                    executor.symbols = tuple(sorted(ps.policies))
+                    deps = dataclasses.replace(deps, policy_set=ps, symbols=executor.symbols)
             # At most one retry per cycle while some watched currency still needs an
             # opening balance.  It runs before the cycle so the cycle sees the cashflow.
             if opening_pending:

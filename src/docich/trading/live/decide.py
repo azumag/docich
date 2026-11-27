@@ -133,6 +133,28 @@ def _payload(plan, mode_text: str, cycle_text: str, blocks_text: str) -> dict:
     }
 
 
+def entry_exit_policies(ledger, held, policy_set) -> dict:
+    """The entry policy of each held position whose digest is not the active one.
+
+    After a promotion the active policy of a symbol changes while an older position is
+    still open.  That position keeps the exit rules it was entered under (Issue #3623
+    §2.6-5); buys stay blocked by ``legacy_position_open`` until it is flat.  A digest the
+    ledger cannot load is left out, so the sell falls back to the active exit rules: the
+    sell still carries the entry digest (the ledger trigger), only the rule set differs.
+    """
+    policies: dict = {}
+    for symbol, position in (held or {}).items():
+        digest = getattr(position, "entry_policy_digest", None)
+        active = policy_set.policies.get(symbol)
+        if not digest or active is None or digest == active.digest:
+            continue
+        try:
+            policies[symbol] = ledger.load_policy(digest)
+        except Exception:
+            continue
+    return policies
+
+
 def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext", *,
                     inputs: CycleInputs | None = None, dedupe: dict | None = None,
                     decision_prefix: str = "live1",
@@ -157,7 +179,9 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
         return sell_attempts_for(deps.ledger, exits, inputs.held, deps.policy_set,
                                  decision_prefix=decision_prefix)
 
-    signals = scan_live(ctx.frames, inputs.positions, deps.policy_set, now=ctx.now)
+    signals = scan_live(ctx.frames, inputs.positions, deps.policy_set, now=ctx.now,
+                        exit_policies=entry_exit_policies(deps.ledger, inputs.held,
+                                                          deps.policy_set))
 
     skip_decisions: list[SkipDecision] = list(signals.skipped)
 
