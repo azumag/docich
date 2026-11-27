@@ -145,7 +145,8 @@ def test_production_catalog_enables_doushi_card_in_auto_rotation():
     # 2026-11-18: chart-659 (#659) 追加 → 18本（manual-only）。
     # #5584: geography-world (newcorner, DOCICH_NEW_CORNER_ENABLED ゲート) → 19本。
     # 2026-11-25: hanjuku-speedrun 追加 → 20本（manual-only）。
-    assert len(catalog) == 20
+    # #1716: international-politics (newcorner, 同ゲート) → 21本。
+    assert len(catalog) == 21
     row = next(c for c in catalog if c.id == "doushi-card")
     assert (row.adapter, row.game) == ("doushi", VIEW_NAME)
     assert row.enabled is True and row.manual_only is False

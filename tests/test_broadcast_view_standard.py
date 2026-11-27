@@ -42,7 +42,7 @@ BROADCAST_VIEWS = (
     "paper-view", "weather-view", "tsuitate-view", "yosou-view", "doushi-view",
     "othello-view", "puyo-view",
     "mystery-view", "lawsim-view", "trpg-view", "chart-659",
-    "geography-world-view",
+    "geography-world-view", "international-politics-view",
 )
 
 #: The PAPER dashboard ships as a static asset rather than a template constant.
@@ -107,6 +107,7 @@ def test_served_japanese_pages_declare_notranslate():
         "trpg-view": trpg_view.HTML,
         "chart-659": chart_view.HTML,
         "geography-world-view": new_corner_view.HTML,
+        "international-politics-view": new_corner_view.HTML,
         "paper-view": PAPER_DASHBOARD.read_text(encoding="utf-8"),
     }
     for name, html in pages.items():
