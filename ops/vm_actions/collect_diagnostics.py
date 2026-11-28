@@ -8294,6 +8294,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1601-sortie-identity",
             "hanjuku-chart-v1602-sortie-fail-identity",
             "hanjuku-chart-v1605-retreat-card-flow",
+            "hanjuku-chart-v1606-normal-general-card-spend",
             "hanjuku-chart-v1601-comment-strategy",
             "hanjuku-chart-v1602-sortie-identity",
             "hanjuku-chart-v1605-boss-egg-unread",

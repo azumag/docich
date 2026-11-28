@@ -54,7 +54,7 @@ def test_control_melee_permission_needs_healthy_hp_current_army_and_combat(chang
     assert gate['role'] != 'control_then_melee_not_a_kill'
 
 
-@pytest.mark.parametrize('ally_hp, allowed', [(12, False), (16, False), (17, True), (33, True), (38, True)])
+@pytest.mark.parametrize('ally_hp, allowed', [(13, False), (16, False), (17, True), (33, True), (38, True)])
 def test_halving_opens_when_the_enemy_ends_up_no_stronger_than_us(ally_hp, allowed):
     """Owner 2026-11-04: 切り札は不利でなくても使う。半減後に敵HPが自HP以下なら開く。
 
