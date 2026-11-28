@@ -8298,6 +8298,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1607-chikujou-scan-inner",
             "hanjuku-chart-v1609-normal-loss-no-refusal",
             "hanjuku-chart-v1612-month-floor-dispatch",
+            "hanjuku-chart-v1613-general-loss-card-spend",
+            "hanjuku-chart-v1555-spend-eggs-and-cards",
             "hanjuku-chart-v1606-ch4-boss-source-reach",
             "hanjuku-chart-v1607-chikujou-noncontiguous",
             "hanjuku-chart-v1608-recall-y-recovery",

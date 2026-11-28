@@ -953,11 +953,22 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
     # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
+    # 既に1枚使った戦闘が危険なままなら、卵落とし等の非致死リスクで拒否せず
+    # 次の札を開かせる。1枚目や通常戦闘の判定は従来どおり（安全弁は維持）。
+    heal_alternative = (
+        listed_cards is not None
+        and 'エンジェリン' in listed_cards
+        and card != 'エンジェリン'
+        and _card_healing_needed(cur)
+    )
     # 危険なままの戦闘では非致死リスクで拒否せず次の札を開かせる。
     # docich#5802: 敗北へ向かう通常将軍戦も同じ安全弁を使う。
     if (not result['allowed'] and not finished
             and _critical_survival_needed(cur)
             and (summoned or boss or _ordinary_general_losing_battle(cur))
+            and not heal_alternative
+            and card not in reference.BOSS_ONLY_CARDS
+            and estimate.get('effect_kind') != 'retreat'
             and result['role'] in {'nonlethal_egg_risk', 'control_has_no_observed_followup',
                                    'damage_or_egg_risk_unclassified'}):
         result.update(allowed=True, role='critical_card_spend')
@@ -2638,8 +2649,9 @@ def _retreat_cards_to_spend(cur):
     (cards_checked, cards_exhausted, exhausted) cap it too.
     """
     rescue = cur.get('survival') or {}
-    if (rescue.get('exhausted') or rescue.get('cards_exhausted')
-            or int(rescue.get('cards_checked') or 0) >= CARD_SPEND_ATTEMPT_LIMIT):
+    checks = int(rescue.get('cards_checked') or 0)
+    over_check_limit = checks > 6 if _critical_survival_needed(cur) else checks >= CARD_SPEND_ATTEMPT_LIMIT
+    if rescue.get('exhausted') or rescue.get('cards_exhausted') or over_check_limit:
         return False
     attempts = _card_spend_attempts(cur)
     return any(attempts.get(card, 0) < CARD_SPEND_ATTEMPT_LIMIT

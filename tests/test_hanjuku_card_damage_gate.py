@@ -76,7 +76,9 @@ def test_a_critical_summon_battle_may_open_its_first_card():
 def test_a_critical_ordinary_battle_may_open_its_first_card():
     # docich#5802: 退却禁止の下では、敗北へ向かう通常将軍戦でも札を温存しない。
     from docich.hanjuku.judgment import battle as rules
-    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    # main 側の判定（_ordinary_general_losing_battle）に合わせ、明確に敗北へ向かう
+    # 局面（HPが敵の半分未満）で固定する。
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=12)
     cur = mem['battle']
     gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
     assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
@@ -89,6 +91,11 @@ def test_an_ordinary_battle_outside_losing_pressure_keeps_the_existing_refusal()
     gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
     assert rules._ordinary_general_losing_battle(cur) is False
     assert gate['allowed'] is False
+    # Retreat-banned critical HP in an ordinary battle must spend usable cards.
+    critical_mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    critical_gate = rules._card_damage_gate(
+        critical_mem, critical_mem['battle'], 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert critical_gate['allowed'] is True and critical_gate['role'] == 'critical_card_spend'
 
 
 def assert_not_spent(mem):
