@@ -650,3 +650,13 @@ def test_prompt_requires_desumasu_tone(live):
     # 以前の「〜でしょう」「〜ですね」禁止は、丁寧な語尾として許可に変わった。
     assert '「〜でしょう」「〜ですね」「〜てやりましょう」' not in prompt
 
+
+def test_prompt_bans_detail_numbers_and_excuses_and_asks_for_strategy(live):
+    # owner 2026-11-28: HP等の細かい数値と「未確認です」系の留保を入れず、
+    # bot の戦略アルゴリズムと絡めた行動説明を入れる。
+    value = periodic.situation(live.runtime, RUN, _state(live), live.now)
+    prompt = periodic.build_prompt(value)
+    assert 'HP・兵数・ダメージ・残金などの細かい数値は書かない' in prompt
+    assert 'エクスキューズや留保は書かない' in prompt
+    assert '戦略の言葉で添えてください' in prompt
+
