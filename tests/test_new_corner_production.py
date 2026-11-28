@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 from pathlib import Path
 import sys
 import threading
@@ -74,6 +75,8 @@ CORNER_ID = "geography-world"
 VIEW_NAME = "geography-world-view"
 INTERNATIONAL_ID = "international-politics"
 INTERNATIONAL_VIEW = "international-politics-view"
+ENGLISH_ID = "english"
+ENGLISH_VIEW = "english-view"
 
 
 def _global(tmp_path, config_text=""):
@@ -207,6 +210,63 @@ def test_theme_candidates_load_and_select_for_international_politics():
     assert theme["fixtureId"] == "fixed-international-politics-deepdive-001"
     assert pick_theme_id(INTERNATIONAL_ID, generation=1) == ids[0]
     assert pick_theme_id(INTERNATIONAL_ID, generation=len(ids) + 1) == ids[0]
+
+
+def test_production_catalog_registers_english_flag_gated():
+    g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
+    row = next(c for c in load_catalog(g) if c.id == ENGLISH_ID)
+    assert (row.adapter, row.game) == ("newcorner", ENGLISH_VIEW)
+    assert row.enabled is True and row.manual_only is False
+    assert row.live_eligible is False and row.paused is False
+    assert row.duration_minutes == 4 and row.audio_enabled is False
+    assert row.fetch_on_start is False and row.target_matches is None
+
+
+def test_theme_candidates_load_and_select_for_english():
+    candidates = list_theme_candidates(ENGLISH_ID)
+    assert len(candidates) >= 3
+    ids = [c["id"] for c in candidates]
+    assert len(set(ids)) == len(ids)
+    expected = {
+        "stack-trace-reading", "deploy-rollback",
+        "central-bank-rate-decision", "election-headline",
+        "coffee-shop-order", "weekend-plan",
+    }
+    assert expected <= set(ids)
+    theme = select_theme("stack-trace-reading", ENGLISH_ID)
+    assert theme["id"] == "stack-trace-reading" and theme["title"].strip()
+    assert pick_theme_id(ENGLISH_ID, generation=1) == ids[0]
+    assert pick_theme_id(ENGLISH_ID, generation=len(ids) + 1) == ids[0]
+
+
+def test_adapter_is_ineligible_for_english_when_flag_is_off(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    monkeypatch.delenv(ENABLE_ENV, raising=False)
+    corner = Corner(
+        ENGLISH_ID, "newcorner", ENGLISH_VIEW,
+        duration_minutes=4, audio_enabled=False,
+    )
+    adapter = NewCornerAdapter(g, corner)
+    assert adapter.manager.corner_id == ENGLISH_ID
+    assert adapter.manager.view_name == ENGLISH_VIEW
+    assert adapter.manager.duration_minutes == 4
+    # flag 未指定／OFF: adapter は rotation に入りえない（fail-closed）
+    assert adapter.manager.eligible() is False
+
+
+def test_english_produce_record_is_disabled_when_flag_unset(tmp_path, monkeypatch):
+    g = _global(tmp_path)
+    # DOCICH_NEW_CORNER_ENABLED 未指定: produce_record は disabled を返し発火しない
+    monkeypatch.delenv(ENABLE_ENV, raising=False)
+    result = produce_record(
+        ENGLISH_ID,
+        env={},
+        agents="",
+        root=ROOT,
+    )
+    assert result.status == "disabled"
+    assert result.record is None
+    assert not result.ok
 
 
 # --- record production (fake material + recorded generation) ------------------
