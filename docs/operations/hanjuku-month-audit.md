@@ -183,6 +183,8 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   terminal declined/leftover は「キャンセル」として1回だけ保存。
 - 同じ章・月は1回だけ。所持金・必要残し・候補・試行済み・増築済み・
   flow/計画/在城/統計を1件32KB以内で残す。
+- 所持金または必要予約が未読なら、`CHIKUJOU_AFFORDABILITY_WAIT` 回だけ入力せず再観測する。読み直せた場合は通常判定へ戻り、上限後は支出せず `chikujou='unverified'` で月を閉じる。
+- 終端の `chikujou_affordability_unverified` がある月は、築城可能条件を後から満たして見えても confidence を `medium` にし、資金確認未完了として表示する。途中の wait 記録だけでは降格しない。
 - 題名は `[半熟英雄] 築城可能なまま月一終了: ch<章> <月>` または
   `築城可能なのにキャンセル: ...`。
 

@@ -8286,7 +8286,13 @@ def _project_corner_state(data):
             "hanjuku-chart-v1591-clear-sortie-launch-latch",
             "hanjuku-chart-v1592-unreadable-card-loop",
             "hanjuku-chart-v1593-unreadable-card-source",
-            "hanjuku-chart-v1595-boss-card-retreat-residual",
+<<<<<<< HEAD
+            "hanjuku-chart-v1596-boss-card-retreat-residual",
+=======
+            "hanjuku-chart-v1594-boss-no-start",
+            "hanjuku-chart-v1595-boss-order-recovery",
+            "hanjuku-chart-v1594-chikujou-hold-receipt",
+>>>>>>> origin/main
             "hanjuku-chart-v1592-boss-source-consolidation",
             "hanjuku-chart-v1586-announce-interrupt-settle",
             "hanjuku-chart-v1590-boss-sole-starved-break",
@@ -8337,6 +8343,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1443-boss-companion-stage-timeout",
             "hanjuku-chart-v1444-chikujou-skip-note",
             "hanjuku-chart-v1407-boss-wave-march-blocker",
+            "hanjuku-chart-v1409-chikujou-affordability-retry",
             "hanjuku-chart-v985-roster-lost",
             "hanjuku-chart-v982-gbox",
             "hanjuku-chart-v984-roster-map-anchor",

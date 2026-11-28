@@ -9,7 +9,7 @@ castle fails the two-general launch rule, an unread castle is the only place
 a sendable pair can hide, so it is probed too (throttled by its last start).
 """
 from docich import hanjuku_chart as chart
-from docich.hanjuku.strategy import replan
+from docich.hanjuku.strategy import orders, replan
 from docich.hanjuku.state.regions import world as _world
 
 ANY = replan.MOVE_ANY_GENERAL   # 余剰将軍（旧: しょうぐん も後方互換で受理）
@@ -117,3 +117,33 @@ def test_unread_garrison_does_not_crash_situation_digest():
     assert situation['garrison']['カバルッサ'] == ['ココット']
     assert all(isinstance(names, list) for names in situation['garrison'].values())
     assert any(names == [] for names in situation['garrison'].values())
+
+
+def test_location_unknown_second_defender_mints_a_recheck_probe_not_a_wave():
+    """docich#5775: use the same defender accounting as ``next_order``.
+
+    A two-name roster whose second name is location-unknown is not a legal
+    sortie source yet. The boss picker must not mint the wave that
+    ``_source_spare_missing`` will veto forever; it opens the bounded source
+    location recheck first, exactly like the ordinary interim picker.
+    """
+    mem = memory({'カバルッサ': ['ココット', 'ゼウス']})
+    _world(mem)['general_location_unknown'] = ['ゼウス']
+    waves = boss_waves(mem)
+    assert not [o for o in waves if not o.get('source_probe')]
+    probes = [o for o in waves if o.get('source_probe')]
+    assert len(probes) == 1
+    assert probes[0]['source'] == 'カバルッサ'
+    assert probes[0]['general'] == ANY
+    executable = {**probes[0], 'step': 'A:test:Mprobe'}
+    assert orders.order_start_blocker(executable, mem) is None
+
+
+def test_two_measured_defenders_still_send_a_wave_when_one_location_is_unknown():
+    """The stricter accounting does not suppress a genuinely legal source."""
+    mem = memory({'カバルッサ': ['ココット', 'ゼウス', 'ヘラ']})
+    _world(mem)['general_location_unknown'] = ['ヘラ']
+    waves = [o for o in boss_waves(mem) if not o.get('source_probe')]
+    assert waves
+    assert waves[0]['source'] == 'カバルッサ'
+    assert waves[0]['general'] in ('ココット', 'ゼウス')

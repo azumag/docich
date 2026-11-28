@@ -461,6 +461,35 @@ def _month_soldier_budget(mem, shop, header, gold):
     return budget
 
 
+def _pending_chikujou_header_shop(mem):
+    """Return this month's ready-to-build shop when the HUD header is unreadable.
+
+    The monthly menu can still be recognized when one HUD digit is missing.
+    In that frame _plan(mem, None) cannot recover the existing month-keyed
+    shop, so the ordinary flow could reach も〜おしまい before retrying the
+    already-planned build. Reuse only a shop whose month/chapter scope is
+    explicit and whose earlier purchase/necessity steps are already settled.
+    """
+    shop = mem.get('shop')
+    month = mem.get('month')
+    if (not isinstance(shop, dict) or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or shop.get('key') != month
+            or mem.get('month_chapter') != mem.get('chapter')):
+        return None
+    if shop.get('chikujou_header_unverified') is True:
+        return shop
+    if (shop.get('chikujou') != 'check'
+            or shop.get('soldiers_done') is not True
+            or (shop.get('merchant_done') is not True
+                and (shop.get('items') or shop.get('bargain_deferred')))
+            or shop.get('cards_held') or mem.get('month_sub')
+            or shop.get('egg') in ('pending', 'check')
+            or shop.get('recruit') in ('pending', 'check')):
+        return None
+    return shop
+
+
 MONTH_SUB_OPEN_LIMIT = 6   # 出撃未着手の月で月一メニューに使う上限(owner 2026-11-28)
 
 
@@ -485,10 +514,29 @@ def _month_sub_over_budget(mem):
     return counts.get('month') == key and int(counts.get('count') or 0) >= MONTH_SUB_OPEN_LIMIT
 
 
-def month_step(screen: Screen, mem):
-    shop = _plan(mem, screen.header)
     # owner 2026-11-28: 出撃がまだ始まっていない月で月一メニューの処理が続くと、
     # 出撃0のまま月が終わる。上限を超えたらメニューを閉じてマップへ戻す。
+def month_step(screen: Screen, mem):
+    shop = None
+    if screen.kind == 'month_menu' and screen.header is None:
+        shop = _pending_chikujou_header_shop(mem)
+        receipt = shop.get('soldier_receipt') if isinstance(shop, dict) else None
+        receipt_pending = isinstance(receipt, dict) and receipt.get('status') == 'pending'
+        if shop and shop.get('chikujou') == 'check' and not receipt_pending:
+            # A refill's debit is not known until observe_events settles its
+            # receipt. Let the existing pending-receipt guard below own these
+            # frames; they must not consume the build affordability retry budget.
+            # Run the same bounded gate before the exit row can be selected.
+            # Never use the saved balance as payment evidence.
+            result = _month_chikujou(screen, mem, shop)
+            if result is not None:
+                return result
+            if shop.get('chikujou') == 'unverified':
+                shop['chikujou_header_unverified'] = True
+        if shop is None:
+            shop = _plan(mem, screen.header)
+    else:
+        shop = _plan(mem, screen.header)
     if _month_sub_over_budget(mem):
         if mem.get('month_sub_deferred_noted') != mem.get('month'):
             mem['month_sub_deferred_noted'] = mem.get('month')
@@ -1155,6 +1203,7 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
+CHIKUJOU_AFFORDABILITY_WAIT = 3  # transient unread gold/reserve frames before a safe skip
 CHIKUJOU_SCROLL_SCHEMA = 2     # bidirectional scan state; v1 stopped at the first repeated window
 CHIKUJOU_SCROLL_RECOVER_WAIT = 2  # inputless observations before retrying a dead scroll episode
 
@@ -1511,6 +1560,36 @@ def _month_chikujou(screen, mem, shop):
         return None
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
+    gold_readable = type(gold) is int and gold >= 0
+    reserve_readable = type(reserve) is int and reserve >= 0
+    if not gold_readable or not reserve_readable:
+        previous = shop.get('chikujou_affordability_wait')
+        waits = (min(previous + 1, CHIKUJOU_AFFORDABILITY_WAIT + 1)
+                 if type(previous) is int and previous >= 0 else 1)
+        shop['chikujou_affordability_wait'] = waits
+        observed = {
+            'waits': waits,
+            'gold': gold if gold_readable else None,
+            'reserve': reserve if reserve_readable else None,
+            'gold_readable': gold_readable,
+            'reserve_readable': reserve_readable,
+            'header_readable': screen.header is not None,
+            'screen': screen.kind,
+        }
+        if waits <= CHIKUJOU_AFFORDABILITY_WAIT:
+            _record(mem, 'chikujou_affordability_wait', month=shop.get('key'),
+                    observed_metric=observed,
+                    reason='所持金または必要予約を一時的に読めないため、築城の可否を決めず有限回再観測する')
+            return []
+        shop['chikujou'] = 'unverified'
+        observed['skipped'] = True
+        _record(mem, 'chikujou_affordability_unverified', month=shop.get('key'),
+                observed_metric=observed,
+                deviation_reason=('month_header_unreadable' if screen.header is None
+                                  else 'affordability_unreadable'),
+                reason='所持金または必要予約を有限回待っても読めないため、支出せず当月の築城可否を未確認で閉じる')
+        return None
+    shop.pop('chikujou_affordability_wait', None)
     if not _chikujou_affordable(gold, reserve):
         # Keep the row open: a reserve released later in this same menu (an
         # egg/recruit skip, a repair deferral, a completed roster) frees the
