@@ -811,6 +811,31 @@ def test_exhausted_battle_retry_stays_high_even_if_month_launched(runtime_dir):
     assert record['confidence_reasons'] == []
 
 
+def test_retry_exhausted_identity_is_backfilled_from_launched_order(runtime_dir):
+    step = 'A:3d1e5d29:Mc7fc03'
+    value = state(11, '15-10', 0, launches=2)
+    value['policy']['plan']['chart_plan'] = {
+        'request_id': '53c04353b1719ad7',
+        'orders': [{'step': 'A:53c04353:M9ba530', 'purpose': 'attack',
+                    'general': '別将', 'source': '別城', 'target': '別目標'}],
+    }
+    value['policy']['world']['launched_orders'] = {step: {
+        'general': 'フェデリーニ', 'source': 'タタール', 'target': 'クラボニア',
+        'purpose': 'attack'}}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('situation_held', step=step,
+                                  variant='attack_retry_exhausted')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['sortie_event']
+    assert event['step'] == step
+    assert event['general'] == 'フェデリーニ'
+    assert event['source'] == 'タタール'
+    assert event['target'] == 'クラボニア'
+    assert event['purpose'] == 'attack'
+    assert (event['general'], event['target']) != (None, None)
+
+
 def test_other_order_failure_stays_high_even_if_month_launched(runtime_dir):
     value = state(9, '1-1', 0, launches=2)
     audit.observe(runtime_dir, audit.capture(value), value,
