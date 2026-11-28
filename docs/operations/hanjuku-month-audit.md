@@ -144,9 +144,10 @@ terminal な出撃失敗/取消のdecisionを、`sortie_*` のrecordとして保
   退却選択・理由・直前120秒の決定・計画/在城/flow/statsを1件32KB以内で保存する。
 - `battle_egg_before_retreat` は「退却より先に卵を確認する」 proactiveな記録なので
   単独ではissue化しない。実際の退却選択または敗北だけを対象にする。
+- `battle_result` の `egg_uses` は本人の最終観測台帳値であり、召喚選択だけでは減算されない。卵だけが残る敗北は当該戦闘で使用可能だった証拠ではないため、イベントは保存するが `confidence=medium` (`egg_count_not_current_battle_proof`) とする。独立して確認できる通常切り札が残る場合は、従来どおりカード証拠を優先する。
 - 同じ `(chapter, kind, resources, general, step)` は900秒cooldown。
 - 題名は `[半熟英雄] 卵/切り札を残して退却/敗北: ch<章> <将軍またはstep>`。
-- 卵・切り札の残数はbattle結果/退却metricへ追加し、実測値だけを使う。
+- 切り札の残数は出撃時の確定携行キットと戦闘内の使用記録から評価する。卵は最終観測台帳値のため、卵のみの敗北を high-confidence の「資源を残した敗北」とは扱わない。
 
 ## 野営放置（3ヶ月以上連続）（v1410）
 

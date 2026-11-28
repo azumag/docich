@@ -3371,8 +3371,24 @@ def egg_battle_step(screen: Screen, mem):
         # こうげき while a carried card was still in planned_cards.  In a
         # summon fight the きりふだ row sits BELOW たまごをつかう and is not in
         # the visible command text until the box scrolls down; open it first.
-        if _summon_card_row_hidden(screen, battle, cards_left=cards_left,
-                                   empty_egg=empty_egg):
+        # A grey/omitted egg row is not proof that the summon command box has
+        # no lower card row. Only a live own-general panel, our attack command,
+        # one recognized enemy summon, and a confirmed carried card license a
+        # navigation-only down press; selection still needs the visible row.
+        enemy_summon_menu = (chart.is_boss_castle(battle.get('castle'))
+                              and len(enemy_rows) == len(enemy_monsters) == 1)
+        own_attack_menu = (general_reading is not None
+                           and battle.get('side') == 'attack'
+                           and enemy_summon_menu
+                           and 'こうげき' in (screen.text or ''))
+        # owner 2026-11-27 (#5322): 卵行が OCR から消えても、攻撃コマンド＋召喚獣1体＋
+        # 携行札が確認できれば下スクロールで切り札行を探す。main 側の helper と同義。
+        if ((cards_left and 'きりふだ' not in (screen.text or '')
+                and ('たまごをつかう' in (screen.text or '') or empty_egg
+                     or own_attack_menu)
+                and not battle.get('card_flow'))
+                or _summon_card_row_hidden(screen, battle, cards_left=cards_left,
+                                           empty_egg=empty_egg)):
             scrolls = int(battle.get('summon_card_scroll') or 0)
             rearm_pending = False
             if scrolls >= SUMMON_CARD_SCROLL_LIMIT:
@@ -3390,11 +3406,17 @@ def egg_battle_step(screen: Screen, mem):
                 _record(mem, 'battle_summon_card_scroll', **_battle_labels(battle),
                         observed_metric={'scrolls': scrolls + 1, 'cards_left': list(cards_left),
                                          'text': (screen.text or '')[:60],
+                                         'egg_row_visible': 'たまごをつかう' in (screen.text or ''),
+                                         'own_attack_menu': own_attack_menu,
                                          'cursor_y': screen.menu_cursor,
                                          'visible': sorted({w for _, _, w in _options(screen)}),
                                          'screen_kind': screen.kind,
                                          'empty_egg': bool(empty_egg)},
-                        reason='召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する')
+                        reason=('実将軍の攻撃コマンドを確認したが卵行がOCRに現れないため、'
+                                '携行札の行を探して下へスクロールする'
+                                if own_attack_menu and 'たまごをつかう' not in (screen.text or '')
+                                and not empty_egg else
+                                '召喚獣戦の切り札行はたまごをつかうの下にあるため、下へスクロールして表示する'))
                 return [pad('down')]
             if not battle.get('summon_card_scroll_out'):
                 # The reveal scroll spent its whole budget and re-arms; the
