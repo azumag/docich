@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision, SkipDecision  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
@@ -18,6 +19,11 @@ from docich.trading.status import build_public_status, write_public_status  # no
 
 
 D = Decimal
+
+
+def top_book(symbol: str = "BTC/JPY", *, bid: str = "999999", ask: str = "1000000") -> TopOfBook:
+    return TopOfBook(symbol, D(bid), D(ask), 1000.0, bid_amount=D("1000000"),
+                     ask_amount=D("1000000"))
 
 
 def decision(oid: str = "opp-1", *, amount: str = "0.01") -> AllocationDecision:
@@ -44,7 +50,9 @@ class TestPaperLedger(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.db = self.root / "run" / "trading" / "paper.sqlite3"
         self.ledger = PaperLedger(self.db)
-        self.broker = PaperBroker(self.ledger)
+        self.broker = PaperBroker(
+            self.ledger, books={"BTC/JPY": top_book()},
+        )
 
     def tearDown(self):
         self.ledger.close()
@@ -78,13 +86,17 @@ class TestPaperLedger(unittest.TestCase):
             decision("cost-sell"), side="sell", reason_code="take_profit"
         )
         sell = self.broker.fill(sell_decision, timestamp=1001.0)
-        self.assertEqual(buy.price, D("1000000") * D("1.0005") * D("1.0012"))
-        self.assertEqual(sell.price, D("1000000") * D("0.9995") * D("0.9988"))
+        # v3: buy walks the asks, sell walks the bids; only the fee is added.
+        self.assertEqual(buy.price, D("1000000") * D("1.0012"))
+        self.assertEqual(sell.price, D("999999") * D("0.9988"))
         self.assertGreater(buy.price, D("1000000"))
         self.assertLess(sell.price, D("1000000"))
 
     def test_cost_model_can_be_disabled_for_accounting_fixtures(self):
-        broker = PaperBroker(self.ledger, taker_fee_rate="0", slippage_bps="0")
+        broker = PaperBroker(
+            self.ledger, taker_fee_rate="0", slippage_bps="0",
+            books={"BTC/JPY": top_book(bid="1000000", ask="1000000")},
+        )
         fill = broker.fill(decision("zero-cost"), timestamp=1000.0)
         self.assertEqual(fill.price, D("1000000"))
 

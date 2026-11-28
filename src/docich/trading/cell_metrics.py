@@ -35,6 +35,8 @@ Fee history of PAPER buy fills (by ``cost_context``):
   with ``fee_rate`` "0" and carry *no* fee.  This is the bug being corrected.
 * ``paper-cost-v2`` (PR #3744): buys charge ``max(quote, base)`` and already
   include the fee in the fill price.
+* ``paper-cost-v3``: buys walk the asks and add the taker fee on top of the
+  book VWAP; like v2 the fee is already in the fill price.
 
 ``corrected_*`` figures re-price only the fee-free buys as ``price * (1 + rate)``;
 sell fills are never changed.  The decision is made per buy fill:
@@ -71,6 +73,15 @@ cost`` of the pool at the sale.  Sells whose recorded cost basis is <= 1 JPY
 ``filled_at`` and carry the count and mean ``r`` (recorded and
 fee-corrected).
 
+``return_blocks_v3`` is the same shape but only counts sells that (a) were
+themselves recorded with a cost model >= 3 (``paper-cost-v3`` or later) and
+(b) consumed inventory that came only from model >= 3 buys.  The per-symbol
+pool keeps a ``v3_only`` flag: any buy with a lower/unknown model clears it,
+and it is reset to True when the pool becomes flat after a sell.  Dust is
+excluded exactly as in ``return_blocks``.  This is the evidence rule v4 uses:
+v2 and older PAPER fills were priced at the 5m close and never paid the
+bid/ask spread.
+
 Failure policy (as ``strategy_metrics``)
 ----------------------------------------
 A missing/unreadable ledger or any malformed fill row returns an explicit
@@ -99,7 +110,7 @@ ONE = D("1")
 JST = dt.timezone(dt.timedelta(hours=9), "JST")
 
 SCHEMA_VERSION = 1
-FEE_AWARE_MIN_MODEL_VERSION = 2  # paper-cost-v2: buys already carry the fee
+FEE_AWARE_MIN_MODEL_VERSION = 2  # paper-cost-v2/v3: buys already carry the fee
 FEE_FREE_BUY_MODEL = "paper-cost-v1"  # buys recorded fee_rate 0 and carry no fee
 BTC_JPY_BUY_FEE_RATE = D("0.0010")
 JPY_PAIR_BUY_FEE_RATE = D("0.0012")
@@ -133,6 +144,21 @@ def _decimal(value: object) -> Decimal:
     if not number.is_finite():
         raise ValueError("not finite")
     return number
+
+
+def _model_version(cost_context_text: object) -> int | None:
+    """Model version of a recorded cost context, or None when it cannot be read."""
+    if cost_context_text is None:
+        return None
+    try:
+        context = json.loads(str(cost_context_text))
+        if not isinstance(context, dict):
+            return None
+        model = context.get("model")
+    except (TypeError, ValueError):
+        return None
+    match = _MODEL_RE.match(model) if isinstance(model, str) else None
+    return int(match.group(1)) if match is not None else None
 
 
 def buy_fee_correction_rate(symbol: str, cost_context_text: object) -> Decimal | None:
@@ -181,19 +207,21 @@ def _fallback_rate(symbol: str, context: dict) -> Decimal:
 class _Pool:
     """Average-cost pool of one symbol (recorded and fee-corrected bases)."""
 
-    __slots__ = ("held", "cost", "corrected_cost", "origins")
+    __slots__ = ("held", "cost", "corrected_cost", "origins", "v3_only")
 
     def __init__(self) -> None:
         self.held = ZERO
         self.cost = ZERO
         self.corrected_cost = ZERO
         self.origins: dict[str | None, Decimal] = {}
+        # True while every unit currently held was bought under model >= 3.
+        self.v3_only = True
 
 
 class _Cell:
     __slots__ = (
         "closed", "wins", "corrected_wins", "pnl", "corrected_pnl", "sold_qty",
-        "carry_qty", "dust", "days",
+        "carry_qty", "dust", "days", "days_v3",
     )
 
     def __init__(self) -> None:
@@ -207,6 +235,7 @@ class _Cell:
         self.dust = 0
         # day -> [count, sum r, sum corrected r]
         self.days: dict[str, list] = {}
+        self.days_v3: dict[str, list] = {}
 
 
 def _validated(raw: tuple) -> tuple[str, str, str, Decimal, Decimal, float, object]:
@@ -299,6 +328,9 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
                     buys["legacy_no_cost_context"] += int(context is None)
                 else:
                     buys["corrected"] += 1
+                model_version = _model_version(context)
+                if model_version is None or model_version < 3:
+                    pool.v3_only = False
                 pool.held += amount
                 pool.cost += amount * price
                 pool.corrected_cost += amount * price * (ONE if rate is None else ONE + rate)
@@ -317,6 +349,9 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
             pnl = sold * (price - average)
             corrected_pnl = sold * (price - corrected_average)
             total_pnl += pnl
+            sell_model = _model_version(context)
+            sell_is_v3 = sell_model is not None and sell_model >= 3
+            inventory_is_v3 = pool.v3_only
 
             experiment = experiment_id_from_strategy_id(strategy_id, CELL_EXIT_PREFIX)
             if experiment is not None:
@@ -339,6 +374,11 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
                     block[0] += 1
                     block[1] += pnl / cost_basis
                     block[2] += corrected_pnl / (sold * corrected_average)
+                    if sell_is_v3 and inventory_is_v3:
+                        v3_block = cell.days_v3.setdefault(day, [0, ZERO, ZERO])
+                        v3_block[0] += 1
+                        v3_block[1] += pnl / cost_basis
+                        v3_block[2] += corrected_pnl / (sold * corrected_average)
 
             # Every sell consumes the pool, attributed or not.
             remaining = held - sold
@@ -347,6 +387,9 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
                     pool.origins[key] = pool.origins[key] * remaining / held
             else:
                 pool.origins.clear()
+                # The next inventory starts clean; only later v3 buys can make it
+                # eligible for return_blocks_v3 again.
+                pool.v3_only = True
             pool.held = remaining
             pool.cost = max(ZERO, pool.cost - average * sold)
             pool.corrected_cost = max(ZERO, pool.corrected_cost - corrected_average * sold)
@@ -369,6 +412,15 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
             }
             for day, (count, total, corrected_total) in sorted(cell.days.items())
         ]
+        blocks_v3 = [
+            {
+                "day": day,
+                "count": count,
+                "mean_return": str(total / count),
+                "mean_return_corrected": str(corrected_total / count),
+            }
+            for day, (count, total, corrected_total) in sorted(cell.days_v3.items())
+        ]
         cell_rows.append({
             "experiment_id": experiment,
             "symbol": symbol,
@@ -382,6 +434,7 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
             "carry_in_fraction": str(cell.carry_qty / cell.sold_qty),
             "dust_excluded_sells": cell.dust,
             "return_blocks": blocks,
+            "return_blocks_v3": blocks_v3,
         })
     result.update({
         "status": "partial" if unpaired else "ok",

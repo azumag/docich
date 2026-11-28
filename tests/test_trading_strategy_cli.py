@@ -81,6 +81,12 @@ class TestTradingStrategyCli(unittest.TestCase):
                 }
             },
             "frames": {"BTC/JPY": frame_payload([100, 100, 101, 102, 103, 104, 105])},
+            "books": {
+                "BTC/JPY": {
+                    "bid": "104.9", "ask": "105",
+                    "bid_amount": "1000000", "ask_amount": "1000000",
+                }
+            },
         }
 
     def test_history_returns_public_normalized_frames(self):
@@ -189,6 +195,10 @@ class TestTradingStrategyCli(unittest.TestCase):
                 "amount_step": "0.001", "min_amount": "0.001", "min_cost": "1",
             }
             data["frames"]["ETH/JPY"] = frame_payload([200, 200, 202, 204, 206, 208, 210])
+            data["books"]["ETH/JPY"] = {
+                "bid": "209.9", "ask": "210",
+                "bid_amount": "1000000", "ask_amount": "1000000",
+            }
             snapshot = Path(tmp) / "strategy.json"
             snapshot.write_text(json.dumps(data), encoding="utf-8")
             rc, out, err = self.run_cli([
@@ -215,6 +225,10 @@ class TestTradingStrategyCli(unittest.TestCase):
                     "amount_step": "0.001", "min_amount": "0.001", "min_cost": "1",
                 }
                 data["frames"][symbol] = frame_payload(closes)
+                data["books"][symbol] = {
+                    "bid": str(closes[-1] * 0.999), "ask": str(closes[-1]),
+                    "bid_amount": "1000000", "ask_amount": "1000000",
+                }
             snapshot = Path(tmp) / "strategy.json"
             snapshot.write_text(json.dumps(data), encoding="utf-8")
             rc, out, err = self.run_cli(["trading", "--state-dir", str(Path(tmp)/"state"), "strategy-cycle", "--snapshot", str(snapshot)])

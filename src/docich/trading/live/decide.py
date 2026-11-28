@@ -35,6 +35,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping
 
+from ..liquidity import entry_block
 from ..models import SkipDecision
 from .exchange import OrderBook
 from .inputs import CycleInputs, build_cycle_inputs, sell_attempts_for
@@ -98,6 +99,21 @@ def _drop_symbol(signals: LiveSignals, symbol: str,
         else:
             exits.append(opportunity)
     filtered = dataclasses.replace(signals, entries=tuple(entries), exits=tuple(exits))
+    return filtered, dropped
+
+
+def _drop_entries(signals: LiveSignals, symbol: str,
+                  reason: str) -> tuple[LiveSignals, list[SkipDecision]]:
+    """Remove only the BUY entries of ``symbol``; its exits stay untouched."""
+    dropped: list[SkipDecision] = []
+    entries = []
+    for opportunity in signals.entries:
+        if opportunity.symbol == symbol:
+            dropped.append(SkipDecision(opportunity.opportunity_id, opportunity.symbol,
+                                        reason, side=opportunity.side))
+        else:
+            entries.append(opportunity)
+    filtered = dataclasses.replace(signals, entries=tuple(entries))
     return filtered, dropped
 
 
@@ -228,6 +244,20 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
         if problem is not None:
             current, dropped = _drop_symbol(current, symbol, problem)
             skip_decisions.extend(dropped)
+            del books[symbol]
+
+    # ---- liquidity gate: NEW BUYS only ------------------------------------------------
+    # A wide spread or a mostly empty recent history blocks entries, never exits:
+    # closing a position must stay possible even when the market is thin.
+    for symbol in sorted(tuple(books)):
+        if not any(item.symbol == symbol for item in current.entries):
+            continue
+        reason = entry_block(books[symbol], ctx.frames.get(symbol))
+        if reason is None:
+            continue
+        current, dropped = _drop_entries(current, symbol, reason)
+        skip_decisions.extend(dropped)
+        if not any(item.symbol == symbol for item in current.entries + current.exits):
             del books[symbol]
 
     # ---- markets: rules + a fresh frame + a good book ---------------------------------

@@ -40,6 +40,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
+from ..liquidity import entry_block
 from ..models import Opportunity, SkipDecision
 from . import views
 from .decide import DecisionSet, book_age_problem
@@ -261,6 +262,7 @@ def build_free_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleCont
     # ---- markets (rules + a fresh frame + a fresh book) ------------------------------------
     rules = deps.executor.rules()
     markets: dict[str, SymbolMarket] = {}
+    books: dict[str, object] = {}
     for symbol in sorted({item.symbol for item in entries + exits}):
         frame, rule = ctx.frames.get(symbol), rules.get(symbol)
         if frame is None or rule is None:
@@ -268,6 +270,7 @@ def build_free_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleCont
         existing = base.markets.get(symbol)
         if existing is not None:
             markets[symbol] = existing
+            books[symbol] = existing.book
             continue
         try:
             book = deps.reader.fetch_order_book(symbol, depth=20)
@@ -278,6 +281,20 @@ def build_free_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleCont
         if book.symbol != symbol or book_age_problem(deps.clock(), book.exchange_ts_ms) is not None:
             continue
         markets[symbol] = SymbolMarket(rule, book, frame.last_price)
+        books[symbol] = book
+
+    # ---- liquidity gate: the free strategy's NEW BUYS only --------------------------------
+    # Its exits keep following the mirror regardless of the spread: hand-closing a
+    # position must not be blocked by a thin book.
+    kept_entries: list[Opportunity] = []
+    for opportunity in entries:
+        reason = entry_block(books.get(opportunity.symbol), ctx.frames.get(opportunity.symbol))
+        if reason is None:
+            kept_entries.append(opportunity)
+            continue
+        skips.append(SkipDecision(opportunity.opportunity_id, opportunity.symbol, reason,
+                                  side="buy"))
+    entries = kept_entries
 
     # ---- funds left after the per-symbol plans --------------------------------------------
     if base.result is not None:

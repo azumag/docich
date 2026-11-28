@@ -69,10 +69,14 @@ def _write_slot(ws, symbol, mapping, *, history=False):
         (directory / "paper_strategy_experiment.json").write_text(json.dumps(mapping))
 
 
-def _cell(experiment_id, symbol, value="0.02", days=STRONG_DAYS):
-    return {"experiment_id": experiment_id, "symbol": symbol, "closed_sells": 30,
-            "return_blocks": [{"day": day, "count": 5, "mean_return": value,
-                               "mean_return_corrected": value} for day in days]}
+def _cell(experiment_id, symbol, value="0.02", days=STRONG_DAYS, v3=True):
+    blocks = [{"day": day, "count": 5, "mean_return": value,
+               "mean_return_corrected": value} for day in days]
+    cell = {"experiment_id": experiment_id, "symbol": symbol, "closed_sells": 30,
+            "return_blocks": blocks}
+    if v3:
+        cell["return_blocks_v3"] = blocks
+    return cell
 
 
 def _judge(h, cells, *, now=NOW, safety=False):
@@ -121,10 +125,17 @@ def test_min_hold_blocks_a_symbol_changed_less_than_seven_days_ago(h):
     assert decision.changes == () and decision.rejected[0]["reason"] == "min_hold"
 
 
-def test_a_new_symbol_is_added_on_rule_v3_alone(h):
+def test_a_new_symbol_is_added_on_rule_v4_alone(h):
     _write_slot(h.ws, "BAT/JPY", _mapping("bat_261117"))
     [change] = _judge(h, [_cell("bat_261117", "BAT/JPY")]).changes
     assert change.symbol == "BAT/JPY" and change.previous_digest is None and change.live_mean is None
+
+
+def test_a_cell_with_only_v2_blocks_is_never_promoted(h):
+    _write_slot(h.ws, "OAS/JPY", _mapping("oas_261117"))
+    decision = _judge(h, [_cell("oas_261117", "OAS/JPY", v3=False)])
+    assert decision.changes == ()
+    assert decision.rejected == ()
 
 
 def test_rules_come_from_the_slot_history_when_the_slot_rotated(h):

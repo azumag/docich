@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision  # noqa: E402
 from docich.trading.notifications import _render_event_with_local_facts, _safe_status  # noqa: E402
@@ -45,9 +46,24 @@ def _decision(oid: str, side: str, amount: str, price: str) -> AllocationDecisio
     )
 
 
+class _ExactPriceBroker(PaperBroker):
+    """Seed accounting fixtures at the decision's own price (zero cost model)."""
+
+    def fill(self, decision, *, timestamp, signal_context=None, market=None, book=None):
+        if book is None:
+            book = TopOfBook(
+                decision.symbol, decision.price, decision.price, float(timestamp),
+                bid_amount=decision.amount, ask_amount=decision.amount,
+            )
+        return super().fill(
+            decision, timestamp=timestamp, signal_context=signal_context,
+            market=market, book=book,
+        )
+
+
 def _zero_cost_broker(ledger: PaperLedger) -> PaperBroker:
     """These tests isolate accounting math from the production execution-cost model."""
-    return PaperBroker(ledger, taker_fee_rate="0", slippage_bps="0")
+    return _ExactPriceBroker(ledger, taker_fee_rate="0", slippage_bps="0")
 
 
 def _write_history_cache(path: Path, *, now: float, symbol: str = "BTC/JPY") -> None:
