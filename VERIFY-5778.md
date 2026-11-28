@@ -145,3 +145,9 @@ owner PR #5780（merged）の説明も同じで、`state.setdefault('count', 0)`
 - 現行 main（c032a6a37）の `src/docich/hanjuku/strategy/corridor.py` で防御を確認：`state.setdefault('count', 0)`（708行目）、`int(state.get('count') or 0)` による安全な読み取り（694・716・722・783行目ほか）。owner PR #5780 の修正が main に入っている。
 - 結論 (a) 実欠陥は、issue の署名・経路と現行コード・#5780 の diff で裏付けられている。現行 main では修正済みのため新規の実修正 PR はなし。issue は owner クローズ待ち。
 - 残件：回帰テストで「count を持たない同月 state + due probe」を直接固定するものは現行 tests には確認できず（unit 報告どおり）。speedrun frozen copy の `state['count']` 直接参照は別系統のため本件の判定には影響しない。
+
+## 検品ゲート確認（Muse、2026-11-28 09:55 JST）
+
+- fingerprint / occurrence を検品ゲートで再計算した。SHA-1('brain_error:KeyError@corridor.py:718:_probe_spend')[:16] = 3f82c4ab0d3c2e4f、incident_id = 3f82c4ab0d3c2e4f-1795808629-3。いずれも issue の値と一致する。
+- 結論 (a) 実欠陥は、経路・再発機構・owner PR #5780 の独立確認で裏付けられている。現行 main の hanjuku-hero 側では修正済みのため、新規の実修正は不要。
+- speedrun frozen copy に同じ直接参照が残っている点は、frozen copy の扱いのため本件では修正提案まで行わない（別件の残リスクとして記録）。
