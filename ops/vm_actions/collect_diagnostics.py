@@ -8237,13 +8237,6 @@ def _project_corner_state(data):
             "hanjuku-chart-v1549-victory-menu-hold",
             "hanjuku-chart-v1550-camp-dispatch-receipt",
             "hanjuku-chart-v1551-boss-month-phase-guard",
-<<<<<<< HEAD
-            "hanjuku-chart-v1552-chapter-end-save-accept",
-            "hanjuku-chart-v1552-ch9-sortie-speed",
-            "hanjuku-chart-v1553-chapter-end-save",
-            "hanjuku-chart-v1554-chapter-end-save",
-            "hanjuku-chart-v1555-spend-eggs-and-cards",
-=======
             "hanjuku-chart-v1553-chapter-end-save",
             "hanjuku-chart-v1554-chapter-end-save",
             "hanjuku-chart-v1556-boss-dispatch-recovery",
@@ -8326,7 +8319,6 @@ def _project_corner_state(data):
             "hanjuku-chart-v1575-ch9-cliff-camp-recall",
             "hanjuku-chart-v1576-stale-wave-fresh-cell",
             "hanjuku-chart-v1577-boss-redirect-y-jump",
->>>>>>> origin/main
             "hanjuku-chart-v1547-victory-menu-advance",
             "hanjuku-chart-v1547-ch11-boss-gateway",
             "hanjuku-chart-v1543-summon-card-rearm-hold",
