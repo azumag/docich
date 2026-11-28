@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 from docich.trading.experiment_control import (  # noqa: E402
     CONTROL_FILENAME, assess_experiment, experiment_lock,
 )
@@ -100,7 +101,11 @@ def _fill(target, oid, side, price, *, symbol, at, experiment_id="active"):
     )
     ledger = PaperLedger(target / "paper.sqlite3")
     try:
-        PaperBroker(ledger).fill(decision, timestamp=at)
+        PaperBroker(ledger).fill(
+            decision, timestamp=at,
+            book=TopOfBook(symbol, price, price, float(at),
+                           bid_amount=decision.amount, ask_amount=decision.amount),
+        )
     finally:
         ledger.close()
 
@@ -136,6 +141,16 @@ class Gateway:
             timestamps=tuple(now - (count - index - 1) * 300 for index in range(count)),
             closes=tuple(D(str(value)) for value in values), volumes=(D("1"),) * count,
         )}
+
+    def fetch_top_books(self, symbols, *, now, limit=20):
+        books = {}
+        for symbol in symbols:
+            price = D(str(self.prices[symbol][-1]))
+            books[symbol] = TopOfBook(
+                symbol, price * D("0.999"), price * D("1.001"), now,
+                bid_amount=D("100000000"), ask_amount=D("100000000"),
+            )
+        return books
 
 
 def _cycle(g, prices, *, now=NOW, index=1):

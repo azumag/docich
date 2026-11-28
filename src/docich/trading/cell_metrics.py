@@ -35,6 +35,8 @@ Fee history of PAPER buy fills (by ``cost_context``):
   with ``fee_rate`` "0" and carry *no* fee.  This is the bug being corrected.
 * ``paper-cost-v2`` (PR #3744): buys charge ``max(quote, base)`` and already
   include the fee in the fill price.
+* ``paper-cost-v3``: buys walk the asks and add the taker fee on top of the
+  book VWAP; like v2 the fee is already in the fill price.
 
 ``corrected_*`` figures re-price only the fee-free buys as ``price * (1 + rate)``;
 sell fills are never changed.  The decision is made per buy fill:
@@ -99,7 +101,7 @@ ONE = D("1")
 JST = dt.timezone(dt.timedelta(hours=9), "JST")
 
 SCHEMA_VERSION = 1
-FEE_AWARE_MIN_MODEL_VERSION = 2  # paper-cost-v2: buys already carry the fee
+FEE_AWARE_MIN_MODEL_VERSION = 2  # paper-cost-v2/v3: buys already carry the fee
 FEE_FREE_BUY_MODEL = "paper-cost-v1"  # buys recorded fee_rate 0 and carry no fee
 BTC_JPY_BUY_FEE_RATE = D("0.0010")
 JPY_PAIR_BUY_FEE_RATE = D("0.0012")

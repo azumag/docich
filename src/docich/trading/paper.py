@@ -6,36 +6,55 @@ from decimal import Decimal
 from typing import Mapping
 
 from .ledger import PaperLedger
+from .liquidity import best_bid_ask, spread_bps
 from .models import AllocationDecision, MarketInfo, PaperFill, TradingValidationError, as_decimal
 
 
 D = Decimal
 # PAPER uses immediate synthetic fills, so model them as taker-like executions.
-# The fixed fallbacks below are deliberately conservative and apply only when
-# public market metadata / depth is unavailable; per-market wiring overrides
-# them without changing the ledger schema.
+# The fixed fee fallback applies only when public market metadata is missing;
+# per-market wiring overrides it without changing the ledger schema.
 DEFAULT_TAKER_FEE_RATE = D("0.0012")  # 12 bps
-DEFAULT_SLIPPAGE_BPS = D("5")         # 5 bps each execution
+# Kept for the exit/notification estimate helpers.  Fill prices never add
+# this on top of a book VWAP (that would double count the spread).
+DEFAULT_SLIPPAGE_BPS = D("5")         # 5 bps each estimated exit
 BPS = D("10000")
-COST_MODEL_VERSION = "paper-cost-v2"  # v2: buys charge max(quote, base) taker fee
+# v3: fills walk the executable side of the book (asks for buys, bids for
+# sells) and add only the taker fee.  No close-price fallback and no extra
+# slippage on top of the VWAP.
+COST_MODEL_VERSION = "paper-cost-v3"
+
+
+class PaperFillSkipped(TradingValidationError):
+    """The public book cannot fill this decision (reason code on the instance)."""
+
+    def __init__(self, reason_code: str):
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 @dataclass(frozen=True)
 class ExecutionCost:
-    """Deterministic cost inputs for one synthetic fill."""
+    """Deterministic book-VWAP cost inputs for one synthetic fill."""
 
     fee_rate: Decimal
     fee_source: str  # "market" | "fallback"
-    slippage_bps: Decimal
-    slippage_source: str  # "depth" | "fallback"
+    reference_close: Decimal
+    top_bid: Decimal
+    top_ask: Decimal
+    spread_bps: Decimal
+    vwap: Decimal
 
     def payload(self) -> dict[str, str]:
         return {
             "model": COST_MODEL_VERSION,
+            "price_source": "book_vwap",
+            "reference_close": str(self.reference_close),
+            "top_bid": str(self.top_bid),
+            "top_ask": str(self.top_ask),
+            "spread_bps": str(self.spread_bps),
             "fee_rate": str(self.fee_rate),
             "fee_source": self.fee_source,
-            "slippage_bps": str(self.slippage_bps),
-            "slippage_source": self.slippage_source,
         }
 
 
@@ -190,19 +209,20 @@ def paper_execution_price(
 
 
 class PaperBroker:
-    """Persist an allocation decision as an immediate cost-adjusted synthetic fill.
+    """Persist an allocation decision as an immediate book-priced synthetic fill.
 
     Execution costs are represented through the recorded fill price so existing
     average-cost and realized/unrealized P/L accounting automatically includes
-    them.  Allocation/reference notionals remain the risk-approved gross
-    notionals; this avoids silently relaxing or exceeding the existing capital
-    deployment ceiling merely because PAPER execution costs were introduced.
+    them.  The fill walks the executable side of the public book (asks for buys,
+    bids for sells) for the decision amount and applies the taker fee; no extra
+    slippage is added on top of that VWAP.  Allocation/reference notionals remain
+    the risk-approved gross notionals; this avoids silently relaxing or exceeding
+    the existing capital deployment ceiling merely because PAPER execution costs
+    were introduced.
 
-    Costs resolve deterministically from public data only: per-market taker
-    fees from ``MarketInfo`` and depth-aware slippage from the top of book /
-    visible depth.  Anything unavailable fails safe to the conservative
-    fixed fallbacks, and the applied breakdown is persisted to the private
-    ledger for audit (never to the public status).
+    A missing, malformed or too-shallow book does not fall back to the close:
+    ``fill`` raises :class:`PaperFillSkipped` with ``book_unavailable`` or
+    ``depth_insufficient`` and nothing is written to the ledger.
     """
 
     def __init__(
@@ -222,6 +242,8 @@ class PaperBroker:
         if slippage < 0 or slippage >= BPS:
             raise TradingValidationError("slippage_bps must be in [0, 10000)")
         self.taker_fee_rate = fee
+        # Retained so existing configuration/fixtures keep validating, but the
+        # book-VWAP fill path intentionally does not apply it.
         self.slippage_bps = slippage
         self.markets: dict[str, MarketInfo] = dict(markets or {})
         self.books: dict[str, object] = dict(books or {})
@@ -238,21 +260,48 @@ class PaperBroker:
         if fee_source == "fallback":
             fee_rate = self.taker_fee_rate
         resolved_book = book if book is not None else self.books.get(decision.symbol)
-        slip_bps, slip_source = resolve_slippage_bps(
-            amount=decision.amount, side=decision.side, book=resolved_book,
-            fallback_bps=self.slippage_bps,
-        )
+        amount = as_decimal(decision.amount, "amount")
+        if amount <= 0:
+            raise TradingValidationError("paper fill amount must be positive")
+        top = best_bid_ask(resolved_book)
+        if top is None:
+            raise PaperFillSkipped("book_unavailable")
+        top_bid, top_ask = top
+        levels = _book_levels(resolved_book, decision.side)
+        if not levels:
+            raise PaperFillSkipped("book_unavailable")
+        remaining = amount
+        notional = D("0")
+        for price, level_amount in levels:
+            if remaining <= 0:
+                break
+            take = min(remaining, level_amount)
+            notional += take * price
+            remaining -= take
+        if remaining > 0:
+            # No fallback to the close: an order the visible book cannot
+            # absorb is simply not filled in this cycle.
+            raise PaperFillSkipped("depth_insufficient")
+        vwap = notional / amount
+        relative_spread = spread_bps(resolved_book)
+        if relative_spread is None:
+            raise PaperFillSkipped("book_unavailable")
         return ExecutionCost(
-            fee_rate=fee_rate, fee_source=fee_source,
-            slippage_bps=slip_bps, slippage_source=slip_source,
+            fee_rate=fee_rate,
+            fee_source=fee_source,
+            reference_close=decision.price,
+            top_bid=top_bid,
+            top_ask=top_ask,
+            spread_bps=relative_spread,
+            vwap=vwap,
         )
 
     def _cost_adjusted(
         self, decision: AllocationDecision, cost: ExecutionCost
     ) -> AllocationDecision:
         effective = paper_execution_price(
-            decision.price, decision.side,
-            taker_fee_rate=cost.fee_rate, slippage_bps=cost.slippage_bps,
+            cost.vwap, decision.side,
+            taker_fee_rate=cost.fee_rate, slippage_bps=D("0"),
         )
         return replace(decision, price=effective)
 

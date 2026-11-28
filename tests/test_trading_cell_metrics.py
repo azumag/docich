@@ -27,6 +27,10 @@ V1_ZERO = {"model": "paper-cost-v1", "fee_rate": "0", "fee_source": "market"}
 V1_FEE = {"model": "paper-cost-v1", "fee_rate": "0.0012", "fee_source": "fallback"}
 V2_FEE = {"model": "paper-cost-v2", "fee_rate": "0.0012", "fee_source": "market"}
 V2_ZERO = {"model": "paper-cost-v2", "fee_rate": "0", "fee_source": "market"}
+V3_FEE = {"model": "paper-cost-v3", "fee_rate": "0.0012", "fee_source": "market",
+          "price_source": "book_vwap"}
+V3_ZERO = {"model": "paper-cost-v3", "fee_rate": "0", "fee_source": "market",
+           "price_source": "book_vwap"}
 
 
 class Ledger:
@@ -238,6 +242,22 @@ def test_v1_buy_with_recorded_nonzero_fee_not_corrected(ledger):
 def test_v2_zero_fee_is_deliberate_and_not_corrected(ledger):
     c = _round_trip(ledger, V2_ZERO)
     assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
+
+
+def test_v3_buy_is_fee_bearing_and_not_corrected(ledger):
+    # paper-cost-v3 already includes the taker fee in the book-VWAP fill price.
+    c = _round_trip(ledger, V3_FEE, buy_price=D("1001.2"))
+    assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
+    assert D(c["realized_pnl_jpy"]) == D("988")
+    assert ledger.result()["buy_fee_correction"]["corrected"] == 0
+    assert ledger.result()["buy_fee_correction"]["already_fee_bearing"] == 1
+
+
+def test_v3_zero_fee_market_is_not_corrected(ledger):
+    # A zero market fee is a v3 result, not the v1 free-buy bug.
+    c = _round_trip(ledger, V3_ZERO)
+    assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
+    assert ledger.result()["buy_fee_correction"]["corrected"] == 0
 
 
 def test_buy_without_cost_context_is_pre_1905_fee_bearing_and_not_corrected(ledger):

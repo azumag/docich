@@ -189,6 +189,7 @@ def test_snapshot_exposes_allowlisted_fill_signal_context(tmp_path):
 def test_snapshot_includes_recent_orders(tmp_path):
     from decimal import Decimal
 
+    from docich.trading.arbitrage import TopOfBook
     from docich.trading.ledger import PaperLedger
     from docich.trading.models import AllocationDecision
     from docich.trading.paper import PaperBroker
@@ -214,6 +215,8 @@ def test_snapshot_includes_recent_orders(tmp_path):
             reason_code="momentum_breakout",
         ),
         timestamp=1000.0,
+        book=TopOfBook("BTC/JPY", Decimal("100"), Decimal("100"), 1000.0,
+                       bid_amount=Decimal("1"), ask_amount=Decimal("1")),
     )
     ledger.close()
 

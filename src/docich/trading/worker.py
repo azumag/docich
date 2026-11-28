@@ -1,7 +1,7 @@
 """Continuously usable paper-only crypto worker orchestration."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 import math
 from pathlib import Path
@@ -19,10 +19,12 @@ from .freshness import (
     assess_market_freshness,
 )
 from .ledger import PaperLedger
+from .liquidity import entry_block
 from .market_cache import load_cache, prune_cache, save_cache, store_frames
 from .market_data import MarketFrame
+from .models import AllocationDecision, MarketInfo, SkipReason
 from .notifications import deliver_pending_notifications
-from .paper import PaperBroker
+from .paper import PaperBroker, PaperFillSkipped
 from .performance import build_performance
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
@@ -358,6 +360,49 @@ def _carry_snapshot(
     payload["freshness_summary"] = freshness_summary_payload(freshness)
 
 
+def _cap_reduced_buy(
+    decision: AllocationDecision,
+    market: MarketInfo | None,
+    book_price: Decimal,
+) -> tuple[AllocationDecision | None, str | None]:
+    """Keep a book-priced buy inside the decision's reference notional cap.
+
+    Allocation sizes the amount at the close.  When the executable book VWAP
+    makes that amount exceed the risk-approved reference notional, recompute the
+    amount at the book price (rounding down to the market step).  Anything below
+    the exchange minimum cannot be traded at this price and is skipped.
+    """
+    if market is None:
+        return decision, None
+    if decision.amount * book_price <= decision.reference_notional:
+        return decision, None
+    raw_amount = decision.reference_notional / book_price
+    step = market.amount_step
+    amount = raw_amount if step is None or step <= 0 else (raw_amount // step) * step
+    if amount <= 0:
+        return None, "below_min_amount"
+    if market.min_amount is not None and amount < market.min_amount:
+        return None, "below_min_amount"
+    if market.min_cost is not None and amount * book_price < market.min_cost:
+        return None, "below_min_cost"
+    if amount * book_price > decision.reference_notional:
+        # The market step cannot reduce this order enough to respect the cap.
+        return None, "below_min_amount"
+    quote_notional = amount * decision.price
+    if decision.quote_notional > 0:
+        reference_notional = (
+            quote_notional * decision.reference_notional / decision.quote_notional
+        )
+    else:
+        reference_notional = quote_notional
+    return replace(
+        decision,
+        amount=amount,
+        quote_notional=quote_notional,
+        reference_notional=reference_notional,
+    ), None
+
+
 def run_worker_cycle(
     g: GlobalConfig,
     *,
@@ -614,15 +659,17 @@ def run_worker_cycle(
                     top_books = fetch_top_books(
                         [item.symbol for item in allocation.decisions],
                         now=decision_now,
-                        limit=5,
+                        limit=20,
                     )
                     if isinstance(top_books, dict):
                         books = dict(top_books)
                 except Exception:
-                    # Public depth is best-effort: missing books fail safe to
-                    # the conservative fixed slippage inside the broker.
+                    # Public depth is best-effort in the fetch itself; a
+                    # missing book means the decision is skipped this cycle
+                    # (there is no close-price fallback).
                     books = {}
             new_fill_count = 0
+            fill_skip_codes: list[SkipReason] = []
             checked_entry_gate = False
             # Realized losses become known on exits. Recheck before any buys,
             # not after executing all orders precomputed for this cycle.
@@ -654,10 +701,37 @@ def run_worker_cycle(
                 # order (observed signal vs threshold). Pop it once and persist it
                 # with the fill as well as the public event.
                 signal_context = pop_reason_context(decision.opportunity_id)
-                fill = broker.fill(
-                    decision, timestamp=decision_now, signal_context=signal_context,
-                    book=books.get(decision.symbol),
-                )
+                book = books.get(decision.symbol)
+                if decision.side == "buy":
+                    # The liquidity gate only ever blocks NEW BUYS.  A sell must
+                    # stay executable even in a wide or empty market.
+                    block = entry_block(book, frames.get(decision.symbol))
+                    if block is not None:
+                        fill_skip_codes.append(
+                            SkipReason(block, symbol=decision.symbol, side="buy"))
+                        continue
+                    try:
+                        cost = broker.resolve_cost(decision, book=book)
+                    except PaperFillSkipped as exc:
+                        fill_skip_codes.append(
+                            SkipReason(exc.reason_code, symbol=decision.symbol, side="buy"))
+                        continue
+                    adjusted, cap_reason = _cap_reduced_buy(
+                        decision, markets.get(decision.symbol), cost.vwap)
+                    if cap_reason is not None:
+                        fill_skip_codes.append(
+                            SkipReason(cap_reason, symbol=decision.symbol, side="buy"))
+                        continue
+                    decision = adjusted
+                try:
+                    fill = broker.fill(
+                        decision, timestamp=decision_now, signal_context=signal_context,
+                        book=book,
+                    )
+                except PaperFillSkipped as exc:
+                    fill_skip_codes.append(
+                        SkipReason(exc.reason_code, symbol=decision.symbol, side=decision.side))
+                    continue
                 if append_public_event(event_path, build_fill_event(fill, reason_context=signal_context)):
                     new_fill_count += 1
 
@@ -694,6 +768,7 @@ def run_worker_cycle(
             errors.extend(arbitrage_errors)
         rejected_codes = [item.reason_code for item in selection.rejected]
         skipped_codes = rejected_codes + [item.reason_code for item in allocation.skipped]
+        skipped_codes.extend(fill_skip_codes)
         if not experiment_step.entries_allowed:
             skipped_codes.append("experiment_" + experiment_step.reason_code)
         # Two distinct success notions (documented, not a contradiction):

@@ -1276,6 +1276,52 @@ def test_dust_with_a_zero_exchange_minimum_is_marked_not_fatal(ws, ws_alt, harne
                and payload["symbol"] == "XYM/JPY" for payload in payloads)
 
 
+# ---- D2: the entry liquidity gate blocks buys, never exits ------------------------------
+def test_wide_spread_drops_only_the_buy_and_keeps_the_exit(ws, harnesses, monkeypatch):
+    h = harnesses()
+    ps = policy_set_for("OAS/JPY")
+    store(h, ps)
+    wide = book("OAS/JPY", bids=(("100", "1000"),), asks=(("101", "1000"),))
+    rig = make_rig(ws, h, ps=ps, rules={"OAS/JPY": rule()},
+                   book_overrides={"OAS/JPY": wide})
+    buy = opportunity("OAS/JPY", "buy", oid="buy-1")
+    sell = opportunity("OAS/JPY", "sell", oid="sell-1")
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals((buy,), (sell,), (), {}))
+
+    built = build_decisions(rig.deps, rig.state, make_ctx(rig))
+
+    assert built.signals.entries == ()
+    assert built.signals.exits == (sell,)
+    reasons = {(row.payload["side"], row.payload["reason"])
+               for row in decision_rows(h.ledger) if row.payload["action"] == "skip"}
+    assert ("buy", "spread_too_wide") in reasons
+
+
+def test_illiquid_recent_bars_drop_the_buy(ws, harnesses, monkeypatch):
+    h = harnesses()
+    ps = policy_set_for("OAS/JPY")
+    store(h, ps)
+    rig = make_rig(ws, h, ps=ps, rules={"OAS/JPY": rule()})
+    monkeypatch.setattr(decide_module, "scan_live",
+                        lambda *a, **k: LiveSignals(
+                            (opportunity("OAS/JPY", "buy", oid="buy-1"),), (), (), {}))
+    ctx = make_ctx(rig, frames={
+        "OAS/JPY": MarketFrame(
+            symbol="OAS/JPY", timeframe_seconds=300,
+            timestamps=tuple(NOW + i for i in range(4)),
+            closes=(D("100"),) * 4, volumes=(D("0"),) * 4,
+        )
+    })
+
+    built = build_decisions(rig.deps, rig.state, ctx)
+
+    assert built.signals.entries == ()
+    reasons = [row.payload["reason"] for row in decision_rows(h.ledger)
+               if row.payload["action"] == "skip"]
+    assert "illiquid" in reasons
+
+
 # ---- m2: a book can age while the later books are fetched serially -----------------------
 def test_a_book_that_aged_while_other_books_were_fetched_is_dropped(ws, harnesses,
                                                                     monkeypatch):

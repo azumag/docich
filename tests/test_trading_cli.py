@@ -39,6 +39,12 @@ class TestTradingCli(unittest.TestCase):
                 }
             },
             "prices": {"BTC/JPY": "1000000"},
+            "books": {
+                "BTC/JPY": {
+                    "bid": "999999", "ask": "1000000",
+                    "bid_amount": "1000", "ask_amount": "1000",
+                }
+            },
             "opportunities": [{
                 "opportunity_id": "opp-1", "strategy_id": "fixture-v1",
                 "symbol": "BTC/JPY", "side": "buy", "score": "0.9",

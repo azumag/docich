@@ -136,6 +136,19 @@ def test_the_free_strategy_buys_toward_weight_times_capital(ws, h):
     assert (intent.symbol, intent.side, D(intent.amount)) == ("XYM/JPY", "buy", D("20"))
 
 
+def test_a_wide_spread_blocks_a_free_buy(ws, h):
+    _base, ps = _sets()
+    decide_tests.store(h, ps)
+    _weights(ws, h.clock.seconds(), {"XYM/JPY": "0.2"})
+    rig, ctx = _rig(ws, h, ps)
+    rig.reader.books["XYM/JPY"] = decide_tests.book(
+        "XYM/JPY", bids=(("100", "1000"),), asks=(("101", "1000"),))
+    act.decide_and_act(rig.deps, rig.state, ctx)
+    assert _free_intents(h, ps.free) == []
+    skips = act_tests.skip_rows(h.ledger, "spread_too_wide")
+    assert any(row["symbol"] == "XYM/JPY" and row["side"] == "buy" for row in skips)
+
+
 def test_a_symbol_the_mirror_left_is_sold_out_under_the_free_digest(ws, h):
     _base, ps = _sets()
     decide_tests.store(h, ps)

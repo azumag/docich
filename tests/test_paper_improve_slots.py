@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import config, paper_improve_retry  # noqa: E402
 from docich.trading import paper_improve_slots as slots  # noqa: E402
 from docich.trading.ai_text import AiTextError  # noqa: E402
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 from docich.trading.experiment_control import CONTROL_FILENAME  # noqa: E402
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
@@ -99,7 +100,11 @@ def _fill(target, oid, side, price, *, symbol, at, experiment_id="active"):
     )
     ledger = PaperLedger(target / "paper.sqlite3")
     try:
-        PaperBroker(ledger).fill(decision, timestamp=at)
+        PaperBroker(ledger).fill(
+            decision, timestamp=at,
+            book=TopOfBook(symbol, price, price, float(at),
+                           bid_amount=decision.amount, ask_amount=decision.amount),
+        )
     finally:
         ledger.close()
 
@@ -420,6 +425,16 @@ class Gateway:
             timestamps=tuple(now - (count - index - 1) * 300 for index in range(count)),
             closes=tuple(D(str(value)) for value in values), volumes=(D("1"),) * count,
         )}
+
+    def fetch_top_books(self, symbols, *, now, limit=20):
+        books = {}
+        for symbol in symbols:
+            price = D(str(self.prices[symbol][-1]))
+            books[symbol] = TopOfBook(
+                symbol, price * D("0.999"), price * D("1.001"), now,
+                bid_amount=D("100000000"), ask_amount=D("100000000"),
+            )
+        return books
 
 
 def test_worker_trades_the_symbol_with_the_candidate_from_the_slot_phase(tmp_path):
