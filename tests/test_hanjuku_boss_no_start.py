@@ -70,10 +70,13 @@ def test_boss_only_replan_passes_a_nonboss_pending_plan_and_starts_a_wave():
 
     starts = [r for r in mem['_records'] if r['decision'] == 'order_start']
     assert starts, actions
-    started = starts[0]['chart_step']
-    started_order = next(o for o in boss_orders(mem) if o.get('step') == started)
-    assert started_order['target'] == BOSS
-    assert started_order['purpose'] == 'attack'
+    # Assert on the order_start record itself (target/purpose), not on the
+    # final chart plan: the forced replan rebuilds the plan, so looking the
+    # started step up in it is brittle (CI hanjuku-suite (3/3) hit
+    # StopIteration here while a boss wave had in fact started).
+    boss_starts = [r for r in starts
+                   if r.get('target') == BOSS and r.get('purpose') == 'attack']
+    assert boss_starts, starts
     assert any(r['decision'] == 'boss_no_start_replan' for r in mem['_records'])
 
 
