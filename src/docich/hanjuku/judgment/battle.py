@@ -3444,7 +3444,16 @@ def _dying_with_egg(mem, battle):
         return False
     if hp * 10 > enemy * 5:  # ally at or above half the enemy's HP: not dying
         return False
-    return _own_egg_positive(mem, battle) and not _own_egg_empty(mem, battle)
+    if _own_egg_positive(mem, battle) and not _own_egg_empty(mem, battle):
+        return True
+    # owner 2026-11-28: 卵の残数が未読でも、実メニューで「たまごをつかう」の白行を
+    # 観測していれば卵は撃てる。負けているボス戦で攻撃を続けて卵を使わずに落ちる
+    # 事例（第4話 7 vs 82 など）があるため、ボス戦に限って実測の白行を根拠に認める。
+    if not (battle.get('enemy') in chart.BOSSES.values()
+            or chart.is_boss_castle(battle.get('enemy'))):
+        return False
+    return bool(battle.get('own_egg_positive_observed') or battle.get('egg_white_seen')
+                or battle.get('egg_available_unused'))
 
 
 def _own_egg_needed(mem, battle, general_reading=None):
