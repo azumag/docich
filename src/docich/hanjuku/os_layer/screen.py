@@ -1180,7 +1180,7 @@ def month_confirmation_positions(screen):
     return [(x, y) for x, y, _ in choices]
 
 
-_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *(\d+)G')
+_HUD_HEADER = re.compile(r'(?:(\d+)わ *)?(\d+)ねん *(\d+)のつき *[+＋]?(\d+)G')
 _KNIGHT_MENU_KINDS = frozenset({'battle_menu', 'battle_menu_pending', 'monster_menu', 'monster_menu_pending',
                               'egg_battle_menu', 'okunote_menu', 'egg_choice_menu', 'card_select'})
 
@@ -1293,15 +1293,19 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         # normal light mask misses the grey rows entirely. Read both so the
         # entry order comes from the actual collected order (#5325).
         rows = {}
-        for predicate in (
-                lambda r, g, b: min(r, g, b) >= 170,
-                lambda r, g, b: 95 <= min(r, g, b) <= 165
-                and max(r, g, b) - min(r, g, b) <= 12):
+        grey = set()
+        for predicate, is_grey in (
+                (lambda r, g, b: min(r, g, b) >= 170, False),
+                (lambda r, g, b: 95 <= min(r, g, b) <= 165
+                 and max(r, g, b) - min(r, g, b) <= 12, True)):
             for ln in read_lines(frame, predicate=predicate, rect=(160, 15, 252, 145)):
                 text = ''.join(w for _, w in ln.spans())
                 if text:
                     rows.setdefault(ln.y, text)
+                    if is_grey:
+                        grey.add(ln.y)
         screen.password_list = sorted(rows.items())
+        screen.password_list_grey = grey
     screen.okunote_only_box = _okunote_only_box(frame, screen)
     if screen.kind == 'text':
         screen.prose_attached_marks = attached_mark_cells(

@@ -14,6 +14,7 @@ from ..os_layer import roster as receipts
 # World facts shared with the economy strategy live in the OS layer.
 from ..os_layer.world import HOUSE_VIEW, _castle_status_after_sortie, _repair_hp_ready
 from ..strategy import goals
+from ..strategy.orders import active_sortie_launch_priority
 from ..state import egg_memory
 from ..state.regions import (world as _world, flow as _flow, journal as _journal,
                               sorties as _sorties, plan as _plan_region)
@@ -114,6 +115,13 @@ def _entry_exit(mem, reason, code, entry=None):
 GIFTS = (('スカーフ', 200), ('みずぎ', 100), ('ピアス', 50))
 ROSTER_LIMIT = receipts.MAX_GENERALS
 STEP_LIMIT = 24
+# The general status page is reopened/held by the roster walk; the orchestrator
+# now stands down its orphan B while this flow is the owner
+# (status_panel.status_panel_owner_active).  A panel that cannot be read as the
+# selected general must therefore leave after a bounded number of observations
+# with B instead of spending the whole STEP_LIMIT as no-input holds.  Matches
+# post_month_status.STATUS_RETRIES (12).
+STATUS_READ_LIMIT = 12
 # Expected cells of the empty-inventory receipt that may be hidden under the
 # source castle's sprite (g1163 2026-11-11 いちじょうだに needs 1).
 SORTIE_PANEL_OCCLUDED = 2
@@ -158,19 +166,65 @@ def location_row(screen):
     return next((r.span(24, 168).replace(' ', '') for r in screen.lines if r.y == 151), None)
 
 
-def general_status(screen):
+def name_has_digits(name):
+    """True when an *expected* general name carries a digit of its own.
+
+    Live panels in this repository only show digit-free names, so a digit in
+    an OCR'd name is normally evidence of a misread (``ヴィーナス1``), and both
+    readers reject it.  When the caller is matching one known general whose
+    real name contains a digit (later chapters, e.g. ``てつじん8ごう``), the
+    digit is part of the expected identity instead: the readers may accept it
+    but only for that exact expected name.
+    """
+    return isinstance(name, str) and bool(re.search(r'\d', name))
+
+
+def _name_row_readable(name, allow_digits):
+    """Reject blank/unknown names and, unless the target has a digit, digits."""
+    return (bool(name) and UNKNOWN not in name
+            and not re.search(r'\s' if allow_digits else r'[\d\s]', name))
+
+
+def general_status_name(screen, *, expected=None):
+    """Read the named-general heading without requiring a readable egg row.
+
+    A status reader must retain ownership when the name is visible but the egg
+    row is temporarily unreadable; its bounded retry is responsible for that
+    row. The name and adjacent しょうぐん label identify the page.
+
+    ``expected`` only decides whether the target's own digits are acceptable;
+    a different (digit-free) name is still returned so the caller can prove
+    this is another general's page.
+    """
+    allow_digits = name_has_digits(expected)
+    for x, y in ((24, 39), (16, 31)):
+        row = next((r for r in screen.lines if r.y == y), None)
+        if row is None:
+            continue
+        name = row.span(x, x + 64).strip()
+        if (not _name_row_readable(name, allow_digits)
+                or row.span(x + 64, x + 112) != 'しょうぐん'):
+            continue
+        return name
+    return None
+
+
+def general_status(screen, *, expected=None):
     """Read the named general and egg row, never equate zero uses with broken.
 
     Main-menu panels use x=24/88, y=39 and egg y=119. Field/sortie panels
     use x=16/80, y=31 and egg y=111. Unknown tiles invalidate the egg row.
+    ``expected`` admits digits only when the target general's own name has
+    one; every other caller keeps the measured digit rejection.
     """
+    allow_digits = name_has_digits(expected)
     for x, y in ((24, 39), (16, 31)):
         row = next((r for r in screen.lines if r.y == y), None)
         egg = next((r for r in screen.lines if r.y == y + 80), None)
         if row is None or egg is None:
             continue
         name = row.span(x, x + 64).strip()
-        if (not name or UNKNOWN in name or re.search(r'[\d\s]', name)
+        if (not _name_row_readable(name, allow_digits)
                 or row.span(x + 64, x + 112) != 'しょうぐん'):
             continue
         text = egg.span(x, x + 112).replace(' ', '')
@@ -749,8 +803,8 @@ def _capture_selection_marker(state, mem, frame, name):
                                'tick': mem.get('tick')}
 
 
-def _observe_status(screen, mem):
-    info = general_status(screen)
+def _observe_status(screen, mem, *, expected=None):
+    info = general_status(screen, expected=expected)
     if info:
         name = info['general']
         state = mem.get('house') or {}
@@ -1414,6 +1468,14 @@ def _step_once(screen, mem, frame):
         monthly = month_menu_ready(screen) and not mem.get('month_sub')
         if not monthly and _corridor_march(mem):
             return None
+        # owner 2026-11-27 (#5702): 出撃の開始から発射確認までの間は、家来一覧や
+        # 状態確認の探索より発射確認を優先する（メニューを開くとマップの▲が見えない）。
+        launch_step = active_sortie_launch_priority(mem)
+        if launch_step:
+            _record(mem, 'deferred_sortie',
+                    observed_metric={'step': launch_step},
+                    reason='出撃の開始から発射確認までのため、家来・状態の探索を見送る')
+            return None
         # An explicit month-end inspection now owns returns and repairs.
         # Once it finishes, field surveys must not steal the next map plan.
         if (not monthly and (mem.get('post_month_status_last') or {}).get('scope') == scope):
@@ -1878,7 +1940,7 @@ def _step_once(screen, mem, frame):
             if actions == [pad('a')]:
                 state['selected'] = target
                 _capture_selection_marker(state, mem, frame, target)
-                _phase(state, 'status')
+                _phase(state, 'status', status_reads=0)
             elif actions:
                 from ..os_layer.commands import roster_list_batch
                 actions = roster_list_batch(screen, target) or actions
@@ -1893,12 +1955,26 @@ def _step_once(screen, mem, frame):
             return [pad('b')]
         state['selected'] = selected
         _capture_selection_marker(state, mem, frame, selected)
-        _phase(state, 'status')
+        _phase(state, 'status', status_reads=0)
         return [pad('a')]
     if phase == 'status':
         info = _observe_status(screen, mem)
         if not info or info['general'] != state.get('selected'):
+            reads = int(state.get('status_reads') or 0) + 1
+            state['status_reads'] = reads
+            if reads >= STATUS_READ_LIMIT:
+                # The orphan close now yields this page to us, so an unreadable
+                # or wrong general must still end in a real B (one observation,
+                # not a STEP_LIMIT of no-input holds with the panel held open).
+                _record(mem, 'status_unreadable',
+                        observed_metric={'reads': reads, 'limit': STATUS_READ_LIMIT,
+                                         'selected': state.get('selected'),
+                                         'screen': screen.kind},
+                        reason='一覧から開いた本人ステータスを読めないため卵修理の観察を有限に終了')
+                _exit(mem, '本人ステータスを読めないまま観察上限に達したため入力を止める')
+                return [pad('b')]
             return []
+        state.pop('status_reads', None)
         name = info['general']
         _tally_open_once(mem, state, 'partial' if state.get('from_survey') else 'full', info)
         receipts.wage(mem, info)

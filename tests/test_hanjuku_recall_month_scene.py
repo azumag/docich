@@ -17,7 +17,7 @@ from docich.hanjuku.os_layer.pixels import read_png
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku.os_layer.screen import Screen
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
-from test_hanjuku_chart_bot import camp_menu
+from test_hanjuku_chart_bot import camp_menu, complete_recall_y_jump
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'tests' / 'fixtures' / 'hanjuku'
@@ -76,27 +76,56 @@ def test_the_scene_advances_on_every_later_frame():
         assert 'camp_recall_interrupted' not in decisions(state)
 
 
-def test_a_dispatched_recall_waits_out_the_scene_and_ends_on_the_month_screen():
-    # The recall A was already sent: the scene advances with A and the dispatch
-    # wait is settled (unconfirmed, finitely) on the next screen, as before v286
-    # it was settled on the scene itself.
-    actions, state = decide(read_png(SCENE), recall_state(stage='await_dispatch'))
+def test_a_dispatched_recall_scene_coverage_waits_for_field_evidence():
+    # A has a receipt already. The concert scene covers the picker, but is not
+    # itself proof of acceptance and must not create the pre-send retry marker.
+    actions, state = decide(
+        read_png(SCENE), recall_state(stage='await_dispatch', input_sent=True))
     assert actions == [pad('a')]
+    assert 'camp_recall_scene_covered' in decisions(state)
     assert 'camp_recall_interrupted' not in decisions(state)
-    assert state['policy']['flow']['recall']['stage'] == 'await_dispatch'
-    _, state = decide(read_png(MONTH_MENU), state)
-    assert 'camp_recall_unconfirmed' in decisions(state)
-    assert 'recall' not in state['policy']
+    recall = state['policy']['flow']['recall']
+    assert recall['stage'] == 'await_dispatch'
+    assert recall['scene_covered'] is True
+    assert 'recall_interrupted' not in state['policy']['flow']
+
+    # A later text frame still belongs to the scene/month owner and cannot
+    # consume the dispatch receipt window.
+    steps = recall['steps']
+    assert recall_flow.camp_recall_step(
+        Screen([], None, '月初の案内文', kind='text'), state['policy'], None) is None
+    assert recall['steps'] == steps
+
+    # Only a field/picker observation can settle the covered request. This
+    # is a parsed Screen, so exercise the flow boundary directly rather than
+    # passing it to decide(), whose public input is a pixel Frame.
+    mem = state['policy']
+    for _ in range(6):
+        mem['tick'] = int(mem.get('tick') or 0) + 1
+        recall_flow._recall_dispatch_step(
+            Screen([], None, '', kind='map_target', marker=(90, 80)),
+            mem, recall)
+    flow_records = mem.get('_records', [])
+    assert 'camp_recall_unconfirmed' in [row.get('decision') for row in flow_records]
+    assert 'recall' not in (mem.get('flow') or {})
+    verification = mem['flow']['recall_verification']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert verification['picker_closed'] is False
+    assert verification['scene_covered'] is True
 
 
 def test_a_sent_but_unclosed_recall_schedules_the_destination_roster_read():
     # docich#5127 (owner 2026-11-23): input_sent + picker_closed=False ended as
     # "unconfirmed" and never asked the destination roster, so the general's
     # arrival could not be confirmed. The bounded read is scheduled instead.
-    state = recall_state(stage='await_dispatch', input_sent=True, goal='ファルゲ')
-    _, state = decide(read_png(MONTH_MENU), state)
-    assert 'camp_recall_unconfirmed' in decisions(state)
-    due = state['policy']['roster_read_due']['ファルゲ']
+    mem = {'chapter': 3, 'tick': 70400, 'flow': {}, '_records': []}
+    recall = {'stage': 'await_dispatch', 'steps': 0, 'input_sent': True,
+              'goal': 'ファルゲ', 'target': [414, 496]}
+    picker = Screen([], None, '', kind='map_target', marker=(90, 80))
+    for offset in range(6):
+        mem['tick'] = 70400 + offset
+        recall_flow._recall_dispatch_step(picker, mem, recall)
+    due = mem['roster_read_due']['ファルゲ']
     assert 70400 + recall_flow.RECALL_READ_DELAY <= due <= 70400 + recall_flow.RECALL_READ_DELAY + 10
 
 
@@ -164,7 +193,7 @@ def test_the_interrupted_recall_resumes_and_reaches_a_destination(monkeypatch):
                                                    'clipped': False}])
     target = Screen([], None, '', kind='map_target', marker=(163, 115))
     assert recall_flow._camp_recall_step(target, mem, frame) == [pad('y')]
-    mem['y_jumped'] = {'RECALL': _flow(mem)['recall']['goal']}
+    complete_recall_y_jump(mem)
     assert recall_flow._camp_recall_step(target, mem, frame) == [pad('a')]
     done = _flow(mem)['recall']
     assert done['stage'] == 'await_dispatch' and done['target_cell'] == [163, 115]

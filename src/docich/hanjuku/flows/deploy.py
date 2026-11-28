@@ -24,6 +24,7 @@ from ..os_layer.world import NAME, _en_route, _owned
 from ..state import egg_memory
 from ..strategy.bargains import forget_picked, note_card_carried
 from ..strategy.boss_cards import UNSEEN, boss_card_reserved, boss_kit
+from ..strategy import card_census as card_census_booking, unreadable_card_block
 from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_UNREADABLE_LIMIT, CARRY_SLOTS,
                            NORMAL_CARD_UNREADABLE_LIMIT, SORTIE_CONFIRM_UNREADABLE_LIMIT,
                             ENEMY_EGG_CARD_ID_SUM, RARE_SCAN_LIMIT, SORTIE_CONFIRM_LIMIT, _cap_card_ids,
@@ -33,13 +34,18 @@ from ..strategy.kit import (CARD_IDS, CARD_MISS_LIMIT, CARD_SCROLL_LIMIT, CARD_U
 from ..strategy.orders import (SOURCE_LOCATION_RECHECK_LIMIT, SORTIE_CANCELLED_OBSERVED_LIMIT,
                                SOURCE_DEFENDER_CANCEL_LIMIT, HERO_BROKEN_SORTIE_CANCEL_LIMIT,
                                _boss_companion_wait_expired,
+                               _boss_egg_depleted, _boss_sole_consolidation_permitted,
+                               _boss_target_unlocked, _broken_hero_order,
                                _boss_egg_depleted, _boss_target_unlocked, _broken_hero_order,
+                               clear_sortie_launch_priority,
                                _continue_transit_sorties, _defense_move_pick, _few_castles,
                                _finish_order, _garrison_move, _hero_source_alternative, _order,
-                               drop_retired_step_context,
+                               _site_king_down, drop_retired_step_context,
                                _order_hero_alternatives, _record_source_defender_cancel,
                                _record_sortie_cancelled_observed, _reserve_source_guard, _retake_reserved,
-                               _sortie_general, _source, _source_location_recheck, _source_spare_missing,
+                               _sortie_general, _sortie_resume_due, _sortie_resume_owe,
+                               _sortie_resume_outcome,
+                               _source, _source_location_recheck, _source_spare_missing,
                                _staffed_elsewhere, _unplaced_castle_generals)
 
 
@@ -73,6 +79,57 @@ def _cancel_broken_hero_sortie(mem, order):
     return [pad('b')]
 
 
+SITE_UNCONFIRMED_REARM_LIMIT = 2   # site steps reopened from an unreadable launch per month
+VERIFY_LIST_OPEN_LIMIT = 6         # presses that may open the sortie list from the castle menu
+
+
+def _rearm_unconfirmed_site_step(mem, order, sortie):
+    """Reopen a site step whose interrupted launch cannot be verified.
+
+    The destination was never confirmed (the sortie has no target), so the
+    army cannot be marching to this site: keeping the step ``launched_
+    unconfirmed`` only blocks it until the next Y-view reconciliation. Live
+    g1342 2026-11-25 02:11:27-02:11:30 read the castle menu as the sortie
+    list, gave up after three reads and left 4-B1 untouched for 20 minutes.
+    Bounded per step per month; the site's closed marker still wins.
+    """
+    step, target = order['step'], order.get('target')
+    if (mem.get('chapter') or 0) != 4 or target not in chart.boss_sites(4):
+        return False
+    if _site_king_down(mem, target) or sortie.get('target') is not None:
+        return False
+    month = mem.get('month')
+    book = mem.setdefault('site_unconfirmed_rearm', {})
+    entry = book.get(step)
+    if not isinstance(entry, dict) or entry.get('month') != month:
+        entry = {'month': month, 'count': 0}
+    if entry['count'] >= SITE_UNCONFIRMED_REARM_LIMIT:
+        return False
+    entry['count'] += 1
+    book[step] = entry
+    _sorties(mem).pop(step, None)
+    (_world(mem).get('launched_orders') or {}).pop(step, None)
+    for name, launch in list((_world(mem).get('launched') or {}).items()):
+        if isinstance(launch, dict) and launch.get('step') == step:
+            _world(mem)['launched'].pop(name, None)
+    for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
+        (mem.get(key) or {}).pop(step, None)
+    for key in ('general_override', 'source_override', 'card_override'):
+        (_plan_region(mem).get(key) or {}).pop(step, None)
+    (_plan_region(mem).get('order_context') or {}).pop(step, None)
+    (_plan_region(mem).get('sortie_general') or {}).pop(step, None)
+    clear_sortie_launch_priority(mem, step)
+    (_plan_region(mem).setdefault('orders', {}))[step] = 'pending'
+    (mem.get('sortie_verify_open') or {}).pop(step, None)
+    forget_picked(mem)
+    _record(mem, 'site_unconfirmed_rearmed', chart_step=step,
+            general=sortie.get('general'),
+            observed_metric={'target': target, 'count': entry['count'], 'month': month},
+            resulting_event=f'rearm:{step}',
+            reason='出撃先の決定前に割り込まれ、在城確認が上限まで読めないため指示待ちへ戻す')
+    return True
+
+
 def _verify_sortie_source(screen, mem, order):
     """Never select a replacement while checking an interrupted departure.
 
@@ -87,6 +144,22 @@ def _verify_sortie_source(screen, mem, order):
                 reason='出撃記録または将軍名が欠損しているため在城・不在を推定せず検証を保留する')
         _plan_region(mem)['active'] = None
         return [pad('b'), pad('b')]
+    listed = menu_to(screen, 'しゅつげき')
+    if listed is not None:
+        # The castle menu's left column plus the resident rows read as a
+        # general list (live g1342 2026-11-25 02:11:27: candidates しゅつげき/
+        # ステータス + どうし…). Its four rows are not the sortie roster, so a
+        # missing name here proves nothing and must not spend the reads.
+        # Opening the list is bounded: if the press never lands, the ordinary
+        # read budget below still gives up and re-arms the site step.
+        opens = mem.setdefault('sortie_verify_open', {})
+        opens[step] = int(opens.get(step) or 0) + 1
+        if opens[step] <= VERIFY_LIST_OPEN_LIMIT:
+            return _deploy_input(screen, mem, order,
+                                 [pad('a')] if listed == 'here' else [listed],
+                                 '出撃メニューのしゅつげきを開いて出撃元の将軍一覧を確認する')
+        # Past the bound the counter stays over the limit: the ordinary read
+        # budget below resolves the launch instead of restarting this route.
     present = _present_generals(screen)
     if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
         present = None
@@ -97,33 +170,68 @@ def _verify_sortie_source(screen, mem, order):
             _plan_region(mem)['active'] = None
             _record(mem, 'sortie_verification_held', chart_step=step,
                     reason='一覧で在城・不在を確定できないため出撃未確定を維持して別の指示へ進む')
+            _rearm_unconfirmed_site_step(mem, order, sortie)
             return [pad('b'), pad('b')]
         return _hold_deploy(screen, mem, order, '出撃未確定の将軍の在城・不在を一覧で確定できないため保留')
     cancelled = sortie['general'] in present
     sortie['status'] = 'cancelled' if cancelled else 'en_route'
+    (mem.get('sortie_verify_open') or {}).pop(step, None)
+    resume_owed = False
     if cancelled:
-        from .house import _sortie_state_sig, _tally_sortie_attempt
-        # Issue #3326 (34): roster presence proves the unit stayed behind.
-        _tally_sortie_attempt(mem, sortie.get('target') or sortie.get('planned_target'),
-                              sortie.get('purpose'), 'cancelled_observed',
-                              _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
-        _record_sortie_cancelled_observed(mem, order, sortie)
         status = (_plan_region(mem).get('orders') or {}).get(step)
-        if status not in ('failed',):
+        # docich#5020: a battle-resume source check is not an ordinary failed
+        # launch. Do not increment the generic attempt/cancel suppression
+        # before the same-month re-open is driven (Devin review on #5150).
+        resume_owed = status != 'failed' and _sortie_resume_due(mem, step)
+        if resume_owed:
+            _sortie_resume_owe(mem, step)
+            _record(mem, 'sortie_resume_source_confirmed', chart_step=step,
+                    general=sortie['general'], source=sortie['source'],
+                    observed_metric=present,
+                    reason='再開対象の将軍が出撃元に残っていることを確認したため、通常取消抑止を使わず同じ指示のピッカー再開へ進む')
+        else:
+            from .house import _sortie_state_sig, _tally_sortie_attempt
+            # Issue #3326 (34): roster presence proves cancellation.
+            _tally_sortie_attempt(mem, sortie.get('target') or sortie.get('planned_target'),
+                                  sortie.get('purpose'), 'cancelled_observed',
+                                  _sortie_state_sig(mem, sortie.get('source'), sortie['general']))
+            _record_sortie_cancelled_observed(mem, order, sortie)
+        # _record_sortie_cancelled_observed may have just reached its
+        # retry limit and marked the order failed. Re-read after that mutation;
+        # the pre-record status above is stale and must not resurrect the step.
+        current_status = (_plan_region(mem).get('orders') or {}).get(step)
+        if current_status != 'failed':
             _plan_region(mem).setdefault('orders', {})[step] = 'pending'
     else:
         _plan_region(mem).setdefault('orders', {})[step] = 'launched'
+        _sortie_resume_outcome(mem, step, 'established',
+                reason='出撃元の一覧に出撃将軍がいないため、割り込まれた出撃は成立していたと確定')
     if not cancelled:
         _garrison_move(mem, sortie['general'], source=sortie['source'])
         from .camp_recheck import observe_departure
         observe_departure(mem, sortie['general'], sortie.get('tick'))
+    # owner 2026-11-26: 9話で出撃キャンセルが続く事象を issue から読めるよう、
+    # 「なぜ出発しなかったか」の材料（確認要求・拒否・計画状態・在城観測）を残す。
+    cancel_state = {
+        'step': step,
+        'plan_status': (_plan_region(mem).get('orders') or {}).get(step),
+        'departure_requested': bool((_flow(mem).get('departure_request') or {}).get('step') == step),
+        'decline_sent': bool(mem['sortie_decline'].get('decline_sent'))
+        if isinstance(mem.get('sortie_decline'), dict) else False,
+        'attempt_open': bool(_flow(mem).get('sortie_attempt')),
+        'general': sortie['general'],
+        'target': sortie.get('target') or sortie.get('planned_target'),
+    }
     _record(mem, 'sortie_cancelled_observed' if cancelled else 'sortie_departed_observed',
             chart_step=step, general=sortie['general'], source=sortie['source'], target=None,
-            observed_metric=present,
+            observed_metric=({**present, 'cancel_state': cancel_state}
+                             if cancelled and isinstance(present, dict) else present),
             reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
             else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
     _flow(mem).pop('sortie_attempt', None)
-    _plan_region(mem)['active'] = None
+    # docich#5020: keep the resumed order driving — ordinary settlements
+    # release to None so next_order picks the best order fresh.
+    _plan_region(mem)['active'] = step if resume_owed else None
     if cancelled:
         # The general is still home, so the carried cards may never have left
         # the field: forget them rather than keep a count that may be ahead.
@@ -840,6 +948,17 @@ def _deploy_input(screen, mem, order, actions, reason):
 DEPLOY_HOLD_LIMIT = 12   # consecutive unclassified sortie screens before cancelling
 
 
+def _empty_kit_blocks_departure(want, carried):
+    """Whether a readable confirm must not approve this departure.
+
+    docich#5353: the plan names cards but the measured panel shows none. The
+    owner wants resources spent before losses, so the sortie is cancelled and
+    retried later rather than departing unarmed. A partial mismatch (some
+    cards carried) keeps the existing approve path.
+    """
+    return bool(want) and carried == []
+
+
 def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
     context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
     # docich#4715: an unclassified sortie screen held forever — the live run sat
@@ -939,9 +1058,19 @@ def _move_general_pick(screen, mem, order):
     busy = _en_route(mem)[0]
     spare = sorted((g for g in present if g not in busy), key=lambda g: g == NAME)
     # Chapter 9 may empty a rear castle and walks the hero forward too
-    # (owner 2026-11-09 / 2026-11-11).
+    # (owner 2026-11-09 / 2026-11-11). The boss-only consolidation is the
+    # separate bounded exception minted by the mechanical plan (#5769).
     road_walk = chart.guard_free(mem.get('chapter'))
-    if (len(present) < 2 and not road_walk) or not spare:
+    sole_consolidation = _boss_sole_consolidation_permitted(order, mem)
+    if (len(present) < 2 and not road_walk and not sole_consolidation) or not spare:
+        # owner 2026-11-27: 同じ移動（例: アルマムーン>スペンソニア）が毎回
+        # 新しい step 名で再計画され、月内に何度も失敗していた。失敗した leg を
+        # 月単位で覚え、次回の計画から外す。
+        leg = f"{_source(order, mem)}>{order.get('target')}"
+        legs = mem.get('move_leg_failed')
+        legs = legs if isinstance(legs, dict) else {}
+        legs[leg] = mem.get('month')
+        mem['move_leg_failed'] = legs
         _finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない',
                       observed_metric=present[:8], source=_source(order, mem),
                       reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')
@@ -955,7 +1084,8 @@ def _move_general_pick(screen, mem, order):
         # to another general and the hero never arrived (g1190 2026-11-18
         # 15:12: the order named どうし and ラビオリ departed instead — #4546).
         if planned in spare and (planned != NAME or road_walk
-                                 or order.get('hero_hub_move') is True):
+                                 or order.get('hero_hub_move') is True
+                                 or sole_consolidation):
             general = planned
             reason = '計画が名指しした将軍をそのまま移動させる'
         else:
@@ -1413,6 +1543,7 @@ def _cursor_order_cards(order, mem) -> bool:
     """Chapter 9 picks cards from the top of the list (owner 2026-11-11)."""
     return (chart.guard_free(mem.get('chapter')) and not _is_boss_order(order, mem)
             and not _strict_boss_cards(order, mem)
+            and order.get('corridor_strong_kit') is not True
             and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed')
 
 
@@ -1785,6 +1916,28 @@ def _hold_guarded_sortie(mem, order, decision, reason, observed):
     return [pad('b'), pad('b')]
 
 
+def _settle_owned_target(mem, order):
+    """Close a conquest order whose target is already ours as done.
+
+    'pending' hands the stale attack back to every activation path and the
+    deploy gate cancelled it again every observation (docich#5623: ch5 wave
+    attacks on an already-taken バスカビル kept the month at zero launches);
+    'failed' would feed the failure books and re-arm windows a conquest that
+    simply happened without this march.
+    """
+    (_plan_region(mem).setdefault('orders', {}))[order['step']] = 'done'
+    _plan_region(mem)['active'] = None
+    forget_picked(mem)
+    _plan_region(mem).setdefault('sortie_general', {}).pop(order['step'], None)
+    _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
+    drop_retired_step_context(mem)
+    _record(mem, 'sortie_settled_owned_target', chart_step=order['step'],
+            source=_source(order, mem), target=order.get('target'),
+            observed_metric={'source': _source(order, mem), 'target': order.get('target')},
+            reason='攻撃目標の城は既に自軍のため出撃せず、征服済みの指示として閉じる')
+    return [pad('b'), pad('b')]
+
+
 def _hold_locked_boss(mem, order):
     """Recheck unsent active orders too; retain already-sent reconciliation."""
     status = (_plan_region(mem).get('orders') or {}).get(order['step'])
@@ -1805,16 +1958,15 @@ def _hold_unrouted_sortie(mem, order):
         # the list was never read (owner 2026-11-23: normal sortie cancelled
         # with the general present).
         return None
-    if order.get('purpose') == 'attack':
-        # Owner 2026-11-23: once the sortie window is open, commit.  The route
-        # is already validated when the source/general is chosen; a later B
-        # here left the opened window unused and blocked progress.
-        return None
     if ((_plan_region(mem).get('orders') or {}).get(order['step']) in ('launched', 'launched_unconfirmed')
             or routes.order_allowed(mem, order, _source(order, mem))):
         return None
     mem.pop('y_jump', None)
     _flow(mem).pop('sortie_attempt', None)
+    if order.get('purpose') == 'attack' and order.get('target') in _owned(mem):
+        # An attack on a castle already ours can never launch; handing it
+        # back to 'pending' just re-arms the same stale step (docich#5623).
+        return _settle_owned_target(mem, order)
     return _hold_guarded_sortie(mem, order, 'sortie_route_unverified',
             '第3話の既存城間ルートにない直行を取り消し、中継城経由で選び直す',
             {'source': _source(order, mem), 'target': order.get('target')})
@@ -1856,6 +2008,13 @@ def _keep_sortie_defender(screen, mem, order):
             {'present': present[:8], 'available': sorted(available),
              'location_recheck_attempts': recheck['attempts']})
     (mem.get('source_location_rechecks') or {}).pop(source, None)
+    # owner 2026-11-27: 守備を残せない城は、その月の出撃元として使えない。
+    # 記録して次の計画で別の城（将軍2人以上）を選ばせる。同じ城で毎回
+    # キャンセルを繰り返すと、月の予算を捨てて出撃0のまま終わる。
+    depleted = mem.get('sortie_source_depleted')
+    depleted = depleted if isinstance(depleted, dict) else {}
+    depleted[source] = mem.get('month')
+    mem['sortie_source_depleted'] = depleted
     _refute_unplaced(mem, order)
     _record_source_defender_cancel(mem, order, present=present, available=sorted(available))
     return _hold_guarded_sortie(mem, order, 'sortie_held_source_defender',
@@ -2219,6 +2378,18 @@ def deploy_step(screen: Screen, mem, *, frame=None):
     if order is None:
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
+    if (kind != 'sortie_confirm'
+            and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
+        # docich#5146: the blind-approve allowance and its miss budget belong
+        # to one uninterrupted confirmation round. Any other observed screen
+        # means the panel was left (a battle can swallow the blind A and drop
+        # the flow back through the menus), so the re-entered confirmation
+        # gets its own single blind approval instead of inheriting the spent
+        # flag and cancelling on its third unreadable observation. An
+        # unconfirmed launch keeps the flag: its menu reads reconcile the
+        # previous departure, they do not rearm it (map.py order_start).
+        for key in ('sortie_confirm_miss', 'sortie_confirm_blind'):
+            (mem.get(key) or {}).pop(order['step'], None)
     if ('_run_identity' in mem
             and (_plan_region(mem).get('orders') or {}).get(order['step']) != 'launched_unconfirmed'):
         # The deploy continuation (castle menu, general list, card select,
@@ -2585,6 +2756,13 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         mem.get('card_unreadable', {}).pop(order['step'], None)
+        cleared_blocks = unreadable_card_block.clear(mem, source=_source(order, mem))
+        if cleared_blocks:
+            _record(mem, 'unreadable_card_block_cleared',
+                    observed_metric={'count': len(cleared_blocks),
+                                     'routes': [[row.get('purpose'), row.get('source'), row.get('target')]
+                                                for row in cleared_blocks]},
+                    reason='この出撃元の切り札一覧を構造読みできたため、読み不可出撃で止めていた経路を解除する')
         if _observe_card_stock(mem, inventory):
             wanted = _deploy_cards(order, mem)
             for card in picked:
@@ -2707,8 +2885,12 @@ def deploy_step(screen: Screen, mem, *, frame=None):
         return [move]
     if kind == 'sortie_confirm':
         _plan_region(mem).setdefault('order_context', {}).pop(order['step'], None)
-        empty_receipt = _empty_sortie_inventory(screen)
-        slot_receipt = _sortie_inventory(screen)
+        from .house import SORTIE_PANEL_OCCLUDED
+        # docich#5146: the same castle-sprite occlusion the repair dispatch
+        # already tolerates (house.py SORTIE_PANEL_OCCLUDED, #3920/v655) hid
+        # the departure panel at ながはま every frame and cancelled sorties.
+        empty_receipt = _empty_sortie_inventory(screen, occluded=SORTIE_PANEL_OCCLUDED)
+        slot_receipt = _sortie_inventory(screen, occluded=SORTIE_PANEL_OCCLUDED)
         carried = [] if empty_receipt else slot_receipt
         inventory_evidence = ('measured_empty_sortie' if empty_receipt else
                               'measured_single_card_sortie' if slot_receipt and len(slot_receipt) == 1 else
@@ -2763,10 +2945,41 @@ def deploy_step(screen: Screen, mem, *, frame=None):
                         return [pad('a'), {'type': 'wait', 'ms': 150}, pad('a')]
                     misses.pop(order['step'], None)
                     _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
-                                  observed_metric={'carried': None},
+                                  observed_metric={'carried': None, 'blind_approved': bool(
+                                      (mem.get('sortie_confirm_blind') or {}).get(order['step']))},
                                   reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
                     return [pad('b'), pad('b')]
                 if misses[order['step']] == limit:
+                    # docich#5353 (owner 2026-11-24: resources before losses):
+                    # a readable panel with no cards while the plan names some
+                    # is not a departure to approve. Cancelling keeps the kit
+                    # for a later sortie instead of leaving unarmed.
+                    if _empty_kit_blocks_departure(want, carried):
+                        misses.pop(order['step'], None)
+                        unreadable_attempt = int((mem.get('card_skip_departure') or {}).get(order['step']) or 0)
+                        if unreadable_attempt:
+                            row, created = unreadable_card_block.mark(
+                                mem, order, source=_source(order, mem), cards=want, step=order['step'])
+                            card_census_booking.book(mem, 'unreadable_card_loop')
+                            _record(mem, 'unreadable_card_loop_blocked',
+                                    **_deploy_context(order, mem, expected_metric=want),
+                                    observed_metric={
+                                        'purpose': order.get('purpose'), 'source': row.get('source'),
+                                        'target': row.get('target'), 'planned': want,
+                                        'unreadable_depart_attempt': unreadable_attempt,
+                                        'blocked_steps': row.get('steps') or [],
+                                        'created': created,
+                                        'census_due': card_census_booking.due(mem) is not None},
+                                    reason='切り札一覧を読めない出撃が空携行で取消されたため、全所持読みで台帳を確定しつつ、この出撃元から札を携行する波を同じ出撃元の一覧再読まで停止する')
+                        _record(mem, 'sortie_kit_empty_cancel',
+                                **_deploy_context(order, mem, expected_metric=want),
+                                carried=carried,
+                                observed_metric={'carried': carried, 'planned': want},
+                                reason='計画の切り札が携行されていないため出撃を取り消し、次回に持ち越す')
+                        _finish_order(mem, 'failed', deviation_reason='carried_kit_empty',
+                                      observed_metric={'carried': [], 'planned': want},
+                                      reason='携行札なしの出撃を避けるため取り消して次の指示へ進む')
+                        return [pad('b'), pad('b')]
                     # A readable panel is the truth: approve the shown kit.
                     _record(mem, 'sortie_kit_mismatch',
                             **_deploy_context(order, mem, expected_metric=want),

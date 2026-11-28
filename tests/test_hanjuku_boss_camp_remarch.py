@@ -37,8 +37,10 @@ def _mem_with_status(row, month='2-6'):
 def test_a_healthy_boss_camper_gets_a_boss_move_task():
     mem = _mem_with_status({**CAMPED, 'hp': 49, 'max_hp': 49})
     post.arm(mem)
+    # The live arm path knows the chapter, so the task carries the measured
+    # site (chapter 4's boss is four sites; docich#5421).
     assert mem['post_month_status']['tasks'] == [
-        {'kind': 'boss_move', 'name': 'ゼウス'}]
+        {'kind': 'boss_move', 'name': 'ゼウス', 'goal': BOSS}]
 
 
 def test_an_injured_boss_camper_keeps_the_plain_exemption():
@@ -62,6 +64,7 @@ def test_a_broken_boss_camper_is_recalled_not_moved():
 
 def test_boss_move_task_marks_the_recall_state(monkeypatch):
     mem = memory()
+    _flow(mem)['retreat_rechecks'] = {'ゼウス': {'attempts': 3}}
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='task_jump',
@@ -74,7 +77,10 @@ def test_boss_move_task_marks_the_recall_state(monkeypatch):
                         lambda _screen, _mem, _frame: [pad('a')])
     assert post.step(screen, mem, object()) == [pad('a')]
     assert _flow(mem)['recall']['boss_move'] is True
+    assert _flow(mem)['recall']['task_recall'] is True
     assert _flow(mem)['recall']['stage'] == 'to_camp'
+    # The explicit monthly task owns the camp menu; a stale recheck row is gone.
+    assert 'ゼウス' not in (_flow(mem).get('retreat_rechecks') or {})
 
 
 def _camp_menu_screen(selected):

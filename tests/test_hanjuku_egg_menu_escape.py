@@ -1,0 +1,47 @@
+"""Bounded escape for an egg battle menu whose rows read as unreadable.
+
+Measured chapter 4 (4-B4, カシュー HP1 vs フォーリシア HP237): the box showed
+もうこうげき/きりふだ with no readable row names; the bot returned no input and
+the run ended input_stalled four times.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from docich.hanjuku.flows import battle_menus as B
+from docich.hanjuku_screen import Screen
+
+
+def _screen():
+    return Screen(kind='egg_battle_menu', text='もうこうげききりふだ', hand=None, lines=[])
+
+
+def _mem(sent=0, n=7):
+    ident = repr(('カシュー', 'フォーリシア'))
+    return {'battle': {'ally': 'カシュー', 'enemy': 'フォーリシア'},
+            'egg_menu_escape': {'ident': ident, 'n': n, 'sent': sent},
+            '_records': []}
+
+
+def test_unreadable_rows_get_bounded_up_nudges_then_a():
+    s = _screen()
+    mem = _mem()
+    assert B.egg_menu_escape(s, mem) == [B.pad('up')]
+    assert B.egg_menu_escape(s, mem) == [B.pad('up')]
+    assert B.egg_menu_escape(s, mem) == [B.pad('a')]
+    assert any(r['decision'] == 'egg_menu_cursor_nudge' for r in mem['_records'])
+
+
+def test_send_budget_is_bounded_per_battle():
+    s = _screen()
+    mem = _mem(sent=B.EGG_MENU_ESCAPE_SENDS)
+    # Nudges may still run, but no further A is sent once the budget is spent.
+    assert B.egg_menu_escape(s, mem) == [B.pad('up')]
+    assert B.egg_menu_escape(s, mem) == [B.pad('up')]
+    assert B.egg_menu_escape(s, mem) is None
+
+
+def test_a_non_egg_menu_is_left_alone():
+    s = Screen(kind='battle_menu', text='こうげき', hand=None, lines=[])
+    mem = _mem()
+    assert B.egg_menu_escape(s, mem) is None

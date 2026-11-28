@@ -35,7 +35,7 @@ Money is ``Decimal`` (never ``float``).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Mapping, Sequence
 
@@ -65,6 +65,13 @@ class CycleInputs:
     decided_keys: frozenset[str]
     block_buys: tuple[str, ...]
     problems: tuple[tuple[str, str], ...]
+    # Positions entered under a FREE-strategy policy, kept apart from the per-symbol ones
+    # above (Issue #3623, owner decision 2026-11-27: a symbol may be held by both).
+    # ``free_positions``/``free_held`` hold at most one free position per symbol;
+    # ``free_ambiguous_symbols`` have two (an old free policy still draining).
+    free_positions: Mapping[str, views.CostBasis] = field(default_factory=dict)
+    free_held: Mapping[str, HeldPosition] = field(default_factory=dict)
+    free_ambiguous_symbols: frozenset[str] = frozenset()
 
 
 def _asset_free(balance: BalanceSnapshot, currency: str) -> Decimal:
@@ -73,8 +80,14 @@ def _asset_free(balance: BalanceSnapshot, currency: str) -> Decimal:
 
 
 def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
-                       balance: BalanceSnapshot, policy_set: LivePolicySet) -> CycleInputs:
-    """Everything one LIVE cycle needs, read from ``ledger`` and ``balance`` (read-only)."""
+                       balance: BalanceSnapshot, policy_set: LivePolicySet,
+                       free_digests: frozenset[str] = frozenset()) -> CycleInputs:
+    """Everything one LIVE cycle needs, read from ``ledger`` and ``balance`` (read-only).
+
+    Positions whose entry digest is in ``free_digests`` (free-strategy policies) never
+    count as a second position of a per-symbol strategy: they go to the ``free_*`` fields.
+    Funds (C, deployed, free quote) still cover every position: one account, one capital.
+    """
     block_buys: set[str] = set()
     problems: set[tuple[str, str]] = set()
 
@@ -103,8 +116,34 @@ def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
                   free_quote=free_quote)
 
     rows_by_symbol: dict[str, list[views.PositionRow]] = {}
+    free_rows: dict[str, list[views.PositionRow]] = {}
     for row in views.open_position_rows(ledger):
-        rows_by_symbol.setdefault(row.symbol, []).append(row)
+        target = free_rows if row.entry_policy_digest in free_digests else rows_by_symbol
+        target.setdefault(row.symbol, []).append(row)
+
+    free_positions: dict[str, views.CostBasis] = {}
+    free_held: dict[str, HeldPosition] = {}
+    free_ambiguous: set[str] = set()
+    active_free = None if policy_set.free is None else policy_set.free.digest
+    for symbol in sorted(free_rows):
+        rows = free_rows[symbol]
+        if len(rows) > 1:
+            free_ambiguous.add(symbol)
+            # Drain the OLDER free policy first; the active one waits until it is flat.
+            rows = [row for row in rows if row.entry_policy_digest != active_free] or rows[:1]
+            rows = rows[:1]
+        row = rows[0]
+        try:
+            cost = views.position_cost(ledger, row.position_id, fee_rates.get(symbol))
+        except ValueError:
+            problems.add((symbol, COST_BASIS_UNAVAILABLE))
+            continue
+        if cost.net_base > 0:
+            free_positions[symbol] = cost
+            free_held[symbol] = HeldPosition(
+                position_id=row.position_id, net_base=cost.net_base,
+                free_base=_asset_free(balance, symbol.split("/")[0]),
+                entry_policy_digest=row.entry_policy_digest)
 
     positions: dict[str, views.CostBasis] = {}
     held: dict[str, HeldPosition] = {}
@@ -147,6 +186,9 @@ def build_cycle_inputs(ledger: LiveLedger, *, rules: Mapping[str, MarketRules],
         decided_keys=frozenset(views.decision_keys(ledger, "live1:")),
         block_buys=tuple(sorted(block_buys)),
         problems=tuple(sorted(problems)),
+        free_positions=free_positions,
+        free_held=free_held,
+        free_ambiguous_symbols=frozenset(free_ambiguous),
     )
 
 

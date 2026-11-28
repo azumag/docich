@@ -231,7 +231,7 @@ function render(data) {
   render.lastData = data;
   const h = data.header || {}, p = data.portfolio || {}, perf = data.performance || {};
   const ch = data.chart || {}, dec = data.decision || {};
-  $("title").textContent = h.title || "PAPER 暗号資産コーナー";
+  $("title").textContent = h.title || "暗号通貨コーナー";
   $("clock").textContent = jst(h.generated_at || (Date.now() / 1000)) + " JST";
   $("state").textContent = "状態:" + (h.worker_state || "unknown") + " #" + (h.snapshot_seq ?? "?");
   const age = h.data_age_sec;

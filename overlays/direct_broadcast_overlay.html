@@ -294,6 +294,144 @@ html[data-soren-neutral="1"] .toast {
 .summary-line.sum-drop { color: #fdba74; background: rgba(61, 27, 5, .72); }
 .summary-line.sum-av { color: #f9a8d4; background: rgba(63, 12, 44, .72); }
 .summary-line.sum-muted { color: #aab8c8; }
+#speedrun-timer {
+  --srt-gold: #facc15;
+  --srt-blue: #60a5fa;
+  --srt-red: #f87171;
+  --srt-white: #e5e7eb;
+  --srt-gray: #64748b;
+  height: 73px;
+  display: none;
+  grid-template-columns: 222px minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  color: var(--srt-white);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+html[data-speedrun-timer="1"] #speedrun-timer { display: grid; }
+html[data-speedrun-timer="1"] #top-rail > #summary,
+html[data-speedrun-timer="1"] #top-rail > #work,
+html[data-speedrun-timer="1"] #top-rail > #gen-top { display: none; }
+.srt-left {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 2px 8px 2px 3px;
+  border-right: 1px solid rgba(103, 232, 249, .18);
+  overflow: hidden;
+}
+.srt-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.srt-title {
+  color: #67e8f9;
+  font-size: 10.5px;
+  line-height: 12px;
+  font-weight: 900;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.srt-attempt { color: #fde68a; font-size: 12px; line-height: 12px; font-weight: 900; white-space: nowrap; }
+.srt-stale { color: var(--srt-gray); font-size: 8.5px; line-height: 10px; font-weight: 800; white-space: nowrap; }
+#srt-total {
+  color: var(--srt-white);
+  font-size: 25px;
+  line-height: 25px;
+  font-weight: 900;
+  letter-spacing: -.6px;
+  white-space: nowrap;
+}
+#srt-total.is-gold { color: var(--srt-gold); }
+#srt-total.is-blue { color: var(--srt-blue); }
+#srt-total.is-red { color: var(--srt-red); }
+#srt-total.is-white { color: var(--srt-white); }
+.srt-meta {
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+  color: #94a3b8;
+  font-size: 9.5px;
+  line-height: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.srt-meta b { color: #e5e7eb; font-weight: 900; }
+.srt-chips { height: 12px; display: flex; gap: 4px; overflow: hidden; }
+.srt-chip {
+  display: none;
+  max-width: 102px;
+  padding: 1px 4px;
+  border: 1px solid rgba(251, 146, 60, .55);
+  border-radius: 3px;
+  color: #fed7aa;
+  background: rgba(31, 17, 5, .82);
+  font-size: 8.5px;
+  line-height: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.srt-chip.comment { border-color: rgba(167, 139, 250, .6); color: #ddd6fe; background: rgba(32, 18, 78, .82); }
+.srt-chip.active { display: block; }
+.srt-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+}
+.srt-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 1px 5px;
+  border: 1px solid rgba(148, 163, 184, .22);
+  border-radius: 4px;
+  background: rgba(12, 28, 48, .55);
+  overflow: hidden;
+}
+.srt-cell.is-running {
+  border-color: #67e8f9;
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, .42);
+  background: rgba(8, 51, 68, .72);
+}
+.srt-cell-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.srt-cell-name { color: #cbd5e1; }
+.srt-cell-time { color: var(--srt-white); }
+.srt-cell-delta {
+  color: #94a3b8;
+  font-size: 9.5px;
+  line-height: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.srt-cell.is-gold .srt-cell-time,
+.srt-cell.is-gold .srt-cell-delta { color: var(--srt-gold); }
+.srt-cell.is-blue .srt-cell-time,
+.srt-cell.is-blue .srt-cell-delta { color: var(--srt-blue); }
+.srt-cell.is-red .srt-cell-time,
+.srt-cell.is-red .srt-cell-delta { color: var(--srt-red); }
+.srt-cell.is-white .srt-cell-time,
+.srt-cell.is-white .srt-cell-delta { color: var(--srt-white); }
+.srt-cell.is-gray .srt-cell-name,
+.srt-cell.is-gray .srt-cell-time,
+.srt-cell.is-gray .srt-cell-delta { color: var(--srt-gray); }
+.srt-cell.is-unreached .srt-cell-time { color: var(--srt-gray); }
 #work {
   height: 73px;
   display: none;
@@ -1088,9 +1226,7 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
 .hanjuku-gap-toast.tone-battle { border-color: #f0b84d; }
 .hanjuku-gap-toast.tone-month { border-color: #8fa8bb; }
 .hanjuku-gap-toast.tone-general { border-color: #7ee0c4; }
-.hanjuku-gap-toast.tone-plan { border-color: #75daec; font-size: 12px; line-height: 1.2; padding: 4px 6px; }
-.hanjuku-gap-toast.tone-plan .hanjuku-gap-toast-age { display: none; }
-.hanjuku-gap-toasts.has-plan, .hanjuku-gap-toasts.with-progress { min-height: 0; }
+.hanjuku-gap-toasts.with-progress { min-height: 0; }
 .hanjuku-gap-toast.tone-flow { border-color: #a8bdf9; font-size: 12px; padding: 4px 6px; }
 .hanjuku-gap-progress { height: 64px; min-height: 0; overflow: hidden;
   border-left: 3px solid #a8bdf9; background: #0b2232;
@@ -1104,11 +1240,6 @@ html[data-soren-monitor="1"]:not([data-improve-active="1"])[data-monitor-view="o
   flex-direction: column; gap: 6px; }
 .hanjuku-gap-flow-head { display: flex; align-items: baseline; justify-content: space-between;
   gap: 8px; color: #bdcdd9; font-size: 15px; font-weight: 700; }
-.hanjuku-gap-current-plan { padding: 6px 8px; border-left: 3px solid #75daec; border-radius: 4px; background: #0b2835; }
-.hanjuku-gap-current-plan-head { color: #75daec; font-size: 12px; font-weight: 700; }
-.hanjuku-gap-current-plan-detail { margin-top: 3px; color: #e6f2f8; font-size: 12px;
-  line-height: 1.3; white-space: pre-wrap; overflow-wrap: anywhere; }
-
 /* An intrinsic square SVG in a fixed-size slot; variable text only clips below.
    The 174px ceiling also fits the 540px game-gap height with progress shown. */
 .hanjuku-gap-minimap { display: block; width: min(100%, 174px); height: auto;
@@ -1220,6 +1351,7 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
   <section id="hanjuku-gap" aria-label="半熟英雄の観測詳細"></section>
   <section id="top-rail" class="rail" aria-live="polite">
     <div id="summary"></div>
+    <div id="speedrun-timer" aria-label="半熟英雄スピードラン タイマー"></div>
     <div id="work">
       <div class="work-bar"></div>
       <div class="work-copy"><div class="work-title"></div><div class="work-body"></div></div>
@@ -2227,46 +2359,6 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
     gapLive.toasts.push({id:++gapLive.seq, text, tone, at:now});
     gapLive.toasts = gapLive.toasts.filter(t => now - t.at <= 45000).slice(-5);
   }
-  // A stage ID and the inferred "sortie" pending category are not proof of
-  // a sortie. Only an order with matching step, actor and recorded route
-  // may be labelled planned/issued. Status comes from the persisted policy.
-  function gapPlanInfo(value) {
-    const gap = value?.gap || {};
-    const step = String(value?.plan || '');
-    const intent = String(gap.intent || '').trim();
-    if (intent) {
-      const parts = intent.split(' / ');
-      const read = prefix => parts.find(part => part.startsWith(prefix))?.slice(prefix.length).trim() || '';
-      const intentStep = read('段階 ');
-      const status = read('状態 ');
-      const general = (parts[0] || '').trim();
-      const route = (parts[1] || '').trim();
-      const purpose = (parts[2] || '').trim();
-      const reasonAt = parts.findIndex(p => p.startsWith('理由 '));
-      const reason = reasonAt >= 0 ? parts.slice(reasonAt).join(' / ').slice(3).trim() : '';
-      const labels = {pending:'出撃予定', launched:'出撃命令済み',
-        launched_unconfirmed:'出撃命令済み（成立未確認）'};
-      // An exact stage match prevents J3's action from leaking into J30.
-      if ((!step || intentStep === step) && general && route.includes('→') && labels[status]) {
-        const details = [general, route, purpose, reason ? `理由 ${reason}` : ''].filter(Boolean);
-        return {label:labels[status], detail:details.join(' / '), known:true};
-      }
-    }
-    // A sortie chart row is a persisted, recent issued order, not the next
-    // action to perform. It is only usable as evidence for its exact step.
-    const move = (gap.moves || []).find(m => step && m.step === step && m.general
-      && (m.source || m.target) && ['行軍中','成立未確認','交戦中'].includes(m.status));
-    if (move) {
-      const label = {'行軍中':'出撃命令済み（行軍中）',
-        '成立未確認':'出撃命令済み（成立未確認）',
-        '交戦中':'出撃経過確認中'}[move.status];
-      const route = `${move.source || '未確認'}→${move.target || '未確認'}`;
-      return {label, detail:[move.general, route, move.reason ? `理由 ${move.reason}` : '']
-        .filter(Boolean).join(' / '), known:true};
-    }
-    // The battle plan is rendered separately, not masquerading as a sortie.
-    return {label:'計画確認中', detail:'行動内容未取得', known:false};
-  }
   function gapFlowText(row) {
     const stageNames = {
       processing:'処理中', menu:'メニュー操作中', scan:'一覧確認中',
@@ -2333,10 +2425,7 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
         out.push(['▸ 進行 ' + gapFlowText(row), 'flow']);
     }
     // Owner 2026-11-06: the sortie intent is shown once, in the 出撃意図 line.
-    // The chart no longer repeats it (neither as a live block nor a toast).
-    // "sortie" is only an inferred pending category, not a confirmed order.
-    if (previous && value.pending !== previous.pending && value.pending && value.pending !== '出撃')
-      out.push([`▸ 処理中 ${value.pending}`, 'plan']);
+    // The chart never repeats pending/plan state as a toast.
     return out;
   }
   function gapBuildSkeleton(surface) {
@@ -2541,12 +2630,6 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
     // Update only the toast elements that changed: re-creating them every poll
     // restarted the enter animation and made the strip flicker.
     const live = gapLive.toasts.filter(t => now - t.at <= 45000).slice(-4);
-    const planInfo = gapPlanInfo(value);
-    const currentToast = `▸ ${planInfo.label} ${value.plan || '段階未取得'}\n${planInfo.detail}`;
-    // A historical toast is not the current plan; display the current card
-    // unless the exact same up-to-date details are visible in the toast.
-    const planToastVisible = live.some(t => t.tone === 'plan' && t.text === currentToast);
-    gapDom.toastBox.classList.toggle('has-plan', planToastVisible);
     const ids = new Set(live.map(t => t.id));
     for (const [id, el] of gapDom.toasts) {
       if (!ids.has(id)) { el.remove(); gapDom.toasts.delete(id); }
@@ -2783,6 +2866,329 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
     }
     return selected.slice(0, 4).map((line) => monitorText(String(line).replace(/[│┌┐└┘─━]/g, '').trim()));
   }
+  const speedrunView = {
+    timer: null, runningBase: 0, runningCell: null, frame: null, lastFrame: 0,
+    total: null, pb: null, sob: null, attempt: null, stale: null, workChip: null, commentChip: null, cells: [],
+  };
+
+  function srtElement(className, text) {
+    const element = document.createElement('div');
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+  }
+  /* speedrun-timer-pure:begin */
+  // DOM-free display decisions. tests/test_speedrun_timer_view.mjs evaluates
+  // exactly this block (with node:vm); keep it free of document/window access.
+  function srtPad2(value) {
+    return String(value).padStart(2, '0');
+  }
+  function srtClock(ms) {
+    const total = Math.max(0, Math.floor(Number(ms) || 0));
+    const hours = Math.floor(total / 3600000);
+    const minutes = Math.floor(total / 60000) % 60;
+    const seconds = Math.floor(total / 1000) % 60;
+    const millis = total % 1000;
+    return `${hours}:${srtPad2(minutes)}:${srtPad2(seconds)}.${String(millis).padStart(3, '0')}`;
+  }
+  function srtSplit(ms) {
+    const total = Math.max(0, Math.floor(Number(ms) || 0));
+    const hours = Math.floor(total / 3600000);
+    const minutes = Math.floor(total / 60000) % 60;
+    const seconds = Math.floor(total / 1000) % 60;
+    const millis = String(total % 1000).padStart(3, '0');
+    return hours > 0
+      ? `${hours}:${srtPad2(minutes)}:${srtPad2(seconds)}.${millis}`
+      : `${minutes}:${srtPad2(seconds)}.${millis}`;
+  }
+  function srtHms(ms) {
+    const total = Math.max(0, Math.floor(Number(ms) || 0));
+    const hours = Math.floor(total / 3600000);
+    const minutes = Math.floor(total / 60000) % 60;
+    const seconds = Math.floor(total / 1000) % 60;
+    return `${hours}:${srtPad2(minutes)}:${srtPad2(seconds)}`;
+  }
+  function srtDelta(ms) {
+    if (!Number.isSafeInteger(ms)) return '—';
+    return `${ms < 0 ? '−' : '+'}${srtSplit(Math.abs(ms))}`;
+  }
+  function srtElapsed(timer, now = Date.now()) {
+    if (!timer || timer.status === 'pending') return 0;
+    const started = Number.isSafeInteger(timer.started_at_ms) ? timer.started_at_ms : 0;
+    if (timer.status === 'finished' || timer.status === 'dnf') {
+      const ended = Number.isSafeInteger(timer.ended_at_ms) ? timer.ended_at_ms : started;
+      return Math.max(0, ended - started);
+    }
+    const at = timer.stale && Number.isSafeInteger(timer.heartbeat_at_ms)
+      ? timer.heartbeat_at_ms
+      : now;
+    return Math.max(0, at - started);
+  }
+  function srtRunningBase(timer) {
+    const current = Number.isSafeInteger(timer.current_index) ? timer.current_index : 0;
+    let base = 0;
+    for (const split of Array.isArray(timer.splits) ? timer.splits : []) {
+      if (Number.isSafeInteger(split.end_index) && split.end_index < current
+          && Number.isSafeInteger(split.cumulative_ms)) {
+        base = Math.max(base, split.cumulative_ms);
+      }
+    }
+    return base;
+  }
+  function speedrunTotalClass(timer, elapsed) {
+    if (!timer) return 'is-white';
+    if (timer.status === 'finished') {
+      // The rta finish() records the authoritative verdict (PB = gold,
+      // slower = red, not PB-eligible = white).  Untrusted values fall back
+      // to the PB-total comparison, and no PB at all stays white.
+      if (timer.total_verdict === 'gold' || timer.total_verdict === 'red'
+          || timer.total_verdict === 'white') {
+        return `is-${timer.total_verdict}`;
+      }
+      if (timer.pb_eligible === false) return 'is-white';
+      const pbTotal = timer.comparison?.pb_total_ms;
+      if (!Number.isSafeInteger(pbTotal)) return 'is-white';
+      return elapsed <= pbTotal ? 'is-gold' : 'is-red';
+    }
+    if (timer.status !== 'running') return 'is-white';
+    const comparison = timer.comparison && typeof timer.comparison === 'object'
+      ? timer.comparison : {};
+    const cumulative = Array.isArray(comparison.pb_cumulative_ms)
+      ? comparison.pb_cumulative_ms : [];
+    const splits = Array.isArray(timer.splits) ? timer.splits : [];
+    // §3.6: red when the last confirmed cumulative or the current elapsed is
+    // slower than the PB at the same point; blue when either is comparable
+    // and red did not win; white when there is no PB to compare against.
+    let comparable = false;
+    let behind = false;
+    const last = splits.length ? splits[splits.length - 1] : null;
+    if (last && Number.isSafeInteger(last.end_index)
+        && Number.isSafeInteger(last.cumulative_ms)
+        && Number.isSafeInteger(cumulative[last.end_index])) {
+      comparable = true;
+      if (last.cumulative_ms > cumulative[last.end_index]) behind = true;
+    }
+    const index = Number.isSafeInteger(timer.current_index) ? timer.current_index : 0;
+    if (Number.isSafeInteger(cumulative[index])) {
+      comparable = true;
+      if (elapsed > cumulative[index]) behind = true;
+    }
+    if (behind) return 'is-red';
+    return comparable ? 'is-blue' : 'is-white';
+  }
+  function speedrunCellModel(timer, index, elapsed) {
+    const comparison = timer.comparison && typeof timer.comparison === 'object'
+      ? timer.comparison : {};
+    const pbSegments = Array.isArray(comparison.pb_segments_ms)
+      ? comparison.pb_segments_ms : [];
+    const current = Number.isSafeInteger(timer.current_index) ? timer.current_index : 0;
+    let split = null;
+    let continuation = false;
+    for (const candidate of Array.isArray(timer.splits) ? timer.splits : []) {
+      if (!candidate || !Number.isSafeInteger(candidate.index)) continue;
+      if (candidate.index === index) {
+        split = candidate;
+        break;
+      }
+      if (candidate.index < index && Number.isSafeInteger(candidate.end_index)
+          && index <= candidate.end_index) {
+        continuation = true;
+      }
+    }
+    if (split) {
+      const verdict = ['gold', 'blue', 'red', 'white'].includes(split.verdict)
+        ? split.verdict : 'white';
+      return {time: srtSplit(split.segment_ms), delta: srtDelta(split.delta_ms),
+        classes: [`is-${verdict}`]};
+    }
+    if (continuation) return {time: '', delta: '結合', classes: ['is-gray']};
+    if (timer.status === 'running' && index === current) {
+      const runningMs = Math.max(0, elapsed - srtRunningBase(timer));
+      const pbSegment = pbSegments[index];
+      return {time: srtSplit(runningMs), delta: '',
+        classes: ['is-running',
+          Number.isSafeInteger(pbSegment) && runningMs > pbSegment ? 'is-red' : 'is-white']};
+    }
+    const pbSegment = pbSegments[index];
+    // Unreached cells only carry the PB segment time; milliseconds are noise
+    // there and made hour-long PBs clip before LOW-1.
+    return {time: Number.isSafeInteger(pbSegment) ? `PB ${srtHms(pbSegment)}` : '',
+      delta: '', classes: ['is-unreached']};
+  }
+  /* speedrun-timer-pure:end */
+  function buildSpeedrunTimer() {
+    const left = srtElement('srt-left');
+    const head = srtElement('srt-head');
+    head.append(srtElement('srt-title', '半熟英雄RTA'));
+    const attempt = document.createElement('span');
+    attempt.className = 'srt-attempt';
+    attempt.id = 'srt-attempt';
+    attempt.textContent = '#—';
+    head.appendChild(attempt);
+    // LOW-5: a small, separate note next to the attempt number; nothing else
+    // changes when the heartbeat stops.
+    const stale = document.createElement('span');
+    stale.className = 'srt-stale';
+    stale.id = 'srt-stale';
+    head.appendChild(stale);
+    const total = srtElement('srt-total');
+    total.id = 'srt-total';
+    total.textContent = '0:00:00.000';
+    const meta = srtElement('srt-meta');
+    const pbWrap = document.createElement('span');
+    pbWrap.append(document.createTextNode('PB '));
+    const pb = document.createElement('b');
+    pb.id = 'srt-pb';
+    pb.textContent = '—';
+    pbWrap.appendChild(pb);
+    const sobWrap = document.createElement('span');
+    sobWrap.append(document.createTextNode('SoB '));
+    const sob = document.createElement('b');
+    sob.id = 'srt-sob';
+    sob.textContent = '—';
+    sobWrap.appendChild(sob);
+    meta.append(pbWrap, sobWrap);
+    const chips = srtElement('srt-chips');
+    const workChip = document.createElement('span');
+    workChip.className = 'srt-chip';
+    workChip.id = 'srt-work-chip';
+    const commentChip = document.createElement('span');
+    commentChip.className = 'srt-chip comment';
+    commentChip.id = 'srt-comment-chip';
+    chips.append(workChip, commentChip);
+    left.append(head, total, meta, chips);
+    const grid = srtElement('srt-grid');
+    for (let index = 0; index < 12; index += 1) {
+      const cell = document.createElement('div');
+      cell.className = 'srt-cell';
+      cell.dataset.index = String(index);
+      const label = document.createElement('div');
+      label.className = 'srt-cell-label';
+      const name = document.createElement('span');
+      name.className = 'srt-cell-name';
+      name.textContent = `${index + 1}話`;
+      const time = document.createElement('span');
+      time.className = 'srt-cell-time';
+      const delta = document.createElement('div');
+      delta.className = 'srt-cell-delta';
+      label.append(name, time);
+      cell.append(label, delta);
+      grid.appendChild(cell);
+      speedrunView.cells.push({ cell, name, time, delta });
+    }
+    document.getElementById('speedrun-timer').append(left, grid);
+    speedrunView.total = total;
+    speedrunView.pb = pb;
+    speedrunView.sob = sob;
+    speedrunView.attempt = attempt;
+    speedrunView.stale = stale;
+    speedrunView.workChip = workChip;
+    speedrunView.commentChip = commentChip;
+  }
+  // MED-2: the top rail exists only on the full/top surfaces, and the browser
+  // overlay keeps two frames where the outgoing one is visibility:hidden.  No
+  // clock or render work may run in a frame that cannot be seen.
+  function speedrunSurfaceVisible() {
+    if (SURFACE_REGION !== 'full' && SURFACE_REGION !== 'top') return false;
+    if (document.hidden) return false;
+    try {
+      if (window.frameElement?.style?.visibility === 'hidden') return false;
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  function setSpeedrunTimerActive(active) {
+    document.documentElement.dataset.speedrunTimer = active ? '1' : '0';
+    const rail = document.getElementById('top-rail');
+    if (rail) rail.dataset.speedrunTimer = active ? '1' : '0';
+  }
+  function stopSpeedrunClock() {
+    if (speedrunView.frame !== null) cancelAnimationFrame(speedrunView.frame);
+    speedrunView.frame = null;
+    speedrunView.lastFrame = 0;
+  }
+  function speedrunClockTick(timestamp) {
+    speedrunView.frame = null;
+    const timer = speedrunView.timer;
+    // Stopping here (instead of rescheduling) lets the next 1s poll restart
+    // the clock once the frame is visible again.
+    if (!timer || timer.status !== 'running' || timer.stale
+        || !speedrunSurfaceVisible()) return;
+    if (!speedrunView.lastFrame || timestamp - speedrunView.lastFrame >= 32) {
+      speedrunView.lastFrame = timestamp;
+      const elapsed = srtElapsed(timer, Date.now());
+      speedrunView.total.textContent = srtClock(elapsed);
+      if (speedrunView.runningCell) {
+        speedrunView.runningCell.time.textContent = srtSplit(Math.max(0, elapsed - speedrunView.runningBase));
+      }
+    }
+    speedrunView.frame = requestAnimationFrame(speedrunClockTick);
+  }
+  function startSpeedrunClock() {
+    if (speedrunView.frame !== null) return;
+    speedrunView.lastFrame = 0;
+    speedrunView.frame = requestAnimationFrame(speedrunClockTick);
+  }
+  function renderSpeedrunCells(timer) {
+    const elapsed = srtElapsed(timer);
+    speedrunView.runningBase = srtRunningBase(timer);
+    speedrunView.runningCell = null;
+    for (let index = 0; index < 12; index += 1) {
+      const view = speedrunView.cells[index];
+      const model = speedrunCellModel(timer, index, elapsed);
+      view.cell.className = ['srt-cell', ...model.classes].join(' ');
+      view.name.textContent = `${index + 1}話`;
+      view.time.textContent = model.time;
+      view.delta.textContent = model.delta;
+      if (model.classes.includes('is-running')) speedrunView.runningCell = view;
+    }
+  }
+  function renderSpeedrunChips(workActive, workState, commentActive, cg) {
+    if (workActive) {
+      speedrunView.workChip.textContent = `⚙ ${String(workState.title || '作業中').slice(0, 18)}`;
+      speedrunView.workChip.classList.add('active');
+    } else {
+      speedrunView.workChip.textContent = '';
+      speedrunView.workChip.classList.remove('active');
+    }
+    if (commentActive) {
+      speedrunView.commentChip.textContent = `💬 ${String(cg?.label || 'コメント生成中').slice(0, 16)}`;
+      speedrunView.commentChip.classList.add('active');
+    } else {
+      speedrunView.commentChip.textContent = '';
+      speedrunView.commentChip.classList.remove('active');
+    }
+  }
+  function renderSpeedrunTimer(timer) {
+    if (!timer || !speedrunSurfaceVisible()) {
+      speedrunView.timer = null;
+      speedrunView.runningCell = null;
+      speedrunView.stale.textContent = '';
+      stopSpeedrunClock();
+      setSpeedrunTimerActive(false);
+      renderSpeedrunChips(false, {}, false, null);
+      return false;
+    }
+    setSpeedrunTimerActive(true);
+    speedrunView.timer = timer;
+    speedrunView.attempt.textContent = Number.isSafeInteger(timer.attempt_no) ? `#${timer.attempt_no}` : '#—';
+    speedrunView.stale.textContent = timer.stale ? '計測停止中' : '';
+    speedrunView.pb.textContent = Number.isSafeInteger(timer.comparison?.pb_total_ms)
+      ? srtClock(timer.comparison.pb_total_ms) : '—';
+    speedrunView.sob.textContent = Number.isSafeInteger(timer.comparison?.sum_of_best_ms)
+      ? srtClock(timer.comparison.sum_of_best_ms) : '—';
+    const elapsed = srtElapsed(timer);
+    speedrunView.total.textContent = srtClock(elapsed);
+    const totalClass = speedrunTotalClass(timer, elapsed);
+    for (const name of ['is-gold', 'is-blue', 'is-red', 'is-white']) {
+      speedrunView.total.classList.toggle(name, name === totalClass);
+    }
+    renderSpeedrunCells(timer);
+    if (timer.status === 'running' && !timer.stale) startSpeedrunClock();
+    else stopSpeedrunClock();
+    return true;
+  }
   function renderTopRail() {
     const workState = state?.notifications?.work || {};
     const workActive = Boolean(workState.active);
@@ -2794,6 +3200,17 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
       cg = gens.find((g) => String(g.key||'') === 'comment') || null;
       commentActive = Boolean(cg);
     } catch { commentActive = false; cg = null; }
+    // スピードランタイマー > 作業中 > コメント生成中 > 4行サマリ。
+    // タイマー中は作業/コメントを左下の小さなチップへ縮め、タイマーを隠さない。
+    if (state?.speedrunTimer && speedrunSurfaceVisible()) {
+      summary.style.display = 'none';
+      work.classList.remove('active');
+      genTop.classList.remove('active');
+      renderSpeedrunTimer(state.speedrunTimer);
+      renderSpeedrunChips(workActive, workState, commentActive, cg);
+      return;
+    }
+    renderSpeedrunTimer(null);
     // 作業インジケーター領域にコメント生成中を表示: work優先、次にcomment、最後にサマリ
     if (workActive) {
       work.classList.add('active');
@@ -3030,6 +3447,7 @@ html[data-prediction-active="1"][data-next-corner="1"] #feed { height: 568px; }
       publishHealth(String(error?.message || error));
     }
   }
+  buildSpeedrunTimer();
   void refresh();
   setInterval(refresh, 1000);
   setInterval(render, 1000);

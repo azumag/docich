@@ -27,3 +27,17 @@ def test_guarded_holds_stay_fail_closed():
                                      map_registration_hold=True) is None
     assert O.shop_list_unowned_input("shop_list", streak,
                                      orphan_battle_menu=True) is None
+
+
+def test_a_pending_purchase_or_quote_keeps_the_list_owned():
+    mem = {'shop': {'items': [['バグストーム', 1]], 'want': None}}
+    assert O._shop_list_plan_pending(mem)
+    assert O.shop_list_unowned_input(
+        "shop_list", O.SHOP_LIST_HOLD_MAX + 1,
+        shop_plan_pending=O._shop_list_plan_pending(mem)) is None
+    mem['shop']['items'] = []
+    mem['shop']['want'] = ['バグストーム', 1, 10]
+    assert O._shop_list_plan_pending(mem)
+    assert O.shop_list_unowned_input(
+        "shop_list", O.SHOP_LIST_HOLD_MAX + 1,
+        shop_plan_pending=O._shop_list_plan_pending(mem)) is None

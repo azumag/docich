@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ops.vm_actions.runtime_registry import (
     DIAG_WINDOW_SEC,
+    HANJUKU_PERIODIC_ONESHOT,
     HANJUKU_SCENE_ONESHOT,
     KNOWN_LANES,
     MAX_JSON_BYTES,
@@ -77,6 +78,21 @@ class RegistrySchemaTests(unittest.TestCase):
         self.assertEqual(HANJUKU_SCENE_ONESHOT["log_file"], hanjuku_scene.LOG_NAME + ".jsonl")
         self.assertIn(HANJUKU_SCENE_ONESHOT["queue_lane"], KNOWN_LANES)
         self.assertNotIn("hanjuku_scene_worker", worker_names())
+
+
+class PeriodicRegistryTests(unittest.TestCase):
+    def test_hanjuku_periodic_manifest_matches_the_worker_contract(self):
+        import sys
+        sys.path.insert(0, str(ROOT / "src"))
+        from docich import hanjuku_periodic as periodic
+
+        self.assertEqual(HANJUKU_PERIODIC_ONESHOT["request_file"], periodic.REQUEST)
+        self.assertEqual(HANJUKU_PERIODIC_ONESHOT["state_file"], periodic.STATE)
+        self.assertEqual(HANJUKU_PERIODIC_ONESHOT["result_file"], periodic.RESULT)
+        self.assertEqual(HANJUKU_PERIODIC_ONESHOT["lock_file"], periodic.LOCK)
+        self.assertEqual(HANJUKU_PERIODIC_ONESHOT["log_file"], periodic.LOG + ".jsonl")
+        self.assertIn(HANJUKU_PERIODIC_ONESHOT["queue_lane"], KNOWN_LANES)
+        self.assertNotIn("hanjuku_periodic_worker", worker_names())
 
 
 def _parse_start_all_workers(text):

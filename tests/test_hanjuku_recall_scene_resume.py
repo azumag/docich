@@ -6,6 +6,9 @@ destination, and the recall was dropped, so the next attempt began from
 finding the camp again and hit the next month's end just as often.
 """
 from docich.hanjuku import orchestrator as O
+from docich.hanjuku.flows import recall as R
+from docich.hanjuku.state.regions import journal as _journal
+from docich.hanjuku_screen import Screen
 
 
 def memory(resumes=0):
@@ -43,3 +46,120 @@ def test_a_recall_cut_three_times_is_skipped_instead_of_looping():
     assert abandoned['observed_metric']['stage'] == 'dest'
     assert abandoned['observed_metric']['goal'] == 'アルマムーン'
     assert abandoned['observed_metric']['target'] == [175, 84]
+
+
+
+def dispatch_memory(input_sent=True):
+    recall = {'stage': 'await_dispatch', 'steps': 0, 'target': [132, 124],
+              'goal': 'アルマムーン', 'fort': True, 'kind': 'dome',
+              'general': 'バジル', 'a_inputs': 1, 'requested_tick': 99,
+              'request_trace': {'request': 'recall-1'}}
+    if input_sent:
+        recall['input_sent'] = True
+    mem = {'tick': 100, 'chapter': 12, 'flow': {'recall': recall},
+           '_records': []}
+    return mem, recall
+
+
+def test_scene_during_dispatch_preserves_the_sent_request_and_marks_coverage():
+    mem, recall = dispatch_memory()
+    result = O._recall_after_scene(mem, recall, 'text', 'concert')
+    assert result is recall
+    assert recall['stage'] == 'await_dispatch'
+    assert recall['input_sent'] is True
+    assert recall['goal'] == 'アルマムーン'
+    assert recall['target'] == [132, 124]
+    assert recall['scene_covered'] is True
+    assert recall['scene_covered_tick'] == 100
+    assert recall['scene_pending'] is True
+    assert 'recall_interrupted' not in mem['flow']
+
+
+def test_scene_during_dispatch_uses_the_receipt_even_before_input_sent_is_projected():
+    mem, recall = dispatch_memory(input_sent=False)
+    trace = recall['request_trace']
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 1}
+    R._mark_recall_interrupted(mem)
+    assert recall['scene_covered'] is True
+    assert recall['scene_covered_tick'] == 100
+    assert 'recall_interrupted' not in mem['flow']
+
+
+def test_scene_before_dispatch_receipt_keeps_the_existing_free_retry_marker():
+    mem, recall = dispatch_memory(input_sent=False)
+    O._recall_after_scene(mem, recall, 'unknown', 'concert')
+    assert recall['stage'] == 'await_dispatch'
+    assert recall.get('scene_covered') is not True
+    assert mem['flow']['recall_interrupted'] == 100
+    assert recall['scene_pending'] is True
+
+
+def test_text_frame_does_not_spend_the_dispatch_receipt_window():
+    mem, recall = dispatch_memory()
+    actions = R.camp_recall_step(Screen([], None, 'イベント文面', kind='text'), mem, None)
+    assert actions is None
+    assert recall['steps'] == 0
+    assert recall['scene_covered'] is True
+
+
+def test_post_scene_map_is_not_misread_as_picker_acceptance_or_goal_refusal():
+    mem, recall = dispatch_memory()
+    recall.update(scene_covered=True, scene_covered_tick=99, scene_pending=True)
+    for tick in range(6):
+        mem['tick'] = 101 + tick
+        actions = R._recall_dispatch_step(Screen([], None, '', kind='map'), mem, recall)
+        assert actions == []
+    decisions = [row['decision'] for row in mem['_records']]
+    assert 'camp_recall_unconfirmed' in decisions
+    assert 'camp_recall_dispatched' not in decisions
+    assert 'camp_recall_goal_failed' not in decisions
+    verification = mem['flow']['recall_verification']
+    assert verification['status'] == 'arrival_unconfirmed'
+    assert verification['scene_covered'] is True
+    assert verification['picker_closed'] is False
+    assert mem['roster_read_due']['アルマムーン'] > mem['tick']
+
+
+def test_scene_covered_transition_frames_do_not_consume_dispatch_budget():
+    mem, recall = dispatch_memory()
+    recall['scene_covered'] = True
+    before = recall['steps']
+    assert R._recall_dispatch_step(Screen([], None, '', kind='unknown'), mem, recall) is None
+    assert recall['steps'] == before
+
+
+def test_plain_map_return_without_a_scene_still_accepts_the_dispatch():
+    mem, recall = dispatch_memory()
+    actions = R._recall_dispatch_step(Screen([], None, '', kind='map'), mem, recall)
+    assert actions == []
+    assert 'recall' not in mem['flow']
+    assert mem['flow']['recall_verification']['status'] == 'dispatched'
+    assert any(row['decision'] == 'camp_recall_dispatched' for row in mem['_records'])
+
+
+
+def test_receipt_arriving_after_scene_marker_does_not_charge_the_destination():
+    mem, recall = dispatch_memory(input_sent=False)
+    R._mark_recall_interrupted(mem)
+    trace = recall['request_trace']
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 1}
+    for tick in range(6):
+        mem['tick'] = 101 + tick
+        R._recall_dispatch_step(Screen([], None, '', kind='map'), mem, recall)
+    decisions = [row['decision'] for row in mem['_records']]
+    assert recall['scene_covered'] is True
+    assert 'camp_recall_unconfirmed' in decisions
+    assert 'camp_recall_goal_failed' not in decisions
+    assert mem['flow']['recall_verification']['status'] == 'arrival_unconfirmed'
+
+
+def test_receipt_does_not_promote_an_interruption_older_than_the_request():
+    mem, recall = dispatch_memory(input_sent=False)
+    recall['requested_tick'] = 100
+    mem['flow']['recall_interrupted'] = 99
+    trace = recall['request_trace']
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 1}
+    R._recall_dispatch_step(Screen([], None, '', kind='map_target', marker=(90, 80)), mem, recall)
+    assert recall['input_sent'] is True
+    assert recall.get('scene_covered') is not True
+    assert 'scene_covered_tick' not in recall

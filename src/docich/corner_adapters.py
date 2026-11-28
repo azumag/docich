@@ -490,6 +490,7 @@ class RetiredCornerObserver:
         "trpg": "trpg_corner_state.json",
         "meriken": "soren91_corner.json",
         "nethack": "nethack_corner.json",
+        "newcorner": "new_corner.json",
     }
 
     def __init__(self, g, record):
@@ -1017,6 +1018,59 @@ class ChartCornerAdapter:
         return self.manager.resources_released()
 
 
+class NewCornerAdapter:
+    """Bounded new_corner_runtime view through the shared slot (#5584).
+
+    One data-driven adapter for every corner registered in ``CORNER_SPECS``:
+    the catalog row's ``id`` selects the runtime spec and ``<id>-view`` the
+    program view. Real-material collection and ``RADIO:*`` generation happen
+    in the program adapter's preflight (fail-closed) behind
+    ``DOCICH_NEW_CORNER_ENABLED`` — while the flag is off this adapter stays
+    ineligible and existing rotation behaviour is unchanged.
+    """
+
+    def __init__(self, g, corner):
+        from .new_corner_manager import DEFAULT_DURATION_MINUTES, NewCornerManager
+        from .new_corner_view import view_name_for
+
+        view_name = view_name_for(corner.id)
+        if corner.game != view_name or corner.live_eligible is not False:
+            raise CornerExecutionError("NewCorner identity/safety contract mismatch")
+        if type(corner.audio_enabled) is not bool:
+            raise CornerExecutionError("NewCorner corner requires a boolean audio_enabled")
+        self.audio_enabled = corner.audio_enabled
+        self.g, self.corner = g, corner
+        self.manager = NewCornerManager(
+            g,
+            corner.id,
+            duration_minutes=(corner.duration_minutes
+                              if corner.duration_minutes is not None
+                              else DEFAULT_DURATION_MINUTES),
+            audio_enabled=self.audio_enabled,
+        )
+        self.state_path = self.manager.state_path
+
+    def eligible(self):
+        return self.manager.eligible()
+
+    def observations(self):
+        return iter(self.manager.observations())
+
+    def run(self, request):
+        return self.manager.run_rotation(request["request_id"])
+
+    def reconcile_failed_start(self, request_id, *, state_file=None):
+        if state_file is not None and state_file != self.state_path.name:
+            return False
+        return self.manager.reconcile_failed_start(request_id)
+
+    def settle_released_failure(self, request_id):
+        return self.manager.settle_released_failure(request_id)
+
+    def resources_released(self):
+        return self.manager.resources_released()
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -1031,6 +1085,7 @@ ADAPTERS = {
     "mystery": MysteryCornerAdapter,
     "lawsim": LawSimCornerAdapter,
     "chart": ChartCornerAdapter,
+    "newcorner": NewCornerAdapter,
 }
 
 
@@ -1070,8 +1125,19 @@ class CornerExecutionCoordinator:
                     wait_deadline_ts=self.clock() + self.wait_seconds,
                     wait_boundary=True, sleep=self.sleep, now=self.clock,
                 ):
-                    from .hanjuku_resume import prepare_start
-                    prepare_start(self.g, request)
+                    # Dispatch the corner's own Hanjuku package.  A queued
+                    # request names its corner (and, in newer records, the
+                    # game); the configured adapter is the fallback.  A
+                    # Non-family corner skips the call, which is what the
+                    # original prepare_start did by returning early.
+                    from .hanjuku_family import is_hanjuku, module
+                    game = request.get('game')
+                    if not isinstance(game, str):
+                        game = request.get('corner')
+                    if not isinstance(game, str):
+                        game = getattr(getattr(adapter, 'corner', None), 'game', None)
+                    if is_hanjuku(game):
+                        module(game, 'hanjuku_resume').prepare_start(self.g, request)
                     return adapter.run(request)
         except CornerWaitExpired:
             return "queued"

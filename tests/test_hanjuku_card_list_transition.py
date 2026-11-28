@@ -96,6 +96,128 @@ def test_open_unclassified_distinguishes_the_menu_and_list_stages():
     assert '切り札一覧' not in record['observed_metric']['cause']
 
 
+def test_announce_retry_unreadable_list_books_unconfirmed_and_downgrades_loss(tmp_path):
+    # docich#5620: announce retry 後の unreadable list は開札前失敗ではなく、
+    # 選択済み・消費未確認の中断として監査 evidence へ残す。クースカンは
+    # egg_drop=0 の plain card なので、この evidence が無ければ high のまま。
+    from docich.hanjuku import month_audit as audit
+    from test_hanjuku_month_audit import state as audit_state
+
+    mem = memory('クースカン', enemy='プリンス', enemy_hp=100, ally='どうし', ally_hp=90)
+    cur = mem['battle']
+    visible = ('クースカン', 'クースカン', 'ゼンマイン')
+    assert p.card_list_step(cards(visible), mem) == [p.pad('a')]
+    assert cur['cards_selected'] == ['クースカン']
+    for _ in range(p.CARD_ANNOUNCE_LIMIT + 1):
+        assert p.card_list_step(cards(visible), mem) == []
+    flow = cur['card_flow']
+    assert flow['stage'] == 'list' and flow['announce_retried'] is True
+    assert flow['selection_planned'] is False
+    assert any(r['decision'] == 'battle_card_announce_retry' for r in mem['_records'])
+
+    for _ in range(3):
+        assert p.card_list_step(cards(()), mem) == []
+    assert p.card_list_step(cards(()), mem) == [p.pad('b'), p.pad('b')]
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['クースカン']
+    listed = next(r for r in reversed(mem['_records'])
+                  if r['decision'] == 'battle_card_list_unclassified')
+    assert listed['observed_metric']['selected_interrupted'] is True
+    unclassified = next(r for r in reversed(mem['_records'])
+                        if r['decision'] == 'battle_card_unclassified')
+    assert unclassified['observed_metric']['selected_interrupted'] is True
+
+    # 2枚目は実際の発着順序の代わりに選択済み台帳へ足す。ミックミーは
+    # egg_drop=2 で構造的に消費確定不能なので、1枚目の evidence が残れば
+    # 残存札すべてを unconfirmed evidence で説明できる。
+    cur['cards_selected'].append('ミックミー')
+    cur.update(ally_hp=0, enemy_hp=20)
+    p.battle_end(mem, 'map')
+    p.battle_end(mem, 'map')
+    result = next(r for r in reversed(mem['_records']) if r['decision'] == 'battle_result')
+    assert result['outcome'] == 'loss'
+    assert result['observed_metric']['cards_unclassified'] == ['クースカン']
+
+    value = audit_state(5, '5-3', 0)
+    audit.observe(tmp_path, audit.capture(value), value, [result], now=1000)
+    incident = audit.load_incidents(tmp_path)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    battle = incident['battle_event']
+    assert battle['cards_unconfirmed_only'] is True
+    assert battle['cards_unclassified'] == ['クースカン']
+    assert battle['cards_attempted'] == []
+    assert '使用未分類（告知未校正）: [\'クースカン\']' in audit.render(incident)
+
+
+def test_pre_selection_unreadable_list_does_not_book_cards_unclassified():
+    # 対照: 開札前/選択前の flow は従来どおり携行札を消費未確認扱いしない。
+    mem = memory('クースカン', enemy='プリンス', enemy_hp=100, ally='どうし', ally_hp=90)
+    cur = mem['battle']
+    assert cur['cards_selected'] == []
+    for _ in range(3):
+        assert p.card_list_step(cards(()), mem) == []
+    assert p.card_list_step(cards(()), mem) == [p.pad('b'), p.pad('b')]
+    assert cur['card_flow'] is None
+    assert cur['cards_selected'] == cur['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    listed = next(r for r in reversed(mem['_records'])
+                  if r['decision'] == 'battle_card_list_unclassified')
+    assert listed['observed_metric']['selected_interrupted'] is False
+    assert not any(r['decision'] == 'battle_card_unclassified' for r in mem['_records'])
+
+
+def test_announce_retry_list_flow_at_battle_end_books_unconfirmed_and_downgrades_loss(tmp_path):
+    # docich#5676: announce retry が stage='list' へ戻した選択済み flow は、
+    # 戦闘終了で消えても消費未確認 evidence を残す。
+    from docich.hanjuku import month_audit as audit
+    from test_hanjuku_month_audit import state as audit_state
+
+    mem = memory('クースカン', enemy='プリンス', enemy_hp=100, ally='どうし', ally_hp=90)
+    cur = mem['battle']
+    visible = ('クースカン', 'クースカン', 'ゼンマイン')
+    assert p.card_list_step(cards(visible), mem) == [p.pad('a')]
+    for _ in range(p.CARD_ANNOUNCE_LIMIT + 1):
+        assert p.card_list_step(cards(visible), mem) == []
+    flow = cur['card_flow']
+    assert flow['stage'] == 'list' and flow['announce_retried'] is True
+    assert cur['cards_selected'] == ['クースカン']
+
+    cur.update(ally_hp=0, enemy_hp=20)
+    p.battle_end(mem, 'map')
+    p.battle_end(mem, 'map')
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['クースカン']
+    unclassified = next(r for r in reversed(mem['_records'])
+                        if r['decision'] == 'battle_card_unclassified')
+    assert unclassified['observed_metric']['selected_interrupted'] is True
+    result = next(r for r in reversed(mem['_records']) if r['decision'] == 'battle_result')
+    assert result['outcome'] == 'loss'
+
+    value = audit_state(7, '6-5', 0)
+    audit.observe(tmp_path, audit.capture(value), value, [result], now=1000)
+    incident = audit.load_incidents(tmp_path)[0]
+    assert incident['confidence'] == 'medium'
+    assert incident['confidence_reasons'] == ['cards_unconfirmed_signature']
+    assert incident['battle_event']['cards_unconfirmed_only'] is True
+    assert incident['battle_event']['cards_unclassified'] == ['クースカン']
+
+
+def test_pre_selection_list_flow_at_battle_end_does_not_book_cards_unclassified():
+    # 対照: 開札前/選択前の flow は戦闘終了でも台帳を汚さない。
+    mem = memory('クースカン', enemy='プリンス', enemy_hp=100, ally='どうし', ally_hp=90)
+    cur = mem['battle']
+    assert cur['card_flow']['stage'] == 'list'
+    assert cur['cards_selected'] == []
+    cur.update(ally_hp=0, enemy_hp=20)
+    p.battle_end(mem, 'map')
+    p.battle_end(mem, 'map')
+    result = next(r for r in reversed(mem['_records']) if r['decision'] == 'battle_result')
+    assert result['observed_metric']['cards_selected'] == []
+    assert result['observed_metric']['cards_unclassified'] == []
+    assert not any(r['decision'] == 'battle_card_unclassified' for r in mem['_records'])
+
+
 @pytest.mark.parametrize('fixture,target', [
     ('g749-roquefort-control-card-list.png', 'クースカン'),
     ('g684-castora-kooskan-list.png', 'クースカン'),

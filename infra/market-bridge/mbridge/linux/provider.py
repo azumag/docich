@@ -12,6 +12,7 @@ from typing import Any
 from ..common.contract import (EXPECTED_SOURCE, Envelope, Snapshot,
                                decode_snapshot, is_tradeable, safe_reason,
                                validate_envelope, validate_snapshot)
+from dataclasses import replace
 from ..common.publish import load_published, publish_atomic
 from .client import BridgeClient, BridgeError
 
@@ -53,7 +54,7 @@ class MarketBridgeProvider:
 
         self._last_envelope: Envelope | None = None
         self._last_ok_mon: float | None = None
-        self._last_bridge_sequence = 0
+        self._last_upstream_sequence = -1
         self._published_sequence = 0
         self._last_reason = "provider_unavailable"
 
@@ -82,7 +83,7 @@ class MarketBridgeProvider:
                 # A new bridge instance starts a new generation; regressing to
                 # an older one is rejected below as generation_conflict.
                 self.generation = snap.generation
-                self._last_bridge_sequence = 0
+                self._last_upstream_sequence = -1
                 self._published_sequence = 0
             ok, reason = validate_snapshot(
                 snap, expected_market=self.market, expected_source=self.expected_source,
@@ -91,7 +92,7 @@ class MarketBridgeProvider:
                 required_symbols=self.required_symbols)
             if ok and self.fetch_scanner:
                 ok, reason = self._validate_scanner(snap, now)
-            if ok and snap.sequence <= self._last_bridge_sequence:
+            if ok and snap.upstream_sequence <= self._last_upstream_sequence:
                 ok, reason = False, "sequence_regressed"
         except BridgeError as exc:
             ok, reason = False, exc.reason
@@ -101,10 +102,14 @@ class MarketBridgeProvider:
             ok, reason = False, "upstream_error"
 
         if ok and snap is not None:
+            # The published envelope sequence is issued by this provider, never
+            # copied from the upstream bridge.  The upstream sequence is
+            # preserved verbatim in upstream_sequence.
+            self._published_sequence += 1
+            snap = replace(snap, sequence=self._published_sequence)
             published = self._publish(snap, now)
             self._last_ok_mon = mon
-            self._last_bridge_sequence = snap.sequence
-            self._published_sequence = snap.sequence
+            self._last_upstream_sequence = snap.upstream_sequence
             self._last_reason = "ok" if snap.status == "ready" else snap.reason
         else:
             published = self._publish_unready(reason or "provider_unavailable", now)
@@ -130,7 +135,8 @@ class MarketBridgeProvider:
             return False, "invalid_schema"
         merged = Snapshot(
             market=snap.market, source=snap.source, source_epoch=snap.source_epoch,
-            generation=snap.generation, sequence=snap.sequence, status=snap.status,
+            generation=snap.generation, sequence=snap.sequence,
+            upstream_sequence=snap.upstream_sequence, status=snap.status,
             reason=snap.reason, market_state=snap.market_state,
             source_ts=snap.source_ts, received_ts=snap.received_ts,
             quotes=snap.quotes, candidates=candidates)
@@ -153,7 +159,8 @@ class MarketBridgeProvider:
         snap = Snapshot(
             market=self.market, source=self.expected_source,
             source_epoch=self.source_epoch, generation=self.generation,
-            sequence=self._published_sequence, status="unavailable", reason=safe_reason(reason),
+            sequence=self._published_sequence, upstream_sequence=0,
+            status="unavailable", reason=safe_reason(reason),
             market_state="unknown", source_ts=0.0, received_ts=now)
         return self._publish(snap, now)
 

@@ -179,10 +179,24 @@ def test_egg_drop_opener_precedes_an_override_that_would_spend_the_first_turn():
     assert state['battle']['card_flow']['tactic_id'].startswith('eggdrop:')
 
 
-def test_egg_drop_opener_precedes_a_one_hit_melee_finish():
-    # A one-hit general still has a usable egg: the egg-drop card wins.
+def test_egg_drop_opener_does_not_spend_at_one_hp_outside_boss():
+    # Owner 2026-11-25: ボス戦以外では、相手のHPが1なら切り札も卵も使わない。
+    # The earlier unconditional egg-drop opener is overridden at HP1: melee.
     state = mem('1-C2', ally='ココット')
     view = opening(state, 'キッシュ', 1, 'ココット', 24)
+    assert state['battle']['egg_plan']['dropper'] == 'ブラッキー'
+    actions = policy.battle_step(view, state)
+    assert actions and actions[0]['buttons'] == ['a']
+    assert state['battle'].get('card_flow') is None
+    assert any(r['decision'] == 'battle_hp1_resource_hold' for r in state['_records'])
+    assert not state['battle'].get('cards_selected')
+
+
+def test_egg_drop_opener_still_precedes_a_one_hit_melee_above_one_hp():
+    # HP2..4 keeps the existing egg-drop opener; only HP1 takes the 2026-11-25
+    # conservation rule.
+    state = mem('1-C2', ally='ココット')
+    view = opening(state, 'キッシュ', 2, 'ココット', 24)
     assert state['battle']['egg_plan']['dropper'] == 'ブラッキー'
     assert policy.battle_step(view, state) == [policy.pad('b')]
     assert state['battle']['card_flow']['tactic_id'].startswith('eggdrop:')

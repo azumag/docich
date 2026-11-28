@@ -654,6 +654,75 @@ class TestOwnedProcessesAlive(unittest.TestCase):
         )
         self.assertIsNone(result)
 
+    def _probe_after_session_loss(self, *, session_exists, env_hits, verdicts,
+                                  protected=frozenset(), server_missing=False):
+        state = {"verdicts": verdicts}
+        stderr = ""
+        if not session_exists:
+            stderr = "no server running" if server_missing else "can't find session"
+        probe = mock.Mock(returncode=0 if session_exists else 1, stderr=stderr)
+        with (
+            mock.patch.object(self.tmux, "_run", return_value=probe) as exists_mock,
+            mock.patch.object(
+                self.tmux, "_server_pane_leaders", return_value=list(protected)
+            ),
+            mock.patch.object(self.tmux, "_server_pid", return_value=999),
+            mock.patch("docich.tmux.ancestor_pids", return_value=[1]),
+            mock.patch("docich.tmux.descendant_pids", return_value=[]),
+            mock.patch("docich.tmux.process_ids", return_value=[100, 200, 300]),
+            mock.patch("docich.tmux.process_table", return_value={100: None, 200: None}),
+            mock.patch("docich.tmux.processes_with_env", return_value=env_hits),
+            mock.patch(
+                "docich.tmux.pidfd_tagged_process_running",
+                side_effect=lambda pid, tags: state["verdicts"][pid],
+            ) as tagged_mock,
+        ):
+            result = self.tmux.owned_processes_alive_after_session_loss(self.ownership)
+        return result, exists_mock, tagged_mock
+
+    def test_after_session_loss_zero_tagged_processes_proves_death(self):
+        result, exists_mock, _tagged = self._probe_after_session_loss(
+            session_exists=False, env_hits=[], verdicts={}
+        )
+        self.assertEqual(result, ())
+        self.assertEqual(
+            exists_mock.call_args.args[0], ["has-session", "-t", "docich-game-g1"]
+        )
+
+    def test_after_session_loss_a_live_tagged_orphan_blocks_the_proof(self):
+        result, _exists, _tagged = self._probe_after_session_loss(
+            session_exists=False, env_hits=[300], verdicts={300: True}
+        )
+        self.assertEqual(result, (300,))
+
+    def test_after_session_loss_no_server_still_scans_exact_tagged_orphans(self):
+        result, _exists, _tagged = self._probe_after_session_loss(
+            session_exists=False, server_missing=True,
+            env_hits=[300], verdicts={300: True},
+        )
+        self.assertEqual(result, (300,))
+
+    def test_after_session_loss_protected_infrastructure_is_not_a_survivor(self):
+        result, _exists, tagged_mock = self._probe_after_session_loss(
+            session_exists=False, env_hits=[300], verdicts={},
+            protected=frozenset({300}),
+        )
+        self.assertEqual(result, ())
+        tagged_mock.assert_not_called()
+
+    def test_after_session_loss_requires_the_session_to_be_missing(self):
+        result, _exists, tagged_mock = self._probe_after_session_loss(
+            session_exists=True, env_hits=[], verdicts={}
+        )
+        self.assertIsNone(result)
+        tagged_mock.assert_not_called()
+
+    def test_after_session_loss_an_unverifiable_candidate_is_unprovable(self):
+        result, _exists, _tagged = self._probe_after_session_loss(
+            session_exists=False, env_hits=[300], verdicts={300: None}
+        )
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

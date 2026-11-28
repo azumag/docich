@@ -34,7 +34,7 @@ REASONS = frozenset({'none', 'disabled', 'no_facts', 'duplicate', 'cooldown', 'i
                      'generation_failed', 'timeout', 'queue_giveup', 'gate_giveup',
                      'rate_limit', 'backoff', 'delivery_failed', 'worker_error'})
 ROLES = frozenset({'BATCH_COMMENTARY_AGENTS', 'RADIO_AGENTS', 'AI_COMMON_AGENTS'})
-MAX_OUTPUT_BYTES = 8192
+MAX_OUTPUT_BYTES = 16384
 CARD_ROLE_MEANINGS = {
     'nonlethal_egg_risk': '削りで敵の卵発動条件に近づく危険があり、使用候補から外した判断',
     'damage_or_egg_risk_unclassified': '現在の損害または卵発動リスクを確定できず、使用を許可しなかった判断',
@@ -231,16 +231,19 @@ def parse_output(output, snapshot):
     return text.strip()
 
 
-def generate(g, runtime, snapshot, cfg, prompt):
-    """Reference-run only the existing shell chain, with a private bounded job."""
+def generate_prompt(g, runtime, prompt, timeout):
+    """Reference-run the existing shell chain with a private bounded job.
+
+    The scene worker bounds ``timeout`` by its semantic scene TTL; periodic
+    commentary passes its own bounded budget.  Containment and the canonical
+    provider/queue policy stay identical for both callers.
+    """
     from .trading.soren_output import resolve_soren_root
 
     root = resolve_soren_root(g)
     if not (root / 'eloop_lib.sh').is_file():
         raise SceneError('unavailable')
-    remaining = min(cfg['generation_timeout_s'], snapshot['request']['expires_at'] - time.time() - 2)
-    if remaining < 1:
-        raise SceneError('stale')
+    remaining = min(300.0, max(1.0, float(timeout)))
     with tempfile.TemporaryDirectory(prefix='.scene-', dir=runtime) as directory:
         work = Path(directory)
         prompt_path, output_path, last, failure, meta = [work / name for name in
@@ -275,6 +278,15 @@ def generate(g, runtime, snapshot, cfg, prompt):
         except (OSError, ValueError, TypeError):
             role = None
         return output_path.read_text(encoding='utf-8'), role if role in ROLES else None
+
+
+def generate(g, runtime, snapshot, cfg, prompt):
+    """Scene-bounded alias used by the existing one-shot consumer."""
+    remaining = min(cfg['generation_timeout_s'],
+                    snapshot['request']['expires_at'] - time.time() - 2)
+    if remaining < 1:
+        raise SceneError('stale')
+    return generate_prompt(g, runtime, prompt, remaining)
 
 
 def record(runtime, state, event, *, reason='none', now=None, **metrics):

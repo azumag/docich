@@ -380,12 +380,28 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
 - `total` / `cpu_pct_total` / `rss_mb_total` / `oldest_age_sec`
 - `by_type`: `browser` / `gpu` / `renderer` / `utility` / `other` の件数
 - `by_owner`: `soren-shared-overlay` / `soren-game` / `twica` /
-  `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct`。
+  `nethack-tiles` / `obs` / `webui` / `other` ごとの `count` / `cpu_pct` /
+  `rss_mb` / `renderer_rss_mb`。RSS は各プロセスの VmRSS をowner別に合算し、renderer_rss_mb はrendererだけの内訳を示す。
   `gpu_cpu_pct` / `renderer_cpu_pct` は0でない場合だけ出す。
 - `type_sources`: `type_arg` / `no_type_arg` の件数。`cmdline_bytes_max` と
   `max_type_arg_offset` は型判定の切り分け用（見つからない場合は後者を出さない）。
 - CPUは0.5秒の2サンプル差分（100 = 1コア）。`/proc` を列挙できない場合は
   `status=unknown` / `scan_complete=0`。
+
+### shared overlay renderer memory alert（#5112 follow-up）
+
+`browser_processes.by_owner.soren-shared-overlay.renderer_rss_mb` は、固定ownerに分類された
+Chromium rendererだけの VmRSS 合計（MiB）。`.github/workflows/vm-storage-monitor.yml` は
+既存の owner-only read-only diagnostics を使い、毎時2回この値を評価する。
+
+- 4096 MiB 以上: WARN
+- 8192 MiB 以上: CRITICAL
+- 完全な `/proc` scan と固定owner値が得られない場合: unknown。既存alertを閉じない。
+- しきい値未満へ戻った場合だけ既存alertを閉じる。severity変更時は旧alertを閉じて新しいseverityを作る。
+- 公開Issueにはrenderer RSS・固定しきい値・workflow URLだけを載せる。PID・argv・URL・path・生diagnosticsは載せない。
+
+これは検知・通知のみで、service restart は実行しない。restart は #5113 の
+cooldown付き guard と、ownerが管理する systemd timer の導入・実機検証に分離する。
 
 ## 収集元（すべて read-only）
 
@@ -492,6 +508,11 @@ cmdlineの生バイト・URL・パス・PIDは出さず、argv/生バイトは�
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
   bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
+  さらに system scope の手置き legacy owner（`docich-soren91-corner.service` /
+  `docich-soren91-corner.timer`）の active/enabled を `system_legacy` として投影し、
+  canonical timer と legacy が同時に active な場合だけ `duplicate_owner` を true にする。
+  unit path・unit 本文・command line は出さない。corner health は同じ条件を
+  `rotation_owner_duplicate` 行として報告する。
   alias pair投影も支配timer選択と同じ`PROD_ROOT.parent`のuser unit rootを使う。
   gatewayのscrubbed `HOME=/tmp` をunit欠損の判定元にしない。
   時刻指定manual予約がある場合は、UUIDや任意payloadを出さずに
@@ -1143,6 +1164,13 @@ queue lane は lock dir スキャンで自動検出されるため登録不要�
 診断key・既存radio laneを登録する。確認済みfactがある時だけ最大1件を処理するゲーム所属の
 短命processなので `start_all.sh` の常駐worker表へは追加しない。待機中にPIDが無いことは正常。
 healthは同じruntime/世代の `scene_narration` の鮮度と `generate_*` / `deliver_*` の進行で判断する。
+半熟の15分定期実況は `HANJUKU_PERIODIC_ONESHOT` に request/state/result/lock/log と
+既存radio laneを登録する。cornerが起動するゲーム所属の短命workerであり、待機中に
+PIDが無いことは正常。同じruntime identityの `hanjuku_periodic.json` の
+`next_at` / `pending_seq` / `last_result_seq` / `recent_texts` 件数と、
+`hanjuku_periodic_result.json` のstatusを読む。本文・prompt・provider出力は出さない。
+詳細は [hanjuku-periodic-commentary.md](hanjuku-periodic-commentary.md)。
+
 初回のlauncher receiptだけでworker journalが未完成の間は、workerのstatusは `unavailable` になる。
 
 CI は以下を検査する（`ops/vm_actions/tests/test_runtime_registry.py`）：

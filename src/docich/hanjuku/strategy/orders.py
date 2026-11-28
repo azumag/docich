@@ -18,6 +18,7 @@ from ..os_layer.world import (NAME, SORTIE_BUSY_TICKS, _en_route, _owned,
 from .kit import _deploy_cards, _is_boss_order
 from . import edition
 from . import routes
+from . import unreadable_card_block
 from .execution import bound_fields, execution_claimed, execution_order
 from ..state import egg_memory
 from ..state.regions import world as _world, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
@@ -174,11 +175,15 @@ def _boss_companion_source(order, mem):
     chapter = mem.get('chapter') or 0
     owned = _owned(mem) & set(chart.castles(chapter))
     if order.get('target') in chart.boss_sites(4):
-        # Owner 2026-10-30: 強い将軍から. Every read list's strongest companion
-        # competes, not the chart source's first fit one (g1075 08:20-08:25
-        # sent each source's lone アルテミス 49/7, カペリーニ 63/7, ミュスカデ
-        # 57/9). The hero's castle, where joiners stand, is read first while
-        # no read list holds one as strong as the hero.
+        # Owner 2026-10-30 (強い将軍から) chose the strongest read companion.
+        # Owner 2026-11-05 later established that strength does not decide a
+        # boss fight (an egg does), and that among equally fit sources the
+        # shortest march goes first. g1342 2026-11-24 still paid cross-map
+        # marches: ポセイドン from アルカ to 南東 (1159 cells) while
+        # ネクスドリア (343) held a fit egg-holder, and ブカティーニ from
+        # フヌイヌム to 北西 (793) while アルカ (377) was closer. Pick a source
+        # inside the near-distance band; strength ranks within that band and
+        # a source outside it never wins on strength alone.
         best = {c: names[0] for c in owned
                 if (names := _order_hero_alternatives(order, mem, garrison.get(c), relaxed=False))}
         if not best:
@@ -191,8 +196,13 @@ def _boss_companion_source(order, mem):
         if (home in owned and garrison.get(home) is None
                 and not any(_boss_comparable(mem, g) for g in best.values())):
             return home
-        return max(best, key=lambda c: (_strength(best[c]), -_distance(chapter, c, order['target'])),
-                   default=None)
+        if not best:
+            return None
+        distances = {c: _distance(chapter, c, order['target']) for c in best}
+        nearest = min(distances.values())
+        pool = [c for c, distance in distances.items()
+                if distance <= nearest * SEASON_SOURCE_NEAR_RATIO]
+        return max(pool, key=lambda c: (_strength(best[c]), -distances[c]))
     castles = [source] + sorted(owned - {source})
     need = chart.sender_min(chapter)
     sole = len(owned) <= 1
@@ -474,6 +484,13 @@ def _normal_missing(mem):
 # one normal castle is missing or lost; two or more still waits for retakes.
 SEASON_SITE_MISSING_LIMIT = 1
 
+# Among 四季王 sources within this ratio of the nearest eligible march,
+# strength still ranks first; beyond it the shorter march wins. Owner
+# 2026-11-05: an egg, not strength, decides the boss fight. A 16-cell
+# difference (アルカ 739 vs アルマムーン 755 to 南西) stays strength-ranked,
+# while 343 vs 1159 to 南東 no longer pays the cross-map march.
+SEASON_SOURCE_NEAR_RATIO = 1.25
+
 
 def _season_site_ready(order, mem):
     if ((mem.get('chapter') or 0) != 4 or order.get('target') not in chart.boss_sites(4)
@@ -669,6 +686,12 @@ def _boss_target_unlocked(order, mem):
     # a retry or a hotloaded active order cannot remove the game prerequisite.
     if not chart.is_boss_castle(order.get('target')):
         return True
+    if order.get('roster_probe') is True or order.get('source_probe') is True:
+        # A read-only roster probe targets the nearest enemy/boss castle only
+        # as a destination; deploy reads the source list and backs out (B,B).
+        # The boss lock applies to attacks, not to that read (chapter 1: the
+        # probe was held as boss_target_locked every observation).
+        return True
     chapter = mem.get('chapter')
     if chapter == 9:
         # The moving boss may only be attacked at a cell measured on this
@@ -679,6 +702,8 @@ def _boss_target_unlocked(order, mem):
         return order.get('target') == chart.boss_castle(9) and bool(chart.moving_boss_cell(9))
     if chapter == 4 and (order.get('target') not in chart.boss_sites(4)
                          or _season_site_held(order, mem)):
+        return False
+    if chapter == 4 and _season_site_waits_for_visible_skull(order, mem):
         return False
     if _season_site_ready(order, mem):
         return True
@@ -699,6 +724,53 @@ def _season_site_held(order, mem):
     lost = mem.get('lost') or ()
     return (chart.home_castle(mem.get('chapter') or 0) in lost
             or len(lost) > SEASON_SITE_MISSING_LIMIT or _site_king_down(mem, order.get('target')))
+
+
+def _season_site_row(mem, target):
+    """The stored Y-view row for a chapter-4 site, or None."""
+    row = (mem.get('season_sites') or {}).get(target)
+    if (mem.get('chapter') or 0) != 4 or not isinstance(row, dict):
+        return None
+    return row if row.get('chapter') == 4 else None
+
+
+SEASON_SITE_STALE_TICKS = 1500     # about eight world-map surveys without a clean read
+
+
+def _season_site_marker_fresh(mem, row):
+    """The skull was read recently (a cursor/camp on the box stops fresh reads)."""
+    read = row.get('last_read_tick')
+    return type(read) is not int or int(mem.get('tick') or 0) - read <= SEASON_SITE_STALE_TICKS
+
+
+def _season_site_skull_visible(mem, target):
+    """The latest Y-view reading for this site still shows the king's skull."""
+    row = _season_site_row(mem, target)
+    return (bool(row) and row.get('marker') == 'skull' and row.get('state') != 'closed'
+            and _season_site_marker_fresh(mem, row))
+
+
+def _season_site_waits_for_visible_skull(order, mem):
+    """A hidden/partial site waits while another site still shows a skull.
+
+    g1342 2026-11-24 (owner): the defeated 北東 site stopped drawing its skull
+    while our camp stood on it. That makes a skull-less site a candidate only
+    after every visible skull is gone; the reading itself is bounded and
+    reversible (a skull reopens the site), so this is a priority, never a
+    permanent skip. A site whose state is already closed is handled by
+    ``_season_site_held`` and never reaches this gate.
+    """
+    target = order.get('target')
+    if (mem.get('chapter') or 0) != 4 or target not in chart.boss_sites(4):
+        return False
+    row = _season_site_row(mem, target)
+    if not row or row.get('state') == 'closed':
+        return False
+    if row.get('marker') is None or (row.get('marker') == 'skull'
+                                     and _season_site_marker_fresh(mem, row)):
+        return False
+    return any(_season_site_skull_visible(mem, other)
+               for other in chart.boss_sites(4) if other != target)
 
 
 BOSS_COMPANION_WAIT_TICKS = 200   # bounded wait before a safe hero-only boss attempt
@@ -757,6 +829,10 @@ def _boss_companion_source_wait_expired(mem, order):
     now = int(mem.get('tick') or 0)
     if type(started) is not int:
         wait[step] = now
+        _record(mem, 'boss_companion_source_wait', chart_step=step,
+                target=order.get('target'),
+                observed_metric={'waited_ticks': 0},
+                reason='出撃元に適格な代役が来るまで、上限付きの待機を開始する')
         return False
     elapsed = now - started
     if elapsed < BOSS_COMPANION_SOURCE_WAIT_TICKS:
@@ -781,10 +857,40 @@ def _ready(order, mem) -> bool:
             and order.get('general') == chart_adjust.PROBE_GENERAL):
         cells = chart.castles(mem.get('chapter') or 0)
         return _source(order, mem) in cells and order.get('target') in cells
+    if unreadable_card_block.order_blocked(
+            mem, order, source=_source(order, mem) if ('step' in order and 'source' in order)
+            else order.get('source')):
+        return False
     if (routes.is_road(mem.get('chapter')) and not chart.is_boss_castle(order.get('target'))
             and not routes.order_allowed(mem, order,
                                          _source(order, mem) if 'step' in order else order.get('source'))):
         return False
+    # Owner 2026-11-24 (chapter 12): no boss march leaves the home castle
+    # (it is absorbed or camps on the way); the hero goes to the staging castle
+    # first and only that castle sends.
+    if (routes.staging_phase(mem) is not None and chart.is_boss_castle(order.get('target'))
+            and routes.staging_blocks(mem, order,
+                                      _source(order, mem) if 'step' in order else order.get('source'))):
+        return False
+    # Owner 2026-11-27: in chapter 12 the hero's castle must keep three
+    # people (the hero included). An order that would empty it out waits
+    # until the garrison grows again.
+    if (mem.get('chapter') or 0) == 12:
+        _home = chart.home_castle(12)
+        _src = _source(order, mem)
+        if _home and _src == _home:
+            _names = (_world(mem).get('garrison') or {}).get(_home)
+            if isinstance(_names, list):
+                _uniq = {n for n in _names if isinstance(n, str)}
+                if len(_uniq) <= 3:
+                    _step = str(order.get('step'))
+                    _marks = mem.setdefault('ch12_home_keep_three', {})
+                    if isinstance(_marks, dict) and _marks.get(_step) != len(_uniq):
+                        _marks[_step] = len(_uniq)
+                        _record(mem, 'ch12_home_keep_three', chart_step=order.get('step'),
+                                observed_metric={'castle': _home, 'names': sorted(_uniq)},
+                                reason='第12話では主人公の城に主人公含め3人を残すため、この注文を保留する')
+                    return False
     if '_run_identity' in mem:
         # An adopted/hotloaded plan may outlive its native map receipt. The
         # runtime must never navigate either endpoint from that old plan.
@@ -807,18 +913,20 @@ def _ready(order, mem) -> bool:
         # The corridor chapter's moving boss: the game refuses a sortie from a
         # castle that keeps only one general, so the chart's boss order from the
         # one-general last castle was started every ~85 steps and never
-        # launched (g1190 17-x). Other boss charts (chapter 4's sites) keep
-        # their measured one-general reprobe rule.
+        # launched (g1190 17-x). Other boss charts use the bounded source wait
+        # below instead of this one-general guard.
         if chart.corridor(mem.get('chapter') or 0):
             source_names = (_world(mem).get('garrison') or {}).get(_source(order, mem))
             if source_names is not None and len(set(source_names)) < 2:
                 return False
         if (companion_source is None
                 and (_world(mem).get('garrison') or {}).get(_source(order, mem)) is not None):
-            # Chapter-4 summon sites keep their measured egg-holder gate. Other
-            # boss orders get a bounded source wait before reaching deploy.
-            if (order.get('target') in chart.boss_sites(4)
-                    or not _boss_companion_source_wait_expired(mem, order)):
+            # Every boss order gets the same bounded source wait before it
+            # reaches deploy. Chapter-4 summon sites used to short-circuit
+            # here without arming the timer, so an order whose source held no
+            # eligible egg-holding companion waited forever and never reached
+            # deploy's bounded fallback (docich#5397).
+            if not _boss_companion_source_wait_expired(mem, order):
                 return False
     if ((_broken_hero_order(order, mem) or _boss_egg_depleted(order, mem))
             and not (companion_source if _is_boss_order(order, mem)
@@ -827,7 +935,6 @@ def _ready(order, mem) -> bool:
         # observed, safe hero or fails the order. Do not keep _ready blocked
         # forever on an injured companion or a broken/depleted hero.
         if not (_is_boss_order(order, mem)
-                and order.get('target') not in chart.boss_sites(4)
                 and _boss_companion_wait_expired(mem, order)):
             return False
     after = order['after']
@@ -863,6 +970,34 @@ def _mark_order_failed(mem, step):
     drop_retired_step_context(mem)
 
 
+CAVALRY_PREFIX = '騎馬'
+
+
+def _ch9_strip_cavalry(orders, mem):
+    """Owner 2026-11-27: chapter 9 has no cavalry condition.
+
+    The chart's ch9 orders name 騎馬A/騎馬B, which the live roster does not
+    always contain; any general standing at the source may take the order.
+    Applied to every ch9 order, not just the boss one.
+    """
+    if (mem.get('chapter') or 0) != 9:
+        return orders
+    garrison = (mem.get('world') or {}).get('garrison') or {}
+    out = []
+    for order in orders:
+        if isinstance(order, dict):
+            general = order.get('general')
+            if isinstance(general, str) and general.startswith(CAVALRY_PREFIX):
+                source = order.get('source')
+                names = garrison.get(source) if isinstance(source, str) else None
+                pick = next((n for n in (names or ())
+                             if isinstance(n, str) and n != NAME), None)
+                if pick:
+                    order = {**order, 'general': pick}
+        out.append(order)
+    return out
+
+
 def _orders(mem):
     """The order list in force: an adopted adjusted plan, else the base chart.
 
@@ -879,6 +1014,7 @@ def _orders(mem):
     # An interim order only exists when no plan order is waiting (see
     # ``_off_chart``), so it may follow an exhausted plan as well as the base.
     base = plan['orders'] if plan.get('orders') else chart.orders(mem.get('chapter') or 0)
+    base = _ch9_strip_cavalry(base, mem)
     return (*base, *((interim,) if interim else ()))
 
 
@@ -919,6 +1055,117 @@ def _with_hero_hub_permission(mem, order):
     return {**order, 'hero_hub_move': True}
 
 
+LAUNCH_PRIORITY_PURPOSES = frozenset({'attack', 'retake', 'boss', 'invade'})
+LAUNCH_PRIORITY_TERMINAL = frozenset({'done', 'failed', 'launched', 'launched_unconfirmed'})
+
+
+def _launch_priority_order(order):
+    """Enemy-directed dispatch whose pre-launch screens outrank housekeeping."""
+    return (isinstance(order, dict)
+            and order.get('purpose') in LAUNCH_PRIORITY_PURPOSES
+            and order.get('roster_probe') is not True
+            and order.get('source_probe') is not True)
+
+
+def arm_sortie_launch_priority(mem, order):
+    """Mark an enemy-directed order as occupying the start-to-launch window."""
+    if _launch_priority_order(order) and order.get('step'):
+        mem['sortie_launch_pending'] = order['step']
+
+
+def _launch_probe_matches_live_sortie(probe, sortie):
+    """Whether a launch probe still describes the live sortie for its step."""
+    if (not isinstance(probe, dict) or not isinstance(sortie, dict)
+            or sortie.get('status') not in ('en_route', 'launched_unconfirmed')):
+        return False
+    for key in ('general', 'source'):
+        expected, actual = probe.get(key), sortie.get(key)
+        if expected and actual and expected != actual:
+            return False
+    expected_target = probe.get('target')
+    actual_target = sortie.get('target') or sortie.get('planned_target')
+    if expected_target and actual_target and expected_target != actual_target:
+        return False
+    probe_tick = probe.get('confirmation_tick')
+    sortie_tick = sortie.get('confirmation_tick')
+    if (type(probe_tick) is int and type(sortie_tick) is int
+            and probe_tick != sortie_tick):
+        return False
+    return True
+
+
+def clear_sortie_launch_priority(mem, step):
+    """Drop launch-priority artifacts whose sortie is settled or reopened.
+
+    A retry that has already started owns the latch now; only its stale probe
+    is discarded here.
+    """
+    if not step:
+        return
+    flow_state = _flow(mem)
+    plan = _plan_region(mem)
+    attempt = flow_state.get('sortie_attempt') or {}
+    departure = flow_state.get('departure_request') or {}
+    status = (plan.get('orders') or {}).get(step)
+    retry_in_flight = ((plan.get('active') == step and status not in LAUNCH_PRIORITY_TERMINAL)
+                       or (attempt.get('step') == step and not attempt.get('interrupted'))
+                       or departure.get('step') == step)
+    if mem.get('sortie_launch_pending') == step and not retry_in_flight:
+        mem.pop('sortie_launch_pending', None)
+    (flow_state.get('launch_probe') or {}).pop(step, None)
+    if attempt.get('step') == step and attempt.get('interrupted'):
+        flow_state.pop('sortie_attempt', None)
+
+
+def active_sortie_launch_priority(mem):
+    """Return the latched step only while its launch is still genuinely in flight.
+
+    The latch is a hint for housekeeping flows, not independent truth.  It is
+    armed at ``order_start`` and again when the departure commits; after that
+    the world-map/roster launch probe carries the confirmation window.  Before
+    the commit the active plan step, target-selection attempt, or departure
+    reservation proves the attempt is still in flight.  Anything else (order
+    failed/cancelled, launch confirmed, rollback before the next start, or a
+    kept portrait march whose map survey cannot help) clears the hint so house
+    and monthly scans are not deferred for the rest of the chapter.
+    """
+    step = mem.get('sortie_launch_pending')
+    if not step:
+        return None
+    # Only the purpose/probe flags are needed here.  Resolve the plan row
+    # directly instead of _order_for_step: a receipt-bound execution may be
+    # intentionally hidden while it owns the picker, but it is still the
+    # in-flight launch this latch describes.
+    order = (next((o for o in _orders(mem) if isinstance(o, dict) and o.get('step') == step), None)
+             or (_world(mem).get('launched_orders') or {}).get(step))
+    if not _launch_priority_order(order):
+        mem.pop('sortie_launch_pending', None)
+        return None
+    flow_state = _flow(mem)
+    probe = (flow_state.get('launch_probe') or {}).get(step)
+    if isinstance(probe, dict):
+        if not _launch_probe_matches_live_sortie(probe, _sorties(mem).get(step)):
+            (flow_state.get('launch_probe') or {}).pop(step, None)
+        elif probe.get('kept'):
+            mem.pop('sortie_launch_pending', None)
+            return None
+        else:
+            return step
+    plan = _plan_region(mem)
+    status = (plan.get('orders') or {}).get(step)
+    if status in LAUNCH_PRIORITY_TERMINAL:
+        mem.pop('sortie_launch_pending', None)
+        return None
+    attempt = flow_state.get('sortie_attempt') or {}
+    departure = flow_state.get('departure_request') or {}
+    if (plan.get('active') == step
+            or (attempt.get('step') == step and not attempt.get('interrupted'))
+            or departure.get('step') == step):
+        return step
+    mem.pop('sortie_launch_pending', None)
+    return None
+
+
 def _plan_pending(mem) -> bool:
     """An adopted plan still has an order that can run, or one waiting on a
     capture that a marching unit is making.
@@ -941,8 +1188,13 @@ def _plan_pending(mem) -> bool:
         if after and after[0] == 'captured' and after[1] not in owned:
             return after[1] in heading          # waits on a capture somebody is making
         # A source read empty cannot start the order (g438: dead ココット's J1).
+        # An attack whose target is already ours can never launch either;
+        # counting it live kept a stale plan of バスカビル waves pending and
+        # starved the rebuild for a whole month (docich#5623).
         return (_ready(o, mem) and _source(o, mem) in owned
                 and _source_list_open(o, mem)
+                and (o.get('purpose') == 'move' or chart.is_boss_castle(o.get('target'))
+                     or o.get('roster_probe') is True or o.get('target') not in owned)
                 and not _retake_reserved(o, mem) and not _source_spare_missing(o, mem, allow_probe=True))
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
@@ -1003,6 +1255,7 @@ SITE_STEP_REARM_COOLDOWN = 300              # between two re-arms of the same st
 # cycles. Keep an unentered attempt bindable after its step is sent again, so
 # a late 「ボスじょうにせめこんだ!!」 is not orphaned by the overwritten record.
 SITE_LATE_ENTRY_TICKS = 8 * SORTIE_BUSY_TICKS
+MOVING_BOSS_LATE_ENTRY_TICKS = 21600
 RETIRED_SORTIES_PER_STEP = 3
 
 
@@ -1208,6 +1461,7 @@ def _relaunch_overdue_boss(mem):
     now = int(mem.get('tick') or 0)
     status = _plan_region(mem).setdefault('orders', {})
     reading = boss_cell_measurement(mem)
+    routes.staging_update(mem)
     for step, sortie in _sorties(mem).items():
         # An unconfirmed launch keeps its cell in planned_target only; g1075
         # 4-B2 カペリーニ stayed en route for 3066 ticks (2026-10-30 09:28).
@@ -1219,6 +1473,8 @@ def _relaunch_overdue_boss(mem):
                 or type(sortie.get('tick')) is not int
                 or now - sortie['tick'] < _arrival_limit(mem, sortie)):
             continue
+        if routes.staging_blocks(mem, {'target': target}, sortie.get('source')):
+            continue        # the staging castle sends the next wave, not this source
         relaunches = mem.setdefault('boss_relaunch', {})
         # Owner 2026-10-30: a spent relaunch budget must not park a site
         # forever. After a very long wait past the normal limit the step
@@ -1566,6 +1822,76 @@ def _refresh_live_marches(mem):
                 reason='出撃後に行軍中を実測したため行軍記録の期限を更新する')
 
 
+SITE_END_REARM_LIMIT = 2        # a site step reopened from an observed return per month
+
+
+def _rearm_site_step_after_return(mem, step, sortie, general):
+    """Reopen a 四季王 step whose march ended in a castle other than its target.
+
+    ``_observed_march_end`` already treats a post-departure 在城 reading as the
+    end of the march, but a confirmed site launch was only discarded: the order
+    stayed 'launched' until ``SITE_PHANTOM_TICKS`` (900 observations) or the
+    next Y-view reconciliation re-armed it (live g1342 2026-11-25 02:15:49
+    4-B2: エシャロット read 在城 at 02:26:12, re-armed only at 02:31:43). The
+    general came back without reaching the site, so the step can be offered
+    again at once. A camp/castle *at* the target is the siege itself and is
+    left alone; a won king is skipped through ``_site_king_down``. Bounded per
+    step per month and spaced by the existing site cooldown.
+    """
+    if (mem.get('chapter') or 0) != 4:
+        return False
+    target = sortie.get('target')
+    if (target not in chart.boss_sites(4) or _site_king_down(mem, target)
+            or _boss_fight_live(mem, step)):
+        return False
+    status = (_plan_region(mem).get('orders') or {}).get(step)
+    if status not in ('launched', 'launched_unconfirmed'):
+        return False
+    rows = (mem.get('general_statuses') or {}).get('statuses') or {}
+    row = rows.get(general) if isinstance(rows, dict) else None
+    if (not isinstance(row, dict) or row.get('location_observed') is not True
+            or row.get('location') != 'castle'):
+        return False
+    marker = row.get('marker') if isinstance(row.get('marker'), dict) else {}
+    landed = marker.get('castle_candidate')
+    # A camp/castle on the target site is the siege the boss flow owns; only a
+    # measured return to a different castle re-opens the step.
+    if not isinstance(landed, str) or landed == target or landed not in chart.castles(4):
+        return False
+    now, month = int(mem.get('tick') or 0), mem.get('month')
+    rearmed = mem.setdefault('site_step_rearm', {})
+    last = rearmed.get(step)
+    if type(last) is int and now - last < SITE_STEP_REARM_COOLDOWN:
+        return False
+    counts = mem.setdefault('site_end_rearm', {})
+    entry = counts.get(step)
+    if not isinstance(entry, dict) or entry.get('month') != month:
+        entry = {'month': month, 'count': 0}
+    if entry['count'] >= SITE_END_REARM_LIMIT:
+        return False
+    entry['count'] += 1
+    counts[step] = entry
+    rearmed[step] = now
+    _plan_region(mem).setdefault('orders', {})[step] = 'pending'
+    for key in ('rare_card_kit', 'strong_card_kit', 'dropper_card_kit', 'sortie_actor_miss'):
+        (mem.get(key) or {}).pop(step, None)
+    for key in ('general_override', 'source_override', 'card_override'):
+        (_plan_region(mem).get(key) or {}).pop(step, None)
+    (_plan_region(mem).get('order_context') or {}).pop(step, None)
+    (_plan_region(mem).get('sortie_general') or {}).pop(step, None)
+    (_world(mem).get('launched_orders') or {}).pop(step, None)
+    for name, launch in list((_world(mem).get('launched') or {}).items()):
+        if isinstance(launch, dict) and launch.get('step') == step:
+            _world(mem)['launched'].pop(name, None)
+    clear_sortie_launch_priority(mem, step)
+    _record(mem, 'site_step_ended_rearmed', chart_step=step, general=general,
+            observed_metric={'site': target, 'landed': landed,
+                             'count': entry['count'], 'month': month},
+            resulting_event=f'rearm:{step}',
+            reason='撃破実測のない四季王stepの将軍が別の城へ戻って行軍が終わったため、次の出撃のために開き直す')
+    return True
+
+
 def _expire_spent_sorties(mem):
     """Expire stale march records without fabricating a return to the source.
 
@@ -1617,8 +1943,33 @@ def _expire_spent_sorties(mem):
                 continue
         if not measured:
             _queue_overdue_location_recheck(mem, sortie)
-        sorties.pop(step, None)
         general, source = sortie.get('general'), sortie.get('source')
+        target = sortie.get('target')
+        order = (_world(mem).get('launched_orders') or {}).get(step) or {}
+        rows = (mem.get('general_statuses') or {}).get('statuses') or {}
+        row = rows.get(general) if isinstance(rows, dict) else None
+        arrived_move = bool(
+            measured and target and target in _owned(mem)
+            and (sortie.get('purpose') or order.get('purpose')) == 'move'
+            and isinstance(row, dict) and row.get('location') == 'castle'
+            and row.get('location_observed') is True and row.get('castle') == target)
+        if arrived_move:
+            # A move into our own castle draws neither a unit marker nor an
+            # entry message; the general's status naming the destination is
+            # the successful arrival, not proof that the launch never happened.
+            sortie['status'] = 'arrived'
+            sortie['launch_confirmed'] = True
+            (_flow(mem).get('launch_probe') or {}).pop(step, None)
+            (_flow(mem).get('launch_miss') or {}).pop(step, None)
+            order_state = (_plan_region(mem).get('orders') or {}).get(step)
+            if order_state in ('launched', 'launched_unconfirmed'):
+                _mark_order_failed(mem, step)
+            _record(mem, 'sortie_move_arrival_observed', chart_step=step, general=general,
+                    observed_metric={'general': general, 'source': source, 'target': target,
+                                     'castle': row.get('castle'), 'status_tick': row.get('tick')},
+                    reason='自城への移動で本人のステータスが行先の在城を示したため到着を確認し、未発射として巻き戻さない')
+            continue
+        sorties.pop(step, None)
         if measured:
             # docich#3515: a camp/castle reading for a kept/blind launch
             # proves the general never left (or never confirmed). Reopen the
@@ -1626,8 +1977,16 @@ def _expire_spent_sorties(mem):
             # waiting for _arrival_limit. No probe means the launch was
             # already confirmed: a retreat discards only.
             probe = (_flow(mem).get('launch_probe') or {}).get(step) or {}
-            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind'))
-            if unconfirmed and (_plan_region(mem).get('orders') or {}).get(step) == 'launched':
+            order_state = (_plan_region(mem).get('orders') or {}).get(step)
+            # docich#5626: a 'launched_unconfirmed' order is itself an
+            # unconfirmed launch — a measured camp/castle end must reopen it
+            # the same way instead of stranding the step with no record
+            # (live g1342 ch8 14-5: ポワソン->いちじょうだに stayed
+            # launched_unconfirmed; the retry and re-arm paths only cover
+            # chapter-4 sites and boss castles).
+            unconfirmed = bool(sortie.get('launch_kept') or probe.get('kept') or probe.get('blind')
+                               or order_state == 'launched_unconfirmed')
+            if unconfirmed and order_state in ('launched', 'launched_unconfirmed'):
                 # Mirrors flows.map.LAUNCH_MISS_LIMIT; strategy must not import
                 # flows (layers test), so the budget lives here.
                 _MISS_LIMIT = 2
@@ -1640,11 +1999,15 @@ def _expire_spent_sorties(mem):
                     (_plan_region(mem).get(key) or {}).pop(step, None)
                 _plan_region(mem).setdefault('order_context', {}).pop(step, None)
                 _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
-                (_world(mem).get('launched_orders') or {}).pop(step, None)
+                if step in {o.get('step') for o in _orders(mem)}:
+                    # An in-plan step re-arms through the plan itself; a
+                    # dead-plan step re-enters only via next_order's retry
+                    # list, which reads this copy (docich#5626).
+                    (_world(mem).get('launched_orders') or {}).pop(step, None)
                 for target, entry in list((_world(mem).get('launched') or {}).items()):
                     if isinstance(entry, dict) and entry.get('step') == step:
                         _world(mem)['launched'].pop(target, None)
-                (_flow(mem).get('launch_probe') or {}).pop(step, None)
+                clear_sortie_launch_priority(mem, step)
                 rows = (mem.get('general_statuses') or {}).get('statuses') or {}
                 row = rows.get(general) if isinstance(rows, dict) else None
                 observed = {'general': general, 'source': source, 'target': sortie.get('target'),
@@ -1662,6 +2025,11 @@ def _expire_spent_sorties(mem):
                     _record(mem, 'sortie_launch_unverified', chart_step=step, general=general,
                             observed_metric=observed, resulting_event='order_reopened',
                             reason='出撃後の野営・在城を実測し出撃が成立していないため出撃を未発射に戻す')
+            else:
+                # A confirmed site march that came back to another castle is a
+                # retreat/lost road fight: the step can run again now instead
+                # of waiting for the phantom/ledger reconciliation.
+                _rearm_site_step_after_return(mem, step, sortie, general)
         if (general and general != NAME and general not in placed
                 and source in chart.castles(mem.get('chapter') or 0)
                 and measured):
@@ -1724,6 +2092,91 @@ def _rearm_phantom_site_steps(mem):
                                  'sorties': sorted(sorties)},
                 resulting_event=f'rearm:{step}',
                 reason='撃破実測のない四季王stepの行軍記録が消えていたため、次の出撃のために開き直す')
+
+
+SITE_FAILED_REARM_COOLDOWN = 600            # ticks between two re-arms of a failed site step
+SITE_FAILED_REARM_LIMIT = 3                 # failed site steps re-armed per step per month
+
+
+def _rearm_failed_site_steps(mem):
+    """Re-open a failed chapter 4 site step whose king is still alive.
+
+    g1342 2026-11-25: 4-B1 (南西) read 'failed' in every chart_history entry
+    while its skull stayed visible; ``next_order`` skips a failed step and
+    nothing re-armed a base site step (the boss-castle re-arm only walks the
+    rebuilt plan's orders), so 南西 was reachable only through LLM steps whose
+    wait timers restart every replan. Only a site the Y view still shows alive
+    (``_boss_target_unlocked``) comes back, bounded per month with a cooldown,
+    and the failed attempt's actor/source/wait bookkeeping is not carried over.
+    """
+    if (mem.get('chapter') or 0) != 4:
+        return
+    status = _plan_region(mem).get('orders') or {}
+    now = int(mem.get('tick') or 0)
+    month = mem.get('month')
+    book = mem.get('site_failed_rearm')
+    if not isinstance(book, dict):
+        book = mem['site_failed_rearm'] = {}
+    for order in chart.orders(4):
+        step, target = order.get('step'), order.get('target')
+        if (status.get(step) != 'failed' or target not in chart.boss_sites(4)
+                or _site_king_down(mem, target) or not _season_site_skull_visible(mem, target)
+                or not _boss_target_unlocked(order, mem)):
+            continue
+        entry = book.get(step)
+        if not isinstance(entry, dict) or entry.get('month') != month:
+            entry = {'month': month, 'count': 0, 'tick': now - SITE_FAILED_REARM_COOLDOWN}
+        if (entry['count'] >= SITE_FAILED_REARM_LIMIT
+                or now - entry['tick'] < SITE_FAILED_REARM_COOLDOWN):
+            continue
+        entry['count'] += 1
+        entry['tick'] = now
+        book[step] = entry
+        status[step] = 'pending'
+        for key in ('general_override', 'source_override', 'card_override'):
+            (_plan_region(mem).get(key) or {}).pop(step, None)
+        (_plan_region(mem).get('order_context') or {}).pop(step, None)
+        (_plan_region(mem).get('sortie_general') or {}).pop(step, None)
+        for key in ('boss_companion_source_wait', 'boss_companion_source_wait_expired'):
+            (mem.get(key) or {}).pop(step, None)
+        _flow(mem).get('boss_companion_wait_expired', {}).pop(step, None)
+        _flow(mem).get('boss_companion_wait', {}).pop(step, None)
+        _record(mem, 'site_failed_step_rearmed', chart_step=step, general=order.get('general'),
+                observed_metric={'site': target, 'count': entry['count'], 'month': month},
+                resulting_event=f'rearm:{step}',
+                reason='ドクロが見える四季王stepが失敗のまま残り出撃されないため、月内の上限付きで開き直す')
+    if len(book) > 32:
+        for key in list(book)[:-32]:
+            book.pop(key, None)
+
+
+def site_companion_reserve(mem):
+    """Generals a pending 四季王 site sortie needs; interim moves must leave them.
+
+    g1342 2026-11-25 01:12:59: the only eligible companion (ポセイドン) sat at
+    アルマムーン while 4-B2 waited out a cancelled-departure gate, and the
+    garrison rotation moved him to ネクスドリア. 4-B2 then had no companion
+    anywhere and started a fresh wait. The reserve is the strongest eligible
+    companions of the castle the order would sortie from, one per live site.
+    """
+    if (mem.get('chapter') or 0) != 4:
+        return set()
+    status = _plan_region(mem).get('orders') or {}
+    garrison = _world(mem).get('garrison') or {}
+    live = [o for o in chart.orders(4)
+            if o.get('target') in chart.boss_sites(4)
+            and status.get(o['step']) in (None, 'pending')
+            and not _site_king_down(mem, o['target'])
+            and _boss_target_unlocked(o, mem)]
+    reserved = set()
+    for order in live:
+        castle = _boss_companion_source(order, mem)
+        names = _order_hero_alternatives(order, mem, garrison.get(castle)) if castle else []
+        for name in names:
+            if name not in reserved:
+                reserved.add(name)
+                break
+    return reserved
 
 
 BOSS_PHANTOM_TICKS = 2 * BOSS_ARRIVAL_LIMIT   # grace before a launch-less boss step re-arms
@@ -1860,6 +2313,201 @@ def boss_only_phase(mem) -> bool:
     return bool(normal) and normal <= owned and bool(bosses - owned)
 
 
+BOSS_SOLE_CONSOLIDATION_LIMIT = 2   # singleton consolidation moves started per chapter
+
+
+def boss_sole_starved(mem) -> bool:
+    """Boss-only endgame with no measured castle able to keep a defender.
+
+    Unknown rosters are not evidence of starvation: their read-only probes
+    must run before the bounded one-castle exception below is even considered.
+    Chapter 9 is excluded because its owner-approved guard-free rule already
+    lets the road send a singleton.
+    """
+    chapter = mem.get('chapter') or 0
+    if not boss_only_phase(mem) or chart.guard_free(chapter):
+        return False
+    owned = _owned(mem) & set(chart.castles(chapter) or ())
+    if not owned:
+        return False
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    counts = []
+    for castle in owned:
+        names = _known_roster(mem, garrison, castle)
+        if names is None:
+            return False
+        counts.append(len(set(names or ()) - busy))
+    return all(count <= 1 for count in counts) and any(count == 1 for count in counts)
+
+
+def note_boss_sole_starved(mem):
+    """Maintain the continuous starvation clock used by the bounded recovery."""
+    key = 'boss_sole_starved'
+    chapter = mem.get('chapter') or 0
+    if not boss_sole_starved(mem):
+        mem.pop(key, None)
+        return None
+    now = mem.get('tick')
+    now = int(now) if type(now) is int else 0
+    row = mem.get(key)
+    if (not isinstance(row, dict) or row.get('chapter') != chapter
+            or type(row.get('since')) is not int):
+        row = {'chapter': chapter, 'since': now}
+        mem[key] = row
+    return row
+
+
+def _boss_consolidation_book(mem, chapter):
+    book = mem.get('boss_sole_consolidation')
+    if not isinstance(book, dict) or book.get('chapter') != chapter:
+        book = {'chapter': chapter, 'steps': []}
+        mem['boss_sole_consolidation'] = book
+    if not isinstance(book.get('steps'), list):
+        book['steps'] = []
+    return book
+
+
+def boss_sole_consolidation_used(mem, chapter=None):
+    """Started/finished singleton consolidations in this chapter."""
+    chapter = chapter if chapter is not None else (mem.get('chapter') or 0)
+    book = mem.get('boss_sole_consolidation')
+    if not isinstance(book, dict) or book.get('chapter') != chapter:
+        return 0
+    steps = [step for step in book.get('steps') or () if isinstance(step, str)]
+    started = mem.get('order_start_tick') or {}
+    status = _plan_region(mem).get('orders') or {}
+    return len({step for step in steps
+                if step in started or status.get(step) in
+                ('launched', 'launched_unconfirmed', 'done', 'failed')})
+
+
+def _boss_sole_consolidation_permitted(order, mem):
+    """Revalidate the narrow singleton-transfer exception at execution time.
+
+    The flag is trusted only for the exact mechanically minted step, in the
+    boss-only endgame, while the donor is still a singleton and the boss source
+    still lacks a two-general list.  It is never a general relaxation of the
+    owner rule that a castle keeps one defender.
+    """
+    if (not isinstance(order, dict) or order.get('boss_sole_consolidation') is not True
+            or order.get('purpose') != 'move' or not boss_sole_starved(mem)):
+        return False
+    chapter = mem.get('chapter') or 0
+    book = mem.get('boss_sole_consolidation') or {}
+    step = order.get('step')
+    if step not in (book.get('steps') or ()):
+        return False
+    used = boss_sole_consolidation_used(mem, chapter)
+    status = (_plan_region(mem).get('orders') or {}).get(step)
+    if step in (mem.get('order_start_tick') or {}) or status in (
+            'launched', 'launched_unconfirmed', 'done', 'failed'):
+        used -= 1       # the order being revalidated is not its own extra attempt
+    if used >= BOSS_SOLE_CONSOLIDATION_LIMIT:
+        return False
+    target = order.get('target')
+    boss_sources = {o.get('source') for o in chart.all_orders(chapter)
+                    if chart.is_boss_castle(o.get('target'))}
+    if target not in boss_sources:
+        return False
+    source = _source(order, mem)
+    if source not in (_owned(mem) & set(chart.castles(chapter) or ())):
+        return False
+    busy = _en_route(mem)[0] | set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    source_names = _known_roster(mem, garrison, source)
+    target_names = _known_roster(mem, garrison, target)
+    if source_names is None or target_names is None:
+        return False
+    source_free = set(source_names or ()) - busy
+    target_free = set(target_names or ()) - busy
+    return len(source_free) == 1 and len(target_free) < 2
+
+
+def order_start_blocker(order, mem, *, status=None, owned=None):
+    """The first gate keeping ``order`` from ``next_order``, or ``None``.
+
+    This is the same predicate chain as ``next_order`` in one place. The
+    boss-only recovery path uses it to distinguish a plan that has no boss
+    order at all from a boss order that exists but is held by a concrete
+    startability gate; diagnostics can therefore name the gate instead of
+    only reporting that no order came back.
+    """
+    if not isinstance(order, dict):
+        return 'invalid_order'
+    step = order.get('step')
+    if not isinstance(step, str) or not step:
+        return 'missing_step'
+    if status is None:
+        status = _plan_region(mem).get('orders') or {}
+    if owned is None:
+        owned = _owned(mem)
+    if not (status.get(step) in (None, 'pending') or _boss_retry_due(order, mem)):
+        return 'not_pending'
+    purpose, target = order.get('purpose'), order.get('target')
+    if (purpose != 'move' and not chart.is_boss_castle(target)
+            and target in owned and order.get('roster_probe') is not True):
+        return 'target_already_owned'
+    if not _ready(order, mem):
+        return 'not_ready'
+    source = _source(order, mem)
+    if source not in owned:
+        return 'source_not_owned'
+    if not _source_list_open(order, mem):
+        return 'source_list_closed'
+    if _last_castle_held(mem, order):
+        return 'last_castle_held'
+    if _retake_reserved(order, mem):
+        return 'retake_reserved'
+    if _source_spare_missing(order, mem, allow_probe=True):
+        return 'source_spare_missing'
+    general = _plan_region(mem).get('general_override', {}).get(step, order.get('general'))
+    if (general in _en_route(mem)[0]
+            and not _hero_source_alternative(order, mem)):
+        return 'general_en_route'
+    return None
+
+
+def _record_boss_order_no_start(mem, blocked):
+    """Record why a boss-only map frame produced no startable boss order.
+
+    ``blocked`` is empty when the executable sequence contains no boss order:
+    that is a candidate/plan generation failure. Non-empty entries instead
+    name the first startability gate for each pending boss order. The record
+    is bounded by content signature and time so a held month is diagnosable
+    without filling the decision log.
+    """
+    if not boss_only_phase(mem):
+        return
+    now = int(mem.get('tick') or 0)
+    status = _plan_region(mem).get('orders') or {}
+    active = _plan_region(mem).get('active')
+    for order in _orders(mem):
+        if (isinstance(order, dict) and chart.is_boss_castle(order.get('target'))
+                and (order.get('step') == active
+                     or status.get(order.get('step')) in ('launched', 'launched_unconfirmed'))):
+            return    # a boss attempt is already in flight; no false generation failure
+    rows = []
+    for step, blocker in sorted(blocked.items()):
+        rows.append({'step': step, 'blocker': blocker,
+                     'status': status.get(step) or 'pending'})
+    signature = repr(rows) if rows else 'no_boss_order'
+    key = 'boss_order_no_start_seen'
+    seen = mem.get(key) if isinstance(mem.get(key), dict) else {}
+    if (seen.get('signature') == signature and type(seen.get('tick')) is int
+            and 0 <= now - int(seen.get('tick') or 0) < ORDER_DISPATCH_STARVE_TICKS):
+        return
+    mem[key] = {'signature': signature, 'tick': now}
+    if rows:
+        observed = {'blocked': rows[:8], 'blocked_count': len(rows)}
+        reason = 'ボスフェーズでボス注文は残っているが startability ゲートを通らないため、最初の阻止条件を記録する'
+    else:
+        observed = {'blocked': [], 'blocked_count': 0}
+        reason = 'ボスフェーズなのに実行列へボス注文が残っていないため、候補生成失敗として記録する'
+    _record(mem, 'boss_order_no_start', chart_step=None,
+            observed_metric=observed, reason=reason)
+
+
 def _dispatch_pending(mem):
     """Pending or boss-retry order steps the dispatch block could start."""
     status = _plan_region(mem).get('orders') or {}
@@ -1927,8 +2575,10 @@ def order_dispatch_starved(mem) -> bool:
 def next_order(mem):
     # A measured しんぐんちゅうです reading restarts the age of a live march
     # before the fixed windows can relaunch it while it is still walking.
+    note_boss_sole_starved(mem)
     _refresh_live_marches(mem)
     _rearm_phantom_site_steps(mem)
+    _rearm_failed_site_steps(mem)
     _rearm_phantom_boss_steps(mem)
     _relaunch_overdue_boss(mem)
     _relaunch_overdue_march(mem)
@@ -1998,28 +2648,35 @@ def next_order(mem):
     base = [o for o in chart.orders(mem.get('chapter') or 0)
             if o['step'] not in steps and o['target'] not in owned] if _plan_region(mem).get('chart_plan') else []
     chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
-    for order in (*current, *retries, *base):
+    order_sequence = (*current, *retries, *base)
+    # A resumed picker that closed without a verified target leaves an owed
+    # same-month retry. Keep that exact step ahead of newer chart work; it
+    # still passes every ordinary readiness/source/defender gate below.
+    resume_steps = {
+        step for step, row in (_flow(mem).get('sortie_resume') or {}).items()
+        if isinstance(row, dict) and row.get('owed') is True
+        and row.get('month') == mem.get('month')
+    }
+    if resume_steps:
+        order_sequence = (
+            *(order for order in order_sequence if order.get('step') in resume_steps),
+            *(order for order in order_sequence if order.get('step') not in resume_steps),
+        )
+    boss_blocked = {}
+    for order in order_sequence:
+        may_run = (status.get(order['step']) in (None, 'pending')
+                   or _boss_retry_due(order, mem))
         if ((order['step'] in chart_steps or _is_boss_order(order, mem))
-                and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
-                and _ready(order, mem)):
+                and may_run and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
-        if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
-                and (order.get('purpose') == 'move'
-                     or chart.is_boss_castle(order.get('target'))
-                     or order.get('target') not in owned
-                     or order.get('roster_probe') is True)
-                and _ready(order, mem)
-                and _source(order, mem) in owned
-                # A source last read empty would open an empty list and fail
-                # the order (g407: the plan's どうし/ヴィーナス from an empty home),
-                # unless a transfer into it is due to be read (probe).
-                and _source_list_open(order, mem)
-                and not _last_castle_held(mem, order)      # its castle must keep its last general
-                and not _retake_reserved(order, mem)
-                and not _source_spare_missing(order, mem, allow_probe=True)
-                and (_plan_region(mem).get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]
-                     or _hero_source_alternative(order, mem))):
+        if not may_run:
+            continue
+        blocker = order_start_blocker(order, mem, status=status, owned=owned)
+        if blocker is None:
             return order
+        if chart.is_boss_castle(order.get('target')) and isinstance(order.get('step'), str):
+            boss_blocked[order['step']] = blocker
+    _record_boss_order_no_start(mem, boss_blocked)
     return None
 
 
@@ -2031,6 +2688,32 @@ def _follow_general(mem, order, garrison, owned):
     source = _source(order, mem)
     if _is_boss_order(order, mem) and order.get('purpose') != 'move':
         base_source = order.get('source')
+        if order.get('target') in chart.boss_sites(4):
+            # The plan (LLM or mechanical) may pin a far castle because that
+            # is where its named general stands. A 四季王 site is not tied to
+            # that general: deploy picks the eligible egg-holder at the source.
+            # Redirect to the nearest eligible source so the march time is not
+            # paid on every wave (g1342 2026-11-24: 1159-cell and 793-cell
+            # marches while fit companions stood 343/377 cells away).
+            where = _boss_companion_source(order, mem)
+            overrides = _plan_region(mem).setdefault('source_override', {})
+            if where is None:
+                if overrides.pop(order['step'], None) is not None:
+                    _record(mem, 'boss_source_override_cleared', chart_step=order['step'],
+                            target=order.get('target'),
+                            reason='適格な卵持ち代役の記録が無いため、古い出撃元上書きを捨てて待機に戻す')
+                return
+            if where == base_source:
+                overrides.pop(order['step'], None)
+                return
+            if overrides.get(order['step']) != where:
+                overrides[order['step']] = where
+                _record(mem, 'boss_companion_source', chart_step=order['step'],
+                        observed_metric={'source': source, 'companion_at': where,
+                                         'distance': _distance(mem.get('chapter') or 0,
+                                                               where, order['target'])},
+                        reason='ボスへ最も近い適格な卵持ち代役の城を出撃元にする')
+            return
         if (general and general != NAME and base_source in owned
                 and general in (_known_roster(mem, garrison, base_source) or ())):
             overrides = _plan_region(mem).get('source_override') or {}
@@ -2385,7 +3068,8 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     # A genuine arrival or newly joined general may have changed the list
     # since it was measured. Preserve those evidence-gathering reads; a
     # recorded singleton elsewhere must not launch a doomed sortie.
-    if _reserve_source_guard(order, mem) and _source_location_recheck(mem, source) is not None:
+    if ((_reserve_source_guard(order, mem) or order.get('source_probe') is True)
+            and _source_location_recheck(mem, source) is not None):
         return not (allow_probe and _source_location_recheck_due(mem, source))
     if (allow_probe and order.get('source_probe') is True
             and (present is None or routes.probe_due(mem, source))):
@@ -2414,7 +3098,8 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     if (_plan_region(mem).get('active') != order.get('step')
             and not chart.guard_free(mem.get('chapter'))
             and isinstance(present, (list, tuple)) and present
-            and len(set(present) - unavailable) < 2):
+            and len(set(present) - unavailable) < 2
+            and not _boss_sole_consolidation_permitted(order, mem)):
         return True  # pre-flight only: never reopen a plan for the last defender
     # The hero's castle must keep HERO_CASTLE_GUARD generals beside the hero.
     # g1163 2026-11-09 04:39: a plan order sent a general from アルマムーン
@@ -2499,6 +3184,162 @@ def drop_retired_step_context(mem):
             plan.pop(key, None)
 
 
+# docich#5020: a defense/boss battle that closes the destination picker before
+# the target commits ends the order as launched_unconfirmed. Within the same
+# month the picker may be re-opened by driving the same order again -- the
+# general and the carried cards stay as planned and the picker screen is read
+# for real -- at most SORTIE_PICKER_RESUME_LIMIT times per step. Once the
+# budget is spent the incident returns to the launched_unconfirmed terminal.
+SORTIE_PICKER_RESUME_LIMIT = 2    # same-month driven picker re-opens per step
+
+
+def _sortie_resume_row(mem, step):
+    row = (_flow(mem).get('sortie_resume') or {}).get(step)
+    return row if isinstance(row, dict) else None
+
+
+def _sortie_resume_arm(mem, step):
+    """Arm this interruption's same-month picker re-open budget.
+
+    Returns ``(armed, used)``: whether a resume drive may run and how many
+    driven re-opens this step already spent in the observed month. A month the
+    policy never read cannot prove the same-month bound, so it does not arm.
+    """
+    month = mem.get('month')
+    ledger = _flow(mem).setdefault('sortie_resume', {})
+    row = ledger.get(step)
+    if not isinstance(row, dict) or row.get('month') != month:
+        row = {'month': month, 'used': 0}
+        ledger[step] = row
+    row.pop('owed', None)
+    row.pop('picker_active', None)
+    used = int(row.get('used') or 0)
+    row['armed'] = month is not None and used < SORTIE_PICKER_RESUME_LIMIT
+    return row['armed'], used
+
+
+def _sortie_resume_due(mem, step):
+    """A driven re-open is still owed and the month has not moved."""
+    row = _sortie_resume_row(mem, step)
+    return bool(row and row.get('armed') is True
+                and mem.get('month') is not None
+                and row.get('month') == mem.get('month')
+                and int(row.get('used') or 0) < SORTIE_PICKER_RESUME_LIMIT)
+
+
+def _sortie_resume_owe(mem, step):
+    """The cancelled sortie's re-dispatch owes one picker re-open."""
+    row = _sortie_resume_row(mem, step)
+    if isinstance(row, dict):
+        row.pop('armed', None)
+        row.pop('picker_active', None)
+        row['owed'] = True
+
+
+def _sortie_resume_resumed(mem, step, *, driven):
+    """The picker re-opened for this interruption: record ``resumed``.
+
+    A driven re-open spends the same-month budget; the game's own marker
+    return (``sortie_target_resumed``) does not. Repeated frames of an already
+    open picker spend nothing.
+    """
+    row = _sortie_resume_row(mem, step)
+    if not isinstance(row, dict):
+        return
+    if driven and not row.get('owed'):
+        return
+    if not driven and not row.get('armed'):
+        return
+    row.pop('armed', None)
+    row.pop('owed', None)
+    row['picker_active'] = True
+    if driven:
+        row['used'] = int(row.get('used') or 0) + 1
+    # docich#5020: a resumed interruption made progress, so the cancellation
+    # that opened it must not count toward the retry guard's failure budget
+    # (``SORTIE_CANCELLED_OBSERVED_LIMIT``). Otherwise the guard would kill
+    # the order on the third cancellation even though the resume mechanism
+    # already handled the first two, and the exhausted order could never
+    # return to the ordinary unconfirmed path.
+    counts = mem.get('sortie_cancelled_observed_counts') or {}
+    counts.pop(step, None)
+    _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+            resulting_event='resumed',
+            observed_metric={'resume': {'outcome': 'resumed',
+                                        'driven': bool(driven),
+                                        'used': int(row.get('used') or 0),
+                                        'limit': SORTIE_PICKER_RESUME_LIMIT}},
+            reason=('再駆動で行き先ピッカーが再オープンしたため再開を記録' if driven
+                    else 'ゲーム側が出撃先マーカーを戻したため再開を記録'))
+
+
+def _sortie_resume_target_unverified(mem, step):
+    """Count a resumed picker that closed without a verified target.
+
+    Keep this budget separate from ordinary target-cancel limits: a failed
+    resumed picker may be reopened once more, but the second failure returns
+    the order to its original launched_unconfirmed terminal state.
+    """
+    row = _sortie_resume_row(mem, step)
+    if not isinstance(row, dict) or row.get('picker_active') is not True:
+        return None
+    row.pop('picker_active', None)
+    used = int(row.get('used') or 0)
+    result = {'used': used, 'limit': SORTIE_PICKER_RESUME_LIMIT}
+    if used >= SORTIE_PICKER_RESUME_LIMIT:
+        _sortie_resume_outcome(
+            mem, step, 'exhausted',
+            reason='再開した出撃先ピッカーで目標を確認できない状態が上限に達したため、通常の取消回数とは分離して再開を終了')
+        result['outcome'] = 'exhausted'
+    else:
+        row['owed'] = True
+        result['outcome'] = 'retry'
+    return result
+
+
+def _sortie_resume_outcome(mem, step, outcome, *, reason):
+    """Close the interruption incident with ``established``/``exhausted``."""
+    row = _sortie_resume_row(mem, step)
+    if row is None:
+        return
+    used = int(row.get('used') or 0)
+    (_flow(mem).get('sortie_resume') or {}).pop(step, None)
+    _record(mem, 'launch_interrupted_by_battle', chart_step=step,
+            resulting_event=outcome,
+            observed_metric={'resume': {'outcome': outcome,
+                                        'used': used,
+                                        'limit': SORTIE_PICKER_RESUME_LIMIT}},
+            reason=reason)
+
+
+def _sortie_resume_reconcile(mem):
+    """Settle open resume ledgers from the facts this observation holds.
+
+    A ledger whose month passed can never resume again (the bound is
+    same-month only) and a step that reached a terminal state no longer owes a
+    picker, so both drop their drive flags. A ``launched`` step is the
+    interruption incident's ``established`` outcome.
+    """
+    ledger = _flow(mem).get('sortie_resume') or {}
+    if not ledger:
+        return
+    status = _plan_region(mem).get('orders') or {}
+    month = mem.get('month')
+    for step, row in list(ledger.items()):
+        if not isinstance(row, dict):
+            ledger.pop(step, None)
+            continue
+        if month is not None and row.get('month') != month:
+            ledger.pop(step, None)
+            continue
+        if status.get(step) == 'launched':
+            _sortie_resume_outcome(mem, step, 'established',
+                reason='割り込まれた出撃の発射が別経路で確定したため再開の帰結を成立として記録')
+        elif status.get(step) in ('failed', 'done'):
+            row.pop('armed', None)
+            row.pop('owed', None)
+
+
 def _finish_order(mem, state, **fields):
     step = _plan_region(mem).get('active')
     if step and state in ('failed', 'done', 'launched', 'launched_unconfirmed'):
@@ -2512,8 +3353,18 @@ def _finish_order(mem, state, **fields):
             if isinstance(section, dict):
                 section.pop(step, None)
     if step:
+        # Keep the resolved order identity on the terminal record. Interim
+        # orders live in chart_adjust.interim_order rather than chart_plan, so
+        # the audit cannot recover their purpose after the active step retires.
+        order = (_order_for_step(mem, step) or {}) if state == 'failed' else {}
+        for key in ('purpose', 'general', 'source', 'target'):
+            value = order.get(key)
+            if not fields.get(key) and isinstance(value, str) and value:
+                fields[key] = value[:32 if key == 'purpose' else 48]
         _plan_region(mem).setdefault('orders', {})[step] = state
         if state == 'launched':
+            _sortie_resume_outcome(mem, step, 'established',
+                reason='出撃の発射が確定したため、割り込み再開の帰結を成立として記録')
             # A new sortie carries a fresh kit: attempted uses from the
             # previous one must not shrink it (``kit_spent`` is per sortie).
             (mem.get('kit_spent') or {}).pop(step, None)
@@ -2526,7 +3377,6 @@ def _finish_order(mem, state, **fields):
             # no castle menu opened at either source).
             mem.setdefault('failed_local_step', {})[step.rsplit(':', 1)[-1]] = int(mem.get('tick') or 0)
             from . import goals
-            order = _order_for_step(mem, step) or {}
             goal_kind = {'retake': 'retake', 'move': 'move'}.get(order.get('purpose'))
             if goal_kind:
                 goals.note_attempt(mem, goal_kind, 'failed', target=order.get('target'))
@@ -2697,6 +3547,10 @@ def _recall_owned(mem, chapter, owned, origin=None):
             return sorted([*kept, *([hub] if hub in universe and hub not in kept else [])])
     if (not road or not measured):
         return owned
+    if chapter == 9 and not chart.ch9_boss_approachable(origin):
+        last = road[-1]
+        owned = [c for c in owned if c != last] or owned
+        road = [c for c in road if c != last] or road
     entry = min((c for c in road if c in cells),
                 key=lambda c: (cells[c][0] - origin[0]) ** 2 + (cells[c][1] - origin[1]) ** 2,
                 default=None)
@@ -2798,6 +3652,17 @@ def _recall_goal(mem, flags=None):
             c, sum(sum((cells[c][a] - o[a]) ** 2 for a in (0, 1)) for o in positions))) if owned else None
     if hero_castle:
         return hero_castle
+    if state.get('task_recall'):
+        # A monthly task is an explicit return instruction: never leave the
+        # destination unresolved. With no measured position and no unique
+        # hero castle the old tail returned None, the picker fallback then
+        # confirmed the camp itself and recorded a non-move as dispatched
+        # (live g1342 2026-11-25 01:11, キッシュ). Any owned castle is a
+        # better destination than staying camped; prefer the chapter's home.
+        home = chart.home_castle(chapter)
+        if home in owned:
+            return home
+        return owned[0] if owned else None
     return owned[0] if len(owned) == 1 else None
 def _fort_recall_goal(mem, state):
     """The nearest own castle to the 砦, by whichever position is measured.
@@ -2938,7 +3803,10 @@ def _match_sortie(mem, castle, general):
     if candidates:
         return None, 'ambiguous'
     launched = (_world(mem).get('launched') or {}).get(castle) or {}
-    step = _long_march(sorties, castle, general, now, retired)
+    step = _long_march(
+        sorties, castle, general, now, retired,
+        moving_boss=(mem.get('chapter') == chart.MOVING_BOSS_CHAPTER),
+    )
     if step is not None:
         return step, 'matched'
     if launched.get('general') == general and launched.get('step') not in sorties:
@@ -2951,7 +3819,7 @@ def _arrival_limit(mem, sortie):
     return march_arrival_limit(mem, sortie)
 
 
-def _long_march(sorties, castle, general, now, retired=None):
+def _long_march(sorties, castle, general, now, retired=None, *, moving_boss=False):
     """A march longer than SORTIE_BUSY_TICKS: the general's newest sortie.
 
     g1075 2026-10-29 12:45: ポセイドン took 677 observations from グリン to リグア.
@@ -2979,7 +3847,9 @@ def _long_march(sorties, castle, general, now, retired=None):
     boss = chart.is_boss_castle(castle)
     site = castle in chart.boss_sites(4)
     statuses = ('en_route', 'launched_unconfirmed', 'overdue') if boss else ('en_route', 'launched_unconfirmed')
-    limit = SITE_LATE_ENTRY_TICKS if site else LONG_MARCH_TICKS
+    limit = (SITE_LATE_ENTRY_TICKS if site else
+             MOVING_BOSS_LATE_ENTRY_TICKS if (boss and moving_boss) else
+             LONG_MARCH_TICKS)
     if (sortie.get('status') not in statuses
             or not (target == castle or (target is None and sortie.get('planned_target') == castle))
             or not 0 <= now - newest < limit):
@@ -3093,6 +3963,7 @@ def _continue_transit_sorties(mem, castle, names):
             _plan_region(mem)['active'] = None
         if (_flow(mem).get('sortie_attempt') or {}).get('step') == step:
             _flow(mem).pop('sortie_attempt', None)
+        clear_sortie_launch_priority(mem, step)
         _record(mem, 'sortie_transit_continue', chart_step=step, general=sortie['general'],
                 castle=castle, expected_metric={'target': planned},
                 observed_metric=listed[:8],

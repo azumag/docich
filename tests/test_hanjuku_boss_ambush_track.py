@@ -32,7 +32,7 @@ def memory(**extra):
 def test_the_ambush_is_the_farthest_tracked_cell():
     # Farthest from (900,420): (820,640) distance 300, (800,180) 340 -> far
     # in Manhattan terms: (800,180)=340, (820,640)=300, (700,500)=280.
-    assert bp._ambush(memory()) == (800, 180)
+    assert bp._ambush(memory()) == (800 + bp.CH9_AMBUSH_X_OFFSET, 180)
 
 
 def test_a_short_or_thin_track_does_not_ambush():
@@ -65,7 +65,7 @@ def test_the_dest_phase_prefers_the_track_over_the_lead(monkeypatch):
                              text='', hand=None, selected=None)
     assert bp.step(picker, mem, object()) == ['jump']
     # ミント is the only wave general -> index 0 -> the first sorted track cell
-    assert mem['pursuit_aim'] == [700, 500]
+    assert mem['pursuit_aim'] == [700 + bp.CH9_AMBUSH_X_OFFSET, 500]
     assert 'pursuit_lead' not in mem
 
 

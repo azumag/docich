@@ -19,6 +19,8 @@ import statistics
 import unicodedata
 from datetime import datetime, timezone
 
+from .hanjuku_family import is_hanjuku
+
 W = 57
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -906,7 +908,7 @@ def render_console_progress(value):
     reason = value.get("reason")
     evidence = "Evidence: completed results / live score unobserved"
     if reason:
-        reasons = {"game_over": "game over", "screen_stalled": "screen stalled",
+        reasons = {"game_over": "game over", "game_clear": "cleared", "screen_stalled": "screen stalled",
                    "manual_saved_stop": "saved stop", "manual_forced_stop": "forced stop",
                    "switch-terminal-before-corner-active": "switch stopped",
                    "recovery_required": "recovery needed", "quiesce_failed": "quiesce failed",
@@ -955,7 +957,7 @@ def render_docich_corner_stats(corner):
             f"{'Record' if corner.get('console') else 'Live'}: this corner matches {progress}",
         ]
         lines += render_console_progress(corner.get("console"))
-        if corner.get("game") == "hanjuku-hero":
+        if is_hanjuku(corner.get("game")):
             lines += render_hanjuku_status(corner.get("hanjuku"))
         # Hanjuku is a scripted corner: it never appends to scores/<game>.jsonl
         # (docich retro_corner waits for game over, not a scorelog target), so
@@ -975,7 +977,7 @@ def render_docich_corner_stats(corner):
                     if isinstance(row, dict)
                 )
             )
-        elif corner.get("game") != "hanjuku-hero":
+        elif not is_hanjuku(corner.get("game")):
             lines.append("Strategy: no corner ranking data")
         return lines
 

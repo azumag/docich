@@ -44,7 +44,7 @@ def test_full_hp_melee_advantage_requires_full_hp_and_soldiers():
     assert rules._full_hp_melee_advantage(base_cur(card_soldiers_current=False)) is False
 
 
-def test_g1067_full_hp_advantage_refuses_nonlethal_card_and_skips_retreat():
+def test_g1067_full_hp_advantage_presses_the_card_before_the_wall_summon():
     # Tautology guard: the fixture must actually be a full-HP advantage.
     cur = g1067_cur()
     assert rules._full_hp_melee_advantage(cur) is True
@@ -53,11 +53,18 @@ def test_g1067_full_hp_advantage_refuses_nonlethal_card_and_skips_retreat():
     # The real trigger is the wall-summon risk, not the clash position.
     assert rules._unarmed_wall_risk(cur) is True
     mem = {'battle': cur, 'chapter': 3}
+    # owner 2026-11-25: ヘルメスは卵なし・ヘスティアは卵持ちのため、白兵優勢でも
+    # 壁判定の召喚より先に切り札で倒しにいく。
     gate = rules._card_damage_gate(mem, cur, 'グリンボー', listed_cards=['グリンボー'])
-    assert gate['allowed'] is False
-    assert gate['role'] == 'nonlethal_egg_risk'
+    assert gate['allowed'] is True
+    assert gate['role'] == 'egg_race_not_a_kill'
     assert gate['enemy_egg_threat'] is True
-    rules._card_gate_refused(mem, cur, 'グリンボー', gate, listed_cards=['グリンボー'])
+    # 卵の競争でなければ（本人の卵を観測）従来の拒否と、退却しない契約は保つ。
+    raced = {**mem, 'egg_uses': {'ヘルメス': 2}}
+    refused = rules._card_damage_gate(raced, cur, 'グリンボー', listed_cards=['グリンボー'])
+    assert refused['allowed'] is False
+    assert refused['role'] == 'nonlethal_egg_risk'
+    rules._card_gate_refused(raced, cur, 'グリンボー', refused, listed_cards=['グリンボー'])
     assert cur.get('card_damage_rescue_needed') is not True
     assert rules._default_retreat_needed(deepcopy(cur)) is False
 

@@ -107,6 +107,8 @@ class BrowserProcessInventoryTests(unittest.TestCase):
         self.assertEqual(shared["cpu_pct"], 300.0)
         self.assertEqual(shared["gpu_cpu_pct"], 100.0)
         self.assertEqual(shared["renderer_cpu_pct"], 200.0)
+        self.assertEqual(shared["rss_mb"], 2.0)
+        self.assertEqual(shared["renderer_rss_mb"], 1.0)
         self.assertEqual(result["by_owner"]["soren-game"]["cpu_pct"], 0.0)
         self.assertEqual(result["by_owner"]["twica"]["cpu_pct"], 50.0)
         self.assertEqual(result["by_owner"]["twica"]["renderer_cpu_pct"], 50.0)

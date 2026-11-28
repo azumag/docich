@@ -1,5 +1,5 @@
 /** Site-independent, visible-information-only Tsuitate move selection. */
-export const BRAIN_VERSION = "tsuitate-brain-v14";
+export const BRAIN_VERSION = "tsuitate-brain-v16";
 const ROLES = new Set(["P", "L", "N", "S", "G", "B", "R", "K", "+P", "+L", "+N", "+S", "+B", "+R"]);
 const HAND_ROLES = ["P", "L", "N", "S", "G", "B", "R"];
 const HAND_LIMITS = { P: 18, L: 4, N: 4, S: 4, G: 4, B: 2, R: 2 };
@@ -10,6 +10,11 @@ const RECAPTURE_AGE_LIMIT = 2;
 // A long move crosses squares we cannot see, so it can be blocked and foul.
 // This only lowers the ordering score; it never claims a move is legal or not.
 const PATH_RISK_WEIGHT = 0.25;
+// A long move over several unseen squares is not just slightly risky: the
+// first unknown square may already block it. v15 lost a real game retrying
+// long promoted bishop rays (10 blocked fouls); this extra per-square penalty
+// beyond the first unknown keeps such rays below shorter safe moves.
+const DEEP_PATH_PENALTY = 0.4;
 // While checked, a visible king escape is tried before a blind block/capture.
 // The 2026-11-24 50-game replay A/B found that probing even highly exposed
 // escapes first reduced fouls and foul-limit losses versus switching to blocks
@@ -380,7 +385,7 @@ export function inspectMoveCandidates(rawObservation, options = {}) {
     return {
       usi: candidate.usi, role: candidate.role, features: values,
       score: FEATURE_NAMES.reduce((sum, name) => sum + values[name] * selectedProfile.weights[name], 0)
-        - pathPenalty,
+        - pathPenalty - DEEP_PATH_PENALTY * Math.max(0, pathPenalty / PATH_RISK_WEIGHT - 1),
       unknownPathSquares: pathPenalty / PATH_RISK_WEIGHT,
       // Only geometry-compatible, non-king moves get the v11 check evidence tier.
       evidenceCapture: candidate.usi[1] !== "*" && age !== undefined && age <= RECAPTURE_AGE_LIMIT
@@ -463,9 +468,11 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
   if (!candidates.length) return null;
   const scored = candidates.map((candidate) => {
     const values = features(observation, candidate, recent);
+    const pathPenalty = pathRisk(observation, candidate);
+    const unknownPath = pathPenalty / PATH_RISK_WEIGHT;
     const score = legacy ? 0
       : FEATURE_NAMES.reduce((sum, name) => sum + values[name] * selectedProfile.weights[name], 0)
-        - pathRisk(observation, candidate);
+        - pathPenalty - DEEP_PATH_PENALTY * Math.max(0, unknownPath - 1);
     return { usi: candidate.usi, role: candidate.role, features: values, score, priority: 0 };
   });
   // A drop needs its destination to be empty, while a path-safe non-king move
@@ -506,6 +513,19 @@ export function chooseMove(rawObservation, { profile = LINEAR_PROFILE, seed = ""
       .map((candidate) => ({ candidate, exposure: escapeExposure(observation, checkedKing.square, candidate.usi.slice(2, 4)) }))
       .sort((a, b) => a.exposure - b.exposure || b.candidate.score - a.candidate.score)
       .forEach((entry, index) => { entry.candidate.priority = -index; });
+  }
+  // When the visible escapes are exhausted we are guessing at the hidden
+  // checker. A non-king move can capture it or block the line; a drop can only
+  // block. The 51-game replay A/B preferred those moves over drops in the
+  // response pool: fouls 298→284, captured value 1273→1311, foul-limit ends
+  // 20→14 versus v14. King moves keep their existing order (the final attempt
+  // must not spend itself on a king probe). Ordering only: no legality claim.
+  if (observation.inCheck === true && !prioritizeEscapes) {
+    for (const candidate of scored) {
+      if (candidate.priority === 0 && candidate.role !== "K" && candidate.usi[1] !== "*") {
+        candidate.priority = 1;
+      }
+    }
   }
   const topPriority = Math.max(...scored.map((candidate) => candidate.priority));
   const pool = scored.filter((candidate) => candidate.priority === topPriority);

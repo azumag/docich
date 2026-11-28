@@ -49,6 +49,12 @@ LOG_NAME = 'hanjuku_month_audit'
 TITLE_PREFIX = '[半熟英雄] 月内出撃ゼロ'
 AFTER_WINDOW_SECONDS = 300
 BOSS_NO_BATTLE_SECONDS = 600
+# The measured #5500 entry-to-incident gap was 53s; allow a bounded panel transition.
+BOSS_ENTRY_BATTLE_GRACE_SECONDS = 120
+# An active boss-targeted march is not evidence that the bot has failed to
+# start the battle yet. Match the existing stuck-march expiry boundary.
+BOSS_LIVE_SORTIE_MAX_AGE_TICKS = 3000
+BOSS_LIVE_SORTIE_STATUSES = frozenset({'en_route', 'launched', 'launched_unconfirmed'})
 CAMP_ISSUE_COOLDOWN_SECONDS = 900
 SORTIE_ISSUE_COOLDOWN_SECONDS = 900
 BATTLE_RESOURCE_ISSUE_COOLDOWN_SECONDS = 900
@@ -85,6 +91,11 @@ CHIKUJOU_ISSUE_COOLDOWN_SECONDS = 900
 MIN_MONTH_SECONDS = 120
 MAX_GAP_SECONDS = 60
 MIN_OBSERVATIONS = 20
+# A boss phase needs a fair window inside the closed month before the audit
+# can claim a missing boss sortie: the order dispatcher alone allows ~90 s
+# (ORDER_DISPATCH_STARVE_TICKS) for a pending order to reach order_start.
+MIN_BOSS_PHASE_SECONDS = 90
+MIN_BOSS_PHASE_OBSERVATIONS = 20
 MAX_READ_BYTES = 2 * 1024 * 1024
 MAX_RECORD_BYTES = 32 * 1024
 MAX_STATE_BYTES = 128 * 1024
@@ -96,6 +107,7 @@ COMMENT_COOLDOWN_SECONDS = 3600
 COMMENT_COOLDOWN_BY_KIND = {
     'battle_loss_with_resources': 900,
     'battle_retreat_with_resources': 900,
+    'battle_card_at_hp1': 900,
 }
 MAX_ISSUES = 200
 DEFAULT_REPO = 'azumag/docich'
@@ -123,6 +135,7 @@ SIGNAL_LABELS = {
     'chart_adjust_stale': '調整チャート待ち',
     'no_source': '出撃元の将軍がいない',
     'stuck_march': '行軍が停滞',
+    'sortie_kit_unobserved': '切り札の携行レシートなし',
     'ledger_unknown': '月内出撃数を確認できない',
     'boss_no_battle': 'ボス戦闘が発生しない',
     'boss_cell_missing': 'ボス位置が未測定',
@@ -172,6 +185,7 @@ SIGNAL_LABELS = {
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
     'corner_stalled': '画面停滞でコーナー停止',
+    'game_over': 'ゲームオーバー',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
@@ -241,6 +255,7 @@ PRIMARY_LABELS = {
     'recall_kikan_selected': '帰還で「きかん」を選択',
     'recall_y_jump_expected': 'Yジャンプが必要',
     'corner_stalled': '画面停滞でコーナー停止',
+    'game_over': 'ゲームオーバー',
     'screen_stalled': '画面が停止した',
     'input_stalled': '入力が停滞した',
     'battle_menu_wasted': '戦闘Bメニューの無駄な開閉',
@@ -300,6 +315,87 @@ def _names(value, limit=12):
         return None
     names = [_bounded_text(item, 48) for item in value[:limit]]
     return [name for name in names if name]
+
+
+def _bounded_card_flow(value):
+    if not isinstance(value, dict):
+        return None
+    planned = value.get('selection_planned')
+    return {'card': _bounded_text(value.get('card'), 48),
+            'stage': _bounded_text(value.get('stage'), 16),
+            'selection_planned': planned if type(planned) is bool else None}
+
+
+def _bounded_bool(value):
+    return value if type(value) is bool else None
+
+
+def _bounded_card_gate(value):
+    if not isinstance(value, dict):
+        return None
+    return {'card': _bounded_text(value.get('card'), 48),
+            'allowed': _bounded_bool(value.get('allowed')),
+            'role': _bounded_text(value.get('role'), 80),
+            'source': _bounded_text(value.get('source'), 32),
+            'ally_hp': _bounded_int(value.get('ally_hp'), 0, 10 ** 6),
+            'enemy_hp': _bounded_int(value.get('enemy_hp'), 0, 10 ** 6),
+            'tick': _bounded_int(value.get('tick'), 0, 10 ** 9),
+            'seq': _bounded_int(value.get('seq'), 0, 10 ** 6)}
+
+
+def _bounded_carried_cards(value):
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value[:8]:
+        if not isinstance(row, dict):
+            continue
+        rows.append({'card': _bounded_text(row.get('card'), 48),
+                     'provenance': _names(row.get('provenance'), limit=6),
+                     'state': _bounded_text(row.get('state'), 24),
+                     'remaining': _bounded_bool(row.get('remaining')),
+                     'usable_in_battle': _bounded_bool(row.get('usable_in_battle'))})
+    return rows
+
+
+def _bounded_flow_events(value, limit=16):
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        out = {}
+        for key in ('seq', 'tick'):
+            out[key] = _bounded_int(row.get(key), 0, 10 ** 9)
+        for key in ('event', 'card', 'stage', 'source', 'role', 'cause', 'note'):
+            out[key] = _bounded_text(row.get(key), 80)
+        for key in ('allowed', 'selection_planned', 'needs_live_list', 'lethal'):
+            out[key] = _bounded_bool(row.get(key))
+        for key in ('ally_hp', 'enemy_hp', 'enemy_soldiers'):
+            out[key] = _bounded_int(row.get(key), 0, 10 ** 6)
+        rows.append({key: value for key, value in out.items() if value is not None})
+    return rows
+
+
+def _bounded_critical_survival(value):
+    if not isinstance(value, dict):
+        return None
+    balance = value.get('melee_balance') if isinstance(value.get('melee_balance'), dict) else {}
+    return {'needed': _bounded_bool(value.get('needed')),
+            'needed_now': _bounded_bool(value.get('needed_now')),
+            'needed_observed': _bounded_bool(value.get('needed_observed')),
+            'ally_critical_hp': _bounded_bool(value.get('ally_critical_hp')),
+            'enemy_summon': _bounded_bool(value.get('enemy_summon')),
+            'boss': _bounded_bool(value.get('boss')),
+            'behind': _bounded_bool(value.get('behind')),
+            'behind_now': _bounded_bool(value.get('behind_now')),
+            'card_hp_unread': _bounded_bool(value.get('card_hp_unread')),
+            'card_damage_rescue_needed': _bounded_bool(value.get('card_damage_rescue_needed')),
+            'melee_balance': {key: _bounded_int(balance.get(key), 0, 10 ** 9)
+                              if key != 'soldiers_current' else _bounded_bool(balance.get(key))
+                              for key in ('ally_combat', 'enemy_combat', 'ally_melee_score',
+                                          'enemy_melee_score', 'soldiers_current')}}
 
 
 def _text_map(value, limit=12):
@@ -561,6 +657,12 @@ def _boss_battle_seen(mem, records, chapter, boss_name):
                                       or row.get('castle') in boss_sites):
             return True
     boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    if chapter == 4:
+        # Chapter 4's four sites are fought as the season kings, not as the
+        # chart's ボス name. Without these names a live site battle looks
+        # like "no boss battle" to the audit (docich#5397).
+        from ..hanjuku_map_sources import SEASON_KINGS
+        boss_names |= set(SEASON_KINGS)
     for record in records or ():
         if not isinstance(record, dict):
             continue
@@ -585,6 +687,11 @@ def _rows_boss_battle(rows, chapter, boss_name):
     from .. import hanjuku_reference as reference
     boss_sites = set(chart.boss_sites(chapter) or ())
     boss_names = {boss_name} | set(chart.BOSSES.values()) | set(reference.BOSS_GENERALS)
+    if chapter == 4:
+        # See _boss_battle_seen: the season kings are chapter 4's real boss
+        # enemies, so a site battle must count as boss evidence.
+        from ..hanjuku_map_sources import SEASON_KINGS
+        boss_names |= set(SEASON_KINGS)
     for row in rows or ():
         if not isinstance(row, dict):
             continue
@@ -603,6 +710,98 @@ def _rows_boss_battle(rows, chapter, boss_name):
     return False
 
 
+def _boss_entry_evidence(mem, rows, chapter, now):
+    """Return a measured boss-site entry, without treating it as a completed battle.
+
+    The Japanese boss-entry message is observed before the battle panel is
+    drawn. Keep its timestamp so the audit can defer the zero-battle alert for
+    a bounded transition window instead of permanently counting entry as a
+    battle.
+    """
+    from .. import hanjuku_chart as chart
+    boss_sites = set(chart.boss_sites(chapter) or ())
+    candidates = []
+    for row in rows or ():
+        if not isinstance(row, dict) or row.get('decision') != 'attack_observed':
+            continue
+        metric = row.get('observed_metric')
+        metric = metric if isinstance(metric, dict) else {}
+        castle = _bounded_text(row.get('castle'), 48)
+        if castle not in boss_sites:
+            castle = _bounded_text(metric.get('castle') or metric.get('target'), 48)
+        if castle not in boss_sites:
+            continue
+        at = row.get('at')
+        if type(at) not in (int, float) or not 0 <= at <= now:
+            at = None
+        candidates.append({
+            'at': float(at) if at is not None else None,
+            'general': _bounded_text(row.get('general'), 48),
+            'castle': castle,
+            'step': _bounded_text(row.get('chart_step'), 64),
+            'source': 'decision_log',
+        })
+
+    from .state.regions import PLAN, region
+    plan = region(mem, PLAN)
+    attack = plan.get('attack') if isinstance(plan, dict) else None
+    if (isinstance(attack, dict) and attack.get('side') == 'attack'
+            and attack.get('entry_evidence') == 'measured_boss_entry'
+            and attack.get('castle') in boss_sites):
+        general = _bounded_text(attack.get('general'), 48)
+        castle = _bounded_text(attack.get('castle'), 48)
+        step = _bounded_text(attack.get('step'), 64)
+        matching = [entry for entry in candidates
+                    if entry.get('general') == general
+                    and entry.get('castle') == castle
+                    and entry.get('step') == step]
+        if matching:
+            return max(matching, key=lambda entry: entry.get('at') or 0)
+        return {'at': None, 'general': general, 'castle': castle,
+                'step': step, 'source': 'active_plan'}
+    return max(candidates, key=lambda entry: entry.get('at') or 0) if candidates else None
+
+
+def _remember_boss_entry(current, entry, now):
+    """Persist the newest measured entry once, including when only plan state remains."""
+    if not isinstance(entry, dict):
+        return
+    general = _bounded_text(entry.get('general'), 48)
+    castle = _bounded_text(entry.get('castle'), 48)
+    step = _bounded_text(entry.get('step'), 64)
+    source = _bounded_text(entry.get('source'), 24)
+    same_entry = (current.get('entry_general') == general
+                  and current.get('entry_castle') == castle
+                  and current.get('entry_step') == step)
+    at = entry.get('at')
+    if type(at) not in (int, float) or not 0 <= at <= now:
+        at = current.get('entry_observed_at') if same_entry else None
+    if type(at) not in (int, float):
+        at = now
+    previous = current.get('entry_observed_at')
+    previous_valid = type(previous) in (int, float)
+    # An active-plan observation may arrive before its decision-log row.  The
+    # later row is more authoritative even when its event timestamp is older
+    # than the fallback observation time; prefer that measured timestamp.
+    source_rank = {'active_plan': 0, 'decision_log': 1}
+    source_upgrade = (same_entry
+                      and source_rank.get(source, -1)
+                      > source_rank.get(current.get('entry_source'), -1))
+    if (not same_entry or not previous_valid
+            or float(at) > float(previous) or source_upgrade):
+        current['entry_observed_at'] = float(at)
+        current['entry_general'] = general
+        current['entry_castle'] = castle
+        current['entry_step'] = step
+        current['entry_source'] = source
+
+
+def _boss_entry_grace_active(current, now):
+    at = current.get('entry_observed_at')
+    return (type(at) in (int, float)
+            and max(0.0, float(now) - float(at)) < BOSS_ENTRY_BATTLE_GRACE_SECONDS)
+
+
 def _boss_incident_id(identity, current):
     raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|boss|"
            f"{current.get('chapter')}|{current.get('started_at')}")
@@ -617,13 +816,15 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
                                state.get('identity'))
     counts = _decision_counts(rows)
     departures, launch_events = _departures(rows)
-    # _decision_counts truncates its compact map to the 30 most frequent names;
-    # a busy phase can therefore hide a real battle_start from this count.
-    battle_starts = sum(1 for row in rows if row.get('decision') == 'battle_start')
+    battle_starts = counts.get('battle_start', 0)
     from .. import hanjuku_reference as reference
+    boss_enemies = set(reference.BOSS_GENERALS)
+    if current.get('chapter') == 4:
+        from ..hanjuku_map_sources import SEASON_KINGS
+        boss_enemies |= set(SEASON_KINGS)
     boss_battles = sum(1 for row in rows if row.get('decision') == 'battle_start'
                        and (row.get('enemy') == current.get('boss_name')
-                            or row.get('enemy') in reference.BOSS_GENERALS))
+                            or row.get('enemy') in boss_enemies))
     signals = ['boss_no_battle']
     if not mem.get('boss_cell'):
         signals.append('boss_cell_missing')
@@ -631,7 +832,9 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
         signals.append('boss_hp_missing')
     if not any(name.startswith('boss_pursuit') for name in counts):
         signals.append('boss_pursuit_idle')
-    for name in _signals(context, counts, 0, 0, battle_starts):
+    month_sorties = (context or {}).get('month_sorties') or {}
+    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
+    for name in _signals(context, counts, confirmed, departures, battle_starts):
         if name not in signals:
             signals.append(name)
     signals = signals[:8]
@@ -657,8 +860,6 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
                  'max_gap_s': current.get('max_gap_s'), 'started_clean': True}
     move_launches = sum(1 for row in rows if row.get('decision') == 'order_launched'
                         and row.get('purpose') == 'move')
-    month_sorties = (context or {}).get('month_sorties') or {}
-    confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
     identity = state.get('identity') or {}
     signal_text = '+'.join(signals) if signals else 'boss_no_battle'
     record = {
@@ -683,6 +884,15 @@ def _build_boss_incident(runtime, state, after, records, now, current, rows=None
             'max_gap_s': current.get('max_gap_s'),
             'battle_count': 0,
             'battle_starts': battle_starts,
+            'boss_entry': ({
+                'observed_at': float(current.get('entry_observed_at')),
+                'age_s': max(0.0, float(now) - float(current.get('entry_observed_at'))),
+                'grace_s': BOSS_ENTRY_BATTLE_GRACE_SECONDS,
+                'general': _bounded_text(current.get('entry_general'), 48),
+                'castle': _bounded_text(current.get('entry_castle'), 48),
+                'step': _bounded_text(current.get('entry_step'), 64),
+                'source': _bounded_text(current.get('entry_source'), 24),
+            } if type(current.get('entry_observed_at')) in (int, float) else None),
             'boss_hp_seen': mem.get('boss_hp_seen'),
             'boss_hp_history_count': len(mem.get('boss_hp_history') or []),
             'boss_cell': mem.get('boss_cell'),
@@ -771,6 +981,25 @@ def _camp_reason_code(decision, event, reason):
     return 'other'
 
 
+def _bounded_cell(value):
+    return list(value) if (isinstance(value, (list, tuple)) and len(value) == 2
+                           and all(type(item) is int for item in value)) else None
+
+
+def _bounded_jump_evidence(value):
+    if not isinstance(value, dict):
+        return None
+    active, seen = value.get('active'), value.get('seen')
+    evidence = {'attempt': _bounded_int(value.get('attempt'), 0, 10 ** 6),
+                'active': active if type(active) is bool else None,
+                'seen': seen if type(seen) is bool else None,
+                'moves': _bounded_int(value.get('moves'), 0, 10 ** 6),
+                'wait': _bounded_int(value.get('wait'), 0, 10 ** 6),
+                'age': _bounded_int(value.get('age'), 0, 10 ** 6),
+                'last_result': _bounded_text(value.get('last_result'), 64)}
+    return evidence if any(item is not None for item in evidence.values()) else None
+
+
 def _camp_event(record):
     """One terminal camp-recall or cliff-escape incident, or None."""
     if not isinstance(record, dict):
@@ -794,17 +1023,13 @@ def _camp_event(record):
     else:
         kind, outcome = 'camp_recall_cancelled', 'cancelled'
     reason = record.get('reason') if isinstance(record.get('reason'), str) else None
-    camp = metric.get('camp')
-    camp = list(camp) if (isinstance(camp, list) and len(camp) == 2
-                          and all(type(value) is int for value in camp)) else None
-    target_cell = metric.get('target_cell')
-    target_cell = list(target_cell) if (isinstance(target_cell, list) and len(target_cell) == 2
-                                        and all(type(value) is int for value in target_cell)) else None
+    camp = _bounded_cell(metric.get('camp'))
+    target_cell = _bounded_cell(metric.get('target_cell'))
+    camp_world = _bounded_cell(metric.get('camp_world'))
+    boss_cell = _bounded_cell(metric.get('boss_cell'))
+    y_jump = _bounded_jump_evidence(metric.get('y_jump'))
     castle = _bounded_text(metric.get('castle'), 48)
     general = _bounded_text(record.get('general') or metric.get('general'), 48)
-    screen_text = metric.get('text')
-    if not isinstance(screen_text, str) or not screen_text:
-        screen_text = metric.get('screen_text')
     return {
         'kind': kind,
         'outcome': outcome,
@@ -815,6 +1040,9 @@ def _camp_event(record):
         'general': general,
         'camp': camp,
         'target_cell': target_cell,
+        'camp_world': camp_world,
+        'boss_cell': boss_cell,
+        'y_jump': y_jump,
         'castle': castle,
         'stage': _bounded_text(metric.get('stage'), 32),
         'steps': _bounded_int(metric.get('steps'), 0, 10 ** 6),
@@ -829,8 +1057,14 @@ def _camp_event(record):
         'picker_closed': metric.get('picker_closed') is True,
         'escape_move': metric.get('escape_move') is True,
         'interrupted': metric.get('interrupted') is True,
+        'mode_lost': metric.get('mode_lost') is True,
+        'recent_screens': [kind for kind in
+                           (_bounded_text(raw, 32) for raw in
+                            (metric.get('recent_screens')
+                             if isinstance(metric.get('recent_screens'), list) else [])[:6])
+                           if kind is not None],
         'screen': _bounded_text(metric.get('screen_kind') or record.get('screen_kind'), 32),
-        'screen_text': _bounded_text(screen_text, 120),
+        'screen_text': _bounded_text(metric.get('screen_text'), 120),
         'observed_general': _bounded_text(metric.get('observed_general'), 48),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
     }
@@ -1124,10 +1358,41 @@ def _remaining_cards(selected, used):
     return remaining[:12]
 
 
+def _remaining_cards_are_unconfirmed(remaining, *evidence_groups):
+    """Require enough unconfirmed evidence for every remaining copy.
+
+    One physical selection can appear in both attempted and unclassified
+    ledgers; use the maximum per-name count across evidence sources rather
+    than adding overlapping ledgers. One attempt at one of five identical
+    cards must not hide the other four as untried resources.
+    """
+    remaining_counts = Counter(card for card in remaining if isinstance(card, str))
+    if not remaining_counts:
+        return False
+    unconfirmed_counts = Counter()
+    for group in evidence_groups:
+        group_counts = Counter(card for card in (group or ()) if isinstance(card, str))
+        unconfirmed_counts |= group_counts
+    return not (remaining_counts - unconfirmed_counts)
+
+
 def _battle_resources(record):
     metric = record.get('observed_metric')
     metric = metric if isinstance(metric, dict) else {}
+    # docich#5542/#5551: a ledger-sourced count is the last observed value,
+    # not a battle-time remaining egg. Counting it produced repeated false
+    # "eggs left" incidents, so only a measured count is resource evidence.
     egg = _bounded_int(metric.get('egg_uses'), 0, 10 ** 6)
+    ledger_only = False
+    if metric.get('egg_uses_source') == 'ledger':
+        # owner 2026-11-26 (option B): 台帳の正数は実残数ではないが、この戦闘で
+        # 卵戦に入っていないなら「卵を使わなかった」ことの証拠にはなる。
+        # 実測（egg_available_unused）がある場合を除き、台帳のみの場合は
+        # egg_ledger_only を立てて判別できるようにする。
+        measured = metric.get('egg_available_unused') is True
+        ledger_only = (not measured and (egg or 0) > 0
+                       and metric.get('egg_battle') is not True)
+        egg = 1 if (measured or ledger_only) else 0
     selected = [card for card in (metric.get('cards_selected') or [])
                 if isinstance(card, str)][:12]
     used = [card for card in (metric.get('cards_used') or [])
@@ -1138,6 +1403,12 @@ def _battle_resources(record):
     remaining = _remaining_cards(selected, used)
     if pending and pending not in remaining and pending not in used:
         remaining.append(pending)
+    # owner 2026-11-26: a battle that never opened the card list carries no
+    # selection history; the flow now records the measured leftover names so
+    # a real "lost with carried cards" still counts.
+    for card in (metric.get('cards_left_unused') or ()):
+        if isinstance(card, str) and card not in remaining and card not in used:
+            remaining.append(card)
     # owner 決定 2026-11-23 (#5117): the live list proved this card missing
     # (battle_card_missing), so it is not carried and not a remaining resource.
     missing = {card for card in (metric.get('cards_missing') or ())
@@ -1147,10 +1418,11 @@ def _battle_resources(record):
     # a card left is the alert either way), but expose whether that card had
     # already been tried, so triage can tell "the spend attempt failed" from
     # "the card was never given a chance".
-    attempted = {card for card in (metric.get('cards_attempted') or ())
-                 if isinstance(card, str)}
-    retried = {card for card in (metric.get('cards_spend_retry') or ())
-               if isinstance(card, str)}
+    # Keep multiplicity: each list entry is one bounded selection attempt.
+    attempted = [card for card in (metric.get('cards_attempted') or ())
+                 if isinstance(card, str)][:12]
+    retried = [card for card in (metric.get('cards_spend_retry') or ())
+               if isinstance(card, str)][:12]
     resources = []
     if egg:
         resources.append('egg')
@@ -1159,6 +1431,7 @@ def _battle_resources(record):
     return {
         'resources': resources,
         'egg_uses': egg,
+        'egg_ledger_only': bool(ledger_only),
         'cards_selected': selected,
         'cards_used': used,
         'cards_remaining': remaining[:12],
@@ -1170,8 +1443,10 @@ def _battle_resources(record):
         # docich#5158: selections whose announce receipt never calibrated are
         # the same structural gap as egg-drop cards — the audit cannot tell a
         # used card from an unused one.
-        'cards_unclassified': sorted({card for card in (metric.get('cards_unclassified') or ())
-                                      if isinstance(card, str)})[:12],
+        # Keep duplicate entries so the audit can distinguish one
+        # unconfirmed copy from several identical copies.
+        'cards_unclassified': sorted(card for card in (metric.get('cards_unclassified') or ())
+                                     if isinstance(card, str))[:12],
     }
 
 
@@ -1249,6 +1524,7 @@ def _battle_resource_event(record):
         'decision': decision,
         'resources': resources['resources'],
         'egg_uses': resources['egg_uses'],
+        'egg_ledger_only': resources.get('egg_ledger_only') is True,
         'cards_selected': resources['cards_selected'],
         'cards_used': resources['cards_used'],
         'cards_remaining': resources['cards_remaining'],
@@ -1257,14 +1533,19 @@ def _battle_resource_event(record):
         # a selection whose announce signature never calibrated. The audit
         # cannot confirm the use, so this is a detection-limit signal, not proof
         # the bot wasted a usable card.
-        'cards_unconfirmed_only': bool(resources['cards_remaining'])
-        and set(resources['cards_remaining'])
-        <= (set(resources['cards_unconfirmed_egg_drop']) | set(resources['cards_unclassified'])),
-        # docich#5318: egg_uses is a last-observed ledger, not a per-battle
-        # decrement receipt. An egg-only loss is retained for diagnosis but
-        # cannot prove a usable egg was left unused in this battle.
-        'egg_ledger_only': (outcome == 'loss' and decision == 'battle_result'
-                            and resources['resources'] == ['egg']),
+        # docich#5198: a remaining card the survival list already tried is the
+        # same unconfirmed signature even when the settle never reached the
+        # cards_unclassified ledger (e.g. the flow was dropped or the battle
+        # ended mid-attempt). docich#5676: an announce retry's re-selection
+        # leaves the same detection-limit remnant when measured use confirms
+        # only one of the intentional duplicate selected entries.
+        'cards_unconfirmed_only': _remaining_cards_are_unconfirmed(
+            resources['cards_remaining'], resources['cards_unconfirmed_egg_drop'],
+            resources['cards_unclassified'], resources['cards_attempted'],
+            resources['cards_spend_retry']),
+        'cards_unclassified': resources['cards_unclassified'],
+        'cards_attempted': resources['cards_attempted'],
+        'cards_spend_retry': resources['cards_spend_retry'],
         'card_pending': resources['card_pending'],
         'general': general,
         'enemy': _bounded_text(record.get('enemy') or metric.get('enemy'), 48),
@@ -1311,10 +1592,7 @@ def _build_battle_resource_incident(runtime, state, after, event, now):
     # than filing it as a high-confidence loss. A real egg or a plain card keeps
     # the high signal.
     confidence, confidence_reasons = 'high', []
-    if event.get('egg_ledger_only'):
-        confidence = 'medium'
-        confidence_reasons = ['egg_count_not_current_battle_proof']
-    elif event.get('cards_unconfirmed_only'):
+    if event.get('cards_unconfirmed_only'):
         confidence = 'medium'
         confidence_reasons = ['cards_unconfirmed_signature']
     identity = state.get('identity') or {}
@@ -1695,6 +1973,19 @@ def _chikujou_menu_unreadable(records, month):
     return False
 
 
+def _chikujou_affordability_unverified(records, month):
+    """A terminal affordability read failure is a named, non-high-confidence hold."""
+    for row in records or ():
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_affordability_unverified':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric')
+        if isinstance(metric, dict) and metric.get('skipped') is True:
+            return True
+    return False
+
+
 def _chikujou_snapshot(after, before, record, records):
     from .strategy import economy
     month = record.get('month') if isinstance(record.get('month'), str) else None
@@ -1717,9 +2008,16 @@ def _chikujou_snapshot(after, before, record, records):
         return None
     state, mem, shop = chosen
     metric = record.get('observed_metric') if isinstance(record.get('observed_metric'), dict) else {}
-    gold = next((value for value in (metric.get('gold_end'), metric.get('gold_after'),
-                                     metric.get('gold'), state.get('gold'))
-                 if type(value) is int), None)
+    # The policy balance is refreshed from the current screen header. The
+    # outer runtime state's duplicate gold and transaction-level gold_after
+    # can both predate a later purchase (g1190 ch1 2-1 / docich#5465: 35G
+    # outside, 30G in policy). Prefer the live policy balance; event/outer
+    # snapshots are fallbacks only when the policy has no current reading.
+    gold = mem.get('gold') if type(mem.get('gold')) is int else None
+    if type(gold) is not int:
+        gold = next((value for value in (metric.get('gold_end'), metric.get('gold_after'),
+                                         metric.get('gold'), state.get('gold'))
+                     if type(value) is int), None)
     if type(gold) is not int:
         gold = shop.get('gold_end') if type(shop.get('gold_end')) is int else shop.get('gold_start')
     reserve = economy._chikujou_reserve(mem, shop)
@@ -1802,6 +2100,7 @@ def _chikujou_snapshot(after, before, record, records):
         'cost_declined': cost_declined,
         'reserve_skipped': reserve_skipped,
         'menu_unreadable': _chikujou_menu_unreadable(records, month),
+        'affordability_unverified': _chikujou_affordability_unverified(records, month),
         'held_for': _chikujou_hold(shop, records, month),
         'buildable': bool(affordable and staffed_candidates and not refusal_covered
                           and not cost_declined),
@@ -1890,6 +2189,8 @@ def _build_chikujou_incident(runtime, state, after, event, now):
     held_for = event.get('held_for') if event.get('outcome') == 'ended' else None
     menu_unreadable = (event.get('menu_unreadable')
                        if event.get('outcome') == 'ended' else None)
+    affordability_unverified = (event.get('affordability_unverified')
+                                if event.get('outcome') == 'ended' else None)
     # docich#5186: the flow's reserve math held the build money all month.
     # The hold is now recorded, so count it like the other explained holds
     # instead of filing a reason-less chikujou_available_at_end.
@@ -1903,6 +2204,11 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         # docich#5097: the row was unreadable, not a reason-less missed build.
         confidence = 'medium'
         confidence_reasons = ['chikujou_menu_unreadable']
+    elif affordability_unverified:
+        # docich#5186: a transient unread balance/reserve is not proof that
+        # optional construction was affordable at the decision point.
+        confidence = 'medium'
+        confidence_reasons = ['chikujou_affordability_unverified']
     elif reserve_skipped:
         confidence = 'medium'
         confidence_reasons = ['chikujou_reserve_skipped']
@@ -1929,6 +2235,7 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'confidence_reasons': confidence_reasons,
         'chikujou_held_for': held_for,
         'chikujou_menu_unreadable': menu_unreadable,
+        'chikujou_affordability_unverified': affordability_unverified,
         'chikujou_reserve_skipped': reserve_skipped,
         'chikujou_refused_skips': event.get('refused_skips'),
         'chikujou_refused_castles': list(event.get('refused_castles') or []),
@@ -2353,6 +2660,7 @@ def _card_names(value):
 
 def _sortie_carried_cards(mem, step, record, records=None):
     carried = []
+    measured = False
     rare = (mem.get('rare_card_kit') or {}).get(step)
     carried += _card_names(rare)
     strong = (mem.get('strong_card_kit') or {}).get(step)
@@ -2360,42 +2668,61 @@ def _sortie_carried_cards(mem, step, record, records=None):
     dropper = (mem.get('dropper_card_kit') or {}).get(step)
     if isinstance(dropper, dict):
         carried += _card_names(dropper.get('card'))
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(record.get(key))
-    metric = record.get('observed_metric')
-    metric = metric if isinstance(metric, dict) else {}
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(metric.get(key))
-    # docich#5118/#5249: launch decisions do not carry a card list. Read the
-    # measured kit saved by the departure confirmation or committed binding.
+
+    keys = ('cards', 'card', 'cards_selected')
+
+    def add_receipt(source):
+        nonlocal measured
+        if not isinstance(source, dict):
+            return
+        for key in keys:
+            value = source.get(key)
+            if key in source and value is not None:
+                measured = True
+                carried.extend(_card_names(value))
+
+    add_receipt(record)
+    add_receipt(record.get('observed_metric'))
+
+    # A measured confirmation is the source of truth. Missing context is not
+    # an empty kit: blind approval and legacy launches have no measured receipt.
     plan = mem.get('plan') if isinstance(mem.get('plan'), dict) else {}
     contexts = plan.get('order_context')
     context = contexts.get(step) if isinstance(contexts, dict) else None
     context = context if isinstance(context, dict) else {}
-    metric = context.get('observed_metric')
-    metric = metric if isinstance(metric, dict) else {}
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(metric.get(key))
+    add_receipt(context.get('observed_metric'))
+
     world = mem.get('world') if isinstance(mem.get('world'), dict) else {}
     launched = world.get('launched_orders')
     snapshot = launched.get(step) if isinstance(launched, dict) else None
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     binding = snapshot.get('departure_binding')
     binding = binding if isinstance(binding, dict) else {}
-    for key in ('cards', 'card', 'cards_selected'):
-        carried += _card_names(binding.get(key))
-        # Without a binding, the snapshot's top-level cards may be a copy of
-        # the plan (departure_snapshot fallback), not a measured carry receipt.
-        if binding:
-            carried += _card_names(snapshot.get(key))
+    binding_has_receipt = any(key in binding and binding[key] is not None for key in keys)
+    if binding_has_receipt:
+        add_receipt(binding)
+        # Without a measured binding, snapshot.cards may just copy the plan.
+        add_receipt(snapshot)
+
     for row in records or ():
         if (not isinstance(row, dict) or row is record
                 or row.get('decision') != 'sortie_confirm'
                 or row.get('chart_step') != step):
             continue
-        for key in ('cards', 'card', 'cards_selected'):
-            carried += _card_names(row.get(key))
-    return carried
+        add_receipt(row)
+
+    # Preserve None (unobserved) separately from [] (measured empty).
+    return carried if measured or carried else None
+
+def _dropped_cards_for_step(records, step):
+    """Cards the selection screen proved absent and the sortie dropped."""
+    dropped = []
+    for row in records or ():
+        if (not isinstance(row, dict) or row.get('decision') != 'card_dropped'
+                or row.get('chart_step') != step):
+            continue
+        dropped.extend(_card_names(row.get('dropped')))
+    return dropped
 
 
 def _sortie_cards_event(record, mem, records=None):
@@ -2413,10 +2740,48 @@ def _sortie_cards_event(record, mem, records=None):
     stock = _positive_card_stock(mem)
     if not stock:
         return None
+    # A positive field count is not automatically usable by every sortie.
+    # バルムンク is intentionally boss-only: carrying it on an ordinary
+    # attack/retake is prohibited, so it must not make an empty ordinary kit
+    # look like a missed opportunity. Boss-purpose orders and measured boss
+    # castles keep the card eligible.
+    from .. import hanjuku_chart as chart, hanjuku_reference as reference
+    boss_order = (purpose == 'boss' or chart.is_boss_castle(order.get('target')))
+    if not boss_order:
+        stock = {name: count for name, count in stock.items()
+                 if name not in reference.BOSS_ONLY_CARDS}
+    # owner 2026-11-24 (v1448) / 2026-11-26: when the plan names no card, the
+    # kit planner only carries a card whose 卵落 is exactly 0. A stock holding
+    # nothing eligible therefore cannot be a missed carry; flagging it was a
+    # false 'sortie_without_cards' (g1190 ch2: イッテツーン/フットバース
+    # only, both 卵落 > 0, empty plan). A plan that names cards keeps them.
+    if not _card_names(order.get('cards')):
+        stock = {name: count for name, count in stock.items()
+                 if (reference.CARDS.get(name) or {}).get('egg_drop') == 0}
+    if not stock:
+        return None
     carried = _sortie_carried_cards(mem, step, record, records)
     if carried:
         return None
+    # owner 2026-11-26 (#5510): a card the selection screen proved absent is
+    # dropped by design (bounded readings -> card_dropped) and the sortie
+    # leaves without it. That is not a missed opportunity, so an empty kit
+    # fully explained by those drops is not filed.
+    planned = _card_names(order.get('cards'))
+    dropped = _dropped_cards_for_step(records, step) if planned else []
+    if planned and dropped:
+        remaining = list(planned)
+        for name in dropped:
+            if name in remaining:
+                remaining.remove(name)
+        if not remaining:
+            return None
+    carried_observed = carried is not None
+    kind = 'sortie_without_cards' if carried_observed else 'sortie_kit_unconfirmed'
     return {
+        'kind': kind,
+        'carried': carried,
+        'carried_observed': carried_observed,
         'decision': record.get('decision'),
         'step': step,
         'purpose': _bounded_text(purpose, 32),
@@ -2426,7 +2791,6 @@ def _sortie_cards_event(record, mem, records=None):
         'inventory': dict(sorted(stock.items())[:12]),
         'planned_cards': [card for card in (order.get('cards') or [])
                           if isinstance(card, str)][:12],
-        'carried': [],
         'reason': _bounded_text(record.get('reason'), 200),
         'at': record.get('at') if type(record.get('at')) in (int, float) else None,
     }
@@ -2443,7 +2807,10 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
     confirmed = month_sorties.get('launches') if isinstance(month_sorties, dict) else None
     battle_count = sum(counts.get(name, 0) for name in counts
                        if name.startswith('battle_') or name == 'monster_menu_choice')
-    signals = ['sortie_without_cards', 'card_inventory_ignored']
+    measured_empty = event.get('carried_observed') is True
+    kind = event.get('kind') or 'sortie_without_cards'
+    signals = ['sortie_without_cards' if measured_empty else 'sortie_kit_unobserved',
+               'card_inventory_ignored']
     for name in _signals(context, counts, confirmed, departures, battle_count):
         if name not in signals:
             signals.append(name)
@@ -2451,10 +2818,10 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
     identity = state.get('identity') or {}
     record = {
         'schema': SCHEMA,
-        'event': 'sortie_without_cards',
-        'kind': 'sortie_without_cards',
-        'confidence': 'high',
-        'confidence_reasons': [],
+        'event': kind,
+        'kind': kind,
+        'confidence': 'high' if measured_empty else 'low',
+        'confidence_reasons': [] if measured_empty else ['carried_kit_unobserved'],
         'chapter': mem.get('chapter'),
         'month': mem.get('month'),
         'month_summary': _month_summary(state.get('observed'), now)
@@ -2492,13 +2859,12 @@ def _build_sortie_cards_incident(runtime, state, after, event, now):
         'created_at': float(now),
     }
     raw = (f"{identity.get('runtime_id')}|{identity.get('generation')}|"
-           f"sortie_without_cards|{event.get('step')}|{event.get('general')}|"
+           f"{kind}|{event.get('step')}|{event.get('general')}|"
            f"{int(float(now))}")
     record['incident_id'] = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
-    record['signature'] = 'sortie_without_cards'
-    record['fingerprint'] = _fingerprint(mem.get('chapter'), 'sortie_without_cards',
-                                         ['sortie_without_cards'])
-    record['auto_file'] = True
+    record['signature'] = kind
+    record['fingerprint'] = _fingerprint(mem.get('chapter'), kind, [signals[0]])
+    record['auto_file'] = measured_empty
     return _shrink(record)
 
 
@@ -2512,7 +2878,7 @@ def _track_sortie_cards(runtime, state, after, records, now, on_sealed=None):
     event = events[0]
     chapter = mem.get('chapter')
     key = '|'.join(str(part or '') for part in (
-        chapter, event.get('step'), event.get('general')))
+        chapter, event.get('kind'), event.get('step'), event.get('general')))
     table = state.setdefault('sortie_cards_events', {})
     if not isinstance(table, dict):
         table = state['sortie_cards_events'] = {}
@@ -2523,7 +2889,7 @@ def _track_sortie_cards(runtime, state, after, records, now, on_sealed=None):
         return
     incident = _build_sortie_cards_incident(runtime, state, after, event, now)
     _append_incident(runtime, incident, on_sealed)
-    table[key] = {'at': float(now), 'kind': 'sortie_without_cards', 'count': 1}
+    table[key] = {'at': float(now), 'kind': event.get('kind'), 'count': 1}
     if len(table) > 30:
         for stale in sorted(table, key=lambda name: table[name].get('at') or 0)[:-30]:
             table.pop(stale, None)
@@ -2632,6 +2998,43 @@ def _track_camp(runtime, state, after, records, now, on_sealed=None):
             table.pop(stale, None)
 
 
+def _has_live_boss_attack_sortie(mem, phase):
+    """Whether a recent, unsettled sortie is still heading to a boss site.
+
+    A 600-second boss phase can contain a newly launched boss wave. Do not
+    report a zero-battle failure while that march is still active. Unknown age
+    is treated conservatively; a march older than the existing 3000-tick
+    stuck-march boundary no longer suppresses the audit.
+    """
+    world = _world_snapshot(mem)
+    sorties = world.get('sorties') if isinstance(world.get('sorties'), dict) else {}
+    launched = world.get('launched_orders') if isinstance(world.get('launched_orders'), dict) else {}
+    tick = _bounded_int(mem.get('tick'), 0, 10 ** 9)
+    boss_sites = set(phase.get('bosses') or ())
+    if not boss_sites:
+        return False
+    for step, value in list(sorties.items())[:MAX_LIST]:
+        if not isinstance(value, dict):
+            continue
+        if value.get('status') not in BOSS_LIVE_SORTIE_STATUSES:
+            continue
+        target = value.get('target') or value.get('planned_target')
+        if target not in boss_sites:
+            continue
+        purpose = value.get('purpose')
+        if purpose is None and isinstance(launched.get(step), dict):
+            purpose = launched[step].get('purpose')
+        if purpose not in (None, 'attack'):
+            continue
+        started = value.get('tick')
+        age = None
+        if tick is not None and type(started) is int and 0 <= started <= tick:
+            age = tick - started
+        if age is None or age <= BOSS_LIVE_SORTIE_MAX_AGE_TICKS:
+            return True
+    return False
+
+
 def _track_boss(runtime, state, after, records, now, on_sealed=None):
     mem = after.get('policy') or {}
     phase = _boss_phase(mem)
@@ -2671,6 +3074,8 @@ def _track_boss(runtime, state, after, records, now, on_sealed=None):
         version = _bounded_text(after.get('bot_version'), 80)
         if version:
             current['bot_version'] = version
+    _remember_boss_entry(
+        current, _boss_entry_evidence(mem, records, phase['chapter'], now), now)
     if _boss_battle_seen(mem, records, phase['chapter'], phase['boss_name']):
         if not current.get('battle_at'):
             current['battle_count'] = 1
@@ -2681,8 +3086,19 @@ def _track_boss(runtime, state, after, records, now, on_sealed=None):
         return
     if float(now) - float(current.get('started_at') or now) < BOSS_NO_BATTLE_SECONDS:
         return
+    if _has_live_boss_attack_sortie(mem, phase):
+        current['live_boss_sortie_deferred'] = True
+        return
+    current.pop('live_boss_sortie_deferred', None)
     rows = _read_decisions(runtime, current.get('started_at') or now, now,
                            state.get('identity'))
+    _remember_boss_entry(
+        current, _boss_entry_evidence(mem, [*(rows or ()), *(records or ())],
+                                     phase['chapter'], now), now)
+    if _boss_entry_grace_active(current, now):
+        current['boss_entry_deferred'] = True
+        return
+    current.pop('boss_entry_deferred', None)
     if _rows_boss_battle(rows, phase['chapter'], phase['boss_name']):
         current['battle_count'] = 1
         current['battle_at'] = float(now)
@@ -2748,6 +3164,48 @@ def capture(state):
         return _context(state)
     except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
         return None
+
+
+def camp_watch_hint(runtime, *, identity=None, limit=8):
+    """Bounded per-general consecutive camp months from the audit state.
+
+    The policy's own exemption counter is rebuilt from status snapshots and can
+    lose months when a battle leaves a stale ``field`` row. The audit counts
+    the same camps month by month from a complete status list, so the bot hands
+    this read-only hint to the policy at observation start. It is evidence, not
+    a command: the policy still requires a current camp row before using it.
+    """
+    runtime = Path(runtime)
+    path = runtime / AUDIT_FILE
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        raw = path.read_bytes()[:MAX_STATE_BYTES]
+        state = json.loads(raw.decode('utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    if not isinstance(state, dict) or state.get('schema') != SCHEMA:
+        return None
+    if identity is not None and _identity_key(state.get('identity')) != _identity_key(identity):
+        return None
+    watch = state.get('camp_watch')
+    generals = watch.get('generals') if isinstance(watch, dict) else None
+    month = watch.get('month') if isinstance(watch, dict) else None
+    if not isinstance(generals, dict):
+        return None
+    out = {}
+    for name, row in list(generals.items())[:limit]:
+        if not isinstance(name, str) or not isinstance(row, dict):
+            continue
+        if row.get('last_month') != month:
+            continue
+        months = row.get('months')
+        if type(months) is int and 0 < months <= 24:
+            out[name] = months
+    if not out:
+        return None
+    return {'identity': state.get('identity') or {},
+            'month': month, 'generals': out}
 
 
 def _new_state(identity):
@@ -2925,9 +3383,10 @@ def _boss_departures(rows, chapter):
 
 
 def _decision_counts(rows):
+    """Count every observed decision; rare names can determine audit signals."""
     counts = Counter(row.get('decision') for row in rows
                      if isinstance(row.get('decision'), str))
-    return {name: count for name, count in counts.most_common(30)}
+    return dict(counts.most_common())
 
 
 def _decision_rows(rows, limit):
@@ -2996,8 +3455,15 @@ def _signals(context, counts, confirmed, departures, battle_count):
     if not staffed or max(staffed) <= 1:
         out.append('no_source')
     sorties = world.get('sorties') if isinstance(world.get('sorties'), dict) else {}
-    if any(isinstance(row, dict) and (row.get('age_ticks') or 0) > 3000
-           for row in sorties.values()):
+    # Match the world layer's live-march contract: an old arrival/overdue
+    # receipt is historical evidence, not a unit that is still on the road.
+    if any(
+        isinstance(row, dict)
+        and row.get('status') in ('en_route', 'launched_unconfirmed')
+        and type(row.get('age_ticks')) is int
+        and row['age_ticks'] > 3000
+        for row in sorties.values()
+    ):
         out.append('stuck_march')
     if confirmed is None:
         out.append('ledger_unknown')
@@ -3077,6 +3543,81 @@ def _incident_id(identity, chapter, month):
 def _fingerprint(chapter, kind, signals):
     raw = f"{chapter}|{kind}|{'+'.join(signals)}"
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+
+def _month_key(record):
+    """The exact game-month instance used for cross-issue duplicate suppression."""
+    if not isinstance(record, dict):
+        return None
+    summary = record.get('month_summary')
+    summary = summary if isinstance(summary, dict) else {}
+    fingerprint = record.get('fingerprint')
+    month = record.get('month') or summary.get('month')
+    first_tick = summary.get('first_tick')
+    if (not isinstance(fingerprint, str) or not fingerprint
+            or not isinstance(month, str) or not month
+            or type(first_tick) is not int):
+        return None
+    return (fingerprint, month, first_tick)
+
+
+def _month_key_marker(key):
+    if key is None:
+        return None
+    fingerprint, month, first_tick = key
+    if not re.fullmatch(r'[0-9a-f]{8,64}', fingerprint):
+        return None
+    if not re.fullmatch(r'[0-9]+-[0-9]+', month):
+        return None
+    return f'<!-- hanjuku-month-audit key={fingerprint}/{month}/{first_tick} -->'
+
+
+def _issue_markers(record):
+    lines = [
+        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
+        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+    ]
+    marker = _month_key_marker(_month_key(record))
+    if marker:
+        lines.append(marker)
+    return lines
+
+
+def _body_has_month_key(body, key):
+    """True when an issue body records this exact fingerprint/month/first_tick.
+
+    New bodies carry a compact marker. Bodies filed before that marker existed
+    still embed the incident JSON, so fall back to the bounded month_summary
+    fields instead of treating every same-fingerprint issue as a duplicate.
+    """
+    if not isinstance(body, str) or key is None:
+        return False
+    marker = _month_key_marker(key)
+    if marker and marker in body:
+        return True
+    fingerprint, month, first_tick = key
+    if f'hanjuku-month-audit fingerprint={fingerprint}' not in body:
+        return False
+    match = re.search(r'"month_summary"\s*:\s*\{(.*?)\n\s*\}', body, re.S)
+    if match is None:
+        return False
+    summary = match.group(1)
+    tick_match = re.search(r'"first_tick"\s*:\s*(-?[0-9]+)', summary)
+    month_match = re.search(r'"month"\s*:\s*"((?:\\.|[^"\\])*)"', summary)
+    if tick_match is None or month_match is None:
+        return False
+    try:
+        body_month = json.loads(f'"{month_match.group(1)}"')
+    except ValueError:
+        return False
+    return body_month == month and int(tick_match.group(1)) == first_tick
+
+
+def _find_month_key_issue(issues, key):
+    for issue in issues:
+        if _body_has_month_key(issue.get('body'), key):
+            return issue
+    return None
 
 
 def _shrink(record):
@@ -3205,6 +3746,62 @@ def _after_summary(rows, close_at, window_end):
     }
 
 
+def _card_miss_confidence(card, battle):
+    """Evidence-aware confidence for a carried-card-miss incident.
+
+    `high` is reserved for rows whose self-contained battle evidence both is
+    complete enough to audit and independently shows that use was needed: the
+    fight was lost, the damage gate had allowed this card, and a measured
+    critical/behind survival state existed.  Rows that merely prove a leftover
+    card are detection-limit or design signals, not high-confidence defects.
+    """
+    missing = []
+    if battle.get('outcome') not in ('win', 'loss', 'in_progress', 'unclassified'):
+        missing.append('outcome')
+    if type(battle.get('ally_hp_at_end')) is not int or type(battle.get('enemy_hp_at_end')) is not int:
+        missing.append('end_hp')
+    if type(battle.get('card_opened')) is not bool:
+        missing.append('card_opened')
+    elif (battle.get('card_opened')
+          and (type(battle.get('ally_hp_at_open')) is not int
+               or type(battle.get('enemy_hp_at_open')) is not int)):
+        missing.append('open_hp')
+    if type(battle.get('enemy_summon_observed')) is not bool:
+        missing.append('enemy_summon_observed')
+    critical = battle.get('critical_survival') if isinstance(battle.get('critical_survival'), dict) else {}
+    if any(type(critical.get(key)) is not bool
+           for key in ('needed', 'enemy_summon', 'boss', 'behind')):
+        missing.append('critical_survival')
+    carried = battle.get('carried_cards') if isinstance(battle.get('carried_cards'), list) else []
+    carried_row = next((row for row in carried
+                        if isinstance(row, dict) and row.get('card') == card), None)
+    if not (carried_row and carried_row.get('provenance')):
+        missing.append('carried_card_provenance')
+    elif not any(source not in ('planned_cards', 'order_plan')
+                 for source in carried_row.get('provenance')):
+        missing.append('carried_card_actual_provenance')
+    gate = battle.get('damage_gate') if isinstance(battle.get('damage_gate'), dict) else {}
+    if type(gate.get('allowed')) is not bool or not gate.get('role'):
+        missing.append('damage_gate')
+    history = battle.get('card_flow_history')
+    if not isinstance(history, list) or (battle.get('card_opened') is True and not history):
+        missing.append('card_flow_history')
+    if missing:
+        return 'low', ['missing_evidence:' + ','.join(missing)]
+
+    outcome = battle.get('outcome')
+    allowed = gate.get('allowed') is True
+    need = bool(critical.get('needed_observed') or critical.get('needed')
+                or critical.get('behind'))
+    if outcome != 'loss':
+        return 'medium', ['evidence_complete_but_outcome_not_loss']
+    if not allowed:
+        return 'medium', ['evidence_complete_but_damage_gate_not_allowed']
+    if not need:
+        return 'medium', ['evidence_complete_but_survival_need_unproven']
+    return 'high', ['loss_with_allowed_card_and_survival_need']
+
+
 def _track_card_miss(runtime, state, after, records, now, on_sealed):
     """Seal a card_miss incident when a carried card was left unused.
 
@@ -3237,22 +3834,57 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
         state['card_miss_ids'] = seen[-20:]
         metric = row.get('observed_metric')
         metric = metric if isinstance(metric, dict) else {}
-        cards_left = metric.get('cards_left')
-        cards_left = cards_left if isinstance(cards_left, list) else []
-        screen = row.get('screen_kind') or metric.get('screen') or row.get('screen')
-        battle = {'ally': _bounded_text(row.get('ally'), 48),
-                  'enemy': _bounded_text(row.get('enemy'), 48),
-                  'castle': _bounded_text(row.get('castle'), 48), 'at': float(at),
-                  'reason': _bounded_text(row.get('reason'), 200),
-                  'screen': _bounded_text(screen, 32),
-                  'screen_text': _bounded_text(metric.get('text'), 120),
-                  'cards_left': [_bounded_text(card, 48) for card in cards_left
-                                 if isinstance(card, str)][:8]}
+        battle = {
+            'ally': _bounded_text(row.get('ally'), 48),
+            'enemy': _bounded_text(row.get('enemy'), 48),
+            'castle': _bounded_text(row.get('castle'), 48),
+            'side': _bounded_text(row.get('side'), 16),
+            'at': float(at),
+            'reason': _bounded_text(row.get('reason'), 120),
+            'screen': _bounded_text(row.get('screen_kind') or metric.get('screen')
+                                    or metric.get('screen_kind'), 32),
+            'screen_text': _bounded_text(metric.get('text') or metric.get('screen_text'), 96),
+            'cards_left': _names(metric.get('cards_left'), limit=8),
+            'scrolls': _bounded_int(metric.get('scrolls'), 0, 10),
+            'rearms': _bounded_int(metric.get('rearms'), 0, 10),
+            'summon_card_scroll_out': (metric.get('summon_card_scroll_out')
+                                       if type(metric.get('summon_card_scroll_out')) is bool
+                                       else None),
+            'summon_card_exhausted_tick': _bounded_int(
+                metric.get('summon_card_exhausted_tick'), 0, 10 ** 9),
+            'card_flow': _bounded_card_flow(metric.get('card_flow')),
+            'outcome': _bounded_text(metric.get('outcome'), 24),
+            'ally_hp_at_open': _bounded_int(metric.get('ally_hp_at_open'), 0, 10 ** 6),
+            'enemy_hp_at_open': _bounded_int(metric.get('enemy_hp_at_open'), 0, 10 ** 6),
+            'ally_hp_at_end': _bounded_int(metric.get('ally_hp_at_end'), 0, 10 ** 6),
+            'enemy_hp_at_end': _bounded_int(metric.get('enemy_hp_at_end'), 0, 10 ** 6),
+            'start_ally_hp': _bounded_int(metric.get('start_ally_hp'), 0, 10 ** 6),
+            'start_enemy_hp': _bounded_int(metric.get('start_enemy_hp'), 0, 10 ** 6),
+            'card_opened': _bounded_bool(metric.get('card_opened')),
+            'any_card_opened': _bounded_bool(metric.get('any_card_opened')),
+            'card_open_card': _bounded_text(metric.get('card_open_card'), 48),
+            'card_open_stage': _bounded_text(metric.get('card_open_stage'), 24),
+            'card_open_source': _bounded_text(metric.get('card_open_source'), 48),
+            'critical_survival': _bounded_critical_survival(metric.get('critical_survival')),
+            'carried_cards': _bounded_carried_cards(metric.get('carried_cards')),
+            'damage_gate': _bounded_card_gate(metric.get('damage_gate')),
+            'card_flow_opens': _bounded_flow_events(metric.get('card_flow_opens'), limit=8),
+            'card_flow_history': _bounded_flow_events(metric.get('card_flow_history')),
+            'cursor': _bounded_int(metric.get('cursor'), 0, 224),
+            'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
+            'summon_egg_unavailable': (metric.get('summon_egg_unavailable')
+                                       if type(metric.get('summon_egg_unavailable')) is bool
+                                       else None),
+            'enemy_summon_observed': (metric.get('enemy_summon_observed')
+                                      if type(metric.get('enemy_summon_observed')) is bool
+                                      else None),
+        }
+        confidence, confidence_reasons = _card_miss_confidence(card, battle)
         record = {
             'schema': SCHEMA,
             'kind': 'card_miss',
-            'confidence': 'high',
-            'confidence_reasons': ['carried_card_unused_in_boss_or_summon_battle'],
+            'confidence': confidence,
+            'confidence_reasons': confidence_reasons,
             'chapter': mem.get('chapter'),
             'month': mem.get('month'),
             'card': card,
@@ -3270,6 +3902,142 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
         record['signature'] = 'card_miss'
         record['fingerprint'] = _fingerprint(mem.get('chapter'), 'card_miss',
                                              [card, str(row.get('castle') or '')])
+        record['auto_file'] = confidence == 'high'
+        _append_incident(runtime, record, on_sealed)
+        sealed = True
+    return sealed
+
+
+def _boss_battle_context(record, mem):
+    """A battle_card record belongs to a boss battle.
+
+    The bot's HP1 resource hold deliberately leaves boss battles alone, so an
+    audit alarm must not fire for a boss card opened at HP1. Match the same
+    evidence as ``judgment.battle._boss_battle``: chapter boss names, reference
+    boss generals/monsters, a boss castle, and a measured boss entry. The
+    battle_card row names the enemy; the current policy battle supplies the
+    castle/entry context only when it is the same enemy.
+    """
+    from .. import hanjuku_chart as chart, hanjuku_reference as reference
+    enemy = record.get('enemy')
+    if isinstance(enemy, str) and enemy and (enemy in chart.BOSSES.values()
+                                             or reference.is_boss_target(enemy)):
+        return True
+    battle = mem.get('battle') if isinstance(mem, dict) else None
+    battle = battle if isinstance(battle, dict) else {}
+    same = not battle.get('enemy') or battle.get('enemy') == enemy
+    if same and battle.get('entry_evidence') == 'measured_boss_entry':
+        return True
+    castle = record.get('castle')
+    if (not isinstance(castle, str) or not castle) and same:
+        castle = battle.get('castle')
+    return bool(isinstance(castle, str) and castle and chart.is_boss_castle(castle))
+
+
+def _card_at_hp1_event(record, mem):
+    """A trump card opened while a non-boss enemy general sits at HP1, or None.
+
+    Owner 2026-11-25: ボス戦以外では、相手のHPが1なら切り札や奥の手や卵を
+    使わない. This alarm exists so a regression of that rule is visible even
+    when the battle is won. `battle_card` is the earliest durable record that
+    the flow planned a card; a selection/use receipt would come later and may
+    never calibrate.
+    """
+    if not isinstance(record, dict) or record.get('decision') != 'battle_card':
+        return None
+    if _hp_value(record.get('enemy_hp')) != 1:
+        return None
+    card = record.get('card')
+    if not isinstance(card, str) or not card:
+        return None
+    mem = mem if isinstance(mem, dict) else {}
+    if _boss_battle_context(record, mem):
+        return None
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    same = not battle.get('enemy') or battle.get('enemy') == record.get('enemy')
+    context = battle if same else {}
+    metric = record.get('observed_metric')
+    metric = metric if isinstance(metric, dict) else {}
+    damage = metric.get('card_damage_gate')
+    damage = damage if isinstance(damage, dict) else {}
+    ally_hp = record.get('ally_hp')
+    if ally_hp is None:
+        ally_hp = context.get('ally_hp')
+    at = record.get('at') if type(record.get('at')) in (int, float) else None
+    return {
+        'card': card,
+        'at': at,
+        'battle': {
+            'ally': _bounded_text(context.get('ally'), 48),
+            'enemy': _bounded_text(record.get('enemy') or context.get('enemy'), 48),
+            'castle': _bounded_text(record.get('castle') or context.get('castle'), 48),
+            'side': _bounded_text(record.get('side') or context.get('side'), 16),
+            'at': at,
+            'ally_hp': _bounded_int(ally_hp, 0, 10 ** 6),
+            'enemy_hp': 1,
+            'enemy_soldiers': _bounded_int(context.get('enemy_soldiers'), 0, 6),
+            'reason': _bounded_text(record.get('reason'), 200),
+            'resulting_event': _bounded_text(record.get('resulting_event'), 64),
+            'stage': _bounded_text(metric.get('stage'), 32),
+            'screen': _bounded_text(record.get('screen_kind'), 32),
+            'damage_role': _bounded_text(damage.get('role'), 64),
+        },
+    }
+
+
+def _track_card_at_hp1(runtime, state, after, records, now, on_sealed):
+    """Seal an incident when a card is opened at non-boss enemy HP1.
+
+    The v1506 resource hold makes this path unreachable by design. Filing the
+    earliest `battle_card` record is the regression alarm: waiting for a
+    calibrated use receipt would hide attempts that never announce.
+    """
+    if not isinstance(records, (list, tuple)):
+        return False
+    mem = after.get('policy') if isinstance(after, dict) else None
+    mem = mem if isinstance(mem, dict) else {}
+    identity = _identity(after, mem)
+    seen = state.get('card_hp1_ids')
+    seen = seen if isinstance(seen, list) else []
+    sealed = False
+    for row in records:
+        event = _card_at_hp1_event(row, mem)
+        if event is None:
+            continue
+        card = event['card']
+        battle = event['battle']
+        at = event['at'] if event['at'] is not None else now
+        raw = '|'.join(str(part) for part in (
+            identity.get('runtime_id'), mem.get('chapter'), int(float(at)), card,
+            battle.get('enemy') or '', row.get('decision_id') or ''))
+        incident_id = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]
+        if incident_id in seen:
+            continue
+        seen.append(incident_id)
+        state['card_hp1_ids'] = seen[-20:]
+        record = {
+            'schema': SCHEMA,
+            'kind': 'battle_card_at_hp1',
+            'confidence': 'high',
+            'confidence_reasons': ['card_opened_at_non_boss_enemy_hp1'],
+            'chapter': mem.get('chapter'),
+            'month': mem.get('month'),
+            'card': card,
+            'battle_event': battle,
+            'month_summary': {'chapter': mem.get('chapter'), 'month': mem.get('month'),
+                              'observations': (state.get('observed') or {}).get('observations'),
+                              'duration_s': None, 'max_gap_s': None},
+            'evidence': {'runtime_dir': str(Path(runtime).name),
+                         'decisions': 'hanjuku_decisions.jsonl',
+                         'bot_version': (after.get('bot_version') or mem.get('bot_version')),
+                         'identity': identity},
+            'created_at': float(at),
+        }
+        record['incident_id'] = incident_id
+        record['signature'] = 'battle_card_at_hp1'
+        record['fingerprint'] = _fingerprint(
+            mem.get('chapter'), 'battle_card_at_hp1',
+            [card, battle.get('enemy') or battle.get('castle') or ''])
         record['auto_file'] = True
         _append_incident(runtime, record, on_sealed)
         sealed = True
@@ -3281,6 +4049,16 @@ def _append_incident(runtime, record, on_sealed=None):
     append_log(Path(runtime), LOG_NAME, record)
     if callable(on_sealed):
         on_sealed(record)
+
+
+def record_incident(runtime, record, on_sealed=None):
+    """Append one already-sealed incident (fault_issue reuses this pipeline).
+
+    The monthly audit owns the incident log format, the gh dedupe and the
+    secret scan; a non-monthly producer must not write a second log.
+    """
+    _append_incident(runtime, record, on_sealed)
+    return record
 
 
 ISSUE_LOG = 'hanjuku_month_audit_issue.log'
@@ -3332,6 +4110,29 @@ def spawn_issue_filer(runtime, record):
                              stderr=subprocess.STDOUT, start_new_session=True,
                              close_fds=True)
     except OSError:
+        _note_filer_problem(runtime, record, 'spawn_failed')
+        return False
+    return True
+
+
+def _note_filer_problem(runtime, record, reason):
+    """owner 2026-11-26: issue が作られない原因を判断できるよう、失敗を残す。
+
+    The filer is a detached child, so a failure there used to vanish (its log
+    lives in the runtime directory and nobody reads it). One bounded decision
+    per failure keeps it visible in the decisions log.
+    """
+    try:
+        from ..hanjuku_run import append_log
+        append_log(Path(runtime), 'hanjuku_decisions', {
+            'decision': 'issue_filer_failed',
+            'deviation_reason': reason,
+            'chart_step': None,
+            'observed_metric': {'incident_id': record.get('incident_id'),
+                                'kind': record.get('kind')},
+            'reason': 'issue 発行の子プロセスを起動できなかった',
+        })
+    except Exception:
         return False
     return True
 
@@ -3370,6 +4171,46 @@ def _seal_if_due(runtime, state, now, on_sealed=None):
     if float(now) < float(pending.get('window_end_at') or 0):
         return False
     return _seal(runtime, state, now, on_sealed)
+
+
+def _boss_month_coverage(state, boss_phase, observed, close_at):
+    """Boss-phase coverage inside the closed month (docich#5120).
+
+    state['boss'] is the tracker as of the last in-month observation (the
+    boundary observation updates it after the close).  A phase that spans
+    the boundary covers the whole month; one that began inside it only
+    covers [started_at, close_at].  A tracker for a different episode, or
+    none at all, means the current phase was first seen at the boundary,
+    so its in-month coverage is not provable.  Coverage below the floor
+    cannot prove a missing boss sortie — the bot had no fair window to
+    launch one — so such months downgrade to unverified.
+    """
+    info = {'in_month_s': None, 'in_month_observations': None,
+            'phase_sufficient': False}
+    tracker = state.get('boss') if isinstance(state.get('boss'), dict) else None
+    if tracker is not None and (
+            tracker.get('chapter') != boss_phase.get('chapter')
+            or sorted(tracker.get('bosses') or []) != sorted(boss_phase.get('bosses') or [])):
+        tracker = None
+    started = tracker.get('started_at') if tracker is not None else None
+    first_at = observed.get('first_at')
+    if type(started) in (int, float) and type(first_at) in (int, float):
+        info['in_month_s'] = round(
+            max(0.0, float(close_at) - max(float(started), float(first_at))), 1)
+        if float(started) >= float(first_at):
+            info['in_month_observations'] = _bounded_int(
+                tracker.get('observations'), 0, 10 ** 9)
+        else:
+            # The phase covers the whole month, so every in-month
+            # observation is also a boss-phase observation.
+            info['in_month_observations'] = _bounded_int(
+                observed.get('observations'), 0, 10 ** 9)
+    if (info['in_month_s'] is not None
+            and info['in_month_s'] >= MIN_BOSS_PHASE_SECONDS
+            and info['in_month_observations'] is not None
+            and info['in_month_observations'] >= MIN_BOSS_PHASE_OBSERVATIONS):
+        info['phase_sufficient'] = True
+    return info
 
 
 def _close_month(runtime, state, before, after, now, on_sealed=None):
@@ -3424,9 +4265,21 @@ def _close_month(runtime, state, before, after, now, on_sealed=None):
             'started_at': tracker.get('started_at'),
             'observations': tracker.get('observations'),
         }
+        boss_month.update(_boss_month_coverage(state, boss_phase, observed, close_at))
     duration_s = max(0.0, until - since)
     confidence, reasons = _confidence(observed, context, ledger_ok, chapter_changed,
                                       irregular, coverage, duration_s)
+    # A phase that began moments before the month closed never gave the bot
+    # a window to launch a boss sortie, so zero departures is not evidence
+    # of a stall (docich#5120).  Downgrade like any other weak-evidence
+    # month; the phase carries into the next month's judgment.  Months that
+    # did produce a boss departure keep their classification — the coverage
+    # fields stay in boss_month as diagnostics only.
+    if (boss_month is not None and boss_departures == 0
+            and not boss_month.get('phase_sufficient')):
+        if 'short_boss_phase' not in reasons:
+            reasons.append('short_boss_phase')
+        confidence = 'low'
     if not observed.get('started_clean'):
         kind = 'skipped'
     elif chapter_changed:
@@ -3509,6 +4362,7 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _track_camp(runtime, state, after, records, now, on_sealed)
     _track_sortie(runtime, state, after, records, now, on_sealed)
     _track_battle_resources(runtime, state, after, records, now, on_sealed)
+    _track_card_at_hp1(runtime, state, after, records, now, on_sealed)
     _track_camp_abandon(runtime, state, after, now, on_sealed)
     _track_chikujou(runtime, state, before, after, records, now, on_sealed)
     _track_card_miss(runtime, state, after, records, now, on_sealed)
@@ -3523,6 +4377,153 @@ def observe(runtime, before, after, records=None, *, now=None, on_sealed=None):
     _write_state(runtime, state)
     return state
 
+
+
+def _bounded_seconds(value):
+    return round(float(value), 1) if type(value) in (int, float) and 0 <= value <= 10 ** 7 else None
+
+
+def _terminal_bot_state(runtime):
+    """Best-effort bounded final bot state for terminal incident evidence."""
+    try:
+        from ..retroarch_boundary import read_record
+        state = read_record(Path(runtime) / 'hanjuku_bot.json', limit=256 * 1024)
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _bounded_chart_review(value):
+    if not isinstance(value, dict):
+        return None
+    by_type = value.get('by_type') if isinstance(value.get('by_type'), dict) else {}
+    types = {}
+    for key, count in list(by_type.items())[:8]:
+        name = _bounded_text(key, 64)
+        if name and type(count) is int and 0 <= count <= 10 ** 6:
+            types[name] = count
+    out = {
+        'file': _bounded_text(value.get('file'), 64),
+        'proposals': _bounded_int(value.get('proposals'), 0, 10 ** 6),
+        'by_type': types or None,
+        'off_chart_requests': _bounded_int(value.get('off_chart_requests'), 0, 10 ** 6),
+        'adjusted_orders': _bounded_int(value.get('adjusted_orders'), 0, 10 ** 6),
+        'battle_outcomes': _bounded_int(value.get('battle_outcomes'), 0, 10 ** 6),
+        'unattributed_battles': _bounded_int(value.get('unattributed_battles'), 0, 10 ** 6),
+    }
+    return {key: item for key, item in out.items() if item is not None} or None
+
+
+def record_game_over(runtime, *, run, identity, rotation_request_id=None,
+                     terminal_evidence=None, chart_review=None, now=None, spawn=True):
+    """Append one game-over incident and file it as a follow-up issue.
+
+    A game over is a normal terminal state for the game, but for the automated
+    run it is the loss report that must feed the next chart/policy improvement.
+    The corner calls this after durable terminal evidence exists and before the
+    runtime is torn down. The incident id is deterministic for that terminal
+    frame, so a repeated corner tick cannot append duplicates; filing itself
+    remains the detached, secret-scanned monthly-audit pipeline.
+    """
+    now = time.time() if now is None else float(now)
+    runtime = Path(runtime)
+    run = run if isinstance(run, dict) else {}
+    identity = identity if isinstance(identity, dict) else {}
+    bot_state = _terminal_bot_state(runtime)
+    context_state = bot_state if isinstance(bot_state.get('policy'), dict) else run
+    context = _context(context_state)
+    mem = context_state.get('policy') if isinstance(context_state.get('policy'), dict) else {}
+    chapter = (context or {}).get('chapter')
+    if type(chapter) is not int:
+        chapter = mem.get('chapter') if type(mem.get('chapter')) is int else None
+    month = (context or {}).get('month')
+    if not isinstance(month, str) or not month:
+        month = mem.get('month') if isinstance(mem.get('month'), str) else None
+    evidence = terminal_evidence if isinstance(terminal_evidence, dict) else run
+    evidence = evidence if isinstance(evidence, dict) else {}
+    frame = evidence.get('frame_sha256') or run.get('frame_sha256')
+    frame = frame if isinstance(frame, str) else ''
+    observed_at = evidence.get('observed_at') if type(evidence.get('observed_at')) in (int, float) else now
+    runtime_id = identity.get('runtime_id') or run.get('runtime_id') or runtime.name
+    generation = identity.get('generation') if type(identity.get('generation')) is int else run.get('generation')
+    raw_id = f"{runtime_id}|{generation}|game_over|{frame or observed_at}"
+    incident_id = hashlib.sha256(raw_id.encode('utf-8')).hexdigest()[:20]
+    for existing in load_incidents(runtime):
+        if existing.get('incident_id') == incident_id:
+            return existing
+    rows = _read_decisions(runtime, 0.0, now, identity)
+    counts = _decision_counts(rows)
+    departures, launch_events = _departures(rows)
+    battle_count = sum(counts.get(name, 0) for name in counts
+                       if name.startswith('battle_') or name == 'monster_menu_choice')
+    title_hold = None
+    if (type(evidence.get('observed_monotonic')) in (int, float)
+            and type(evidence.get('title_since')) in (int, float)):
+        title_hold = _bounded_seconds(evidence['observed_monotonic'] - evidence['title_since'])
+    bot_version = bot_state.get('bot_version') or run.get('bot_version')
+    record = {
+        'schema': SCHEMA,
+        'event': 'game_over',
+        'kind': 'game_over',
+        'confidence': 'high',
+        'confidence_reasons': [
+            'ゲームプレイ後のタイトル復帰を連続確認し、terminal_reason=game_over が永続化された',
+        ],
+        'chapter': chapter,
+        'month': month,
+        'game_over': {
+            'runtime_id': _bounded_text(runtime_id, 64),
+            'generation': _bounded_int(generation, 0, 10 ** 9),
+            'observed_at': float(observed_at),
+            'phase': _bounded_text(evidence.get('phase') or run.get('phase'), 32),
+            'terminal_evidence': _bounded_text(evidence.get('terminal_evidence'), 64),
+            'frame_sha256': _bounded_text(frame, 64),
+            'title_count': _bounded_int(evidence.get('title_count'), 0, 10 ** 6),
+            'title_hold_s': title_hold,
+            'observations': _bounded_int(evidence.get('observations'), 0, 10 ** 9),
+            'actions_sent': _bounded_int(evidence.get('actions_sent'), 0, 10 ** 9),
+            'battles_started': _bounded_int(evidence.get('battles_started'), 0, 10 ** 6),
+            'battles_finished': _bounded_int(evidence.get('battles_finished'), 0, 10 ** 6),
+            'captured': _names(mem.get('captured')),
+            'lost': _names(mem.get('lost')),
+            'home_lost': mem.get('home_lost') if type(mem.get('home_lost')) is bool else None,
+            'rotation_request_id': _bounded_text(rotation_request_id, 64),
+            'chart_review': _bounded_chart_review(chart_review),
+        },
+        'plan': copy.deepcopy((context or {}).get('plan') or {}),
+        'world': copy.deepcopy((context or {}).get('world') or {}),
+        'flow': copy.deepcopy((context or {}).get('flow') or {}),
+        'stats': copy.deepcopy((context or {}).get('stats') or {}),
+        'battles': {'decisions': battle_count},
+        'signals': ['game_over'],
+        'decisions': {
+            'total': len(rows),
+            'counts': counts,
+            'coverage': None,
+            'before': _decision_rows(rows, 30),
+            'after': None,
+        },
+        'sorties': {'departures': departures, 'launch_events': launch_events},
+        'evidence': {
+            'runtime_dir': str(runtime.name),
+            'decisions': 'hanjuku_decisions.jsonl',
+            'events': 'hanjuku_events.jsonl',
+            'frames': 'hanjuku_frames/',
+            'bot_version': bot_version,
+            'identity': identity,
+        },
+        'created_at': now,
+    }
+    record['incident_id'] = incident_id
+    record['signature'] = 'game_over'
+    record['fingerprint'] = _fingerprint(chapter, 'game_over', [
+        str(runtime_id), str(generation), frame or str(observed_at)])
+    record['auto_file'] = True
+    record = _shrink(record)
+    _append_incident(runtime, record)
+    if spawn:
+        spawn_issue_filer(runtime, record)
+    return record
 
 
 def record_corner_stall(runtime, *, reason, run, identity, rotation_request_id=None,
@@ -3659,6 +4660,23 @@ def _cell(value):
     return f'{BT}{text}{BT}' if text else ''
 
 
+def _card_miss_bool(value):
+    if value is True:
+        return 'true'
+    if value is False:
+        return 'false'
+    return 'unknown'
+
+
+def _card_miss_flow(value):
+    if not isinstance(value, dict):
+        return 'なし'
+    card = _md(value.get('card')) or '不明'
+    stage = _md(value.get('stage')) or '不明'
+    return (f"card={card} / stage={stage}"
+            f" / selection_planned={_card_miss_bool(value.get('selection_planned'))}")
+
+
 def _timeline(record):
     rows = (record.get('decisions') or {}).get('before') or []
     noisy = {'situation_held', 'unknown_hold_advance', 'battle_draw_hold'}
@@ -3668,13 +4686,56 @@ def _timeline(record):
     return rows[-3:], True
 
 
+def _render_card_at_hp1(record):
+    battle = record.get('battle_event') or {}
+    evidence = record.get('evidence') or {}
+    identity = evidence.get('identity') or {}
+    ally_hp = battle.get('ally_hp') if type(battle.get('ally_hp')) is int else '不明'
+    soldiers = (battle.get('enemy_soldiers')
+                if type(battle.get('enemy_soldiers')) is int else '不明')
+    return '\n'.join([
+        *_issue_markers(record),
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **battle_card_at_hp1** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{evidence.get('bot_version')}{BT}",
+        f"- 章: ch{record.get('chapter')} / 月: {record.get('month')}",
+        f"- 使用札: {record.get('card')}",
+        f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
+        f" / 城: {battle.get('castle') or '不明'} / side: {battle.get('side') or '不明'}",
+        f"- HP: 敵 {battle.get('enemy_hp')} / 自軍 {ally_hp} / 敵兵士 {soldiers}",
+        f"- 時刻: {_clock(battle.get('at'))}",
+        f"- 画面: {BT}{battle.get('screen') or '不明'}{BT}"
+        f" / stage: {BT}{battle.get('stage') or '不明'}{BT}"
+        f" / resulting_event: {BT}{battle.get('resulting_event') or '不明'}{BT}",
+        f"- 札の判定: {BT}{battle.get('damage_role') or '不明'}{BT}",
+        f"- 理由: {_md(battle.get('reason')) or ''}",
+        '',
+        'ボス戦以外で相手将軍HP1のときに切り札が選択されました。',
+        'v1506 の `_hp1_resource_hold` が効いていれば、このカードは開かれません。',
+        'HP読取・ボス判定・カードフローのどこで温存が外れたかを確認してください。',
+    ])
+
+
 def _render_card_miss(record):
     battle = record.get('battle_event') or {}
     evidence = record.get('evidence') or {}
     identity = evidence.get('identity') or {}
+    critical = battle.get('critical_survival') if isinstance(battle.get('critical_survival'), dict) else {}
+    gate = battle.get('damage_gate') if isinstance(battle.get('damage_gate'), dict) else {}
+    carried = next((row for row in (battle.get('carried_cards') or [])
+                    if isinstance(row, dict) and row.get('card') == record.get('card')), {})
+    provenance = ','.join(carried.get('provenance') or []) or '不明'
+    events = []
+    for row in (battle.get('card_flow_history') or [])[-6:]:
+        if not isinstance(row, dict):
+            continue
+        detail = row.get('role') or row.get('cause') or row.get('source') or ''
+        events.append(f"{row.get('seq')}:{row.get('event')}:{row.get('card') or '-'}"
+                      f"{'/' + detail if detail else ''}")
+    flow_history = ' / '.join(events) or '未記録'
     return '\n'.join([
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **card_miss** (confidence: {BT}{record.get('confidence')}{BT})",
@@ -3682,22 +4743,165 @@ def _render_card_miss(record):
         f"- 章: ch{record.get('chapter')} / 月: {record.get('month')}",
         f"- 未使用の携行札: {record.get('card')}",
         f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
-        f" / 城: {battle.get('castle') or '不明'}",
+        f" / 城: {battle.get('castle') or '不明'} / side: {battle.get('side') or '不明'}",
         f"- 時刻: {_clock(battle.get('at'))}",
-        f"- 画面: {BT}{battle.get('screen') or '不明'}{BT} / 文言: {_md(battle.get('screen_text') or 'なし')}"
-        f" / 理由: {battle.get('reason') or ''}",
+        f"- 画面: {BT}{battle.get('screen') or '不明'}{BT}"
+        f" / scrolls: {battle.get('scrolls') if type(battle.get('scrolls')) is int else '不明'}"
+        f" / cursorY: {battle.get('cursor') if type(battle.get('cursor')) is int else '不明'}",
+        f"- 卵状態: empty_egg={_card_miss_bool(battle.get('empty_egg'))}"
+        f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
+        f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
+        f"- card_flow: {_card_miss_flow(battle.get('card_flow'))}",
+        f"- 戦闘結果: {battle.get('outcome') or '不明'}"
+        f" / 開封HP: 自 {battle.get('ally_hp_at_open') if type(battle.get('ally_hp_at_open')) is int else '不明'}"
+        f" vs 敵 {battle.get('enemy_hp_at_open') if type(battle.get('enemy_hp_at_open')) is int else '不明'}"
+        f" / 終了HP: 自 {battle.get('ally_hp_at_end') if type(battle.get('ally_hp_at_end')) is int else '不明'}"
+        f" vs 敵 {battle.get('enemy_hp_at_end') if type(battle.get('enemy_hp_at_end')) is int else '不明'}",
+        f"- 瀕死/劣勢: needed={_card_miss_bool(critical.get('needed'))}"
+        f" / observed={_card_miss_bool(critical.get('needed_observed'))}"
+        f" / behind={_card_miss_bool(critical.get('behind'))}"
+        f" / enemy_summon={_card_miss_bool(critical.get('enemy_summon'))}"
+        f" / boss={_card_miss_bool(critical.get('boss'))}",
+        f"- damage gate: allowed={_card_miss_bool(gate.get('allowed'))}"
+        f" / role={BT}{gate.get('role') or '不明'}{BT}"
+        f" / source={BT}{gate.get('source') or '不明'}{BT}",
+        f"- 携行 provenance: {BT}{provenance}{BT} / state={BT}{carried.get('state') or '不明'}{BT}",
+        f"- card_flow履歴: {BT}{flow_history}{BT}",
+        f"- 切り札行揭示: rearms={battle.get('rearms') if type(battle.get('rearms')) is int else '不明'}"
+        f" / scroll_out={_card_miss_bool(battle.get('summon_card_scroll_out'))}"
+        f" / exhausted_tick={battle.get('summon_card_exhausted_tick') if type(battle.get('summon_card_exhausted_tick')) is int else '不明'}",
+        f"- 表示文言: {_md(battle.get('screen_text')) or '未記録'}",
+        f"- 携行札候補: {', '.join(battle.get('cards_left') or []) or '未記録'}",
+        f"- 理由: {battle.get('reason') or ''}",
         '',
         '敵召喚獣戦/ボス戦で、卵なし・奥の手不可のときに携行切り札を開かず攻撃へ進みました。',
         '切り札を開けなかった画面遷移と、未使用のまま攻撃した判断を確認してください。',
     ])
 
 
+def _render_soren_deadline_misplacement(record):
+    """Compact deterministic body for a Soren deadline misplacement."""
+    event = record.get('soren_event') or {}
+    actual = event.get('actual_new_piece') or {}
+    chosen = event.get('chosen_estimate') or {}
+    lower = event.get('best_lower_alternative') or {}
+    merge = event.get('best_merge_alternative') or {}
+    evidence = record.get('evidence') or {}
+    lines = [
+        *_issue_markers(record),
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **{record.get('kind')}** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- turn: {event.get('turn')} → {event.get('next_turn')} / score {event.get('score')}",
+        f"- ドロップ: x={event.get('decision_x')} / piece type={actual.get('type')}"
+        f" / 実着地 top={actual.get('top_y')} / deadline={event.get('deadline_y')}",
+        f"- 選択位置の独立推定: x={chosen.get('x')} / top={chosen.get('top_y')}",
+        f"- 検証: {BT}{event.get('verification') or '不明'}{BT}"
+        f" / candidates={event.get('candidate_count')}"
+        f" / lower={event.get('lower_candidate_count')}",
+    ]
+    if event.get('decision_reason'):
+        lines.append(f"- 戦略理由: {_md(event.get('decision_reason'))}")
+    lines += ['', '### 安全だった代替', '']
+    if lower:
+        lines.append(f"- デッドライン内: x={lower.get('x')} / top={lower.get('top_y')}"
+                     f" / support={lower.get('support_id')}")
+    if merge:
+        lines.append(f"- 同type併合候補: x={merge.get('x')} / top={merge.get('top_y')}"
+                     f" / target={merge.get('target_id')} / gap={merge.get('contact_gap')}")
+    if not lower and not merge:
+        lines.append('- 代替候補の内訳は JSON 証拠を参照')
+    lines += [
+        '',
+        '### 証拠',
+        '',
+        f"- monitor: {BT}{evidence.get('events')}{BT} / history: {BT}{evidence.get('frames')}{BT}",
+        f"- 盤面: prev {event.get('prev_piece_count')} pieces / curr {event.get('curr_piece_count')} pieces",
+        f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        '',
+        '<details><summary>JSON</summary>',
+        '',
+        f"{BT * 3}json",
+        json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1)[:24000],
+        f"{BT * 3}",
+        '',
+        '</details>',
+        '',
+        '実着地したピースがデッドラインを超え、前盤面に安全な代替配置または有効な同type併合候補があった場合だけ記録しています。'
+        '代替がない局面は対象外です。strategy_runner / enforce_deadline_safety が安全候補を実行前に退避できなかった経路を調べてください。',
+    ]
+    return '\n'.join(lines)
+
+
+def _render_game_over(record):
+    over = record.get('game_over') or {}
+    evidence = record.get('evidence') or {}
+    identity = evidence.get('identity') or {}
+    review = over.get('chart_review') or {}
+    counts = ((record.get('decisions') or {}).get('counts') or {})
+    rows = ((record.get('decisions') or {}).get('before') or [])[-8:]
+    lines = [
+        *_issue_markers(record),
+        f"## {_issue_title(record)}",
+        '',
+        f"- 判定: **game_over** (confidence: {BT}{record.get('confidence')}{BT})",
+        f"- ラン: {BT}{identity.get('runtime_id')}{BT} / generation {BT}{identity.get('generation')}{BT} / {BT}{evidence.get('bot_version')}{BT}",
+        f"- 章/月: ch{record.get('chapter')} {record.get('month') or ''}",
+        f"- 終端: {_clock(over.get('observed_at'))} / phase {BT}{over.get('phase') or '不明'}{BT}"
+        f" / title_count {over.get('title_count')} / evidence {BT}{over.get('terminal_evidence') or '不明'}{BT}",
+        f"- 観測: {over.get('observations')}回 / 入力 {over.get('actions_sent')}回"
+        f" / 戦闘開始 {over.get('battles_started')} / 戦闘終了 {over.get('battles_finished')}",
+        f"- 出撃: departure {((record.get('sorties') or {}).get('departures'))}"
+        f" / launch_events {((record.get('sorties') or {}).get('launch_events'))}",
+        f"- 城: captured={over.get('captured') or '不明'} / lost={over.get('lost') or '不明'}"
+        f" / home_lost={over.get('home_lost')}",
+        '',
+        '### chart review',
+        '',
+        f"- file: {BT}{review.get('file') or 'hanjuku_chart_review.json'}{BT}"
+        f" / proposals {review.get('proposals', 0)}"
+        f" / by_type {review.get('by_type') or {}}",
+        f"- battle_outcomes {review.get('battle_outcomes', 0)}"
+        f" / unattributed_battles {review.get('unattributed_battles', 0)}"
+        f" / off_chart_requests {review.get('off_chart_requests', 0)}",
+        '',
+        '### 直近の判断',
+        '',
+    ]
+    if counts:
+        top = ' / '.join(f'{name}={count}' for name, count in list(counts.items())[:8])
+        lines.append(f"- 件数: {top}")
+    else:
+        lines.append('- 件数: 記録なし')
+    for row in rows:
+        detail = ' '.join(part for part in (
+            f"{_clock(row.get('at'))}",
+            f"{BT}{row.get('decision')}{BT}" if row.get('decision') else '',
+            f"step={_md(row.get('chart_step'))}" if row.get('chart_step') else '',
+            f"target={_md(row.get('target'))}" if row.get('target') else '',
+            f"reason={_md(row.get('reason'))}" if row.get('reason') else '',
+        ) if part)
+        lines.append(f"- {detail}")
+    lines += [
+        '',
+        'ゲーム側の終了として検出されました。直近の敗北・防衛・出撃判断と chart review の提案を確認し、'
+        '次回のランで直すべきチャートまたは policy の改善対象を決めてください。',
+    ]
+    return '\n'.join(lines)
+
+
 def render(record):
     """Deterministic Markdown for one incident."""
     if not isinstance(record, dict):
         raise AuditError('invalid_incident')
+    if record.get('kind') == 'game_over':
+        return _render_game_over(record)
+    if record.get('kind') == 'soren_deadline_misplacement':
+        return _render_soren_deadline_misplacement(record)
     if record.get('kind') == 'card_miss':
         return _render_card_miss(record)
+    if record.get('kind') == 'battle_card_at_hp1':
+        return _render_card_at_hp1(record)
     month = record.get('month_summary') or {}
     sorties = record.get('sorties') or {}
     signals = record.get('signals') or []
@@ -3713,13 +4917,13 @@ def render(record):
     chikujou = record.get('chikujou_event') or {}
     boss_month = record.get('boss_month') or {}
     boss = record.get('boss_phase') or {}
+    boss_entry = boss.get('boss_entry') if isinstance(boss.get('boss_entry'), dict) else None
     recall = record.get('recall_event') or {}
     stall = record.get('corner_stall') or {}
     battle_menu = record.get('battle_menu') or {}
     sortie_cards = record.get('sortie_event') or {}
     body = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"## {_issue_title(record)}",
         '',
         f"- 判定: **{kind}** (confidence: {BT}{confidence}{BT})",
@@ -3731,6 +4935,17 @@ def render(record):
     if not camp:
         body.append(f"- 出撃: 確定 {sorties.get('confirmed')} / 発射 {sorties.get('departures')} / order_start {sorties.get('order_start')} / order_launched {sorties.get('order_launched')}")
     body.append('')
+    fault = record.get('fault') or {}
+    if kind in ('brain_error', 'y_jump_stall'):
+        body += [
+            ('### brain例外' if kind == 'brain_error' else '### 帰還Yジャンプの失敗'),
+            '',
+            f"- 署名: {fault.get('signature') or '不明'}",
+            f"- 再発: {fault.get('count')}回 / 初回 {_clock(fault.get('first_at'))}"
+            f" / 最終 {_clock(fault.get('last_at'))} / window {fault.get('window_s')}秒",
+            f"- 詳細: {_md(fault.get('detail'))}",
+            '',
+        ]
     if stall:
         body += [
             '### コーナー停止',
@@ -3766,6 +4981,10 @@ def render(record):
             f" / launch_events {boss_month.get('launch_events')}",
             f"- フェーズ開始: {boss_month.get('started_at')}"
             f" / 観測 {boss_month.get('observations')}回",
+            f"- 月内フェーズ: {boss_month.get('in_month_s')}秒"
+            f" / 観測 {boss_month.get('in_month_observations')}回"
+            + ('' if boss_month.get('phase_sufficient')
+               else '（出撃猶予不足・docich#5120）'),
             '',
         ]
     if chikujou:
@@ -3784,6 +5003,8 @@ def render(record):
                if chikujou.get('held_for') else []),
             *(['- 築城行の読取り: 不可（有限回の再観測後も未読・docich#5079/#5097）']
                if chikujou.get('menu_unreadable') else []),
+            *(['- 築城資金の確認: 未完了（所持金または必要予約を有限回待っても未読・docich#5186）']
+               if chikujou.get('affordability_unverified') else []),
             '',
         ]
         terminal = chikujou.get('terminal_diagnostic')
@@ -3799,6 +5020,7 @@ def render(record):
                 f"- 最終画面: {terminal.get('screen_kind') or '不明'}"
                 f" / {terminal.get('text') or '文言なし'}",
             ]
+        body.append('')
     if stay:
         body += [
             '### 野営放置',
@@ -3812,15 +5034,21 @@ def render(record):
             '',
         ]
     if sortie_cards:
+        carried_observed = sortie_cards.get('carried_observed') is True
         body += [
-            '### 切り札の非携行',
+            '### 切り札の非携行' if carried_observed else '### 切り札の携行未確認',
             '',
             f"- 将軍: {sortie_cards.get('general') or '不明'} / step: {sortie_cards.get('step') or '不明'}"
             f" / purpose: {sortie_cards.get('purpose') or '不明'}",
             f"- 出撃元: {sortie_cards.get('source') or '不明'}"
             f" / 対象: {sortie_cards.get('target') or '不明'}",
-            f"- 在庫: {sortie_cards.get('inventory')} / 携行: なし"
+            f"- 在庫: {sortie_cards.get('inventory')} / 携行: {'なし' if carried_observed else '未確認'}"
             f" / 計画cards: {sortie_cards.get('planned_cards')}",
+            *(["- 型: 計画はあるが実測kitが空（デプロイの選択・確認の失敗）"]
+               if carried_observed and sortie_cards.get('planned_cards') else
+               ["- 型: 計画が空（自動携行の対象・v1448 以降）"]
+               if carried_observed else
+               ["- 型: 出撃確認の実測レシートなし。非携行とは断定できず、自動Issue化しない"]),
             f"- 決定: {sortie_cards.get('decision')} / 理由: {sortie_cards.get('reason') or '不明'}",
             '',
         ]
@@ -3852,6 +5080,10 @@ def render(record):
               if battle.get('cards_unconfirmed_egg_drop') else []),
             *([f"- 使用未分類（告知未校正）: {battle.get('cards_unclassified')}"]
               if battle.get('cards_unclassified') else []),
+            *([f"- 消費未確認の使用試行: {battle.get('cards_attempted')}"]
+              if battle.get('cards_attempted') else []),
+            *([f"- 消費未確認の再選択: {battle.get('cards_spend_retry')}"]
+              if battle.get('cards_spend_retry') else []),
             f"- 退却選択: {bool(battle.get('retreat_selected'))} / 理由: {battle.get('reason') or '不明'}",
             '',
         ]
@@ -3878,16 +5110,23 @@ def render(record):
             f" / status: {camp.get('resulting_event') or '不明'}"
             f" / escape_move: {bool(camp.get('escape_move'))}"
             f" / target_cell: {camp.get('target_cell')}"
+            f" / camp_world: {camp.get('camp_world')}"
+            f" / boss_cell: {camp.get('boss_cell')}"
+            f" / screen: {camp.get('screen') or '不明'}"
             f" / input_receipt_confirmed: {bool(camp.get('input_receipt_confirmed'))}"
             f" / picker_closed: {bool(camp.get('picker_closed'))}"
             f" / interrupted: {bool(camp.get('interrupted'))}",
+            *([f"- Yジャンプ: attempt {camp['y_jump'].get('attempt')} / active {camp['y_jump'].get('active')}"
+               f" / seen {camp['y_jump'].get('seen')} / moves {camp['y_jump'].get('moves')}"
+               f" / wait {camp['y_jump'].get('wait')} / age {camp['y_jump'].get('age')}"
+               f" / last_result {camp['y_jump'].get('last_result') or 'なし'}"]
+              if isinstance(camp.get('y_jump'), dict) else []),
             *([f"- 砦観測: menu {camp.get('fort_menu_observations') or 0} / list {camp.get('fort_list_observations') or 0}"
                f" / status {camp.get('fort_status_observations') or 0} / status一致 {camp.get('fort_status_reads') or 0}",
                f"- 最終画面: {camp.get('screen') or '不明'} / 将軍照合 {camp.get('general') or '不明'} → {camp.get('observed_general') or '不明'}"
                f" / 文言: {_md(camp.get('screen_text') or 'なし')}"
                ] if any(camp.get(key) is not None for key in
-                        ('fort_menu_observations', 'fort_list_observations', 'fort_status_observations',
-                         'screen', 'screen_text', 'observed_general')) else []),
+                        ('fort_menu_observations', 'fort_list_observations', 'fort_status_observations')) else []),
             '',
         ]
     if boss:
@@ -3900,6 +5139,11 @@ def render(record):
             f"- ボス戦闘: {boss.get('battle_count')} / battle_start 全体: {boss.get('battle_starts')}",
             f"- ボスHP観測: {bool(boss.get('boss_hp_seen') or boss.get('boss_hp_history_count'))}"
             f" / 残りボス城: {', '.join(boss.get('bosses') or [])}",
+            *([f"- 実測突入: {boss_entry.get('general') or '不明'} / {boss_entry.get('castle') or '不明'}"
+                f" / 経過 {round(float(boss_entry.get('age_s') or 0), 1)}秒"
+                f" / 待機上限 {boss_entry.get('grace_s')}秒"
+                f" / source {boss_entry.get('source') or '不明'}"]
+               if boss_entry else []),
             '',
         ]
     body.append('### 直前の決定' if (camp or sortie or battle or stay or chikujou or recall
@@ -3966,11 +5210,45 @@ def render(record):
 
 def render_comment(record):
     """Compact recurrence comment for an existing open issue."""
+    if record.get('kind') == 'soren_deadline_misplacement':
+        event = record.get('soren_event') or {}
+        actual = event.get('actual_new_piece') or {}
+        lower = event.get('best_lower_alternative') or {}
+        merge = event.get('best_merge_alternative') or {}
+        alternative = ''
+        if lower:
+            alternative = f"安全x={lower.get('x')} top={lower.get('top_y')}"
+        elif merge:
+            alternative = f"併合x={merge.get('x')} top={merge.get('top_y')}"
+        else:
+            alternative = '代替詳細は本文JSON参照'
+        return '\n'.join([
+            *_issue_markers(record),
+            '### 再発: 安全な配置先があるのにデッドライン超過へドロップ',
+            '',
+            f"- turn: {event.get('turn')} / x={event.get('decision_x')}"
+            f" / piece type={actual.get('type')} / top={actual.get('top_y')}",
+            f"- 代替: {alternative}",
+            f"- 検証: {event.get('verification') or '不明'}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
+    if record.get('kind') == 'battle_card_at_hp1':
+        battle = record.get('battle_event') or {}
+        return '\n'.join([
+            *_issue_markers(record),
+            '### 再発: ボス戦以外の相手HP1で切り札を使用',
+            '',
+            f"- 札: {record.get('card')}",
+            f"- 章: ch{record.get('chapter')} {record.get('month')}",
+            f"- 戦闘: {battle.get('ally') or '不明'} vs {battle.get('enemy') or '不明'}"
+            f" / 城: {battle.get('castle') or '不明'}",
+            f"- 時刻: {_clock(battle.get('at'))}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     if record.get('kind') == 'card_miss':
         battle = record.get('battle_event') or {}
         return '\n'.join([
-            f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-            f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+            *_issue_markers(record),
             f"### 再発: 敵召喚獣戦/ボス戦で切り札未使用",
             '',
             f"- 札: {record.get('card')}",
@@ -3980,14 +5258,28 @@ def render_comment(record):
             f"- 時刻: {_clock(battle.get('at'))}",
             f"- incident_id: {BT}{record.get('incident_id')}{BT}",
         ])
+    fault = record.get('fault') or {}
+    if record.get('kind') in ('brain_error', 'y_jump_stall'):
+        label = ('brain例外' if record.get('kind') == 'brain_error'
+                 else '帰還Yジャンプ失敗')
+        return '\n'.join([
+            *_issue_markers(record),
+            f"### 再発: {label}",
+            '',
+            f"- 署名: {fault.get('signature') or '不明'}",
+            f"- 章: ch{record.get('chapter')} {record.get('month') or ''}",
+            f"- 再発: {fault.get('count')}回 / 初回 {_clock(fault.get('first_at'))}"
+            f" / 最終 {_clock(fault.get('last_at'))}",
+            f"- 詳細: {_md(fault.get('detail'))}",
+            f"- incident_id: {BT}{record.get('incident_id')}{BT}",
+        ])
     month = record.get('month_summary') or {}
     sorties = record.get('sorties') or {}
     labels = [SIGNAL_LABELS.get(name, name) for name in record.get('signals') or []]
     after = record.get('after') or {}
     boss = record.get('boss_phase') or {}
     lines = [
-        f"<!-- hanjuku-month-audit fingerprint={record.get('fingerprint')} -->",
-        f"<!-- hanjuku-month-audit occurrence={record.get('incident_id')} -->",
+        *_issue_markers(record),
         f"### 再発: ch{record.get('chapter')} {record.get('month')}",
         '',
         f"- 判定: **{record.get('kind')}** ({BT}{record.get('confidence')}{BT})",
@@ -4029,7 +5321,8 @@ def render_comment(record):
         lines.insert(5, f"- 築城: {chikujou.get('outcome')} / gold {chikujou.get('gold')}"
                         f" / reserve {chikujou.get('reserve')}"
                         f" / 候補 {chikujou.get('staffed_candidates')}"
-                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else ''))
+                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else '')
+                        + (' / 資金確認未完了' if chikujou.get('affordability_unverified') else ''))
     elif record.get('kind') == 'camp_abandoned':
         lines.insert(5, f"- 野営: {stay.get('months')}ヶ月 / {stay.get('general')}"
                         f" / first {stay.get('first_tick')}")
@@ -4056,6 +5349,16 @@ def render_comment(record):
 
 def _issue_title(record):
     kind = record.get('kind')
+    if kind == 'soren_deadline_misplacement':
+        event = record.get('soren_event') or {}
+        turn = event.get('turn')
+        where = f"turn{turn}" if turn is not None else 'turn不明'
+        return f"[ソ連ゲーム] 安全な配置先があるのにデッドライン超過へドロップ ({where})"[:100]
+    if kind == 'battle_card_at_hp1':
+        battle = record.get('battle_event') or {}
+        where = battle.get('enemy') or battle.get('castle') or '戦闘'
+        return (f"[半熟英雄] ボス戦以外の相手HP1で切り札を使用: {record.get('card')} "
+                f"(ch{record.get('chapter')} {where})")[:100]
     if kind == 'card_miss':
         battle = record.get('battle_event') or {}
         where = battle.get('castle') or battle.get('enemy') or '戦闘'
@@ -4065,10 +5368,20 @@ def _issue_title(record):
         event = record.get('sortie_event') or {}
         who = event.get('general') or event.get('step') or '将軍不明'
         return (f"[半熟英雄] 切り札在庫があるのに非携行で出撃: ch{record.get('chapter')} {who}")[:100]
+    if kind == 'sortie_kit_unconfirmed':
+        event = record.get('sortie_event') or {}
+        who = event.get('general') or event.get('step') or '将軍不明'
+        return (f"[半熟英雄] 切り札の携行を確認できず: ch{record.get('chapter')} {who}")[:100]
     if kind == 'battle_menu_wasted':
         menu = record.get('battle_menu') or {}
         who = menu.get('general') or menu.get('step') or '将軍不明'
         return (f"[半熟英雄] 戦闘Bメニューを無駄に開閉: ch{record.get('chapter')} {who}")[:100]
+    if kind == 'game_over':
+        over = record.get('game_over') or {}
+        runtime_id = over.get('runtime_id') or 'runtime不明'
+        chapter = record.get('chapter')
+        where = f"ch{chapter} " if type(chapter) is int else ''
+        return (f"[半熟英雄] ゲームオーバー: {where}{runtime_id}")[:100]
     if kind == 'corner_stalled':
         stall = record.get('corner_stall') or {}
         label = ('画面停滞' if stall.get('reason') == 'screen_stalled' else '入力停滞')
@@ -4118,6 +5431,14 @@ def _issue_title(record):
     if kind == 'boss_phase_no_battle':
         boss = (record.get('boss_phase') or {}).get('boss_name') or 'ボス'
         return f"[半熟英雄] ボスフェーズでボス戦闘ゼロ: ch{record.get('chapter')} {boss}"[:100]
+    if kind == 'brain_error':
+        fault = record.get('fault') or {}
+        return (f"[半熟英雄] brain例外で入力停止が再発: ch{record.get('chapter')} "
+                f"{fault.get('signature') or '不明'}")[:100]
+    if kind == 'y_jump_stall':
+        fault = record.get('fault') or {}
+        return (f"[半熟英雄] 帰還Yジャンプ失敗が再発: ch{record.get('chapter')} "
+                f"{fault.get('signature') or '不明'}")[:100]
     label = PRIMARY_LABELS.get(record.get('signature'), '原因未分類')
     return f"{TITLE_PREFIX}: ch{record.get('chapter')} {label}"[:100]
 
@@ -4191,13 +5512,97 @@ def _scan_clean(path, *, scanner=None):
     raise AuditError('secret_scan_failed')
 
 
+
+STALE_ISSUE_MARKER = 'hanjuku-month-audit fingerprint='
+STALE_RUN_RE = re.compile(r'ラン: `([^`]+)`')
+STALE_CLOSE_COMMENT = (
+    'この issue は旧ラン（{run}）の観測に基づくものです。'
+    '現行ラン（{current}）では再現していないため、陳腐化として自動クローズしました。'
+    '現行ランで同じ症状が出た場合は、新しい fingerprint で再度起票されます。'
+)
+
+
+def _issue_run(body):
+    match = STALE_RUN_RE.search(body or '')
+    return match.group(1) if match else None
+
+
+def _issue_age_hours(created_at, now):
+    if not isinstance(created_at, str):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return None
+    delta = dt.datetime.fromtimestamp(now, dt.timezone.utc) - stamp
+    return delta.total_seconds() / 3600
+
+
+def current_run_id(runtime):
+    path = Path(runtime) / 'hanjuku_decisions.jsonl'
+    try:
+        with path.open(encoding='utf-8', errors='ignore') as stream:
+            last = None
+            for line in stream:
+                if line.strip():
+                    last = line
+    except OSError:
+        return None
+    if not last:
+        return None
+    try:
+        record = json.loads(last)
+    except ValueError:
+        return None
+    decision_id = record.get('decision_id')
+    if not isinstance(decision_id, str) or ':' not in decision_id:
+        return None
+    return decision_id.split(':', 1)[0]
+
+
+def close_stale_issues(runtime, *, repo=DEFAULT_REPO, hours=24, limit=20, now=None, gh=None, dry_run=False):
+    now = time.time() if now is None else float(now)
+    current = current_run_id(runtime)
+    if not current:
+        return {'status': 'no_run'}
+    issues = _issues(repo, gh=gh, state='open', fields='number,title,body,createdAt')
+    closed = []
+    for issue in issues:
+        if len(closed) >= limit:
+            break
+        body = issue.get('body') or ''
+        if STALE_ISSUE_MARKER not in body:
+            continue
+        run = _issue_run(body)
+        if not run or run == current:
+            continue
+        age = _issue_age_hours(issue.get('createdAt'), now)
+        if age is None or age < hours:
+            continue
+        number = issue.get('number')
+        comment = STALE_CLOSE_COMMENT.format(run=run, current=current)
+        if dry_run:
+            closed.append({'number': number, 'run': run, 'dry_run': True})
+            continue
+        _run_gh(['issue', 'comment', str(number), '--repo', repo, '--body', comment], gh=gh)
+        _run_gh(['issue', 'close', str(number), '--repo', repo], gh=gh)
+        closed.append({'number': number, 'run': run})
+    return {'status': 'closed' if closed else 'nothing', 'current_run': current, 'closed': closed}
+
+
 def _gh_auth(gh=None):
     _run_gh(['auth', 'status'], gh=gh)
 
 
-def _issues(repo, *, gh=None):
-    data = _gh_json(['issue', 'list', '--repo', repo, '--state', 'open',
-                     '--limit', str(MAX_ISSUES), '--json', 'number,title,body'], gh=gh)
+def _issues(repo, *, gh=None, state='open', search=None, fields=None):
+    fields = fields or ('number,title,body' + (',state' if state != 'open' else ''))
+    args = ['issue', 'list', '--repo', repo, '--state', state,
+            '--limit', str(MAX_ISSUES), '--json', fields]
+    if search:
+        args += ['--search', search]
+    data = _gh_json(args, gh=gh)
     return data if isinstance(data, list) else []
 
 
@@ -4262,6 +5667,15 @@ def file_issue(runtime, *, repo=DEFAULT_REPO, incident_id=None, dry_run=False,
                                                      COMMENT_COOLDOWN_SECONDS)
             if age is not None and 0 <= age < cooldown:
                 return {**result, 'status': 'cooldown', 'issue': number}
+    else:
+        key = _month_key(record)
+        if key is not None:
+            candidates = _issues(repo, gh=gh, state='all', search=str(fingerprint))
+            duplicate = _find_month_key_issue(candidates, key)
+            if duplicate is not None:
+                return {**result, 'status': 'duplicate_month',
+                        'issue': duplicate.get('number'),
+                        'month': key[1], 'first_tick': key[2]}
     with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False,
                                      encoding='utf-8') as stream:
         stream.write(text)
@@ -4363,6 +5777,11 @@ def main(argv=None):
     watch_cmd.add_argument('--interval', type=float, default=60.0)
     watch_cmd.add_argument('--once', action='store_true')
     watch_cmd.add_argument('--dry-run', action='store_true')
+    stale_cmd = sub.add_parser('stale-issues')
+    stale_cmd.add_argument('--repo', default=DEFAULT_REPO)
+    stale_cmd.add_argument('--hours', type=float, default=24.0)
+    stale_cmd.add_argument('--limit', type=int, default=20)
+    stale_cmd.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     if args.command == 'watch':
         state_dir = args.state_dir
@@ -4378,6 +5797,18 @@ def main(argv=None):
         except (AuditError, GhError) as exc:
             print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
             return 2
+    if args.command == 'stale-issues':
+        if not args.runtime:
+            parser.error('--runtime or HANJUKU_RUNTIME is required')
+        try:
+            result = close_stale_issues(Path(args.runtime), repo=args.repo,
+                                       hours=args.hours, limit=args.limit,
+                                       dry_run=args.dry_run)
+        except (AuditError, GhError) as exc:
+            print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if not args.runtime:
         parser.error('--runtime or HANJUKU_RUNTIME is required')
     runtime = Path(args.runtime)

@@ -54,6 +54,98 @@ def test_adjusted_order_and_source_override_cannot_bypass_the_route():
     assert not orders._ready(order, mem)
 
 
+def test_an_adopted_attack_with_valid_endpoints_still_obeys_the_live_route_gate():
+    mem = state()
+    invalid = {'step': 'I:attack:unrouted', 'source': 'アルマムーン',
+               'target': 'ドンダム', 'general': 'ミュスカデ',
+               'cards': [], 'after': None, 'purpose': 'attack'}
+
+    # Both endpoints are registered, but this is a cliff-crossing diagonal.
+    assert invalid['source'] in chart.castles(3)
+    assert invalid['target'] in chart.castles(3)
+    assert not routes.order_allowed(mem, invalid, invalid['source'])
+    actions = deploy._hold_unrouted_sortie(mem, invalid)
+    assert actions == [deploy.pad('b'), deploy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_route_unverified'
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders'][invalid['step']] == 'failed'
+
+
+def test_a_route_valid_attack_order_is_not_cancelled_by_the_deploy_gate():
+    mem = state()
+    valid = {'step': 'I:attack:routed', 'source': 'イーピヨル',
+             'target': 'ドンダム', 'general': 'ピオーネ',
+             'cards': [], 'after': None, 'purpose': 'attack'}
+
+    assert routes.order_allowed(mem, valid, valid['source'])
+    assert deploy._hold_unrouted_sortie(mem, valid) is None
+    assert not any(r['decision'] == 'sortie_route_unverified'
+                   for r in mem['_records'])
+
+
+def test_adopted_attack_is_held_if_its_source_is_no_longer_owned():
+    mem = state()
+    order = {'step': 'I:attack:lost-source', 'source': 'イーピヨル',
+             'target': 'ドンダム', 'general': 'ピオーネ',
+             'cards': [], 'after': None, 'purpose': 'attack'}
+    assert routes.order_allowed(mem, order, order['source'])
+
+    mem['captured'].remove('イーピヨル')
+    mem['lost'].append('イーピヨル')
+    _world(mem)['garrison'].pop('イーピヨル', None)
+    assert not routes.order_allowed(mem, order, order['source'])
+    assert deploy._hold_unrouted_sortie(mem, order) == [deploy.pad('b'), deploy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_route_unverified'
+
+
+def test_adopted_attack_to_an_owned_target_is_rejected_outside_road_chapters():
+    mem = {'chapter': 1, 'captured': [], 'home_lost': False}
+    target = chart.home_castle(1)  # the home castle is owned without a captured row
+    attack = {'step': 'I:attack:owned-home', 'target': target, 'purpose': 'attack'}
+    assert not routes.order_allowed(mem, attack, target)
+
+    enemy = next(c for c in chart.castles(1) if c != target)
+    unowned_source = {'step': 'I:attack:unowned-source', 'target': enemy, 'purpose': 'attack'}
+    assert not routes.order_allowed(mem, unowned_source, '未所有の城')
+    valid_attack = {'step': 'I:attack:valid-nonroad', 'target': enemy, 'purpose': 'attack'}
+    assert routes.order_allowed(mem, valid_attack, target)
+
+    # Non-road chapters still have no route-geometry restriction for a move.
+    move = {'step': 'I:move:owned-home', 'target': target, 'purpose': 'move'}
+    assert routes.order_allowed(mem, move, '任意の出撃元')
+
+
+def test_adopted_attack_is_settled_done_if_its_target_became_owned():
+    mem = state()
+    order = {'step': 'I:attack:captured-target', 'source': 'イーピヨル',
+             'target': 'ドンダム', 'general': 'ピオーネ',
+             'cards': [], 'after': None, 'purpose': 'attack'}
+    assert routes.order_allowed(mem, order, order['source'])
+
+    mem['captured'].append('ドンダム')
+    assert not routes.order_allowed(mem, order, order['source'])
+    assert deploy._hold_unrouted_sortie(mem, order) == [deploy.pad('b'), deploy.pad('b')]
+    # docich#5623: an owned target settles 'done' — handing the stale attack
+    # back to pending re-armed it at every activation path forever.
+    assert mem['_records'][-1]['decision'] == 'sortie_settled_owned_target'
+    assert _plan_region(mem)['orders'][order['step']] == 'done'
+
+
+def test_a_plan_attack_on_an_owned_target_is_settled_done_not_pending():
+    mem = state()
+    order = {'step': 'A:plan:M1', 'source': 'イーピヨル',
+             'target': 'ドンダム', 'general': 'ピオーネ',
+             'cards': [], 'after': None, 'purpose': 'attack'}
+    mem['captured'].append('ドンダム')
+    assert not routes.order_allowed(mem, order, order['source'])
+    _plan_region(mem)['active'] = order['step']
+    actions = deploy._hold_unrouted_sortie(mem, order)
+    assert actions == [deploy.pad('b'), deploy.pad('b')]
+    assert mem['_records'][-1]['decision'] == 'sortie_settled_owned_target'
+    assert _plan_region(mem)['active'] is None
+    assert _plan_region(mem)['orders'][order['step']] == 'done'
+
+
 def test_a_relay_castle_lost_after_planning_is_not_attacked_as_an_empty_move():
     mem = state()
     order = {'step': 'I:relay:1', 'source': 'アルマムーン', 'target': 'コラダイン',

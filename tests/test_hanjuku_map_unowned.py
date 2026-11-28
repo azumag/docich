@@ -38,3 +38,19 @@ def test_guarded_holds_stay_fail_closed():
                                map_registration_hold=True) is None
     assert O.map_unowned_input("map", streak,
                                orphan_battle_menu=True) is None
+
+
+def test_unowned_recenter_invalidates_the_old_route_until_map_receipt():
+    mem = {'tick': 77, 'chapter': 3, 'nav_last': {'screen': [4, 5]},
+           'uncertain': False, 'select_focus_tick': 10}
+    O._mark_unowned_map_recenter(mem)
+    assert mem['nav_last'] is None
+    assert mem['uncertain'] is True
+    assert mem['select_focus_tick'] == 77
+    assert mem['select_centered'] == 77
+
+
+def test_unowned_recenter_without_a_chapter_does_not_keep_a_stale_receipt():
+    mem = {'tick': 78, 'select_centered': 10}
+    O._mark_unowned_map_recenter(mem)
+    assert 'select_centered' not in mem

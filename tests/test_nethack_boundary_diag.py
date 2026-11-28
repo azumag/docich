@@ -50,9 +50,13 @@ class _FakeTmux:
         # Preset answer for the docich#4693 death proof; ``None`` means the
         # proof could not be completed (the fail-closed default).
         self.survivors = None
+        self.after_loss_survivors = None
 
     def owned_processes_alive(self, _ownership):
         return self.survivors
+
+    def owned_processes_alive_after_session_loss(self, _ownership):
+        return self.after_loss_survivors
 
     def session_target_exists(self, _target):
         return self.session
@@ -164,6 +168,52 @@ class RefusedCancelIsObservedTests(unittest.TestCase):
             self.assertEqual(diag["reason"], "session_missing")
             self.assertIsNone(diag["process_target_present"])
             self.assertEqual(tmux.calls, [])
+
+    def test_missing_session_with_zero_owned_processes_is_acknowledged(self) -> None:
+        # docich#5708: the approved remediation may drop the wedged session.
+        # Once exact runtime/generation ownership tags prove zero survivors,
+        # ``session_missing`` is dead-runtime evidence rather than a hard refusal.
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            runtime_dir.mkdir()
+            save_dir = Path(tmp) / "save"
+            save_dir.mkdir()
+            tmux = _FakeTmux(SAVE_PROMPT_PANE, session=False)
+            tmux.after_loss_survivors = ()
+            adapter = _adapter(runtime_dir, tmux)
+            adapter.save_dir = save_dir
+            self.assertTrue(
+                adapter.cancel_round_boundary("req-missing", time.monotonic() + 5.0, None)
+            )
+            self.assertEqual(tmux.calls, [])
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "runtime_processes_gone")
+            self.assertEqual(diag["orphan_processes_present"], 0)
+            self.assertEqual(diag["boundary_outcome"], "ended")
+            result = json.loads(
+                (runtime_dir / "nethack_boundary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["request_id"], "req-missing")
+            self.assertEqual(result["outcome"], "ended")
+
+    def test_missing_session_with_a_survivor_or_no_proof_still_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp)
+            for survivors in ((4242,), None):
+                with self.subTest(survivors=survivors):
+                    tmux = _FakeTmux(SAVE_PROMPT_PANE, session=False)
+                    tmux.after_loss_survivors = survivors
+                    adapter = _adapter(runtime_dir, tmux)
+                    self.assertFalse(
+                        adapter.cancel_round_boundary("req", time.monotonic() + 5.0, None)
+                    )
+                    self.assertEqual(tmux.calls, [])
+                    diag = _read_diag(runtime_dir)
+                    self.assertEqual(diag["reason"], "session_missing")
+                    self.assertEqual(
+                        diag["orphan_processes_present"],
+                        None if survivors is None else len(survivors),
+                    )
 
     def test_capture_failure_is_recorded_as_capture_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -297,6 +347,38 @@ class DeadRuntimeCancelTests(unittest.TestCase):
             )
             self.assertEqual(result["request_id"], "req-dead")
             self.assertEqual(result["outcome"], "ended")
+
+    def test_unknown_death_prompt_with_zero_processes_is_acknowledged(self) -> None:
+        # docich#5708 acceptance case: the incident pane had leading text, so
+        # the strict first-line disclosure classifier returned ``unknown``.
+        # With zero runtime-owned processes the cancel must not depend on that
+        # prompt classification.
+        unknown_dead_pane = (
+            "You die...\n"
+            "Do you want your possessions identified? [ynq] (n)\n"
+            "Dlvl:1 $:0 HP:0(15) Pw:2(2) AC:4\n"
+        )
+        self.assertEqual(
+            NethackCoordinatorAdapter._classify_prompt(unknown_dead_pane), "unknown"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_dir = Path(tmp) / "runtime"
+            runtime_dir.mkdir()
+            save_dir = Path(tmp) / "save"
+            save_dir.mkdir()
+            tmux = _FakeTmux(unknown_dead_pane)
+            tmux.survivors = ()
+            adapter = _adapter(runtime_dir, tmux)
+            adapter.save_dir = save_dir
+            self.assertTrue(
+                adapter.cancel_round_boundary("req-unknown", time.monotonic() + 5.0, None)
+            )
+            self.assertEqual(tmux.calls, [])
+            diag = _read_diag(runtime_dir)
+            self.assertEqual(diag["reason"], "runtime_processes_gone")
+            self.assertEqual(diag["prompt_class"], "unknown")
+            self.assertEqual(diag["orphan_processes_present"], 0)
+            self.assertEqual(diag["boundary_outcome"], "ended")
 
     def test_a_dead_runtime_with_a_save_acknowledges_as_suspended(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

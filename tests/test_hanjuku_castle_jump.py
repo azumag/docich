@@ -78,6 +78,15 @@ def test_source_far_away_starts_the_x_menu():
     actions = M._start_castle_jump(mem, order, order['source'])
     assert actions == [M.pad('x')]
     assert mem['castle_jump']['phase'] == 'menu'
+    assert 'order_start_tick' not in mem  # #4622: pressing X is not yet a proven menu start
+
+
+def test_main_menu_observation_marks_the_order_start():
+    mem = _memory()
+    mem['castle_jump'] = {'step': 'J1', 'source': 'アルマムーン', 'phase': 'menu',
+                          'age': 0, 'total': 0, 'tick': 0, 'menu_presses': 1}
+    assert M.castle_jump_step(_main_menu(hand_y=39), mem, None) == [M.pad('down')]
+    assert mem['order_start_tick'] == {'J1': 10}
 
 
 def test_main_menu_moves_to_shiro_and_confirms_it():

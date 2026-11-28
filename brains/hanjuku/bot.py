@@ -24,7 +24,7 @@ from docich import hanjuku_resume
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku.decision_log import _record
-from docich.hanjuku import month_audit, state_budget
+from docich.hanjuku import fault_issue, month_audit, state_budget
 from docich.hanjuku.os_layer.phase import classify
 from docich.hanjuku_run import append_log
 from docich import hanjuku_run
@@ -73,6 +73,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'sortie_launch_confirmed','sortie_launch_unverified','sortie_launch_failed',
     'chart_adjust_request','chart_adjust_applied','independent_menu',
     'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+    'camp_recall_dispatch_stale','camp_recall_dispatch_resumed','camp_recall_dispatch_resent',
     'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
     'camp_escape_move_requested','camp_escape_move_dispatched','camp_escape_move_unconfirmed',
 })
@@ -202,6 +203,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'order_launched_unconfirmed','sortie_arrival_confirmed',
                               'sortie_departed_observed','sortie_cancelled_observed',
                               'camp_recall_cursor','camp_menu_unread','camp_recall_requested','camp_recall_unconfirmed',
+                              'camp_recall_dispatch_stale','camp_recall_dispatch_resumed','camp_recall_dispatch_resent',
                               'camp_recall_picker_step','camp_found','camp_enter','camp_group_screen',
                               'camp_escape_move_requested','camp_escape_move_dispatched','camp_escape_move_unconfirmed',
                               'recall_arrival_status_started','recall_in_castle_observed',
@@ -369,6 +371,18 @@ def observation_interval_ms(state, actions=None):
         # for a readable frame — so re-reading sooner is safe and cuts the
         # post-open wait the user sees.
         return 500
+    if isinstance(policy.get('castle_jump'), dict):
+        return 500
+    plan = policy.get('plan') if isinstance(policy.get('plan'), dict) else {}
+    flow = policy.get('flow') if isinstance(policy.get('flow'), dict) else {}
+    if (isinstance(plan.get('active'), str) and plan.get('active')
+            and not flow.get('departure_request')
+            and not policy.get('boss_card_hold')
+            and not policy.get('boss_stock_cancelled')
+            and (state.get('screen_kind') in {'castle_menu', 'general_list', 'card_select',
+                                              'sortie_confirm', 'map_target'}
+                 or policy.get('expect_menu') is True)):
+        return 500
     if state.get('screen_kind') == 'battle' and not battle and policy.get('battle_seen'):
         # g749 Quiche: the first complete HP17 panel still awaits the second
         # name reading. A 1500ms observation gap let HP fall to8 before B,
@@ -411,38 +425,51 @@ def _valid_request_trace(trace, identity):
 def _journal_pad_inputs(runtime, trace, button):
     """Distinct delivered ``button`` presses matching this request trace.
 
-    Reads only a bounded tail of the existing sender journal; never replays.
-    None means the journal could not be read, which is *unknown*, not
-    *unsent* — callers must not treat it as permission to resend.
+    Reads only bounded tails of the existing sender journals; never replays.
+    ``hanjuku_inputs_sent.jsonl`` mirrors every delivered input (docich#5665):
+    the dense events journal can evict the matching row inside a write burst
+    before the recall's bounded check runs, so the sparse input-only mirror is
+    scanned alongside the events tail. ``later_inputs`` reports that the
+    sender journaled other inputs at/after this request — with no matching row
+    that is the sender-side proof this press never left (unsent). None means
+    no journal could be read at all, which is *unknown*, not *unsent* —
+    callers must not treat it as permission to resend.
     """
-    try:
-        path = runtime / 'hanjuku_events.jsonl'
-        if path.is_symlink() or not path.is_file():
-            return None
-        with path.open('rb') as stream:
-            stream.seek(0, 2)
-            offset = max(0, stream.tell() - 65536)
-            stream.seek(offset)
-            tail = stream.read(65536)
-            if offset:
-                tail = tail.partition(b'\n')[2]
-        seen = set()
+    seen, later, readable = set(), False, False
+    for name in ('hanjuku_inputs_sent', 'hanjuku_events'):
+        try:
+            path = runtime / f'{name}.jsonl'
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open('rb') as stream:
+                stream.seek(0, 2)
+                offset = max(0, stream.tell() - 65536)
+                stream.seek(offset)
+                tail = stream.read(65536)
+                if offset:
+                    tail = tail.partition(b'\n')[2]
+        except OSError:
+            continue
+        readable = True
         for raw in tail.splitlines():
             try:
                 row = json.loads(raw)
             except (ValueError, UnicodeError):
                 continue
-            if (isinstance(row, dict) and row.get('event') == 'input_sent'
-                    and row.get('decision_id') == trace['decision_id']
+            if (not isinstance(row, dict) or row.get('event') != 'input_sent'
+                    or type(row.get('at')) not in (int, float)
+                    or not (trace['planned_at'] <= row['at'] < 10**12)):
+                continue
+            if (row.get('decision_id') == trace['decision_id']
                     and row.get('decision_frame_sha256') == trace['frame_sha256']
-                    and type(row.get('at')) in (int, float)
-                    and trace['planned_at'] <= row['at'] < 10**12
                     and row.get('type') == 'pad' and row.get('buttons') == [button]
                     and row.get('hold_ms') == 100):
                 seen.add(row['at'])
-    except OSError:
+            else:
+                later = True
+    if not readable:
         return None
-    return min(2, len(seen))
+    return {'count': min(2, len(seen)), 'later_inputs': later}
 
 
 def recall_input_receipts(runtime, state, meta):
@@ -453,13 +480,14 @@ def recall_input_receipts(runtime, state, meta):
     """
     recall = ((state.get('policy') or {}).get('flow') or {}).get('recall') or {}
     trace = recall.get('request_trace') or {}
-    if (recall.get('stage') != 'await_dispatch'
+    if (recall.get('stage') not in ('await_dispatch', 'await_dispatch_stale')
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
         return None
-    count = _journal_pad_inputs(runtime, trace, 'a')
-    if count is None:
+    result = _journal_pad_inputs(runtime, trace, 'a')
+    if result is None:
         return None
-    return {'request_trace': trace, 'a_inputs': count}
+    return {'request_trace': trace, 'a_inputs': result['count'],
+            'later_inputs': result['later_inputs']}
 
 
 def card_scroll_receipt(runtime, state, meta):
@@ -469,10 +497,11 @@ def card_scroll_receipt(runtime, state, meta):
     if (boundary.get('await_input') is not True
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
         return None
-    count = _journal_pad_inputs(runtime, trace, 'up')
-    if count is None:
+    result = _journal_pad_inputs(runtime, trace, 'up')
+    if result is None:
         return None
-    return {'request_trace': trace, 'up_inputs': count}
+    return {'request_trace': trace, 'up_inputs': result['count'],
+            'later_inputs': result['later_inputs']}
 
 
 def departure_input_receipt(runtime, state, meta):
@@ -486,10 +515,11 @@ def departure_input_receipt(runtime, state, meta):
     if (request.get('status') not in ('requested', 'sent')
             or not _valid_request_trace(trace, meta.get('hanjuku') or {})):
         return None
-    count = _journal_pad_inputs(runtime, trace, 'a')
-    if count is None:
+    result = _journal_pad_inputs(runtime, trace, 'a')
+    if result is None:
         return None
-    return {'request_trace': trace, 'a_inputs': count}
+    return {'request_trace': trace, 'a_inputs': result['count'],
+            'later_inputs': result['later_inputs']}
 
 
 # The agent and the corner monitor both write screenshots/latest.png. A pad A
@@ -588,6 +618,63 @@ def _where(exc):
     frames=[f for f in traceback.extract_tb(exc.__traceback__) if '/lib/python' not in f.filename][-3:]
     trail=' < '.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in reversed(frames))
     return f'{type(exc).__name__}({str(exc)[:80]!r}) at {trail}'
+
+
+def _fault_context(state, meta):
+    """Identity/chapter/month for a recurrence issue; never guesses a game."""
+    identity = (meta.get('hanjuku') if isinstance(meta, dict) else None)
+    if not isinstance(identity, dict):
+        identity = (state.get('decision_trace')
+                    if isinstance(state, dict) else None)
+    policy = (state.get('policy') if isinstance(state, dict) else None)
+    policy = policy if isinstance(policy, dict) else {}
+    chapter = policy.get('chapter') if type(policy.get('chapter')) is int else None
+    month = policy.get('month') if isinstance(policy.get('month'), str) else None
+    return identity, chapter, month
+
+
+def _note_exception_fault(scope, exc, where):
+    """Best-effort recurrence counting for a failed observation.
+
+    Runs after the decision is already lost (the process exits 2), so it must
+    never raise into the handler. A configuration error before the state load
+    is not a gameplay defect and is skipped.
+    """
+    runtime = scope.get('runtime')
+    state = scope.get('state')
+    if not isinstance(runtime, Path) or not isinstance(state, dict):
+        return
+    try:
+        identity, chapter, month = _fault_context(state, scope.get('meta'))
+        fault_issue.note_fault(
+            runtime, signature=fault_issue.exception_signature(exc, where),
+            detail=where, kind=fault_issue.KIND_BRAIN_ERROR, identity=identity,
+            chapter=chapter, month=month, bot_version=BOT_VERSION,
+            now=time.time())
+    except Exception as report_exc:
+        print(f'hanjuku-bot: fault_issue_failed {type(report_exc).__name__}',
+              file=sys.stderr)
+
+
+def _apply_camp_watch_hint(state, runtime, meta):
+    """Attach the monthly audit's bounded camp-month evidence to the policy.
+
+    ``decide`` copies only ``state['policy']`` into the policy memory, so a
+    top-level key was never visible to ``_count_boss_camps`` (live v1477).
+    """
+    policy = state.get('policy')
+    if not isinstance(policy, dict):
+        policy = state['policy'] = {}
+    try:
+        hint = month_audit.camp_watch_hint(
+            runtime, identity=(meta.get('hanjuku') if isinstance(meta, dict) else None))
+    except Exception:
+        hint = None
+    if hint:
+        policy['camp_watch_hint'] = hint
+    else:
+        policy.pop('camp_watch_hint', None)
+    return hint
 
 
 def _unsortable_path(obj, path=''):
@@ -720,6 +807,11 @@ def main():
             # under the limit.
             state=state_budget.load_state(runtime/'hanjuku_bot.json',BOT_STATE_LIMIT)
             hanjuku_resume.inherit_running_chapter(runtime,state)
+            # The monthly audit counts the same camps from a complete roster
+            # list. Hand that bounded evidence to the policy so a lost
+            # exemption counter can still expire a months-long camp; it is a
+            # read-only hint, refreshed every observation and never an input.
+            _apply_camp_watch_hint(state, runtime, meta)
             # The previous observation is the closed month's last complete
             # state when this observation crosses the month boundary.
             audit_before=month_audit.capture(state)
@@ -759,6 +851,7 @@ def main():
             # silently held every input until the run ended as input_stalled
             # (g1153 2026-11-08 19:26: the v519 carry-manifest set made the
             # bot-state write raise TypeError on every observation).
+            fault_identity, fault_chapter, fault_month = _fault_context(state, meta)
             for label, effect in (
                     ('persist_failed', lambda: persist(
                         runtime, state, records, meta, actions=actions,
@@ -769,6 +862,10 @@ def main():
                             runtime, record))),
                     ('adjust_request_failed', lambda: publish_adjust_request(runtime, records, meta)),
                     ('interim_failed', lambda: ask_interim(runtime, state, meta)),
+                    ('fault_issue_failed', lambda: fault_issue.note_decision_faults(
+                        runtime, records, identity=fault_identity,
+                        chapter=fault_chapter, month=fault_month,
+                        bot_version=BOT_VERSION, now=time.time())),
                     ('state_write_failed', lambda: atomic_write_json(
                         runtime/'hanjuku_bot.json',
                         state_budget.compact_state(state, BOT_STATE_LIMIT)))):
@@ -786,13 +883,17 @@ def main():
         code=2
         # g1133 11-05: 400+ "invalid observation" exits with no way to tell which
         # line raised, so decided actions were silently dropped for hours.
-        print(f'hanjuku-bot: invalid observation {_where(exc)}',file=sys.stderr)
+        where=_where(exc)
+        print(f'hanjuku-bot: invalid observation {where}',file=sys.stderr)
+        _note_exception_fault(locals(), exc, where)
     except Exception as exc:
         # A policy defect must not crash the agent loop or send guesses:
         # hold input for this observation and record only the error class.
         code=2
         actions=[]
-        print(f'hanjuku-bot: policy_error {_where(exc)}',file=sys.stderr)
+        where=_where(exc)
+        print(f'hanjuku-bot: policy_error {where}',file=sys.stderr)
+        _note_exception_fault(locals(), exc, where)
     print(json.dumps({'actions':actions, 'observation_interval_ms':interval_ms}),flush=True)
     return code
 

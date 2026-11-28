@@ -93,6 +93,77 @@ class SeverityTriggerTests(unittest.TestCase):
         report = self.report(corners={"corner_rotation": {"waiting_overdue": False}})
         self.assertFalse(report["triggers"]["corner_rotation_overdue"])
 
+    def test_expired_waiting_game_switch_names_trigger(self):
+        # docich#5708: a NetHack drain held ``draining`` ~3.5 h past its
+        # deadline with every other trigger quiet, so nothing alerted.
+        wedged = {
+            "present": True,
+            "readable": True,
+            "phase": "draining",
+            "deadline_expired": True,
+            "deadline_overdue_sec": 12_600,
+        }
+        report = self.report(corners={"game_switch": wedged})
+        self.assertEqual(report["status"], "warn")
+        self.assertTrue(report["triggers"]["game_switch_in_flight_expired"])
+        self.assertEqual(sum(report["triggers"].values()), 1)
+        for phase in ("quiescing", "stopping"):
+            report = self.report(corners={"game_switch": {**wedged, "phase": phase}})
+            self.assertTrue(report["triggers"]["game_switch_in_flight_expired"], phase)
+
+    def test_game_switch_trigger_ignores_settled_fresh_or_unproven_states(self):
+        wedged = {
+            "present": True,
+            "readable": True,
+            "phase": "draining",
+            "deadline_expired": True,
+            "deadline_overdue_sec": 12_600,
+        }
+        quiet = {
+            "settled ready": {**wedged, "phase": "ready"},
+            "settled idle": {**wedged, "phase": "idle"},
+            "rollback has its own budget": {**wedged, "phase": "rolling_back"},
+            "deadline still ahead": {
+                **wedged, "deadline_expired": False, "deadline_overdue_sec": None,
+            },
+            "within grace": {**wedged, "deadline_overdue_sec": 30},
+            "unparseable deadline": {
+                **wedged, "deadline_expired": None, "deadline_overdue_sec": None,
+            },
+            "bool overdue": {**wedged, "deadline_overdue_sec": True},
+            "unreadable": {"present": True, "readable": False},
+        }
+        for name, game_switch in quiet.items():
+            with self.subTest(name):
+                report = self.report(corners={"game_switch": game_switch})
+                self.assertFalse(report["triggers"]["game_switch_in_flight_expired"])
+                self.assertEqual(report["status"], "ok")
+
+    def test_game_switch_projection_ages_the_expired_deadline(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "game_switch.json").write_text(
+                json.dumps(
+                    {
+                        "phase": "draining",
+                        "active": {"game": "nethack", "generation": 1352},
+                        "deadline_at": "2026-11-26T14:48:56Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = {}
+            now = 1795717736  # 2026-11-26T18:28:56Z, 3h40m past the deadline
+            self.collector._collect_corner_files(state_dir, payload, now)
+        entry = payload["game_switch"]
+        self.assertIs(entry["deadline_expired"], True)
+        self.assertEqual(entry["deadline_overdue_sec"], 13_200)
+        report = self.report(corners={"game_switch": entry})
+        self.assertTrue(report["triggers"]["game_switch_in_flight_expired"])
+
     def test_persist_fail_names_trigger(self):
         _, _, _, i = self.quiet_inputs()
         i["persist"] = {"result": "fail"}

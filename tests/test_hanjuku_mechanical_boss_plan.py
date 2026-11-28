@@ -22,6 +22,15 @@ def _memory():
             '_records': [], 'plan': {'orders': {}}, 'world': {'garrison': {}, 'garrison_tick': {}}}
 
 
+def _ch12_memory():
+    chapter = 12
+    home = chart.home_castle(chapter)
+    normal = [c for c in chart.castles(chapter) if not chart.is_boss_castle(c) and c != home]
+    return {'chapter': chapter, 'captured': normal, 'tick': 1000,
+            '_records': [], 'plan': {'orders': {}},
+            'world': {'garrison': {}, 'garrison_tick': {}, 'sorties': {}}}
+
+
 def test_ch4_boss_plan_drops_completed_conquest_and_closed_sites():
     mem = _memory()
     mem['season_sites'] = {'四季王城(北西)': {'chapter': 4, 'state': 'closed'}}
@@ -41,6 +50,40 @@ def test_ch4_boss_plan_drops_completed_conquest_and_closed_sites():
     assert mem['plan']['orders']['4-A1'] == 'done'
     assert all(mem['plan']['orders'][s] == 'pending' for s in steps)
     assert '4-B1' not in mem['plan']['source_override']
+
+
+def test_ch12_mechanical_boss_plan_gives_boss_an_armable_purpose():
+    mem = _ch12_memory()
+    assert replan._mechanical_boss_plan(mem, 'rid') is True
+    order = next(o for o in mem['plan']['chart_plan']['orders'] if o['step'] == '12-B1')
+    assert order['purpose'] == 'attack'
+    assert order['purpose'] in ORD.LAUNCH_PRIORITY_PURPOSES
+
+
+def test_mechanical_boss_plan_preserves_existing_boss_purposes_and_probes(monkeypatch):
+    mem = _ch12_memory()
+    custom = (
+        {'step': 'X:boss-attack', 'general': '騎馬A', 'source': 'ディランダ',
+         'target': 'ボス', 'cards': (), 'after': None, 'purpose': 'attack'},
+        {'step': 'X:boss-move-probe', 'general': '騎馬A', 'source': 'ディランダ',
+         'target': 'ボス', 'cards': (), 'after': None, 'purpose': 'move',
+         'source_probe': True, 'roster_probe': True},
+        {'step': 'X:boss-read-probe', 'general': '騎馬A', 'source': 'ディランダ',
+         'target': 'ボス', 'cards': (), 'after': None,
+         'source_probe': True, 'roster_probe': True},
+    )
+    monkeypatch.setattr(replan.chart, 'orders', lambda chapter: ())
+    monkeypatch.setattr(replan.chart, 'all_orders', lambda chapter: custom)
+
+    assert replan._mechanical_boss_plan(mem, 'rid') is True
+    rows = {o['step']: o for o in mem['plan']['chart_plan']['orders']}
+    assert rows['X:boss-attack']['purpose'] == 'attack'
+    assert rows['X:boss-move-probe']['purpose'] == 'move'
+    assert rows['X:boss-move-probe']['source_probe'] is True
+    assert rows['X:boss-move-probe']['roster_probe'] is True
+    assert 'purpose' not in rows['X:boss-read-probe']
+    assert rows['X:boss-read-probe']['source_probe'] is True
+    assert rows['X:boss-read-probe']['roster_probe'] is True
 
 
 def test_ch4_mechanical_boss_plan_waits_until_every_normal_castle_is_owned():
@@ -99,6 +142,21 @@ def test_field_map_activates_only_ready_mechanical_plan_steps():
     ready_mem['plan']['active'] = None
     assert O.plan_starved_rearm(ready_mem, 'event', 'map') is False
     assert ready_mem['plan']['active'] is None
+
+
+def test_field_map_never_activates_an_attack_on_an_owned_castle():
+    # docich#5623: a stale plan step attacking an already-owned castle can
+    # never launch; activating it walked into the deploy route check every
+    # observation and the cancel handed it back to pending forever.
+    mem = _memory()
+    mem['world']['garrison'] = {'アルマムーン': ['どうし', 'ピオーネ']}
+    stale = {'step': 'A:plan:M1', 'source': 'アルマムーン', 'target': 'ミヒラギアン',
+             'general': 'ピオーネ', 'cards': [], 'after': None, 'purpose': 'attack'}
+    mem['plan']['orders'] = {stale['step']: 'pending'}
+    mem['plan']['chart_plan'] = {'source': 'mechanical', 'orders': [stale]}
+    assert O.plan_starved_rearm(mem, 'field', 'map') is False
+    assert mem['plan'].get('active') is None
+    assert not any(r['decision'] == 'plan_map_activate' for r in mem['_records'])
 
 
 def test_stale_garrison_emits_roster_probe_and_activates_on_field_map():
@@ -337,3 +395,29 @@ def test_stuck_road_roster_probe_falls_back_to_only_source_with_rejected_move(mo
     assert probe['target'] == legal[0]
     assert probe['source_probe'] is True and probe['roster_probe'] is True
     assert routes.allowed(mem, probe['source'], probe['target'])
+
+
+def test_field_map_does_not_activate_a_locked_boss_step():
+    # Chapter 1/4: the normal castles are not all owned yet, so a mechanical
+    # plan whose first step is the boss must not be activated (the launch flow
+    # would hold it as boss_target_locked on every observation).
+    mem = _memory()
+    mem['captured'] = []
+    mem['plan']['orders'] = {'4-B1': 'pending'}
+    mem['plan']['chart_plan'] = {
+        'source': 'mechanical',
+        'orders': [next(o for o in chart.orders(4) if o['step'] == '4-B1')],
+    }
+    mem['world']['garrison'] = {'アルマムーン': ['どうし', 'アルファルファ', 'ゼウス']}
+    mem['egg_types'] = {'アルファルファ': 'スーパーエッグ', 'ゼウス': 'ワンダーエッグ'}
+    assert O.plan_starved_rearm(mem, 'field', 'map') is False
+    assert mem['plan'].get('active') is None
+
+
+def test_roster_probe_to_a_boss_castle_is_not_boss_locked():
+    mem = _memory()
+    mem['captured'] = []          # normal castles not owned yet
+    order = {'step': 'probe', 'source': chart.home_castle(4),
+             'target': chart.boss_sites(4)[0], 'purpose': 'move',
+             'roster_probe': True, 'source_probe': True}
+    assert ORD._boss_target_unlocked(order, mem) is True

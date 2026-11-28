@@ -32,6 +32,9 @@ _ALLOWED_KINDS = {
     'menu': {'text', 'unknown'},
     'dest': {'world_map', 'map_target', 'map', 'text', 'unknown'},
     'await_dispatch': {'world_map', 'map_target', 'map', 'text', 'unknown'},
+    # docich#5665: a dispatch wait whose proof window ran out demotes here;
+    # the stale wait owns the same screens while it retries the proof.
+    'await_dispatch_stale': {'world_map', 'map_target', 'map', 'text', 'unknown'},
 }
 
 
@@ -59,7 +62,8 @@ def _owner_shape(mem, state):
         return (_clean_name(actor) and roster_receipts.run_identity(state.get('identity')) == identity
                 and type(state.get('chapter')) is int and state['chapter'] == chapter
                 and type(state.get('recheck_tick')) is int and 0 <= state['recheck_tick'] <= now)
-    return (stage in ('recheck_status', 'recheck_read', 'recheck_close', 'menu', 'dest', 'await_dispatch')
+    return (stage in ('recheck_status', 'recheck_read', 'recheck_close', 'menu', 'dest',
+                      'await_dispatch', 'await_dispatch_stale')
             and (_clean_name(actor) or actor is None and stage in ('recheck_status', 'recheck_read'))
             and roster_receipts.run_identity(state.get('anonymous_identity')) == identity
             and type(state.get('anonymous_chapter')) is int and state['anonymous_chapter'] == chapter)
@@ -422,6 +426,26 @@ def capture(mem, battle):
     _record(mem, 'retreat_recheck_pending', chart_step=None, general=actor,
             resulting_event='location_unconfirmed',
             reason='生存する本人の退却選択を記録し、野営化や帰還を断定せず所在を再確認する')
+
+
+def release_for_task(mem, actor):
+    """An explicit monthly task owns this actor; drop a stale recheck row.
+
+    The recheck queue exists for a retreat whose location was never confirmed.
+    A monthly recall/boss_move is a stronger, explicit instruction for the same
+    general, so its camp menu must not be converted into another bounded
+    re-observation (live g1342 2026-11-24 23:41: キッシュ's boss_move was
+    consumed with B because the queue row had already spent all three
+    attempts). Returns whether a row was removed.
+    """
+    queue = _flow(mem).get('retreat_rechecks')
+    if not isinstance(queue, dict) or actor not in queue:
+        return False
+    queue.pop(actor, None)
+    if not queue:
+        _flow(mem).pop('retreat_rechecks', None)
+        _flow(mem).pop('retreat_anonymous_budget', None)
+    return True
 
 
 def _defer(mem, state, reason, *, status='needs_observation'):
@@ -1001,7 +1025,8 @@ def _step_flow(screen, mem, frame, existing):
         # recheck therefore fails on the receipt and closes the menu, so the
         # recall keeps the 砦 route (which also tolerates a menu still fading in).
         if (state and queue and state['stage'] == 'menu' and not state.get('named_status')
-                and state.get('camp_kind') != 'dome'):
+                and state.get('camp_kind') != 'dome'
+                and not state.get('task_recall')):
             if budget['reads'] >= roster_receipts.MAX_GENERALS:
                 _defer(mem, state, '未知の匿名camp追加観測の有限予算に達したため帰還を確定しない',
                        status='anonymous_recheck_exhausted')
@@ -1020,7 +1045,8 @@ def _step_flow(screen, mem, frame, existing):
             if not _valid_status(mem, state) or state.get('general') in queue:
                 _defer(mem, state, '匿名campの現在tent・本人status・episodeが一致せず帰還Aを送らない')
                 return [pad('b')] if is_camp_menu(screen) or screen.kind in ('world_map', 'map_target') else []
-            if screen.kind == 'unknown' and state['stage'] != 'await_dispatch':
+            if (screen.kind == 'unknown'
+                    and state['stage'] not in ('await_dispatch', 'await_dispatch_stale')):
                 return _wait(mem, state, '未知前景では帰還menuを選択しない')
         actions = (world_map_step(screen, mem, frame) if screen.kind == 'world_map'
                    else existing(screen, mem, frame, observed_camps=_visible_camps(mem, frame, queue)))
@@ -1038,7 +1064,8 @@ def _step_flow(screen, mem, frame, existing):
     if not _valid_status(mem, state):
         _defer(mem, state, '同run・同UI episodeの現在tentと本人statusがなく帰還入力を確定しない')
         return [pad('b')] if is_camp_menu(screen) or screen.kind in ('world_map', 'map_target') else []
-    if screen.kind == 'unknown' and state['stage'] != 'await_dispatch':
+    if (screen.kind == 'unknown'
+            and state['stage'] not in ('await_dispatch', 'await_dispatch_stale')):
         return _wait(mem, state, '未知前景では帰還menuを選択しない')
     # #4881: 帰還は「きかん」(Rピッカー)ではなく「いどう」→ map_target →
     # 自軍城屋根またはYジャンプ(RECALL)で確定するため、dest の map_target を

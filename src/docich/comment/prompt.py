@@ -109,7 +109,7 @@ _ERROR_PATTERNS = [re.compile(p, re.I) for p in (
     r"(?:何も言えません|語ることはできません|控えておくべき|確認させてください|どうすればよい|何を.*すれば)",
     r"(?:tool_call|tool_result|assistant_response|System Context|permission denied|no such file or directory|file not found|read failed|edit failed|write failed)",
     r"(?:unexpected token|syntaxerror|referenceerror|typeerror|could not find oldstring|no changes to apply|rejected permission)",
-    r"(?:invalid bearer token|authentication_error|api error|request_id|invalid token|not logged in|please run /login|rate limit|too many requests|429\b|quota|usage limit)",
+    r"(?:invalid bearer token|authentication_error|api error|request_id|invalid token|not logged in|please run /login|rate limit|too many requests|(?:http(?:\s+status)?|status(?:\s+code)?|error(?:\s+code)?|code)\s*[:=]?\s*429\b|^429\b|quota|usage limit)",
     r"(?:ユーザーからの.*指示がなく|システム設定.*だけが提供|具体的なタスク指示が見当たりません)",
     r"(?:提供いただいた|提供していただいた).*(?:実際の記事本文|本文ではなく|テンプレート|管理情報|テキスト).*?(?:含まれていない|ありません|成立していません)",
     r"(?:検索|WebFetch|インターネット|外部.*アクセス).*(?:できません|ありません|許可|確認できません)",

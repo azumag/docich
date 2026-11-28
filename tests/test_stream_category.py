@@ -101,7 +101,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 "nethack",
                 "--games-dir",
                 str(Path(self.g.games_dir).resolve()),
-                "--activity", "NetHack", "--strategy", "AIが迷宮を探索！ 道具と知恵で生き延びられるか",
+                "--activity", "NetHack", "--strategy", "私が迷宮を探索。罠も空腹も、ソ連式の粘りで突破する",
             ],
         )
         # The script loads its own .env from the Soren root, so it must run
@@ -125,7 +125,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
+                "--activity", "暗号通貨", "--strategy", "私の売買判断を観察。仮想資金と本番資金で資本主義の綻びを検証",
             ],
         )
         self.assertNotIn("--game", call["argv"])
@@ -146,7 +146,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 "--category-name",
                 MYSTERY_CATEGORY_NAME,
                 "--activity", "AI探偵ミステリー",
-                "--strategy", "視聴者参加型の推理ゲーム！ みんなで犯人の謎を解き明かそう",
+                "--strategy", "視聴者参加の推理ゲーム。私と同志諸君で犯人を暴こう",
             ],
         )
         self.assertEqual(MYSTERY_CATEGORY_ID, "509658")
@@ -301,7 +301,7 @@ class TestRunningView(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--activity", "ペーパートレード", "--strategy", "AIの売買判断を観察！ 仮想資金で成績を検証",
+                "--activity", "暗号通貨", "--strategy", "私の売買判断を観察。仮想資金と本番資金で資本主義の綻びを検証",
             ],
         )
 
@@ -344,7 +344,7 @@ class TestRunningView(StreamCategoryTestBase):
 
     def test_unknown_safe_id_is_explicit_and_bad_ids_are_rejected(self) -> None:
         self.assertEqual(viewer_title_args("new-game"),
-                         ["--activity", "new-game", "--strategy", "AIはどこまで進めるか？ 試行錯誤のゲーム挑戦"])
+                         ["--activity", "new-game", "--strategy", "私がどこまで進めるか。試行錯誤も計画のうちだ"])
         for game in ("", "../secret", "x;id", "bad name"):
             with self.assertRaises(ValueError):
                 viewer_title_args(game)

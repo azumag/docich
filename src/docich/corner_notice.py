@@ -33,6 +33,7 @@ import json
 from pathlib import Path
 
 from .game_switch import atomic_write_json
+from .hanjuku_family import ORIGINAL, SPEEDRUN
 
 FILE = "next_corner.json"
 SCHEMA = 1
@@ -62,8 +63,9 @@ CORNER_LABELS = {
     "moon-buggy": "ムーンバギー",
     "pacman4console": "パックマン",
     "nethack": "NetHack",
-    "hanjuku-hero": "半熟英雄",
-    "paper": "ペーパートレード",
+    ORIGINAL: "半熟英雄",
+    SPEEDRUN: "半熟英雄 スピードラン",
+    "paper": "暗号通貨",
     "meriken": "ソ連ゲーム91",
     "tsuitate": "ついたて将棋",
     "weather": "天気予報",

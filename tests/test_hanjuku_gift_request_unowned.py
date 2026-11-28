@@ -33,3 +33,9 @@ def test_guarded_holds_stay_fail_closed():
                                         map_registration_hold=True) is None
     assert O.gift_request_unowned_input("gift_request", streak,
                                         orphan_battle_menu=True) is None
+
+
+def test_an_unread_regular_gift_selection_is_still_owned():
+    streak = O.GIFT_REQUEST_HOLD_MAX + 5
+    assert O.gift_request_unowned_input(
+        "gift_request", streak, gift_selection_pending=True) is None

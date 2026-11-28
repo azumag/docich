@@ -136,10 +136,10 @@ def test_prewarm_installs_the_finite_fallback_once(tmp_path):
 
     mgr._prewarm_script(state)
 
-    assert set(state["fallback_segments"]) == {str(index) for index in range(1, 9)}
+    assert set(state["fallback_segments"]) == {str(index) for index in range(1, 10)}
     assert state["fallback_segments"]["1"]
     saved = json.loads(mgr.path.read_text())
-    assert set(saved["fallback_segments"]) == {str(index) for index in range(1, 9)}
+    assert set(saved["fallback_segments"]) == {str(index) for index in range(1, 10)}
 
     # Idempotent: a second prewarm must not overwrite the installed set.
     state["fallback_segments"]["1"] = "sentinel"
@@ -176,7 +176,7 @@ def test_fast_manager_runs_fixed_narration_slots(tmp_path, monkeypatch):
     }) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert saved["end_reason"] == "eight-slots-drained"
+    assert saved["end_reason"] == "all-slots-drained"
     assert saved["reports"]["script:1"]["text"] == "最初のネタです。"
     assert all(saved["reports"][f"script:{index}"]["source"] == "fallback"
                for index in range(2, 9))
