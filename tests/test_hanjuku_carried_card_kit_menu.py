@@ -87,3 +87,14 @@ def test_confirmed_kit_with_a_usable_card_still_opens_the_menu():
     p.battle_menu_step(menu(selected=1), mem)
     assert (cur.get('card_flow') or {}).get('stage') == 'list'
     assert not decisions(mem, 'battle_card_menu_skipped_confirmed_kit')
+
+
+def test_confirmed_kit_retired_refusal_still_opens_in_losing_normal_general_battle():
+    """#5802: 敗北へ向かう通常将軍戦では、damage-gate拒否を携行確認 skip の根拠にしない。"""
+    mem, step = bound_execution(['ノリウツール'], general='ピスタチオ')
+    cur = survival_battle(mem, step, ally='ピスタチオ', enemy='ブカティーニ',
+                          ally_hp=18, enemy_hp=37)
+    cur['start_ally_hp'] = 49
+    p.battle_menu_step(menu(selected=1), mem)
+    assert (cur.get('card_flow') or {}).get('stage') == 'list'
+    assert not decisions(mem, 'battle_card_menu_skipped_confirmed_kit')

@@ -813,9 +813,13 @@ def _survival_menu(screen, mem, cur):
     if ('きりふだ' in labels and not rescue.get('cards_exhausted')
             and not rescue.get('listed_cards')):
         confirmed_kit = _confirmed_carried_kit(mem, cur)
+        confirmed_gates = ({c: _card_damage_gate(mem, cur, c, listed_cards=confirmed_kit)
+                            for c in confirmed_kit}
+                           if confirmed_kit is not None else {})
         if confirmed_kit is not None and all(
-                not _card_damage_gate(mem, cur, c, listed_cards=confirmed_kit)['allowed']
-                and not _card_damage_gate(mem, cur, c, listed_cards=confirmed_kit)['needs_live_list']
+                not confirmed_gates[c]['allowed']
+                and not confirmed_gates[c]['needs_live_list']
+                and not _card_refusal_retired(confirmed_gates[c].get('role'), cur, survival=True)
                 for c in confirmed_kit):
             rescue['cards_exhausted'] = True
             _record(mem, 'battle_card_menu_skipped_confirmed_kit', **_battle_labels(cur),
@@ -953,7 +957,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
     eligible = []
     for candidate in candidates:
         gate = _card_damage_gate(mem, cur, candidate, listed_cards=names)
-        if gate['allowed'] or _card_refusal_retired(gate.get('role'), cur):
+        if gate['allowed'] or _card_refusal_retired(gate.get('role'), cur, survival=True):
             eligible.append(candidate)
         else:
             _card_gate_refused(mem, cur, candidate, gate, listed_cards=names)
@@ -973,7 +977,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
             return [pad('b')]
         return _emit_moves(move)
     gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-    if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur):
+    if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur, survival=True):
         _card_gate_refused(mem, cur, card, gate, listed_cards=names)
         return _card_gate_close(mem, cur, names)
     flow.update(card=card, stage='announce', selection_planned=True)

@@ -22,11 +22,12 @@ def isolated_card_gate(monkeypatch):
     monkeypatch.setattr('docich.hanjuku.judgment.battle._egg_race_pressure', lambda *a: False)
 
 
-def _survival_list_memory(ally_hp):
-    mem = gate_memory('ゼンマイン', enemy='クミン', enemy_hp=60,
-                      ally_hp=ally_hp, soldiers=(0, 6))
+def _survival_list_memory(ally_hp, *, card='ゼンマイン', enemy='クミン', enemy_hp=60,
+                          ally='ココット', start_ally_hp=40, soldiers=(0, 6), side='attack'):
+    mem = gate_memory(card, enemy=enemy, enemy_hp=enemy_hp, ally=ally,
+                      ally_hp=ally_hp, soldiers=soldiers, side=side)
     cur = mem['battle']
-    cur['start_ally_hp'] = 40
+    cur['start_ally_hp'] = start_ally_hp
     cur['survival'] = {'opens': 1, 'pending_opens': 0, 'menu_ticks': 0,
                        'cards_checked': 1, 'cards_attempted': [], 'egg_attempted': False}
     cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
@@ -45,6 +46,14 @@ def test_low_hp_refusal_roles_are_retired():
         'nonlethal_egg_risk', {'ally_hp': 0, 'start_ally_hp': 40}) is False
 
 
+def test_losing_normal_general_refusal_retirement_is_survival_scoped():
+    cur = {'ally_hp': 18, 'start_ally_hp': 49, 'enemy_hp': 37,
+           'ally': 'ピスタチオ', 'enemy': 'ブカティーニ', 'side': None}
+    assert rules._card_refusal_retired('nonlethal_egg_risk', cur) is False
+    assert rules._card_refusal_retired('nonlethal_egg_risk', cur, survival=True) is True
+    assert rules._card_refusal_retired('boss_only_balmung', cur, survival=True) is False
+
+
 def test_survival_list_selects_a_retired_low_hp_refusal():
     mem = _survival_list_memory(13)
 
@@ -58,7 +67,7 @@ def test_survival_list_selects_a_retired_low_hp_refusal():
 
 
 def test_survival_list_keeps_the_refusal_above_the_low_hp_band():
-    mem = _survival_list_memory(14)
+    mem = _survival_list_memory(14, enemy_hp=10)
 
     assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
 
@@ -66,6 +75,33 @@ def test_survival_list_keeps_the_refusal_above_the_low_hp_band():
     assert cur['cards_selected'] == []
     assert cur['card_flow'] is None
     assert cur['card_damage_refusals']['ゼンマイン']
+
+
+def test_losing_normal_general_survival_list_selects_noriutool():
+    mem = _survival_list_memory(18, card='ノリウツール', enemy='ブカティーニ',
+                                enemy_hp=37, ally='ピスタチオ', start_ally_hp=49,
+                                side=None)
+
+    assert p.card_list_step(cards(['ノリウツール']), mem) == [p.pad('a')]
+
+    cur = mem['battle']
+    assert cur['cards_selected'] == ['ノリウツール']
+    assert cur['card_flow']['stage'] == 'announce'
+    assert cur['card_assessment']['reason'] == 'nonlethal_egg_risk'
+    assert 'ノリウツール' not in (cur.get('card_damage_refusals') or {})
+
+
+def test_non_losing_normal_general_survival_list_keeps_noriutool_refusal():
+    mem = _survival_list_memory(30, card='ノリウツール', enemy='ブカティーニ',
+                                enemy_hp=37, ally='ピスタチオ', start_ally_hp=49,
+                                soldiers=(6, 0), side=None)
+
+    assert p.card_list_step(cards(['ノリウツール']), mem) == [p.pad('b')]
+
+    cur = mem['battle']
+    assert cur['cards_selected'] == []
+    assert cur['card_flow'] is None
+    assert cur['card_damage_refusals']['ノリウツール']
 
 
 def test_retreat_open_preserves_an_unselected_card_flow(monkeypatch):
