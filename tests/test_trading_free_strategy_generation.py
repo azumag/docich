@@ -114,7 +114,31 @@ def _fake_argv(script: str):
     return (sys.executable, "-I", "-c", script)
 
 
-def test_request_text_dsh_uses_empty_cwd_minimal_env_and_stdin(monkeypatch, tmp_path):
+@pytest.fixture
+def dsh_home(monkeypatch, tmp_path):
+    """A valid dedicated DSH home (absolute, existing, outside the repo and host HOME)."""
+    home = tmp_path / "dsh-home"
+    home.mkdir()
+    monkeypatch.setenv(generation.DSH_HOME_ENV, str(home))
+    return home
+
+
+def _env_probe_argv():
+    return _fake_argv(
+        "import json, os, sys\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'type': 'final', 'reason': {'kind': 'completed'},\n"
+        "                  'text': json.dumps(dict(os.environ))}))\n")
+
+
+def _final_text_argv(text: str):
+    return _fake_argv(
+        "import json\n"
+        f"text = {text!r}\n"
+        "print(json.dumps({'type': 'final', 'reason': {'kind': 'completed'}, 'text': text}))\n")
+
+
+def test_request_text_dsh_uses_empty_cwd_minimal_env_and_stdin(monkeypatch, tmp_path, dsh_home):
     monkeypatch.setenv("DOCICH_STRATEGY_AI_TOKEN", "synthetic-docich-secret")
     monkeypatch.setenv("LIVE_ENABLED", "1")
     monkeypatch.setenv("BITBANK_API_KEY", "synthetic-exchange-secret")
@@ -139,11 +163,120 @@ def test_request_text_dsh_uses_empty_cwd_minimal_env_and_stdin(monkeypatch, tmp_
     assert answer["empty"] == []
     assert answer["cwd"] != str(ROOT)
     assert not Path(answer["cwd"]).exists()          # TemporaryDirectory removed afterwards
-    assert set(answer["env"]) <= set(generation.DSH_ENV_ALLOW)
+    assert set(answer["env"]) <= set(generation.DSH_ENV_ALLOW) | {"HOME"}
+    assert "HOME" in answer["env"]
     assert "DOCICH_STRATEGY_AI_TOKEN" not in answer["env"]
     assert "LIVE_ENABLED" not in answer["env"]
     assert "BITBANK_API_KEY" not in answer["env"]
     assert answer["env"].count("OPENCODE_API_KEY") == 1
+
+
+def test_request_text_dsh_isolates_home_and_derives_profile_and_npm_cache(
+        monkeypatch, tmp_path, dsh_home):
+    host_home = tmp_path / "host-home"
+    host_home.mkdir()
+    monkeypatch.setenv("HOME", str(host_home))
+    monkeypatch.delenv("DSH_HOME", raising=False)
+    monkeypatch.delenv("npm_config_cache", raising=False)
+    monkeypatch.setattr(generation, "DSH_ARGV", _env_probe_argv())
+
+    env = json.loads(generation.request_text_dsh("prompt"))
+
+    assert env["HOME"] == str(dsh_home.resolve())
+    assert str(host_home.resolve()) not in env.values()
+    assert env["DSH_HOME"] == str(dsh_home.resolve() / ".dsh")
+    assert env["npm_config_cache"] == str(dsh_home.resolve() / ".npm")
+    assert generation.DSH_HOME_ENV not in env
+
+
+def test_request_text_dsh_respects_inherited_dsh_home_and_npm_cache(
+        monkeypatch, tmp_path, dsh_home):
+    host_home = tmp_path / "host-home"
+    host_home.mkdir()
+    profile, cache = tmp_path / "custom-profile", tmp_path / "custom-npm-cache"
+    monkeypatch.setenv("HOME", str(host_home))
+    monkeypatch.setenv("DSH_HOME", str(profile))
+    monkeypatch.setenv("npm_config_cache", str(cache))
+    monkeypatch.setattr(generation, "DSH_ARGV", _env_probe_argv())
+
+    env = json.loads(generation.request_text_dsh("prompt"))
+
+    assert env["HOME"] == str(dsh_home.resolve())
+    assert env["DSH_HOME"] == str(profile)
+    assert env["npm_config_cache"] == str(cache)
+
+
+@pytest.mark.parametrize("case", ["missing", "relative", "nonexistent", "file",
+                                  "repo-internal", "host-home"])
+def test_invalid_dsh_home_fails_before_any_process(monkeypatch, tmp_path, case):
+    monkeypatch.setenv(generation.GENERATOR_ENV, "dsh")
+    monkeypatch.setenv(generation.DSH_ENABLED_ENV, "1")
+    host_home = tmp_path / "host-home"
+    host_home.mkdir()
+    monkeypatch.setenv("HOME", str(host_home))
+    if case == "missing":
+        monkeypatch.delenv(generation.DSH_HOME_ENV, raising=False)
+    elif case == "relative":
+        monkeypatch.setenv(generation.DSH_HOME_ENV, "relative/dsh-home")
+    elif case == "nonexistent":
+        monkeypatch.setenv(generation.DSH_HOME_ENV, str(tmp_path / "does-not-exist"))
+    elif case == "file":
+        target = tmp_path / "a-file"
+        target.write_text("x", encoding="utf-8")
+        monkeypatch.setenv(generation.DSH_HOME_ENV, str(target))
+    elif case == "repo-internal":
+        monkeypatch.setenv(generation.DSH_HOME_ENV, str(ROOT / "tests"))
+    else:  # host-home
+        monkeypatch.setenv(generation.DSH_HOME_ENV, str(host_home))
+    monkeypatch.setattr(generation.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn"))
+    with pytest.raises(StrategyError, match="^text_provider_not_configured$"):
+        generation.select_text_fn()
+
+
+# ---- DSH final-answer fence unwrapping (DSH path only) ----------------------------------------
+@pytest.mark.parametrize("text,expected", [
+    ('```json\n{"source": "x"}\n```', '{"source": "x"}'),
+    ('```JSON\n{"source": "x"}\n```', '{"source": "x"}'),
+    ('```\n{"source": "x"}\n```', '{"source": "x"}'),
+    ('\n```json\n{"source": "x"}\n```\n', '{"source": "x"}'),
+    ('{"source": "x"}', '{"source": "x"}'),
+    ('prose\n```json\n{"source": "x"}\n```', 'prose\n```json\n{"source": "x"}\n```'),
+    ('```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```',
+     '```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```'),
+])
+def test_request_text_dsh_unwraps_only_a_single_surrounding_fence(
+        monkeypatch, dsh_home, text, expected):
+    monkeypatch.setattr(generation, "DSH_ARGV", _final_text_argv(text))
+    assert generation.request_text_dsh("prompt") == expected
+
+
+def test_https_request_text_does_not_unwrap_a_fence(monkeypatch):
+    monkeypatch.setenv("DOCICH_STRATEGY_AI_ENDPOINT", "https://example.invalid/v1/chat")
+    monkeypatch.setenv("DOCICH_STRATEGY_AI_MODEL", "synthetic-model")
+    monkeypatch.setenv("DOCICH_STRATEGY_AI_TOKEN", "synthetic-token")
+    fenced = '```json\n{"source": "x"}\n```'
+
+    class FakeResponse:
+        status = 200
+
+        def read(self, amount=-1):
+            return encode({"choices": [{"message": {"content": fenced}, "finish_reason": "stop"}]})
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(generation.http.client, "HTTPSConnection", FakeConnection)
+    assert generation.request_text("prompt") == fenced
 
 
 @pytest.mark.parametrize("script,constant,value", [
@@ -152,7 +285,7 @@ def test_request_text_dsh_uses_empty_cwd_minimal_env_and_stdin(monkeypatch, tmp_
     ("import sys; sys.stderr.write('x' * 20000); sys.stderr.flush()\n", "DSH_STDERR_LIMIT", 1024),
     ("import sys; sys.exit(3)\n", None, None),
 ])
-def test_request_text_dsh_bounds_time_output_and_exit_code(monkeypatch, script, constant, value):
+def test_request_text_dsh_bounds_time_output_and_exit_code(monkeypatch, dsh_home, script, constant, value):
     monkeypatch.setattr(generation, "DSH_ARGV", _fake_argv(script))
     if constant:
         monkeypatch.setattr(generation, constant, value)
@@ -162,7 +295,7 @@ def test_request_text_dsh_bounds_time_output_and_exit_code(monkeypatch, script, 
     assert time.monotonic() - started < 10
 
 
-def test_request_text_dsh_bad_json_from_child_uses_the_fixed_code(monkeypatch):
+def test_request_text_dsh_bad_json_from_child_uses_the_fixed_code(monkeypatch, dsh_home):
     monkeypatch.setattr(generation, "DSH_ARGV", _fake_argv("print('not json')\n"))
     with pytest.raises(StrategyError, match="^text_provider_failed$"):
         generation.request_text_dsh("prompt")
@@ -192,7 +325,7 @@ def test_dsh_without_enable_flag_fails_before_any_process_or_state(monkeypatch, 
     assert not trading_dir.exists()
 
 
-def test_dsh_with_enable_flag_selects_the_dsh_transport(monkeypatch):
+def test_dsh_with_enable_flag_selects_the_dsh_transport(monkeypatch, dsh_home):
     monkeypatch.setenv(generation.GENERATOR_ENV, "dsh")
     monkeypatch.setenv(generation.DSH_ENABLED_ENV, "1")
     assert generation.select_text_fn() is generation.request_text_dsh

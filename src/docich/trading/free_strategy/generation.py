@@ -93,6 +93,7 @@ def request_text(prompt: str) -> str:
 # fixture).  Unknown event types are ignored and the LAST completed ``final`` event wins.
 GENERATOR_ENV = "DOCICH_FREE_STRATEGY_GENERATOR"
 DSH_ENABLED_ENV = "DOCICH_FREE_STRATEGY_DSH_ENABLED"
+DSH_HOME_ENV = "DOCICH_FREE_STRATEGY_DSH_HOME"
 
 DSH_ARGV = ("npx", "--yes", "@deepseek-ai/dsh@latest", "--profile", "headless",
             "--approval-policy", "never", "--permission-mode", "read-only", "--json", "-")
@@ -101,10 +102,12 @@ DSH_STDOUT_LIMIT = 2 * 1024 * 1024
 DSH_STDERR_LIMIT = 64 * 1024
 
 # Only these variables cross into the harness.  DOCICH_* (including the HTTPS provider
-# token), LIVE/bitbank/exchange settings and every other ambient value are dropped so a
-# generated strategy or prompt injection cannot read docich credentials.
+# token and the dedicated DSH_HOME selector), LIVE/bitbank/exchange settings and every
+# other ambient value are dropped so a generated strategy or prompt injection cannot read
+# docich credentials.  ``HOME`` is deliberately absent: the child always gets the
+# dedicated DSH home below, never the host HOME that holds ``~/.config/docich/*.env``.
 DSH_ENV_ALLOW = (
-    "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR",
+    "PATH", "LANG", "LC_ALL", "TMPDIR",
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
     "https_proxy", "http_proxy", "no_proxy",
     "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
@@ -112,8 +115,47 @@ DSH_ENV_ALLOW = (
 )
 
 
-def _dsh_environment() -> dict[str, str]:
-    return {name: os.environ[name] for name in DSH_ENV_ALLOW if name in os.environ}
+def _dsh_home() -> Path:
+    """Resolve the dedicated DSH home, or fail before any process is spawned.
+
+    It must be an absolute existing directory that is neither the repo root (or inside
+    it) nor the parent's HOME.  The directory is expected to contain only the DSH
+    profile/credentials store and the npm cache, never docich env files.
+    """
+    raw = os.environ.get(DSH_HOME_ENV, "")
+    if not raw:
+        raise StrategyError("text_provider_not_configured")
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        raise StrategyError("text_provider_not_configured")
+    try:
+        home = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise StrategyError("text_provider_not_configured") from None
+    if not home.is_dir():
+        raise StrategyError("text_provider_not_configured")
+    repo = Path(__file__).resolve().parents[4]
+    if home == repo or repo in home.parents:
+        raise StrategyError("text_provider_not_configured")
+    host_home = os.environ.get("HOME", "")
+    if host_home:
+        try:
+            same_as_host_home = home == Path(host_home).resolve()
+        except (OSError, RuntimeError):
+            same_as_host_home = False
+        if same_as_host_home:
+            raise StrategyError("text_provider_not_configured")
+    return home
+
+
+def _dsh_environment(home: Path) -> dict[str, str]:
+    env = {name: os.environ[name] for name in DSH_ENV_ALLOW if name in os.environ}
+    # HOME is always overridden.  The profile store and npm cache default below the
+    # dedicated home so none of them can fall back to the host HOME.
+    env["HOME"] = str(home)
+    env["DSH_HOME"] = os.environ.get("DSH_HOME") or str(home / ".dsh")
+    env["npm_config_cache"] = os.environ.get("npm_config_cache") or str(home / ".npm")
+    return env
 
 
 def _terminate_process_group(proc) -> None:
@@ -213,33 +255,60 @@ def _parse_dsh_output(raw: bytes) -> str:
     return answer
 
 
+_DSH_FENCE_OPEN = re.compile(r"\A```(?:json)?\Z", re.IGNORECASE)
+
+
+def _unwrap_single_fence(text: str) -> str:
+    """Return the inner text when the whole answer is exactly one code fence.
+
+    The DSH final answer is free-form and agents often wrap the JSON in ```json.  Only
+    that presentation wrapper is removed; validation is unchanged (``generate`` still
+    requires exactly the four keys and ``Artifact.create``).  Prose around a fence is
+    returned unchanged and therefore still fails to decode, as before.
+    """
+    stripped = text.strip()
+    lines = stripped.splitlines()
+    if (len(lines) < 2 or not _DSH_FENCE_OPEN.match(lines[0])
+            or lines[-1] != "```"):
+        return text
+    inner = "\n".join(lines[1:-1])
+    if "```" in inner:
+        return text
+    return inner
+
+
 def request_text_dsh(prompt: str) -> str:
     """Run one DSH turn and return only its final assistant text.
 
     Safety boundary (also a review requirement):
     * cwd is a brand-new empty TemporaryDirectory, never the repo or trading dir, and no
       ``--add-dir`` is passed; it is removed afterwards.
-    * only ``DSH_ENV_ALLOW`` crosses into the child (see above).
+    * only ``DSH_ENV_ALLOW`` crosses into the child, with ``HOME`` and the profile/cache
+      variables always pinned to the dedicated ``DOCICH_FREE_STRATEGY_DSH_HOME``.  The
+      host HOME is never passed, so DSH cannot read ``~/.config/docich/*.env``.
+    * missing or invalid ``DOCICH_FREE_STRATEGY_DSH_HOME`` fails with
+      ``text_provider_not_configured`` before any process is spawned.
     * the observed ``read-only`` permission preset is passed.  DSH is still an agent with
       tools and network: a prompt injection through ``research_brief`` and the npm
       ``@latest`` supply chain remain residual risks.  The answer is therefore only data;
       it goes through the same Artifact validation and only runs inside gVisor.  It is
       never imported or executed on the host.
     * stdout/stderr and provider errors are bounded and never logged or returned verbatim;
-      every failure is the fixed ``text_provider_failed`` code.
+      every provider failure is the fixed ``text_provider_failed`` code.
     """
+    home = _dsh_home()
     payload = prompt.encode("utf-8")
     with tempfile.TemporaryDirectory(prefix="docich-dsh-") as cwd:
         try:
             proc = subprocess.Popen(
-                DSH_ARGV, cwd=cwd, env=_dsh_environment(),
+                DSH_ARGV, cwd=cwd, env=_dsh_environment(home),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=True,
             )
         except OSError as exc:
             raise StrategyError("text_provider_failed") from exc
         raw = _collect_dsh(proc, payload)
-    return _parse_dsh_output(raw)
+    return _unwrap_single_fence(_parse_dsh_output(raw))
 
 
 def select_text_fn() -> Callable[[str], str]:
@@ -252,6 +321,7 @@ def select_text_fn() -> Callable[[str], str]:
     if os.environ.get(DSH_ENABLED_ENV) != "1":
         # Same fixed code as an unconfigured HTTPS provider; no process is spawned.
         raise StrategyError("text_provider_not_configured")
+    _dsh_home()
     return request_text_dsh
 
 

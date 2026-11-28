@@ -168,17 +168,24 @@ sudo systemctl disable --now docich-free-strategy-worker.service
 候補に渡す銘柄は `free-strategy-worker.env` の `DOCICH_FREE_STRATEGY_SYMBOLS`（JPY建て。空でなく重複なし。固定の銘柄数上限はない）。
 銘柄数を増やすとcontextが大きくなるため、gVisorへ渡す入力が `MAX_INPUT`（1MiB）を超えるcycleは `context_input_limit` でゲスト起動前に失敗する。
 
-**DSHで生成する場合（任意・既定OFF）**：`DOCICH_FREE_STRATEGY_GENERATOR=dsh` と `DOCICH_FREE_STRATEGY_DSH_ENABLED=1` の両方が揃ったときだけ、
+**DSHで生成する場合（任意・既定OFF）**：`DOCICH_FREE_STRATEGY_GENERATOR=dsh` と `DOCICH_FREE_STRATEGY_DSH_ENABLED=1` の両方が揃い、
+かつ `DOCICH_FREE_STRATEGY_DSH_HOME` が有効な専用ディレクトリを指すときだけ、
 `npx --yes @deepseek-ai/dsh@latest --profile headless --approval-policy never --permission-mode read-only --json -` を空の一時ディレクトリで実行し、標準入力へプロンプトを渡す。
-環境変数は許可リスト（`PATH`/`HOME`/`LANG`等、プロキシ、`DSH_HOME`、`npm_config_cache`、`OPENCODE_API_KEY`）だけを渡し、`DOCICH_*`・LIVE・取引所の変数は渡さない。
+`DOCICH_FREE_STRATEGY_DSH_HOME` は絶対パスの既存ディレクトリで、repo root と同一でもその内側でもなく、親processの `HOME` と同一でもないこと（mode 0700）。
+DSHのprofile/資格情報ストアとnpm cacheだけを置く専用ディレクトリとし、`~/.config/docich/*.env` を置くディレクトリを指定しない。
+未設定・不正な場合はHTTPS窓口未設定と同じ `text_provider_not_configured` で、プロセスを起動しない（生成予算も消費しない）。
+子processの `HOME` は常にこの専用ディレクトリへ上書きし、親の `HOME` は渡さない。`DSH_HOME` は継承値が無ければ `<DSH_HOME>/.dsh`、
+`npm_config_cache` は継承値が無ければ `<DSH_HOME>/.npm` を既定にする。
+その他の環境変数は許可リスト（`PATH`/`LANG`等、プロキシ、`DSH_HOME`、`npm_config_cache`、`OPENCODE_API_KEY`）だけを渡し、`DOCICH_*`・LIVE・取引所の変数は渡さない。
 `--permission-mode read-only` は `--dump-config` で確認した既存preset。DSHは道具とネットワークを持つエージェントなので、`research_brief` 経由のプロンプト注入と npm `@latest` のサプライチェーンは残存リスク。
 生成物はHTTPS経路と同じ検証だけを通し、ホストではimport/execせず、gVisor内でのみ実行する。タイムアウトは900秒、stdout 2MiB・stderr 64KiBで有界。失敗はすべて `text_provider_failed`。
-有効化フラグが無い場合はHTTPS窓口未設定と同じ `text_provider_not_configured` で、プロセスを起動しない。
+有効化の前提として、専用の `DSH_HOME` を用意し、unitの `PATH` 上で `npx`/`node` が起動できることを確認する（VMでの動作は未検証）。
 
 **DSH側の定期実行（任意）**：DSH には定期呼び出し（オートメーション）機能があるため、docich の timer を使わず DSH 側で同じプロンプトファイルを定期実行し、生成物を `docich free-strategy register` で登録する運用も選べる（その場合 docich 側のフックは無効のまま）。DSH 側オートメーション設定は本タスクでは未検証。
 
 **docich側のDSHフック（任意・既定OFF）**：`scripts/systemd/docich-free-strategy-dsh.service` と `.timer` は初期状態ではインストールもenableもしない（deployスクリプトは触らない）。
-有効化する場合だけ、`free-strategy-dsh.env.example` から `~/.config/docich/free-strategy-dsh.env` を作って `DOCICH_FREE_STRATEGY_DSH_ENABLED=1` と `OPENCODE_API_KEY` を設定し、
+有効化する場合だけ、`free-strategy-dsh.env.example` から `~/.config/docich/free-strategy-dsh.env` を作って `DOCICH_FREE_STRATEGY_DSH_ENABLED=1`、
+`DOCICH_FREE_STRATEGY_DSH_HOME`（専用ディレクトリ、0700）と `OPENCODE_API_KEY` を設定し、
 `docich-free-strategy-improve.timer` の**代わりに** `docich-free-strategy-dsh.timer` をenableする（両方を同時に動かさない。生成予算は共有）。
 
 導入（workerの導入後、VM上で）:
