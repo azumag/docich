@@ -184,6 +184,14 @@ def _boss_companion_source(order, mem):
         # フヌイヌム to 北西 (793) while アルカ (377) was closer. Pick a source
         # inside the near-distance band; strength ranks within that band and
         # a source outside it never wins on strength alone.
+        # owner 2026-11-28: 第4話でアルマムーンから各ボスへは直接行けない。
+        # ただし他に送れる城が無い場合は従来どおり home を使う（候補がゼロになると
+        # ボスへ一切出撃できなくなるため）。
+        blocked = set(routes.BOSS_BLOCKED_SOURCES.get(chapter, ()))
+        if blocked and any(c not in blocked
+                           and _order_hero_alternatives(order, mem, garrison.get(c))
+                           for c in owned):
+            owned = owned - blocked
         best = {c: names[0] for c in owned
                 if (names := _order_hero_alternatives(order, mem, garrison.get(c), relaxed=False))}
         if not best:

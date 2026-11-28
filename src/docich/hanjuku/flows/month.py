@@ -1237,7 +1237,7 @@ CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and re
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
 CHIKUJOU_AFFORDABILITY_WAIT = 3  # transient unread gold/reserve frames before a safe skip
-CHIKUJOU_SCROLL_SCHEMA = 2     # bidirectional scan state; v1 stopped at the first repeated window
+CHIKUJOU_SCROLL_SCHEMA = 3     # v3 keeps the chosen scan direction until a physical end probe
 CHIKUJOU_SCROLL_RECOVER_WAIT = 2  # inputless observations before retrying a dead scroll episode
 
 
@@ -1312,7 +1312,14 @@ def _chikujou_text_has_castle(text, name, suffix):
 
 
 def _chikujou_scan_direction(labels, rows, names, current):
-    """Choose the catalog-order direction of the nearest remaining castle row."""
+    """Choose the direction of the nearest remaining castle row.
+
+    The visible four rows are not guaranteed to be a contiguous slice of the
+    chapter catalog (docich#5803). A remaining catalog index between the
+    visible extremes therefore is not proof that the row is inside the
+    window; choose the nearer window edge for such an interior candidate
+    instead of treating it as already covered.
+    """
     order = {key: index for index, key in enumerate(labels)}
     visible = [order[key] for _, _, word in rows
                if (key := _chikujou_castle_key(word)) in order]
@@ -1323,6 +1330,7 @@ def _chikujou_scan_direction(labels, rows, names, current):
     low, high = min(visible), max(visible)
     above = [index for index in remaining if index < low]
     below = [index for index in remaining if index > high]
+    inside = [index for index in remaining if low < index < high]
     if current == 'up' and above:
         return 'up'
     if current == 'down' and below:
@@ -1335,6 +1343,13 @@ def _chikujou_scan_direction(labels, rows, names, current):
         return 'up'
     if below:
         return 'down'
+    if inside:
+        up_distance = min(index - low for index in inside)
+        down_distance = min(high - index for index in inside)
+        if up_distance < down_distance:
+            return 'up'
+        if down_distance < up_distance:
+            return 'down'
     return current if current in ('up', 'down') else 'down'
 
 
@@ -1342,13 +1357,26 @@ def _chikujou_opposite(direction):
     return 'up' if direction == 'down' else 'down'
 
 
+def _chikujou_interior_catalog_candidate(labels, rows, names):
+    """Whether a hidden candidate contradicts the contiguous-window position model."""
+    order = {key: index for index, key in enumerate(labels)}
+    visible = [order[key] for _, _, word in rows
+               if (key := _chikujou_castle_key(word)) in order]
+    remaining = [order[key] for name in names or ()
+                 if (key := _chikujou_castle_key(name)) in order]
+    if not visible:
+        return False
+    low, high = min(visible), max(visible)
+    return any(low < index < high for index in remaining)
+
+
 def _chikujou_catalog_end(labels, rows, cur, direction):
     """Whether the cursor is at the provable catalog end in this direction.
 
-    Ownership can make the practical end earlier than the first/last catalog
-    castle, so an interior repeated window is not treated as an end merely
-    because the reverse probe moved. The first/last catalog row is still a
-    hard boundary: no castle can exist beyond it in that direction.
+    Ownership can make the practical end earlier than the first/last ordinary
+    catalog castle, so an interior repeated window is not treated as an end
+    merely because the reverse probe moved. The first ordinary row and the
+    last non-boss row are still hard boundaries in their directions.
     """
     keys = list(labels or ())
     if not keys or cur not in rows or len(rows) != 4:
@@ -1356,7 +1384,11 @@ def _chikujou_catalog_end(labels, rows, cur, direction):
     if direction == 'up':
         return cur == rows[0] and _chikujou_castle_key(rows[0][2]) == keys[0]
     if direction == 'down':
-        return cur == rows[-1] and _chikujou_castle_key(rows[-1][2]) == keys[-1]
+        # The last catalog entry is the boss site (「ボス」/chapter 1's
+        # けっかい), which never appears in the monthly building list. The
+        # provable downward end is the last ordinary castle instead.
+        end_key = keys[-2] if len(keys) > 1 else keys[-1]
+        return cur == rows[-1] and _chikujou_castle_key(rows[-1][2]) == end_key
     return False
 
 
@@ -1447,7 +1479,8 @@ def _chikujou_scroll(screen, mem, sub, names=None):
         state.clear()
         state.update(schema=CHIKUJOU_SCROLL_SCHEMA, signature=None, direction=direction,
                      mode='scan', same=0, presses=presses, since_new_row=0, input_episodes=0,
-                     end_down=False, end_up=False, seen_keys=[], seen=[], wait=0)
+                     end_down=False, end_up=False, seen_keys=[], seen=[], wait=0,
+                     catalog_unreliable=False)
     seen_keys = state.get('seen_keys')
     if not isinstance(seen_keys, list):
         seen_keys = state['seen_keys'] = []
@@ -1473,8 +1506,15 @@ def _chikujou_scroll(screen, mem, sub, names=None):
         state['since_new_row'] = (0 if new_keys else int(state.get('since_new_row') or 0) + 1)
     elif state.get('signature') is not None:
         state['same'] = int(state.get('same') or 0) + 1
+    if _chikujou_interior_catalog_candidate(labels, rows, names):
+        state['catalog_unreliable'] = True
     desired = _chikujou_scan_direction(labels, rows, names, state.get('direction'))
-    if state.get('mode') == 'scan' and desired != state.get('direction'):
+    if (state.get('mode') == 'scan' and desired != state.get('direction')
+            and (int(state.get('presses') or 0) == 0 or not state.get('catalog_unreliable'))):
+        # Catalog positions are a heuristic until an interior hidden candidate
+        # contradicts them. After that, reversing on each reclassification can
+        # oscillate around the row; keep the committed direction until an input
+        # stall proves a physical end and the reverse probe runs (docich#5803).
         state['direction'] = desired
         state['same'] = 0
     metric = {'visible': [r[2] for r in rows], 'selected': cur[2],
