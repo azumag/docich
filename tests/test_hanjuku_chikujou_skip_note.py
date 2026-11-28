@@ -90,6 +90,18 @@ def test_the_same_months_launch_pending_state_is_deferral_evidence():
     assert record['observed_metric']['deferral_step'] == 'A:1:M1'
 
 
+def test_pending_launch_alone_does_not_mask_a_real_scan_hold():
+    mem = _mem({'key': '1-1', 'chikujou': 'skipped', 'chikujou_tried': ['A'],
+                'chikujou_last_hold': {'month': '1-1',
+                                       'deviation_reason': 'castle_scan_exhausted'}})
+    mem['month'] = '1-1'
+    mem['sortie_launch_pending'] = 'A:1:M1'
+    m._note_chikujou_skip_unexplained(mem, mem['shop'])
+    record = mem['_records'][-1]
+    assert record['decision'] == 'chikujou_skip_after_hold'
+    assert record['observed_metric']['held_reason'] == 'castle_scan_exhausted'
+
+
 def test_a_different_months_deferral_is_still_unexplained():
     mem = _mem({'key': '1-1', 'chikujou': 'skipped', 'chikujou_tried': ['A']})
     mem['chapter'] = 1

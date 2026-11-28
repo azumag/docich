@@ -832,7 +832,7 @@ def month_step(screen: Screen, mem):
     return [move] if move else []
 
 
-def _chikujou_sortie_deferral(mem, month):
+def _chikujou_sortie_deferral(mem, month, include_pending=False):
     """Return same-month evidence that a launch deferral ended the castle scan."""
     for row in reversed(mem.get('_records') or ()):
         if not isinstance(row, dict) or row.get('decision') != 'chikujou_deferred_sortie':
@@ -847,7 +847,7 @@ def _chikujou_sortie_deferral(mem, month):
             and list(state.get('key') or []) == [mem.get('chapter'), month]):
         return {'step': mem.get('sortie_launch_pending'), 'deferrals': state.get('count')}
     step = mem.get('sortie_launch_pending')
-    if step and mem.get('month') in (None, month):
+    if include_pending and step and mem.get('month') in (None, month):
         return {'step': step}
     return None
 
@@ -896,7 +896,7 @@ def _note_chikujou_skip_unexplained(mem, shop):
     if seen == month:
         return
     shop['chikujou_skip_logged'] = month
-    deferred = _chikujou_sortie_deferral(mem, month)
+    deferred = _chikujou_sortie_deferral(mem, month, include_pending=held_reason is None)
     if deferred:
         metric = {'gold': (shop.get('gold_start')),
                   'chikujou': shop.get('chikujou'),
