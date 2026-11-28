@@ -2003,8 +2003,13 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1609-normal-loss-no-refusal",
                  "hanjuku-chart-v1610-month-floor-dispatch",
                  "hanjuku-chart-v1608-recall-y-recovery",
+<<<<<<< HEAD
                  "hanjuku-chart-v1611-sortie-floor-priority",
                  "hanjuku-chart-v1610-general-list-recovery",
+=======
+                 "hanjuku-chart-v1610-general-list-recovery",
+                 "hanjuku-chart-v1611-sortie-floor-priority",
+>>>>>>> origin/devin/1795863133-sortie-floor-priority
                  "hanjuku-chart-v1605-retreat-card-flow",
                  "hanjuku-chart-v1606-normal-general-card-spend",
                  "hanjuku-chart-v1607-chikujou-scan-inner",
