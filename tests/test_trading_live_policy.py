@@ -146,3 +146,16 @@ def test_policy_cli_prints_the_digest_only(tmp_path):
                          capture_output=True, text=True, env=env, check=True)
     assert out.stdout.strip() == pol.experiment_digest(synthetic_spec())
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_free_policy_accepts_more_than_eight_unique_jpy_symbols():
+    symbols = [f"S{index:02d}/JPY" for index in range(12)]
+    policy = pol.build_free_policy(artifact="a" * 64, experiment="free-1",
+                                   symbols=symbols, promoted_at="1")
+    assert policy.symbols == tuple(symbols)
+    assert policy.max_opportunity_fraction == pol.FREE_MAX_FRACTION
+    with pytest.raises(pol.LivePolicyError, match="non-empty list of unique pairs"):
+        pol.build_free_policy(artifact="a" * 64, experiment="free-1", symbols=[], promoted_at="1")
+    with pytest.raises(pol.LivePolicyError, match="non-empty list of unique pairs"):
+        pol.build_free_policy(artifact="a" * 64, experiment="free-1",
+                              symbols=symbols + ["S00/JPY"], promoted_at="1")

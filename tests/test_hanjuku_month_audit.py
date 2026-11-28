@@ -811,6 +811,31 @@ def test_exhausted_battle_retry_stays_high_even_if_month_launched(runtime_dir):
     assert record['confidence_reasons'] == []
 
 
+def test_retry_exhausted_identity_is_backfilled_from_launched_order(runtime_dir):
+    step = 'A:3d1e5d29:Mc7fc03'
+    value = state(11, '15-10', 0, launches=2)
+    value['policy']['plan']['chart_plan'] = {
+        'request_id': '53c04353b1719ad7',
+        'orders': [{'step': 'A:53c04353:M9ba530', 'purpose': 'attack',
+                    'general': '別将', 'source': '別城', 'target': '別目標'}],
+    }
+    value['policy']['world']['launched_orders'] = {step: {
+        'general': 'フェデリーニ', 'source': 'タタール', 'target': 'クラボニア',
+        'purpose': 'attack'}}
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [_sortie_record('situation_held', step=step,
+                                  variant='attack_retry_exhausted')],
+                  now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    event = record['sortie_event']
+    assert event['step'] == step
+    assert event['general'] == 'フェデリーニ'
+    assert event['source'] == 'タタール'
+    assert event['target'] == 'クラボニア'
+    assert event['purpose'] == 'attack'
+    assert (event['general'], event['target']) != (None, None)
+
+
 def test_other_order_failure_stays_high_even_if_month_launched(runtime_dir):
     value = state(9, '1-1', 0, launches=2)
     audit.observe(runtime_dir, audit.capture(value), value,
@@ -1701,6 +1726,34 @@ def test_chikujou_month_end_with_unreadable_menu_row_is_medium_confidence(runtim
     assert record['confidence_reasons'] == ['chikujou_menu_unreadable']
     assert record['chikujou_menu_unreadable'] is True
     assert '築城行の読取り: 不可' in audit.render(record)
+
+def test_chikujou_month_end_after_unread_affordability_is_medium_confidence(runtime_dir):
+    """docich#5186: a terminal unknown gold/reserve read is named, not high confidence."""
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_affordability_unverified', month='1-1',
+         chapter=10, observed_metric={'skipped': True, 'waits': 4,
+                                      'gold_readable': False, 'reserve_readable': False})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'medium'
+    assert record['confidence_reasons'] == ['chikujou_affordability_unverified']
+    assert record['chikujou_affordability_unverified'] is True
+    assert '築城資金の確認: 未完了' in audit.render(record)
+    assert '資金確認未完了' in audit.render_comment(record)
+
+
+def test_chikujou_affordability_wait_without_terminal_skip_stays_high(runtime_dir):
+    value = _chikujou_state()
+    note(runtime_dir, 999, 'chikujou_affordability_wait', month='1-1',
+         chapter=10, observed_metric={'waits': 1, 'skipped': False})
+    audit.observe(runtime_dir, audit.capture(value), value,
+                  [{'decision': 'month_done', 'month': '1-1',
+                    'reason': '月一の購入を終了', 'at': 1000}], now=1000)
+    record = audit.load_incidents(runtime_dir)[0]
+    assert record['confidence'] == 'high'
+    assert record['chikujou_affordability_unverified'] is False
 
 
 def test_chikujou_cost_decline_in_prior_observation_suppresses_alarm(runtime_dir):
@@ -2704,6 +2757,35 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
                 'summon_card_exhausted_tick': 900,
                 'card_flow': {'card': 'ミックミー', 'stage': 'announce',
                               'selection_planned': True},
+                'outcome': 'loss',
+                'ally_hp_at_open': 70, 'enemy_hp_at_open': 80,
+                'ally_hp_at_end': 0, 'enemy_hp_at_end': 30,
+                'start_ally_hp': 90, 'start_enemy_hp': 90,
+                'card_opened': True, 'card_open_card': 'ノリウツール',
+                'card_open_stage': 'list', 'card_open_source': 'summon_menu',
+                'critical_survival': {
+                    'needed': True, 'needed_now': False, 'needed_observed': True,
+                    'ally_critical_hp': False, 'enemy_summon': True, 'boss': True,
+                    'behind': True, 'behind_now': False, 'card_hp_unread': False,
+                    'card_damage_rescue_needed': False, 'melee_balance': {}},
+                'carried_cards': [{
+                    'card': 'ノリウツール', 'provenance': ['sortie_record'],
+                    'state': 'leftover', 'remaining': True,
+                    'usable_in_battle': True}],
+                'damage_gate': {
+                    'card': 'ノリウツール', 'allowed': True,
+                    'role': 'single_card_lethal', 'source': 'evaluation',
+                    'ally_hp': 10, 'enemy_hp': 30, 'tick': 990, 'seq': 2},
+                'card_flow_opens': [{
+                    'card': 'ノリウツール', 'stage': 'list', 'source': 'summon_menu',
+                    'tick': 980, 'ally_hp': 70, 'enemy_hp': 80}],
+                'card_flow_history': [
+                    {'seq': 1, 'tick': 980, 'event': 'open', 'card': 'ノリウツール',
+                     'stage': 'list', 'source': 'summon_menu',
+                     'ally_hp': 70, 'enemy_hp': 80},
+                    {'seq': 2, 'tick': 990, 'event': 'gate_evaluation',
+                     'card': 'ノリウツール', 'stage': 'announce', 'allowed': True,
+                     'role': 'single_card_lethal', 'ally_hp': 10, 'enemy_hp': 30}],
             }, **IDENTITY}
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
@@ -2722,6 +2804,14 @@ def test_card_miss_decision_seals_an_auto_file_incident(runtime_dir):
     assert battle['cards_left'] == ['ノリウツール']
     assert battle['card_flow'] == {'card': 'ミックミー', 'stage': 'announce',
                                    'selection_planned': True}
+    assert battle['outcome'] == 'loss'
+    assert battle['ally_hp_at_open'] == 70 and battle['enemy_hp_at_open'] == 80
+    assert battle['ally_hp_at_end'] == 0 and battle['enemy_hp_at_end'] == 30
+    assert battle['critical_survival']['needed'] is True
+    assert battle['carried_cards'][0]['provenance'] == ['sortie_record']
+    assert battle['damage_gate']['role'] == 'single_card_lethal'
+    assert [row['event'] for row in battle['card_flow_history']] == [
+        'open', 'gate_evaluation']
     # docich#5632: the re-arm state is projected so a first exhaustion, a
     # re-arm wait and a final exhaustion are distinguishable in the issue.
     assert battle['rearms'] == 1
@@ -2765,7 +2855,11 @@ def test_card_miss_projection_bounds_malformed_diagnostics(runtime_dir):
     sealed = []
     audit.observe(runtime_dir, audit.capture(first), second, [miss], now=1001,
                   on_sealed=sealed.append)
-    battle = sealed[0]['battle_event']
+    incident = sealed[0]
+    assert incident['confidence'] == 'low'
+    assert incident['auto_file'] is False
+    assert incident['confidence_reasons'][0].startswith('missing_evidence:')
+    battle = incident['battle_event']
     assert battle['side'] is None
     assert battle['cards_left'] is None
     assert battle['scrolls'] is None and battle['cursor'] is None

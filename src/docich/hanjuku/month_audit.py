@@ -326,6 +326,78 @@ def _bounded_card_flow(value):
             'selection_planned': planned if type(planned) is bool else None}
 
 
+def _bounded_bool(value):
+    return value if type(value) is bool else None
+
+
+def _bounded_card_gate(value):
+    if not isinstance(value, dict):
+        return None
+    return {'card': _bounded_text(value.get('card'), 48),
+            'allowed': _bounded_bool(value.get('allowed')),
+            'role': _bounded_text(value.get('role'), 80),
+            'source': _bounded_text(value.get('source'), 32),
+            'ally_hp': _bounded_int(value.get('ally_hp'), 0, 10 ** 6),
+            'enemy_hp': _bounded_int(value.get('enemy_hp'), 0, 10 ** 6),
+            'tick': _bounded_int(value.get('tick'), 0, 10 ** 9),
+            'seq': _bounded_int(value.get('seq'), 0, 10 ** 6)}
+
+
+def _bounded_carried_cards(value):
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value[:8]:
+        if not isinstance(row, dict):
+            continue
+        rows.append({'card': _bounded_text(row.get('card'), 48),
+                     'provenance': _names(row.get('provenance'), limit=6),
+                     'state': _bounded_text(row.get('state'), 24),
+                     'remaining': _bounded_bool(row.get('remaining')),
+                     'usable_in_battle': _bounded_bool(row.get('usable_in_battle'))})
+    return rows
+
+
+def _bounded_flow_events(value, limit=16):
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        out = {}
+        for key in ('seq', 'tick'):
+            out[key] = _bounded_int(row.get(key), 0, 10 ** 9)
+        for key in ('event', 'card', 'stage', 'source', 'role', 'cause', 'note'):
+            out[key] = _bounded_text(row.get(key), 80)
+        for key in ('allowed', 'selection_planned', 'needs_live_list', 'lethal'):
+            out[key] = _bounded_bool(row.get(key))
+        for key in ('ally_hp', 'enemy_hp', 'enemy_soldiers'):
+            out[key] = _bounded_int(row.get(key), 0, 10 ** 6)
+        rows.append({key: value for key, value in out.items() if value is not None})
+    return rows
+
+
+def _bounded_critical_survival(value):
+    if not isinstance(value, dict):
+        return None
+    balance = value.get('melee_balance') if isinstance(value.get('melee_balance'), dict) else {}
+    return {'needed': _bounded_bool(value.get('needed')),
+            'needed_now': _bounded_bool(value.get('needed_now')),
+            'needed_observed': _bounded_bool(value.get('needed_observed')),
+            'ally_critical_hp': _bounded_bool(value.get('ally_critical_hp')),
+            'enemy_summon': _bounded_bool(value.get('enemy_summon')),
+            'boss': _bounded_bool(value.get('boss')),
+            'behind': _bounded_bool(value.get('behind')),
+            'behind_now': _bounded_bool(value.get('behind_now')),
+            'card_hp_unread': _bounded_bool(value.get('card_hp_unread')),
+            'card_damage_rescue_needed': _bounded_bool(value.get('card_damage_rescue_needed')),
+            'melee_balance': {key: _bounded_int(balance.get(key), 0, 10 ** 9)
+                              if key != 'soldiers_current' else _bounded_bool(balance.get(key))
+                              for key in ('ally_combat', 'enemy_combat', 'ally_melee_score',
+                                          'enemy_melee_score', 'soldiers_current')}}
+
+
 def _text_map(value, limit=12):
     if not isinstance(value, dict):
         return None
@@ -1269,7 +1341,9 @@ def _context_order(after, step):
     for order in orders:
         if isinstance(order, dict) and order.get('step') == step:
             return order
-    return {}
+    launched = (((context or {}).get('world') or {}).get('launched_orders') or {})
+    order = launched.get(step) if isinstance(launched, dict) else None
+    return order if isinstance(order, dict) else {}
 
 
 
@@ -1901,6 +1975,19 @@ def _chikujou_menu_unreadable(records, month):
     return False
 
 
+def _chikujou_affordability_unverified(records, month):
+    """A terminal affordability read failure is a named, non-high-confidence hold."""
+    for row in records or ():
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_affordability_unverified':
+            continue
+        if month is not None and row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric')
+        if isinstance(metric, dict) and metric.get('skipped') is True:
+            return True
+    return False
+
+
 def _chikujou_snapshot(after, before, record, records):
     from .strategy import economy
     month = record.get('month') if isinstance(record.get('month'), str) else None
@@ -2015,6 +2102,7 @@ def _chikujou_snapshot(after, before, record, records):
         'cost_declined': cost_declined,
         'reserve_skipped': reserve_skipped,
         'menu_unreadable': _chikujou_menu_unreadable(records, month),
+        'affordability_unverified': _chikujou_affordability_unverified(records, month),
         'held_for': _chikujou_hold(shop, records, month),
         'buildable': bool(affordable and staffed_candidates and not refusal_covered
                           and not cost_declined),
@@ -2103,6 +2191,8 @@ def _build_chikujou_incident(runtime, state, after, event, now):
     held_for = event.get('held_for') if event.get('outcome') == 'ended' else None
     menu_unreadable = (event.get('menu_unreadable')
                        if event.get('outcome') == 'ended' else None)
+    affordability_unverified = (event.get('affordability_unverified')
+                                if event.get('outcome') == 'ended' else None)
     # docich#5186: the flow's reserve math held the build money all month.
     # The hold is now recorded, so count it like the other explained holds
     # instead of filing a reason-less chikujou_available_at_end.
@@ -2116,6 +2206,11 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         # docich#5097: the row was unreadable, not a reason-less missed build.
         confidence = 'medium'
         confidence_reasons = ['chikujou_menu_unreadable']
+    elif affordability_unverified:
+        # docich#5186: a transient unread balance/reserve is not proof that
+        # optional construction was affordable at the decision point.
+        confidence = 'medium'
+        confidence_reasons = ['chikujou_affordability_unverified']
     elif reserve_skipped:
         confidence = 'medium'
         confidence_reasons = ['chikujou_reserve_skipped']
@@ -2142,6 +2237,7 @@ def _build_chikujou_incident(runtime, state, after, event, now):
         'confidence_reasons': confidence_reasons,
         'chikujou_held_for': held_for,
         'chikujou_menu_unreadable': menu_unreadable,
+        'chikujou_affordability_unverified': affordability_unverified,
         'chikujou_reserve_skipped': reserve_skipped,
         'chikujou_refused_skips': event.get('refused_skips'),
         'chikujou_refused_castles': list(event.get('refused_castles') or []),
@@ -3652,6 +3748,62 @@ def _after_summary(rows, close_at, window_end):
     }
 
 
+def _card_miss_confidence(card, battle):
+    """Evidence-aware confidence for a carried-card-miss incident.
+
+    `high` is reserved for rows whose self-contained battle evidence both is
+    complete enough to audit and independently shows that use was needed: the
+    fight was lost, the damage gate had allowed this card, and a measured
+    critical/behind survival state existed.  Rows that merely prove a leftover
+    card are detection-limit or design signals, not high-confidence defects.
+    """
+    missing = []
+    if battle.get('outcome') not in ('win', 'loss', 'in_progress', 'unclassified'):
+        missing.append('outcome')
+    if type(battle.get('ally_hp_at_end')) is not int or type(battle.get('enemy_hp_at_end')) is not int:
+        missing.append('end_hp')
+    if type(battle.get('card_opened')) is not bool:
+        missing.append('card_opened')
+    elif (battle.get('card_opened')
+          and (type(battle.get('ally_hp_at_open')) is not int
+               or type(battle.get('enemy_hp_at_open')) is not int)):
+        missing.append('open_hp')
+    if type(battle.get('enemy_summon_observed')) is not bool:
+        missing.append('enemy_summon_observed')
+    critical = battle.get('critical_survival') if isinstance(battle.get('critical_survival'), dict) else {}
+    if any(type(critical.get(key)) is not bool
+           for key in ('needed', 'enemy_summon', 'boss', 'behind')):
+        missing.append('critical_survival')
+    carried = battle.get('carried_cards') if isinstance(battle.get('carried_cards'), list) else []
+    carried_row = next((row for row in carried
+                        if isinstance(row, dict) and row.get('card') == card), None)
+    if not (carried_row and carried_row.get('provenance')):
+        missing.append('carried_card_provenance')
+    elif not any(source not in ('planned_cards', 'order_plan')
+                 for source in carried_row.get('provenance')):
+        missing.append('carried_card_actual_provenance')
+    gate = battle.get('damage_gate') if isinstance(battle.get('damage_gate'), dict) else {}
+    if type(gate.get('allowed')) is not bool or not gate.get('role'):
+        missing.append('damage_gate')
+    history = battle.get('card_flow_history')
+    if not isinstance(history, list) or (battle.get('card_opened') is True and not history):
+        missing.append('card_flow_history')
+    if missing:
+        return 'low', ['missing_evidence:' + ','.join(missing)]
+
+    outcome = battle.get('outcome')
+    allowed = gate.get('allowed') is True
+    need = bool(critical.get('needed_observed') or critical.get('needed')
+                or critical.get('behind'))
+    if outcome != 'loss':
+        return 'medium', ['evidence_complete_but_outcome_not_loss']
+    if not allowed:
+        return 'medium', ['evidence_complete_but_damage_gate_not_allowed']
+    if not need:
+        return 'medium', ['evidence_complete_but_survival_need_unproven']
+    return 'high', ['loss_with_allowed_card_and_survival_need']
+
+
 def _track_card_miss(runtime, state, after, records, now, on_sealed):
     """Seal a card_miss incident when a carried card was left unused.
 
@@ -3703,6 +3855,23 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
             'summon_card_exhausted_tick': _bounded_int(
                 metric.get('summon_card_exhausted_tick'), 0, 10 ** 9),
             'card_flow': _bounded_card_flow(metric.get('card_flow')),
+            'outcome': _bounded_text(metric.get('outcome'), 24),
+            'ally_hp_at_open': _bounded_int(metric.get('ally_hp_at_open'), 0, 10 ** 6),
+            'enemy_hp_at_open': _bounded_int(metric.get('enemy_hp_at_open'), 0, 10 ** 6),
+            'ally_hp_at_end': _bounded_int(metric.get('ally_hp_at_end'), 0, 10 ** 6),
+            'enemy_hp_at_end': _bounded_int(metric.get('enemy_hp_at_end'), 0, 10 ** 6),
+            'start_ally_hp': _bounded_int(metric.get('start_ally_hp'), 0, 10 ** 6),
+            'start_enemy_hp': _bounded_int(metric.get('start_enemy_hp'), 0, 10 ** 6),
+            'card_opened': _bounded_bool(metric.get('card_opened')),
+            'any_card_opened': _bounded_bool(metric.get('any_card_opened')),
+            'card_open_card': _bounded_text(metric.get('card_open_card'), 48),
+            'card_open_stage': _bounded_text(metric.get('card_open_stage'), 24),
+            'card_open_source': _bounded_text(metric.get('card_open_source'), 48),
+            'critical_survival': _bounded_critical_survival(metric.get('critical_survival')),
+            'carried_cards': _bounded_carried_cards(metric.get('carried_cards')),
+            'damage_gate': _bounded_card_gate(metric.get('damage_gate')),
+            'card_flow_opens': _bounded_flow_events(metric.get('card_flow_opens'), limit=8),
+            'card_flow_history': _bounded_flow_events(metric.get('card_flow_history')),
             'cursor': _bounded_int(metric.get('cursor'), 0, 224),
             'empty_egg': metric.get('empty_egg') if type(metric.get('empty_egg')) is bool else None,
             'summon_egg_unavailable': (metric.get('summon_egg_unavailable')
@@ -3712,11 +3881,12 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
                                       if type(metric.get('enemy_summon_observed')) is bool
                                       else None),
         }
+        confidence, confidence_reasons = _card_miss_confidence(card, battle)
         record = {
             'schema': SCHEMA,
             'kind': 'card_miss',
-            'confidence': 'high',
-            'confidence_reasons': ['carried_card_unused_in_boss_or_summon_battle'],
+            'confidence': confidence,
+            'confidence_reasons': confidence_reasons,
             'chapter': mem.get('chapter'),
             'month': mem.get('month'),
             'card': card,
@@ -3734,7 +3904,7 @@ def _track_card_miss(runtime, state, after, records, now, on_sealed):
         record['signature'] = 'card_miss'
         record['fingerprint'] = _fingerprint(mem.get('chapter'), 'card_miss',
                                              [card, str(row.get('castle') or '')])
-        record['auto_file'] = True
+        record['auto_file'] = confidence == 'high'
         _append_incident(runtime, record, on_sealed)
         sealed = True
     return sealed
@@ -4553,6 +4723,19 @@ def _render_card_miss(record):
     battle = record.get('battle_event') or {}
     evidence = record.get('evidence') or {}
     identity = evidence.get('identity') or {}
+    critical = battle.get('critical_survival') if isinstance(battle.get('critical_survival'), dict) else {}
+    gate = battle.get('damage_gate') if isinstance(battle.get('damage_gate'), dict) else {}
+    carried = next((row for row in (battle.get('carried_cards') or [])
+                    if isinstance(row, dict) and row.get('card') == record.get('card')), {})
+    provenance = ','.join(carried.get('provenance') or []) or '不明'
+    events = []
+    for row in (battle.get('card_flow_history') or [])[-6:]:
+        if not isinstance(row, dict):
+            continue
+        detail = row.get('role') or row.get('cause') or row.get('source') or ''
+        events.append(f"{row.get('seq')}:{row.get('event')}:{row.get('card') or '-'}"
+                      f"{'/' + detail if detail else ''}")
+    flow_history = ' / '.join(events) or '未記録'
     return '\n'.join([
         *_issue_markers(record),
         f"## {_issue_title(record)}",
@@ -4571,6 +4754,21 @@ def _render_card_miss(record):
         f" / summon_egg_unavailable={_card_miss_bool(battle.get('summon_egg_unavailable'))}"
         f" / enemy_summon_observed={_card_miss_bool(battle.get('enemy_summon_observed'))}",
         f"- card_flow: {_card_miss_flow(battle.get('card_flow'))}",
+        f"- 戦闘結果: {battle.get('outcome') or '不明'}"
+        f" / 開封HP: 自 {battle.get('ally_hp_at_open') if type(battle.get('ally_hp_at_open')) is int else '不明'}"
+        f" vs 敵 {battle.get('enemy_hp_at_open') if type(battle.get('enemy_hp_at_open')) is int else '不明'}"
+        f" / 終了HP: 自 {battle.get('ally_hp_at_end') if type(battle.get('ally_hp_at_end')) is int else '不明'}"
+        f" vs 敵 {battle.get('enemy_hp_at_end') if type(battle.get('enemy_hp_at_end')) is int else '不明'}",
+        f"- 瀕死/劣勢: needed={_card_miss_bool(critical.get('needed'))}"
+        f" / observed={_card_miss_bool(critical.get('needed_observed'))}"
+        f" / behind={_card_miss_bool(critical.get('behind'))}"
+        f" / enemy_summon={_card_miss_bool(critical.get('enemy_summon'))}"
+        f" / boss={_card_miss_bool(critical.get('boss'))}",
+        f"- damage gate: allowed={_card_miss_bool(gate.get('allowed'))}"
+        f" / role={BT}{gate.get('role') or '不明'}{BT}"
+        f" / source={BT}{gate.get('source') or '不明'}{BT}",
+        f"- 携行 provenance: {BT}{provenance}{BT} / state={BT}{carried.get('state') or '不明'}{BT}",
+        f"- card_flow履歴: {BT}{flow_history}{BT}",
         f"- 切り札行揭示: rearms={battle.get('rearms') if type(battle.get('rearms')) is int else '不明'}"
         f" / scroll_out={_card_miss_bool(battle.get('summon_card_scroll_out'))}"
         f" / exhausted_tick={battle.get('summon_card_exhausted_tick') if type(battle.get('summon_card_exhausted_tick')) is int else '不明'}",
@@ -4807,6 +5005,9 @@ def render(record):
                if chikujou.get('held_for') else []),
             *(['- 築城行の読取り: 不可（有限回の再観測後も未読・docich#5079/#5097）']
                if chikujou.get('menu_unreadable') else []),
+            *(['- 築城資金の確認: 未完了（所持金または必要予約を有限回待っても未読・docich#5186）']
+               if chikujou.get('affordability_unverified') else []),
+            '',
         ]
         terminal = chikujou.get('terminal_diagnostic')
         if terminal:
@@ -5122,7 +5323,8 @@ def render_comment(record):
         lines.insert(5, f"- 築城: {chikujou.get('outcome')} / gold {chikujou.get('gold')}"
                         f" / reserve {chikujou.get('reserve')}"
                         f" / 候補 {chikujou.get('staffed_candidates')}"
-                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else ''))
+                        + (f" / 保留 {chikujou.get('held_for')}" if chikujou.get('held_for') else '')
+                        + (' / 資金確認未完了' if chikujou.get('affordability_unverified') else ''))
     elif record.get('kind') == 'camp_abandoned':
         lines.insert(5, f"- 野営: {stay.get('months')}ヶ月 / {stay.get('general')}"
                         f" / first {stay.get('first_tick')}")
@@ -5312,12 +5514,92 @@ def _scan_clean(path, *, scanner=None):
     raise AuditError('secret_scan_failed')
 
 
+
+STALE_ISSUE_MARKER = 'hanjuku-month-audit fingerprint='
+STALE_RUN_RE = re.compile(r'ラン: `([^`]+)`')
+STALE_CLOSE_COMMENT = (
+    'この issue は旧ラン（{run}）の観測に基づくものです。'
+    '現行ラン（{current}）では再現していないため、陳腐化として自動クローズしました。'
+    '現行ランで同じ症状が出た場合は、新しい fingerprint で再度起票されます。'
+)
+
+
+def _issue_run(body):
+    match = STALE_RUN_RE.search(body or '')
+    return match.group(1) if match else None
+
+
+def _issue_age_hours(created_at, now):
+    if not isinstance(created_at, str):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return None
+    delta = dt.datetime.fromtimestamp(now, dt.timezone.utc) - stamp
+    return delta.total_seconds() / 3600
+
+
+def current_run_id(runtime):
+    path = Path(runtime) / 'hanjuku_decisions.jsonl'
+    try:
+        with path.open(encoding='utf-8', errors='ignore') as stream:
+            last = None
+            for line in stream:
+                if line.strip():
+                    last = line
+    except OSError:
+        return None
+    if not last:
+        return None
+    try:
+        record = json.loads(last)
+    except ValueError:
+        return None
+    decision_id = record.get('decision_id')
+    if not isinstance(decision_id, str) or ':' not in decision_id:
+        return None
+    return decision_id.split(':', 1)[0]
+
+
+def close_stale_issues(runtime, *, repo=DEFAULT_REPO, hours=24, limit=20, now=None, gh=None, dry_run=False):
+    now = time.time() if now is None else float(now)
+    current = current_run_id(runtime)
+    if not current:
+        return {'status': 'no_run'}
+    issues = _issues(repo, gh=gh, state='open', fields='number,title,body,createdAt')
+    closed = []
+    for issue in issues:
+        if len(closed) >= limit:
+            break
+        body = issue.get('body') or ''
+        if STALE_ISSUE_MARKER not in body:
+            continue
+        run = _issue_run(body)
+        if not run or run == current:
+            continue
+        age = _issue_age_hours(issue.get('createdAt'), now)
+        if age is None or age < hours:
+            continue
+        number = issue.get('number')
+        comment = STALE_CLOSE_COMMENT.format(run=run, current=current)
+        if dry_run:
+            closed.append({'number': number, 'run': run, 'dry_run': True})
+            continue
+        _run_gh(['issue', 'comment', str(number), '--repo', repo, '--body', comment], gh=gh)
+        _run_gh(['issue', 'close', str(number), '--repo', repo], gh=gh)
+        closed.append({'number': number, 'run': run})
+    return {'status': 'closed' if closed else 'nothing', 'current_run': current, 'closed': closed}
+
+
 def _gh_auth(gh=None):
     _run_gh(['auth', 'status'], gh=gh)
 
 
-def _issues(repo, *, gh=None, state='open', search=None):
-    fields = 'number,title,body' + (',state' if state != 'open' else '')
+def _issues(repo, *, gh=None, state='open', search=None, fields=None):
+    fields = fields or ('number,title,body' + (',state' if state != 'open' else ''))
     args = ['issue', 'list', '--repo', repo, '--state', state,
             '--limit', str(MAX_ISSUES), '--json', fields]
     if search:
@@ -5497,6 +5779,11 @@ def main(argv=None):
     watch_cmd.add_argument('--interval', type=float, default=60.0)
     watch_cmd.add_argument('--once', action='store_true')
     watch_cmd.add_argument('--dry-run', action='store_true')
+    stale_cmd = sub.add_parser('stale-issues')
+    stale_cmd.add_argument('--repo', default=DEFAULT_REPO)
+    stale_cmd.add_argument('--hours', type=float, default=24.0)
+    stale_cmd.add_argument('--limit', type=int, default=20)
+    stale_cmd.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     if args.command == 'watch':
         state_dir = args.state_dir
@@ -5512,6 +5799,18 @@ def main(argv=None):
         except (AuditError, GhError) as exc:
             print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
             return 2
+    if args.command == 'stale-issues':
+        if not args.runtime:
+            parser.error('--runtime or HANJUKU_RUNTIME is required')
+        try:
+            result = close_stale_issues(Path(args.runtime), repo=args.repo,
+                                       hours=args.hours, limit=args.limit,
+                                       dry_run=args.dry_run)
+        except (AuditError, GhError) as exc:
+            print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     if not args.runtime:
         parser.error('--runtime or HANJUKU_RUNTIME is required')
     runtime = Path(args.runtime)

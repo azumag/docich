@@ -288,6 +288,7 @@ def test_a_boss_launch_is_kept_when_the_marker_survey_and_roster_wait_expire(mon
     # settles the phantom; popping it left a phantom en_route forever.
     mem = memory(); confirm(mem); commit(mem)
     _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
+    _sorties(mem)['1-A3']['target'] = 'ボス'
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [])
     mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
@@ -312,6 +313,7 @@ def test_a_kept_boss_launch_settles_on_still_listed_roster(monkeypatch):
     # must roll the kept launch back within the same month.
     mem = memory(); confirm(mem); commit(mem)
     _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
+    _sorties(mem)['1-A3']['target'] = 'ボス'
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [])
     mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS
@@ -329,6 +331,7 @@ def test_a_kept_boss_launch_confirms_on_gone_roster(monkeypatch):
     # and the launch is marked confirmed for the observed-end path.
     mem = memory(); confirm(mem); commit(mem)
     _flow(mem)['launch_probe']['1-A3']['target'] = 'ボス'
+    _sorties(mem)['1-A3']['target'] = 'ボス'
     for _ in range(p.LAUNCH_PROBE_READS):
         survey(monkeypatch, mem, [])
     mem['tick'] += p.LAUNCH_PROBE_ROSTER_TICKS

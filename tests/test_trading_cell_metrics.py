@@ -27,6 +27,10 @@ V1_ZERO = {"model": "paper-cost-v1", "fee_rate": "0", "fee_source": "market"}
 V1_FEE = {"model": "paper-cost-v1", "fee_rate": "0.0012", "fee_source": "fallback"}
 V2_FEE = {"model": "paper-cost-v2", "fee_rate": "0.0012", "fee_source": "market"}
 V2_ZERO = {"model": "paper-cost-v2", "fee_rate": "0", "fee_source": "market"}
+V3_FEE = {"model": "paper-cost-v3", "fee_rate": "0.0012", "fee_source": "market",
+          "price_source": "book_vwap"}
+V3_ZERO = {"model": "paper-cost-v3", "fee_rate": "0", "fee_source": "market",
+           "price_source": "book_vwap"}
 
 
 class Ledger:
@@ -240,6 +244,22 @@ def test_v2_zero_fee_is_deliberate_and_not_corrected(ledger):
     assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
 
 
+def test_v3_buy_is_fee_bearing_and_not_corrected(ledger):
+    # paper-cost-v3 already includes the taker fee in the book-VWAP fill price.
+    c = _round_trip(ledger, V3_FEE, buy_price=D("1001.2"))
+    assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
+    assert D(c["realized_pnl_jpy"]) == D("988")
+    assert ledger.result()["buy_fee_correction"]["corrected"] == 0
+    assert ledger.result()["buy_fee_correction"]["already_fee_bearing"] == 1
+
+
+def test_v3_zero_fee_market_is_not_corrected(ledger):
+    # A zero market fee is a v3 result, not the v1 free-buy bug.
+    c = _round_trip(ledger, V3_ZERO)
+    assert c["corrected_realized_pnl_jpy"] == c["realized_pnl_jpy"]
+    assert ledger.result()["buy_fee_correction"]["corrected"] == 0
+
+
 def test_buy_without_cost_context_is_pre_1905_fee_bearing_and_not_corrected(ledger):
     # pre-#1905 broker charged 0.0012 on buys; the recorded price already includes it.
     c = _round_trip(ledger, None, buy_price=D("1001.2"))
@@ -296,6 +316,76 @@ def test_return_blocks_carry_corrected_mean(ledger):
     block = cell(ledger.result(), "A")["return_blocks"][0]
     assert D(block["mean_return"]) == D("0.1")
     assert D(block["mean_return_corrected"]) == D("988") / D("10012")
+
+
+# --- v3-only return blocks (rule v4 evidence) ---------------------------------
+
+def test_v3_sell_of_v3_inventory_counts(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 1, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+    assert D(a["return_blocks_v3"][0]["mean_return"]) == D("0.1")
+    # v3 buys already carry the fee in the recorded price, so no correction is
+    # added on top (corrected_mean == recorded_mean).
+    assert D(a["return_blocks_v3"][0]["mean_return_corrected"]) == D("0.1")
+
+
+def test_v3_block_excludes_a_pool_that_contains_a_v2_buy(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=V2_FEE)
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 1, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 2, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    # The normal block still counts the sell, but v4 evidence must not.
+    assert sum(b["count"] for b in a["return_blocks"]) == 1
+    assert a["return_blocks_v3"] == []
+
+
+def test_v3_blocks_resume_after_the_pool_becomes_flat(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=V2_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 1, cost=V3_FEE)   # v2 inventory
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 2, cost=V3_FEE)        # pool is flat again
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 3, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 2
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+    assert D(a["return_blocks_v3"][0]["mean_return"]) == D("0.1")
+
+
+def test_a_buy_without_cost_context_breaks_v3_eligibility(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=None)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 1, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 1
+    assert a["return_blocks_v3"] == []
+
+
+def test_v2_dust_at_or_below_one_jpy_does_not_block_later_v3_round_trips(ledger):
+    ledger.fill("lab:A:e1", "buy", D("0.001"), 1000, T0, cost=V2_FEE)   # exactly 1 JPY
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 1, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 2, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+    assert D(a["return_blocks_v3"][0]["mean_return"]) == D("0.1")
+
+
+def test_v2_inventory_above_one_jpy_excludes_v3_sells_until_it_is_sold_down(ledger):
+    ledger.fill("lab:A:e1", "buy", D("0.1"), 1000, T0, cost=V2_FEE)   # 100 JPY
+    ledger.fill("lab:A:e1", "buy", 1, 1000, T0 + 1, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 1, 1100, T0 + 2, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", D("0.09"), 1100, T0 + 3, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 2
+    assert a["return_blocks_v3"] == []
+    # Proportional consumption has shrunk the v2 remainder to under 1 JPY.
+    ledger.fill("lab-exit:A:x", "sell", D("0.01"), 1100, T0 + 4, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 3
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
 
 
 # --- failure policy -----------------------------------------------------------

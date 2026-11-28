@@ -12,11 +12,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 from docich.trading.depth import DepthBook, DepthLevel  # noqa: E402
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.notifications import _render_event_with_local_facts, _safe_status  # noqa: E402
-from docich.trading.models import MarketInfo  # noqa: E402
+from docich.trading.models import AllocationDecision, MarketInfo  # noqa: E402
+from docich.trading.paper import PaperBroker  # noqa: E402
 from docich.trading.settlement import CircuitBreakStatus  # noqa: E402
 from docich.trading.strategies import StrategyPolicy  # noqa: E402
 from docich.trading.strategy_store import save_strategy_policy  # noqa: E402
@@ -26,7 +28,7 @@ D = Decimal
 NOW = 1_800_000_000.0
 
 
-def _frame(symbol: str, *, momentum: bool = False) -> MarketFrame:
+def _frame(symbol: str, *, momentum: bool = False, volume: str = "1") -> MarketFrame:
     timestamps = tuple(NOW - (23 - i) * 300 for i in range(24))
     closes = [D("100") for _ in range(24)]
     if momentum:
@@ -36,7 +38,7 @@ def _frame(symbol: str, *, momentum: bool = False) -> MarketFrame:
         timeframe_seconds=300,
         timestamps=timestamps,
         closes=tuple(closes),
-        volumes=tuple(D("1") for _ in range(24)),
+        volumes=tuple(D(volume) for _ in range(24)),
     )
 
 
@@ -80,6 +82,36 @@ class FakeStrategyGateway:
         if self.one_bad_symbol and symbol == "BAD/JPY":
             raise RuntimeError("public history unavailable")
         return {symbol: self.frames[symbol]}
+
+    def fetch_top_books(self, symbols, *, now, limit=20):
+        self.last_book_args = (tuple(symbols), now, limit)
+        books = {}
+        for symbol in symbols:
+            frame = self.frames.get(symbol)
+            if frame is None:
+                continue
+            price = frame.last_price
+            books[symbol] = TopOfBook(
+                symbol, price * D("0.999"), price * D("1.001"), now,
+                bid_amount=D("1000000"), ask_amount=D("1000000"),
+            )
+        return books
+
+    def fetch_depth_books(self, symbols, *, now, limit=20):
+        self.last_book_args = (tuple(symbols), now, limit)
+        books = {}
+        for symbol in symbols:
+            frame = self.frames.get(symbol)
+            if frame is None:
+                continue
+            price = frame.last_price
+            books[symbol] = DepthBook(
+                symbol,
+                (_level(price * D("0.999"), 1000000),),
+                (_level(price * D("1.001"), 1000000),),
+                now,
+            )
+        return books
 
 
 def _global(root: Path, *, capital: int = 10000):
@@ -144,6 +176,344 @@ class FlakyStrategyGateway(FakeStrategyGateway):
             self.fail_once.discard(symbol)
             raise RuntimeError("transient public history failure")
         return {symbol: self.frames.get(symbol, _frame(symbol))}
+
+
+class OneSymbolGateway(FakeStrategyGateway):
+    """One BTC/JPY symbol with a chosen frame and book (None = no book)."""
+
+    def __init__(self, *, book, frame: MarketFrame | None = None):
+        super().__init__()
+        self.markets = {"BTC/JPY": _market("BTC/JPY")}
+        self.frames = {"BTC/JPY": frame or _frame("BTC/JPY", momentum=True)}
+        self.book = book
+
+    def fetch_market_frames(self, symbols, *, timeframe, limit, now):
+        self.last_frame_args = (timeframe, limit, now)
+        return {symbol: self.frames[symbol] for symbol in symbols if symbol in self.frames}
+
+    def fetch_top_books(self, symbols, *, now, limit=20):
+        self.last_book_args = (tuple(symbols), now, limit)
+        if self.book is None:
+            return {}
+        return {symbol: self.book for symbol in symbols if symbol in self.frames}
+
+    def fetch_depth_books(self, symbols, *, now, limit=20):
+        self.last_book_args = (tuple(symbols), now, limit)
+        if self.book is None:
+            return {}
+        return {symbol: self.book for symbol in symbols if symbol in self.frames}
+
+
+class DepthGateway(FakeStrategyGateway):
+    """Two symbols; each depth value is a book or an exception to raise."""
+
+    def __init__(self, books, frames):
+        super().__init__()
+        self.markets = {symbol: _market(symbol) for symbol in books}
+        self.frames = dict(frames)
+        self.books = dict(books)
+        self.depth_calls: list[tuple[str, int]] = []
+
+    def fetch_market_frames(self, symbols, *, timeframe, limit, now):
+        self.last_frame_args = (timeframe, limit, now)
+        return {symbol: self.frames[symbol] for symbol in symbols if symbol in self.frames}
+
+    def fetch_depth_books(self, symbols, *, now, limit=20):
+        self.last_book_args = (tuple(symbols), now, limit)
+        symbol = list(symbols)[0]
+        self.depth_calls.append((symbol, limit))
+        value = self.books.get(symbol)
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            return {}
+        return {symbol: value}
+
+
+def _top(symbol: str = "BTC/JPY", *, bid: str, ask: str) -> TopOfBook:
+    return TopOfBook(symbol, D(bid), D(ask), NOW, bid_amount=D("1000000"),
+                     ask_amount=D("1000000"))
+
+
+class TestPaperWorkerFills(unittest.TestCase):
+    def _skip_codes(self, g) -> list[str]:
+        status = json.loads((g.state_dir / "trading" / "status.json").read_text(encoding="utf-8"))
+        return list(status["skipped_reason_codes"])
+
+    def test_book_fetch_uses_twenty_levels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            gateway = FakeStrategyGateway()
+            run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW,
+                             observation_now_fn=lambda: NOW)
+            self.assertEqual(gateway.last_book_args[2], 20)
+
+    def test_depth_beyond_the_top_level_fills_at_the_multi_level_vwap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            book = DepthBook(
+                "BTC/JPY",
+                bids=(_level("102.9", 100),),
+                asks=(_level("103", 1), _level("103.5", 100)),
+                as_of=NOW,
+            )
+            gateway = DepthGateway(
+                {"BTC/JPY": book},
+                {"BTC/JPY": _frame("BTC/JPY", momentum=True)},
+            )
+            result = run_worker_cycle(
+                g, gateway=gateway, cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 1)
+            ledger = PaperLedger(g.state_dir / "trading" / "paper.sqlite3")
+            try:
+                [fill] = ledger.recent_fills(limit=10)
+                expected_vwap = (D("103") * 1 + D("103.5") * 13) / D("14")
+                self.assertEqual(fill.amount, D("14"))
+                self.assertEqual(fill.price, expected_vwap * D("1.0012"))
+                assert fill.cost_context is not None
+                self.assertEqual(fill.cost_context["top_ask"], "103")
+                self.assertEqual(fill.cost_context["reference_close"], "104")
+            finally:
+                ledger.close()
+            # The real gateway raises for the whole batch on one bad book; the
+            # worker must call it per symbol so this limit applies to one book.
+            self.assertEqual(gateway.depth_calls, [("BTC/JPY", 20)])
+
+    def test_one_failed_depth_book_does_not_erase_another_symbols_fill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            trading_dir = g.state_dir / "trading"
+            trading_dir.mkdir(parents=True, exist_ok=True)
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                seeded = AllocationDecision(
+                    opportunity_id="seed-eth", strategy_id="momentum-v1",
+                    symbol="ETH/JPY", side="buy", quote="JPY", amount=D("1"),
+                    price=D("100"), quote_notional=D("100"),
+                    reference_notional=D("100"), reason_code="momentum_breakout",
+                )
+                PaperBroker(
+                    ledger,
+                    books={"ETH/JPY": TopOfBook(
+                        "ETH/JPY", D("100"), D("100"), NOW - 1000,
+                        bid_amount=D("1"), ask_amount=D("1"))},
+                    taker_fee_rate="0",
+                ).fill(seeded, timestamp=NOW - 1000)
+            finally:
+                ledger.close()
+            timestamps = tuple(NOW - (23 - i) * 300 for i in range(24))
+            eth_frame = MarketFrame(
+                "ETH/JPY", 300, timestamps,
+                tuple([D("100")] * 23 + [D("200")]),
+                tuple(D("1") for _ in range(24)),
+            )
+            gateway = DepthGateway(
+                {
+                    "BTC/JPY": RuntimeError("bad depth for one symbol"),
+                    "ETH/JPY": DepthBook(
+                        "ETH/JPY",
+                        bids=(_level("199", 1000),),
+                        asks=(_level("200", 1000),),
+                        as_of=NOW,
+                    ),
+                },
+                {
+                    "BTC/JPY": _frame("BTC/JPY", momentum=True),
+                    "ETH/JPY": eth_frame,
+                },
+            )
+            result = run_worker_cycle(
+                g, gateway=gateway, cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 1)
+            self.assertIn("book_unavailable", self._skip_codes(g))
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                fills = [fill for fill in ledger.recent_fills(limit=10)
+                         if fill.filled_at >= NOW]
+                self.assertEqual([(fill.side, fill.symbol) for fill in fills],
+                                 [("sell", "ETH/JPY")])
+            finally:
+                ledger.close()
+            self.assertEqual(sorted(symbol for symbol, _ in gateway.depth_calls),
+                             ["BTC/JPY", "ETH/JPY"])
+
+    def test_illiquid_buy_is_dropped_before_allocation_so_a_liquid_one_can_buy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            trading_dir = g.state_dir / "trading"
+            trading_dir.mkdir(parents=True, exist_ok=True)
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                seeded = AllocationDecision(
+                    opportunity_id="seed-hold", strategy_id="momentum-v1",
+                    symbol="HOLD/JPY", side="buy", quote="JPY", amount=D("98.9"),
+                    price=D("100"), quote_notional=D("9890"),
+                    reference_notional=D("9890"), reason_code="momentum_breakout",
+                )
+                PaperBroker(
+                    ledger,
+                    books={"HOLD/JPY": TopOfBook(
+                        "HOLD/JPY", D("100"), D("100"), NOW - 300,
+                        bid_amount=D("98.9"), ask_amount=D("98.9"))},
+                    taker_fee_rate="0",
+                ).fill(seeded, timestamp=NOW - 300)
+            finally:
+                ledger.close()
+
+            # Only 110 JPY of the 10,000 capital is still deployable.  The
+            # illiquid candidate scores/sorts above LIQ/JPY and would consume it.
+            books = {
+                symbol: DepthBook(
+                    symbol,
+                    (_level("103.8", 1000),),
+                    (_level("104", 1000),),
+                    NOW,
+                )
+                for symbol in ("HOLD/JPY", "ILLIQ/JPY", "LIQ/JPY")
+            }
+            gateway = DepthGateway(
+                books,
+                {
+                    "HOLD/JPY": _frame("HOLD/JPY"),
+                    "ILLIQ/JPY": _frame("ILLIQ/JPY", momentum=True, volume="0"),
+                    "LIQ/JPY": _frame("LIQ/JPY", momentum=True),
+                },
+            )
+            result = run_worker_cycle(
+                g, gateway=gateway, cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 1)
+            self.assertIn("illiquid", self._skip_codes(g))
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                fills = [fill for fill in ledger.recent_fills(limit=10)
+                         if fill.filled_at >= NOW]
+                self.assertEqual([(fill.side, fill.symbol) for fill in fills],
+                                 [("buy", "LIQ/JPY")])
+            finally:
+                ledger.close()
+            self.assertNotIn("ILLIQ/JPY", [symbol for symbol, _ in gateway.depth_calls])
+            self.assertIn("LIQ/JPY", [symbol for symbol, _ in gateway.depth_calls])
+
+    def test_missing_book_skips_the_buy_instead_of_falling_back_to_the_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            result = run_worker_cycle(
+                g, gateway=OneSymbolGateway(book=None), cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 0)
+            self.assertIn("book_unavailable", self._skip_codes(g))
+
+    def test_wide_spread_blocks_the_buy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            result = run_worker_cycle(
+                g, gateway=OneSymbolGateway(book=_top(bid="100", ask="100.5")),
+                cycle_index=1, now=NOW, observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 0)
+            self.assertIn("spread_too_wide", self._skip_codes(g))
+
+    def test_illiquid_frame_blocks_the_buy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            frame = _frame("BTC/JPY", momentum=True, volume="0")
+            result = run_worker_cycle(
+                g, gateway=OneSymbolGateway(book=_top(bid="104", ask="104.2"), frame=frame),
+                cycle_index=1, now=NOW, observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 0)
+            self.assertIn("illiquid", self._skip_codes(g))
+
+    def test_sells_are_not_gated_by_spread_or_activity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            trading_dir = g.state_dir / "trading"
+            trading_dir.mkdir(parents=True, exist_ok=True)
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                seeded = AllocationDecision(
+                    opportunity_id="seed-buy", strategy_id="momentum-v1",
+                    symbol="BTC/JPY", side="buy", quote="JPY", amount=D("1"),
+                    price=D("100"), quote_notional=D("100"),
+                    reference_notional=D("100"), reason_code="momentum_breakout",
+                )
+                PaperBroker(
+                    ledger, books={"BTC/JPY": _top(bid="100", ask="100")},
+                    taker_fee_rate="0",
+                ).fill(seeded, timestamp=NOW - 1000)
+            finally:
+                ledger.close()
+            timestamps = tuple(NOW - (23 - i) * 300 for i in range(24))
+            exit_frame = MarketFrame(
+                "BTC/JPY", 300, timestamps,
+                tuple([D("100")] * 23 + [D("200")]),
+                tuple(D("0") for _ in range(24)),
+            )
+            # 50% spread and zero-volume bars would block any new buy.
+            result = run_worker_cycle(
+                g,
+                gateway=OneSymbolGateway(
+                    book=_top(bid="150", ask="250"), frame=exit_frame),
+                cycle_index=1, now=NOW, observation_now_fn=lambda: NOW,
+            )
+            self.assertGreaterEqual(result.new_fill_count, 1)
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                self.assertNotIn("BTC/JPY", ledger.positions())
+                sell = next(fill for fill in ledger.recent_fills(limit=10)
+                            if fill.side == "sell")
+                self.assertLess(sell.price, D("150"))
+            finally:
+                ledger.close()
+            self.assertNotIn("spread_too_wide", self._skip_codes(g))
+
+    def test_book_price_over_the_cap_reduces_the_amount(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            result = run_worker_cycle(
+                g, gateway=OneSymbolGateway(book=_top(bid="200", ask="200")),
+                cycle_index=1, now=NOW, observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 1)
+            ledger = PaperLedger(g.state_dir / "trading" / "paper.sqlite3")
+            try:
+                [fill] = ledger.recent_fills(limit=10)
+                # 15% of 10000 = 1500; 1500 // 200 = 7 (amount_step 1).
+                self.assertEqual(fill.amount, D("7"))
+                self.assertLessEqual(fill.reference_notional, D("1500"))
+            finally:
+                ledger.close()
+
+    def test_book_price_below_the_market_minimum_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=1000)
+            result = run_worker_cycle(
+                g, gateway=OneSymbolGateway(book=_top(bid="400", ask="400")),
+                cycle_index=1, now=NOW, observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 0)
+            self.assertIn("below_min_amount", self._skip_codes(g))
+
+    def test_depth_insufficient_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            shallow = TopOfBook(
+                "BTC/JPY", D("104"), D("104.2"), NOW,
+                bid_amount=D("1"), ask_amount=D("0.1"),
+            )
+            result = run_worker_cycle(
+                g, gateway=OneSymbolGateway(book=shallow), cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 0)
+            self.assertIn("depth_insufficient", self._skip_codes(g))
 
 
 class TestPaperWorkerCycle(unittest.TestCase):

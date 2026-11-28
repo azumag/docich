@@ -89,18 +89,18 @@ CASTLE = frozenset({'しろのなかにいます'})
 # measured carry rate); the manifest normally replaces this entirely.
 CARRY_RECHECK_BUDGET = 3
 CARRY_OVERDUE_MONTHS = 2
-# A battle/event can take the foreground while the recall's destination
-# picker is open.  ``camp_recheck._defer`` then drops the recall without
-# sending the return A, and the task used to be marked finished, so the
-# general waited for the next month's scan (live g1153 2026-11-08: ポワソン
-# and リースリング were interrupted at 17:00/17:05 and stayed camped).  Retry
-# the same task a bounded number of times within this month; a dispatched
-# recall is never repeated.
+# A battle/event can take the foreground while the recall/boss_move
+# destination picker is open.  ``camp_recheck._defer`` then drops the recall
+# flow without sending the destination A, and the task used to be marked
+# finished, so the general waited for the next month's scan (live g1153
+# 2026-11-08: ポワソン and リースリング were interrupted at 17:00/17:05 and
+# stayed camped). Retry the same task a bounded number of times within this
+# month; a dispatched recall is never repeated.
 CAMP_ROW_STALE_TICKS = 600   # a camp measured longer ago than this is re-read
 RECALL_TASK_RETRIES = 2
-# A battle that took the foreground from an in-progress recall is not the
-# recall's own attempt; it is retried without spending the month's budget for
-# this many ticks after `flow.recall_interrupted` (set by recall.py).
+# A battle that took the foreground from an in-progress recall/boss_move is
+# not the flow's own attempt; it is retried without spending the month's
+# budget for this many ticks after `flow.recall_interrupted` (set by recall.py).
 RECALL_INTERRUPT_GRACE = 240
 
 
@@ -1877,6 +1877,7 @@ def step(screen, mem, frame, *, boss_dispatch=False):
                         _log(mem, 'post_month_sortie_floor',
                              observed_metric={'stage': state['stage'], 'month': mem.get('month')},
                              reason='当月に成立した出撃がまだ無く開始可能な指示があるため、月次確認を延期してマップを出撃計画へ明け渡す')
+                    _orders.arm_sortie_floor_dispatch(mem)
                     return None
     # The monthly workflow owns this map.  A lost cursor is a temporary
     # navigation interrupt, not a reason to let the sortie planner take over.
@@ -2506,7 +2507,7 @@ def step(screen, mem, frame, *, boss_dispatch=False):
             return recall if recall is not None else []
         job = state.get('job') or {}
         name = job.get('name') if isinstance(job, dict) else None
-        if job.get('kind') == 'recall' and isinstance(name, str) and name:
+        if job.get('kind') in ('recall', 'boss_move') and isinstance(name, str) and name:
             retries = state.get('recall_task_retries')
             retries = retries if isinstance(retries, dict) else {}
             used = retries.get(name)

@@ -10,7 +10,8 @@ from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku.os_layer.screen import Screen, parse
 
 from test_hanjuku_house import Canvas, roster, status
-from docich.hanjuku.state.regions import flow as _flow, world as _world, plan as _plan_region
+from docich.hanjuku.state.regions import (flow as _flow, world as _world,
+                                          plan as _plan_region, journal as _journal)
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +57,89 @@ def test_map_yields_to_a_startable_order_until_the_month_has_a_launch():
     state['floor_yields'] = post.SORTIE_FLOOR_YIELDS
     assert post.step(field, mem, None) == [pad('x')]
     assert state['stage'] == 'open_menu'
+
+
+def test_floor_yield_arms_only_the_current_dispatch_frame():
+    """docich#5812: the yielded frame carries a scoped dispatch latch."""
+    from docich.hanjuku.strategy.orders import (active_sortie_floor_dispatch,
+                                                clear_sortie_floor_dispatch)
+    mem = memory(month_sorties={'scope': [1, '2-6'], 'launches': 0})
+    post.arm(mem)
+    field = Screen([], None, '', kind='map')
+    assert post.step(field, mem, None) is None
+    assert active_sortie_floor_dispatch(mem) is True
+    # The orchestrator clears the latch before the next observation; a stale
+    # persisted value cannot make housekeeping defer forever.
+    clear_sortie_floor_dispatch(mem)
+    assert active_sortie_floor_dispatch(mem) is False
+    mem['sortie_floor_dispatch'] = {'chapter': 1, 'month': '2-6'}
+    mem['month'] = '2-7'
+    assert active_sortie_floor_dispatch(mem) is False
+    assert 'sortie_floor_dispatch' not in mem
+
+
+def test_floor_yielded_map_frame_reaches_dispatch_before_housekeeping(monkeypatch):
+    """docich#5812: house_scan must not consume the frame the floor yielded."""
+    from docich import hanjuku_chart as chart
+    from docich.hanjuku import orchestrator as orchestrator_module
+    import docich.hanjuku.os_layer.screen as screen_module
+    from docich.hanjuku.os_layer.pixels import Frame
+
+    chapter = 1
+    castles = chart.castles(chapter)
+    home = chart.home_castle(chapter)
+    normal = [c for c in castles if not chart.is_boss_castle(c)]
+    target = normal[-1]
+    step = 'A:5812:M1'
+    order = {'step': step, 'general': 'ゼウス', 'source': home, 'target': target,
+             'cards': [], 'after': None, 'purpose': 'attack', 'note': 'regression'}
+    mem = {'chapter': chapter, 'month': '19-7', 'tick': 10_000,
+           '_records': [], 'captured': [c for c in normal if c != target],
+           'lost': [target],
+           'chart_plan': {'request_id': '5812', 'orders': [order]},
+           'garrison': {home: ['どうし', 'ゼウス', 'ココット']},
+           'world': {'sorties': {}},
+           'month_sorties': {'scope': [chapter, '19-7'], 'launches': 0}}
+    post.arm(mem)
+    field = Screen([], None, '', kind='map', cursor=(80, 90),
+                   header={'chapter': chapter, 'year': 19, 'month': 7, 'gold': 100})
+    monkeypatch.setattr(orchestrator_module, 'classify', lambda _frame: 'field')
+    monkeypatch.setattr(screen_module, 'parse', lambda _frame, phase=None: field)
+
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    actions, updated = orchestrator_module.decide(frame, {'policy': mem})
+    decisions = [r['decision'] for r in updated['_records']]
+
+    assert 'post_month_sortie_floor' in decisions
+    assert 'order_start' in decisions
+    assert decisions.index('post_month_sortie_floor') < decisions.index('order_start')
+    assert 'house_scan_started' not in decisions
+    assert 'world_map_open' not in decisions
+    assert 'select_focus' not in decisions
+    assert updated['policy'].get('house') is None
+    assert updated['policy']['sortie_launch_pending'] == step
+    assert actions == [pad('select')]
+
+    # The dispatch that starts on the yielded frame still completes a launch.
+    # Skip the bounded castle-menu walk synthetically, then use the same roof
+    # confirmation and receipt-backed return the production target flow uses.
+    from docich import hanjuku_policy as policy
+    launched_mem = updated['policy']
+    launched_mem.pop('castle_jump', None)
+    monkeypatch.setattr(policy, 'nav_step', lambda *_a, **_k: 'arrived')
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda *_a, **_k: [{'kind': 'enemy', 'target': (10, 57),
+                                            'clipped': False}])
+    marker = Screen([], None, '', kind='map_target', marker=(8, 55))
+    assert policy.target_step(marker, launched_mem, frame) == [policy.pad('a')]
+    assert any(r['decision'] == 'sortie_departure_requested' for r in launched_mem['_records'])
+    trace = {'decision_id': '5812-test', 'frame_sha256': 'e' * 64, 'planned_at': 1.0}
+    _flow(launched_mem)['departure_request']['request_trace'] = trace
+    _journal(launched_mem)['_departure_input'] = {'request_trace': trace, 'a_inputs': 1}
+    policy.observe_sortie_transition(Screen([], None, '', kind='map'), launched_mem,
+                                     'map_target')
+    assert any(r['decision'] == 'order_launched' for r in launched_mem['_records'])
 
 
 def test_idle_floor_yields_stop_so_the_scan_can_recall_the_camped_source():
@@ -1640,11 +1724,11 @@ def test_waiting_carry_row_can_cross_the_month_boundary():
     assert receipts._carry_eligible(row, ('location',)) is False
 
 
-def _wait_recall_state(mem, name='ヴィーナス'):
+def _wait_recall_state(mem, name='ヴィーナス', kind='recall'):
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='wait_recall', started_tick=100,
-                 job={'kind': 'recall', 'name': name}, tasks=[])
+                 job={'kind': kind, 'name': name}, tasks=[])
     return state
 
 
@@ -1696,6 +1780,66 @@ def test_recall_task_retry_is_bounded():
     state = _wait_recall_state(mem)
     state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
     _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
+
+
+def test_boss_move_task_is_requeued_within_the_bounded_budget():
+    # docich#5789: a ch10 White House camper is intentionally not sent home;
+    # boss_move is the only monthly resolution path, so losing its recall flow
+    # must requeue the same boss_move job instead of ending the month.
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['job']['goal'] = 'ボス'
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [
+        {'kind': 'boss_move', 'name': 'ヴィーナス', 'goal': 'ボス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': 1}
+    assert state['stage'] == 'process'
+
+
+def test_boss_move_task_retry_is_bounded():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
+
+
+def test_interrupted_boss_move_retry_does_not_spend_the_bounded_budget():
+    # A battle/scene interruption is not the boss_move flow's own failed
+    # attempt: even at the ordinary retry cap it receives the same free retry
+    # as an interrupted home recall, bounded by RECALL_INTERRUPT_GRACE.
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['job']['goal'] = 'ボス'
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    _flow(mem)['recall_interrupted'] = mem['tick']
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [
+        {'kind': 'boss_move', 'name': 'ヴィーナス', 'goal': 'ボス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    record = [r for r in mem['_records']
+              if r['decision'] == 'post_month_recall_requeued'][-1]
+    assert record['observed_metric']['battle_interrupt'] is True
+
+
+def test_expired_boss_move_interruption_does_not_bypass_the_retry_budget():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    mem['tick'] = 100 + post.RECALL_INTERRUPT_GRACE + 1
+    _flow(mem).pop('recall', None)
+    _flow(mem)['recall_interrupted'] = 100
     assert post.step(Screen([], None, '', kind='map'), mem, None) == []
     assert state['tasks'] == []
     assert state['stage'] == 'process'

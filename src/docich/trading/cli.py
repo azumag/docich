@@ -17,7 +17,7 @@ from .ledger import PaperLedger
 from .market_data import MarketFrame, MarketFrameError
 from .models import MarketInfo, Opportunity, TradingValidationError, as_decimal
 from .notifications import NotificationError, deliver_pending_notifications
-from .paper import PaperBroker
+from .paper import PaperBroker, PaperFillSkipped
 from .presentation import PresentationError, read_presentation, write_presentation
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
@@ -34,8 +34,11 @@ class TradingCliError(RuntimeError):
 _SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
     "quote_to_reference", "available_quote", "markets", "prices", "opportunities",
+    "books",
 }
+_SNAPSHOT_REQUIRED_KEYS = _SNAPSHOT_KEYS - {"books"}
 _MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate", "taker_fee_rate_base", "taker_fee_rate_quote", "market_order_enabled"}
+_BOOK_KEYS = {"bid", "ask", "bid_amount", "ask_amount"}
 _OPPORTUNITY_KEYS = {
     "opportunity_id", "strategy_id", "symbol", "side", "score", "expected_edge_bps",
     "max_notional_fraction", "expires_at", "reason_code",
@@ -56,7 +59,9 @@ _FRAME_KEYS = {"timeframe_seconds", "timestamps", "closes", "volumes"}
 _STRATEGY_SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
     "quote_to_reference", "available_quote", "markets", "frames",
+    "books",
 }
+_STRATEGY_SNAPSHOT_REQUIRED_KEYS = _STRATEGY_SNAPSHOT_KEYS - {"books"}
 
 _FILL_KEYS = {
     "fill_id", "opportunity_id", "strategy_id", "symbol", "side", "quote", "amount",
@@ -258,6 +263,38 @@ def _market_from_snapshot(symbol: str, raw: Any) -> MarketInfo:
         raise TradingCliError(f"market {symbol} is invalid") from exc
 
 
+def _book_from_snapshot(symbol: str, raw: Any, *, as_of: float) -> TopOfBook:
+    if not isinstance(raw, dict):
+        raise TradingCliError(f"book {symbol} must be an object")
+    _unknown_keys(raw, _BOOK_KEYS, f"book {symbol}")
+    missing = sorted(_BOOK_KEYS - set(raw))
+    if missing:
+        raise TradingCliError(f"book {symbol} is missing fields: {', '.join(missing)}")
+    try:
+        return TopOfBook(
+            symbol,
+            as_decimal(raw["bid"], f"book[{symbol}].bid"),
+            as_decimal(raw["ask"], f"book[{symbol}].ask"),
+            as_of,
+            bid_amount=as_decimal(raw["bid_amount"], f"book[{symbol}].bid_amount"),
+            ask_amount=as_decimal(raw["ask_amount"], f"book[{symbol}].ask_amount"),
+        )
+    except (TradingValidationError, KeyError, TypeError, ValueError) as exc:
+        raise TradingCliError(f"book {symbol} is invalid") from exc
+
+
+def _books_from_snapshot(raw: Any, markets: Mapping[str, Any], *, as_of: float) -> dict[str, TopOfBook]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TradingCliError("snapshot books must be an object")
+    unknown = sorted(set(raw) - set(markets))
+    if unknown:
+        raise TradingCliError(f"snapshot books contain unknown markets: {', '.join(unknown)}")
+    return {symbol: _book_from_snapshot(symbol, book, as_of=as_of)
+            for symbol, book in raw.items()}
+
+
 def _opportunity_from_snapshot(raw: Any) -> Opportunity:
     if not isinstance(raw, dict):
         raise TradingCliError("opportunity must be an object")
@@ -292,7 +329,7 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
     _unknown_keys(data, _SNAPSHOT_KEYS, "snapshot")
     if data.get("mode") != "paper":
         raise TradingCliError("only paper mode is supported; live trading is unavailable")
-    missing = sorted(_SNAPSHOT_KEYS - set(data))
+    missing = sorted(_SNAPSHOT_REQUIRED_KEYS - set(data))
     if missing:
         raise TradingCliError(f"snapshot is missing fields: {', '.join(missing)}")
     try:
@@ -336,6 +373,8 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
         "markets": {symbol: _market_from_snapshot(symbol, raw) for symbol, raw in markets_raw.items()},
         "prices": prices,
         "opportunities": opportunities,
+        "books": _books_from_snapshot(
+            data.get("books"), markets_raw, as_of=as_of),
     }
 
 
@@ -374,7 +413,7 @@ def _load_strategy_snapshot(path: Path) -> dict[str, Any]:
     _unknown_keys(data, _STRATEGY_SNAPSHOT_KEYS, "strategy snapshot")
     if data.get("mode") != "paper":
         raise TradingCliError("only paper mode is supported; live trading is unavailable")
-    missing = sorted(_STRATEGY_SNAPSHOT_KEYS - set(data))
+    missing = sorted(_STRATEGY_SNAPSHOT_REQUIRED_KEYS - set(data))
     if missing:
         raise TradingCliError(f"strategy snapshot is missing fields: {', '.join(missing)}")
     try:
@@ -400,6 +439,8 @@ def _load_strategy_snapshot(path: Path) -> dict[str, Any]:
         "as_of": as_of, "capital_reference": capital, "deployed_reference": deployed,
         "quote_to_reference": quote_rates, "available_quote": available,
         "markets": markets, "frames": frames,
+        "books": _books_from_snapshot(
+            data.get("books"), markets, as_of=as_of),
     }
 
 
@@ -662,9 +703,14 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 policy=CapitalPolicy(),
                 now=snapshot["as_of"],
             )
-            broker = PaperBroker(ledger, markets=snapshot["markets"])
+            broker = PaperBroker(
+                ledger, markets=snapshot["markets"], books=snapshot["books"])
+            fill_skips: list[str] = []
             for decision in result.decisions:
-                broker.fill(decision, timestamp=snapshot["as_of"])
+                try:
+                    broker.fill(decision, timestamp=snapshot["as_of"])
+                except PaperFillSkipped as exc:
+                    fill_skips.append(exc.reason_code)
             deployed_after = snapshot["deployed_reference"] + ledger.deployed_reference()
             payload = build_public_status(
                 worker_state="paper_cycle_complete",
@@ -674,7 +720,7 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 deployed_reference=deployed_after,
                 open_positions=ledger.positions(),
                 recent_fills=ledger.recent_fills(limit=20),
-                skipped_reason_codes=[skip.reason_code for skip in result.skipped],
+                skipped_reason_codes=[skip.reason_code for skip in result.skipped] + fill_skips,
             )
             write_public_status(state_dir / "status.json", payload)
             _json_print(payload)
@@ -701,11 +747,17 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
                 capital_reference=snapshot["capital_reference"], deployed_reference=deployed_before,
                 policy=CapitalPolicy(), now=snapshot["as_of"],
             )
-            broker = PaperBroker(ledger, markets=snapshot["markets"])
+            broker = PaperBroker(
+                ledger, markets=snapshot["markets"], books=snapshot["books"])
+            fill_skips: list[str] = []
             for decision in allocation.decisions:
-                broker.fill(decision, timestamp=snapshot["as_of"])
+                try:
+                    broker.fill(decision, timestamp=snapshot["as_of"])
+                except PaperFillSkipped as exc:
+                    fill_skips.append(exc.reason_code)
             rejected_codes = [item.reason_code for item in selection.rejected]
             skipped_codes = rejected_codes + [item.reason_code for item in allocation.skipped]
+            skipped_codes.extend(fill_skips)
             summary = {
                 "candidate_count": len(candidates),
                 "selected_count": len(selection.selected),

@@ -461,8 +461,89 @@ def _month_soldier_budget(mem, shop, header, gold):
     return budget
 
 
+def _pending_chikujou_header_shop(mem):
+    """Return this month's ready-to-build shop when the HUD header is unreadable.
+
+    The monthly menu can still be recognized when one HUD digit is missing.
+    In that frame _plan(mem, None) cannot recover the existing month-keyed
+    shop, so the ordinary flow could reach も〜おしまい before retrying the
+    already-planned build. Reuse only a shop whose month/chapter scope is
+    explicit and whose earlier purchase/necessity steps are already settled.
+    """
+    shop = mem.get('shop')
+    month = mem.get('month')
+    if (not isinstance(shop, dict) or not isinstance(month, str)
+            or re.fullmatch(r'[1-9][0-9]*-(?:[1-9]|1[0-2])', month) is None
+            or shop.get('key') != month
+            or mem.get('month_chapter') != mem.get('chapter')):
+        return None
+    if shop.get('chikujou_header_unverified') is True:
+        return shop
+    if (shop.get('chikujou') != 'check'
+            or shop.get('soldiers_done') is not True
+            or (shop.get('merchant_done') is not True
+                and (shop.get('items') or shop.get('bargain_deferred')))
+            or shop.get('cards_held') or mem.get('month_sub')
+            or shop.get('egg') in ('pending', 'check')
+            or shop.get('recruit') in ('pending', 'check')):
+        return None
+    return shop
+
+
+MONTH_SUB_OPEN_LIMIT = 6   # 出撃未着手の月で月一メニューに使う上限(owner 2026-11-28)
+
+
+def _month_sub_opens(mem):
+    counts = mem.get('month_sub_opens')
+    return counts if isinstance(counts, dict) else {}
+
+
+def _note_month_sub_open(mem):
+    key = mem.get('month')
+    counts = _month_sub_opens(mem)
+    count = int(counts.get('count') or 0) + 1 if counts.get('month') == key else 1
+    mem['month_sub_opens'] = {'month': key, 'count': count}
+
+
+def _month_sub_over_budget(mem):
+    """この月、出撃がまだ始まっていないのに月一メニューを開きすぎたか。"""
+    key = mem.get('month')
+    if mem.get('sortie_started_month') == key:
+        return False
+    counts = _month_sub_opens(mem)
+    return counts.get('month') == key and int(counts.get('count') or 0) >= MONTH_SUB_OPEN_LIMIT
+
+
+    # owner 2026-11-28: 出撃がまだ始まっていない月で月一メニューの処理が続くと、
+    # 出撃0のまま月が終わる。上限を超えたらメニューを閉じてマップへ戻す。
 def month_step(screen: Screen, mem):
-    shop = _plan(mem, screen.header)
+    shop = None
+    if screen.kind == 'month_menu' and screen.header is None:
+        shop = _pending_chikujou_header_shop(mem)
+        receipt = shop.get('soldier_receipt') if isinstance(shop, dict) else None
+        receipt_pending = isinstance(receipt, dict) and receipt.get('status') == 'pending'
+        if shop and shop.get('chikujou') == 'check' and not receipt_pending:
+            # A refill's debit is not known until observe_events settles its
+            # receipt. Let the existing pending-receipt guard below own these
+            # frames; they must not consume the build affordability retry budget.
+            # Run the same bounded gate before the exit row can be selected.
+            # Never use the saved balance as payment evidence.
+            result = _month_chikujou(screen, mem, shop)
+            if result is not None:
+                return result
+            if shop.get('chikujou') == 'unverified':
+                shop['chikujou_header_unverified'] = True
+        if shop is None:
+            shop = _plan(mem, screen.header)
+    else:
+        shop = _plan(mem, screen.header)
+    if _month_sub_over_budget(mem):
+        if mem.get('month_sub_deferred_noted') != mem.get('month'):
+            mem['month_sub_deferred_noted'] = mem.get('month')
+            _record(mem, 'month_sub_deferred_sortie', month=mem.get('month'),
+                    observed_metric=_month_sub_opens(mem),
+                    reason='出撃が未着手のため、月一メニューの続きを打ち切ってマップへ戻る')
+        return [pad('b')]
     body = _month_dialog_body(screen)
     # The amount-setting overlay draws the hand on the gold and the
     # 「じゅうじキー…ケタ…すうじ…」 hint over the month menu (measured g1190
@@ -751,6 +832,26 @@ def month_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _chikujou_sortie_deferral(mem, month, include_pending=False):
+    """Return same-month evidence that a launch deferral ended the castle scan."""
+    for row in reversed(mem.get('_records') or ()):
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_deferred_sortie':
+            continue
+        if row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric') if isinstance(row.get('observed_metric'), dict) else {}
+        return {'step': metric.get('step'), 'scrolls': metric.get('scrolls'),
+                'deferrals': metric.get('deferrals')}
+    state = mem.get('chikujou_defer')
+    if (isinstance(state, dict) and int(state.get('count') or 0) > 0
+            and list(state.get('key') or []) == [mem.get('chapter'), month]):
+        return {'step': mem.get('sortie_launch_pending'), 'deferrals': state.get('count')}
+    step = mem.get('sortie_launch_pending')
+    if include_pending and step and mem.get('month') in (None, month):
+        return {'step': step}
+    return None
+
+
 def _note_chikujou_skip_unexplained(mem, shop):
     """Name a month that closed 築城 as skipped without any recorded cause.
 
@@ -795,6 +896,19 @@ def _note_chikujou_skip_unexplained(mem, shop):
     if seen == month:
         return
     shop['chikujou_skip_logged'] = month
+    deferred = _chikujou_sortie_deferral(mem, month, include_pending=held_reason is None)
+    if deferred:
+        metric = {'gold': (shop.get('gold_start')),
+                  'chikujou': shop.get('chikujou'),
+                  'tried': list(tried)[:8],
+                  'candidates': sorted(_chikujou_candidates(mem))[:8]}
+        for key in ('step', 'scrolls', 'deferrals'):
+            if deferred.get(key) is not None:
+                metric['deferral_' + key] = deferred[key]
+        _record(mem, 'chikujou_skip_after_deferred_sortie', month=month,
+                observed_metric=metric,
+                reason='出撃デファーで築城探索を打ち切った後に skipped のまま月を終えた')
+        return
     if held_reason:
         _record(mem, 'chikujou_skip_after_hold', month=month,
                 observed_metric={'gold': (shop.get('gold_start')),
@@ -1122,7 +1236,8 @@ def _month_extra(screen, mem, shop, *, recruit_only=False, egg_only=False):
 CHIKUJOU_SUB_LIMIT = 64        # bounded castle navigation, quote, result and return
 CHIKUJOU_WAIT_LIMIT = 6        # no repeated A while a selection/result frame persists
 CHIKUJOU_MENU_WAIT = 3         # month-menu frames re-read before giving up ちくじょう
-CHIKUJOU_SCROLL_SCHEMA = 2     # bidirectional scan state; v1 stopped at the first repeated window
+CHIKUJOU_AFFORDABILITY_WAIT = 3  # transient unread gold/reserve frames before a safe skip
+CHIKUJOU_SCROLL_SCHEMA = 3     # v3 keeps the chosen scan direction until a physical end probe
 CHIKUJOU_SCROLL_RECOVER_WAIT = 2  # inputless observations before retrying a dead scroll episode
 
 
@@ -1197,7 +1312,14 @@ def _chikujou_text_has_castle(text, name, suffix):
 
 
 def _chikujou_scan_direction(labels, rows, names, current):
-    """Choose the catalog-order direction of the nearest remaining castle row."""
+    """Choose the direction of the nearest remaining castle row.
+
+    The visible four rows are not guaranteed to be a contiguous slice of the
+    chapter catalog (docich#5803). A remaining catalog index between the
+    visible extremes therefore is not proof that the row is inside the
+    window; choose the nearer window edge for such an interior candidate
+    instead of treating it as already covered.
+    """
     order = {key: index for index, key in enumerate(labels)}
     visible = [order[key] for _, _, word in rows
                if (key := _chikujou_castle_key(word)) in order]
@@ -1208,6 +1330,7 @@ def _chikujou_scan_direction(labels, rows, names, current):
     low, high = min(visible), max(visible)
     above = [index for index in remaining if index < low]
     below = [index for index in remaining if index > high]
+    inside = [index for index in remaining if low < index < high]
     if current == 'up' and above:
         return 'up'
     if current == 'down' and below:
@@ -1220,6 +1343,13 @@ def _chikujou_scan_direction(labels, rows, names, current):
         return 'up'
     if below:
         return 'down'
+    if inside:
+        up_distance = min(index - low for index in inside)
+        down_distance = min(high - index for index in inside)
+        if up_distance < down_distance:
+            return 'up'
+        if down_distance < up_distance:
+            return 'down'
     return current if current in ('up', 'down') else 'down'
 
 
@@ -1227,13 +1357,26 @@ def _chikujou_opposite(direction):
     return 'up' if direction == 'down' else 'down'
 
 
+def _chikujou_interior_catalog_candidate(labels, rows, names):
+    """Whether a hidden candidate contradicts the contiguous-window position model."""
+    order = {key: index for index, key in enumerate(labels)}
+    visible = [order[key] for _, _, word in rows
+               if (key := _chikujou_castle_key(word)) in order]
+    remaining = [order[key] for name in names or ()
+                 if (key := _chikujou_castle_key(name)) in order]
+    if not visible:
+        return False
+    low, high = min(visible), max(visible)
+    return any(low < index < high for index in remaining)
+
+
 def _chikujou_catalog_end(labels, rows, cur, direction):
     """Whether the cursor is at the provable catalog end in this direction.
 
-    Ownership can make the practical end earlier than the first/last catalog
-    castle, so an interior repeated window is not treated as an end merely
-    because the reverse probe moved. The first/last catalog row is still a
-    hard boundary: no castle can exist beyond it in that direction.
+    Ownership can make the practical end earlier than the first/last ordinary
+    catalog castle, so an interior repeated window is not treated as an end
+    merely because the reverse probe moved. The first ordinary row and the
+    last non-boss row are still hard boundaries in their directions.
     """
     keys = list(labels or ())
     if not keys or cur not in rows or len(rows) != 4:
@@ -1241,7 +1384,11 @@ def _chikujou_catalog_end(labels, rows, cur, direction):
     if direction == 'up':
         return cur == rows[0] and _chikujou_castle_key(rows[0][2]) == keys[0]
     if direction == 'down':
-        return cur == rows[-1] and _chikujou_castle_key(rows[-1][2]) == keys[-1]
+        # The last catalog entry is the boss site (「ボス」/chapter 1's
+        # けっかい), which never appears in the monthly building list. The
+        # provable downward end is the last ordinary castle instead.
+        end_key = keys[-2] if len(keys) > 1 else keys[-1]
+        return cur == rows[-1] and _chikujou_castle_key(rows[-1][2]) == end_key
     return False
 
 
@@ -1332,7 +1479,8 @@ def _chikujou_scroll(screen, mem, sub, names=None):
         state.clear()
         state.update(schema=CHIKUJOU_SCROLL_SCHEMA, signature=None, direction=direction,
                      mode='scan', same=0, presses=presses, since_new_row=0, input_episodes=0,
-                     end_down=False, end_up=False, seen_keys=[], seen=[], wait=0)
+                     end_down=False, end_up=False, seen_keys=[], seen=[], wait=0,
+                     catalog_unreliable=False)
     seen_keys = state.get('seen_keys')
     if not isinstance(seen_keys, list):
         seen_keys = state['seen_keys'] = []
@@ -1358,8 +1506,15 @@ def _chikujou_scroll(screen, mem, sub, names=None):
         state['since_new_row'] = (0 if new_keys else int(state.get('since_new_row') or 0) + 1)
     elif state.get('signature') is not None:
         state['same'] = int(state.get('same') or 0) + 1
+    if _chikujou_interior_catalog_candidate(labels, rows, names):
+        state['catalog_unreliable'] = True
     desired = _chikujou_scan_direction(labels, rows, names, state.get('direction'))
-    if state.get('mode') == 'scan' and desired != state.get('direction'):
+    if (state.get('mode') == 'scan' and desired != state.get('direction')
+            and (int(state.get('presses') or 0) == 0 or not state.get('catalog_unreliable'))):
+        # Catalog positions are a heuristic until an interior hidden candidate
+        # contradicts them. After that, reversing on each reclassification can
+        # oscillate around the row; keep the committed direction until an input
+        # stall proves a physical end and the reverse probe runs (docich#5803).
         state['direction'] = desired
         state['same'] = 0
     metric = {'visible': [r[2] for r in rows], 'selected': cur[2],
@@ -1382,7 +1537,7 @@ def _chikujou_scroll(screen, mem, sub, names=None):
         mem['chikujou_defer'] = defer_state
         sub['declined'] = True
         sub['aborted'] = True
-        _record(mem, 'chikujou_deferred_sortie',
+        _record(mem, 'chikujou_deferred_sortie', month=sub.get('key'),
                 observed_metric={'visible': [r[2] for r in rows],
                                  'scrolls': int(state.get('presses') or 0),
                                  'step': launch_step,
@@ -1478,6 +1633,36 @@ def _month_chikujou(screen, mem, shop):
         return None
     gold = (screen.header or {}).get('gold')
     reserve = _chikujou_reserve(mem, shop)
+    gold_readable = type(gold) is int and gold >= 0
+    reserve_readable = type(reserve) is int and reserve >= 0
+    if not gold_readable or not reserve_readable:
+        previous = shop.get('chikujou_affordability_wait')
+        waits = (min(previous + 1, CHIKUJOU_AFFORDABILITY_WAIT + 1)
+                 if type(previous) is int and previous >= 0 else 1)
+        shop['chikujou_affordability_wait'] = waits
+        observed = {
+            'waits': waits,
+            'gold': gold if gold_readable else None,
+            'reserve': reserve if reserve_readable else None,
+            'gold_readable': gold_readable,
+            'reserve_readable': reserve_readable,
+            'header_readable': screen.header is not None,
+            'screen': screen.kind,
+        }
+        if waits <= CHIKUJOU_AFFORDABILITY_WAIT:
+            _record(mem, 'chikujou_affordability_wait', month=shop.get('key'),
+                    observed_metric=observed,
+                    reason='所持金または必要予約を一時的に読めないため、築城の可否を決めず有限回再観測する')
+            return []
+        shop['chikujou'] = 'unverified'
+        observed['skipped'] = True
+        _record(mem, 'chikujou_affordability_unverified', month=shop.get('key'),
+                observed_metric=observed,
+                deviation_reason=('month_header_unreadable' if screen.header is None
+                                  else 'affordability_unreadable'),
+                reason='所持金または必要予約を有限回待っても読めないため、支出せず当月の築城可否を未確認で閉じる')
+        return None
+    shop.pop('chikujou_affordability_wait', None)
     if not _chikujou_affordable(gold, reserve):
         # Keep the row open: a reserve released later in this same menu (an
         # egg/recruit skip, a repair deferral, a completed roster) frees the
@@ -1540,6 +1725,7 @@ def _month_chikujou(screen, mem, shop):
                         'left_menu': False, 'chikujou_version': 2, 'rows_tried': list(tried),
                         'chikujou_identity': run_identity(mem.get('_run_identity')),
                         'chikujou_chapter': mem.get('chapter')}
+    _note_month_sub_open(mem)
     _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
             observed_metric={'reserve': reserve, 'tried': list(tried)},
             reason='必要資金を残して、当月まだ増築していない所有城の防衛力を上げる')

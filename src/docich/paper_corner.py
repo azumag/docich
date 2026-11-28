@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PAPER program: confirmed boundary, eight ordered narrations, restore."""
+"""PAPER program: confirmed boundary, nine ordered narrations, restore."""
 import argparse
 import datetime as dt
 import fcntl
@@ -333,7 +333,7 @@ class PaperCornerManager:
             # state and speech keep the full text.
             overlay_body = report['text'][:OVERLAY_BODY_LIMIT]
             self.overlay(self.g, {'ts': int(self.clock()), 'category': 'system', 'level': 'info',
-                                 'title': 'PAPER 暗号資産コーナー', 'body': overlay_body, 'source_id': event_id})
+                                 'title': '暗号通貨コーナー', 'body': overlay_body, 'source_id': event_id})
             report['overlay'] = True
             self.save(state)
         if not report['speech']:
@@ -1333,7 +1333,7 @@ class PaperCornerManager:
             state['last_progress_at'] = self.clock()
             self._refresh_paper_flag(state)
             self.save(state)
-        state['end_reason'] = 'eight-slots-drained'
+        state['end_reason'] = 'all-slots-drained'
         if state.get('ai_failure_reason'):
             state['end_detail'] = str(state['ai_failure_reason'])[:240]
         self.save(state)

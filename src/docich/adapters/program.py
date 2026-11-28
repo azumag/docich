@@ -33,7 +33,7 @@ from .cli_game import CliCoordinatorAdapter
 PAPER_VIEW_NAME = "paper-view"
 
 #: Marker the text dashboard renderer always prints; text readiness requires it.
-VIEW_READY_MARKER = "PAPER 暗号資産コーナー"
+VIEW_READY_MARKER = "暗号通貨コーナー"
 
 #: Loopback port for the HTML dashboard server.
 DEFAULT_DASHBOARD_PORT = 8799
@@ -101,7 +101,7 @@ def paper_view_game_config() -> GameConfig:
     """Synthetic game config for the dashboard view (never read from toml)."""
     return GameConfig(
         name=PAPER_VIEW_NAME,
-        title="PAPER 暗号資産コーナー",
+        title="暗号通貨コーナー",
         adapter="program",
         raw={"cli": {"cols": 80, "rows": 24, "font": "monospace", "font_size": 18}},
         agent=GameAgentConfig(enabled=False),

@@ -113,7 +113,82 @@ def build_policy(spec: StrategyExperiment, symbol: str) -> LivePolicy:
     return LivePolicy(symbol, spec, exp_digest, fraction, digest)
 
 
-def policy_from_payload(payload: Mapping) -> LivePolicy:
+FREE_KIND = "free"
+FREE_MAX_FRACTION = Decimal("0.30")
+
+
+@dataclass(frozen=True)
+class FreePolicy:
+    """A promoted free (AI-written Python) strategy, followed by weight mirroring.
+
+    LIVE never runs the strategy's code.  The free-strategy worker keeps the promoted
+    artifact running as a PAPER "mirror" experiment and publishes its position weights;
+    LIVE buys toward ``weight x capital`` and sells a symbol out when the mirror holds none
+    of it (Issue #3623, owner decision 2026-11-27).  ``promoted_at`` makes every adoption a
+    new digest, so the loss stop starts again at each promotion.
+    """
+
+    artifact: str
+    experiment: str
+    symbols: tuple[str, ...]
+    promoted_at: str
+    max_opportunity_fraction: Decimal
+    digest: str
+    kind: str = FREE_KIND
+
+    def payload(self) -> dict:
+        return {"kind": FREE_KIND, "artifact": self.artifact, "experiment": self.experiment,
+                "symbols": list(self.symbols), "promoted_at": self.promoted_at,
+                "max_opportunity_fraction": format(self.max_opportunity_fraction, "f"),
+                "digest": self.digest}
+
+
+def _free_digest(artifact, experiment, symbols, promoted_at, fraction) -> str:
+    return sha256_hex(canonical_json({
+        "kind": FREE_KIND, "artifact": artifact, "experiment": experiment,
+        "symbols": list(symbols), "promoted_at": promoted_at,
+        "max_opportunity_fraction": format(fraction, "f")}))
+
+
+def build_free_policy(*, artifact: str, experiment: str, symbols, promoted_at: str) -> FreePolicy:
+    if not is_sha256_hex(artifact):
+        raise LivePolicyError("free artifact must be a sha256 digest")
+    if not isinstance(experiment, str) or not experiment or len(experiment) > 64:
+        raise LivePolicyError("free experiment id is invalid")
+    if not isinstance(promoted_at, str) or not promoted_at or len(promoted_at) > 40:
+        raise LivePolicyError("free promoted_at is invalid")
+    names = tuple(sorted(validate_symbol(symbol) for symbol in symbols))
+    # No fixed symbol-count cap; LIVE still only follows non-empty, unique JPY pairs and
+    # keeps FREE_MAX_FRACTION plus the liquidity entry_block per order.
+    if not names or len(set(names)) != len(names):
+        raise LivePolicyError("free symbols must be a non-empty list of unique pairs")
+    if any(not name.endswith("/JPY") for name in names):
+        raise LivePolicyError("LIVE policies are JPY pairs only")
+    fraction = FREE_MAX_FRACTION
+    return FreePolicy(artifact, experiment, names, promoted_at, fraction,
+                      _free_digest(artifact, experiment, names, promoted_at, fraction))
+
+
+def free_policy_from_payload(payload: Mapping) -> FreePolicy:
+    try:
+        policy = build_free_policy(artifact=payload["artifact"], experiment=payload["experiment"],
+                                   symbols=payload["symbols"], promoted_at=payload["promoted_at"])
+    except (KeyError, TypeError, CanonicalError) as exc:
+        raise LivePolicyError("free policy payload is malformed") from exc
+    if (policy.digest != payload.get("digest")
+            or format(policy.max_opportunity_fraction, "f") != payload.get("max_opportunity_fraction")):
+        raise LivePolicyError("free policy digest mismatch")
+    return policy
+
+
+def policy_from_payload(payload: Mapping):
+    """A stored policy: a per-symbol :class:`LivePolicy` or a :class:`FreePolicy`."""
+    if isinstance(payload, Mapping) and payload.get("kind") == FREE_KIND:
+        return free_policy_from_payload(payload)
+    return symbol_policy_from_payload(payload)
+
+
+def symbol_policy_from_payload(payload: Mapping) -> LivePolicy:
     try:
         spec = strict_experiment(payload["experiment"])
         policy = build_policy(spec, str(payload["symbol"]))
@@ -130,6 +205,14 @@ def policy_from_payload(payload: Mapping) -> LivePolicy:
 class LivePolicySet:
     policies: Mapping[str, LivePolicy]
     digest: str
+    free: FreePolicy | None = None
+
+    def all_symbols(self) -> tuple[str, ...]:
+        """Every symbol the worker watches: the per-symbol policies and the free strategy's."""
+        names = set(self.policies)
+        if self.free is not None:
+            names.update(self.free.symbols)
+        return tuple(sorted(names))
 
     def policy_for(self, symbol: str) -> LivePolicy:
         try:
@@ -138,11 +221,18 @@ class LivePolicySet:
             raise LivePolicyError(f"no policy for {symbol}") from exc
 
     def payload(self) -> dict:
-        return {"symbols": {sym: pol.digest for sym, pol in sorted(self.policies.items())}}
+        return _set_payload(self.policies, self.free)
 
 
-def _set_digest(policies: Mapping[str, LivePolicy]) -> str:
-    return sha256_hex(canonical_json({"symbols": {s: p.digest for s, p in sorted(policies.items())}}))
+def _set_payload(policies: Mapping[str, LivePolicy], free: FreePolicy | None) -> dict:
+    payload: dict = {"symbols": {s: p.digest for s, p in sorted(policies.items())}}
+    if free is not None:
+        payload["free"] = free.digest   # absent without a free strategy: old digests unchanged
+    return payload
+
+
+def _set_digest(policies: Mapping[str, LivePolicy], free: FreePolicy | None = None) -> str:
+    return sha256_hex(canonical_json(_set_payload(policies, free)))
 
 
 def build_policy_set(spec: StrategyExperiment, symbols=INITIAL_SYMBOLS) -> LivePolicySet:
@@ -153,8 +243,9 @@ def build_policy_set(spec: StrategyExperiment, symbols=INITIAL_SYMBOLS) -> LiveP
     return LivePolicySet(policies, _set_digest(policies))
 
 
-def policy_set_from_policies(policies: Mapping[str, LivePolicy]) -> LivePolicySet:
-    return LivePolicySet(dict(policies), _set_digest(policies))
+def policy_set_from_policies(policies: Mapping[str, LivePolicy],
+                             free: FreePolicy | None = None) -> LivePolicySet:
+    return LivePolicySet(dict(policies), _set_digest(policies, free), free)
 
 
 def main(argv: list[str] | None = None) -> int:

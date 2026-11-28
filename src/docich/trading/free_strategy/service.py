@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+from decimal import Decimal
 import hashlib
 import math
 import os
@@ -12,7 +13,7 @@ import time
 
 from ..market_data import MarketFrame
 from .broker import settle_observation
-from .contract import StrategyError, decimal_text, encode
+from .contract import MAX_INPUT, StrategyError, decimal_text, encode
 from .evaluation import evaluate
 from .sandbox import DockerSandbox, SandboxError
 from .store import LabStore
@@ -29,6 +30,39 @@ def write_health(directory: Path, *, now: float, status: str, codes: list[str], 
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(filename, directory / "health.json")
+    finally:
+        Path(filename).unlink(missing_ok=True)
+
+
+LIVE_WEIGHTS_FILENAME = "live_weights.json"
+
+
+def write_live_weights(directory: Path, exp: dict, artifact, prices: dict, *, now: float) -> None:
+    """Publish the LIVE mirror's position weights (value / equity per symbol) for LIVE.
+
+    Read by ``trading/live/free_mirror.py``; LIVE never runs the candidate code.  Written
+    after the mirror's settlement and before its next decision, from the same prices.
+    """
+    account = exp["account"]
+    cash = Decimal(account["cash_jpy"])
+    values = {symbol: Decimal(amount) * prices[symbol]
+              for symbol, amount in account["positions"].items()
+              if Decimal(amount) > 0 and symbol in prices}
+    equity = cash + sum(values.values(), Decimal(0))
+    if equity <= 0:
+        return
+    payload = {"schema_version": 1, "mode": "PAPER", "artifact": exp["artifact"],
+               "experiment": exp["id"], "observed_at": now, "equity_jpy": decimal_text(equity),
+               "symbols": sorted(artifact.payload["symbols"]),
+               "weights": {symbol: decimal_text((value / equity).quantize(Decimal("1e-8")))
+                           for symbol, value in sorted(values.items())}}
+    fd, filename = tempfile.mkstemp(dir=directory, prefix=".weights-")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encode(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(filename, directory / LIVE_WEIGHTS_FILENAME)
     finally:
         Path(filename).unlink(missing_ok=True)
 
@@ -100,6 +134,7 @@ def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=tim
         write_health(directory, now=now_fn(), status="running", codes=[])
         try:
             ids = store.observed_ids()
+            mirror_ids = set(store.observed_mirror_ids())
             markets = gateway.discover_markets() if ids else {}
             for identity in ids:
                 exp = store.experiment(identity)
@@ -154,6 +189,13 @@ def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=tim
                         completed += 1
                         continue
                     context, prices = build_context(store, exp, frames, now=observed_at)
+                    # Pre-check the exact gVisor stdin envelope before any guest launch.
+                    # More symbols are allowed, so the context (not a symbol cap) is the
+                    # bound; an oversized cycle fails with a fixed code and no container.
+                    if len(encode({"source": artifact.payload["source"], "context": context})) > MAX_INPUT:
+                        raise StrategyError("context_input_limit")
+                    if identity in mirror_ids:
+                        write_live_weights(directory, exp, artifact, prices, now=observed_at)
                     if exp["last_bar"] is None or context["data_cutoff"] > exp["last_bar"]:
                         # Only candidate execution needs gVisor. A broken runner
                         # cannot freeze host-owned valuation of existing PAPER risk.

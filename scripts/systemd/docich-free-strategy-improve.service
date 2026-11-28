@@ -1,0 +1,18 @@
+[Unit]
+Description=docich free-strategy PAPER improvement (daily: retire stopped candidates, judge promotion, generate one candidate)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PATH=__DOCICH_ROOT__/.venv-trading/bin:/usr/local/bin:/usr/bin:/bin
+# PAPER inputs (trading dir, image, symbols) from the worker env; the text-only provider
+# endpoint/model/token from a separate owner-managed file (0600, never committed).
+EnvironmentFile=/home/ubuntu/.config/docich/free-strategy-worker.env
+EnvironmentFile=/home/ubuntu/.config/docich/free-strategy-ai.env
+ExecStart=__DOCICH_ROOT__/bin/docich free-strategy improve --trading-dir ${DOCICH_FREE_STRATEGY_TRADING_DIR} --image ${DOCICH_FREE_STRATEGY_IMAGE} --symbols ${DOCICH_FREE_STRATEGY_SYMBOLS}
+NoNewPrivileges=yes
+UMask=0077
+TimeoutStartSec=600

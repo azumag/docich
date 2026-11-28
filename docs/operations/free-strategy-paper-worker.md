@@ -144,3 +144,68 @@ sudo systemctl disable --now docich-free-strategy-worker.service
 
 このworkerから実注文へ切り替える設定はありません。`live` / `promote` コマンドもありません。
 本運用を作る場合は別設計・別レビュー・別承認が必要です。
+
+## 定期改善と昇格判定（2026-11-27 オーナー決定）
+
+自由戦略も通常のPAPERと同じく、毎日改善する。`docich free-strategy improve`
+（[`improve.py`](../../src/docich/trading/free_strategy/improve.py)）を
+`docich-free-strategy-improve.timer`（毎日 06:40 JST、`Persistent=true`）が1回実行する。
+
+1. `free-strategies/improve.disabled` があれば何もしない（停止スイッチ）。
+2. 損失ストップ（`drawdown_limit`）で止まった候補は、期限を今に縮めて次のcycleで清算させ、観測枠を空ける。
+3. 全候補の昇格判定を `free-strategies/promotion.json`（0600）へ書く（下記）。
+4. 観測枠（最大2）に空きがあれば、過去の候補の成績（費用込みの損益・最大ドローダウン・約定数・停止理由、8件まで）を
+   プロンプトに入れて新しい候補を1件だけ作る。プロバイダーへの依頼は従来どおりUTCの1日1回まで。新しい候補の期間は7日。
+
+**昇格判定（ルール `free-v1`）**：候補のPAPER評価額の日次リターン（日本時間の日ごとに、その日の最後の評価額を前日と比べる。
+作成日と当日は使わない）を、通常PAPERのルールv3と同じ e-process に通す（E ≥ 5、日ブロック5以上、1日0.2%の帰無）。
+隔離（quarantined）・評価が古い候補は対象外。LIVEで自由戦略が動いているときは、同じ日でそのLIVEの日次リターンを上回ることも要る。
+判定は報告を書くだけで、LIVEへの反映はLIVE側が行う。
+
+**AIの呼び出し**：既定は従来どおり、道具を使わない文章専用のHTTPS窓口だけを使う（コーディングエージェントは使わない）。
+窓口の設定は `~/.config/docich/free-strategy-ai.env`（0600、Gitに入れない。例は `scripts/systemd/free-strategy-ai.env.example`）。
+プロンプト本文は [`prompts/generate_strategy.md`](../../src/docich/trading/free_strategy/prompts/generate_strategy.md) を正本とし、先頭のHTMLコメントを除いた本文へ、従来と同じ有界データを追記する。
+候補に渡す銘柄は `free-strategy-worker.env` の `DOCICH_FREE_STRATEGY_SYMBOLS`（JPY建て。空でなく重複なし。固定の銘柄数上限はない）。
+銘柄数を増やすとcontextが大きくなるため、gVisorへ渡す入力が `MAX_INPUT`（1MiB）を超えるcycleは `context_input_limit` でゲスト起動前に失敗する。
+
+**DSHで生成する場合（任意・既定OFF）**：`DOCICH_FREE_STRATEGY_GENERATOR=dsh` と `DOCICH_FREE_STRATEGY_DSH_ENABLED=1` の両方が揃い、
+かつ `DOCICH_FREE_STRATEGY_DSH_HOME` が有効な専用ディレクトリを指すときだけ、
+`npx --yes @deepseek-ai/dsh@latest --profile headless --approval-policy never --permission-mode read-only --json -` を空の一時ディレクトリで実行し、標準入力へプロンプトを渡す。
+`DOCICH_FREE_STRATEGY_DSH_HOME` は絶対パスの既存ディレクトリで、repo root と同一でもその内側でもなく、親processの `HOME` と同一でもないこと（mode 0700）。
+DSHのprofile/資格情報ストアとnpm cacheだけを置く専用ディレクトリとし、`~/.config/docich/*.env` を置くディレクトリを指定しない。
+未設定・不正な場合はHTTPS窓口未設定と同じ `text_provider_not_configured` で、プロセスを起動しない（生成予算も消費しない）。
+子processの `HOME` は常にこの専用ディレクトリへ上書きし、親の `HOME` は渡さない。`DSH_HOME` は継承値が無ければ `<DSH_HOME>/.dsh`、
+`npm_config_cache` は継承値が無ければ `<DSH_HOME>/.npm` を既定にする。
+その他の環境変数は許可リスト（`PATH`/`LANG`等、プロキシ、`DSH_HOME`、`npm_config_cache`、`OPENCODE_API_KEY`）だけを渡し、`DOCICH_*`・LIVE・取引所の変数は渡さない。
+`--permission-mode read-only` は `--dump-config` で確認した既存preset。DSHは道具とネットワークを持つエージェントなので、`research_brief` 経由のプロンプト注入と npm `@latest` のサプライチェーンは残存リスク。
+生成物はHTTPS経路と同じ検証だけを通し、ホストではimport/execせず、gVisor内でのみ実行する。タイムアウトは900秒、stdout 2MiB・stderr 64KiBで有界。失敗はすべて `text_provider_failed`。
+有効化の前提として、専用の `DSH_HOME` を用意し、unitの `PATH` 上で `npx`/`node` が起動できることを確認する（VMでの動作は未検証）。
+
+**DSH側の定期実行（任意）**：DSH には定期呼び出し（オートメーション）機能があるため、docich の timer を使わず DSH 側で同じプロンプトファイルを定期実行し、生成物を `docich free-strategy register` で登録する運用も選べる（その場合 docich 側のフックは無効のまま）。DSH 側オートメーション設定は本タスクでは未検証。
+
+**docich側のDSHフック（任意・既定OFF）**：`scripts/systemd/docich-free-strategy-dsh.service` と `.timer` は初期状態ではインストールもenableもしない（deployスクリプトは触らない）。
+有効化する場合だけ、`free-strategy-dsh.env.example` から `~/.config/docich/free-strategy-dsh.env` を作って `DOCICH_FREE_STRATEGY_DSH_ENABLED=1`、
+`DOCICH_FREE_STRATEGY_DSH_HOME`（専用ディレクトリ、0700）と `OPENCODE_API_KEY` を設定し、
+`docich-free-strategy-improve.timer` の**代わりに** `docich-free-strategy-dsh.timer` をenableする（両方を同時に動かさない。生成予算は共有）。
+
+導入（workerの導入後、VM上で）:
+
+```sh
+sed "s|__DOCICH_ROOT__|$(pwd)|g" scripts/systemd/docich-free-strategy-improve.service \
+  | sudo tee /etc/systemd/system/docich-free-strategy-improve.service >/dev/null
+sudo cp scripts/systemd/docich-free-strategy-improve.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now docich-free-strategy-improve.timer
+```
+
+DSHフックを使う場合のinstall例（improve.timerを使わない）:
+
+```sh
+sed "s|__DOCICH_ROOT__|$(pwd)|g" scripts/systemd/docich-free-strategy-dsh.service \
+  | sudo tee /etc/systemd/system/docich-free-strategy-dsh.service >/dev/null
+sudo cp scripts/systemd/docich-free-strategy-dsh.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+# 既にimprove.timerが動いているなら先に止める（両方を同時に動かさない）。
+sudo systemctl disable --now docich-free-strategy-improve.timer
+sudo systemctl enable --now docich-free-strategy-dsh.timer
+```

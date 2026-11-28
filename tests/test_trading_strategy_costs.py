@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 from docich.trading.events import build_fill_event  # noqa: E402
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
@@ -81,18 +82,26 @@ def decision(oid: str, side: str, price: object, *, strategy_id: str = "cost-che
     )
 
 
-@pytest.mark.parametrize("fee,slip,buy_price,sell_price", [
-    ("0", "0", "100", "100"),
-    ("0.003", "7", "100.3702100", "99.6302100"),
+def top(price: object, amount: object = "1") -> TopOfBook:
+    value = D(str(price))
+    return TopOfBook("BTC/JPY", value, value, NOW, bid_amount=D(str(amount)),
+                     ask_amount=D(str(amount)))
+
+
+@pytest.mark.parametrize("fee,slip", [
+    ("0", "0"),
+    ("0.003", "7"),
 ])
-def test_execution_helper_preserves_broker_cost_overrides(tmp_path, fee, slip, buy_price, sell_price):
+def test_execution_helper_preserves_broker_cost_overrides(tmp_path, fee, slip):
     ledger = PaperLedger(tmp_path / "paper.sqlite3")
     try:
         broker = PaperBroker(ledger, taker_fee_rate=fee, slippage_bps=slip)
-        for side, expected in (("buy", buy_price), ("sell", sell_price)):
-            fill = broker.fill(decision(side, side, "100"), timestamp=NOW)
-            assert fill.price == D(expected)
-            assert paper_execution_price("100", side, taker_fee_rate=fee, slippage_bps=slip) == fill.price
+        for side in ("buy", "sell"):
+            fill = broker.fill(decision(side, side, "100"), timestamp=NOW, book=top("100"))
+            # v3: the book VWAP is 100; only the taker fee moves the price,
+            # even though the broker was configured with a legacy slippage.
+            assert fill.price == paper_execution_price(
+                "100", side, taker_fee_rate=fee, slippage_bps="0")
     finally:
         ledger.close()
 
@@ -111,7 +120,8 @@ def test_lab_exit_estimate_matches_cost_inclusive_fill_and_survives_public_paths
     ledger = PaperLedger(tmp_path / "paper.sqlite3")
     try:
         broker = PaperBroker(ledger)
-        buy = broker.fill(decision("buy", "buy", "100"), timestamp=NOW - 300)
+        buy = broker.fill(
+            decision("buy", "buy", "100"), timestamp=NOW - 300, book=top("100"))
         frames = {"BTC/JPY": frame("BTC/JPY", [100, 100, 100, "100.6"])}
         result = scan_experiment_exits(
             frames, ledger.position_cost_basis(), experiment(profit_bps="20"), now=NOW,
@@ -121,12 +131,18 @@ def test_lab_exit_estimate_matches_cost_inclusive_fill_and_survives_public_paths
         context = result.reason_contexts[opportunity.opportunity_id]
         sell = broker.fill(
             decision(opportunity.opportunity_id, "sell", "100.6", strategy_id=opportunity.strategy_id),
-            timestamp=NOW, signal_context=context,
+            timestamp=NOW, signal_context=context, book=top("100.6"),
         )
         expected_bps = (sell.price / buy.price - D("1")) * D("10000")
         assert expected_bps > D("20")
-        assert D(context["pnl_bps"]) == expected_bps
-        assert D(context["conditions"][0]["observed"]) == expected_bps
+        # The exit decision stays close-based (with the estimate slippage) while
+        # the fill is the bid VWAP; they intentionally differ.
+        context_bps = (
+            paper_execution_price("100.6", "sell") / buy.price - D("1")
+        ) * D("10000")
+        assert context_bps < expected_bps
+        assert D(context["pnl_bps"]) == context_bps
+        assert D(context["conditions"][0]["observed"]) == context_bps
         assert context["last_price"] == "100.6"
         event = build_fill_event(sell, reason_context=context)
         status_context = signal_context_payload(sell.signal_context)
@@ -134,7 +150,7 @@ def test_lab_exit_estimate_matches_cost_inclusive_fill_and_survives_public_paths
         for recorded in (event["reason_context"], status_context, trip["exit_signal"]):
             assert recorded["conditions"][0]["unit"] == "net_pnl_bps"
         assert D(trip["realized_jpy"]) == sell.price - buy.price
-        assert "売却費用を含む推定損益率プラス0.26%" in render_notification(event, mode="compact").speech_text
+        assert "売却費用を含む推定損益率プラス0.31%" in render_notification(event, mode="compact").speech_text
     finally:
         ledger.close()
 
@@ -186,6 +202,7 @@ def test_historical_gross_pnl_signal_keeps_its_original_meaning(tmp_path):
         }
         sell = PaperBroker(ledger).fill(
             decision("historical", "sell", "101.5"), timestamp=NOW, signal_context=context,
+            book=top("101.5"),
         )
         event = build_fill_event(sell, reason_context=context)
         text = render_notification(event, mode="compact").speech_text

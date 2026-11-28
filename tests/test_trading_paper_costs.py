@@ -17,6 +17,7 @@ from docich.trading.paper import (  # noqa: E402
     DEFAULT_SLIPPAGE_BPS,
     DEFAULT_TAKER_FEE_RATE,
     PaperBroker,
+    PaperFillSkipped,
     resolve_fee_rate,
     resolve_slippage_bps,
 )
@@ -104,13 +105,98 @@ class TestPerMarketFees(unittest.TestCase):
             try:
                 broker = PaperBroker(ledger, markets={"BTC/JPY": market()}, books={"BTC/JPY": deep_book()})
                 fill = broker.fill(decision(), timestamp=1000.0)
-                # Deep book: zero slippage, only the (higher) quote taker fee widens the buy.
+                # Deep book: the ask VWAP is the top ask; only the (higher) quote
+                # taker fee widens the buy.
                 self.assertEqual(fill.price, D("1000000") * D("1.001"))
                 assert fill.cost_context is not None
+                self.assertEqual(fill.cost_context["model"], "paper-cost-v3")
+                self.assertEqual(fill.cost_context["price_source"], "book_vwap")
+                self.assertEqual(fill.cost_context["reference_close"], "1000000")
+                self.assertEqual(fill.cost_context["top_bid"], "1000000")
+                self.assertEqual(fill.cost_context["top_ask"], "1000000")
+                self.assertEqual(fill.cost_context["spread_bps"], "0")
                 self.assertEqual(fill.cost_context["fee_source"], "market")
-                self.assertEqual(fill.cost_context["slippage_source"], "depth")
+                self.assertNotIn("slippage_bps", fill.cost_context)
+                self.assertNotIn("slippage_source", fill.cost_context)
             finally:
                 ledger.close()
+
+
+class TestBookVwapExecution(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = PaperLedger(Path(self.tmp.name) / "paper.sqlite3")
+
+    def tearDown(self):
+        self.ledger.close()
+        self.tmp.cleanup()
+
+    def _book(self, *, bids, asks):
+        return DepthBook(
+            "BTC/JPY",
+            bids=tuple(DepthLevel(D(price), D(amount)) for price, amount in bids),
+            asks=tuple(DepthLevel(D(price), D(amount)) for price, amount in asks),
+            as_of=1000.0,
+        )
+
+    def test_buy_is_asks_vwap_plus_fee_without_slippage(self):
+        book = self._book(bids=(("99", "10"),), asks=(("100", "1"), ("102", "1")))
+        broker = PaperBroker(
+            self.ledger, markets={"BTC/JPY": market()}, books={"BTC/JPY": book},
+        )
+        fill = broker.fill(decision(amount="2"), timestamp=1000.0)
+        # VWAP = (100 * 1 + 102 * 1) / 2 = 101; fee = max(0.0005, 0.001).
+        self.assertEqual(fill.price, D("101") * D("1.001"))
+        assert fill.cost_context is not None
+        self.assertEqual(fill.cost_context["top_bid"], "99")
+        self.assertEqual(fill.cost_context["top_ask"], "100")
+        self.assertEqual(fill.cost_context["reference_close"], "1000000")
+
+    def test_sell_is_bids_vwap_minus_fee_without_slippage(self):
+        book = self._book(bids=(("99", "1"), ("98", "1")), asks=(("100", "10"),))
+        broker = PaperBroker(
+            self.ledger, markets={"BTC/JPY": market()}, books={"BTC/JPY": book},
+        )
+        fill = broker.fill(decision("sell-vwap", side="sell", amount="2"), timestamp=1000.0)
+        self.assertEqual(fill.price, D("98.5") * D("0.999"))
+        assert fill.cost_context is not None
+        self.assertEqual(fill.cost_context["top_bid"], "99")
+        self.assertEqual(fill.cost_context["top_ask"], "100")
+
+    def test_missing_book_does_not_fill(self):
+        broker = PaperBroker(self.ledger)
+        with self.assertRaises(PaperFillSkipped) as caught:
+            broker.fill(decision(), timestamp=1000.0)
+        self.assertEqual(caught.exception.reason_code, "book_unavailable")
+        self.assertEqual(self.ledger.recent_fills(limit=10), [])
+
+    def test_too_shallow_book_does_not_fill(self):
+        book = self._book(bids=(("99", "10"),), asks=(("100", "0.5"),))
+        broker = PaperBroker(self.ledger, books={"BTC/JPY": book})
+        with self.assertRaises(PaperFillSkipped) as caught:
+            broker.fill(decision(amount="1"), timestamp=1000.0)
+        self.assertEqual(caught.exception.reason_code, "depth_insufficient")
+        self.assertEqual(self.ledger.recent_fills(limit=10), [])
+
+    def test_malformed_book_does_not_fill(self):
+        class Broken:
+            bids = [("not-a-price", "1")]
+            asks = [("100", "1")]
+
+        broker = PaperBroker(self.ledger, books={"BTC/JPY": Broken()})
+        with self.assertRaises(PaperFillSkipped) as caught:
+            broker.fill(decision(amount="1"), timestamp=1000.0)
+        self.assertEqual(caught.exception.reason_code, "book_unavailable")
+        self.assertEqual(self.ledger.recent_fills(limit=10), [])
+
+    def test_cost_context_numbers_are_strings(self):
+        broker = PaperBroker(self.ledger, books={"BTC/JPY": deep_book()})
+        fill = broker.fill(decision(amount="0.01"), timestamp=1000.0)
+        assert fill.cost_context is not None
+        for key in ("reference_close", "top_bid", "top_ask", "spread_bps", "fee_rate"):
+            self.assertIsInstance(fill.cost_context[key], str, key)
+        self.assertEqual(fill.cost_context["model"], "paper-cost-v3")
+
 
 
 class TestDepthSlippage(unittest.TestCase):

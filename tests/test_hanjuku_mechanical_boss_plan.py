@@ -22,6 +22,15 @@ def _memory():
             '_records': [], 'plan': {'orders': {}}, 'world': {'garrison': {}, 'garrison_tick': {}}}
 
 
+def _ch12_memory():
+    chapter = 12
+    home = chart.home_castle(chapter)
+    normal = [c for c in chart.castles(chapter) if not chart.is_boss_castle(c) and c != home]
+    return {'chapter': chapter, 'captured': normal, 'tick': 1000,
+            '_records': [], 'plan': {'orders': {}},
+            'world': {'garrison': {}, 'garrison_tick': {}, 'sorties': {}}}
+
+
 def test_ch4_boss_plan_drops_completed_conquest_and_closed_sites():
     mem = _memory()
     mem['season_sites'] = {'四季王城(北西)': {'chapter': 4, 'state': 'closed'}}
@@ -41,6 +50,40 @@ def test_ch4_boss_plan_drops_completed_conquest_and_closed_sites():
     assert mem['plan']['orders']['4-A1'] == 'done'
     assert all(mem['plan']['orders'][s] == 'pending' for s in steps)
     assert '4-B1' not in mem['plan']['source_override']
+
+
+def test_ch12_mechanical_boss_plan_gives_boss_an_armable_purpose():
+    mem = _ch12_memory()
+    assert replan._mechanical_boss_plan(mem, 'rid') is True
+    order = next(o for o in mem['plan']['chart_plan']['orders'] if o['step'] == '12-B1')
+    assert order['purpose'] == 'attack'
+    assert order['purpose'] in ORD.LAUNCH_PRIORITY_PURPOSES
+
+
+def test_mechanical_boss_plan_preserves_existing_boss_purposes_and_probes(monkeypatch):
+    mem = _ch12_memory()
+    custom = (
+        {'step': 'X:boss-attack', 'general': '騎馬A', 'source': 'ディランダ',
+         'target': 'ボス', 'cards': (), 'after': None, 'purpose': 'attack'},
+        {'step': 'X:boss-move-probe', 'general': '騎馬A', 'source': 'ディランダ',
+         'target': 'ボス', 'cards': (), 'after': None, 'purpose': 'move',
+         'source_probe': True, 'roster_probe': True},
+        {'step': 'X:boss-read-probe', 'general': '騎馬A', 'source': 'ディランダ',
+         'target': 'ボス', 'cards': (), 'after': None,
+         'source_probe': True, 'roster_probe': True},
+    )
+    monkeypatch.setattr(replan.chart, 'orders', lambda chapter: ())
+    monkeypatch.setattr(replan.chart, 'all_orders', lambda chapter: custom)
+
+    assert replan._mechanical_boss_plan(mem, 'rid') is True
+    rows = {o['step']: o for o in mem['plan']['chart_plan']['orders']}
+    assert rows['X:boss-attack']['purpose'] == 'attack'
+    assert rows['X:boss-move-probe']['purpose'] == 'move'
+    assert rows['X:boss-move-probe']['source_probe'] is True
+    assert rows['X:boss-move-probe']['roster_probe'] is True
+    assert 'purpose' not in rows['X:boss-read-probe']
+    assert rows['X:boss-read-probe']['source_probe'] is True
+    assert rows['X:boss-read-probe']['roster_probe'] is True
 
 
 def test_ch4_mechanical_boss_plan_waits_until_every_normal_castle_is_owned():

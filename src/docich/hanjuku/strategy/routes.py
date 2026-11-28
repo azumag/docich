@@ -25,12 +25,34 @@ def is_road(chapter) -> bool:
     return chapter in ROAD_CHAPTERS
 
 
+# owner 2026-11-27: 第1話で間に城があるため直接行軍できない組。
+CHAPTER1_BLOCKED_LEGS = frozenset({
+    ('アルマムーン', 'スペンソニア'),
+})
+# ボスへ一直線に行けない城（間にジョンリギ/スペンソニアがある）。
+CHAPTER1_BOSS_BLOCKED_SOURCES = frozenset({'アルマムーン', 'ジョンリギ'})
+
+# owner 2026-11-28: 第4話もアルマムーンから各ボス（四季王城 x4）へは直接つながらず、
+# 必ず他の城を経由する。
+BOSS_BLOCKED_SOURCES = {
+    1: CHAPTER1_BOSS_BLOCKED_SOURCES,
+    4: frozenset({'アルマムーン'}),
+}
+
+
 def legs(chapter):
     if chapter == 9:
         # One winding road: a march goes to the adjacent castle, both ways
         # (a lost castle is retaken from either neighbour).
         road = chart.corridor(9)
         return {pair for a, b in zip(road, road[1:]) for pair in ((a, b), (b, a))}
+    if chapter == 1:
+        # owner 2026-11-27: 第1話は城同士が一直線でつながっていない。チャートの実測
+        # leg だけが攻撃可能（アルマムーン→スペンソニア は不可、ジョンリギ経由）。
+        # ボスも スペンソニア→けっかい のみ（アルマムーン/ジョンリギからは不可）。
+        # ボス leg（スペンソニア→けっかい）も含める: 行軍経路の探索（path）が
+        # ボス到達を必要とする。ボスの可否は allowed() 側で判定する。
+        return {(o['source'], o['target']) for o in chart.measured_orders(1)}
     return {(o['source'], o['target']) for o in chart.measured_orders(chapter)
             if not chart.is_boss_castle(o['target'])} if chapter == 3 else set()
 
@@ -39,9 +61,36 @@ def allowed(mem, source, target):
     chapter = mem.get('chapter')
     if chapter == 9:
         return (chart.is_boss_castle(target) or (source, target) in legs(9))
+    if chapter == 1:
+        # owner 2026-11-27: 第1話で「間に城があるため直接行けない」leg だけを塞ぐ。
+        # 全 leg を実測表に絞ると既存の偵察・補充の計画と衝突するため、
+        # まずは実際に問題になった組を明示的に拒否する。
+        if (source, target) in CHAPTER1_BLOCKED_LEGS:
+            return False
+        if chart.is_boss_castle(target):
+            return source not in CHAPTER1_BOSS_BLOCKED_SOURCES
+        return True
+    if chapter == 4:
+        # owner 2026-11-28: 第4話のボス（四季王城 x4）はアルマムーンから直接行けない。
+        if chart.is_boss_castle(target):
+            return source not in BOSS_BLOCKED_SOURCES[4]
+        return True
     return (chapter != 3 or chart.is_boss_castle(target)
             or (source, target) in legs(3)
             or (target in _owned(mem) and (target, source) in legs(3)))
+
+
+def transfer_allowed(mem, source, target):
+    """Whether a transfer (move) may march from source to target.
+
+    owner 2026-11-27: 攻撃と移動で第1話の扱いを分ける。攻撃・奪還は実測 leg のみ
+    （allowed）だが、自城への将軍移動は所有城を経由する relay を許す。
+    """
+    if mem.get('chapter') != 1:
+        return True
+    if allowed(mem, source, target):
+        return True
+    return bool(path(mem, source, target, _owned(mem)))
 
 
 def move_leg(mem, source, target, owned=None):

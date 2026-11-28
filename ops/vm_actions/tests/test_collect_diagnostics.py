@@ -1646,6 +1646,26 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    state['bot_version']='hanjuku-chart-v1448-auto-carry-safe-card'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1448-auto-carry-safe-card'
+    state['bot_version']='hanjuku-chart-v1449-chikujou-hold-note'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-chikujou-hold-note'
+    state['bot_version']='hanjuku-chart-v1450-attack-route-revalidation'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1450-attack-route-revalidation'
+    state['bot_version']='hanjuku-chart-v1451-dome-camp-terminal-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1451-dome-camp-terminal-evidence'
+    state['bot_version']='hanjuku-chart-v1450-password-dispatch'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1450-password-dispatch'
+    state['bot_version']='hanjuku-chart-v1451-defense-wait-probe'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1451-defense-wait-probe'
+    state['bot_version']='hanjuku-chart-v1452-battle-card-row-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1452-battle-card-row-evidence'
+    state['bot_version']='hanjuku-chart-v1449-dome-camp-terminal-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-dome-camp-terminal-evidence'
+    state['bot_version']='hanjuku-chart-v1447-password-measured-order'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1447-password-measured-order'
+    state['bot_version']='hanjuku-chart-v1440-chikujou-event-text-advance'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1440-chikujou-event-text-advance'
     for marker in (
         'hanjuku-chart-v1460-password-entered-field',
         'hanjuku-chart-v1461-melee-only-ugokazaru',
@@ -1925,6 +1945,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1464-verified-month-blind-nav",
                  "hanjuku-chart-v1456-live-boss-sortie-audit",
                  "hanjuku-chart-v1402-sortie-audit-confidence",
+                 "hanjuku-chart-v1409-chikujou-affordability-retry",
                  "hanjuku-chart-v1415-merchant-strong-first",
                  "hanjuku-chart-v1416-card-miss-after-use",
                  "hanjuku-chart-v1417-stall-refresh",
@@ -1941,9 +1962,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1569-chikujou-scan",
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
-<<<<<<< HEAD
                  "hanjuku-chart-v1555-spend-eggs-and-cards",
-=======
                  "hanjuku-chart-v1557-order-start-proof",
                  "hanjuku-chart-v1559-selected-card-interruption",
                  "hanjuku-chart-v1558-game-over-issue",
@@ -1958,6 +1977,46 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1575-ch9-cliff-camp-recall",
                  "hanjuku-chart-v1576-stale-wave-fresh-cell",
                  "hanjuku-chart-v1577-boss-redirect-y-jump",
+<<<<<<< HEAD
+=======
+                 "hanjuku-chart-v1581-move-arrival-observed",
+                 "hanjuku-chart-v1582-mechanical-boss-purpose",
+                 "hanjuku-chart-v1583-ch9-cavalry-and-ch12-keep-three",
+                 "hanjuku-chart-v1583-card-miss-evidence",
+                 "hanjuku-chart-v1584-stepless-card-ledger",
+                 "hanjuku-chart-v1585-card-row-unread",
+                 "hanjuku-chart-v1587-sortie-launch-latch",
+                 "hanjuku-chart-v1586-corridor-probe-count",
+                 "hanjuku-chart-v1586-announce-interrupt-settle",
+                 "hanjuku-chart-v1592-unreadable-card-loop",
+                 "hanjuku-chart-v1593-unreadable-card-source",
+                 "hanjuku-chart-v1594-boss-no-start",
+                 "hanjuku-chart-v1596-boss-card-retreat-residual",
+                 "hanjuku-chart-v1590-boss-sole-starved-break",
+                 "hanjuku-chart-v1594-chikujou-hold-receipt",
+                 "hanjuku-chart-v1595-boss-order-recovery",
+                 "hanjuku-chart-v1598-boss-move-retry",
+                 "hanjuku-chart-v1599-boss-move-retry",
+                 "hanjuku-chart-v1600-ch4-boss-not-direct",
+                 "hanjuku-chart-v1601-sortie-identity",
+                 "hanjuku-chart-v1602-sortie-fail-identity",
+                 "hanjuku-chart-v1605-boss-egg-unread",
+                 "hanjuku-chart-v1606-ch4-boss-source-reach",
+                 "hanjuku-chart-v1607-chikujou-noncontiguous",
+                 "hanjuku-chart-v1609-normal-loss-no-refusal",
+                 "hanjuku-chart-v1612-month-floor-dispatch",
+                 "hanjuku-chart-v1613-general-loss-card-spend",
+                 "hanjuku-chart-v1608-recall-y-recovery",
+                 "hanjuku-chart-v1610-general-list-recovery",
+                 "hanjuku-chart-v1611-sortie-floor-priority",
+                 "hanjuku-chart-v1605-retreat-card-flow",
+                 "hanjuku-chart-v1606-normal-general-card-spend",
+                 "hanjuku-chart-v1607-chikujou-scan-inner",
+                 "hanjuku-chart-v1601-comment-strategy",
+                 "hanjuku-chart-v1602-sortie-identity",
+                 "hanjuku-chart-v1597-chikujou-defer-reason",
+                 "hanjuku-chart-v1598-egg-row-scroll",
+                 "hanjuku-chart-v1596-chikujou-deferral-skip",
 >>>>>>> origin/main
 )
     for version in versions:

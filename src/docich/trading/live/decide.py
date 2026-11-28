@@ -35,6 +35,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping
 
+from ..liquidity import entry_block
 from ..models import SkipDecision
 from .exchange import OrderBook
 from .inputs import CycleInputs, build_cycle_inputs, sell_attempts_for
@@ -101,6 +102,21 @@ def _drop_symbol(signals: LiveSignals, symbol: str,
     return filtered, dropped
 
 
+def _drop_entries(signals: LiveSignals, symbol: str,
+                  reason: str) -> tuple[LiveSignals, list[SkipDecision]]:
+    """Remove only the BUY entries of ``symbol``; its exits stay untouched."""
+    dropped: list[SkipDecision] = []
+    entries = []
+    for opportunity in signals.entries:
+        if opportunity.symbol == symbol:
+            dropped.append(SkipDecision(opportunity.opportunity_id, opportunity.symbol,
+                                        reason, side=opportunity.side))
+        else:
+            entries.append(opportunity)
+    filtered = dataclasses.replace(signals, entries=tuple(entries))
+    return filtered, dropped
+
+
 def _restrict(signals: LiveSignals, symbol: str) -> LiveSignals:
     """The same signals with everything outside ``symbol`` removed (for one-market dry runs)."""
     return LiveSignals(
@@ -133,6 +149,28 @@ def _payload(plan, mode_text: str, cycle_text: str, blocks_text: str) -> dict:
     }
 
 
+def entry_exit_policies(ledger, held, policy_set) -> dict:
+    """The entry policy of each held position whose digest is not the active one.
+
+    After a promotion the active policy of a symbol changes while an older position is
+    still open.  That position keeps the exit rules it was entered under (Issue #3623
+    §2.6-5); buys stay blocked by ``legacy_position_open`` until it is flat.  A digest the
+    ledger cannot load is left out, so the sell falls back to the active exit rules: the
+    sell still carries the entry digest (the ledger trigger), only the rule set differs.
+    """
+    policies: dict = {}
+    for symbol, position in (held or {}).items():
+        digest = getattr(position, "entry_policy_digest", None)
+        active = policy_set.policies.get(symbol)
+        if not digest or active is None or digest == active.digest:
+            continue
+        try:
+            policies[symbol] = ledger.load_policy(digest)
+        except Exception:
+            continue
+    return policies
+
+
 def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext", *,
                     inputs: CycleInputs | None = None, dedupe: dict | None = None,
                     decision_prefix: str = "live1",
@@ -148,7 +186,8 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
     rules = deps.executor.rules()
     if inputs is None:
         inputs = build_cycle_inputs(deps.ledger, rules=rules, balance=ctx.balance,
-                                    policy_set=deps.policy_set)
+                                    policy_set=deps.policy_set,
+                                    free_digests=deps.ledger.free_policy_digests())
     keys = state.dedupe if dedupe is None else dedupe
 
     def attempts_for(exits):
@@ -157,7 +196,9 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
         return sell_attempts_for(deps.ledger, exits, inputs.held, deps.policy_set,
                                  decision_prefix=decision_prefix)
 
-    signals = scan_live(ctx.frames, inputs.positions, deps.policy_set, now=ctx.now)
+    signals = scan_live(ctx.frames, inputs.positions, deps.policy_set, now=ctx.now,
+                        exit_policies=entry_exit_policies(deps.ledger, inputs.held,
+                                                          deps.policy_set))
 
     skip_decisions: list[SkipDecision] = list(signals.skipped)
 
@@ -203,6 +244,20 @@ def build_decisions(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext",
         if problem is not None:
             current, dropped = _drop_symbol(current, symbol, problem)
             skip_decisions.extend(dropped)
+            del books[symbol]
+
+    # ---- liquidity gate: NEW BUYS only ------------------------------------------------
+    # A wide spread or a mostly empty recent history blocks entries, never exits:
+    # closing a position must stay possible even when the market is thin.
+    for symbol in sorted(tuple(books)):
+        if not any(item.symbol == symbol for item in current.entries):
+            continue
+        reason = entry_block(books[symbol], ctx.frames.get(symbol))
+        if reason is None:
+            continue
+        current, dropped = _drop_entries(current, symbol, reason)
+        skip_decisions.extend(dropped)
+        if not any(item.symbol == symbol for item in current.entries + current.exits):
             del books[symbol]
 
     # ---- markets: rules + a fresh frame + a good book ---------------------------------

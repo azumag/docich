@@ -563,6 +563,7 @@ def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
     assert record['enemy'] == 'タピオカ'
     assert record['observed_metric'] == {
         'ally_hp': 4, 'enemy_hp': 50, 'card_confirmation': 'unclassified',
+        'cards_selected': [], 'cards_used': [],
         'cards_unclassified': ['グリンボー']}
 
 

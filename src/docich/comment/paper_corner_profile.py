@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover - only a broken tz database reaches this
     _JST = timezone(timedelta(hours=9))
 
 PAPER_VIEW = "paper-view"
-BLURB = "PAPER暗号資産コーナー。仮想資金の模擬売買で損益を検証している(実取引なし)"
+BLURB = "暗号通貨コーナー。画面はPAPER取引(仮想資金の模擬売買)の損益。本番(LIVE)の実取引の結果は解説で別に発表する"
 
 # The paper worker publishes every 60s.  Three missed cycles means the numbers
 # may no longer be the current state, so they are shown as reference values.
@@ -52,9 +52,10 @@ GAME_RULES_EN = (
     "included), 区間損益 (today's realized P/L), 含み損益 (unrealized P/L), 保有 "
     "(positions), 直近約定 (recent fills), BOTの判断 (decision summary).\n"
     "When asked about money, profit, or losses, use the current-corner memo's numbers, "
-    "state whether the cumulative P/L is up or down, and always say this is PAPER trading "
-    "with virtual funds, not real income. Do not apply the Soviet game's rules "
-    "(countries, merging, score)."
+    "state whether the cumulative P/L is up or down, and always say these screen numbers are "
+    "PAPER trading with virtual funds, not real income. A separate LIVE bot trades real money; "
+    "its results are announced in the corner narration only, so never invent LIVE numbers. "
+    "Do not apply the Soviet game's rules (countries, merging, score)."
 )
 
 GAME_RULES_JA = (
@@ -63,18 +64,19 @@ GAME_RULES_JA = (
     "実際のお金・口座・発注は使わず、約定と損益は公開価格からローカルで模擬計算している\n"
     "\t- 画面の主な表示: 資金、投入、累積損益、区間損益(確定分)、含み損益、保有、直近約定、BOTの判断\n"
     "\t- お金・儲け・損益を聞かれたら、現在のコーナーのメモの数字で、累積損益がプラスかマイナスかを答える\n"
-    "\t- 必ずPAPER取引(仮想資金)であり実収入ではないと伝える。実取引の利益のように話さない\n"
+    "\t- 画面の数字は必ずPAPER取引(仮想資金)であり実収入ではないと伝える。実取引の利益のように話さない\n"
+    "\t- 本番(LIVE)の実取引も別に動いており、その結果はコーナーの解説で発表する。コメント返答ではLIVEの金額を作らない\n"
     "\t- ソ連ゲームの国・併合・得点のルールで説明しない"
 )
 
 UI_MEMO = (
-    "【いまの画面: PAPER暗号資産コーナー】\n"
+    "【いまの画面: 暗号通貨コーナー（PAPER＋LIVE）】\n"
     "画面上部に「PAPER / 模擬」と資金・投入。カードに累積損益・区間損益(確定分)・"
     "含み損益、保有銘柄、直近約定、BOTの判断が出る。"
 )
 
 OPS_LINES = (
-    "- このコーナーはPAPER暗号資産コーナー。仮想資金の模擬売買で、実際のお金は増減しない",
+    "- このコーナーは暗号通貨コーナー。画面はPAPER取引(仮想資金の模擬売買)で、実際のお金は増減しない。本番(LIVE)の実取引の結果は解説で別に発表する",
     "- ソ連ゲームの戦略改善・メリケンAI・予想の話は、このコーナーの話ではない",
 )
 
@@ -212,9 +214,9 @@ def _worker_label(status: Mapping[str, object]) -> str:
 
 def _unavailable() -> str:
     return "\n".join((
-        "現在のメイン画面: PAPER暗号資産コーナー(paper-view)。"
+        "現在のメイン画面: 暗号通貨コーナー(paper-view)。"
         "実際のお金は使わないPAPER取引で、仮想資金による暗号資産の模擬売買を検証している。"
-        "実口座・実発注はない。",
+        "画面の数字に実口座・実発注はない(本番LIVEの実取引の結果は解説で別に発表する)。",
         "※このコーナーの損益ステータスはまだ取得できていない。資金・損益を聞かれたら、"
         "今は数字を確認できないと答え、推測で金額を作らない。PAPER取引(仮想資金)であることは必ず伝える。",
         "ソ連ゲームのスコア・建国・戦略改善の話ではない。",
@@ -288,9 +290,9 @@ def _facts(status: Mapping[str, object], moment: float) -> _Facts:
 def _game_state(f: _Facts) -> str:
     """Measured PAPER corner facts plus the rule for money questions."""
     lines = [
-        "現在のメイン画面: PAPER暗号資産コーナー(paper-view)。"
+        "現在のメイン画面: 暗号通貨コーナー(paper-view)。"
         "実際のお金は使わないPAPER取引で、仮想資金による暗号資産の模擬売買を検証している。"
-        "実口座・実発注はない。",
+        "画面の数字に実口座・実発注はない(本番LIVEの実取引の結果は解説で別に発表する)。",
     ]
     if f.as_of is None:
         lines.append("画面の成績(最終更新時刻は不明):")

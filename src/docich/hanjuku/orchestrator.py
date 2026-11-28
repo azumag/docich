@@ -9,6 +9,8 @@ returned records and sends the bounded pad actions.
 from __future__ import annotations
 
 from .os_layer.pixels import Frame
+import unicodedata
+
 from . import decision_log
 from .flows import (battle as battle_flow, battle_menus as battle_menus_flow,
                     card_census as card_census_flow,
@@ -214,6 +216,66 @@ def event_text_advance(mem, phase, kind, key, actions, guarded=False):
     else:
         mem.pop('event_text_watch', None)
     return advance
+
+
+def _chikujou_partial_castle_label(text, chapter):
+    """Recognize a typewriter prefix of a catalog castle without changing state labels."""
+    folded = ''.join(unicodedata.normalize('NFKC', text or '').split())
+    if len(folded) < 2:
+        return False
+    labels = (month_flow.STATUS_NAMES.get(name, name)
+              for name in month_flow.chart.CASTLE_NAMES.get(chapter or 1, ()))
+    for label in labels:
+        native = ''.join(unicodedata.normalize('NFKC', label).split())
+        if native.startswith(folded):
+            return True
+        if folded.startswith(native) and folded[len(native):].startswith('じょう'):
+            return True
+    return False
+
+
+def _chikujou_menu_text_owned(mem, kind, key):
+    """A live castle list/result owns its text; generic event A must not select it."""
+    sub = mem.get('month_sub')
+    if (kind != 'text' or not isinstance(sub, dict)
+            or sub.get('kind') != 'chikujou'):
+        return False
+    text = key[5:] if isinstance(key, str) and key.startswith('text:') else ''
+    return (_is_chikujou_prompt(text)
+            or _chikujou_partial_castle_label(text, mem.get('chapter'))
+            or any(token in text for token in
+                   ('どのしろをぞうちく', 'どのしろをそうたく',
+                    'これいじょうのぞうちく', 'うむッ', 'いかんッ',
+                    'よろしいですかな', 'かかりますが',
+                    'おかねがたりません', 'しょうぐんがおりませなんだ')))
+
+
+def _dome_camp_menu_text_owned(recall, recall_dialog, kind):
+    """Recognize recall-owned dome text so its bounded menu wait can restart once."""
+    return bool(recall_dialog and isinstance(recall, dict)
+                and recall.get('stage') == 'menu'
+                and recall.get('camp_kind') == 'dome'
+                and kind == 'text')
+
+
+def event_text_advance_step(mem, phase, kind, key, actions, guarded=False, dome_recall=None):
+    """Advance unrelated event narration without consuming a live foreground-owner wait."""
+    guarded = guarded or _chikujou_menu_text_owned(mem, kind, key)
+    advanced = event_text_advance(mem, phase, kind, key, actions, guarded)
+    if advanced:
+        sub = mem.get('month_sub')
+        if isinstance(sub, dict) and sub.get('kind') == 'chikujou':
+            # The A belongs to unrelated scripted narration, not a failed
+            # castle transition. Give the resumed native list its own wait.
+            sub['build_wait'] = 0
+        if (isinstance(dome_recall, dict) and dome_recall.get('stage') == 'menu'
+                and dome_recall.get('camp_kind') == 'dome'
+                and dome_recall.get('event_text_advance_restarted') is not True):
+            # One known text advance gets a fresh menu window. Further event
+            # A presses must not extend the dome's bounded close indefinitely.
+            dome_recall['menu_other'] = 0
+            dome_recall['event_text_advance_restarted'] = True
+    return advanced
 
 
 # docich#4632: an unreadable scripted-scene frame (kind 'unknown' in a
@@ -1766,6 +1828,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=_memory
+    # The month-scan floor latch belongs to the observation that produced it.
+    # Clearing it here makes a persisted latch inert after a restart and lets
+    # each new yield re-arm exactly one dispatch-priority frame.
+    strategy_orders.clear_sortie_floor_dispatch(mem)
     # v1356/S3b: a policy written before the field-inventory ledger's semantics
     # changed carries an old ``card_stock``. There is no reservation on a
     # hotload, so the first observation after the deploy books exactly one
@@ -2409,6 +2475,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if actions is None:
         from .flows import arrival_status
         actions = arrival_status.step(screen, mem)
+    # docich#5812: when the month scan yielded this exact map frame to a
+    # startable order, dispatch owns it before boss pursuit or housekeeping.
+    # The latch is re-armed only while the bounded floor yield repeats, so a
+    # spent/reclaimed floor returns these owners to their normal priority.
+    if (actions is None and kind == 'map' and mem.get('chapter')
+            and strategy_orders.active_sortie_floor_dispatch(mem)):
+        actions = map_flow.map_step(screen, mem, frame)
     if actions is None:
         from .flows import boss_pursuit
         actions = boss_pursuit.step(screen, mem, frame)
@@ -2642,10 +2715,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     summon_scene = bool(battle.get('summon_scene') or mem.get('summon_scene'))
     from .state.regions import plan as _plan_here
     plan_active = bool(_plan_here(mem).get('active'))
+    dome_recall = (recall if _dome_camp_menu_text_owned(recall, recall_dialog, kind)
+                    else None)
     text_guarded = event_guarded and not (
         kind == 'text' and phase == 'dialogue' and screen.text
         and not named_hold and not summon_scene and not plan_active)
-    if event_text_advance(mem, phase, kind, concert_key, actions, text_guarded):
+    if event_text_advance_step(mem, phase, kind, concert_key, actions, text_guarded,
+                               dome_recall=dome_recall):
         decision_log._record(mem,'event_text_advance',screen=kind,phase=phase,
                        observed_metric={'unchanged_observations':EVENT_TEXT_ADVANCE_MAX,
                                         'frame_sha256':digest},

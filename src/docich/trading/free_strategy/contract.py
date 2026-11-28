@@ -117,7 +117,9 @@ class Artifact:
                initial_state: dict | None = None) -> Artifact:
         if not isinstance(image, str) or not IMAGE_RE.fullmatch(image):
             raise StrategyError("immutable_image_required")
-        if (not isinstance(symbols, list) or not 1 <= len(symbols) <= 8
+        # No fixed symbol-count cap: a bounded context and the per-cycle/daily budgets
+        # keep the observation finite.  Require a non-empty, duplicate-free JPY list.
+        if (not isinstance(symbols, list) or not symbols
                 or any(not isinstance(s, str) or not SYMBOL_RE.fullmatch(s) for s in symbols)
                 or len(set(symbols)) != len(symbols)):
             raise StrategyError("invalid_symbols")

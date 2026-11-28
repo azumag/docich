@@ -1,4 +1,4 @@
-"""Shadow judge for PAPER promotion (Issue #3623 rule v3): read-only, never raises."""
+"""Shadow judge for PAPER promotion (Issue #3623 rule v4): read-only, never raises."""
 import json
 import tempfile
 import unittest
@@ -59,15 +59,19 @@ class EProcessTests(unittest.TestCase):
         self.assertIsNone(result["promoted_day"])
 
 
-def _cell(symbol, experiment_id, values, start=17, closed_sells=10):
-    return {
+def _cell(symbol, experiment_id, values, start=17, closed_sells=10, v3=True):
+    blocks = [
+        {"day": day, "count": 1, "mean_return_corrected": str(value),
+         "mean_return": str(value)}
+        for day, value in _days(values, start)
+    ]
+    cell = {
         "symbol": symbol, "experiment_id": experiment_id, "closed_sells": closed_sells,
-        "return_blocks": [
-            {"day": day, "count": 1, "mean_return_corrected": str(value),
-             "mean_return": str(value)}
-            for day, value in _days(values, start)
-        ],
+        "return_blocks": blocks,
     }
+    if v3:
+        cell["return_blocks_v3"] = blocks
+    return cell
 
 
 class BuildShadowTests(unittest.TestCase):
@@ -92,12 +96,23 @@ class BuildShadowTests(unittest.TestCase):
         self.assertEqual(result["promotable_count"], 1)
         self.assertEqual(result["promotable"][0]["symbol"], "ADA/JPY")
         self.assertEqual(result["promotable"][0]["experiment_id"], "ada_261116")
-        self.assertEqual(result["rule_version"], "v3")
+        self.assertEqual(result["rule_version"], "v4")
+        self.assertNotIn("first_block_day", result)
 
-    def test_blocks_before_the_first_whole_day_after_freezing_are_ignored(self):
+    def test_blocks_before_the_old_rule_v3_date_are_now_included(self):
         result = self._build([_cell("ADA/JPY", "ada_261116", [0.5] * 8, start=9)])
-        # days 11-09..11-16 are all before FIRST_BLOCK_DAY (2026-11-17)
+        self.assertEqual(result["cells_evaluated"], 1)
+        self.assertEqual(result["promotable_count"], 1)
+
+    def test_v2_only_blocks_are_never_promoted(self):
+        result = self._build([_cell("ADA/JPY", "ada_261116", [0.5] * 8, v3=False)])
         self.assertEqual(result["cells_evaluated"], 0)
+        self.assertEqual(result["promotable_count"], 0)
+
+    def test_five_strong_v3_day_blocks_are_promotable(self):
+        result = self._build([_cell("ADA/JPY", "ada_261116", [0.019] * 5)])
+        self.assertEqual(result["cells_with_min_blocks"], 1)
+        self.assertEqual(result["promotable_count"], 1)
 
     def test_counts_and_ruin(self):
         result = self._build([
@@ -120,8 +135,8 @@ class BuildShadowTests(unittest.TestCase):
 
     def test_malformed_blocks_are_skipped(self):
         cell = _cell("ADA/JPY", "ada_261116", [0.01] * 6)
-        cell["return_blocks"].extend([{"day": "2026-11-30", "mean_return_corrected": "nan"},
-                                      {"day": "2026-11-30", "mean_return_corrected": "oops"}, 7])
+        cell["return_blocks_v3"].extend([{"day": "2026-11-30", "mean_return_corrected": "nan"},
+                                         {"day": "2026-11-30", "mean_return_corrected": "oops"}, 7])
         result = self._build([cell])
         self.assertEqual(result["cells_evaluated"], 1)
 

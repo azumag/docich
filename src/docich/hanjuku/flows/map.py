@@ -37,14 +37,17 @@ from ..strategy.execution import departure_snapshot
 from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
 from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT,
                                _boss_companion_wait_expired, _broken_hero_order,
+                               clear_sortie_launch_priority,
                                drop_retired_step_context, _finish_order,
-                               _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
+                               _garrison_move, _give_up_source, _launch_probe_matches_live_sortie,
+                               _near_goal, _order, _order_for_step, _ready,
                                _recall_goal, _retire_unentered_sortie,
                                _sortie_general, _sortie_resume_arm, _sortie_resume_due,
                                _sortie_resume_reconcile, _sortie_resume_resumed,
                                _sortie_resume_target_unverified, _source,
                                SORTIE_PICKER_RESUME_LIMIT,
                                next_order, order_dispatch_starved, parked_boss_steps,
+                               active_sortie_floor_dispatch,
                                arm_sortie_launch_priority)
 from ..strategy.replan import _off_chart
 from .result import FlowResult
@@ -196,6 +199,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     previous = _sorties(mem).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
+    (_flow(mem).get('launch_probe') or {}).pop(step, None)
     _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
@@ -375,9 +379,10 @@ def _recall_exhausted(mem, recall):
 def _goal_after_failures(mem, flags, recall, goal):
     """A destination that never accepted this camp's recall is replaced.
 
-    ``camp_recall_goal_failed`` counts (camp, castle) pairs whose A was sent and
-    never arrived. Keep the nearest castle that has not failed yet, so a silent
-    failure stops repeating every month (g1190 2026-11-17: リーキ -> アルマムーン
+    ``camp_recall_goal_failed`` counts (camp, castle) pairs whose dispatch
+    never arrived, plus the measured pre-dispatch residual closes of docich#5788.
+    Keep the nearest castle that has not failed yet, so a silent failure stops
+    repeating every month (g1190 2026-11-17: リーキ -> アルマムーン
     three times, the general still camped).
     """
     if not isinstance(goal, str):
@@ -2574,7 +2579,8 @@ def map_step(screen: Screen, mem, frame):
     # sparser than the interval while a chapter throws battles (g1133
     # 2026-11-05: every cluster re-sent SELECT and no order ever drove).
     recentered = _apply_select_centered(mem)
-    if (not recentered
+    floor_dispatch = active_sortie_floor_dispatch(mem)
+    if (not recentered and not floor_dispatch
             and _cursor(screen) and not screen.marker and not mem.get('y_jump')
             and not mem.get('select_used') and not mem.get('near_goal')):
         tick = int(mem.get('tick') or 0)
@@ -2623,7 +2629,7 @@ def map_step(screen: Screen, mem, frame):
         # Before choosing what to do next, read every castle's owner at once —
         # unless a boss-phase order is starved for dispatch (docich#5077):
         # the repeated survey then yields one frame to the block below.
-        if not order_dispatch_starved(mem):
+        if not floor_dispatch and not order_dispatch_starved(mem):
             mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
             mem.pop('world_map_due', None)
             _record(mem, 'world_map_open', screen=screen.kind,
@@ -2733,6 +2739,9 @@ def map_step(screen: Screen, mem, frame):
         # the later departure commit. Housekeeping otherwise keeps preempting
         # the long source/cards/target walk before sortie_departure_requested.
         arm_sortie_launch_priority(mem, order)
+        # owner 2026-11-28: 月内に一度でも出撃が始まったかを月単位で記録する
+        # （月一メニューの処理が月を食い尽くすのを防ぐ判断に使う）。
+        mem['sortie_started_month'] = mem.get('month')
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
@@ -3061,6 +3070,7 @@ def _commit_departure(mem, order, context, snapshot):
     previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
+    (_flow(mem).get('launch_probe') or {}).pop(order['step'], None)
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     _world(mem).setdefault('sorties', {})[order['step']] = {
@@ -3085,7 +3095,9 @@ def _commit_departure(mem, order, context, snapshot):
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
-            'tick': int(mem.get('tick') or 0), 'roster_read': False}
+            'tick': int(mem.get('tick') or 0), 'roster_read': False,
+            **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
+               if 'departure_binding' in snapshot else {})}
         # owner 2026-11-27 (#5696/#5702): 出撃を開始したが発射を確認できていない
         # 間は、築城一覧・家来確認などの割り込みより発射確認を優先する。
         arm_sortie_launch_priority(mem, order)
@@ -3171,8 +3183,9 @@ def _probe_launch_markers(mem, markers):
     now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
         sortie = _sorties(mem).get(step)
-        if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
+        if not _launch_probe_matches_live_sortie(probe, sortie):
             probes.pop(step, None)
+            clear_sortie_launch_priority(mem, step)
             continue
         if probe.get('blind'):
             if probe.get('kept'):
@@ -3303,6 +3316,11 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
         return
     roster = list(generals)
     for step, probe in list(probes.items()):
+        sortie = _sorties(mem).get(step)
+        if not _launch_probe_matches_live_sortie(probe, sortie):
+            probes.pop(step, None)
+            clear_sortie_launch_priority(mem, step)
+            continue
         if probe.get('source') != castle:
             continue
         general = probe.get('general')
@@ -3316,7 +3334,6 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
             # find the unit, a name that merely scrolled off proves nothing.
             continue
         probes.pop(step, None)
-        sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
@@ -3352,6 +3369,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
     _sorties(mem).pop(step, None)
+    clear_sortie_launch_priority(mem, step)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)

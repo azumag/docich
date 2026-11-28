@@ -22,11 +22,13 @@ from ..decision_log import _record, _tally
 from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, CARD_LIST_OPEN_WAITS, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
-                               RETREAT_CARD_GRACE_LIMIT, _retreat_cards_to_spend, _retreat_immediate_loss,
+                               RETREAT_CARD_GRACE_LIMIT, CARD_OPEN_ATTEMPTS, CARD_SPEND_ATTEMPT_LIMIT,
+                               _retreat_cards_to_spend, _retreat_immediate_loss,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
-                               MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _bind_battle_strategy,
+                               MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _begin_card_flow, _bind_battle_strategy,
                                _bind_event_duel, _bind_substitute_defender, _boss_tactics_allowed,
                                _card_damage_gate, _card_damage_key, _card_damage_recheck_resources,
+                               _card_miss_evidence,
                                _card_melee_ready, _card_use_unclassified, _charted_melee, _command_open_wait,
                                _critical_safe_card, _critical_survival_needed, _defender_egg_window, _defender_last_resort,
                                _defender_summon_preempt, _defense_kit_read_unread, _defense_kit_read_window,
@@ -35,6 +37,7 @@ from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD
                                _egg_race_pressure, _score_pressure,
                                _release_interrupted_card_flow,
                                _hero_losing_melee, _hero_retreat_needed, _hold_general_loss_metric, _hold_melee_egg, _melee_balance,
+                               _launched_carried_snapshot,
                                _dying_with_egg, _migrate_card_evidence, _observe_egg_drop_candidate, _one_hit_lethal,
                                _hp1_resource_hold,
                                _early_resource_rescue_needed, _own_egg_empty, _own_egg_positive, _strong_card_tactics, _strong_enemy, _survival_needed,
@@ -48,6 +51,7 @@ from ..strategy.campaign import _castle_label, observe_chapter_castle, observe_c
 from ..strategy.kit import _is_boss_order
 from ..strategy.execution import bound_fields
 from ..strategy.orders import (LONG_MARCH_TICKS, SITE_LATE_ENTRY_TICKS, _bind_sortie,
+                                clear_sortie_launch_priority,
                                 drop_retired_step_context,
                                 _garrison_move, _match_sortie, _order_for_step, _tactics)
 
@@ -580,6 +584,7 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
     tactic that has not come due yet.
     """
     step = cur.get('step')
+    ledger_step = step
     if _dying_with_egg(mem, cur):
         if not cur.get('egg_opening_preempt_recorded'):
             cur['egg_opening_preempt_recorded'] = True
@@ -601,6 +606,7 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
                 and isinstance(snapshot.get('cards'), list) and snapshot['cards']):
             # The launched snapshot carries the measured actor and carried kit.
             bound = {'general': snapshot['general'], 'cards': list(snapshot['cards'])}
+            ledger_step = snapshot.get('step') or ledger_step
         else:
             context = (_plan_region(mem).get('order_context') or {}).get(step) or {}
             observed = context.get('observed_metric')
@@ -608,6 +614,7 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
             if (snapshot.get('corridor') is True and isinstance(cards, list) and cards
                     and context.get('actual_general') == cur.get('ally')):
                 bound = {'general': context['actual_general'], 'cards': list(cards)}
+                ledger_step = snapshot.get('step') or ledger_step
             else:
                 # The battle's step and the sortie's launch step can disagree
                 # (a retry mints a new step; the march context may not be set
@@ -621,13 +628,11 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
                 if cur.get('side') == 'defense':
                     return []
                 ally = cur.get('ally')
-                recent = [(snap.get('confirmation_tick') or 0, snap) for snap in
-                          (_world(mem).get('launched_orders') or {}).values()
-                          if isinstance(snap, dict) and snap.get('general') == ally
-                          and isinstance(snap.get('cards'), list) and snap['cards']]
-                if not recent:
+                snapshot_step, chosen = _launched_carried_snapshot(mem, ally)
+                if (chosen is None or not isinstance(chosen.get('cards'), list)
+                        or not chosen['cards']):
                     return []
-                chosen = max(recent, key=lambda item: item[0])[1]
+                ledger_step = snapshot_step or ledger_step
                 bound = {'general': ally, 'cards': list(chosen['cards'])}
     boss_entry = _boss_tactics_allowed(mem, cur)
     if _is_boss_order(order, mem) and not boss_entry:
@@ -637,10 +642,11 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
         card = tactic['card']
         covered[card] = covered.get(card, 0) + 1
     carried = list(bound['cards'])
-    for card in (mem.get('kit_spent') or {}).get(step) or ():
+    for card in (mem.get('kit_spent') or {}).get(ledger_step) or ():
         if card in carried:
             carried.remove(card)
     added = []
+    ledger_tag = ledger_step or step
     for slot, card in enumerate(carried):
         if card in reference.BOSS_ONLY_CARDS and not boss_entry:
             continue
@@ -653,15 +659,21 @@ def _carried_opening_tactics(mem, cur, existing, *, pressure=False, pressure_rea
             covered[card] -= 1
             if not (pressure and not applies):
                 continue
-            added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
-                          'step': step, 'egg_race': True,
-                          'tactic_id': f'pressure:{step}:{card}:{slot}',
-                          'note': f'{pressure_reason or "切り札の押し込み"}のため、'
-                                  'チャートの対象外でも携行札を開幕に使用'})
+            tactic = {'enemy': cur.get('enemy'), 'card': card, 'open': True,
+                      'step': step, 'egg_race': True,
+                      'tactic_id': f'pressure:{ledger_tag}:{card}:{slot}',
+                      'note': f'{pressure_reason or "切り札の押し込み"}のため、'
+                              'チャートの対象外でも携行札を開幕に使用'}
+            if ledger_step:
+                tactic['kit_step'] = ledger_step
+            added.append(tactic)
             continue
-        added.append({'enemy': cur.get('enemy'), 'card': card, 'open': True,
-                      'step': step, 'tactic_id': f'carried:{step}:{card}:{slot}',
-                      'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'})
+        tactic = {'enemy': cur.get('enemy'), 'card': card, 'open': True,
+                  'step': step, 'tactic_id': f'carried:{ledger_tag}:{card}:{slot}',
+                  'note': '実携行を確認した未指定の切り札を温存せず開幕に使用'}
+        if ledger_step:
+            tactic['kit_step'] = ledger_step
+        added.append(tactic)
     return added
 
 
@@ -887,7 +899,8 @@ def battle_step(screen: Screen, mem):
             # A panel at zero is the end of the fight: drop the opening card
             # that has not reached the command menu yet instead of pushing B
             # after a resolution the chart cannot follow up on.
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま戦闘終了パネルへ進んだため中断')
         return []
     # The opening taunt can coexist with a complete HP panel. B is ignored
     # while it is visible, so do not spend any opening budget or pending wait.
@@ -925,7 +938,8 @@ def battle_step(screen: Screen, mem):
             if flow.get('stage') == 'announce':
                 _card_use_unclassified(mem, cur, '一騎打ちにコマンドメニューはなく、未確認の切り札使用を待てない')
             else:
-                cur['card_flow'] = None
+                _release_interrupted_card_flow(
+                    mem, cur, '選択済み・消費未確認のまま一騎打ちへ置き換わったため中断')
         return _melee_step(mem, cur)
     # Card selection and subsequent damage do not prove that the card hit:
     # the A input may not have reached the game, and melee also lowers HP.
@@ -956,7 +970,8 @@ def battle_step(screen: Screen, mem):
         if (cur.get('card_flow') or {}).get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '危険HPで本人の卵を確認するため、未確認の切り札使用は未分類として保持')
         else:
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま本人卵の救済確認へ置き換わったため中断')
         rescue = _survival_state(mem, cur)
         rescue.update(egg_priority=True, opens=rescue['opens'] + 1,
                       pending_opens=rescue.get('pending_opens', 0) + 1, menu_ticks=0)
@@ -1113,8 +1128,9 @@ def battle_step(screen: Screen, mem):
         # later chart; another carried copy remains eligible.
         inventory = next((row for row in egg_plan.get('cards', [])
                           if row['name'] == tactic['card']), None)
+        ledger_step = tactic.get('kit_step') or cur.get('step')
         consumed = [*(cur.get('cards_selected') or []),
-                    *((mem.get('kit_spent') or {}).get(cur.get('step')) or [])]
+                    *((mem.get('kit_spent') or {}).get(ledger_step) or [])]
         if (tactic['card'] in consumed and egg_plan.get('kit_known')
                 and (inventory is None or inventory.get('available') == 0)):
             continue
@@ -1170,11 +1186,13 @@ def battle_step(screen: Screen, mem):
                 if not cur.get('deviation_reason'):
                     cur['strategy_variant'] = 'after_card_unconfirmed'
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
-            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
-                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
-                                'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
-                                'egg_drop_only': bool(tactic.get('egg_drop_only')),
-                                'kit_source': egg_plan.get('kit_source')}
+            _begin_card_flow(mem, cur, {'card': tactic['card'], 'stage': 'menu', 'note': note,
+                                        'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid,
+                                        'enemy_soldiers_at_open': cur.get('enemy_soldiers'),
+                                        'egg_drop_only': bool(tactic.get('egg_drop_only')),
+                                        'kit_source': egg_plan.get('kit_source'),
+                                        **({'kit_step': tactic['kit_step']} if tactic.get('kit_step') else {})},
+                             source='chart_tactic')
             # 卵落が最大HP合計の余りを超える札は、命中すれば敵の卵を落とす。
             # どの札が落ちさせても同じなので、チャート札も同じ根拠で監視する。
             drop_evidence = _egg_drop_evidence(cur, tactic['card'])
@@ -1274,7 +1292,8 @@ def _hp1_hold_step(mem, cur):
             _card_use_unclassified(
                 mem, cur, '相手HP1で資源を使わないため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
         else:
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま相手HP1の資源温存へ切り替わったため中断')
     cur['melee_holds'] = 0
     if not cur.get('hp1_hold'):
         cur['hp1_hold'] = True
@@ -1293,7 +1312,8 @@ def _one_hit_finish_step(mem, cur):
         if flow.get('stage') == 'announce':
             _card_use_unclassified(mem, cur, '敵が一撃で倒れるため、未確認の切り札使用告知は未分類のまま白兵へ戻る')
         else:
-            cur['card_flow'] = None
+            _release_interrupted_card_flow(
+                mem, cur, '選択済み・消費未確認のまま一撃撃破の白兵へ切り替わったため中断')
     cur['melee_holds'] = 0
     if not cur.get('one_hit_finish'):
         cur['one_hit_finish'] = True
@@ -1448,6 +1468,53 @@ def note_duel_event(screen, mem):
         mem['duel_event'] = {'tick': int(mem.get('tick') or 0), 'text': flat[-40:]}
 
 
+def _card_flow_has_selection(cur, card_flow):
+    card = card_flow.get('card')
+    return bool(card_flow.get('selection_planned')) or (
+        isinstance(card, str) and card in (cur.get('cards_selected') or []))
+
+
+def _retreat_waits_for_card_path(cur):
+    """Let an already bounded card path finish before opening the retreat row.
+
+    The card flow itself has the menu/list/announce bounds, a failed opening
+    retry uses CARD_OPEN_ATTEMPTS, and a damage-gate recheck uses the survival
+    menu's existing opens/cards_checked bounds.  The immediate-loss floor is
+    the only exception: waiting there reproduces g460.
+    """
+    if _retreat_immediate_loss(cur):
+        return False
+    card_flow = cur.get('card_flow') or {}
+    if card_flow:
+        selected = _card_flow_has_selection(cur, card_flow)
+        if not selected:
+            return True
+        # docich#5799: an announce retry resets selection_planned and returns
+        # the flow to list/menu/down, but the card is still a bounded
+        # selection whose consumption receipt is unresolved.  Above the
+        # critical retreat HP (or while HP is unread) let that existing,
+        # bounded card path finish instead of superseding it with retreat.
+        hp = cur.get('ally_hp')
+        if type(hp) is not int or hp > GENERAL_CRITICAL_RETREAT_HP:
+            return True
+    retry = cur.get('card_open_retry_pending')
+    if isinstance(retry, dict):
+        waits = int(retry.get('waits') or 0)
+        if waits < CARD_OPEN_ATTEMPTS:
+            retry['waits'] = waits + 1
+            return True
+        cur.pop('card_open_retry_pending', None)
+    if (cur.get('card_damage_rescue_needed') is not True
+            or not isinstance(cur.get('card_damage_list_blocked'), dict)):
+        return False
+    rescue = cur.get('survival') or {}
+    if rescue.get('exhausted') or rescue.get('cards_exhausted'):
+        return False
+    return (int(rescue.get('opens') or 0) < 12
+            and int(rescue.get('pending_opens') or 0) < 3
+            and int(rescue.get('cards_checked') or 0) < CARD_SPEND_ATTEMPT_LIMIT)
+
+
 def _hero_retreat_open(mem, cur):
     if cur.get('event_duel'):
         return None
@@ -1487,6 +1554,8 @@ def _hero_retreat_open(mem, cur):
         return None
     if _egg_before_retreat(mem, cur):
         return None
+    if _retreat_waits_for_card_path(cur):
+        return None
     flow = cur.get('hero_retreat') or {}
     if flow.get('unavailable') or flow.get('exhausted') or flow.get('opens', 0) >= 3:
         return None
@@ -1522,6 +1591,8 @@ def _hero_retreat_open(mem, cur):
                 general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
                 observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
                                  'card_confirmation': 'unclassified',
+                                 'cards_selected': cur.get('cards_selected', []),
+                                 'cards_used': cur.get('cards_used', []),
                                  # docich#5192/#5194: export the unclassified
                                  # selection so the audit's cards_unconfirmed_only
                                  # downgrade fires on the retreat path too. #5158/
@@ -1529,6 +1600,23 @@ def _hero_retreat_open(mem, cur):
                                  'cards_unclassified': cur.get('cards_unclassified', [])},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
+    elif (_card_flow_has_selection(cur, card_flow)
+            and not _retreat_immediate_loss(cur)
+            and int(cur.get('retreat_card_grace') or 0) < RETREAT_CARD_GRACE_LIMIT):
+        # docich#5799: an announce retry resets the stage/selection flag, but
+        # it is still the same bounded selection.  Give that non-announce
+        # flow the same critical-HP grace instead of preempting it at once.
+        cur['retreat_card_grace'] = int(cur.get('retreat_card_grace') or 0) + 1
+        if cur['retreat_card_grace'] == 1:
+            _record(mem, 'battle_retreat_card_wait', **_battle_labels(cur),
+                    general=cur.get('ally'), enemy=cur.get('enemy'),
+                    card=card_flow.get('card'),
+                    observed_metric={'ally_hp': cur.get('ally_hp'),
+                                     'enemy_hp': cur.get('enemy_hp'),
+                                     'grace_limit': RETREAT_CARD_GRACE_LIMIT,
+                                     'stage': card_flow.get('stage')},
+                    reason='選択済み切り札の有界な再試行・使用確認を待ってから退却する (#5799)')
+        return None
     elif (not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur)):
         # docich#4999: selected-but-unconfirmed cards get one bounded spend
         # retry through the survival menu before the retreat menu opens.
@@ -1549,7 +1637,26 @@ def _hero_retreat_open(mem, cur):
             return _human_menu_open(cur, 'survival', mem)
     flow = cur.setdefault('hero_retreat', {})
     flow['opens'] = flow.get('opens', 0) + 1
-    cur['card_flow'] = None  # supersede an unselected chart card intention
+    interrupted_card_flow = cur.get('card_flow') or {}
+    selected_interrupted = (isinstance(interrupted_card_flow.get('card'), str)
+                            and interrupted_card_flow.get('card') in (cur.get('cards_selected') or []))
+    pending_card = interrupted_card_flow.get('card') if selected_interrupted else None
+    if selected_interrupted:
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま退却確認へ置き換わったため中断')
+        _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
+                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp'),
+                                 'card_confirmation': 'unclassified',
+                                 'selected_interrupted': True,
+                                 'cards_selected': cur.get('cards_selected', []),
+                                 'cards_used': cur.get('cards_used', []),
+                                 'cards_unclassified': cur.get('cards_unclassified', [])},
+                resulting_event='retreat_preempted_card_use',
+                reason='選択済み・消費未確認の切り札 flow を抱えたまま退却を優先')
+    else:
+        _release_interrupted_card_flow(
+            mem, cur, '選択済み・消費未確認のまま退却確認へ置き換わったため中断')
     _record(mem, 'battle_hero_retreat_open', **_battle_labels(cur),
             general=cur.get('ally'), enemy=cur.get('enemy'),
             castle=cur.get('castle'), side=cur.get('side'),
@@ -1628,8 +1735,9 @@ def _defense_kit_read_open(mem, cur):
     guard['opens'] += 1
     # A read-only flow: card is None, so no tactic/list selection can consume a
     # card. The existing card_flow branch sends the bounded B to open the menu.
-    cur['card_flow'] = {'card': None, 'stage': 'menu', 'read_kit': True,
-                        'enemy_hp_at_open': cur.get('enemy_hp')}
+    _begin_card_flow(mem, cur, {'card': None, 'stage': 'menu', 'read_kit': True,
+                                'enemy_hp_at_open': cur.get('enemy_hp')},
+                     source='defense_kit_read')
     _record(mem, 'battle_defense_kit_read_open', **_battle_labels(cur),
             observed_metric={**window, 'open_attempt': guard['opens'],
                              'limit': DEFENDER_EGG_OPEN_LIMIT},
@@ -1991,7 +2099,17 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             # the off-chart planner kept waiting on a sortie that had ended.
             _plan_region(mem).setdefault('orders', {})[step] = 'failed'
             drop_retired_step_context(mem)
+            order = boss_order if isinstance(boss_order, dict) else {}
+            identity = {
+                'general': order.get('general') or cur.get('ally'),
+                'source': order.get('source'),
+                'target': order.get('target') or castle,
+                'purpose': order.get('purpose'),
+            }
+            identity = {key: value for key, value in identity.items()
+                        if isinstance(value, str) and value}
             _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
+                    **identity,
                     observed_metric={'retries': retries[step], 'outcome': outcome,
                                      'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
                     reason='攻撃の再試行上限に到達したため、この手順を打ち切って計画外の判断へ渡す')
@@ -2040,7 +2158,8 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 side=cur.get('side'), screen_kind='battle_end',
                 observed_metric={'cards_left': [card for card in (cur.get('planned_cards') or ())
                                                if isinstance(card, str)],
-                                 'screen': 'battle_end'},
+                                 'screen': 'battle_end',
+                                 **_card_miss_evidence(mem, cur, _boss_card, outcome=outcome)},
                 reason='ボス戦で携行切り札を使わないまま戦闘が終了した')
     _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
             expected_metric=cur.get('strategy_expected'),
@@ -2109,6 +2228,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
         if castle and target and castle == target and (won_battle or lost_battle):
             result = 'won' if won_battle else ('retreated' if retreat else 'lost')
             _sorties(mem).pop(step, None)
+            clear_sortie_launch_priority(mem, step)
             history = mem.setdefault('sortie_history', [])
             history.append({'step': step, 'general': sortie.get('general'),
                             'source': sortie.get('source'), 'target': target,
@@ -2138,6 +2258,7 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
                 and sortie.get('status') in ('en_route', 'launched_unconfirmed')
                 and type(sortie.get('road_defeat')) is not int):
             sortie['road_defeat'] = int(mem.get('tick') or 0)
+            clear_sortie_launch_priority(mem, step)
             # The outcome ledger is what the march and the attack rules read
             # (``sortie_history`` consumers). A road defeat
             # that only lived on the sortie record was invisible to them:

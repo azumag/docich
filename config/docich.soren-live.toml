@@ -139,6 +139,18 @@ corners = [
   # リリース順序で flag ON にする（この行の enabled は catalog 上の登録であり、
   # 発火可否は常に env flag が握る）。音声は未配線のため false。
   { id = "geography-world", adapter = "newcorner", game = "geography-world-view", enabled = true, duration_minutes = 4, audio_enabled = false },
+  # international-politics (#1716): geography-world と同じ new_corner_runtime 共通
+  # production adapter 経路。テーマ候補は設計の優先領域に限定した seed で、実材料取得と
+  # RADIO:* direct 生成は program adapter の preflight が fail-closed で行う。
+  # DOCICH_NEW_CORNER_ENABLED=1（既定OFF）でのみ適格になり、音声は未配線のため false。
+  { id = "international-politics", adapter = "newcorner", game = "international-politics-view", enabled = true, duration_minutes = 4, audio_enabled = false },
+  # english (#1717): geography-world / international-politics と同じ new_corner_runtime 共通
+  # production adapter 経路。技術英語・ニュース英語・日常表現のローテーションを対象とし、
+  # テーマ候補は tests/fixtures/english_corner/theme_candidates.json の seed に限定する。
+  # DOCICH_NEW_CORNER_ENABLED=1（既定OFF）でのみ適格になり、flag OFF の間は既存 rotation
+  # への影響はゼロ。preview 検証後に正規リリース順序で flag ON にする（この行の enabled は
+  # catalog 上の登録であり、発火可否は常に env flag が握る）。音声は未配線のため false。
+  { id = "english", adapter = "newcorner", game = "english-view", enabled = true, duration_minutes = 4, audio_enabled = false },
 ]
 
 # new_corner_runtime 共通 production adapter の生成チェーン (#5584)。

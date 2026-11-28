@@ -110,11 +110,11 @@ def test_ai_segments_are_spoken_in_fixed_order(tmp_path, monkeypatch):
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert saved["end_reason"] == "eight-slots-drained"
+    assert saved["end_reason"] == "all-slots-drained"
     assert targets == list(SEGMENT_KEYS)
-    assert [saved["reports"][f"script:{i}"]["text"] for i in range(1, 9)] == [
+    assert [saved["reports"][f"script:{i}"]["text"] for i in range(1, 10)] == [
         f"{key}のネタです。" for key in SEGMENT_KEYS]
-    assert all(saved["reports"][f"script:{i}"]["drained"] for i in range(1, 9))
+    assert all(saved["reports"][f"script:{i}"]["drained"] for i in range(1, 10))
     assert all(f"{key}のネタです。" in spoken for key in SEGMENT_KEYS)
     assert saved["covered_topics"][0] == "corner：cornerのネタです。"
 
@@ -127,7 +127,7 @@ def test_covered_topics_keep_every_spoken_slot(tmp_path, monkeypatch):
         tmp_path, overlay=lambda g, payload: None, speech=lambda g, text, **kwargs: None,
     )
     queue = [{"status": "item", "topic": f"話題{index}", "text": f"{index}番目のネタです。"}
-             for index in range(1, 9)]
+             for index in range(1, 10)]
     seen = []
 
     def fake_next(*args, **kwargs):
@@ -139,9 +139,9 @@ def test_covered_topics_keep_every_spoken_slot(tmp_path, monkeypatch):
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert len(saved["covered_topics"]) == 8
+    assert len(saved["covered_topics"]) == 9
     assert saved["covered_topics"][0] == "話題1：1番目のネタです。"
-    assert seen[-1][0] == "話題1：1番目のネタです。" and len(seen[-1]) == 7
+    assert seen[-1][0] == "話題1：1番目のネタです。" and len(seen[-1]) == 8
 
 
 def test_generation_failure_reads_finite_fallback_then_marks_degraded(tmp_path, monkeypatch):
@@ -159,24 +159,24 @@ def test_generation_failure_reads_finite_fallback_then_marks_degraded(tmp_path, 
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert calls["n"] == 8 * NARRATION_AI_RETRIES
-    assert saved["end_reason"] == "eight-slots-drained"
+    assert calls["n"] == 9 * NARRATION_AI_RETRIES
+    assert saved["end_reason"] == "all-slots-drained"
     assert saved["degraded"] is True
     assert "timeout" in saved["end_detail"]
     assert set(saved["generation_failures"]) == set(SEGMENT_KEYS)
     assert all(saved["reports"][f"script:{index}"]["source"] == "fallback"
-               for index in range(1, 9))
+               for index in range(1, 10))
 
 
-def test_ai_disabled_reads_all_eight_fallback_slots(tmp_path):
+def test_ai_disabled_reads_all_nine_fallback_slots(tmp_path):
     mgr, _coord = _manager(tmp_path, script_agents="")
 
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert saved["end_reason"] == "eight-slots-drained"
+    assert saved["end_reason"] == "all-slots-drained"
     assert "degraded" not in saved
-    assert [saved["reports"][f"script:{index}"]["slot"] for index in range(1, 9)] == list(SEGMENT_KEYS)
+    assert [saved["reports"][f"script:{index}"]["slot"] for index in range(1, 10)] == list(SEGMENT_KEYS)
 
 
 def test_each_slot_waits_for_audio_monitor_before_next(tmp_path, monkeypatch):

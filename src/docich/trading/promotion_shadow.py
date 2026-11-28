@@ -1,14 +1,14 @@
 """Shadow judge for PAPER -> LIVE promotion of per-symbol slot strategies.
 
-Issue #3623 §2.6 / §2.8 (rule v3).  This module only *judges and reports*:
+Issue #3623 §2.6 / §2.8 / §3 rule v4.  This module only *judges and reports*:
 it reads the private PAPER ledger through ``cell_metrics`` (opened ``mode=ro``),
 never writes, never touches the worker, the slots or any LIVE state, and never
 raises on bad input.  A "promotable" cell here changes nothing; LIVE does not
 exist yet.
 
-Rule v3 = the e-process of rule v2 (frozen 2026-11-08, Issue #3623 §2.8)
-with the same constants except THRESHOLD, extended to the cells of per-symbol slot experiments
-(``<base>_<yymmdd>``, see ``symbol_slots`` / ``paper_improve_slots``):
+Rule v4 = the same e-process and constants as rule v3 (DELTA 0.002, LOSS_CAP
+0.02, PRIOR_SD 0.01, THRESHOLD 5, MIN_BLOCKS 5), judged on
+``cell_metrics.return_blocks_v3`` instead of ``return_blocks``:
 
 * cell = (slot experiment id, symbol); unit = JST day block of the
   fee-corrected mean net return per closed sell (``cell_metrics``);
@@ -20,20 +20,23 @@ with the same constants except THRESHOLD, extended to the cells of per-symbol sl
 * a block with Y_t < -LOSS_CAP sets E to 0 for good;
 * promotable on the first day with E >= THRESHOLD and at least MIN_BLOCKS blocks.
 
-Differences from v2 that matter (all deliberate and frozen with v3):
+Why v4 exists: PAPER before ``paper-cost-v3`` filled at the 5m close and never
+paid the bid/ask spread.  On wide-spread symbols such as OAS the close simply
+bounced between bid and ask, so mean-reversion entries looked profitable when a
+real taker would have paid the spread on every round trip.  Rule v4 only counts
+day blocks whose sells and consumed inventory were all filled under model >= 3
+(book VWAP plus the taker fee).  A cell therefore needs five day blocks of v3
+fills before it can promote; immediately after deploying v3 no promotion can
+happen until that evidence accumulates.  This is intended.
 
-* only blocks of days on or after ``FIRST_BLOCK_DAY`` count (the slots started
-  2026-11-16 and rule v3 was frozen that day, so whole days after it are used);
-* THRESHOLD is 5, not 430 (owner decision 2026-11-16).  A slot experiment lives
-  at most 7 days, so a cell has at most 7 day blocks; with 430 even an
-  OAS/JPY-sized effect (+1.9% per day) never promoted within 7 days
-  (simulated, daily sd 0.5%).  With 5 an effect of +1.9% per day promotes
-  ~100% of the time, +1% per day ~60%, +0.5% per day ~1%, and break-even
-  cells (<= 0.2% per day) ~0% (also with heavy tails).  Theory only
-  guarantees that a cell at or below the null passes with probability <= 1/5,
-  and over time many cells are tested, so some false promotions are accepted:
-  LIVE holds about 10,000 JPY.  The simulation assumes independent day blocks
-  and a daily sd of 0.5%; real symbols ranged 0.4-1.2% (not verified further).
+Rule v3's date filter (``FIRST_BLOCK_DAY``) is gone: v3 fills cannot exist
+before the v3 deployment, so selecting on the recorded model is sufficient.
+
+The e-process guarantees that a cell at or below the null passes with
+probability <= 1/5 per cell.  Many cells are tested over time, so some false
+promotions are accepted: LIVE holds about 10,000 JPY.  The simulation behind
+THRESHOLD=5 assumes independent day blocks and a daily sd of 0.5%; real symbols
+ranged 0.4-1.2% (not verified further).
 """
 from __future__ import annotations
 
@@ -45,21 +48,20 @@ from typing import Iterable, Mapping
 
 from .cell_metrics import aggregate_cell_metrics
 
-RULE_VERSION = "v3"
+RULE_VERSION = "v4"
 DELTA = 0.002
 LOSS_CAP = 0.02
 PRIOR_SD = 0.01
 MAX_LAMBDA = 0.9 / LOSS_CAP
 THRESHOLD = 5.0
 MIN_BLOCKS = 5
-FIRST_BLOCK_DAY = "2026-11-17"  # JST; first whole day after the rule was frozen
 MAX_LISTED = 10
 
 _SLOT_EXPERIMENT_RE = re.compile(r"^([a-z0-9]+)_\d{6}$")
 
 
 def e_process(blocks: Iterable[tuple[str, float]]) -> dict[str, object]:
-    """Run the rule-v2/v3 e-process over ``(day, mean_net_return)`` blocks."""
+    """Run the rule-v2/v3/v4 e-process over ``(day, mean_net_return)`` blocks."""
     ordered = sorted(blocks)
     ys: list[float] = []
     e_value = 1.0
@@ -102,7 +104,7 @@ def _slot_cells(cells: object) -> list[Mapping[str, object]]:
 
 
 def _blocks(cell: Mapping[str, object]) -> list[tuple[str, float]]:
-    raw = cell.get("return_blocks")
+    raw = cell.get("return_blocks_v3")
     blocks = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, Mapping):
@@ -112,7 +114,7 @@ def _blocks(cell: Mapping[str, object]) -> list[tuple[str, float]]:
             value = float(str(item.get("mean_return_corrected")))
         except ValueError:
             continue
-        if day >= FIRST_BLOCK_DAY and value == value and abs(value) != float("inf"):
+        if day and value == value and abs(value) != float("inf"):
             blocks.append((day, value))
     return blocks
 
@@ -120,7 +122,7 @@ def _blocks(cell: Mapping[str, object]) -> list[tuple[str, float]]:
 def build_promotion_shadow(trading_dir) -> dict[str, object]:
     """Judge every slot-experiment cell; report only, no side effects."""
     base: dict[str, object] = {
-        "rule_version": RULE_VERSION, "first_block_day": FIRST_BLOCK_DAY,
+        "rule_version": RULE_VERSION,
         "threshold": THRESHOLD, "min_blocks": MIN_BLOCKS,
         "status": "unavailable", "cells_evaluated": 0, "cells_with_min_blocks": 0,
         "ruined_count": 0, "max_e_value": None, "promotable_count": 0, "promotable": [],

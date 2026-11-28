@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "corner": "english",
+  "fixtureId": "english-theme-candidates-001",
+  "isSyntheticFixture": true,
+  "scopeNote": "Theme candidate list for the english-from-real-materials corner. Candidates are planning seeds only: a candidate title selects the expression the production runner collects verified public-Web material for; the titles themselves are not verified English specimens and are never presented as such.",
+  "candidates": [
+    {
+      "id": "stack-trace-reading",
+      "title": "スタックトレースを読む：\"exception in thread main\" の意味と切り分け",
+      "domain": "technical-english",
+      "description": "例外の種類・スレッド名・発生箱を英字ログから抜き出し、再現手順と回避策を英語で伝える表現。"
+    },
+    {
+      "id": "deploy-rollback",
+      "title": "デプロイとロールバック：\"roll back the release\" を状況別に使い分ける",
+      "domain": "technical-english",
+      "description": "リリースの展開と巻き戻しをIT運用の文脈で説明し、進捗と障害の伝達に使う表現。"
+    },
+    {
+      "id": "central-bank-rate-decision",
+      "title": "中央銀行の政策金利決定：\"the Fed holds rates steady\" をニュースで読む",
+      "domain": "news-english",
+      "description": "金融政策の見出しを「据え置き・利上げ・利下げ」に分解し、市場への影響を英語で要約する表現。"
+    },
+    {
+      "id": "election-headline",
+      "title": "選挙速報の見出し：\"projects\" と \"leads\" の違いを整理する",
+      "domain": "news-english",
+      "description": "選挙報道における「予測・優勢・当確」のニュアンス差を英語の動詞選択から読み解く表現。"
+    },
+    {
+      "id": "coffee-shop-order",
+      "title": "カフェでの注文：\"to go\" と \"for here\" を使い分ける",
+      "domain": "daily-english",
+      "description": "日常のカフェ・レストランで使える英語の定型文と、店員との短いやり取りの表現。"
+    },
+    {
+      "id": "weekend-plan",
+      "title": "週末の予定：\"I'm planning to\" と \"maybe I'll\" で意志の強さを表す",
+      "domain": "daily-english",
+      "description": "友人や同僚との雑談で週末の予定を伝える際、確信度に合わせて使い分ける英語表現。"
+    }
+  ],
+  "nonProductionAcceptance": {
+    "requiresReviewerApproval": true,
+    "mustNotPresentSyntheticAsReal": true,
+    "mustKeepSourceUrls": true,
+    "mustPrioritizePrimaryTechnicalSources": true,
+    "mustKeepShortQuotes": true,
+    "mustKeepCitations": true,
+    "mustIncludeKeyPhrases": true,
+    "mustIncludeMeaning": true,
+    "mustIncludeGrammar": true,
+    "mustIncludeNuance": true,
+    "mustIncludeSourceMaterialBrief": true,
+    "mustIncludeEnglishSections": true
+  }
+}

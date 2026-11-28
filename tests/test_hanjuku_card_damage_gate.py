@@ -73,11 +73,23 @@ def test_a_critical_summon_battle_may_open_its_first_card():
     assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
 
 
-def test_an_ordinary_battle_keeps_the_existing_refusal():
+def test_a_critical_ordinary_battle_may_open_its_first_card():
+    # docich#5802: 退却禁止の下では、敗北へ向かう通常将軍戦でも札を温存しない。
     from docich.hanjuku.judgment import battle as rules
-    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=40)
+    # main 側の判定（_ordinary_general_losing_battle）に合わせ、明確に敗北へ向かう
+    # 局面（HPが敵の半分未満）で固定する。
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=12)
     cur = mem['battle']
     gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
+
+
+def test_an_ordinary_battle_outside_losing_pressure_keeps_the_existing_refusal():
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=27, ally_hp=22)
+    cur = mem['battle']
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert rules._ordinary_general_losing_battle(cur) is False
     assert gate['allowed'] is False
     # Retreat-banned critical HP in an ordinary battle must spend usable cards.
     critical_mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
@@ -98,7 +110,8 @@ def assert_not_spent(mem):
 ])
 def test_final_selection_uses_soldier_absorption_and_exact_current_hp_boundary(
         hp, enemy_soldiers, allowed, damage):
-    mem = memory(enemy='ソーピニヨン', enemy_hp=hp, soldiers=(0, enemy_soldiers))
+    mem = memory(enemy='ソーピニヨン', enemy_hp=hp, ally='しゅじんこう',
+                 ally_hp=90, soldiers=(6, enemy_soldiers))
     expected = [p.pad('a' if allowed else 'b')]
     assert p.card_list_step(cards(['ゼンマイン']), mem) == expected
     current = mem['battle']['card_assessment']
@@ -155,7 +168,8 @@ def test_a_live_panel_on_the_card_menu_replaces_the_old_damage_inputs():
     ('だれか', None, False, 'damage_or_egg_risk_unclassified'),
 ])
 def test_known_eggless_thought_zero_defense_override_and_unknown(enemy, side, allowed, role):
-    mem = memory(enemy=enemy, enemy_hp=30, side=side)
+    mem = memory(enemy=enemy, enemy_hp=30, ally='しゅじんこう', ally_hp=90,
+                 soldiers=(6, 6), side=side)
     assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('a' if allowed else 'b')]
     assert mem['battle']['card_assessment']['reason'] == role
 
@@ -250,8 +264,11 @@ def test_health_need_decides_whether_healing_precedes_a_lethal_card(hp, choice):
     assert mem['battle']['card_flow']['card'] == choice
 
 
-def test_control_without_attack_follows_a_visible_heal_instead():
+def test_control_without_attack_follows_a_visible_heal_instead(monkeypatch):
     # ally 10 vs enemy 27: halving (14 left) would still leave us behind.
+    # This alternatives test is independent of the #5802 losing-battle override.
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._ordinary_general_losing_battle',
+                        lambda cur: False)
     mem = memory('クースカン', ally_hp=10)
     assert p.card_list_step(cards(['クースカン', 'エンジェリン']), mem) == [p.pad('down')]
     assert p.card_list_step(cards(['クースカン', 'エンジェリン'], 1), mem) == [p.pad('a')]
