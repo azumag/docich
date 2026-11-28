@@ -4,6 +4,13 @@
 取消された出撃元だけがここへ入る。card_select の一覧は目標ごとではなく
 出撃元が開く同じ在庫画面なので、将軍・step・目標だけを変えた波状攻撃が
 同じ失敗をなぞらないよう、出撃元単位で止める。
+
+ブロックは失敗を測った月の間だけ効く。月が替われば新しい試行窓として解除し、
+月の表示が動かない場合も ``BLOCK_TICKS`` で上限を切る。解除の直接証拠
+（同じ出撃元の切り札一覧の構造読み）が無いまま章の最後まで止めると、出撃元が
+1つしかない章では候補が全て消えて可読性の証拠を取る機会自体が失われるため
+（2026-11-28 ch5 10-2〜10-8: アルマムーンだけが在城で、取消後の全注文が
+standing のまま出撃0が続いた）。
 """
 from __future__ import annotations
 
@@ -14,6 +21,9 @@ BOOK_KEY = 'unreadable_card_block'
 BLOCK_LIMIT = 16
 STEP_LIMIT = 16
 ROUTE_LIMIT = 8
+# 月の表示が進まない状況（長い戦闘・月次処理）でもブロックを章全体へ
+# 広げないための上限。1 tick は約1.4秒の観測なので約21分。
+BLOCK_TICKS = 900
 
 
 def key_for(source):
@@ -26,8 +36,27 @@ def key_for(source):
     return source if isinstance(source, str) else ''
 
 
+def _expired_window(mem, row):
+    """Whether this chapter's row has outlived its retry window.
+
+    A month boundary is a new attempt window: the empty-kit guard still refuses
+    the departure, so the retry can only cost one cancelled sortie attempt,
+    while keeping the block forever removed the only way to read the list.
+    ``BLOCK_TICKS`` bounds the same window when the month label does not move.
+    """
+    month = mem.get('month')
+    if isinstance(month, str) and isinstance(row.get('month'), str) and month != row['month']:
+        return True
+    tick = mem.get('tick')
+    last = row.get('last_tick')
+    if type(last) is not int:
+        last = row.get('tick')
+    return type(tick) is int and type(last) is int and tick - last >= BLOCK_TICKS
+
+
 def _row_active(mem, row):
-    return isinstance(row, dict) and row.get('chapter') == mem.get('chapter')
+    return (isinstance(row, dict) and row.get('chapter') == mem.get('chapter')
+            and not _expired_window(mem, row))
 
 
 def entry(mem, purpose, source, target):
@@ -133,16 +162,17 @@ def order_blocked(mem, order, *, source=None):
 
 
 def mark(mem, order, *, source, cards, step):
-    """Block this route for the chapter and return ``(row, created)``.
+    """Block this route for the failure month and return ``(row, created)``.
 
-    The block deliberately has no automatic monthly expiry: the failed empty-kit
-    attempt is deterministic while the card list remains unreadable, so a month
-    boundary alone is not new evidence. Chapter transition clears the whole key.
-    Within the chapter, only a structured read of the same source's sortie card
+    The block is confined to the month that measured the failure (and to
+    ``BLOCK_TICKS`` when the month label does not advance), so a chapter with a
+    single source cannot be starved of every candidate by one unreadable panel.
+    Within that window only a structured read of the same source's sortie card
     list is direct readability evidence. A completed inventory census is not:
     it proves stock, and a zero stock can make the next plan cardless, but it
     does not prove that this source's occluded/unreadable panel can be read.
-    The book itself stays bounded.
+    A new failure after the window re-marks the source with the new month.
+    Chapter transition clears the whole key. The book itself stays bounded.
     """
     book = mem.setdefault(BOOK_KEY, {})
     for key, row in list(book.items()):
@@ -178,17 +208,47 @@ def mark(mem, order, *, source, cards, step):
     return row, created
 
 
+def expire(mem):
+    """Drop rows whose retry window passed; return the released rows.
+
+    Rows of another chapter are bookkeeping cleanup and are not returned: only
+    a same-chapter month/tick expiry re-opens the source for a card-carrying
+    attempt, so only those are worth recording. Callers record the release and
+    then rebuild the plan; the next empty-kit cancellation re-marks the source
+    in the new window, so the retry rate stays bounded.
+    """
+    book = mem.get(BOOK_KEY) or {}
+    released = []
+    for key, row in list(book.items()):
+        if not isinstance(row, dict):
+            book.pop(key, None)
+            continue
+        if _row_active(mem, row):
+            continue
+        book.pop(key, None)
+        if row.get('chapter') == mem.get('chapter'):
+            released.append(row)
+    return released
+
+
 def clear(mem, *, source=None):
     """Release blocks after new card-list evidence; return rows.
 
     A sortie-card-list read is evidence for the source whose panel was read.
     ``source=None`` is the explicit whole-chapter form used by tests and state
     maintenance; production evidence passes its measured source.
+
+    The read is direct evidence even when the month/tick window already passed:
+    the row still records that source's unreadable panel, so removing it keeps
+    a later ``expire`` from reporting a release the read superseded.
     """
     book = mem.get(BOOK_KEY) or {}
     rows = []
     for key, row in list(book.items()):
-        if _row_active(mem, row) and (source is None or row.get('source') == source):
-            rows.append(row)
-            book.pop(key, None)
+        if not isinstance(row, dict) or row.get('chapter') != mem.get('chapter'):
+            continue
+        if source is not None and row.get('source') != source:
+            continue
+        rows.append(row)
+        book.pop(key, None)
     return rows
