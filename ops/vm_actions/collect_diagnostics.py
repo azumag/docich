@@ -8290,6 +8290,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1595-boss-order-recovery",
             "hanjuku-chart-v1598-boss-move-retry",
             "hanjuku-chart-v1599-boss-move-retry",
+            "hanjuku-chart-v1600-ch4-boss-not-direct",
             "hanjuku-chart-v1597-chikujou-defer-reason",
             "hanjuku-chart-v1598-egg-row-scroll",
             "hanjuku-chart-v1596-chikujou-deferral-skip",
