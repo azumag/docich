@@ -47,6 +47,7 @@ from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIM
                                _sortie_resume_target_unverified, _source,
                                SORTIE_PICKER_RESUME_LIMIT,
                                next_order, order_dispatch_starved, parked_boss_steps,
+                               active_sortie_floor_dispatch,
                                arm_sortie_launch_priority)
 from ..strategy.replan import _off_chart
 from .result import FlowResult
@@ -2578,7 +2579,8 @@ def map_step(screen: Screen, mem, frame):
     # sparser than the interval while a chapter throws battles (g1133
     # 2026-11-05: every cluster re-sent SELECT and no order ever drove).
     recentered = _apply_select_centered(mem)
-    if (not recentered
+    floor_dispatch = active_sortie_floor_dispatch(mem)
+    if (not recentered and not floor_dispatch
             and _cursor(screen) and not screen.marker and not mem.get('y_jump')
             and not mem.get('select_used') and not mem.get('near_goal')):
         tick = int(mem.get('tick') or 0)
@@ -2627,7 +2629,7 @@ def map_step(screen: Screen, mem, frame):
         # Before choosing what to do next, read every castle's owner at once —
         # unless a boss-phase order is starved for dispatch (docich#5077):
         # the repeated survey then yields one frame to the block below.
-        if not order_dispatch_starved(mem):
+        if not floor_dispatch and not order_dispatch_starved(mem):
             mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
             mem.pop('world_map_due', None)
             _record(mem, 'world_map_open', screen=screen.kind,

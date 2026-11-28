@@ -1828,6 +1828,10 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=_memory
+    # The month-scan floor latch belongs to the observation that produced it.
+    # Clearing it here makes a persisted latch inert after a restart and lets
+    # each new yield re-arm exactly one dispatch-priority frame.
+    strategy_orders.clear_sortie_floor_dispatch(mem)
     # v1356/S3b: a policy written before the field-inventory ledger's semantics
     # changed carries an old ``card_stock``. There is no reservation on a
     # hotload, so the first observation after the deploy books exactly one
@@ -2471,6 +2475,13 @@ def _decide_impl(frame: Frame, state: dict, *, adjusted=None, interim=None,
     if actions is None:
         from .flows import arrival_status
         actions = arrival_status.step(screen, mem)
+    # docich#5812: when the month scan yielded this exact map frame to a
+    # startable order, dispatch owns it before boss pursuit or housekeeping.
+    # The latch is re-armed only while the bounded floor yield repeats, so a
+    # spent/reclaimed floor returns these owners to their normal priority.
+    if (actions is None and kind == 'map' and mem.get('chapter')
+            and strategy_orders.active_sortie_floor_dispatch(mem)):
+        actions = map_flow.map_step(screen, mem, frame)
     if actions is None:
         from .flows import boss_pursuit
         actions = boss_pursuit.step(screen, mem, frame)

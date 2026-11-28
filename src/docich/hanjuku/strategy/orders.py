@@ -1067,6 +1067,27 @@ LAUNCH_PRIORITY_PURPOSES = frozenset({'attack', 'retake', 'boss', 'invade'})
 LAUNCH_PRIORITY_TERMINAL = frozenset({'done', 'failed', 'launched', 'launched_unconfirmed'})
 
 
+def arm_sortie_floor_dispatch(mem):
+    """Mark this observation's month-scan floor yield as dispatch-owned."""
+    mem['sortie_floor_dispatch'] = {
+        'chapter': mem.get('chapter'), 'month': mem.get('month')}
+
+
+def clear_sortie_floor_dispatch(mem):
+    mem.pop('sortie_floor_dispatch', None)
+
+
+def active_sortie_floor_dispatch(mem):
+    """Whether the current map frame was explicitly yielded to dispatch."""
+    state = mem.get('sortie_floor_dispatch')
+    if not isinstance(state, dict):
+        return False
+    if state.get('chapter') != mem.get('chapter') or state.get('month') != mem.get('month'):
+        mem.pop('sortie_floor_dispatch', None)
+        return False
+    return True
+
+
 def _launch_priority_order(order):
     """Enemy-directed dispatch whose pre-launch screens outrank housekeeping."""
     return (isinstance(order, dict)

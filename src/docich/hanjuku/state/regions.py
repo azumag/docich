@@ -438,6 +438,7 @@ KEY_OWNERSHIP = {
     'month_roster_scan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月roster走査手順状態
     'month_status_complete': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月ステータス完了フラグ
     'month_sorties': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 当月の敵城向け出撃成立数(#4642の月一出撃床)
+    'sortie_floor_dispatch': {'region': FLOW, 'lifetime': 'procedure', 'migrated': False},  # 月次床で譲られた現観測だけの出撃優先ラッチ(#5812)
     'month_sub': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月サブ状態
     'month_text_advance': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月テキスト送り手順状態
     'month_blind_nav': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 月メニュー盲操作の試行回数
