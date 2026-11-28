@@ -19,10 +19,10 @@ from .freshness import (
     assess_market_freshness,
 )
 from .ledger import PaperLedger
-from .liquidity import entry_block
+from .liquidity import MIN_ACTIVE_BAR_FRACTION, active_bar_fraction, entry_block
 from .market_cache import load_cache, prune_cache, save_cache, store_frames
 from .market_data import MarketFrame
-from .models import AllocationDecision, MarketInfo, SkipReason
+from .models import AllocationDecision, MarketInfo, Opportunity, SkipReason
 from .notifications import deliver_pending_notifications
 from .paper import PaperBroker, PaperFillSkipped
 from .performance import build_performance
@@ -667,6 +667,20 @@ def run_worker_cycle(
             entries = tuple(
                 opportunity for opportunity in candidates if opportunity.symbol not in exit_symbols
             )
+            # Drop illiquid BUYS before capital allocation: otherwise a high-ranked
+            # illiquid candidate can reserve this cycle's remaining budget and starve
+            # a liquid one.  Exits are never filtered.  The spread part of
+            # entry_block stays at fill time because it needs the book; fetching
+            # books for every candidate here would multiply public API calls.
+            illiquid_codes: list[SkipReason] = []
+            liquid_entries: list[Opportunity] = []
+            for opportunity in entries:
+                if active_bar_fraction(frames.get(opportunity.symbol)) < MIN_ACTIVE_BAR_FRACTION:
+                    illiquid_codes.append(
+                        SkipReason("illiquid", symbol=opportunity.symbol, side="buy"))
+                else:
+                    liquid_entries.append(opportunity)
+            entries = tuple(liquid_entries)
             selection = (
                 select_diversified_opportunities(
                     entries, frames, symbol_thresholds=slot_runtime.correlation_thresholds(slot_steps))
@@ -796,6 +810,7 @@ def run_worker_cycle(
         rejected_codes = [item.reason_code for item in selection.rejected]
         skipped_codes = rejected_codes + [item.reason_code for item in allocation.skipped]
         skipped_codes.extend(fill_skip_codes)
+        skipped_codes.extend(illiquid_codes)
         if not experiment_step.entries_allowed:
             skipped_codes.append("experiment_" + experiment_step.reason_code)
         # Two distinct success notions (documented, not a contradiction):

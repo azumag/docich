@@ -362,6 +362,32 @@ def test_a_buy_without_cost_context_breaks_v3_eligibility(ledger):
     assert a["return_blocks_v3"] == []
 
 
+def test_v2_dust_at_or_below_one_jpy_does_not_block_later_v3_round_trips(ledger):
+    ledger.fill("lab:A:e1", "buy", D("0.001"), 1000, T0, cost=V2_FEE)   # exactly 1 JPY
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 1, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 2, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+    assert D(a["return_blocks_v3"][0]["mean_return"]) == D("0.1")
+
+
+def test_v2_inventory_above_one_jpy_excludes_v3_sells_until_it_is_sold_down(ledger):
+    ledger.fill("lab:A:e1", "buy", D("0.1"), 1000, T0, cost=V2_FEE)   # 100 JPY
+    ledger.fill("lab:A:e1", "buy", 1, 1000, T0 + 1, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 1, 1100, T0 + 2, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", D("0.09"), 1100, T0 + 3, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 2
+    assert a["return_blocks_v3"] == []
+    # Proportional consumption has shrunk the v2 remainder to under 1 JPY.
+    ledger.fill("lab-exit:A:x", "sell", D("0.01"), 1100, T0 + 4, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 3
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+
+
 # --- failure policy -----------------------------------------------------------
 
 def test_missing_ledger_is_unavailable_not_empty_success(tmp_path):
