@@ -1877,6 +1877,7 @@ def step(screen, mem, frame, *, boss_dispatch=False):
                         _log(mem, 'post_month_sortie_floor',
                              observed_metric={'stage': state['stage'], 'month': mem.get('month')},
                              reason='当月に成立した出撃がまだ無く開始可能な指示があるため、月次確認を延期してマップを出撃計画へ明け渡す')
+                    _orders.arm_sortie_floor_dispatch(mem)
                     return None
     # The monthly workflow owns this map.  A lost cursor is a temporary
     # navigation interrupt, not a reason to let the sortie planner take over.
