@@ -17,8 +17,8 @@ from ...hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from ..decision_log import _record
 from ..os_layer.commands import (MENU_NAV_BATCH_MAX, MENU_NAV_RELEASE_MS, general_list_batch,
                                  menu_to, pad)
-from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_visible,
-                                _measured_card_select, _options, _present_generals,
+from ..os_layer.readers import (CASTLE_STATUS, STATUS_NAMES, _empty_sortie_inventory, _general_strict_spans,
+                                _general_visible, _measured_card_select, _options, _present_generals,
                                 _sortie_inventory, _current, month_menu_ready)
 from ..os_layer.world import NAME, _en_route, _owned
 from ..state import egg_memory
@@ -959,7 +959,8 @@ def _empty_kit_blocks_departure(want, carried):
     return bool(want) and carried == []
 
 
-def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None):
+def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_variant=None,
+                 extra_metric=None):
     context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
     # docich#4715: an unclassified sortie screen held forever — the live run sat
     # on `field hold` (map_target) for many minutes with months passing and no
@@ -977,42 +978,121 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None, hold_va
     if not (mem.get('retry_context') or {}).get(order['step']):
         context.update(strategy_variant='sortie_cards_unclassified' if screen.kind == 'sortie_confirm'
                        else 'sortie_menu_unclassified', deviation_reason=reason)
+    observed = {'hand': screen.hand,
+                # OCR yield: live frames can render with no
+                # readable text at all (g1163 2026-11-10 04:39:
+                # 299x224 frames parsed to ''), so the held screen
+                # records how much text it actually produced.
+                'text_len': len(getattr(screen, 'text', '') or ''),
+                'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
+                'carried_cards_read': carried, 'confirmation': 'unclassified',
+                'hold_variant': hold_variant}
+    if extra_metric:
+        observed.update(extra_metric)
     _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
-            observed_metric={'hand': screen.hand,
-                             # OCR yield: live frames can render with no
-                             # readable text at all (g1163 2026-11-10 04:39:
-                             # 299x224 frames parsed to ''), so the held screen
-                             # records how much text it actually produced.
-                             'text_len': len(getattr(screen, 'text', '') or ''),
-                             'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
-                             'carried_cards_read': carried, 'confirmation': 'unclassified',
-                             'hold_variant': hold_variant},
+            observed_metric=observed,
             reason=reason)
     return []
 
 
 
 GENERAL_LIST_HOLD_LIMIT = 8
+GENERAL_LIST_SCAN_RECOVERY_AFTER = 3   # strict failures before scan-backed narrowing
+STRICT_FAILURE_RECORD_LIMIT = 6
 
 
-def _hold_general_list_bounded(screen, mem, order, reason, variant):
+def _strict_roster_failure_metric(screen, present, visible, *, scan_completed=False):
+    """Bounded per-general reasons a strict roster confirmation failed."""
+    failures = []
+    if present is None:
+        failures.append({'general': None, 'condition': 'list_unreadable'})
+    else:
+        counts = {g: present.count(g) for g in set(present)}
+        for general in dict.fromkeys(present):
+            if counts[general] > 1:
+                failures.append({'general': general, 'condition': 'duplicate'})
+            if general in visible and not _general_visible(screen, general):
+                failures.append({'general': general, 'condition': 'not_strictly_visible'})
+            if general_max_hp('しゅじんこう' if general == NAME else general) is None:
+                failures.append({'general': general, 'condition': 'max_hp_unknown'})
+    return {'strict_failures': failures[:STRICT_FAILURE_RECORD_LIMIT],
+            'strict_failure_count': len(failures),
+            'strict_failure_omitted': max(0, len(failures) - STRICT_FAILURE_RECORD_LIMIT),
+            'present_count': None if present is None else len(present),
+            'visible_count': len(visible),
+            'scan_completed': scan_completed}
+
+
+def _scan_backed_roster(screen, mem, order, visible):
+    """A complete walked roster usable as evidence for narrowed confirmation.
+
+    ``limit`` is not completion evidence: it only says the walk was stopped.
+    The current page and cursor must still belong to the walked roster, and
+    selecting anyone still requires the strict row+cursor check later.
+    """
+    scan = mem.get('general_list_scan')
+    if (not isinstance(scan, dict) or scan.get('step') != order['step']
+            or scan.get('castle') != _source(order, mem)
+            or scan.get('end') not in {'wrapped', 'stalled'}):
+        return None
+    names = scan.get('names')
+    if (not isinstance(names, list) or not names or len(names) != len(set(names))
+            or any(general_max_hp('しゅじんこう' if g == NAME else g) is None for g in names)):
+        return None
+    if not visible or not set(visible) <= set(names):
+        return None
+    cur = _current(screen)
+    if not cur or cur[2] not in names:
+        return None
+    return list(names), scan
+
+
+def _cursor_strictly_confirmed(screen, general):
+    """The hand is on the one strictly readable row for ``general``."""
+    cur = _current(screen)
+    strict = _general_strict_spans(screen, general)
+    total = [(x, y) for x, y, w in _options(screen) if x > 100 and w == general]
+    return bool(cur and cur[2] == general and len(strict) == 1 and len(total) == 1
+                and (cur[0], cur[1]) == strict[0])
+
+
+def _note_scan_backed_recovery(screen, mem, order, scan, failure_metric):
+    """Record the first use of a completed scan as narrowed evidence."""
+    step = order['step']
+    notes = mem.setdefault('general_list_scan_recovery', {})
+    if step in notes:
+        return
+    notes[step] = {'castle': _source(order, mem), 'tick': int(mem.get('tick') or 0)}
+    names = list(scan.get('names') or [])
+    _record(mem, 'general_list_scan_recovery', **_deploy_context(order, mem), screen=screen.kind,
+            observed_metric={**failure_metric,
+                             'scan_end': scan.get('end'), 'scan_presses': scan.get('presses'),
+                             'scan_general_count': len(names), 'scan_generals': names[:12]},
+            reason='走査完了済みの名簿を証拠に、厳密確認を選択本人の行とカーソルへ絞って出撃を回復する')
+
+
+def _hold_general_list_bounded(screen, mem, order, reason, variant, extra_metric=None):
     """Fail a stuck general-list selection before the 60-tick menu watchdog."""
     step = order['step']
     holds = mem.setdefault('general_list_hold', {})
     holds[step] = holds.get(step, 0) + 1
+    metric = {'hold_variant': variant}
+    if extra_metric:
+        metric.update(extra_metric)
     if holds[step] >= GENERAL_LIST_HOLD_LIMIT:
         count = holds.pop(step)
         (mem.get('target_cancel') or {}).pop(step, None)
+        metric['hold_count'] = count
         _record(mem, 'general_list_hold_exhausted',
                 **_deploy_context(order, mem), screen=screen.kind,
-                observed_metric={'hold_variant': variant, 'hold_count': count},
+                observed_metric=metric,
                 reason=reason)
         _finish_order(mem, 'failed', deviation_reason=reason,
-                      observed_metric={'hold_variant': variant, 'hold_count': count},
+                      observed_metric=dict(metric),
                       source=_source(order, mem),
                       reason='将軍一覧の停滞上限に達したため出撃指示を取り消す')
         return [pad('b'), pad('b')]
-    return _hold_deploy(screen, mem, order, reason, hold_variant=variant)
+    return _hold_deploy(screen, mem, order, reason, hold_variant=variant, extra_metric=extra_metric)
 
 
 def _hold_boss_card_selection(screen, mem, order, reason, *, card=None):
@@ -2541,11 +2621,24 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             (mem.get('sortie_actor_miss') or {}).pop(order['step'], None)
             present = _listed_generals(screen, mem, order)
             visible = set(_present_generals(screen) or ())
-            if (present is None or len(present) != len(set(present))
-                    or any((g in visible and not _general_visible(screen, g)) or general_max_hp(
-                        'しゅじんこう' if g == NAME else g) is None for g in present)):
-                return _hold_general_list_bounded(screen, mem, order,
-                    '出撃一覧の本人・カーソルを確認できないため保留', 'roster_unreadable')
+            scan = mem.get('general_list_scan')
+            scan_completed = (isinstance(scan, dict) and scan.get('step') == order['step']
+                              and scan.get('castle') == _source(order, mem) and bool(scan.get('end')))
+            failure_metric = _strict_roster_failure_metric(
+                screen, present, visible, scan_completed=scan_completed)
+            narrowed = False
+            if failure_metric['strict_failure_count']:
+                hold_count = int((mem.get('general_list_hold') or {}).get(order['step']) or 0) + 1
+                scan_backed = (_scan_backed_roster(screen, mem, order, visible)
+                               if hold_count >= GENERAL_LIST_SCAN_RECOVERY_AFTER else None)
+                if scan_backed is None:
+                    return _hold_general_list_bounded(screen, mem, order,
+                        '出撃一覧の本人・カーソルを確認できないため保留', 'roster_unreadable',
+                        extra_metric=failure_metric)
+                present, scan = scan_backed
+                narrowed = True
+                _note_scan_backed_recovery(screen, mem, order, scan,
+                                           {**failure_metric, 'hold_count': hold_count})
             candidates = (_order_hero_alternatives(order, mem, present)
                           if order['general'] == NAME or _is_boss_order(order, mem)
                           or order.get('source_probe') is True else [])
@@ -2601,7 +2694,12 @@ def deploy_step(screen: Screen, mem, *, frame=None):
             move = _list_menu_to(screen, mem, order, general)
             if move is None:
                 return _hold_general_list_bounded(screen, mem, order,
-                    '選択本人へカーソルを合わせられないため保留', 'cursor_unreachable')
+                    '選択本人へカーソルを合わせられないため保留', 'cursor_unreachable',
+                    extra_metric=failure_metric if narrowed else None)
+            if narrowed and move == 'here' and not _cursor_strictly_confirmed(screen, general):
+                return _hold_general_list_bounded(screen, mem, order,
+                    '選択本人の行とカーソルを厳密に確認できないため保留', 'cursor_unconfirmed',
+                    extra_metric={**failure_metric, 'selected_general': general})
             (mem.get('general_list_hold') or {}).pop(order['step'], None)
             if move == 'here':
                 _plan_region(mem).setdefault('sortie_general', {})[order['step']] = general
