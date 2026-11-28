@@ -1554,6 +1554,14 @@ def test_narration_rechecks_identity_after_thread_dispatch(tmp_path, monkeypatch
     monkeypatch.setattr(fence, 'shared_section', delayed)
     sent = []
     write_candidates(tmp_path, [{'seq': 1, 'at': time.time(), 'key': 'a', 'text': '実況', **identity}])
+    delivery_done = threading.Event()
+    original_deliver = hanjuku_narration._deliver
+    def completing_deliver(*args, **kwargs):
+        try:
+            return original_deliver(*args, **kwargs)
+        finally:
+            delivery_done.set()
+    monkeypatch.setattr(hanjuku_narration, '_deliver', completing_deliver)
     start = time.monotonic()
     hanjuku_narration.consider(SimpleNamespace(state_dir=tmp_path), Game(), tmp_path,
                                enqueue=lambda *a, **k: sent.append(a))
@@ -1568,11 +1576,8 @@ def test_narration_rechecks_identity_after_thread_dispatch(tmp_path, monkeypatch
             atomic_write_json(tmp_path / 'hanjuku_run.json', {**identity, 'terminal_reason': 'game_over'})
     finally:
         release.set()
+    assert delivery_done.wait(5)
     log_path = tmp_path / 'hanjuku_narration.jsonl'
-    for _ in range(50):
-        if log_path.exists():
-            break
-        time.sleep(.02)
     assert not sent
     record = json.loads(log_path.read_text().splitlines()[-1])
     assert record['status'] == ('skipped:terminal' if change == 'terminal' else 'skipped:fence_lost')
