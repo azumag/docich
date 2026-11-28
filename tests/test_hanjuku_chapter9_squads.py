@@ -96,16 +96,17 @@ def test_a_thin_front_opens_a_new_budget_without_an_empty_reading():
     assert mem[corridor.WAVE]['refill'] == 1
 
 
-def test_the_hero_walks_forward_only_up_to_one_castle_behind_the_front():
-    """Owner 2026-11-12: 主人公は前線の自城一つ前の自城に常駐する.
+def test_the_hero_walks_forward_to_the_front():
+    """Owner 2026-11-24: 9話では取り立ての最前線へ主人公を進める.
 
-    With HOME and FRONT ours, the post is HOME itself, so the hero stays there.
-    A third capture moves the post to FRONT and only then does he step forward.
+    With HOME and FRONT ours, the post is FRONT itself, so the hero in HOME
+    walks forward as soon as the front is held.
     """
     mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: []})
-    assert not [o for o in _orders(mem) if o.get('corridor_hero')]
+    hero = [o for o in _orders(mem) if o.get('corridor_hero')]
+    assert len(hero) == 1 and (hero[0]['source'], hero[0]['target']) == (HOME, FRONT)
     mem = _mem(garrison={HOME: [HERO, 'バトウラ'], FRONT: ['リーキ']})
-    mem['captured'] = [FRONT, NEXT]          # NEXT taken: the post becomes FRONT
+    mem['captured'] = [FRONT, NEXT]          # NEXT taken: the front is NEXT
     mem['lost'] = []
     mem['tick'] += 50
     hero = [o for o in _orders(mem) if o.get('corridor_hero')]
@@ -223,3 +224,26 @@ def test_recall_goal_ignores_visible_but_cliff_blocked_castles():
     assert O._recall_owned(mem, 9, ['カラ', 'イデ！']) == ['カラ', 'イデ！']
     # A corridor-less chapter ignores cliffs entirely.
     assert O._recall_owned(mem, 3, ['a', 'b'], origin=[0, 0]) == ['a', 'b']
+
+
+def test_hero_with_last_companion_at_front_skips_attack_so_rear_moves_run():
+    """Front [HERO, 1] cannot attack; planner must not starve rear moves."""
+    mem = _mem(garrison={HOME: ['バトウラ', 'ココット'], FRONT: [HERO, 'ブリオッシュ']})
+    orders = _orders(mem)
+    assert all(o['source'] != FRONT for o in orders)
+    assert [o['source'] for o in orders if o['purpose'] == 'move'] == [HOME]
+    stale_mem = _mem(garrison={HOME: ['バトウラ'], FRONT: [HERO, 'ブリオッシュ']})
+    corridor._world(stale_mem)['garrison_tick'] = {FRONT: 4000}
+    assert any(o['source'] == FRONT for o in _orders(stale_mem))
+
+
+def test_hero_with_last_companion_makes_front_thin_and_opens_refill_wave():
+    mem = _mem(garrison={HOME: ['バトウラ'], FRONT: [HERO, 'ブリオッシュ']})
+    assert corridor._front_thin(mem, FRONT) is True
+    _orders(mem)
+    _send(mem, HOME, FRONT, 6, status='arrived')
+    _sorties(mem)['I:old']['status'] = 'arrived'
+    mem['tick'] += 30
+    assert [o['source'] for o in _by(mem, 'move')] == [HOME]
+    assert mem[corridor.WAVE]['refill'] == 1
+

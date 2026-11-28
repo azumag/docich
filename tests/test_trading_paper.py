@@ -146,6 +146,7 @@ class TestPublicTradingStatus(unittest.TestCase):
             eligible_symbols=["BTC/JPY"], capital_reference=D("10000"),
             deployed_reference=D("3000"), open_positions={"BTC/JPY": D("0.01")},
             recent_fills=[], skipped_reason_codes=[],
+            snapshot_seq=7, snapshot_generated_at=123.0,
             performance_summary={
                 "as_of": 123.0,
                 "complete": True,
@@ -163,9 +164,12 @@ class TestPublicTradingStatus(unittest.TestCase):
             },
         )
         summary = payload["performance_summary"]
+        self.assertEqual(payload["snapshot_id"], "paper:7:123000000")
+        self.assertEqual(summary["snapshot_id"], payload["snapshot_id"])
         self.assertEqual(
             summary,
             {
+                "snapshot_id": "paper:7:123000000",
                 "as_of": 123.0,
                 "complete": True,
                 "position_count": 1,
@@ -184,6 +188,19 @@ class TestPublicTradingStatus(unittest.TestCase):
         self.assertNotIn("avg_cost", blob)
         self.assertNotIn("api_key", blob)
         self.assertNotIn("must-not-leak", blob)
+
+    def test_invalid_snapshot_identity_is_not_published_or_carried(self):
+        for seq, generated in ((True, 123.0), (7, float("nan")), (7, -1.0)):
+            payload = build_public_status(
+                worker_state="paper_worker_idle", last_cycle_at=123.0,
+                eligible_symbols=[], capital_reference=D("10000"),
+                deployed_reference=D("0"), open_positions={}, recent_fills=[],
+                skipped_reason_codes=[], snapshot_seq=seq,
+                snapshot_generated_at=generated,
+                performance_summary={"as_of": 123.0, "snapshot_id": "paper:7:123000000"},
+            )
+            self.assertIsNone(payload["snapshot_id"])
+            self.assertNotIn("snapshot_id", payload["performance_summary"])
 
     def test_worker_summary_is_allowlisted(self):
         payload = build_public_status(

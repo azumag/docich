@@ -16,8 +16,8 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich-retro-corner.timer` | canonical timerの互換名。移行後はcanonicalへのrelative alias |
 | `docich-game-switch-fifo.service` | 期限切れdrainingを安全に復旧し、保存済みFIFO先頭を再駆動するoneshot |
 | `docich-game-switch-fifo.timer` | ゲーム切替FIFOを30秒ごとに独立監視するtimer |
-| `docich-soren91-corner.service` | Soren本番 `:99` にSoren91定時コーナーを載せる長時間oneshot |
-| `docich-soren91-corner.timer` | 毎分 `soren91-corner tick`。設定timezone/start_hour(/weekdays)に一致した時だけ1日1回実行 |
+| `docich-soren91-corner.service` | **legacy**: rotation 無効時のSoren91定時コーナー用oneshot。canonical rotation と併用しない |
+| `docich-soren91-corner.timer` | **legacy**: 毎分 `soren91-corner tick`。canonical timer と同時に enable しない |
 | `docich-nethack-daily-improve.service` | 完了runの結果・経過要約からcanary候補を作るoneshot。ゲーム操作なし |
 | `docich-nethack-daily-improve.timer` | 毎日05:10 JSTに日次改善候補を1回実行 |
 | `docich-paper-improve.service` | 暗号資産PAPER戦略改善を `paper-improve-scheduled`（gate付き）で1回実行するoneshot。ゲーム操作なし |
@@ -48,8 +48,6 @@ for f in \
   docich-retro-corner.timer \
   docich-game-switch-fifo.service \
   docich-game-switch-fifo.timer \
-  docich-soren91-corner.service \
-  docich-soren91-corner.timer \
   docich-nethack-daily-improve.service \
   docich-nethack-daily-improve.timer \
   docich-paper-improve.service \
@@ -74,6 +72,13 @@ systemctl --user enable --now docich-rotate.timer
 # (移行後はcanonical timerへのaliasとして解決される)。
 systemctl --user enable --now docich-corner-rotation.timer
 
+# 旧 per-corner rotation (docich-soren91-corner.*) は rotation 無効の legacy
+# 構成専用。上の rollling rotation と同時に enable しない
+# (rotation owner は常に1つ。canonical timer と legacy が競合すると、先に
+#  ロックを取った側だけが tick し、もう一方は already-running で待機し続ける)。
+# production では deploy hook が canonical user unit だけを管理する。
+# system scope (/etc/systemd/system) への手置きは行わない。
+
 # production profileで設定済みのNetHack日次改善候補生成。
 # timerはゲームを起動・操作せず、要約からcanary候補を作る。
 systemctl --user enable --now docich-nethack-daily-improve.timer
@@ -86,9 +91,8 @@ systemctl --user enable --now docich-paper-improve.timer
 # 期限前の試合終了待ちは変更せず、共通配信基盤も再起動しない。
 systemctl --user enable --now docich-game-switch-fifo.timer
 
-# 旧Soren91固定時刻入口を個別に使う場合。共通rotationでは新規導入不要。
-# 有効化しても同じcorner-rotation state/lockへ委譲される。
-systemctl --user enable --now docich-soren91-corner.timer
+# 旧Soren91固定時刻入口 (docich-soren91-corner.timer) は rotation 無効の
+# legacy 構成専用。共通rotationと併用しない。
 ```
 
 `docich-rotate.service` と `docich-corner-rotation.service` は `[Install]` を持たないため
@@ -122,7 +126,10 @@ PAPERは固定時間を持たず、事実に基づく読み上げネタを1件�
 `docich-paper-runtime.service` と `docich-corner-rotation.service/timer` を配置します。
 共通rotationでは `docich-corner-rotation.timer` をenableすれば全cornerを判定します
 （移行期間中は旧 `docich-retro-corner.timer` が同unitへのalias）。
-旧PAPER/Soren91 timerを併用しても同じstate/lockで重複実行は防止されますが、新規導入は不要です。
+旧Soren91 timer を canonical rotation と併用しないでください。同じ state/lock を
+先に取った側だけが rotation を所有し、もう一方は `already-running` のまま待機し続けます
+（2026-11-25 の本番事象。正規経路への一本化は `ops/vm_actions/consolidate_corner_rotation_owner.sh`）。
+旧PAPER timer も同様に新規導入は不要です。
 過去通知を避けるため、
 workerの初回起動より先にlive profileの `trading notify-once` を実行します。
 実注文・private API・鍵は使用しません。資金は模擬1万円、投入上限30%です。

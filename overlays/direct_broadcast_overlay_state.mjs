@@ -1,5 +1,7 @@
 import fs from 'fs';
 
+import { normalizeActiveGameContext } from './active_game_context.mjs';
+
 
 export const DIRECT_BROADCAST_STATE_ROUTE = '/__soren_overlay/broadcast/state';
 export const DIRECT_BROADCAST_VERSION = 1;
@@ -12,6 +14,21 @@ const DEFAULT_NEXT_CORNER_FILE = `${DEFAULT_DOCICH_ROOT}/run-soren-live/next_cor
 const NEXT_CORNER_SCHEMA = 1;
 const NEXT_CORNER_MAX_AGE_SEC = 600;
 const NEXT_CORNER_DUE_GRACE_SEC = 900;
+// The speedrun timer is written by docich's rta hook while the corner runs.
+// Its path mirrors next_corner.json so Soren needs no server change.
+export const DEFAULT_GAME_SWITCH_FILE = `${DEFAULT_DOCICH_ROOT}/run-soren-live/game_switch.json`;
+export const DEFAULT_SPEEDRUN_TIMER_FILE = `${DEFAULT_DOCICH_ROOT}/run-soren-live/speedrun/hanjuku-speedrun/timer.json`;
+export const SPEEDRUN_TIMER_SCHEMA = 1;
+export const SPEEDRUN_TIMER_GAME = 'hanjuku-speedrun';
+export const SPEEDRUN_TIMER_STATUSES = Object.freeze(['pending', 'running', 'finished', 'dnf']);
+export const SPEEDRUN_TIMER_MAX_SPLITS = 12;
+// A live timer that has not observed the game for 30s is frozen on screen;
+// a finished one returns the rail to the 4-line summary after 10 minutes.
+export const SPEEDRUN_TIMER_STALE_MS = 30 * 1000;
+export const SPEEDRUN_TIMER_TTL_MS = 10 * 60 * 1000;
+const SPEEDRUN_VERDICTS = new Set(['gold', 'blue', 'red', 'white']);
+// finish() records the total verdict itself (gold = new PB, red = slower).
+const SPEEDRUN_TOTAL_VERDICTS = new Set(['gold', 'red', 'white']);
 const DEFAULT_AB_STATE_FILE = 'tmp/state/ab_state.json';
 const DEFAULT_AB_GAMES_FILE = 'tmp/state/ab_games.jsonl';
 const DEFAULT_ROLLING_SCORES_FILE = 'tmp/state/rolling_scores.json';
@@ -82,6 +99,141 @@ function readJson(file) {
   } catch {
     return {};
   }
+}
+
+
+function nonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+
+function boundedInteger(value, minimum, maximum) {
+  const number = nonNegativeInteger(value);
+  return number !== null && number >= minimum && number <= maximum ? number : null;
+}
+
+
+function signedInteger(value) {
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+
+function timerTimeArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, SPEEDRUN_TIMER_MAX_SPLITS)
+    .map((item) => (item === null || item === undefined ? null : nonNegativeInteger(item)));
+}
+
+
+function timerComparison(value) {
+  const comparison = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    pb_total_ms: nonNegativeInteger(comparison.pb_total_ms),
+    pb_segments_ms: timerTimeArray(comparison.pb_segments_ms),
+    pb_cumulative_ms: timerTimeArray(comparison.pb_cumulative_ms),
+    gold_segments_ms: timerTimeArray(comparison.gold_segments_ms),
+    sum_of_best_ms: nonNegativeInteger(comparison.sum_of_best_ms),
+  };
+}
+
+
+function timerSplits(value) {
+  if (!Array.isArray(value)) return [];
+  const splits = [];
+  for (const item of value) {
+    if (splits.length >= SPEEDRUN_TIMER_MAX_SPLITS) break;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const index = boundedInteger(item.index, 0, SPEEDRUN_TIMER_MAX_SPLITS - 1);
+    const endIndex = item.end_index === undefined
+      ? index
+      : boundedInteger(item.end_index, 0, SPEEDRUN_TIMER_MAX_SPLITS - 1);
+    const segmentMs = nonNegativeInteger(item.segment_ms);
+    const cumulativeMs = nonNegativeInteger(item.cumulative_ms);
+    if (index === null || endIndex === null || endIndex < index
+        || segmentMs === null || cumulativeMs === null) continue;
+    splits.push({
+      index,
+      end_index: endIndex,
+      segment_ms: segmentMs,
+      cumulative_ms: cumulativeMs,
+      verdict: SPEEDRUN_VERDICTS.has(item.verdict) ? item.verdict : 'white',
+      delta_ms: signedInteger(item.delta_ms),
+    });
+  }
+  return splits.sort((left, right) => left.index - right.index);
+}
+
+
+/**
+ * A bounded view of docich's speedrun ``timer.json``.
+ *
+ * It is shown only while ``game_switch.json`` says the active game is
+ * ``hanjuku-speedrun``.  The timer's runtime id is compared when the switch
+ * file carries one, so a stopped attempt cannot leak onto the next game.
+ * Anything malformed, another game, an unknown schema/status, or a finished
+ * attempt past its TTL returns ``null`` and the normal 4-line summary returns.
+ */
+export function speedrunTimerState(timerFile, gameSwitchFile, nowMs = Date.now()) {
+  const now = nonNegativeInteger(nowMs) ?? 0;
+  // One read gives both the active game and its runtime id, so a rewrite
+  // between two reads cannot mix two documents.
+  const switchDocument = readJson(gameSwitchFile);
+  const active = normalizeActiveGameContext(switchDocument);
+  if (!active.active || active.game !== SPEEDRUN_TIMER_GAME) return null;
+  // The timer shows only while its runtime id matches the active one; a
+  // legacy plain-string active game (or an object without an id) cannot be
+  // matched, so it shows nothing (the design: "only when the ids match").
+  const activeRuntime = switchDocument.active
+    && typeof switchDocument.active === 'object'
+    && !Array.isArray(switchDocument.active)
+    && typeof switchDocument.active.runtime_id === 'string'
+    && switchDocument.active.runtime_id
+    ? switchDocument.active.runtime_id
+    : null;
+  const raw = readJson(timerFile);
+  if (raw.schema !== SPEEDRUN_TIMER_SCHEMA || raw.game !== SPEEDRUN_TIMER_GAME) return null;
+  if (!SPEEDRUN_TIMER_STATUSES.includes(raw.status)) return null;
+  if (activeRuntime === null
+      || typeof raw.runtime_id !== 'string' || raw.runtime_id !== activeRuntime) {
+    return null;
+  }
+
+  const status = raw.status;
+  const startedAt = nonNegativeInteger(raw.started_at_ms);
+  const endedAt = nonNegativeInteger(raw.ended_at_ms);
+  if (status !== 'pending' && startedAt === null) return null;
+  if ((status === 'finished' || status === 'dnf')) {
+    if (endedAt === null) return null;
+    if (now > endedAt && now - endedAt > SPEEDRUN_TIMER_TTL_MS) return null;
+  }
+  const currentIndex = raw.current_index === undefined
+    ? 0
+    : boundedInteger(raw.current_index, 0, SPEEDRUN_TIMER_MAX_SPLITS);
+  if (currentIndex === null) return null;
+  if ((status === 'pending' || status === 'running')
+      && currentIndex >= SPEEDRUN_TIMER_MAX_SPLITS) {
+    return null;
+  }
+
+  const heartbeatAt = nonNegativeInteger(raw.heartbeat_at_ms);
+  const stale = status === 'running'
+    && (heartbeatAt === null || now - heartbeatAt > SPEEDRUN_TIMER_STALE_MS);
+  return {
+    attempt_no: boundedInteger(raw.attempt_no, 1, Number.MAX_SAFE_INTEGER),
+    status,
+    started_at_ms: status === 'pending' ? null : startedAt,
+    ended_at_ms: (status === 'finished' || status === 'dnf') ? endedAt : null,
+    current_index: currentIndex,
+    splits: timerSplits(raw.splits),
+    comparison: timerComparison(raw.comparison),
+    heartbeat_at_ms: heartbeatAt,
+    pb_eligible: typeof raw.pb_eligible === 'boolean' ? raw.pb_eligible : null,
+    total_verdict: SPEEDRUN_TOTAL_VERDICTS.has(raw.total_verdict) ? raw.total_verdict : null,
+    total_ms: nonNegativeInteger(raw.total_ms),
+    stale,
+    nowMs: now,
+  };
 }
 
 
@@ -627,11 +779,22 @@ export function buildDirectBroadcastOverlayState(config, nowMs = Date.now()) {
       || process.env.DOCICH_NEXT_CORNER_FILE
       || DEFAULT_NEXT_CORNER_FILE,
   );
+  const speedrunTimerFile = String(
+    sources.speedrunTimerFile
+      || process.env.DOCICH_SPEEDRUN_TIMER_FILE
+      || DEFAULT_SPEEDRUN_TIMER_FILE,
+  );
+  const gameSwitchFile = String(
+    sources.gameSwitchFile
+      || process.env.DOCICH_GAME_SWITCH_FILE
+      || DEFAULT_GAME_SWITCH_FILE,
+  );
   return {
     gameGapEnabled: config?.gameGapEnabled === true,
     version: DIRECT_BROADCAST_VERSION,
     updatedAt: nowSec,
     nextCorner: nextCornerNotice(nextCornerFile, nowSec),
+    speedrunTimer: speedrunTimerState(speedrunTimerFile, gameSwitchFile, nowMs),
     feeds: {
       showStatusG,
       showStatus: feed('SHOW-STATUS', sources.opsHtmlFile),

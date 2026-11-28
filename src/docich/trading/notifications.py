@@ -15,7 +15,7 @@ from ..config import GlobalConfig
 from .events import PublicEventError, read_public_events
 from .performance import realized_pnl_for_fill
 from .presentation import PresentationError, read_presentation, render_notification
-from .status import performance_summary_payload
+from .status import _valid_snapshot_id, performance_summary_payload
 from .soren_output import enqueue_speech, send_overlay
 
 
@@ -109,6 +109,11 @@ def _safe_status(
         if value is not None:
             result[key] = value
     performance = performance_summary_payload(raw.get("performance_summary"))
+    snapshot_id = _valid_snapshot_id(raw.get("snapshot_id"))
+    if snapshot_id is not None and performance.get("snapshot_id") == snapshot_id:
+        result["snapshot_id"] = snapshot_id
+    else:
+        performance.pop("snapshot_id", None)
     as_of = performance.get("as_of")
     # Do not announce stale or undated marks as a current portfolio valuation.
     if (

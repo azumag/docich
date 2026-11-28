@@ -437,9 +437,23 @@ def test_measured_empty_sortie_ignores_only_background_and_cursor_unknowns():
 
 
 @pytest.mark.parametrize('y,x,value', [(63, 208, None), (79, 224, None),
-    (63, 200, UNKNOWN), (79, 232, UNKNOWN), (47, 136, 'あ'),
-    (95, 192, UNKNOWN), (111, 160, UNKNOWN), (127, 192, None)])
+    (63, 200, UNKNOWN), (79, 232, UNKNOWN), (95, 192, UNKNOWN), (127, 192, None)])
+def test_occluded_empty_receipt_cells_still_approve_a_carriless_sortie(y, x, value):
+    # docich#5146: the deploy flow shares the repair dispatch's sprite
+    # allowance — one hidden or lost expected cell no longer holds a sortie
+    # that carries nothing. The strict receipt still rejects them.
+    screen = measured_empty_sortie()
+    replace_cell(screen, y, x, value)
+    assert not policy._empty_sortie_inventory(screen)
+    mem = empty_order_memory()
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm'
+
+
+@pytest.mark.parametrize('y,x,value', [(47, 136, 'あ'), (111, 160, UNKNOWN)])
 def test_partial_empty_receipt_and_unknown_body_cells_hold(y, x, value):
+    # A readable wrong character fails even the tolerant receipt; a うむッ!
+    # hidden by the sprite passes the receipt but leaves no item to approve.
     screen = measured_empty_sortie()
     replace_cell(screen, y, x, value)
     assert not policy._empty_sortie_inventory(screen)
@@ -673,8 +687,8 @@ def test_measured_single_card_receipt_ignores_left_stats_and_background(right_ed
 
 
 @pytest.mark.parametrize('y,x,value', [(47, 200, UNKNOWN), (47, 216, None), (47, 224, '2'),
-    (47, 232, UNKNOWN), (63, 176, UNKNOWN), (79, 176, 'あ'), (55, 136, 'あ'),
-    (87, 160, 'あ'), (119, 160, 'あ'), (95, 136, UNKNOWN), (111, 160, UNKNOWN)])
+    (63, 176, UNKNOWN), (79, 176, 'あ'), (55, 136, 'あ'),
+    (87, 160, 'あ'), (119, 160, 'あ'), (111, 160, UNKNOWN)])
 def test_partial_or_extra_single_card_receipt_is_held(y, x, value):
     screen = measured_loaded_sortie()
     replace_cell(screen, y, x, value)
@@ -684,6 +698,19 @@ def test_partial_or_extra_single_card_receipt_is_held(y, x, value):
     assert policy.deploy_step(screen, mem) == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
     assert '1-A2' not in _plan_region(mem).get('order_context', {})
+
+
+@pytest.mark.parametrize('y,x,value', [(47, 232, UNKNOWN), (95, 136, UNKNOWN)])
+def test_sprite_occluded_fixed_cells_still_approve_the_read_kit(y, x, value):
+    # docich#5146: cells the castle sprite hides are not a mismatch on the
+    # deploy flow either. The strict receipt still rejects the panel.
+    screen = measured_loaded_sortie()
+    replace_cell(screen, y, x, value)
+    assert policy._sortie_inventory(screen) is None
+    mem = foot_order_memory()
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm'
+    assert mem['_records'][-1]['cards'] == ['フットバース']
 
 
 @pytest.mark.parametrize('hand', [None, (130, 105, 150, 118), (138, 121, 156, 134)])

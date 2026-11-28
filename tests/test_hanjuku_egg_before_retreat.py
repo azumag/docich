@@ -39,18 +39,6 @@ def test_positive_egg_precedes_visible_retreat_even_at_critical_hp(ally):
     assert not mem['battle'].get('hero_retreat')
 
 
-@pytest.mark.parametrize('change', [
-    {'egg_uses': {'キッシュ': 0}}, {'egg_uses': {'キッシュ': None}},
-    {'egg_uses': {'ヴィーナス': 4}}, {'egg_recheck': ['キッシュ']},
-    {'egg_zero_owners': ['キッシュ'], 'egg_uses': {}},
-])
-def test_unknown_zero_other_actor_and_dirty_counts_keep_retreat(change):
-    mem = memory(); mem.update(change)
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
-    assert not (mem['battle'].get('survival') or {}).get('egg_attempted')
-
-
 @pytest.mark.parametrize('rescue', [
     {'exhausted': True}, {'egg_attempted': True}, {'pending_opens': 3}, {'opens': 12},
 ])
@@ -65,13 +53,6 @@ def test_final_open_budget_still_allows_a_now_visible_egg():
     p._survival_state(mem, mem['battle']).update(pending_opens=3, opens=12)
     assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
     assert mem['battle']['survival']['egg_attempted']
-
-
-def test_disabled_egg_row_keeps_retreat_despite_saved_positive_quantity():
-    mem = memory()
-    assert p.battle_menu_step(menu(('きりふだ', 'たいきゃく'), selected=1), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
-    assert not (mem['battle'].get('survival') or {}).get('egg_attempted')
 
 
 def test_existing_owned_summon_does_not_open_another_general_egg():
@@ -104,25 +85,6 @@ def test_sword_practice_never_requests_a_nonexistent_resource_menu():
     mem = memory(ally=p.NAME)
     mem['battle'].update(enemy='だいじん', start_ally_hp=90, start_enemy_hp=90, step=None, side=None)
     assert not p._egg_before_retreat(mem, mem['battle'])
-
-
-def test_selected_egg_has_bounded_fade_before_failed_attempt_retreat():
-    mem = memory()
-    assert p.battle_menu_step(menu(), mem) == [p.pad('a')]
-    for _ in range(3):
-        assert p.battle_menu_step(menu(), mem) == []
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
-    assert mem['egg_uses']['キッシュ'] == 4
-
-
-def test_selected_egg_does_not_toggle_b_during_ordinary_panel_fade():
-    mem = memory()
-    p.battle_menu_step(menu(), mem)
-    for _ in range(3):
-        assert p.battle_step(battle(mem), mem) == [{'type': 'wait', 'ms': 50}]
-    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
-    assert mem['battle']['command_open_pending']['owner'] == 'retreat'
 
 
 def test_native_first_panel_rechecks_at_existing_short_cadence():

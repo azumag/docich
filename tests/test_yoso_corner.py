@@ -141,7 +141,11 @@ def test_production_catalog_enables_yosou_oh_for_the_automatic_rotation():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     catalog = load_catalog(g)
     # 2026-10-18: mystery (#684) + lawsim (#697) 追加 → 16本（13+ぷよ+mystery+lawsim）。
-    assert len(catalog) == 18
+    # 2026-11-18: chart-659 (#659) 追加 → 18本（manual-only）。
+    # #5584: geography-world (newcorner, DOCICH_NEW_CORNER_ENABLED ゲート) → 19本。
+    # 2026-11-25: hanjuku-speedrun 追加 → 20本（manual-only）。
+    # #1716: international-politics (newcorner, 同ゲート) → 21本。
+    assert len(catalog) == 21
     row = next(c for c in catalog if c.id == "yosou-oh")
     assert (row.adapter, row.game) == ("yoso", VIEW_NAME)
     # 2026-10-15 オーナー判断: 手動専用を解除し、自動抽選＋手動予約の両方を使う。

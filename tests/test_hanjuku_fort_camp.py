@@ -143,25 +143,169 @@ def test_a_fort_status_for_another_general_does_not_confirm_the_sortie():
     assert state.get('fort_status_reads') is None
 
 
+@pytest.mark.parametrize('stage,observed,counter', [
+    ('fort_menu', lambda: screen('g1097-fort-menu-over-dome.png'), 'fort_menu_observations'),
+    ('fort_list', lambda: screen('g1097-probe-fort-list.png'), 'fort_list_observations'),
+    ('fort_status', lambda: status_panel('エピィ'), 'fort_status_observations'),
+])
+def test_fort_recall_limit_records_bounded_stage_and_screen_evidence(stage, observed, counter):
+    current = observed()
+    mem = memory(recall=fort_recall(stage=stage, fort=True, general='ヴィーナス',
+                                    steps=recall.RECALL_LIMIT))
+    recall._camp_recall_step(current, mem, object())
+    metric = decisions(mem, 'camp_recall_aborted')[-1]['observed_metric']
+    assert metric['stage'] == stage
+    assert metric['steps'] == recall.RECALL_LIMIT + 1
+    assert metric[counter] == 1
+    assert metric['screen_kind'] == current.kind
+    if stage == 'fort_status':
+        assert metric['general'] == 'ヴィーナス'
+        assert metric['observed_general'] == 'エピィ'
+        assert metric['fort_status_reads'] == 0
+        assert metric['screen_text'] == 'しろのなかにいます'
+
+
+def test_fort_observation_counter_and_screen_text_are_bounded():
+    state = fort_recall(stage='fort_list')
+    state['fort_list_observations'] = recall.RECALL_LIMIT + 1
+    text = '  しろのなかにいます\n' * 20
+    frame = type('Frame', (), {'kind': 'text', 'text': text})()
+    recall._observe_fort_frame(frame, state)
+    assert state['fort_list_observations'] == recall.RECALL_LIMIT + 1
+    assert len(state['fort_last_screen_text']) <= 120
+    assert '\n' not in state['fort_last_screen_text']
+    assert state['fort_last_screen_text'].startswith('しろのなかにいます')
+
+
 def test_the_named_general_is_the_one_who_leaves():
     mem = memory(recall=fort_recall(stage='fort_list', fort_actor='エピィ'))
     assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('down')]
     assert _flow(mem)['recall']['stage'] == 'fort_list'
 
 
+def test_a_monthly_task_recall_without_fort_actor_still_selects_its_named_general():
+    mem = memory(recall=fort_recall(stage='fort_list', task_recall=True, general='エピィ'))
+    assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('down')]
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'fort_list' and state['general'] == 'エピィ'
+
+
+def test_a_non_task_recall_does_not_use_general_as_the_fort_selection_fallback():
+    mem = memory(recall=fort_recall(stage='fort_list', general='エピィ'))
+    assert p.camp_recall_step(screen('g1097-probe-fort-list.png'), mem, object()) == [p.pad('a')]
+    state = _flow(mem)['recall']
+    assert state['stage'] == 'fort_status' and state['general'] == 'ヴィーナス'
+
+
+def test_dome_menu_text_still_belongs_to_the_dome_screen_wait():
+    mem = memory(recall=fort_recall(stage='menu', steps=0))
+    text = Screen([], None, 'ドームの中の案内文', kind='text')
+    assert p.camp_recall_step(text, mem, object()) == []
+    state = _flow(mem)['recall']
+    assert state['steps'] == 1 and state['menu_other'] == 1
+
+
+def test_dome_dest_text_is_held_without_spending_the_recall_budget():
+    mem = memory(recall=fort_recall(stage='dest', fort=True, general='エピィ',
+                                    steps=recall.RECALL_LIMIT))
+    text = Screen([], None, '戦闘後の長い案内文', kind='text')
+    assert p.camp_recall_step(text, mem, object()) is None
+    state = _flow(mem)['recall']
+    assert state['steps'] == recall.RECALL_LIMIT
+    assert state['hold_since'] == mem['tick']
+    assert not decisions(mem, 'camp_recall_aborted')
+
+
+def test_dest_abort_projects_camp_goal_and_the_selected_fort_member():
+    mem = memory(recall=fort_recall(stage='dest', fort=True, general='エピィ',
+                                    goal='アルマムーン', target_cell=[12, 34],
+                                    steps=recall.RECALL_LIMIT))
+    assert p.camp_recall_step(MAP, mem, object()) == []
+    metric = decisions(mem, 'camp_recall_aborted')[-1]['observed_metric']
+    assert metric['camp'] == [131, 110]
+    assert metric['target_cell'] == [12, 34]
+    assert metric['castle'] == 'アルマムーン'
+    assert metric['general'] == 'エピィ'
+
+
 def test_the_picker_opens_the_y_jump_because_a_fort_has_no_castle_in_view(monkeypatch):
     monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
     monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
-    mem = memory(recall=fort_recall(stage='fort_status', general='ヴィーナス'))
+    mem = memory(recall=fort_recall(stage='fort_status', general='ヴィーナス',
+                                    fort_picker_requested=True))
     assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
     assert _flow(mem)['recall']['stage'] == 'dest' and _flow(mem)['recall']['fort'] is True
     assert mem['y_jump']['goal'] == 'アルマムーン' and mem['y_jump']['mode'] == 'target'
+
+
+@pytest.mark.parametrize('stage,counter', [
+    ('fort_menu', 'fort_menu_observations'),
+    ('fort_list', 'fort_list_observations'),
+    ('fort_status', 'fort_status_observations'),
+])
+def test_fort_stages_release_after_their_own_nonprogress_bound(stage, counter):
+    state = fort_recall(stage=stage, fort=True, steps=0, goal='アルマムーン',
+                        target_cell=[12, 34])
+    state[counter] = recall.FORT_STAGE_OBSERVATION_LIMIT
+    mem = memory(recall=state)
+    frame = Screen([], None, '', kind='unknown')
+
+    assert p.camp_recall_step(frame, mem, object()) == [p.pad('b')]
+    assert 'recall' not in _flow(mem)
+    metric = decisions(mem, 'camp_recall_aborted')[-1]['observed_metric']
+    assert metric['stage'] == stage
+    assert metric[counter] == recall.FORT_STAGE_OBSERVATION_LIMIT + 1
+    assert metric['camp'] == [131, 110]
+    assert metric['castle'] == 'アルマムーン'
+    assert metric['target_cell'] == [12, 34]
+
+
+def test_a_fort_status_sends_only_one_picker_request_until_it_opens():
+    mem = memory(recall=fort_recall(stage='fort_status', general='ヴィーナス'))
+    status = status_panel('ヴィーナス')
+    assert p.camp_recall_step(status, mem, object()) == [p.pad('a')]
+    assert _flow(mem)['recall']['fort_picker_requested'] is True
+    assert p.camp_recall_step(status, mem, object()) == []
+    assert _flow(mem)['recall']['fort_status_reads'] == 2
+
+
+def test_a_map_target_without_a_pending_fort_request_is_not_adopted():
+    mem = memory(recall=fort_recall(stage='fort_status', general='ヴィーナス'))
+    assert p.camp_recall_step(TARGET, mem, object()) is None
+    assert _flow(mem)['recall']['stage'] == 'fort_status'
+
+
+def test_a_pending_fort_picker_precedes_both_recall_bounds(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
+    state = fort_recall(stage='fort_status', general='ヴィーナス',
+                        fort_picker_requested=True, steps=recall.RECALL_LIMIT,
+                        fort_status_observations=recall.FORT_STAGE_OBSERVATION_LIMIT)
+    mem = memory(recall=state)
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert not decisions(mem, 'camp_recall_aborted')
+
+
+def test_orchestrator_routes_only_the_requested_fort_picker_to_recall():
+    owned = {'stage': 'fort_status', 'fort_picker_requested': True}
+    assert orchestrator._fort_picker_owns_map_target(owned, 'map_target', 'field')
+    assert not orchestrator._fort_picker_owns_map_target(
+        {'stage': 'fort_status'}, 'map_target', 'field')
+    assert not orchestrator._fort_picker_owns_map_target(
+        {'stage': 'dest', 'fort_picker_requested': True}, 'map_target', 'field')
+    assert not orchestrator._fort_picker_owns_map_target(owned, 'map_target', 'concert')
+    assert not orchestrator._fort_picker_owns_map_target(owned, 'map', 'field')
 
 
 def test_the_next_general_follows_soon_after_a_fort_sortie():
     mem = memory(recall=fort_recall(stage='await_dispatch', fort=True, general='ヴィーナス', steps=6,
                                     camp_kind='dome'))
     assert p.camp_recall_step(MAP, mem, object()) == []
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        assert p.camp_recall_step(MAP, mem, object()) == []
     assert 'recall' not in _flow(mem)
     assert _flow(mem)['recall_skip_ticks'] == recall.FORT_RETRY_TICKS
     assert decisions(mem, 'camp_recall_unconfirmed')[-1]['observed_metric']['general'] == 'ヴィーナス'
@@ -463,3 +607,34 @@ def test_a_fort_menu_seen_mid_recheck_is_handed_over_before_the_receipt_check():
     assert recall.camp_recall_step(screen('g1097-fort-menu-over-dome.png'), mem, fort) == [p.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'fort_list'
     assert decisions(mem, 'retreat_recheck_fort')
+
+
+
+@pytest.mark.parametrize('stage,observed', [
+    ('fort_menu', lambda: screen('g1097-fort-menu-over-dome.png')),
+    ('fort_list', lambda: screen('g1097-probe-fort-list.png')),
+    ('fort_status', lambda: status_panel('ヴィーナス')),
+])
+def test_a_new_fort_sortie_is_deferred_inside_the_month_end_margin(stage, observed):
+    state = fort_recall(stage=stage, fort=True, general='ヴィーナス')
+    mem = memory(month_start_tick=0, month_durations=[300], tick=150, recall=state)
+    assert recall._month_end_soon(mem) is True
+    actions = recall._camp_recall_step(observed(), mem, object())
+    assert actions == [p.pad('b')]
+    assert 'recall' not in _flow(mem)
+    assert not decisions(mem, 'camp_fort_sortie')
+    deferred = decisions(mem, 'camp_group_screen')[-1]
+    assert deferred['resulting_event'] == 'fort_route_left'
+    assert '月末' in deferred['reason']
+
+
+def test_a_fort_picker_already_requested_is_not_cancelled_by_the_month_end_gate(monkeypatch):
+    monkeypatch.setattr(recall, '_recall_goal', lambda _mem: 'アルマムーン')
+    monkeypatch.setattr(recall, 'castle_roofs', lambda _frame: [])
+    state = fort_recall(stage='fort_status', fort=True, general='ヴィーナス',
+                        fort_picker_requested=True)
+    mem = memory(month_start_tick=0, month_durations=[300], tick=150, recall=state)
+    assert recall._month_end_soon(mem) is True
+    assert p.camp_recall_step(TARGET, mem, object()) == [p.pad('y')]
+    assert _flow(mem)['recall']['stage'] == 'dest'
+    assert not decisions(mem, 'camp_recall_aborted')

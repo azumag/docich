@@ -6,6 +6,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import pytest
 from docich import hanjuku_policy as p
+from docich.hanjuku.strategy.orders import SORTIE_CANCELLED_OBSERVED_LIMIT
+from docich.hanjuku.flows.deploy import _verify_sortie_source
 from docich.hanjuku_screen import Screen
 from docich.hanjuku_font import TextLine, UNKNOWN
 from docich.hanjuku.state.regions import world as _world, plan as _plan_region, sorties as _sorties, flow as _flow, journal as _journal
@@ -271,3 +273,225 @@ def test_unknown_name_does_not_reestablish_defeated_general_location():
     mem=memory();_world(mem)['general_location_unknown']=['ゼウス']
     p._observe_garrison(screen('general_list',['ゼウス'+UNKNOWN]),mem,p._order(mem))
     assert _world(mem)['general_location_unknown']==['ゼウス']
+
+
+def _verify_cancel(mem, words=('ゼウス', 'どうし')):
+    """Drive the source-roster reconciliation of the unconfirmed launch."""
+    _plan_region(mem)['active'] = '1-A2'
+    return p.deploy_step(screen('general_list', list(words)), mem)
+
+
+def _reopen_picker(mem):
+    """The re-driven dispatch confirms the sortie and the picker re-opens."""
+    _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': False}
+    p.observe_sortie_transition(screen('map_target'), mem, 'map')
+
+
+def _outcomes(mem):
+    return [r['resulting_event'] for r in mem['_records']
+            if r['decision'] == 'launch_interrupted_by_battle']
+
+
+def test_battle_interrupted_picker_resumes_same_month_then_establishes():
+    """docich#5020 改善案1・2: a battle that closes the destination picker owes
+    one same-month re-open. The roster verify sees the cancelled general, the
+    same order keeps driving (将軍・切り札据え置き), the picker re-opens for
+    real (resumed) and a real send closes the incident (established)."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    first = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle']
+    assert len(first) == 1
+    assert first[0]['resulting_event'] is None    # incident opened, not yet resolved
+    assert first[0]['observed_metric']['resume'] == {'armed': True, 'used': 0, 'limit': 2}
+    # The roster still lists the general: the launch cancelled and the
+    # same-month picker re-open is owed -- the step keeps driving.
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    # The re-driven dispatch re-opens the destination picker: one spent re-open.
+    _reopen_picker(mem)
+    # Repeated frames of the same open picker spend nothing more.
+    p.observe_sortie_transition(screen('map_target'), mem, 'map_target')
+    resumed = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle'
+               and r['resulting_event'] == 'resumed']
+    assert len(resumed) == 1
+    assert resumed[0]['observed_metric']['resume'] == {'outcome': 'resumed', 'driven': True,
+                                                      'used': 1, 'limit': 2}
+    # The resumed sortie's observed send closes the incident as established.
+    p._finish_order(mem, 'launched')
+    assert _outcomes(mem) == [None, 'resumed', 'established']
+    assert not (_flow(mem).get('sortie_resume') or {})
+
+
+def test_two_failed_picker_reopens_cut_off_to_launched_unconfirmed():
+    """docich#5020: at most two same-month re-opens per step. The interruption
+    that finds the budget spent closes as exhausted and the order returns to
+    the existing launched_unconfirmed terminal path."""
+    mem = memory(); mem['month'] = 4
+    for _ in range(2):
+        p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+        assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+        _reopen_picker(mem)
+    # The picker is open again (third dispatch) when another battle interrupts.
+    _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': True}
+    _plan_region(mem)['active'] = '1-A2'
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None
+    assert _outcomes(mem) == [None, 'resumed', None, 'resumed', 'exhausted']
+    # Exhausted: the cancelled sortie verifies but no re-open is owed, so the
+    # order releases to the ordinary unconfirmed path like any other cancel.
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] is None
+
+
+def test_picker_resume_never_crosses_the_month():
+    """docich#5020: the re-open budget belongs to the interruption's month. A
+    sortie verified cancelled in a later month follows the ordinary
+    unconfirmed path (pending, released) and no resume is recorded."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert (_flow(mem).get('sortie_resume') or {})['1-A2']['armed'] is True
+    # The month turns before the source roster is read.
+    mem['month'] = 5
+    p.observe_sortie_transition(screen('map'), mem, 'map')
+    assert '1-A2' not in (_flow(mem).get('sortie_resume') or {})
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] is None
+    # The new month's own dispatch may still send this order, but it is a fresh
+    # sortie, not a resume of the interruption.
+    _reopen_picker(mem)
+    assert 'resumed' not in _outcomes(mem)
+
+
+def test_marker_return_records_resumed_without_spending_the_budget():
+    """docich#5020: the existing sortie_target_resumed path is preserved -- the
+    game's own marker return resolves a battle interruption's resume without
+    consuming one of the two driven re-opens."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    p.observe_sortie_transition(screen('map_target'), mem, 'defense_started')
+    assert any(r['decision'] == 'sortie_target_resumed' for r in mem['_records'])
+    resumed = [r for r in mem['_records'] if r['decision'] == 'launch_interrupted_by_battle'
+               and r['resulting_event'] == 'resumed']
+    assert len(resumed) == 1
+    assert resumed[0]['observed_metric']['resume']['driven'] is False
+    assert resumed[0]['observed_metric']['resume']['used'] == 0
+
+
+def test_resume_source_verification_skips_normal_cancel_suppression_before_map_step():
+    """A resume-owed source read must keep the same order startable."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert (_flow(mem).get('sortie_resume') or {})['1-A2']['owed'] is True
+    assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
+    # The factual roster observation remains in the decision log; only the
+    # ordinary retry counter/suppression is bypassed for this resume.
+    assert [r for r in mem['_records'] if r['decision'] == 'sortie_cancelled_observed']
+    assert [r for r in mem['_records'] if r['decision'] == 'sortie_resume_source_confirmed']
+
+    # The chart's 1-A2 row requires キカンドン to be captured. Satisfy that
+    # ordinary prerequisite so this assertion isolates the resume gate rather
+    # than failing readiness and falling through to 1-A1.
+    mem['captured'] = ['キカンドン']
+    # Exercise the real map gate: it must not clear the resumed order as a
+    # normal cancellation suppressed by the generic retry guard.
+    p.map_step(screen('map'), mem, None)
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert not [r for r in mem['_records'] if r['decision'] == 'order_precondition_lost']
+
+
+def _miss_resumed_picker_target(mem):
+    order = p._order(mem)
+    assert order and order['step'] == '1-A2'
+    actions = None
+    for _ in range(p.TARGET_MISS_LIMIT):
+        actions = p._unverified_target(screen('map_target'), mem, order, None)
+    return actions
+
+
+def test_resumed_picker_target_misses_use_resume_budget_not_target_cancel_limit():
+    """Two target-confirmation failures exhaust the two reopens without a new battle."""
+    mem = memory(); mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+
+    _reopen_picker(mem)
+    row = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert row['used'] == 1 and row['picker_active'] is True
+    assert _miss_resumed_picker_target(mem) == [p.pad('b')]
+    row = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert row['used'] == 1 and row['owed'] is True
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert not (mem.get('target_cancel') or {}).get('1-A2')
+
+    # No second battle occurs: the second failed target confirmation itself
+    # consumes the remaining picker-reopen budget.
+    _reopen_picker(mem)
+    row = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert row['used'] == 2 and row['picker_active'] is True
+    assert _miss_resumed_picker_target(mem) == [p.pad('b')]
+    assert '1-A2' not in (_flow(mem).get('sortie_resume') or {})
+    assert _plan_region(mem)['orders']['1-A2'] == 'launched_unconfirmed'
+    assert _plan_region(mem)['active'] is None
+    assert not (mem.get('target_cancel') or {}).get('1-A2')
+    assert _outcomes(mem) == [None, 'resumed', 'resumed', 'exhausted']
+
+
+
+def test_closed_resumed_picker_does_not_recreate_an_attempt_on_map_return():
+    mem = memory()
+    mem['month'] = 4
+    p.observe_sortie_transition(screen('defense_started'), mem, 'map_target')
+    assert _verify_cancel(mem) == [p.pad('b'), p.pad('b')]
+    _reopen_picker(mem)
+    assert _miss_resumed_picker_target(mem) == [p.pad('b')]
+    resume = (_flow(mem).get('sortie_resume') or {})['1-A2']
+    assert resume['owed'] is True and resume.get('picker_active') is not True
+    assert not _flow(mem).get('sortie_attempt')
+
+    # The B that closed the resumed picker is not a new unsent departure.
+    p.observe_sortie_transition(screen('map'), mem, 'map_target')
+    assert not _flow(mem).get('sortie_attempt')
+    assert _plan_region(mem)['orders']['1-A2'] == 'pending'
+    assert _plan_region(mem)['active'] == '1-A2'
+    assert not (mem.get('sortie_cancelled_observed_counts') or {}).get('1-A2')
+
+    # The chart's 1-A2 row requires キカンドン to be captured; keep that
+    # prerequisite satisfied so the test exercises resume priority, not a
+    # legitimate readiness rejection.
+    mem['captured'] = ['キカンドン']
+    # The owed step is selected ahead of newer chart orders, but still passes
+    # the same source/defender/readiness gates as an ordinary dispatch.
+    p.map_step(screen('map'), mem, None)
+    assert _plan_region(mem)['active'] == '1-A2'
+
+
+def test_normal_source_cancel_limit_is_not_overwritten_back_to_pending():
+    mem = memory()
+    _flow(mem).pop('sortie_resume', None)
+    order = {'step': '1-A2', 'source': 'アルマムーン', 'target': 'ジョンリギ',
+             'general': 'ゼウス', 'purpose': 'attack', 'cards': [], 'after': None}
+    for count in range(1, SORTIE_CANCELLED_OBSERVED_LIMIT + 1):
+        _plan_region(mem)['orders']['1-A2'] = 'launched_unconfirmed'
+        _plan_region(mem)['active'] = '1-A2'
+        # _sorties() is a read-only accessor; seed its owning WORLD region.
+        _world(mem).setdefault('sorties', {})['1-A2'] = {
+            'general': 'ゼウス', 'source': 'アルマムーン', 'target': None,
+            'planned_target': 'ジョンリギ', 'purpose': 'attack',
+            'status': 'launched_unconfirmed',
+        }
+        _flow(mem)['sortie_attempt'] = {'step': '1-A2', 'target_seen': True}
+        actions = _verify_sortie_source(screen('general_list', ['ゼウス', 'どうし']), mem, order)
+        assert actions == [p.pad('b'), p.pad('b')]
+        expected = ('failed' if count == SORTIE_CANCELLED_OBSERVED_LIMIT else 'pending')
+        assert _plan_region(mem)['orders']['1-A2'] == expected
+    assert mem['sortie_cancelled_observed_counts']['1-A2'] == SORTIE_CANCELLED_OBSERVED_LIMIT

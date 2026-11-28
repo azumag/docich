@@ -106,6 +106,16 @@ jobs:
           python3 ops/vm_actions/summarize_runtime_queue_attribution.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
           python3 ops/vm_actions/summarize_worker_state.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
+      - name: Update deduplicated shared overlay renderer RSS alert
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            echo "Shared overlay renderer memory is unknown; existing alerts are left unchanged."
+            exit 0
+          fi
+          python3 ops/vm_actions/shared_overlay_memory_alert.py "$file" --manage
+
       - name: Summarize storage breakdown
         id: storage_breakdown
         run: |

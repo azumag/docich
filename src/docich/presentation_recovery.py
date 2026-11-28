@@ -19,6 +19,7 @@ import time
 import tomllib
 
 from .game_switch import GameSwitchLock, atomic_write_json
+from .hanjuku_family import is_hanjuku
 from .presentation import PROJECTION_INPUT_LOW_LATENCY, contain_filter, measured_contain_size
 from .tmux import SESSION, Tmux, TmuxOwnership, ownership_environment
 
@@ -64,14 +65,15 @@ def read_record(path, *, include_bytes=False):
 
 
 def runtime_identity(active):
-    if not isinstance(active, dict) or active.get('game') != 'hanjuku-hero':
+    game = active.get('game') if isinstance(active, dict) else None
+    if not isinstance(active, dict) or not is_hanjuku(game):
         raise RecoveryRefused('inactive game')
     rid, generation, lease = (active.get(k) for k in ('runtime_id', 'generation', 'lease_id'))
     if (not isinstance(rid, str) or not re.fullmatch(r'g[1-9][0-9]*-[a-f0-9]{8}', rid)
             or type(generation) is not int or generation != int(rid.split('-')[0][1:])
             or not isinstance(lease, str) or not 1 <= len(lease) <= 128):
         raise RecoveryRefused('runtime identity')
-    return dict(game='hanjuku-hero', runtime_id=rid, generation=generation, lease_id=lease)
+    return dict(game=game, runtime_id=rid, generation=generation, lease_id=lease)
 
 
 def guard_name(generation):

@@ -23,12 +23,28 @@ SOREN91_GAME_STATE_NOTE = (
     "いまの画面のゲームのものではないので、91のスコアとして読み上げないこと。"
 )
 
+#: 配信ネイティブのコーナー view。ケースの内容は state dir の payload から読む。
+MYSTERY_VIEW = "mystery-view"
+YOSOU_VIEW = "yosou-view"
+DOUSHI_VIEW = game_profile.DOUSHI_VIEW
+MYSTERY_PHASE_LABELS = {
+    "intro": "事件発生",
+    "investigate": "現場調査",
+    "interrogate": "容疑者尋問",
+    "deduction": "推理タイム",
+    "prediction": "犯人予想",
+    "reveal": "答えの開示",
+    "done": "おしまい",
+}
+
 GAME_BLURBS = {
     "sorengame": "ソ連ゲーム(Unity WebGL)。AIが戦略を改善しながらプレイし、ロシア建国・ソ連建国を目指す",
     "robots": "Robots(bsdgames)。ロボットの追跡を避けるターン制パズル(いまは手動操作)",
     "nethack": "NetHack(CLIローグライク)",
     "hanjuku-hero": game_profile.HANJUKU_BLURB,
+    game_profile.SPEEDRUN: game_profile.SPEEDRUN_BLURB,
     "paper-view": paper_corner_profile.BLURB,
+    DOUSHI_VIEW: game_profile.DOUSHI_BLURB,
     "external-video-view": (
         "特別コーナー。配信者のPCで遊んでいるゲームの映像をOBSから受けて映している。"
         "コメントには応援・プレイの様子・ゲームの印象で答え、画面から分からない仕掛けや数値は創作しない"
@@ -54,6 +70,7 @@ SOREN_CONTEXT_ENV_KEYS = (
     "COMMENT_OPS_CONTEXT_MAX_CHARS",
     "DOCICH_GAME_SWITCH_CANONICAL_FILE",
     "DOCICH_HANJUKU_CONFIG_FILE",
+    "DOCICH_HANJUKU_SPEEDRUN_CONFIG_FILE",
     "GAME_STATE",
     "IMPROVE_STATE_FILE",
     "MIN_GAMES_BEFORE_IMPROVE",
@@ -100,6 +117,12 @@ class SorenGameContextProvider:
             game_state = SOREN91_GAME_STATE_NOTE
         elif game == "external-video-view":
             game_state = self._flyhome_state_context(canonical)
+        elif game == MYSTERY_VIEW:
+            game_state = self._mystery_state_context(canonical_path.parent)
+        elif game == YOSOU_VIEW:
+            game_state = self._yosou_state_context(canonical_path.parent)
+        elif game == DOUSHI_VIEW:
+            game_state = self._doushi_state_context(canonical_path.parent)
         elif isinstance(game, str) and game != "sorengame":
             profile = self._game_profile(game, state_dir=canonical_path.parent)
             game_state = (
@@ -113,6 +136,96 @@ class SorenGameContextProvider:
             comment_ops_context=self._ops_context(mode),
             celebration_history_context=self._celebration_history_context(),
         )
+
+    def _mystery_state_context(self, state_dir: Path) -> str:
+        """Bounded summary of the airing mystery case for comment replies.
+
+        The corner asks the audience to vote on a case; a generic game blurb let
+        replies talk past the screen (owner 2026-11-23). Only the published view
+        payload is read, every field is bounded, and a missing or malformed
+        payload falls back to the static blurb instead of guessing.
+        """
+        fallback = game_profile.non_soviet_game_state(
+            MYSTERY_VIEW, GAME_BLURBS.get(MYSTERY_VIEW, ""))
+        try:
+            payload = self._read_json(state_dir / "mystery_view.json")
+        except Exception:
+            return fallback
+        case = payload.get("case") if isinstance(payload, dict) else None
+        if not isinstance(case, dict):
+            return fallback
+
+        def bounded(value, limit: int) -> str:
+            return value.strip()[:limit] if isinstance(value, str) else ""
+
+        phase = bounded(payload.get("phase"), 24)
+        victim = bounded(case.get("victim"), 40)
+        place = bounded(case.get("place"), 40)
+        rows = case.get("suspects") if isinstance(case.get("suspects"), list) else []
+        names = []
+        for row in rows[:5]:
+            if not isinstance(row, dict):
+                continue
+            name, role = bounded(row.get("name"), 24), bounded(row.get("role"), 16)
+            if name:
+                names.append(f"{name}（{role}）" if role else name)
+        if not (victim or place or names):
+            return fallback
+        parts = ["- いまはAI探偵ミステリーのコーナー中です。"]
+        if victim or place:
+            parts.append(f"事件: {victim or '被害者不明'}が{place or '場所未明'}で巻き込まれた事件。")
+        if names:
+            parts.append("容疑者: " + "、".join(names) + "。")
+        label = MYSTERY_PHASE_LABELS.get(phase)
+        if label:
+            parts.append(f"いまの段階: {label}。")
+        parts.append("視聴者はアンケートで尋問先や犯人を投票します。画面に無い設定や真相は創作しないこと。")
+        return "".join(parts)[:600]
+
+    def _yosou_state_context(self, state_dir: Path) -> str:
+        """Bounded summary of the airing prediction corner for comment replies.
+
+        The corner ranks viewers by hit rate; without it replies fell back to a
+        generic blurb unrelated to the board (owner 2026-11-23, same class as the
+        mystery corner). Only the public leaderboard file is read and every
+        value is bounded; a missing or malformed ledger keeps the static blurb.
+        """
+        fallback = game_profile.non_soviet_game_state(
+            YOSOU_VIEW, GAME_BLURBS.get(YOSOU_VIEW, ""))
+        try:
+            from .. import prediction_leaderboard as leaderboard
+
+            ledger_path = state_dir / leaderboard.FILE
+            # The shared loader intentionally treats a missing ledger as an empty one
+            # for board views. Comment replies must distinguish "not initialized" from
+            # a real, initialized ledger with zero settled rounds.
+            if ledger_path.is_symlink() or not ledger_path.is_file():
+                return fallback
+            ledger = leaderboard.load(ledger_path)
+            boards = leaderboard.boards(ledger)
+            counts = leaderboard.stats(ledger)
+        except Exception:
+            return fallback
+        rows = boards.get("hit_rate") if isinstance(boards, dict) else None
+        rows = rows if isinstance(rows, list) else []
+        # Keep each fact on its own line: downstream context sanitization is
+        # line-oriented, so a display name must not share the count's line.
+        parts = ["- いまは予想王のコーナー中です。チャンネルポイント予想の結果を発表しています。"]
+        parts.append(f"確定した予想は{counts.get('rounds') or 0}件。")
+        if rows:
+            top = rows[0] if isinstance(rows[0], dict) else {}
+            name = top.get("user_name") or top.get("user_login") or ""
+            name = " ".join(name.split())[:24] if isinstance(name, str) else ""
+            if name:
+                rounds = top.get("rounds") if type(top.get("rounds")) is int else 0
+                hits = top.get("hits") if type(top.get("hits")) is int else 0
+                parts.append(f"的中率トップは同志{name}（{rounds}回中{hits}回）。")
+        parts.append("画面に無い数字や順位は創作しないこと。")
+        return "\n".join(parts)[:600]
+
+    def _doushi_state_context(self, state_dir: Path) -> str:
+        """Use the same bounded ranking summary as the live comment profile launcher."""
+        return game_profile.doushi_game_state(state_dir)
 
     def _flyhome_state_context(self, canonical: dict) -> str:
         """Measured facts only: the screen is the streamer's real play, not data we hold."""
@@ -466,7 +579,12 @@ class SorenGameContextProvider:
     def _game_profile(self, game: str, *, state_dir: Path | None = None) -> dict | None:
         """The docich-owned replacement profile for ``game`` (``None`` when it has none)."""
         # The provider's env is an allowlist: pass the config path explicitly, never via os.environ.
-        config = self._path("DOCICH_HANJUKU_CONFIG_FILE", str(game_profile.REPO_HANJUKU_CONFIG))
+        # Each Hanjuku corner reads its own config; other profiles ignore the value.
+        if game == game_profile.SPEEDRUN:
+            config = self._path("DOCICH_HANJUKU_SPEEDRUN_CONFIG_FILE",
+                                str(game_profile.REPO_SPEEDRUN_CONFIG))
+        else:
+            config = self._path("DOCICH_HANJUKU_CONFIG_FILE", str(game_profile.REPO_HANJUKU_CONFIG))
         return game_profile.build(game, config=config, state_dir=state_dir)
 
     def _celebration_history_context(self) -> str:

@@ -265,13 +265,78 @@ del _chapter
 # Its west edge is a black cliff line; the x=122 column south of the heart is
 # pinched by the dark forest band (x~125-137, y~76-84), so aim the open grass
 # row north-east of it instead. View (134.0, 74.0) -> cell.
+# Owner 2026-11-24 (chapter 9): the サヌト→オシロガ sortie cell sits against
+# the cliff; aiming at the bare castle cell camps there.  Aim one measured
+# step north (up) of the cell for that corridor only.
+CH9_SANUTO_OSHIROGA_AIM_OFFSET = (0, -8)
+MARCH_AIM_OFFSETS = {(9, 'サヌト', 'オシロガ'): CH9_SANUTO_OSHIROGA_AIM_OFFSET}
+
+
+def aim_cell(chapter, source, target, cell=None):
+    """The sortie cell for one route, with its measured per-route offset."""
+    if cell is None:
+        cell = (castles(chapter) or {}).get(target)
+    if not cell:
+        return cell
+    dx, dy = MARCH_AIM_OFFSETS.get((chapter, source, target), (0, 0))
+    return (cell[0] + dx, cell[1] + dy) if (dx or dy) else cell
+
+
 CH9_BOSS_WAYPOINT = (568, 212)
 # Issue #4861 / #4937: a black impassable cliff line splits chapter 9's イデ！
 # pocket (x < 640, y > 260) and north corridor (x < 640, y <= 260) from the
 # east boss-orbit area (x >= 640); the corridor mouth is the only join.
+# Measured on live g1190 frame-006.png (2026-11-26): south of wy >= 476 the
+# cliff wall curves west to world_x <= 612, so a unit at [620, 484] already
+# stands east of the cliff.
 CH9_CLIFF_EAST_X = 640
+CH9_CLIFF_SOUTH_Y = 476
+CH9_CLIFF_SOUTH_EAST_X = 612
 CH9_CLIFF_POCKET_Y = 260
 CH9_EAST_MOUTH = (674, 212)
+# Measured on g1190-ch9-y-view-flags.png: an unbroken black cliff wall
+# separates the west/central intermediate corridor castles (オシロガ/
+# ドンドン/タオ/オオキク/...) from the イデ！ pocket + north corridor.
+# South of y >= 560 (west of the east cliff wall), イソ/カラ sit south of
+# イデ！ and cannot bypass イデ！ directly to the moving boss.
+CH9_CLIFF_SOUTH_POCKET_Y = 560
+CH9_CLIFF_WEST_BANDS = (
+    (200, 400),  # north edge..wy=199: wall <= 384 (east of オシロガ/オレガノ)
+    (370, 448),  # wy=200..369: wall <= 432 (east of アルファルファ)
+    (560, 504),  # wy=370..559: wall <= 496 (east of ドンドン/アテナ/タオ, west of イデ！ 536)
+)
+
+
+def ch9_boss_approachable(unit_world) -> bool:
+    """True when a ch9 unit stands in the east boss area, north corridor, or イデ！ pocket."""
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2):
+        return True
+    ux, uy = unit_world
+    east_x = CH9_CLIFF_SOUTH_EAST_X if uy >= CH9_CLIFF_SOUTH_Y else CH9_CLIFF_EAST_X
+    if ux >= east_x:
+        return True
+    if uy >= CH9_CLIFF_SOUTH_POCKET_Y:
+        return False
+    for max_y, min_x in CH9_CLIFF_WEST_BANDS:
+        if uy < max_y:
+            return ux >= min_x
+    return False
+
+
+def ch9_unreachable_recall_castle(unit_world, owned):
+    """Nearest owned non-イデ！ corridor castle for a cliff-isolated ch9 unit."""
+    if not (isinstance(unit_world, (list, tuple)) and len(unit_world) == 2):
+        return None
+    road = corridor(9) or ()
+    cells = castles(9) or {}
+    last = road[-1] if road else None
+    pool = [c for c in owned if c in cells and c != last and not is_boss_castle(c)]
+    if not pool:
+        pool = [c for c in owned if c in cells and not is_boss_castle(c)]
+    if not pool:
+        return None
+    ux, uy = unit_world
+    return min(pool, key=lambda c: ((cells[c][0] - ux) ** 2 + (cells[c][1] - uy) ** 2, c))
 
 
 def ch9_cliff_detour(unit_world, aim):
@@ -281,7 +346,10 @@ def ch9_cliff_detour(unit_world, aim):
         return None
     ux, uy = unit_world
     ax, ay = aim
-    if ux >= CH9_CLIFF_EAST_X or ax < CH9_CLIFF_EAST_X:
+    if not ch9_boss_approachable(unit_world):
+        return None
+    cliff_x = CH9_CLIFF_SOUTH_EAST_X if uy >= CH9_CLIFF_SOUTH_Y else CH9_CLIFF_EAST_X
+    if ux >= cliff_x or ax < CH9_CLIFF_EAST_X:
         return None
     if uy > CH9_CLIFF_POCKET_Y:
         return CH9_BOSS_WAYPOINT
@@ -972,6 +1040,14 @@ CHAPTER_10_ORDERS = (
      'cards': ('グリンボー', 'クースカン', 'エンジェリン'),
      'target': 'ケントルム', 'after': ('captured', 'ファルゲ'),
      'note': '主人公 右上方面へ 対敵将軍迎撃'},
+    # Owner 2026-11-25: ジュアム is reachable only from ケントルム or カロナック
+    # (the north-west cliffs stop every other march). The chart had no order
+    # for it, so the mechanical planner invented アルマムーン→ジュアム and
+    # walked into the obstacles every month.
+    {'step': '10-A3', 'general': HERO, 'source': 'ケントルム',
+     'cards': (),
+     'target': 'ジュアム', 'after': ('captured', 'ケントルム'),
+     'note': '主人公 ジュアム城へ（ケントルムからのみ到達可能）'},
     # #4922: ケントルム sits behind the White House's north-east wall, so a
     # boss march from it camps against the ring forever; トルストリア is the
     # southern castle with a straight field to the south gate
@@ -1278,6 +1354,42 @@ GATEWAYS = {
 def gateway(chapter):
     """The chapter's central hub and the castle halves it separates, else None."""
     return GATEWAYS.get(chapter)
+
+
+# Chapter 12 (owner 2026-11-24): a boss march straight from the home castle is
+# absorbed or camped by the terrain between, so the boss assault is staged at
+# the chart's own boss source. The chart already names it twice: the hero's
+# last relay order (12-A3 ``主人公 ディランダ城を拠点に``) and the boss order's
+# source (12-B1). The speedrun chart is abolished (``orders`` is empty), so the
+# interim planner never ran either; ``boss_staging`` reads the encoded orders.
+STAGING_CHAPTERS = frozenset({12})
+
+
+def boss_staging(chapter):
+    """``{'castle', 'path'}`` of a chapter's boss staging castle, else None.
+
+    ``castle`` is the source of the boss order that the hero's relay also
+    targets (12-B1 / 12-A3); ``path`` is the hero's relay walked back from it
+    through the encoded orders (home -> ... -> castle), so no castle name is
+    hard-coded here. A chapter without that pair of orders has no staging.
+    """
+    if chapter not in STAGING_CHAPTERS:
+        return None
+    rows = measured_orders(chapter)
+    boss = next((o for o in rows if is_boss_castle(o['target'])), None)
+    if boss is None:
+        return None
+    stage = boss['source']
+    path = [stage]
+    while True:
+        prev = next((o for o in rows if o['general'] == HERO and o['target'] == path[0]
+                     and o['source'] not in path), None)
+        if prev is None:
+            break
+        path.insert(0, prev['source'])
+    if len(path) < 2:
+        return None
+    return {'castle': stage, 'path': tuple(path)}
 
 
 GUARD_FREE_CHAPTERS = frozenset({9})

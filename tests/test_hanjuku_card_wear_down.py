@@ -66,7 +66,9 @@ def test_a_hit_the_soldiers_fully_absorb_still_removes_them():
 
 
 def test_a_hit_below_one_soldier_with_no_egg_drop_stays_in_hand():
-    mem = memory('ダイチスイム')
+    # 自軍をスコア優勢にして、総合スコア劣勢の押し込み (owner 2026-11-25) を外し、
+    # 兵士を1人も削れない一撃の契約だけを固定する。
+    mem = memory('ダイチスイム', ally_hp=200)
     result = gate(mem, 'ダイチスイム')
     assert not result['egg_drop']['drops']
     assert result['allowed'] is False

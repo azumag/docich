@@ -1,0 +1,118 @@
+"""Owner 2026-11-25: outside boss battles, an enemy at HP1 spends no resource.
+
+切り札・奥の手・卵を使わず白兵で押し切る。ボス戦は対象外。The live trigger was
+g1342 2026-11-25: ミックミー was selected against マフィン at enemy HP1 with one
+enemy soldier left (ally HP 23), even though the fight was effectively decided.
+"""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import pytest
+
+from docich import hanjuku_policy as p
+from docich.hanjuku_font import TextLine
+from docich.hanjuku_screen import Screen
+from test_hanjuku_survival import battle as _survival_battle, memory, menu
+
+A_BURST = p._power_mash({}, {'power_mash': True})
+
+
+def okunote_menu():
+    return Screen([TextLine(208, tuple((176 + 8 * i, ch) for i, ch in enumerate('おくのて')))],
+                  None, 'おくのて', kind='battle_menu', menu_cursor=208)
+
+
+def battle(mem, soldiers=(90, 1)):
+    screen = _survival_battle(mem)
+    screen.field_soldiers = soldiers
+    return screen
+
+
+def hp1_memory(hp=23, enemy='ミント'):
+    mem = memory(hp=hp, enemy=1)
+    mem['battle']['enemy'] = enemy
+    mem['battle']['enemy_soldiers'] = 1
+    return mem
+
+
+def test_non_boss_hp1_melees_without_spending_resources():
+    mem = hp1_memory()
+    actions = p.battle_step(battle(mem), mem)
+    assert actions == A_BURST
+    assert any(r['decision'] == 'battle_hp1_resource_hold' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_one_hit_finish' for r in mem['_records'])
+    assert not mem['battle'].get('survival')
+    assert not mem['battle'].get('cards_selected')
+
+
+def test_the_hold_is_non_boss_only():
+    mem = hp1_memory(hp=98)
+    assert p._hp1_resource_hold(mem['battle'])
+    mem['battle']['enemy'] = 'クイーン'
+    assert not p._hp1_resource_hold(mem['battle'])
+    mem['battle']['enemy'] = 'ミント'
+    mem['battle']['castle'] = 'ボス'
+    assert not p._hp1_resource_hold(mem['battle'])
+    mem['battle']['castle'] = None
+    mem['battle']['entry_evidence'] = 'measured_boss_entry'
+    assert not p._hp1_resource_hold(mem['battle'])
+
+
+@pytest.mark.parametrize('flag', ['card_hp_unread', 'card_context_unclassified',
+                                  'egg_battle', 'card_summon_observed'])
+def test_unread_or_summon_context_is_not_a_hold(flag):
+    mem = hp1_memory()
+    mem['battle'][flag] = True
+    assert not p._hp1_resource_hold(mem['battle'])
+
+
+def test_an_open_card_list_is_closed_unused_at_hp1():
+    mem = hp1_memory(hp=60)
+    p.battle_step(battle(mem), mem)          # bind the current HP panel
+    mem['battle']['card_flow'] = {'card': 'ゼンマイン', 'stage': 'list', 'tactic_id': 't'}
+    assert p.card_list_step(menu(('ゼンマイン',), kind='text'), mem) == [p.pad('b')]
+    assert mem['battle']['card_flow'] is None
+    assert not mem['battle'].get('cards_selected')
+
+
+def test_an_open_menu_is_closed_without_egg_or_okunote_at_hp1():
+    mem = hp1_memory(hp=5)
+    assert p.battle_step(battle(mem), mem) == A_BURST
+    mem['battle']['survival'] = {'opens': 1, 'menu_ticks': 0, 'cards_checked': 0,
+                                 'cards_attempted': [], 'egg_attempted': False,
+                                 'exhausted': False}
+    assert p.battle_menu_step(menu(), mem) == [p.pad('b')]
+    assert not mem['battle'].get('egg_attempted')
+    assert not mem['battle'].get('cards_selected')
+
+
+def test_okunote_is_not_opened_at_non_boss_hp1_with_soldiers():
+    mem = {'chapter': 1, 'battle': {
+        'ally': 'トレビス', 'enemy': 'シャルドネ', 'castle': 'ゴーメン',
+        'side': 'defense', 'start_ally_hp': 66, 'start_enemy_hp': 56,
+        'ally_hp': 22, 'enemy_hp': 1, 'enemy_soldiers': 1,
+        'cards_used': [], 'card_evidence_version': 1, 'planned_cards': [],
+        'step': None, 'okunote_only_observed': True}}
+    assert p.okunote_step(okunote_menu(), mem) is None
+    record = next(r for r in mem['_records']
+                  if r['decision'] == 'battle_okunote_skip_one_hit')
+    assert record['observed_metric']['non_boss_hp1_hold'] is True
+    assert 'ボス戦以外' in record['reason']
+    assert not any(r['decision'] == 'battle_okunote_last_resort' for r in mem['_records'])
+
+
+def test_a_boss_at_hp1_is_not_held():
+    mem = hp1_memory(hp=5, enemy='クイーン')
+    p.battle_step(battle(mem), mem)
+    assert not any(r['decision'] == 'battle_hp1_resource_hold' for r in mem['_records'])
+
+
+def test_zero_enemy_soldiers_keep_the_existing_one_hit_record():
+    mem = hp1_memory(hp=60)
+    mem['battle']['enemy_soldiers'] = 0
+    p.battle_step(battle(mem, soldiers=(90, 0)), mem)
+    assert any(r['decision'] == 'battle_one_hit_finish' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_hp1_resource_hold' for r in mem['_records'])

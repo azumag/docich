@@ -17,12 +17,17 @@ def refused_card(monkeypatch):
     The rule for hits that do not finish the enemy is in test_hanjuku_card_wear_down.py.
     """
     monkeypatch.setattr('docich.hanjuku.judgment.battle._card_wears_down_enemy', lambda estimate: False)
+    # owner 2026-11-25: 総合スコア劣勢の押し込みは tests/test_hanjuku_score_pressure.py が持つ。
+    # ここでは卵到達判定だけを固定する (卵なしの押し込みは各テストで実卵を観測して外す)。
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._score_pressure', lambda *a: False)
 
 
-def gate(ally, enemy, enemy_hp, *, chapter, soldiers, side='attack', card='ゼンマイン'):
+def gate(ally, enemy, enemy_hp, *, chapter, soldiers, side='attack', card='ゼンマイン', egg=None):
     mem = memory(card, enemy=enemy, enemy_hp=enemy_hp, ally=ally, ally_hp=40,
                  soldiers=soldiers, side=side)
     mem['chapter'] = chapter
+    if egg is not None:
+        mem['egg_uses'] = {ally: egg}
     step = p.card_list_step(cards([card]), mem)
     return step, mem
 
@@ -48,7 +53,8 @@ def test_our_soldiers_or_an_unread_count_push_the_enemy_into_its_wall(soldiers):
 def test_hera_against_apollon_backs_apollon_onto_its_wall_from_the_rear_rank():
     # 16:06:55 g1075: the general stands 24 dots behind the front, and our
     # back-off stops at the right wall, so contacts settle near X 105.
-    step, mem = gate('ヘラ', 'アポロン', 74, chapter=3, soldiers=(0, 0), card='グリンボー')
+    # ヘラの実卵を観測して卵の競争 (owner 2026-11-25) の対象外にし、到達判定だけを固定する。
+    step, mem = gate('ヘラ', 'アポロン', 74, chapter=3, soldiers=(0, 0), card='グリンボー', egg=1)
     assert step == [p.pad('b')]
     reach = mem['_records'][0]['observed_metric']['egg_reach']
     assert reach['enemy_general_x_min'] == 64.7

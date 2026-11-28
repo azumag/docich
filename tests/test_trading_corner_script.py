@@ -140,7 +140,7 @@ def test_both_prompts_connect_meriken_to_paper_with_grounding_and_no_canned_quip
         assert "ひねくれた自信家" in prompt
         assert "一人称は「僕」" in prompt
         assert "アメリカンジョーク" in prompt
-        assert "PAPER暗号資産の模擬売買" in prompt
+        assert "PAPER（仮想資金の模擬売買）とLIVE（本番の資金での実際の売買）" in prompt
         assert "日本語のです・ます調" in prompt
         assert "以下の実データ(facts)だけを根拠" in prompt
         assert "存在しない数値・銘柄・ニュース・因果関係は絶対に作らない" in prompt
@@ -235,7 +235,9 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     assert "10,000" in first["result"]
     assert "btc_jpy" in first["result"]
     assert "xrp_jpy" not in first["result"]
-    assert "区間の確定損益（前回説明から今回説明まで）" in first["result"]
+    # The fixture intentionally has no PAPER fill ledger; fail closed instead of narrating a zero/known interval result.
+    assert "評価待ち" in first["result"]
+    assert "区間の確定損益（前回説明から今回説明まで）" not in first["result"]
     assert "戦略" in first["strategy"]
     assert all(isinstance(value, str) and value for value in first.values())
     assert sum(len(value) for value in first.values()) >= 500
@@ -391,7 +393,7 @@ def test_build_facts_and_prompt_include_multi_timeframe_walk(tmp_path):
     assert facts["fill_timeframes"][0]["symbol"] == "eth_jpy"
     prompt = build_prompt(facts)
     assert "時間足チャートの解説" in prompt
-    assert "次の11キー" in prompt
+    assert "次の12キー" in prompt
     assert "- chart:" in prompt
     assert "- fills:" in prompt
     assert "- review:" in prompt
@@ -555,7 +557,7 @@ def test_generate_merges_partial_ai_with_fallback(tmp_path, monkeypatch):
     )
     assert result["source"] == "ai-partial"
     assert sorted(result["fallback_segments"]) == [
-        "fills", "improve", "news", "result", "review", "strategy"
+        "fills", "improve", "live", "news", "result", "review", "strategy"
     ]
     assert result["segments"]["corner"] == "AI corner"
     assert result["segments"]["chart"] == "AI chart"
@@ -723,7 +725,7 @@ def test_generate_accepts_multiline_model_json(tmp_path, monkeypatch):
     _write_status(tmp_path)
     monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
     monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
-    body = '{\n  "corner": "生成文1\nつづき",\n  "news": "生成文2",\n  "chart": "生成文3",\n  "strategy": "生成文4",\n  "result": "生成文5",\n  "fills": "生成文6",\n  "review": "生成文7",\n  "improve": "生成文8"\n}'
+    body = '{\n  "corner": "生成文1\nつづき",\n  "news": "生成文2",\n  "chart": "生成文3",\n  "strategy": "生成文4",\n  "result": "生成文5",\n  "live": "生成文LIVE",\n  "fills": "生成文6",\n  "review": "生成文7",\n  "improve": "生成文8"\n}'
     monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: body)
     result = generate_corner_script(
         object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,

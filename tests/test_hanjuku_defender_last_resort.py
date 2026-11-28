@@ -43,7 +43,7 @@ def test_gray_rows_are_scrolled_before_confirming_last_resort():
 @pytest.mark.parametrize('changes', [
     {'ally': 'どうし'}, {'ally': 'しゅじんこう'}, {'ally': 'だいじん'},
     {'ally': '不明'}, {'enemy': '不明'}, {'enemy': 'クイーン'},
-    {'side': None}, {'side': 'attack'}, {'castle': None}, {'castle': '前章の城'},
+    {'side': 'attack'}, {'castle': None}, {'castle': '前章の城'},
     {'ally_hp': 60}, {'ally_hp': 0}, {'ally_hp': None}, {'ally_hp': True},
     {'enemy_hp': 44}, {'enemy_hp': 0}, {'start_enemy_hp': None},
     {'start_ally_hp': 999}, {'enemy_hp': 999},

@@ -434,3 +434,14 @@ def test_4633_paid_up_discharge_verifies_and_exits_with_b():
     assert [r['general'] for r in verified] == ['ビーツ']
     assert verified[0]['observed_metric']['basis'] == 'balance_nonnegative'
     assert not any(r['decision'] == 'discharge_general' for r in out['_records'])
+
+
+def test_last_known_general_is_never_dismissed():
+    # Local chapter 1/2: the balance turned positive but the header stayed
+    # unreadable; the bot kept firing until one general remained and stalled.
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': [],
+                        'recruit_roster': {'names': ['ゼウス'], 'complete': True}}}
+    actions, state = decide(discharge_frame(['ゼウス'], 0), state)
+    assert actions == [p.pad('b')]
+    assert any(r['decision'] == 'discharge_last_general' for r in state['_records'])
+    assert not [r for r in state['_records'] if r['decision'] == 'discharge_general']

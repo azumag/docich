@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_chart as chart
 from docich import hanjuku_commentary, hanjuku_narration, hanjuku_policy as policy
 from docich import pulse_volume
+from docich.hanjuku.flows import shop as shop_flow
 from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_font import UNKNOWN, read_lines
 from docich.hanjuku_screen import Screen
@@ -198,8 +199,11 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert policy._plan(_planned_mem(), {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
     refill = policy._plan(_planned_mem(), {'year': 1, 'month': 6, 'gold': 999})
-    # BARGAIN_TARGETS (2026-11-02): spare cash stocks useful cards to target.
-    assert refill['items'] == [['ノリウツール', 3], ['クースカン', 3], ['ゼンマイン', 2]]
+    # BARGAIN_ORDER follows the 2026-11-25 purchase priority: エンジェリン and
+    # マグネガキン first, then ミックミー and クースカン, within the monthly
+    # 200G/8-copy caps.
+    assert refill['items'] == [['エンジェリン', 2], ['マグネガキン', 2],
+                               ['ミックミー', 1], ['クースカン', 1]]
     assert refill['soldiers'] == 99  # optional cards do not take the refill budget
     assert refill['variant'] == 'soldier_refill_only'
 
@@ -899,26 +903,13 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     spent = Canvas()
     spent.text(176, 175, 'こうげき')
     spent.text(176, 191, 'もうこうげき')
+    spent.hand(98, 169)
     actions, state = decide(spent.frame(), state)
     assert state['screen_kind'] == 'egg_battle_menu'
-    # With no cards left the bot tries the retreat once (owner 2026-09-29)
-    # instead of attacking into a summon it cannot answer.
-    assert actions[0]['buttons'] == ['b']
+    # Owner 2026-11-23: retreat is banned everywhere.  With no egg and no card
+    # the summon turn attacks (the hand is readable on こうげき).
+    assert actions[0]['buttons'] == ['a']
     assert state['policy']['egg_battle_row_dead'] is True
-    # Three bounded return attempts; no immediate A after an unconfirmed B.
-    for _ in range(2):
-        actions, state = decide(spent.frame(), state)
-        assert actions[0]['buttons'] == ['b']
-    # g1107: with the row unreadable the cursor cannot be confirmed, so a
-    # blind A on the greyed egg row is rejected forever. The bot nudges up a
-    # bounded number of times to re-observe, then holds instead of confirming.
-    for _ in range(6):
-        actions, state = decide(spent.frame(), state)
-        assert actions[0]['buttons'] == ['up']
-    actions, state = decide(spent.frame(), state)
-    assert actions == []
-    actions, state = decide(spent.frame(), state)
-    assert actions == []
 
 
 def test_experience_prefers_a_better_action_and_stays_with_an_untried_default():
@@ -1002,6 +993,28 @@ def test_battle_end_records_independent_choice_outcome_into_experience():
     assert result['experience_action'] == 'use_egg' and result['outcome'] == 'win'
 
 
+def test_shop_list_with_unread_cursor_keeps_the_purchase_plan_owned(monkeypatch):
+    c = Canvas()
+    c.text(48, 15, '1ねん 4のつき 100G')
+    c.text(24, 39, 'しょうにん')
+    c.text(168, 167, 'バグストーム 10G')
+    c.text(168, 183, 'クースカン 20G')
+    c.text(168, 199, 'ノリウツール 30G')
+    screen = parse(c.frame())
+    assert screen.kind == 'shop_list'
+    key = shop_flow._month_key(screen.header)
+    shop = {'key': key, 'items': [['バグストーム', 1]], 'want': None}
+    mem = {'shop': shop}
+    monkeypatch.setattr(shop_flow, '_merchant_spendable', lambda *args: 100)
+    monkeypatch.setattr(shop_flow, 'plan_bargains', lambda *args, **kwargs: None)
+    monkeypatch.setattr(shop_flow, 'hold_room', lambda *args: 99)
+    monkeypatch.setattr(shop_flow, 'merchant_card_spendable', lambda *args: 100)
+    monkeypatch.setattr(shop_flow, 'menu_to', lambda *args, **kwargs: None)
+    assert shop_flow.shop_step(screen, mem) == []
+    assert shop['want'] == ['バグストーム', 1, 10]
+    assert shop['unread_selection'] == 'バグストーム'
+
+
 def test_gift_request_buys_the_cheapest_and_declines_extra_money():
     c = Canvas()
     c.text(48, 15, '1ねん 4のつき 100G')
@@ -1018,6 +1031,20 @@ def test_gift_request_buys_the_cheapest_and_declines_extra_money():
     d.text(184, 199, 'いかんッ!')
     d.hand(162, 177)
     assert policy.yes_no_step(parse(d.frame()), mem)[0]['buttons'] == ['down']
+
+
+def test_regular_gift_with_unread_cursor_keeps_selection_owned():
+    c = Canvas()
+    c.text(48, 15, '1ねん 4のつき 100G')
+    c.text(24, 39, 'なにを かいあたえますか?')
+    c.text(168, 167, 'ゆびわ 10G')
+    c.text(168, 183, 'ペンダント 5G')
+    c.text(168, 199, 'コート 20G')
+    mem = {}
+    screen = parse(c.frame())
+    assert screen.kind == 'gift_request'
+    assert policy.gift_step(screen, mem) == []
+    assert mem['gift_selection_pending'] == {'item': 'ペンダント', 'price': 5}
 
 
 def test_unaffordable_gift_request_is_recognised_and_answered():
@@ -2341,16 +2368,58 @@ def test_spending_month_menu_navigation_that_never_moves_is_bounded_too():
     assert policy.month_step(parse(frame), mem) == [policy.pad('b')]
     assert [r['decision'] for r in mem['_records']][-1] == 'menu_nav_stuck'
     assert mem['_records'][-1]['observed_metric']['route'] == 'month_nav'
-    # A stuck walk now escapes via the measured two-column blind plan (the
-    # trailing 'a' opens へいしほじゅう), bounded by MONTH_BLIND_NAV_LIMIT;
-    # once the tries are spent the guarded hold resumes and still never fires
-    # an unbounded confirm.
-    blind = ['up'] * 4 + ['left', 'down', 'a']
-    for _ in range(policy.MONTH_BLIND_NAV_LIMIT):
-        plan = policy.month_step(parse(frame), mem)
-        assert [a['buttons'][0] for a in plan if a['type'] == 'pad'] == blind
+
+    # g1190: the hand can remain on the じゅうじキー hint below the menu.
+    # A blind walk only positions the cursor; that hint is not proof that the
+    # target row is selected. A fresh frame must show the exact row under hand.
+    c = Canvas()
+    c.text(48, 15, '1ねん 11のつき 163G')
+    for label, (x, y) in MONTH_GRID.items():
+        c.text(x, y, label)
+    c.text(176, 199, 'じゅうじキー')
+    c.hand(180, 191)
+    hint = parse(c.frame())
+    assert hint.kind == 'month_menu' and hint.hand and hint.hand[1] >= 175
+    assert hint.has('へいしほじゅう') and not hint.has('かわりますぞ')
+    assert policy._month_menu_row_col(hint, 'へいしほじゅう') == (1, 0)
+    assert policy._month_menu_hint_only(hint), repr(policy._month_dialog_body(hint))
+
+    foreign = Canvas()
+    foreign.text(48, 15, '1ねん 11のつき 163G')
+    for label, (x, y) in MONTH_GRID.items():
+        foreign.text(x, y, label)
+    foreign.text(176, 199, 'いかんッ!')
+    foreign.hand(180, 191)
+    assert not policy._month_menu_hint_only(parse(foreign.frame()))
+
+    blind = ['up'] * 4 + ['left', 'down']
+    plan = policy.month_step(hint, mem)
+    assert [a['buttons'][0] for a in plan if a['type'] == 'pad'] == blind
+    assert 'month_blind_opened' not in mem
     assert [r['decision'] for r in mem['_records']][-1] == 'month_blind_nav'
-    assert policy.month_step(parse(frame), mem) == []
+
+    # A fresh frame with the cursor still on another row must keep positioning;
+    # only the exact target row may send the confirmation.
+    wrong = parse(month_canvas(59, on='しょうにん'))
+    wrong_move = policy._month_menu_move(wrong, mem, 'へいしほじゅう')
+    assert policy.pad('a') not in wrong_move
+
+    target = parse(month_canvas(59, on='へいしほじゅう'))
+    move = policy._month_menu_move(target, mem, 'へいしほじゅう')
+    assert move == [policy.pad('a')]
+    assert mem['month_blind_opened'] == 'へいしほじゅう'
+    assert 'month_blind_nav' not in mem
+    assert mem['_records'][-1]['decision'] == 'month_blind_nav_confirmed'
+    assert policy._month_opened(move, mem, 'へいしほじゅう')
+    assert 'month_blind_opened' not in mem
+
+    # A foreground discharge menu must never start the blind month-menu plan.
+    from docich.hanjuku.os_layer.screen import Screen
+    discharge = Screen(hint.lines, hint.hand, hint.text, kind='discharge_menu')
+    foreign_mem = {'month': '1-11', 'month_nav': {'cancel_sent': True}, '_records': []}
+    foreign_move = policy._month_menu_move(discharge, foreign_mem, 'へいしほじゅう')
+    assert 'month_blind_nav' not in foreign_mem
+    assert foreign_move != [policy.pad('a')]
 
 
 def test_menu_nav_guard_never_cuts_off_navigation_that_keeps_closing_in():
@@ -2820,6 +2889,13 @@ def camp_menu(selected):
                   ''.join(rows), kind='text')
 
 
+def complete_recall_y_jump(mem):
+    jump = mem.get('y_jump') or {}
+    goal = jump.get('goal') or _flow(mem)['recall']['goal']
+    mem.pop('y_jump', None)
+    mem.setdefault('y_jumped', {})['RECALL'] = goal
+
+
 def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     frame = _camp_frame()
     mem = {'chapter': 1, '_records': []}
@@ -2851,7 +2927,7 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     far = Screen(lines=[], hand=None, text='', kind='map_target', marker=(160, 110))
     assert policy.camp_recall_step(far, mem, frame) == [policy.pad('y')]
     assert mem['y_jumps']['RECALL:target'] == 1
-    mem['y_jumped'] = {'RECALL': _flow(mem)['recall']['goal']}
+    complete_recall_y_jump(mem)
     near = Screen(lines=[], hand=None, text='', kind='map_target', marker=(163, 115))
     assert policy.camp_recall_step(near, mem, frame) == [policy.pad('a')]
     assert _flow(mem)['recall']['stage'] == 'await_dispatch'
@@ -2872,6 +2948,18 @@ def test_camp_recall_y_jumps_to_the_goal_when_no_own_castle_is_visible():
     assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('y')]
     assert _flow(mem)['recall']['goal'] == 'アルマムーン'
     assert mem['y_jump']['goal'] == 'アルマムーン'
+
+
+def test_camp_recall_does_not_reopen_an_active_y_jump_while_the_picker_fades():
+    frame = _camp_frame()
+    mem = {'chapter': 1, 'tick': 100, '_records': [],
+           'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
+    marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
+    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('y')]
+    mem['tick'] = 101
+    assert policy.camp_recall_step(marker_only, mem, frame) == []
+    assert mem['y_jumps']['RECALL:target'] == 1
+    assert mem['y_jump']['step'] == 'RECALL'
 
 
 def test_camp_recall_still_confirms_anywhere_once_the_jump_budget_is_spent():
@@ -3908,7 +3996,11 @@ def test_short_generals_save_insufficient_fee_without_building_it_away():
     policy.month_step(parse(month_canvas(49, on='しょうぐんぼしゅう')), mem)
     assert mem['shop']['soldiers'] == 0
     assert mem['shop']['recruit'] == 'skipped'
-    assert mem['shop']['chikujou'] == 'skipped'
+    # docich#5186: an unaffordable eval keeps the row open for a same-menu
+    # reserve release and records the failing signature instead of closing
+    # as 'skipped'.
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_last_eval']['affordable'] is False
     assert 'month_sub' not in mem
 
 
@@ -4156,8 +4248,10 @@ def test_recruit_and_castle_cannot_spend_broken_hero_house_fund():
     policy._plan(mem, {'year': 1, 'month': 7, 'gold': 80}).update(
         egg='not_needed', soldiers=0, soldiers_done=True, soldiers_before_recruit_done=True)
     policy.month_step(parse(month_canvas(80, on='しょうぐんぼしゅう')), mem)
-    # The house fund plus wage/recruit holds exceed 80G.
-    assert mem['shop']['chikujou'] == 'skipped'
+    # The house fund plus wage/recruit holds exceed 80G; the row stays open
+    # for a same-menu reserve release and the failing eval is recorded.
+    assert mem['shop']['chikujou'] == 'check'
+    assert mem['shop']['chikujou_last_eval']['affordable'] is False
     assert 'month_sub' not in mem
 
 
@@ -4550,3 +4644,110 @@ def test_a_visible_cursor_resets_the_blind_map_streak():
     visible = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     policy.map_step(visible, mem, frame)
     assert mem.get('map_blind') is None
+
+
+def test_summon_menu_holds_attack_while_the_card_reveal_can_rearm():
+    # docich#5632: a fresh reveal exhaustion only arms the re-arm gap; while a
+    # re-arm can still recover the きりふだ row the command wait must not
+    # confirm こうげき or file card_miss.  The old spec attacked and emitted
+    # battle_boss_card_missed on the same observation (#5632).
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.hand(98, 169)
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': [], 'cards_selected': [],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    actions, state = decide(c.frame(), state)
+    assert not any(a.get('buttons') == ['a'] for a in (actions or []))
+    assert not state['policy']['battle'].get('boss_card_missed_noted')
+    assert state['policy']['battle']['summon_card_exhausted_tick'] is not None
+    assert any(row.get('decision') == 'battle_summon_card_exhausted'
+               for row in state.get('_records', []))
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
+
+
+def test_a_battle_that_already_used_a_card_does_not_file_a_miss():
+    # docich#5217: ミックミーを使った後に残った札は「開けなかった」証拠ではない。
+    # 台帳の card_miss は「携行札を1枚も開かずに攻撃した」ときだけ記録する。
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.hand(98, 169)
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': ['ミックミー'],
+                                   'cards_selected': ['ミックミー'],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    _, state = decide(c.frame(), state)
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
+
+
+def test_summon_menu_does_not_file_card_miss_before_attack_cursor_is_read():
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    state = {'policy': {'chapter': 8, 'tick': 100,
+                        'battle': {'enemy': 'ニンフ', 'ally': 'ヘルメス',
+                                   'enemy_hp': 100, 'ally_hp': 63,
+                                   'egg_battle': True,
+                                   'card_evidence_version': 1,
+                                   'planned_cards': ['ノリウツール'],
+                                   'cards_used': [], 'cards_selected': [],
+                                   'cards_unclassified': [], 'cards_missing': [],
+                                   'summon_card_scroll': 3}}}
+    _, state = decide(c.frame(), state)
+    assert not state['policy']['battle'].get('boss_card_missed_noted')
+    assert not any(row.get('decision') == 'battle_boss_card_missed'
+                   for row in state.get('_records', []))
+
+
+def test_funded_duel_is_declined_with_ikan():
+    # Owner 2026-11-25: with 500G+ the 果し合い is declined (いかんッ!) to lower
+    # the danger; below the floor the duel is accepted as before.
+    c = Canvas()
+    c.text(48, 15, '3ねん 5のつき 600G')
+    c.text(24, 183, 'いって ごあいて ねがえぬか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 193)
+    mem = {}
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_duel_funded'
+
+    c2 = Canvas()
+    c2.text(48, 15, '3ねん 5のつき 100G')
+    c2.text(24, 183, 'いって ごあいて ねがえぬか?')
+    c2.text(184, 183, 'うむッ!')
+    c2.text(184, 199, 'いかんッ!')
+    c2.hand(162, 177)
+    mem2 = {}
+    assert policy.yes_no_step(parse(c2.frame()), mem2)[0]['buttons'] == ['a']
+    assert mem2['_records'][-1]['strategy_variant'] == 'accept_duel'
+
+
+def test_ample_army_duel_is_declined_with_ikan():
+    # Owner 2026-11-25: with 20+ generals the 果し合い is avoided as well.
+    c = Canvas()
+    c.text(48, 15, '3ねん 5のつき 100G')
+    c.text(24, 183, 'いって ごあいて ねがえぬか?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 193)
+    mem = {'country_general_count': {'count': 20}}
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'decline_duel_army'
+

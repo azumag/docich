@@ -402,6 +402,17 @@ def _rotation_rows(corners, rotation, now):
                 "timer_enabled": enabled,
                 "last_seen_age_sec": last_seen_age,
             })
+        if _bool(timer.get("duplicate_owner")) is True:
+            legacy = timer.get("system_legacy")
+            legacy = legacy if isinstance(legacy, dict) else {}
+            rows.append({
+                "code": "rotation_owner_duplicate",
+                "canonical_timer_active": active,
+                "legacy_service_active": _bool(legacy.get("service_active")),
+                "legacy_service_enabled": _bool(legacy.get("service_enabled")),
+                "legacy_timer_active": _bool(legacy.get("timer_active")),
+                "legacy_timer_enabled": _bool(legacy.get("timer_enabled")),
+            })
 
     if (rotation.get("waiting_overdue") is True
             and not pending and not manual_pending):
@@ -506,6 +517,7 @@ def _rotation_label(row):
         "latched": "ローテーションが recovery_required で停止",
         "released_owner_unretired": "解放済みownerを退役できず対象stateを回避",
         "timer_inactive": "ローテーションタイマーが停止",
+        "rotation_owner_duplicate": "system-scope の旧rotation所有者が残っている",
         "waiting_overdue": "待機が next_due_at を大きく超過",
         "stalled": "tickが長時間更新されていない",
         "pending_unowned": "予約の所有者がいない",

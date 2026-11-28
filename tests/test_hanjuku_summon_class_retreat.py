@@ -35,36 +35,10 @@ def test_monster_panel_enemy_is_summon_class(enemy, enemy_hp):
     assert p._summon_enemy_hp(cur) == enemy_hp
 
 
-def test_monster_panel_deficit_opens_the_retreat_menu():
-    # エピィ 57 vs ランプキン 100: 57*2=114 > 100, so the half-pool
-    # egg-battle threshold alone would keep fighting a box that ignores A.
-    mem = monster_panel(ally='エピィ', enemy='ランプキン', hp=57, enemy_hp=100)
-    cur = mem['battle']
-    assert p._survival_needed(cur)
-    assert rules._default_retreat_needed(deepcopy(cur)) is True
-    assert p._hero_retreat_needed(cur) is True
-    assert p._hero_retreat_open(mem, cur) == [p.pad('b')]
-    assert cur['command_open_pending']['owner'] == 'retreat'
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1
-
-
 def test_battle_panel_goes_to_retreat_not_a_rescue_probe():
     mem = monster_panel()
     assert p.battle_step(battle(mem), mem) == [p.pad('b')]
     assert mem['battle']['command_open_pending']['owner'] == 'retreat'
-
-
-def test_monster_panel_retreat_skips_the_own_egg_probe():
-    # A positive own egg must not delay the retreat behind another probe of
-    # the same unreliable command box.
-    mem = monster_panel()
-    mem['egg_uses'] = {'ソーピニヨン': 3}
-    cur = mem['battle']
-    assert not p._egg_before_retreat(mem, cur)
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert cur['hero_retreat']['selected'] == 1
-    assert not (cur.get('survival') or {}).get('egg_attempted')
 
 
 def test_latched_enemy_summon_uses_the_live_monster_hp():

@@ -42,11 +42,18 @@ def _bot_version():
     return current or BOT_VERSION
 
 RUN_FILE='hanjuku_run.json'
-TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled'})
+TERMINAL_REASONS=frozenset({'game_over','screen_stalled','input_stalled','game_clear'})
+# Owner 2026-11-25: the clear ending (めでたし めでたし) returns to the title
+# after a while. Seeing the ending and then the title must finish the corner,
+# not be read as a game over.
+CLEAR_ENDING_TEXT = 'めでたし'
 # A released game_over cannot re-latch for this long (the title stays up while
 # the first inputs are delivered).
 GAME_OVER_CLEAR_GRACE_S = 120
 STALL_SECONDS=300
+# owner 2026-11-26: a screen that has not changed for 60 s is already worth an
+# issue (a monitor alert), even though the run only ends at STALL_SECONDS.
+STALL_ALERT_SECONDS=60
 # #1369: the merchant confirm screen held ~16 min with no input sent while the
 # screen kept animating, so screen_stalled never fired and the corner had no
 # exit. End the run when observations keep arriving but no input is sent.
@@ -303,7 +310,24 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     candidate=phase=='title' and started and played and playing
     title_since=old.get('title_since',now) if candidate and consecutive and old.get('terminal_candidate') else now
     title_count=int(old.get('title_count',0))+1 if candidate and consecutive and old.get('terminal_candidate') else int(candidate)
-    reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
+    clear_ending = old.get('clear_ending_seen') is True
+    # The clear ending's めでたし line can appear on the ending scenes
+    # (event/dialogue/transition) before the title; scanning only the title
+    # frames missed it and the run was recorded as a plain game_over.
+    if not clear_ending and phase in ('title', 'plain', 'unknown', 'title_or_intro',
+                                      'event', 'dialogue', 'transition', 'concert'):
+        try:
+            from .hanjuku_screen import parse as _parse
+            _ending_text = _parse(frame).text or ''
+            clear_ending = CLEAR_ENDING_TEXT in _ending_text
+            _title_text = _ending_text[:40] if phase == 'title' and _ending_text else old.get('title_text')
+        except Exception:
+            clear_ending = False
+            _title_text = old.get('title_text')
+    else:
+        _title_text = old.get('title_text')
+    terminal = 'game_clear' if clear_ending else 'game_over'
+    reason=terminal if candidate and title_count>=3 and now-title_since>=2 else None
     # A manual "this was not a game over" release earns a grace window: the
     # game sits on its title while the first inputs land, and without it the
     # same observation latched game_over again immediately (g1163 2026-11-10
@@ -385,6 +409,21 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     loop_proof = (hanjuku_repetition.confirmed(repetition, now=now, seconds=STALL_SECONDS)
                   if playing and not reason and not candidate else None)
     frame_since, frame_duration = since, duration
+    # owner 2026-11-26: file one issue per stall episode once the screen has not
+    # changed for STALL_ALERT_SECONDS. The terminal 300 s stall keeps its own
+    # path; this only raises the alert earlier (same dedupe/filer pipeline).
+    stall_alert_since = old.get('stall_alert_since')
+    if (playing and frame_duration >= STALL_ALERT_SECONDS
+            and stall_alert_since != frame_since):
+        stall_alert_since = frame_since
+        try:
+            from .hanjuku.fault_issue import note_fault
+            note_fault(runtime_dir, signature='screen_stalled_60s',
+                       kind='screen_stalled',
+                       detail={'seconds': round(frame_duration, 1),
+                               'phase': phase})
+        except Exception:
+            pass
     if loop_proof:
         reason = 'screen_stalled'
         since, duration = loop_proof['since'], loop_proof['seconds']
@@ -400,12 +439,15 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
                                    else None),
            'terminal_cleared_reason': old.get('terminal_cleared_reason'),
            'frame_unchanged_since':frame_since,'frame_unchanged_seconds':frame_duration,
+           'stall_alert_since': stall_alert_since,
            'repetition':repetition,'repetition_input':{},
            'repetition_evidence':loop_proof,
-           'name_entered':named,'gameplay_seen':played,
+           'name_entered':named,'gameplay_seen':played,'clear_ending_seen':clear_ending,
+           'title_text':_title_text,
            'checkpoint_started':restored,'checkpoint_start_request':checkpoint_bound,
            'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
-           'terminal_evidence':'title_return_after_gameplay' if reason=='game_over'
+           'terminal_evidence':'title_return_after_clear_ending' if reason=='game_clear'
+                             else 'title_return_after_gameplay' if reason=='game_over'
                              else 'no_input_sent_while_observing' if reason=='input_stalled'
                              else hanjuku_repetition.EVIDENCE if loop_proof else None,
            'battle_active':battle_active,'battle_streak':battle_streak,
@@ -466,11 +508,18 @@ def action_sent(runtime_dir: Path, identity: dict, action, *, now=None):
         trace = {}
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
-    event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
-                      'buttons':list(action.buttons),'hold_ms':action.hold_ms,
-                      'frame_sha256':state.get('frame_sha256'),'bot_version':_bot_version(),
-                      'decision_id':trace.get('decision_id'),
-                      'decision_frame_sha256':trace.get('frame_sha256')})
+    payload={'event':'input_sent','at':time.time(),'type':action.type,
+             'buttons':list(action.buttons),'hold_ms':action.hold_ms,
+             'frame_sha256':state.get('frame_sha256'),'bot_version':_bot_version(),
+             'decision_id':trace.get('decision_id'),
+             'decision_frame_sha256':trace.get('frame_sha256')}
+    event(runtime_dir,payload)
+    # docich#5665: the send receipt is recorded at send time, independent of any
+    # screen the recall later owns. The dense events journal can evict this row
+    # inside a write burst (card census, sortie events) before the bounded
+    # dispatch check reads its 64 KiB tail; the sparse input-only mirror keeps
+    # the same bounded-rotation policy without competing writes.
+    append_log(runtime_dir,'hanjuku_inputs_sent',payload)
     if state:
         atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1,
                                                 'repetition_input':hanjuku_repetition.add_input(

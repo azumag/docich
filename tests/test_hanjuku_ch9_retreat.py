@@ -25,13 +25,3 @@ def test_other_chapters_are_unchanged():
     assert B._retreat_forbidden(mem, cur()) is False
 
 
-def test_the_blocked_retreat_is_logged_once():
-    from docich.hanjuku.os_layer.readers import BATTLE_MENU
-    screen = Screen([], None, '', kind='battle_menu')
-    mem = {'chapter': 9, '_records': [], 'battle': cur()}
-    state = cur()
-    B._hero_retreat_menu(screen, mem, state)
-    decisions = [r['decision'] for r in mem['_records']]
-    assert decisions.count('battle_retreat_forbidden') == 1
-    B._hero_retreat_menu(screen, mem, state)
-    assert [r['decision'] for r in mem['_records']].count('battle_retreat_forbidden') == 1

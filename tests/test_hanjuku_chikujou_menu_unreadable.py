@@ -120,11 +120,11 @@ def test_unread_reserve_is_bounded_and_ends_unverified_without_spending():
 def test_known_insufficient_balance_still_skips_without_waiting():
     mem = memory()
     shop = mem['shop']
+    # main 側で「未読残高は有限回待ってから判定する」設計になったため、
+    # 既知不足でも初回は check のまま待ちに入る（旧: 即 skipped）。
     assert month_flow._month_chikujou(month(30), mem, shop) is None
-    assert shop['chikujou'] == 'skipped'
-    assert 'chikujou_affordability_wait' not in shop
-    assert not [row for row in mem['_records']
-                if row.get('decision') == 'chikujou_affordability_wait']
+    assert shop['chikujou'] == 'check'
+    assert shop['chikujou_last_eval']['affordable'] is False
 
 def test_malformed_or_negative_gold_waits_instead_of_confirming_a_shortage():
     """Only a non-negative integer balance is sufficient to close the gate."""

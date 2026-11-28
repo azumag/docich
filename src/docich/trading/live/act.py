@@ -238,5 +238,12 @@ def decide_and_act(deps: "CycleDeps", state: "CycleState", ctx: "CycleContext") 
         }, pinned=True):
             state.record_failures += 1
         return None
-    place_orders(deps, state, ctx, decisions)
+    report = place_orders(deps, state, ctx, decisions)
+    if report.stopped is not None:
+        return None   # an unknown/blocked submit, the budget or a stop: no free orders now
+    # A promoted free strategy follows its PAPER mirror with what the funds have left.
+    from .free_mirror import build_free_decisions
+    free_decisions = build_free_decisions(deps, state, ctx, decisions)
+    if free_decisions is not None:
+        place_orders(deps, state, ctx, free_decisions)
     return None

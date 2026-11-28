@@ -65,6 +65,11 @@ def _install_control_environment(path: Path = ENV_FILE) -> None:
     os.environ.update(controls)
 
 
+def install_control_environment(path: Path = ENV_FILE) -> None:
+    """Public wrapper: load only the two control capability keys."""
+    _install_control_environment(path)
+
+
 def hourly_run_id(now: dt.datetime | None = None) -> str:
     """Legacy deterministic id retained for callers/tests that inject a clock."""
     current = now or dt.datetime.now(dt.timezone.utc)

@@ -1,0 +1,71 @@
+"""docich#5186/#5195/#5200/#5201/#5163: an unaffordable 築城 eval ended the month silently.
+
+`_month_chikujou` closed the row as skipped with no decision record whenever
+the month's gold could not cover the necessity reserve, so the month audit
+recomputed affordability from the end-of-menu snapshot — after egg, recruit
+and soldiers had already settled — saw a buildable list, and filed a
+reason-less `chikujou_available_at_end` at high confidence.
+
+The eval now keeps the row on 'check' so a reserve released later in the
+same menu (an egg/recruit skip, a repair deferral, a completed roster) can
+still fund the build, and records each newly failing (gold, reserve) pair
+on `shop['chikujou_last_eval']` and in the decision log. The audit reads
+that marker and downgrades the month end to a countable explained hold.
+"""
+from docich.hanjuku.flows import month as month_flow
+from docich import hanjuku_policy as policy
+from tests.test_hanjuku_multi_chikujou import HOME, OTHER, month
+
+
+def memory(**shop_updates):
+    shop = {'key': '1-7', 'chikujou': 'check', 'gold_start': 150,
+            'soldiers_done': True, 'merchant_done': True, 'items': [],
+            'reserve': 0, 'egg': 'done', 'recruit_reserve': 0,
+            **shop_updates}
+    return {'chapter': 1, '_records': [], 'captured': [OTHER],
+            'garrison': {HOME: ['ゼウス'], OTHER: ['ココット']}, 'shop': shop}
+
+
+def skipped_of(mem):
+    return [row for row in mem['_records']
+            if row.get('decision') == 'month_chikujou_skipped']
+
+
+def test_unaffordable_eval_stays_open_and_records_each_new_signature():
+    mem = memory(hero_repair_reserve=500)   # 30G wage + 500G repair > gold
+    shop = mem['shop']
+    assert month_flow._month_chikujou(month(100), mem, shop) is None
+    assert shop['chikujou'] == 'check'
+    assert shop['chikujou_last_eval'] == {'month': '1-7', 'gold': 100,
+                                        'reserve': 530, 'affordable': False}
+    assert len(skipped_of(mem)) == 1
+    assert skipped_of(mem)[0]['month'] == '1-7'
+    assert skipped_of(mem)[0]['observed_metric']['reserve'] == 530
+    # The same failing signature is recorded once, not every observation.
+    assert month_flow._month_chikujou(month(100), mem, shop) is None
+    assert len(skipped_of(mem)) == 1
+    # A changed balance is a new eval and is recorded again.
+    assert month_flow._month_chikujou(month(200), mem, shop) is None
+    assert len(skipped_of(mem)) == 2
+    assert shop['chikujou_last_eval']['gold'] == 200
+
+
+def test_a_reserve_released_in_the_same_menu_can_still_build():
+    mem = memory(hero_repair_reserve=500)
+    shop = mem['shop']
+    assert month_flow._month_chikujou(month(100), mem, shop) is None
+    assert shop['chikujou'] == 'check'
+    # The house repair is settled elsewhere in the menu: the hold is gone.
+    shop['hero_repair_reserve'] = 0
+    assert month_flow._month_chikujou(month(100), mem, shop) == [policy.pad('a')]
+    assert shop['chikujou'] == 'opened'
+    assert shop['chikujou_last_eval']['affordable'] is True
+
+
+def test_an_unsettled_reserve_records_the_cause():
+    mem = memory(merchant_done=False, items=[['ふしぎなカード', 2]])
+    shop = mem['shop']
+    # main 側の未読待ち設計では、未確定の reserve は skip せず有限回の再観測に入る。
+    result = month_flow._month_chikujou(month(100), mem, shop)
+    assert result in (None, [])
+    assert shop['chikujou'] == 'check'

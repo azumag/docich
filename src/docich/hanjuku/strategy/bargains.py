@@ -21,6 +21,20 @@ from .economy import (KNOWN_PRICES, UNPRICED_CARDS, _charted_purchase_ahead,
 # of the recommended sets.
 BARGAIN_TARGETS = {'ノリウツール': 3, 'クースカン': 3, 'ゼンマイン': 2, 'ミックミー': 2,
                    'マグネガキン': 2, 'エンジェリン': 2, 'ころぼぐんだん': 2}
+# Owner 2026-11-25: 切り札購入の優先度。商人から買う切り札はこの16種で、
+# この順に買う。目標在庫・価格上限・予算の規則は変えない（非リッチ商人は
+# BARGAIN_TARGETS の7種、リッチ商人は全16種を一覧の実売価格で確認して買う）。
+# 2026-11-06 の9種と 2026-11-02 の行商人7種を1本の順序に統合し、価格降順の
+# 並べ替え (v1415) を置き換える。ピッグローラーはこの優先度から外れる
+# (余剰資金のランダム買い足しだけが対象)。
+CARD_PURCHASE_PRIORITY = (
+    'ファバード', 'エンジェリン', 'ハリケーン', 'ビッグウェイブ',
+    'マグネガキン', 'ドデカヘー', 'リューキーシ', 'ミックミー',
+    'ゼンマイン', 'クースカン', 'ノリウツール', 'イッテツーン',
+    'グリンボー', 'フットバース', 'ころぼぐんだん', 'ブラッキー',
+)
+BARGAIN_ORDER = tuple(name for name in CARD_PURCHASE_PRIORITY
+                      if name in BARGAIN_TARGETS)
 BARGAIN_CASH_BUFFER = 30
 BARGAIN_MONTHLY_GOLD = 200
 BARGAIN_MONTHLY_COPIES = 8
@@ -36,17 +50,21 @@ CHEAP_VENDOR_COPIES = 16
 CHEAP_VENDOR_TARGET_FACTOR = 2
 # Owner 2026-11-06: at 1000G+ stock all explicitly requested cards, while
 # keeping cash for essential spending. Random other cards use only leftover cash.
+# Owner 2026-11-25: the requested set is the owner's purchase priority above.
 RICH_MERCHANT_GOLD = 1000
-RICH_MERCHANT_CARDS = (
-    'ノリウツール', 'ミックミー', 'グリンボー', 'イッテツーン',
-    'ころぼぐんだん', 'フットバース', 'ピッグローラー',
-    'ファバード', 'エンジェリン',
-)
+RICH_MERCHANT_CARDS = CARD_PURCHASE_PRIORITY
 RICH_MERCHANT_MAX_COPIES = 99
 RICH_RANDOM_CARDS = tuple(name for name in KNOWN_PRICES
                           if name not in RICH_MERCHANT_CARDS and name not in BARGAIN_TARGETS)
 RICH_RANDOM_MAX_COPIES = 8
 RICH_RANDOM_MAX_KINDS = 3
+
+_PURCHASE_RANK = {name: rank for rank, name in enumerate(CARD_PURCHASE_PRIORITY)}
+
+
+def _purchase_rank(name):
+    """Owner purchase priority: lower first, kinds outside the list last."""
+    return _PURCHASE_RANK.get(name, len(CARD_PURCHASE_PRIORITY))
 
 
 def _rich_card(shop, name):
@@ -351,6 +369,11 @@ def plan_bargains(mem, shop, header, *, listed=None):
     # belong to the ordinary merchant only.
     rich_targets = [*RICH_MERCHANT_CARDS,
                     *(name for name in BARGAIN_TARGETS if name not in RICH_MERCHANT_CARDS)]
+    # Owner 2026-11-25: buy in the owner's purchase-priority order, not by the
+    # listed price. Kinds outside the priority (a future addition, a bargain
+    # kind not in it) sort last so the order stays deterministic for retries
+    # and hotloads.
+    rich_targets.sort(key=_purchase_rank)
     if rich and listed is None:
         # #4988 moved the BARGAIN_TARGETS pass behind ``not rich``. Without a
         # listing there is no real price, but an empty ``items`` list means the
@@ -425,14 +448,26 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 remaining -= qty * listed[name]
         shop['rich_random_cards'] = random_names
     if not rich:
-        for name, target in BARGAIN_TARGETS.items():
+        for name in BARGAIN_ORDER:
+            target = BARGAIN_TARGETS[name]
             if name in queued or (name in bought and not cheap_pass):
                 continue  # chart quantities and already-attempted purchases stay untouched
             count = held(mem, name)
-            if count is None:
-                # Unknown stock is not 0: asking 99 from a guess is exactly the
-                # refusal loop this ledger replaces (owner 2026-11-22).
-                continue
+            unknown_stock = count is None
+            if unknown_stock:
+                if listed is None or not (cheap_pass or shop.get('cheap_vendor')):
+                    # Without a real listing there is no price evidence; asking
+                    # from an invented 0 is the refusal loop the ledger replaces
+                    # (owner 2026-11-22). An ordinary merchant keeps that rule.
+                    continue
+                # Owner 2026-11-24: at the half-price cart (中華の行商人) a
+                # listed target with unread stock is bought up to its monthly
+                # target. ch4's card census is disabled (observation_limit), so
+                # a kind never owned stays unknown and ミックミー could never be
+                # bought at all. The ask stays bounded by BARGAIN_TARGETS;
+                # ordinary merchants and spare-cash guesses still never buy an
+                # unknown count.
+                count = 0
             seen_basis[name] = count
             target = target * factor
             price = KNOWN_PRICES[name] if listed is None else listed.get(name)
@@ -443,7 +478,11 @@ def plan_bargains(mem, shop, header, *, listed=None):
                 # Owner (2026-11-05): 目標在庫に達していても、チャートに関係なく
                 # 余剰資金で買い足す。月次の金額・枚数上限と実売価格の確認は同じ。
                 need = copy_cap
-            qty = min(need, copy_cap - copies, budget // price, hold_room(mem, name))
+            room = (BARGAIN_TARGETS[name] if unknown_stock
+                    else hold_room(mem, name))
+            if room is None:
+                continue
+            qty = min(need, copy_cap - copies, budget // price, room)
             if qty:
                 added.append([name, qty])
                 budget -= qty * price

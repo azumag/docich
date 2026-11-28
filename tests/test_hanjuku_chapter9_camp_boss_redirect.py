@@ -8,6 +8,7 @@ from docich import hanjuku_chart as chart
 from docich.hanjuku.flows import map as flow_map
 from docich.hanjuku.flows import post_month_status as pms
 from docich.hanjuku.flows import recall
+from docich.hanjuku.os_layer import navigation
 from docich.hanjuku.os_layer.commands import pad
 from docich.hanjuku.os_layer.screen import Frame, Screen
 from docich.hanjuku.state.regions import flow as _flow
@@ -127,6 +128,49 @@ def test_the_marker_is_aimed_at_the_boss_by_a_y_jump():
     assert mem['y_jump']['goal'] == BOSS and mem['y_jump']['step'] == 'RECALL'
 
 
+def test_an_active_jump_is_not_reopened_while_the_picker_is_still_visible():
+    mem = dest_mem()
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == [pad('y')]
+    assert mem['y_jumps']['RECALL:target'] == 1
+    for tick in (101, 102, 103):
+        mem['tick'] = tick
+        assert recall._camp_recall_step(target_screen(), mem, FRAME) == []
+        assert mem['y_jumps']['RECALL:target'] == 1
+        assert mem['y_jump']['goal'] == BOSS
+    opens = [r for r in mem['_records'] if r['decision'] == 'y_jump_open']
+    assert len(opens) == 1
+    assert 'camp_boss_redirect_aborted' not in events(mem)
+
+
+def test_a_jump_that_never_opens_is_closed_once_before_one_retry():
+    mem = dest_mem()
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == [pad('y')]
+    mem['tick'] = 100 + navigation.Y_JUMP_OPEN_GRACE
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == []
+    assert 'y_jump' not in mem
+    assert mem['y_jumps']['RECALL:target'] == 1
+    closed = mem['_records'][-1]
+    assert closed['decision'] == 'y_jump_failed'
+    assert closed['resulting_event'] == 'view_closed'
+    assert 'camp_boss_redirect_aborted' not in events(mem)
+    mem['tick'] += 1
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == [pad('y')]
+    assert mem['y_jumps']['RECALL:target'] == 2
+    assert len([r for r in mem['_records'] if r['decision'] == 'y_jump_open']) == 2
+
+
+def test_a_long_interrupted_opening_is_dropped_without_a_completed_failure():
+    mem = dest_mem()
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == [pad('y')]
+    mem['tick'] = 100 + navigation.Y_JUMP_INTERRUPTED_TICKS
+    assert recall._camp_recall_step(target_screen(), mem, FRAME) == []
+    assert 'y_jump' not in mem
+    assert mem['y_jumps']['RECALL:target'] == 1
+    assert mem['_records'][-1]['decision'] == 'y_jump_interrupted'
+    assert 'y_jump_failed' not in events(mem)
+    assert 'camp_boss_redirect_aborted' not in events(mem)
+
+
 def test_after_the_jump_the_boss_target_is_confirmed_and_never_an_own_roof():
     mem = dest_mem(y_jumped={'RECALL': BOSS})
     actions = recall._camp_recall_step(target_screen(), mem, FRAME)
@@ -137,9 +181,23 @@ def test_after_the_jump_the_boss_target_is_confirmed_and_never_an_own_roof():
 
 def test_a_jump_that_keeps_failing_gives_up_and_leaves_the_camp_alone():
     mem = dest_mem(y_jumps={'RECALL:target': recall.BOSS_JUMP_LIMIT})
+    state = _flow(mem)['recall']
+    state.update(camp_world=[500, 500], general='アテナ')
     actions = recall._camp_recall_step(target_screen(), mem, FRAME)
     assert actions == [pad('b')]
     assert _flow(mem).get('recall') is None and 'camp_boss_redirect_aborted' in events(mem)
+    record = next(r for r in mem['_records'] if r['decision'] == 'camp_boss_redirect_aborted')
+    metric = record['observed_metric']
+    assert metric['stage'] == 'dest' and metric['steps'] == 1
+    assert metric['castle'] == BOSS and metric['goal'] == BOSS
+    assert metric['target_cell'] == [70, 70]
+    assert metric['camp_world'] == [500, 500]
+    assert metric['boss_cell'] == list(BOSS_CELL)
+    assert metric['general'] == 'アテナ'
+    assert metric['screen_kind'] == 'map_target'
+    assert metric['y_jump']['attempt'] == recall.BOSS_JUMP_LIMIT
+    assert metric['y_jump']['active'] is False
+    assert {'seen', 'moves', 'wait'} <= set(metric['y_jump'])
 
 
 def test_a_boss_cell_that_ages_out_mid_redirect_is_never_confirmed():

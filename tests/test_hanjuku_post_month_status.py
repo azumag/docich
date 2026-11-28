@@ -968,6 +968,7 @@ def test_recall_task_starts_the_named_return_on_the_selected_camp(monkeypatch):
                         lambda _screen, _mem, _frame: [pad('a')])
     assert post.step(screen, mem, object()) == [pad('a')]
     assert _flow(mem)['recall']['general'] == 'ヴィーナス'
+    assert _flow(mem)['recall']['fort_actor'] == 'ヴィーナス'
     assert _flow(mem)['recall']['stage'] == 'to_camp'
     assert state['stage'] == 'wait_recall'
 
@@ -1746,6 +1747,10 @@ def test_dispatch_terminal_preserves_interrupt_for_monthly_retry_budget():
     _flow(mem)['recall_interrupted'] = 150
 
     recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, dispatch)
+    # docich#5665: the six-observation window demotes to a stale wait instead
+    # of terminating; drive through its 12-step bound to reach the terminal.
+    for _ in range(12):
+        recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, dispatch)
 
     verification = _flow(mem)['recall_verification']
     assert verification['status'] == 'dispatch_unconfirmed'
@@ -2071,3 +2076,24 @@ def test_repair_tasks_are_skipped_while_temporarily_disabled(monkeypatch):
     statuses = {'ゼウス': {'location': 'castle', 'broken': True, 'castle': 'アルマムーン'}}
     assert post._tasks(statuses, ['ゼウス']) == []
     assert post._tasks(statuses, ['ゼウス'], road=True) == []
+
+
+
+def test_month_end_defers_a_named_recall_task_until_the_next_roster_scan(monkeypatch):
+    mem = memory(month_start_tick=0, month_durations=[300], tick=150)
+    post.arm(mem)
+    state = mem['post_month_status']
+    state.update(stage='task_jump', job={'kind': 'recall', 'name': 'ヴィーナス'},
+                 tasks=[])
+    _flow(mem)['retreat_rechecks'] = {'ヴィーナス': {'status': 'needs_observation'}}
+    monkeypatch.setattr(post, 'own_camps', lambda _frame: [
+        {'target': (131, 110), 'clipped': False, 'kind': 'dome'}])
+    screen = Screen([], None, '', kind='map', cursor=(131, 110))
+
+    assert post.step(screen, mem, object()) == []
+    assert state['stage'] == 'process'
+    assert state.get('job') is None
+    assert 'recall' not in _flow(mem)
+    assert 'retreat_rechecks' not in _flow(mem)
+    assert any(row.get('resulting_event') == 'recall_deferred_month_end'
+               for row in mem['_records'])

@@ -61,6 +61,13 @@ class UnitTemplateContractTests(unittest.TestCase):
                 self.assertIn("Environment=XDG_RUNTIME_DIR=%t", service)
                 self.assertIn("WorkingDirectory=__DOCICH_ROOT__", service)
 
+    def test_standard_install_loop_does_not_add_the_legacy_rotation_owner(self):
+        readme = (ROOT / "scripts" / "systemd" / "README.md").read_text(encoding="utf-8")
+        loop = readme.split("for f in \\", 1)[1].split("done", 1)[0]
+        self.assertNotIn("docich-soren91-corner.service", loop)
+        self.assertNotIn("docich-soren91-corner.timer", loop)
+        self.assertIn("rotation owner は常に1つ", readme)
+
     def test_stage2_reviewed_epoch_enables_the_production_migration(self):
         # The reviewed epoch is what turns the deploy hook's migration branch
         # on; it must stay a regular file so a deploy can never follow a

@@ -55,7 +55,13 @@ END;
 CREATE TABLE IF NOT EXISTS evaluations (
  experiment TEXT PRIMARY KEY, evaluated_at REAL NOT NULL, report BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mirrors (
+ experiment TEXT PRIMARY KEY REFERENCES experiments(id), promoted_at REAL NOT NULL
+);
 """
+# A LIVE mirror (the promoted artifact kept running so LIVE can follow its weights) is
+# outside the research observation budget: at most one is observed besides the research ones.
+_NOT_MIRROR = "id NOT IN (SELECT experiment FROM mirrors)"
 
 
 class LabStore:
@@ -103,7 +109,9 @@ class LabStore:
             raise StrategyError("artifact_integrity_failed")
         return rebuilt
 
-    def create(self, digest: str, *, now: float, capital: str = "10000", days: int = 30) -> str:
+    def create(self, digest: str, *, now: float, capital: str = "10000", days: int = 30,
+               mirror: bool = False) -> str:
+        """Create an experiment; ``mirror=True`` creates the LIVE mirror of a promoted artifact."""
         artifact = self.artifact(digest)
         amount = quantity(capital)
         if not 1000 <= amount <= 100000000 or type(days) is not int or not 1 <= days <= 365:
@@ -120,9 +128,9 @@ class LabStore:
             # Paused experiments still consume public depth/status and therefore
             # remain part of the bounded research observation budget. A pause
             # must not silently create an extra API slot for another candidate.
-            count = self.db.execute("""SELECT COUNT(*) FROM experiments
-                WHERE phase IN ('research','paper_validating','paused')""").fetchone()[0]
-            if count >= MAX_OBSERVED_EXPERIMENTS:
+            count = self.db.execute(f"""SELECT COUNT(*) FROM experiments
+                WHERE phase IN ('research','paper_validating','paused') AND {_NOT_MIRROR}""").fetchone()[0]
+            if not mirror and count >= MAX_OBSERVED_EXPERIMENTS:
                 raise StrategyError("experiment_capacity")
             # The design permits multiple independent experiments for one fixed
             # artifact, but not overlapping/revivable or quarantined copies.
@@ -131,14 +139,33 @@ class LabStore:
             blocked = self.db.execute("""SELECT 1 FROM experiments WHERE artifact=?
                 AND phase IN ('research','paper_validating','paused','quarantined') LIMIT 1""",
                 (digest,)).fetchone()
-            if blocked:
+            if blocked and not mirror:
                 raise StrategyError("artifact_experiment_active")
             account = {"cash_jpy": capital, "positions": {}, "peak_equity": capital}
             self.db.execute("""INSERT INTO experiments
                 (id,artifact,created_at,end_at,phase,policy,account,strategy_state,pending)
                 VALUES (?,?,?,?,?,?,?,?,?)""", (identity, digest, now, now + days * 86400,
                 "research", encode(policy), encode(account), encode(artifact.payload["initial_state"]), encode({})))
+            if mirror:
+                self.db.execute("INSERT INTO mirrors VALUES (?,?)", (identity, now))
         return identity
+
+    def mirror(self) -> dict | None:
+        """The newest LIVE mirror that is still observed, with its artifact."""
+        row = self.db.execute("""SELECT m.experiment, m.promoted_at, e.artifact FROM mirrors m
+            JOIN experiments e ON e.id=m.experiment
+            WHERE e.phase IN ('research','paper_validating','paused')
+            ORDER BY m.promoted_at DESC LIMIT 1""").fetchone()
+        return None if row is None else {"experiment": row[0], "promoted_at": row[1], "artifact": row[2]}
+
+    def mirror_ids(self) -> set[str]:
+        return {row[0] for row in self.db.execute("SELECT experiment FROM mirrors")}
+
+    def end_now(self, identity: str, *, now: float) -> None:
+        """Move an experiment's deadline to now; the next cycle settles it."""
+        with self.transaction():
+            self.db.execute("UPDATE experiments SET end_at=?, revision=revision+1 WHERE id=? AND end_at>?",
+                            (now, identity, now))
 
     def experiment(self, identity: str) -> dict:
         row = self.db.execute("SELECT * FROM experiments WHERE id=?", (identity,)).fetchone()
@@ -151,8 +178,8 @@ class LabStore:
 
     def active_ids(self) -> list[str]:
         return [row[0] for row in self.db.execute(
-            "SELECT id FROM experiments WHERE phase IN ('research','paper_validating') ORDER BY created_at,id LIMIT ?",
-            (MAX_OBSERVED_EXPERIMENTS,))]
+            f"SELECT id FROM experiments WHERE phase IN ('research','paper_validating') AND {_NOT_MIRROR} "
+            "ORDER BY created_at,id LIMIT ?", (MAX_OBSERVED_EXPERIMENTS,))]
 
     def observed_ids(self) -> list[str]:
         """Experiments needing market observation, including risk-stopped ones.
@@ -162,10 +189,20 @@ class LabStore:
         Creation keeps this set bounded so API/depth monitoring cost cannot grow
         without limit.
         """
-        return [row[0] for row in self.db.execute(
-            """SELECT id FROM experiments
-            WHERE phase IN ('research','paper_validating','paused')
+        research = [row[0] for row in self.db.execute(
+            f"""SELECT id FROM experiments
+            WHERE phase IN ('research','paper_validating','paused') AND {_NOT_MIRROR}
             ORDER BY created_at,id LIMIT ?""", (MAX_OBSERVED_EXPERIMENTS,))]
+        return research + self.observed_mirror_ids()
+
+    def research_observed_ids(self) -> list[str]:
+        """Observed research experiments only: the bounded slots a new candidate needs."""
+        mirrors = self.mirror_ids()
+        return [identity for identity in self.observed_ids() if identity not in mirrors]
+
+    def observed_mirror_ids(self) -> list[str]:
+        mirror = self.mirror()
+        return [] if mirror is None else [mirror["experiment"]]
 
     def recent_fills(self, identity: str) -> list[dict]:
         return [decode(row[0]) for row in self.db.execute(

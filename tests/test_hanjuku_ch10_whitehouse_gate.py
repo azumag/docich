@@ -332,6 +332,7 @@ def test_fort_in_whitehouse_ring_uses_boss_move_instead_of_home_recall():
     _flow(m)['recall'] = {
         'stage': 'fort_status', 'target': [133, 116],
         'fort_members': ['フェットチーネ', 'カペリーニ'],
+        'fort_picker_requested': True,
         'general': 'フェットチーネ', 'steps': 0,
     }
     screen = Screen(lines=[], hand=None, text='', kind='map_target',

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import brains
 from . import telemetry as telemetry_mod
+from ..hanjuku_family import ORIGINAL, is_hanjuku, is_original
 from ..adapters import make_adapter
 from ..config import GlobalConfig, load_game
 from .fence import (
@@ -123,10 +124,13 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
     # corner reads that missing record as absent *evidence* ('partial', #2180),
     # not as a legacy runtime, and holds the new-policy stall teardown until the
     # publication lands.
-    from .. import hanjuku_hotload
+    # Non-Hanjuku observations carry no published runtime (the trampoline is a
+    # no-op), but the call site stays for every game, as before.
+    from ..hanjuku_family import hotload
     publish_start = tel.now()
     try:
-        hanjuku_hotload.publish_observation(obs, 'agent')
+        hotload(game_name if is_hanjuku(game_name) else ORIGINAL).publish_observation(
+            obs, 'agent')
     except Exception as exc:
         tel.count("hotload_publish_failures")
         print(f"[agent] 警告: Hanjuku logic generation を公開できませんでした: {exc}", flush=True)
@@ -259,10 +263,11 @@ def run_agent(
     # corner observe loop that never starts (or stops before its first tick)
     # cannot leave the viewers without a wager. The common timer still adopts
     # the canonical runtime as a fallback.
-    if (fence is not None and game.name == 'hanjuku-hero'
+    if (fence is not None and is_original(game.name)
             and isinstance(fence.lease_id, str) and fence.lease_id):
         try:
-            from ..hanjuku_predictions import start_owner_ticker
+            # Original corner only: speedrun has no owner prediction ticker.
+            from ..hanjuku_predictions import start_owner_ticker  # family: original-only
             start_owner_ticker(g, {
                 'game': fence.game,
                 'runtime_id': fence.runtime_id,

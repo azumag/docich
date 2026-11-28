@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import pytest
 import sys
 from decimal import Decimal
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision  # noqa: E402
 from docich.trading.notifications import _render_event_with_local_facts, _safe_status  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
+from docich.trading.status import performance_summary_payload  # noqa: E402
 from docich.trading.performance import (  # noqa: E402
     build_theoretical_benchmark,
     build_performance,
@@ -389,6 +392,33 @@ def test_round_trips_ignore_unmatched_sells(tmp_path):
     assert build_round_trips(db) == []
 
 
+def test_round_trips_reject_oversell_fragment_and_reopen_fresh_lot(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("oversell-rt-buy", "buy", "1", "100"), timestamp=1_000.0)
+    broker.fill(_decision("oversell-rt-sell", "sell", "2", "120"), timestamp=1_100.0)
+    ledger.close()
+
+    # The matched portion of an oversell must not be presented as a valid trip.
+    assert build_round_trips(db) == []
+
+    # As in realized_pnl_for_fill(), a later buy starts a clean inventory lot.
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("fresh-rt-buy", "buy", "1", "110"), timestamp=1_200.0)
+    broker.fill(_decision("fresh-rt-sell", "sell", "1", "130"), timestamp=1_300.0)
+    ledger.close()
+
+    trips = build_round_trips(db)
+    assert len(trips) == 1
+    assert trips[0]["entry_price"] == "110"
+    assert trips[0]["exit_price"] == "130"
+    assert trips[0]["realized_jpy"] == "20"
+    assert trips[0]["entry_reason"] == "momentum_breakout"
+    assert trips[0]["exit_reason"] == "take_profit"
+
+
 def test_recent_orders_returns_allowlisted_rows(tmp_path):
     from docich.trading.performance import recent_orders
 
@@ -401,3 +431,249 @@ def test_recent_orders_returns_allowlisted_rows(tmp_path):
     assert len(orders) == 1
     assert orders[0]["symbol"] == "BTC/JPY"
     assert orders[0]["reason_code"] == "momentum_breakout"
+
+
+
+def test_performance_missing_ledger_is_unavailable_not_a_zero_result(tmp_path):
+    now = dt.datetime(2026, 11, 24, 0, 0, tzinfo=JST).timestamp()
+    perf = build_performance(
+        tmp_path / "missing.sqlite3",
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=now,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "unavailable"
+    assert perf["ledger_reason_code"] == "ledger_missing"
+    assert perf["realized_total_jpy"] is None
+    assert perf["interval_realized_pnl_jpy"] is None
+    assert perf["today_realized_pnl_jpy"] is None
+    assert perf["unrealized_pnl_jpy"] is None
+    assert perf["cumulative_pnl_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+
+def test_performance_invalid_fill_row_is_not_silently_dropped(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    ledger.close()
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """INSERT INTO paper_fills
+               (fill_id, opportunity_id, strategy_id, symbol, side, quote, amount, price,
+                quote_notional, reference_notional, reason_code, filled_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("bad-fill", "bad-opportunity", "momentum-v1", "BTC/JPY", "buy",
+             "JPY", "not-a-number", "100", "100", "100", "test", 1000.0),
+        )
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "invalid"
+    assert perf["ledger_reason_code"] == "ledger_invalid_row"
+    assert perf["realized_total_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+
+def test_performance_unpaired_sell_does_not_publish_partial_realized_total(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("oversell-buy", "buy", "1", "100"), timestamp=1000.0)
+    sold = broker.fill(_decision("oversell-sell", "sell", "2", "120"), timestamp=1100.0)
+    positions = ledger.positions()
+    ledger.close()
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions=positions,
+        prices={"BTC/JPY": "110"},
+        now=1200.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "partial"
+    assert perf["ledger_reason_code"] == "unpaired_sell"
+    assert perf["unpaired_sell_count"] == 1
+    assert perf["realized_total_jpy"] is None
+    assert perf["interval_realized_pnl_jpy"] is None
+    assert perf["cumulative_pnl_jpy"] is None
+    assert perf["equity_jpy"] is None
+    assert realized_pnl_for_fill(db, sold.fill_id) is None
+
+
+def test_public_performance_summary_exposes_only_bounded_ledger_health():
+    payload = performance_summary_payload({
+        "ledger_status": "invalid",
+        "ledger_reason_code": "ledger_invalid_row",
+        "unpaired_sell_count": 2,
+        "private_path": "/private/paper.sqlite3",
+    })
+
+    assert payload == {
+        "ledger_status": "invalid",
+        "ledger_reason_code": "ledger_invalid_row",
+        "unpaired_sell_count": 2,
+        "realized_total_jpy": None,
+        "interval_realized_pnl_jpy": None,
+        "today_realized_pnl_jpy": None,
+        "unrealized_pnl_jpy": None,
+        "cumulative_pnl_jpy": None,
+        "equity_jpy": None,
+    }
+
+
+def test_performance_unreadable_ledger_is_not_reported_as_missing(monkeypatch, tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    ledger.close()
+
+    original_stat = Path.stat
+
+    def denied_stat(path, *args, **kwargs):
+        if path == db:
+            raise PermissionError("denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "unavailable"
+    assert perf["ledger_reason_code"] == "ledger_read_error"
+    assert perf["realized_total_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+
+def test_performance_valid_empty_ledger_remains_a_complete_zero_result(tmp_path):
+    db = tmp_path / "empty.sqlite3"
+    ledger = PaperLedger(db)
+    ledger.close()
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is True
+    assert perf["ledger_status"] == "ok"
+    assert perf["ledger_reason_code"] == "ok"
+    assert perf["unpaired_sell_count"] == 0
+    assert perf["realized_total_jpy"] == "0"
+    assert perf["interval_realized_pnl_jpy"] == "0"
+    assert perf["equity_jpy"] == "1000"
+
+
+def test_performance_missing_fill_table_is_schema_invalid_not_empty(tmp_path):
+    db = tmp_path / "wrong-schema.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE unrelated (value TEXT)")
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=2000.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "invalid"
+    assert perf["ledger_reason_code"] == "ledger_schema_invalid"
+    assert perf["realized_total_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+
+
+def test_realized_pnl_after_oversell_uses_the_next_fresh_inventory_lot(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("taint-buy", "buy", "1", "100"), timestamp=1000.0)
+    broker.fill(_decision("taint-oversell", "sell", "2", "120"), timestamp=1100.0)
+    later_buy = broker.fill(_decision("fresh-buy", "buy", "1", "200"), timestamp=1200.0)
+    later_sell = broker.fill(_decision("fresh-sell", "sell", "1", "210"), timestamp=1300.0)
+    ledger.close()
+
+    assert realized_pnl_for_fill(db, later_buy.fill_id) is None
+    assert realized_pnl_for_fill(db, later_sell.fill_id) == Decimal("10")
+
+
+
+@pytest.mark.parametrize("positions", [{}, {"BTC/JPY": "2"}])
+def test_performance_position_snapshot_must_match_fill_ledger(tmp_path, positions):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    _zero_cost_broker(ledger).fill(_decision("snapshot-buy", "buy", "1", "100"), timestamp=1000.0)
+    ledger.close()
+
+    perf = build_performance(
+        db,
+        capital_reference="1000",
+        positions=positions,
+        prices={"BTC/JPY": "110"},
+        now=1200.0,
+    )
+
+    assert perf["complete"] is False
+    assert perf["ledger_status"] == "partial"
+    assert perf["ledger_reason_code"] == "position_snapshot_mismatch"
+    assert perf["realized_total_jpy"] == "0"
+    assert perf["unrealized_pnl_jpy"] is None
+    assert perf["cumulative_pnl_jpy"] is None
+    assert perf["equity_jpy"] is None
+
+def test_interval_performance_counts_more_than_twenty_fills(tmp_path):
+    """A 30-fill ledger must not be truncated to a recent-20 window."""
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+
+    # Fifteen complete round trips produce 30 fill rows. The first two are
+    # before the interval cursor; the remaining thirteen belong to it.
+    for index in range(15):
+        opened = 1000.0 + index * 10
+        broker.fill(
+            _decision(f"buy-{index}", "buy", "1", "100"),
+            timestamp=opened,
+        )
+        broker.fill(
+            _decision(f"sell-{index}", "sell", "1", "101"),
+            timestamp=opened + 5,
+        )
+    ledger.close()
+
+    performance = build_performance(
+        db,
+        capital_reference="1000",
+        positions={},
+        prices={},
+        now=1200.0,
+        interval_start=1020.0,
+    )
+
+    assert performance["complete"] is True
+    assert performance["ledger_status"] == "ok"
+    assert performance["unpaired_sell_count"] == 0
+    assert performance["realized_total_jpy"] == "15"
+    assert performance["interval_realized_pnl_jpy"] == "13"
+    assert performance["equity_jpy"] == "1015"

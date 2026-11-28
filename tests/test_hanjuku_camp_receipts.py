@@ -15,6 +15,7 @@ from docich.hanjuku_bot import classify, decide
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_screen import Screen, parse
 from test_hanjuku_chart_bot import camp_menu
+from docich.hanjuku.flows import recall as recall_flow
 from docich.hanjuku.state.regions import flow as _flow, journal as _journal
 from docich.hanjuku.state.regions import world as _world, plan as _plan_region
 
@@ -164,15 +165,212 @@ def test_card_scroll_receipt_is_bound_to_run_frame_and_delivered_up(tmp_path):
     assert module.card_scroll_receipt(tmp_path, state, {'hanjuku': {**ID, 'lease_id': 'other'}}) is None
 
 
-def test_missing_dispatch_receipt_is_bounded_and_never_retries_a():
+def test_missing_dispatch_receipt_demotes_to_stale_then_bounds_itself():
     _, state = pending(); mem = state['policy']; mem['_records'] = []
-    view = parse(picker(), phase='field')
-    for _ in range(5):
-        assert p.world_map_step(view, mem, picker()) == []
-    assert p.world_map_step(view, mem, picker()) == [p.pad('b')]
+    _flow(mem)['camp_recall_blocked'] = {'アルマムーン': 1}
+    frame = picker(); view = parse(frame, phase='field')
+    for _ in range(6):
+        assert p.world_map_step(view, mem, frame) == []
+    # docich#5665: an empty six-observation proof window is not yet a defect —
+    # journal eviction can starve it while the press was real. The wait
+    # demotes to a bounded stale stage instead of a permanent unconfirmed
+    # hold, and keeps owning the picker screens while it retries the proof.
+    recall = _flow(mem)['recall']
+    assert recall['stage'] == 'await_dispatch_stale'
+    stale = next(row for row in mem['_records']
+                 if row['decision'] == 'camp_recall_dispatch_stale')
+    assert stale['resulting_event'] == 'dispatch_proof_window_exhausted'
+    assert stale['observed_metric']['steps'] == 6
+    for _ in range(11):
+        assert p.world_map_step(view, mem, frame) == []
+    assert p.world_map_step(view, mem, frame) == [p.pad('b')]
     assert not _flow(mem).get('recall')
     assert not _flow(mem)['recall_verification'].get('input_sent')
     assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
+    record = next(row for row in mem['_records']
+                  if row['decision'] == 'camp_recall_unconfirmed')
+    assert record['resulting_event'] == 'dispatch_unconfirmed'
+    assert '到着' not in record['reason']
+    assert record['observed_metric']['stage'] == 'await_dispatch_stale'
+    assert record['observed_metric']['stale_steps'] == 12
+    assert record['observed_metric']['unsent_proven'] is False
+    assert record['observed_metric']['resends'] == 0
+    # The A was never receipt-confirmed, so the selected castle was not
+    # contacted and must not be learned as a refusing destination.
+    assert _flow(mem)['camp_recall_blocked'] == {'アルマムーン': 1}
+
+
+def test_a_late_dispatch_receipt_resumes_the_stale_wait_as_a_fresh_window():
+    _, state = pending(); mem = state['policy']; mem['_records'] = []
+    frame = picker(); view = parse(frame, phase='field')
+    for _ in range(6):
+        assert p.world_map_step(view, mem, frame) == []
+    recall = _flow(mem)['recall']
+    assert recall['stage'] == 'await_dispatch_stale'
+    # The send receipt lands in the journal after the demotion: the press was
+    # real, so the ordinary acceptance check resumes on a fresh count instead
+    # of the stale bound filing unconfirmed.
+    trace = {**ID, 'decision_id': 'g514-8937051b:514:7',
+             'frame_sha256': frame.digest(), 'planned_at': 100}
+    recall['request_trace'] = trace
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 2}
+    assert p.world_map_step(view, mem, frame) == []
+    assert recall['stage'] == 'await_dispatch' and recall['input_sent']
+    assert recall['steps'] == 0 and recall['stale_steps'] == 1
+    resumed = next(row for row in mem['_records']
+                   if row['decision'] == 'camp_recall_dispatch_resumed')
+    assert resumed['resulting_event'] == 'dispatch_receipt_confirmed'
+    # The picker dropping back to the field map now accepts the dispatch.
+    assert p.camp_recall_step(Screen([], None, '', kind='map'), mem, None) == []
+    assert _flow(mem)['recall_verification']['status'] == 'dispatched'
+    assert not any(r['decision'] == 'camp_recall_unconfirmed' for r in mem['_records'])
+
+
+def test_a_proven_unsent_dispatch_resends_once_then_still_bounds_itself():
+    _, state = pending(); mem = state['policy']; mem['_records'] = []
+    frame = picker(); view = parse(frame, phase='field')
+    recall = _flow(mem)['recall']
+    trace = {**ID, 'decision_id': 'g514-8937051b:514:9',
+             'frame_sha256': frame.digest(), 'planned_at': 100}
+    recall['request_trace'] = trace
+    for _ in range(6):
+        assert p.world_map_step(view, mem, frame) == []
+    assert recall['stage'] == 'await_dispatch_stale'
+    # The sender journaled other inputs after this request but not our A —
+    # unsent is proven, and the destination picker is still on screen, so the
+    # wait backfills one A under a fresh trace instead of filing unconfirmed.
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 0,
+                                       'later_inputs': True}
+    assert p.world_map_step(view, mem, frame) == [p.pad('a')]
+    assert recall['stage'] == 'await_dispatch' and recall['resends'] == 1
+    assert 'request_trace' not in recall and not recall.get('input_sent')
+    # The resent batch never reaches a journal in this fixture either. The
+    # wait demotes a second time — without request_trace nothing is proven —
+    # and the stale bound ends it without a second A.
+    for _ in range(6):
+        assert p.world_map_step(view, mem, frame) == []
+    for _ in range(10):
+        assert p.world_map_step(view, mem, frame) == []
+    assert p.world_map_step(view, mem, frame) == [p.pad('b')]
+    assert _flow(mem)['recall_verification']['status'] == 'dispatch_unconfirmed'
+    assert sum(r['decision'] == 'camp_recall_dispatch_resent'
+               for r in mem['_records']) == 1
+    record = next(row for row in mem['_records']
+                  if row['decision'] == 'camp_recall_unconfirmed')
+    assert record['observed_metric']['resends'] == 1
+
+
+def scene_interrupted_stale_recall(target_cell=(144, 127)):
+    trace = {'decision_id': 'old-request'}
+    recall = {'stage': 'await_dispatch_stale', 'steps': 0, 'stale_steps': 6,
+              'stale_since_tick': 104, 'target': [96, 111], 'goal': 'オオキク',
+              'a_inputs': 1, 'requested_tick': 90, 'request_trace': trace,
+              'scene_pending': True, 'scene_covered': True, 'scene_covered_tick': 100}
+    if target_cell is not None:
+        recall['target_cell'] = list(target_cell)
+    mem = {'chapter': 9, 'tick': 110,
+           'flow': {'recall': recall, 'recall_interrupted': 100},
+           '_records': []}
+    _journal(mem)['_recall_inputs'] = {'request_trace': trace, 'a_inputs': 0,
+                                       'later_inputs': True}
+    return mem, recall
+
+
+def test_scene_interrupted_resend_is_a_fresh_request_and_accepts_picker_close():
+    mem, recall = scene_interrupted_stale_recall()
+    picker_screen = Screen([], None, '', kind='map_target', marker=(144, 127))
+    assert recall_flow._recall_dispatch_step(picker_screen, mem, recall) == [p.pad('a')]
+    assert recall['stage'] == 'await_dispatch' and recall['requested_tick'] == 110
+    assert recall['resends'] == 1
+    assert 'request_trace' not in recall and not recall.get('input_sent')
+    assert 'recall_interrupted' not in _flow(mem)
+    for key in ('scene_covered', 'scene_covered_tick', 'scene_pending'):
+        assert key not in recall
+
+    new_trace = {'decision_id': 'resent-request'}
+    recall['request_trace'] = new_trace
+    _journal(mem)['_recall_inputs'] = {'request_trace': new_trace, 'a_inputs': 1}
+    mem['tick'] = 111
+    assert recall_flow._recall_dispatch_step(Screen([], None, '', kind='map'), mem, recall) == []
+    verification = _flow(mem)['recall_verification']
+    assert verification['status'] == 'dispatched'
+    assert verification['input_sent'] is True and verification['picker_closed'] is True
+    assert verification['interrupted'] is False and verification['scene_covered'] is False
+    decisions = [row['decision'] for row in mem['_records']]
+    assert 'camp_recall_dispatch_resent' in decisions
+    assert 'camp_recall_input_sent' in decisions
+    assert 'camp_recall_dispatched' in decisions
+    assert 'camp_recall_unconfirmed' not in decisions
+
+
+@pytest.mark.parametrize('target_cell,marker', [
+    (None, (144, 127)),
+    ((144, 127), (152, 127)),
+])
+def test_scene_interrupted_resend_is_rejected_when_picker_identity_is_unconfirmed(target_cell, marker):
+    mem, recall = scene_interrupted_stale_recall(target_cell=target_cell)
+    picker_screen = Screen([], None, '', kind='map_target', marker=marker)
+    assert recall_flow._recall_dispatch_step(picker_screen, mem, recall) == [p.pad('b')]
+    assert 'recall' not in _flow(mem)
+    assert not any(row['decision'] == 'camp_recall_dispatch_resent' for row in mem['_records'])
+    rejected = next(row for row in mem['_records']
+                    if row['decision'] == 'camp_recall_dispatch_resend_rejected')
+    assert rejected['resulting_event'] == 'picker_identity_unconfirmed'
+    verification = _flow(mem)['recall_verification']
+    assert verification['status'] == 'dispatch_unconfirmed'
+    assert verification['interrupted'] is True
+    terminal = next(row for row in mem['_records']
+                    if row['decision'] == 'camp_recall_unconfirmed')
+    assert terminal['observed_metric']['unsent_proven'] is True
+    assert terminal['observed_metric']['interrupted'] is True
+
+
+def test_action_sent_mirrors_the_receipt_into_the_input_journal(tmp_path):
+    frame = picker()
+    atomic_write_json(tmp_path / 'hanjuku_run.json', {**ID, 'frame_sha256': frame.digest()})
+    atomic_write_json(tmp_path / 'hanjuku_bot.json',
+                      {'decision_trace': {**ID, 'decision_id': 'g514-8937051b:514:1',
+                                          'frame_sha256': frame.digest()}})
+    hanjuku_run.action_sent(tmp_path, ID,
+                            SimpleNamespace(type='pad', buttons=['a'], hold_ms=100))
+    mirror = [json.loads(row) for row in
+              (tmp_path / 'hanjuku_inputs_sent.jsonl').read_text().splitlines()]
+    events = [json.loads(row) for row in
+              (tmp_path / 'hanjuku_events.jsonl').read_text().splitlines()]
+    assert len(mirror) == len(events) == 1 and mirror == events
+    row = mirror[0]
+    assert (row['event'], row['type'], row['buttons']) == ('input_sent', 'pad', ['a'])
+    assert row['decision_id'] == 'g514-8937051b:514:1'
+    assert row['decision_frame_sha256'] == frame.digest()
+
+
+def test_the_input_mirror_outlives_a_dense_events_tail_and_proves_unsent(tmp_path):
+    module = command_bot(); _, state = pending()
+    trace = {**ID, 'decision_id': 'g514-8937051b:514:1',
+             'frame_sha256': picker().digest(), 'planned_at': 100}
+    state['policy']['flow']['recall']['request_trace'] = trace
+    good = {'event': 'input_sent', 'decision_id': trace['decision_id'],
+            'decision_frame_sha256': trace['frame_sha256'], 'at': 101,
+            'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}
+    # The events tail was flooded past its 64 KiB proof window; the sparse
+    # input-only mirror still carries the matching send row.
+    (tmp_path / 'hanjuku_events.jsonl').write_text('x' * 70000)
+    (tmp_path / 'hanjuku_inputs_sent.jsonl').write_text(json.dumps(good))
+    one = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
+    assert one['a_inputs'] == 1 and one['later_inputs'] is False
+    # Inputs journaled at/after this request without a matching row prove the
+    # batch never left — distinct from an unreadable journal (unknown).
+    later = {**good, 'decision_id': 'g514-8937051b:514:2', 'at': 102}
+    (tmp_path / 'hanjuku_inputs_sent.jsonl').write_text(json.dumps(later))
+    two = module.recall_input_receipts(tmp_path, state, {'hanjuku': ID})
+    assert two['a_inputs'] == 0 and two['later_inputs'] is True
+    # The stale stage keeps asking for the same receipt while it retries.
+    state['policy']['flow']['recall']['stage'] = 'await_dispatch_stale'
+    assert module.recall_input_receipts(tmp_path, state, {'hanjuku': ID}) == two
+    # No readable journal is unknown, never unsent.
+    (tmp_path / 'hanjuku_inputs_sent.jsonl').unlink()
+    (tmp_path / 'hanjuku_events.jsonl').unlink()
+    assert module.recall_input_receipts(tmp_path, state, {'hanjuku': ID}) is None
 
 
 @pytest.mark.parametrize('kind',['unknown','yes_no'])
@@ -231,3 +429,89 @@ def test_a_general_that_left_the_camp_confirms_the_arrival():
     assert recall_flow.camp_arrival_check(mem) is True
     assert any(r['decision'] == 'camp_recall_arrival_confirmed' for r in mem['_records'])
     assert 'camp_verify' not in _flow(mem)
+
+
+def test_cliff_escape_request_is_not_a_camp_recall_or_arrival_read():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'target': [134, 120], 'kind': 'camp'}
+    actions = [p.pad('a')]
+    assert recall_flow._request_recall(
+        mem, state, 'アルマムーン', actions,
+        escape_move=True, target_cell=[135, 121]) == actions
+    assert 'roster_read_due' not in mem
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_requested']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_requested'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['target_cell'] == [135, 121]
+
+
+@pytest.mark.parametrize('goal', [None, 'アルマムーン'])
+def test_cliff_escape_dispatch_unconfirmed_is_not_a_camp_recall(goal):
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 5, 'goal': goal,
+             'target': [134, 120], 'target_cell': [135, 121],
+             'kind': 'camp', 'escape_move': True, 'a_inputs': 1}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='text'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_unconfirmed']
+    row = mem['_records'][0]
+    assert row['resulting_event'] == 'field_move_unconfirmed'
+    assert row['observed_metric']['escape_move'] is True
+    assert row['observed_metric']['camp'] == [134, 120]
+    assert row['observed_metric']['target_cell'] == [135, 121]
+    assert row['observed_metric']['stage'] == 'await_dispatch'
+    assert row['observed_metric']['steps'] == 6
+    assert row['observed_metric']['input_receipt_confirmed'] is False
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatch_unconfirmed'
+    assert 'recall_verification' not in flow
+    assert 'camp_recall_blocked' not in flow
+    assert mem['uncertain'] is True
+
+
+def test_cliff_escape_dispatch_accepted_is_not_a_camp_arrival_proof():
+    from docich.hanjuku.flows import recall as recall_flow
+
+    mem = {'chapter': 9, 'tick': 120, '_records': []}
+    state = {'stage': 'await_dispatch', 'steps': 0, 'goal': None,
+             'target': [134, 120], 'kind': 'camp', 'escape_move': True,
+             'a_inputs': 1, 'input_sent': True}
+    assert recall_flow._recall_dispatch_step(
+        Screen([], None, '', kind='map'), mem, state) == []
+    assert [row['decision'] for row in mem['_records']] == [
+        'camp_escape_move_dispatched']
+    assert mem['_records'][0]['resulting_event'] == 'field_move_accepted'
+    assert mem['_records'][0]['observed_metric']['input_receipt_confirmed'] is True
+    flow = _flow(mem)
+    assert flow['escape_move_verification']['status'] == 'dispatched'
+    assert 'recall_verification' not in flow
+    assert 'camp_verify' not in flow
+    assert not mem.get('uncertain')
+
+
+@pytest.mark.parametrize('decision', [
+    'camp_escape_move_requested', 'camp_escape_move_dispatched',
+    'camp_escape_move_unconfirmed'])
+def test_cliff_escape_decisions_keep_their_frame_and_input_context(tmp_path, decision):
+    module = command_bot()
+    frame = picker()
+    state = {'step': 242, 'screen_kind': 'text',
+             'policy': {'active': 'unrelated'}}
+    record = {'decision': decision, 'chart_step': 'camp_escape',
+              'strategy_variant': 'escape_move',
+              'deviation_reason': 'cliff_exit'}
+    module.persist(tmp_path, state, [record], {'hanjuku': ID},
+                   actions=[], frame_sha256=frame.digest(), frame=frame)
+    plan = json.loads((tmp_path / 'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    assert plan['chart_step'] == 'camp_escape'
+    assert plan['strategy_variant'] == 'escape_move'
+    assert plan['deviation_reason'] == 'cliff_exit'
+    assert plan['snapshot'] == 'decision-002.png'
+    assert (tmp_path / 'hanjuku_frames' / 'decision-002.png').exists()

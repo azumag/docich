@@ -300,3 +300,20 @@ def test_a_failed_egg_selection_retries_after_the_general_loses_more_hp():
     assert p._egg_before_retreat(mem, cur) is True, 'HP 減少後は再試行する'
     cur['survival']['egg_attempts'] = rules.EGG_ATTEMPT_HARD_LIMIT
     assert p._egg_before_retreat(mem, cur) is False, '上限で止まる'
+
+
+def test_the_hp_drop_retry_can_reselect_the_visible_egg_in_the_menu():
+    # docich#5536 follow-up: the outer retry gate is meaningless unless the
+    # open survival menu uses the same counted budget instead of the binary
+    # egg_attempted flag.
+    cur = duel()
+    mem = {'chapter': 1, 'battle': cur, 'egg_uses': {'カシュー': 4}}
+    cur['survival'] = {'egg_attempted': True, 'egg_attempts': 2,
+                       'egg_attempt_hp': 28, 'opens': 0, 'pending_opens': 0,
+                       'menu_ticks': 0, 'cards_checked': 0, 'cards_attempted': []}
+    cur['ally_hp'] = 20
+    assert p._egg_before_retreat(mem, cur) is True
+    assert p.battle_menu_step(menu(('たまごをつかう',)), mem) == [p.pad('a')]
+    assert cur['survival']['egg_attempts'] == 3
+    assert cur['survival']['egg_attempt_hp'] == 20
+    assert cur['survival']['egg_wait'] == 0

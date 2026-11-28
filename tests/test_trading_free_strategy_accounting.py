@@ -273,7 +273,7 @@ def test_evaluation_never_grants_live_authority(tmp_path):
         report = evaluate(store, identity, now=1_100.0)
         assert report["net_pnl_jpy"] == "100"
         assert report["live_eligible"] is False
-        assert "live_broker_not_implemented" in report["blockers"]
+        assert "promotion_judgement_required" in report["blockers"]
     finally:
         store.close()
 

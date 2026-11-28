@@ -234,3 +234,86 @@ def test_a_confirmed_boss_camp_does_not_reopen():
     assert 'A:x:M1' not in _world(mem)['sorties']
     assert _plan_region(mem)['orders']['A:x:M1'] == 'launched'
     assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_an_unconfirmed_normal_castle_order_reopens_on_a_measured_camp():
+    # docich#5626 (live g1342 ch8 14-5): ポワソン's attack on the ordinary
+    # castle いちじょうだに stayed 'launched_unconfirmed' after his camp at
+    # the target measured-ended the record — neither the kept-launch reopen
+    # nor the chapter-4/boss re-arms applied, so the step could never retry
+    # or settle. An unconfirmed order status is itself an unverified launch.
+    mem = observed(age=200, location='camp', delta=50)
+    _world(mem)['sorties']['A:x:M1'].update(status='launched_unconfirmed', target='アブダレ')
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched_unconfirmed'}
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in _world(mem)['sorties']
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
+    assert any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_the_unconfirmed_reopen_is_bounded_by_the_miss_limit():
+    # The same reopened step camping again fails the order instead of
+    # cycling forever (launch_miss budget, mirrors flows.map.LAUNCH_MISS_LIMIT).
+    mem = observed(age=200, location='camp', delta=50)
+    _world(mem)['sorties']['A:x:M1'].update(status='launched_unconfirmed', target='アブダレ')
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched_unconfirmed'}
+    from docich.hanjuku.state.regions import flow as _flow
+    _flow(mem)['launch_miss'] = {'A:x:M1': 1}
+    O._expire_spent_sorties(mem)
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'failed'
+    assert any(r['decision'] == 'sortie_launch_failed' for r in mem['_records'])
+
+
+def test_a_dead_plan_step_keeps_its_retry_copy_when_reopened():
+    # The step is not in the current chart_plan, so next_order can only
+    # re-dispatch it through world.launched_orders — the reopen must keep it.
+    mem = observed(age=200, location='camp', delta=50)
+    _world(mem)['sorties']['A:x:M1'].update(status='launched_unconfirmed', target='アブダレ')
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched_unconfirmed'}
+    mem['launched_orders'] = {'A:x:M1': {'step': 'A:x:M1', 'general': 'ヘルメス',
+                                       'source': 'アルマムーン', 'target': 'アブダレ',
+                                       'purpose': 'attack'}}
+    O._expire_spent_sorties(mem)
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
+    assert 'A:x:M1' in (_world(mem).get('launched_orders') or {})
+
+
+def test_a_pending_order_state_is_not_reopened_by_a_measured_camp():
+    # A step no longer counted launched keeps its own status; only the
+    # launched/launched_unconfirmed steps are settled here.
+    mem = observed(age=200, location='camp', delta=50)
+    _world(mem)['sorties']['A:x:M1'].update(status='en_route', target='アブダレ')
+    _plan_region(mem)['orders'] = {'A:x:M1': 'pending'}
+    O._expire_spent_sorties(mem)
+    assert 'A:x:M1' not in _world(mem)['sorties']
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'pending'
+    assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+
+
+def test_a_move_status_at_the_owned_target_is_arrival_not_a_failed_launch():
+    # docich#5737: a move into our own castle draws no unit marker and no
+    # entry message. The monthly status naming that destination is the
+    # successful arrival; treating it as "the general never left" reopens and
+    # eventually fails a completed transfer.
+    mem = observed(age=200, location='castle', delta=50)
+    mem['captured'] = ['キカンドン']
+    mem['general_statuses']['statuses']['ヘルメス']['castle'] = 'キカンドン'
+    _world(mem)['sorties']['A:x:M1'].update(
+        status='en_route', target='キカンドン', purpose='move')
+    _plan_region(mem)['orders'] = {'A:x:M1': 'launched'}
+    from docich.hanjuku.state.regions import flow as _flow
+    _flow(mem)['launch_probe'] = {'A:x:M1': {'general': 'ヘルメス', 'source': 'アルマムーン',
+                   'target': 'キカンドン', 'reads': 1, 'blind': True, 'tick': 49900}}
+    _flow(mem)['launch_miss'] = {'A:x:M1': 1}
+    O._expire_spent_sorties(mem)
+    sortie = _world(mem)['sorties']['A:x:M1']
+    assert sortie['status'] == 'arrived'
+    assert sortie['launch_confirmed'] is True
+    assert _plan_region(mem)['orders']['A:x:M1'] == 'failed'
+    assert 'A:x:M1' not in (_flow(mem).get('launch_probe') or {})
+    assert 'A:x:M1' not in (_flow(mem).get('launch_miss') or {})
+    assert 'ヘルメス' not in _world(mem)['garrison']['アルマムーン']
+    assert any(r['decision'] == 'sortie_move_arrival_observed' for r in mem['_records'])
+    assert not any(r['decision'] == 'sortie_record_observed_ended' for r in mem['_records'])
+    assert not any(r['decision'] == 'sortie_launch_unverified' for r in mem['_records'])
+    assert not any(r['decision'] == 'sortie_launch_failed' for r in mem['_records'])

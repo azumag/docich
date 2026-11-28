@@ -33,6 +33,9 @@ LAYER_RANK = {
     'strategy': 2,
     'judgment': 3,
     'flows': 4, 'reporting': 4, 'month_audit': 4,
+    # Reuses the monthly audit's incident/gh pipeline from outside it; nothing
+    # inside the package imports this module.
+    'fault_issue': 5,
     'orchestrator': 5,
 }
 

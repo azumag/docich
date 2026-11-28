@@ -28,13 +28,52 @@ def ready(monkeypatch):
     return mem
 
 
-def listing(gold=300, rows=(('ノリウツール', 18),)):
+def listing(gold=300, rows=(('ノリウツール', 18),), selected=0):
     c = Canvas(); c.text(48, 15, f'1ねん 5のつき {gold}G')
     for i, (name, price) in enumerate(rows):
         c.text(120, 175 + i * 16, name); c.text(216, 175 + i * 16, f'{price}G')
-    c.hand(98, 169)
+    c.hand(98, 169 + 16 * selected)
     screen = parse(c.frame()); screen.kind = 'shop_list'
     return screen
+
+
+def test_mickey_is_bought_before_the_cheaper_kuusukan(ready):
+    # g1342 6-7/6-8: the catalogue order filled the cheaper クースカン first and
+    # ミックミー got 0 copies for months. The recommended set is
+    # クースカン+ミックミーx2, so the same budget must now buy ミックミー.
+    rows = (('クースカン', 24), ('ミックミー', 40))
+    b.plan_bargains(ready, ready['shop'], listing(gold=200, rows=rows).header,
+                    listed=dict(rows))
+    items = dict(ready['shop']['items'])
+    assert items.get('ミックミー') == 2
+    assert items.get('クースカン') == 1
+    assert ready['shop']['items'][0][0] == 'ミックミー'
+
+
+def test_the_half_price_cart_buys_a_listed_target_with_unread_stock(ready):
+    # ch4's card census aborts (observation_limit), so a never-owned kind stays
+    # unknown and ミックミー could never be bought. At the half-price cart a real
+    # listing is price evidence, and the ask stays bounded by the target.
+    ready['card_stock'].pop('ミックミー')
+    ready['shop']['cheap_vendor'] = True
+    rows = (('ミックミー', 20),)
+    b.plan_bargains(ready, ready['shop'], listing(gold=300, rows=rows).header,
+                    listed=dict(rows))
+    assert ['ミックミー', 2] in ready['shop']['items']
+
+
+def test_an_ordinary_merchant_still_leaves_unread_stock_alone(ready):
+    # The 2026-11-22 rule stays for the monthly merchant: only the half-price
+    # cart may ask for a kind whose count was never read.
+    ready['card_stock'].pop('ミックミー')
+    rows = (('ミックミー', 40),)
+    b.plan_bargains(ready, ready['shop'], listing(gold=300, rows=rows).header,
+                    listed=dict(rows))
+    assert not any(name == 'ミックミー' for name, _ in ready['shop']['items'])
+
+
+def test_bargain_order_covers_every_target():
+    assert set(b.BARGAIN_ORDER) == set(b.BARGAIN_TARGETS)
 
 
 def test_empty_plan_buys_a_visible_strong_card_with_spare_cash(ready):
@@ -56,7 +95,8 @@ def test_monthly_plan_opens_merchant_without_a_chart_card_order():
 
 def test_actual_cart_stock_replaces_unavailable_provisional_candidates(ready):
     b.plan_bargains(ready, ready['shop'], listing().header)
-    assert ready['shop']['items'][0][0] == 'ノリウツール'
+    # The priority order starts with エンジェリン (owner 2026-11-25).
+    assert ready['shop']['items'][0][0] == 'エンジェリン'
     # This vendor has only ミックミー: do not walk away just because the
     # first two provisional candidates consumed the preliminary budget.
     assert p.shop_step(listing(rows=(('ミックミー', 40),)), ready) == [p.pad('a')]
@@ -274,17 +314,20 @@ def month_pass_spent(mem):
 
 def test_a_half_price_cart_after_the_month_pass_gets_a_pass_of_its_own(ready):
     month_pass_spent(ready)
-    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('a')]       # selects a card to buy
+    # 最強の可視札（ゼンマイン）へカーソルを下げてから選択する。
+    assert p.shop_step(listing(9987, HALF), ready) == [p.pad('down')]
+    assert p.shop_step(listing(9987, HALF, selected=2), ready) == [p.pad('a')]
     shop = ready['shop']
     assert shop['want'][0] in dict(HALF) and shop['cheap_vendor'] is True
     assert shop['cheap_vendor_planned'] is True
     planned = dict(shop['items'])
     # This synthetic four-row canvas clips the fourth (ミックミー) row; only the
-    # three visible cards may be planned from the actual listing. v1352 puts
-    # BARGAIN_TARGETS on the rich path too, so the two bargain targets go to 99
-    # with the rich budget instead of the cart's smaller caps.
-    for name in ('ノリウツール', 'クースカン', 'ゼンマイン'):
-        assert planned.get(name) == b.RICH_MERCHANT_MAX_COPIES, name
+    # three visible cards may be planned from the actual listing. ゼンマイン is
+    # part of the 2026-11-25 purchase priority, so it is rich-priority too and
+    # all three kinds go to 99 with the rich budget. The first (ゼンマイン) is
+    # the cheap-vendor want.
+    assert planned == {'ゼンマイン': 99, 'クースカン': 99, 'ノリウツール': 99}
+    assert shop['want'] == ['ゼンマイン', 99, 16]
     assert set(planned) <= {name for name, _ in HALF}
     ordinary = [(n, q) for n, q in shop['items']
                 if n not in b.RICH_MERCHANT_CARDS and n not in b.BARGAIN_TARGETS]

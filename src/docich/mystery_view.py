@@ -103,13 +103,19 @@ h1{font-size:26px;line-height:1.05;letter-spacing:.06em;margin:0;font-weight:800
 .card{border:1px solid #2c2242;border-radius:8px;background:#171126;padding:6px 8px;margin-bottom:6px;font-size:13px;line-height:1.35}
 .card .name{font-weight:800;color:#e8e2ff}.card .role{color:#9d8fc0;font-size:11px;margin-left:6px}
 .card .clue{color:#ffe6a8;font-size:12px;margin-top:2px}.card .alibi{color:#a8ffd0;font-size:12px;margin-top:2px}
+.card,.card .name,.card .role,.card .clue,.card .alibi{overflow-wrap:anywhere;word-break:break-word}
 .card.dim{opacity:.45}.card.hit{border-color:#7b5fd0;background:#1d1533}
 .poll{font-size:13px;line-height:1.5;color:#dcd4f2;white-space:pre-wrap}
 .poll .q{font-weight:800;color:#ffd67a}
 .predict{font-size:13px;line-height:1.5;color:#dcd4f2}
 #matrix{display:flex;gap:10px;height:330px}
 #matrix .mrooms{flex:0 0 38%}#matrix .msusp{flex:1}
-.mrow{border:1px solid #2c2242;border-radius:8px;background:#171126;padding:5px 7px;margin-bottom:5px;font-size:11.5px;line-height:1.35}
+/* 長い容疑者名・アリバイ・手がかりで欄がはみ出してUIが隠れないよう、
+   各列は縦スクロールさせ、折り返しを許可する（owner 2026-11-23）。 */
+#suspects,#mrooms,#msusp{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;scrollbar-width:thin}
+#suspects::-webkit-scrollbar,#mrooms::-webkit-scrollbar,#msusp::-webkit-scrollbar{width:6px}
+#suspects::-webkit-scrollbar-thumb,#mrooms::-webkit-scrollbar-thumb,#msusp::-webkit-scrollbar-thumb{background:#4a3768;border-radius:3px}
+.mrow{border:1px solid #2c2242;border-radius:8px;background:#171126;padding:5px 7px;margin-bottom:5px;font-size:11.5px;line-height:1.35;overflow-wrap:anywhere;word-break:break-word}
 .mrow .who{font-weight:800;color:#e8e2ff}.mrow .role{color:#9d8fc0;font-size:10px;margin-left:5px}
 .mrow .line{color:#cdc4e4;margin-top:1px}.mrow .say{color:#a8ffd0}.mrow .trace{color:#ffe6a8}
 .mrow .cl{font-size:11px;color:#ffe6a8;margin-top:2px}

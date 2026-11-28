@@ -1,0 +1,43 @@
+name: CI nightly watchdog
+
+# GitHub can delay or drop scheduled workflow runs (in this repository every
+# scheduled workflow stopped receiving events between 2026-10-30 and 2026-11-22).
+# The nightly full suite is the only full suite for Hanjuku-only pull requests,
+# so its silence cannot be reported by the scheduler that went quiet. This
+# detector therefore runs on a push to main as well as on a schedule: it keeps
+# one deduplicated Issue open while no successful nightly exists and dispatches
+# a full-suite run when one is missing.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '11 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+concurrency:
+  group: ci-nightly-watchdog-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Keep the nightly full-suite alert consistent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python3 .github/scripts/ci_nightly_watchdog.py

@@ -17,15 +17,15 @@ from ..version import BOT_VERSION
 from .deploy import (_cancel_broken_hero_sortie, _deploy_context, _deploy_input, _hold_deploy,
                             _hold_guarded_sortie, _hold_locked_boss, _hold_unrouted_sortie)
 from ..strategy.bargains import forget_picked
-from .recall import (MENU_HOLD_LIMIT, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
+from .recall import (MENU_HOLD_LIMIT, MOVE_MODE_STAGES, RECALL_LIMIT, _hold_after_picker, _recall_dispatch_step, _request_recall,
                     RELAY_MENU_WAIT, _relay_target, _y_route_step,
                     relay_from_picker,
                             camp_recall_step)
 from ..os_layer.commands import (VISIBLE_LIST_RELEASE_MS, castle_list_batch, menu_to, pad,
                                  roster_list_batch)
 from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_OFFSET, Y_JUMP_TOL, _align_on_roof, _drop_stale_y_jump, _start_y_jump,
-                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell, nav_step,
-                                   y_jump_unreachable)
+                                   _forget_failed_jump, _want_y_jump, _y_jump_step, boss_probe_cell,
+                                   forget_target_placement, nav_step, y_jump_unreachable)
 from ..os_layer.readers import (UNDER_CURSOR_PX, WORLD_MAP_OFFSET, _canonical_general, _cursor, _options,
                                 _roof_under_cursor, season_sites, world_cursor, world_flags,
                                 world_markers)
@@ -35,11 +35,19 @@ from ..strategy import goals
 from ..strategy.kit import _deploy_cards, _is_boss_order
 from ..strategy.execution import departure_snapshot
 from ..state.regions import world as _world, flow, journal, flow as _flow, journal as _journal, sorties as _sorties, plan as _plan_region
-from ..strategy.orders import (BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT, _broken_hero_order,
+from ..strategy.orders import (BOSS_COMPANION_WAIT_TICKS, BOSS_TARGET_CANCEL_LIMIT, SOURCE_MISS_LIMIT,
+                               _boss_companion_wait_expired, _broken_hero_order,
+                               clear_sortie_launch_priority,
                                drop_retired_step_context, _finish_order,
-                               _garrison_move, _give_up_source, _near_goal, _order, _order_for_step, _ready,
-                               _recall_goal, _retire_unentered_sortie, _sortie_general, _source,
-                               next_order, order_dispatch_starved, parked_boss_steps)
+                               _garrison_move, _give_up_source, _launch_probe_matches_live_sortie,
+                               _near_goal, _order, _order_for_step, _ready,
+                               _recall_goal, _retire_unentered_sortie,
+                               _sortie_general, _sortie_resume_arm, _sortie_resume_due,
+                               _sortie_resume_reconcile, _sortie_resume_resumed,
+                               _sortie_resume_target_unverified, _source,
+                               SORTIE_PICKER_RESUME_LIMIT,
+                               next_order, order_dispatch_starved, parked_boss_steps,
+                               arm_sortie_launch_priority)
 from ..strategy.replan import _off_chart
 from .result import FlowResult
 
@@ -61,22 +69,52 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     """
     from .camp_recheck import observe_departure_return
     observe_departure_return(screen, mem)
+    _sortie_resume_reconcile(mem)
     # A recall destination picker belongs to the recall, not to an active
     # chart sortie's interrupted target selection.
-    if (_flow(mem).get('recall') or {}).get('stage') in ('dest', 'await_dispatch'):
+    if (_flow(mem).get('recall') or {}).get('stage') in ('dest', 'await_dispatch',
+                                                        'await_dispatch_stale'):
         return
     order = _order(mem)
     attempt = _flow(mem).get('sortie_attempt')
     if not attempt and order and previous_kind == 'map_target':
+        resume = (_flow(mem).get('sortie_resume') or {}).get(order['step'])
+        if (isinstance(resume, dict) and resume.get('owed') is True
+                and resume.get('picker_active') is not True):
+            # B intentionally closed a resumed picker after its target miss.
+            # The owed retry is not a fresh interrupted departure: rebuilding
+            # an attempt from stale order_context would re-enter normal cancel
+            # suppression before the remaining resume slot can run.
+            return
         context = (_plan_region(mem).get('order_context') or {}).get(order['step']) or {}
         if context.get('actual_general'):
             attempt = {'step': order['step'], 'target_seen': True}
             _flow(mem)['sortie_attempt'] = attempt
     if not attempt:
         return
-    if (mem.get('y_jump') or {}).get('mode') == 'target' or mem.get('y_jump_return') == 'target':
+    own_target_jump = ((mem.get('y_jump') or {}).get('mode') == 'target'
+                       or mem.get('y_jump_return') == 'target')
+    if (screen.kind in SORTIE_INTERRUPTING_BATTLE_KINDS and order
+            and order.get('step') == attempt.get('step')):
+        # A fight cut the destination selection. The marker the picker restores
+        # afterwards sits wherever the game left it, not the cell our Y jump
+        # put it on, and a pre-battle arrival receipt still names the old cell.
+        # Mark the attempt so the resumed picker re-does the target jump
+        # (``target_step``) instead of confirming the restored marker, and give
+        # that jump a fresh attempt budget: the interrupted one must not eat it.
+        step = attempt.get('step')
+        if not attempt.get('battle_interrupt'):
+            attempt['battle_interrupt'] = True
+            tick = mem.get('tick')
+            attempt['battle_interrupt_tick'] = tick if type(tick) is int else None
+            (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
+            _forget_failed_jump(mem, step, 'target')
+        forget_target_placement(mem, step)
+    if own_target_jump:
         # Our own Y jump for the target (the view and the fade back), not an
-        # interruption.
+        # interruption. Captured before the battle reset above dropped
+        # ``y_jump_return``: the reset is about placement, not about treating
+        # our own view as a closed picker.
         if screen.kind in ('map_target', 'map'):
             mem.pop('y_jump_return', None)      # back on a map: normal tracking resumes
         else:
@@ -93,18 +131,22 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 # battle, the marker came back unplaced and the bot idled).
                 (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
                 _forget_failed_jump(mem, step, 'target')
-                (mem.get('y_jumped') or {}).pop(step, None)
-                # The remembered marker cell is from before the interruption
-                # too. g1163 2026-11-11 12:24:03 kept オシロガ's cell after
-                # the month menu, read the resumed marker as arrived, aligned
-                # it on a roof nearby and sent シュゼット to a cliff where she
-                # camped. Forget it so the target is found again by a jump.
-                mem.pop('cursor', None)
-                if (mem.get('near_goal') or {}).get('step') == step:
-                    mem.pop('near_goal', None)
-                mem['uncertain'] = True
+                # The remembered marker cell and the Y-view receipt are from
+                # before the interruption too. g1163 2026-11-11 12:24:03 kept
+                # オシロガ's cell after the month menu, read the resumed
+                # marker as arrived, aligned it on a roof nearby and sent
+                # シュゼット to a cliff where she camped. Forget both so the
+                # target is found again by a fresh jump.
+                forget_target_placement(mem, step)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
+                # docich#5020: the game's own marker return resolves the
+                # interruption's resume without spending the driven budget.
+                _sortie_resume_resumed(mem, step, driven=False)
+            else:
+                # docich#5020: the re-driven dispatch re-opened the destination
+                # picker -- spend one of this month's two resume re-opens.
+                _sortie_resume_resumed(mem, step, driven=True)
         attempt['target_seen'] = True
         attempt.pop('interrupted', None)
         return
@@ -112,6 +154,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             or not order or order['step'] != attempt['step']):
         return
     step = order['step']
+    # The target picker closed (a battle, event or a plain return): its cursor
+    # and Y-jump receipt no longer describe any marker on screen. A re-armed
+    # attempt must re-place the target instead of confirming the restored
+    # marker at the old cell.
+    forget_target_placement(mem, step)
     request = flow(mem).get('departure_request')
     if isinstance(request, dict) and request.get('step') == step:
         if (_departure_receipt_sent(mem, request) and isinstance(request.get('snapshot'), dict)
@@ -151,6 +198,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     previous = _sorties(mem).get(step)
     if previous:
         _retire_unentered_sortie(mem, step, previous)
+    (_flow(mem).get('launch_probe') or {}).pop(step, None)
     _world(mem).setdefault('sorties', {})[step] = {
         'general': general, 'source': snapshot['source'], 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
@@ -168,12 +216,19 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
         # The picker closed into a battle, not into a plain field frame: the
         # generic unconfirmed record below cannot tell the two apart, so the
         # monthly decision breakdown counts this cause on its own (docich#5020).
+        # docich#5020 改善案1・2: arm the same-month picker re-open budget here;
+        # resumed / established / exhausted closes the incident later (#5138).
+        armed, used = _sortie_resume_arm(mem, step)
+        outcome = 'exhausted' if not armed and used >= SORTIE_PICKER_RESUME_LIMIT else None
         _record(mem, 'launch_interrupted_by_battle', chart_step=step,
                 general=general, target=order['target'], screen=screen.kind,
+                resulting_event=outcome,
                 observed_metric={'planned_target': order['target'],
                                  'target': order['target'],
                                  'source': snapshot['source'],
-                                 'screen': screen.kind},
+                                 'screen': screen.kind,
+                                 'resume': {'armed': armed, 'used': used,
+                                            'limit': SORTIE_PICKER_RESUME_LIMIT}},
                 reason='出撃先ピッカーの最中に戦闘が割り込み目標決定前に閉じたため、割り込みからの再開率を測る')
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
@@ -543,6 +598,21 @@ def world_map_step(screen, mem, frame):
                 observe_chapter_castle(mem, name)
                 if mem.get('chapter'):
                     break
+    recall = _flow(mem).get('recall')
+    if (isinstance(recall, dict) and recall.get('battle_return')
+            and recall.get('stage') in MOVE_MODE_STAGES):
+        # docich#5452: a whole map after combat cannot be told apart from the
+        # view a dead いどう mode would leave — an A there opens the castle
+        # menu instead of confirming the destination. Drop the recall's own
+        # jump and restart the return from the camp.
+        from .recall import _recall_move_mode_lost
+        own_jump = (mem.get('y_jump') or {}).get('step') == 'RECALL'
+        if own_jump:
+            mem.pop('y_jump', None)
+        actions = _recall_move_mode_lost(mem, recall, screen)
+        # The closing B only belongs on a view the recall itself could own;
+        # a foreign flow's jump keeps its screen.
+        return actions if own_jump or not mem.get('y_jump') else []
     if mem.get('y_jump'):
         order = _order(mem)
         if order is not None and mem['y_jump'].get('step') == order['step']:
@@ -570,7 +640,7 @@ def world_map_step(screen, mem, frame):
         if waits <= RELAY_MENU_WAIT:
             return []
         recall['relay_menu_waits'] = 0
-    if recall and recall.get('stage') == 'await_dispatch':
+    if recall and recall.get('stage') in ('await_dispatch', 'await_dispatch_stale'):
         return _recall_dispatch_step(screen, mem, recall)
     if recall and recall.get('boss') and recall.get('stage') == 'dest':
         # いどう opened a whole-island picker, whose confirmation below sends
@@ -578,7 +648,8 @@ def world_map_step(screen, mem, frame):
         # it and keep the camp where it is. Unmeasured: the event names the screen.
         from .recall import _abort_boss_redirect
         return _abort_boss_redirect(mem, recall, 'boss_picker_is_world_map',
-                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す')
+                                    'いどうが全島ピッカーを開いたため、自軍城へ帰還させず取り消す',
+                                    screen=screen)
     if recall and recall.get('stage') == 'dest':
         # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
@@ -872,10 +943,12 @@ def world_map_step(screen, mem, frame):
                 observed_metric={'cursor': list(y_cursor),
                                  'world': list(mem['cursor'])},
                 reason='全体マップの自位置カーソルからフィールド位置を再確定する')
-    # The same view draws chapter 4's 四季王 sites: a cleared one keeps a
-    # pennant, a live king keeps the skull.
+    # The same view draws chapter 4's 四季王 sites: a live king keeps the
+    # skull, a defeated one draws none. Pass the richer reading so the writer
+    # can tell a partial/hidden marker from clean terrain (and from a frame
+    # whose other sites no longer read normally).
     if (mem.get('chapter') or 0) == 4 and hasattr(frame, 'pixel'):
-        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame)))
+        _apply_season_sites(mem, season_sites(frame, 4, world_cursor(frame), True))
     if (mem.get('chapter') or 0) != 4 and hasattr(frame, 'pixel'):
         # A single boss skull on the Y view is the boss's measured cell (the
         # moving boss included; chapter 4's four sites use the scan above).
@@ -1052,7 +1125,7 @@ def _hold_off_castle(screen, mem, order) -> bool:
 
 def _measured_goal(mem, order, castle):
     """Last coordinate boundary, including already-issued reconciliation."""
-    goal = chart.castles(mem.get('chapter') or 0).get(castle)
+    goal = chart.aim_cell(mem.get('chapter') or 0, _source(order, mem), castle)
     if goal is None:
         _plan_region(mem)['active'] = None
         forget_picked(mem)
@@ -1095,15 +1168,14 @@ ORDER_START_BACKOFF = 12      # observations (~18 s) before the same order resta
 
 
 def _order_start_due(mem, step):
-    """The same order is not restarted on every observation.
+    """Whether a proven start of this order is still inside its backoff.
 
-    A start that an interruption (defence, event) cut short used to restart at
-    once: g1133 2026-11-05 started the same move 10 times in five minutes, each
-    attempt opening the world map and aborting. The backoff keeps the order
-    pending without paying that cost again.
+    The check itself must not consume the budget: an interruption can cut the
+    attempt before the castle menu is ever reached (g1190 2026-11-19 run 5 —
+    #4622), and stamping here would hold the first real retry for no reason.
     """
     now = int(mem.get('tick') or 0)
-    started = mem.setdefault('order_start_tick', {})
+    started = mem.get('order_start_tick') or {}
     last = started.get(step)
     if last is not None and now - int(last) < ORDER_START_BACKOFF:
         # Counted, not recorded: a held frame that never reaches the plan is
@@ -1111,10 +1183,17 @@ def _order_start_due(mem, step):
         # decision and no order_start — #4622).
         _tally(mem, 'order_start_backoff')
         return False
-    started[step] = now
+    return True
+
+
+def _mark_order_started(mem, step):
+    """Record that the order reached a concrete castle-opening action."""
+    if not step:
+        return
+    started = mem.setdefault('order_start_tick', {})
+    started[step] = int(mem.get('tick') or 0)
     for stale in list(started)[:-40]:      # del on the temporary list is a no-op
         started.pop(stale, None)
-    return True
 
 
 def _drop_jump_state(mem, step):
@@ -1128,6 +1207,7 @@ def _drop_jump_state(mem, step):
                       if not k.startswith(f'{step}:')}
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
+    (mem.get('y_jumped_res') or {}).pop(step, None)
     last = mem.get('y_jump_last') or {}
     if last.get('step') == step:
         mem.pop('y_jump_last', None)
@@ -1517,6 +1597,7 @@ def _mark_hero_select_miss(mem, step):
 
 def _start_castle_jump(mem, order, source):
     if _hero_select_jump_allowed(mem, order, source):
+        _mark_order_started(mem, order['step'])
         mem['castle_jump'] = {'step': order['step'], 'source': source,
                               'target': order.get('target'), 'phase': 'confirm',
                               'mode': 'hero_select', 'age': 0, 'total': 0,
@@ -1662,20 +1743,66 @@ def _castle_jump_y_fallback(screen, mem, jump, rows):
     budget. The stall is a property of the panel, not of the order: once the
     menu is closed the ordinary map step retries the same source through the
     whole-map Y jump (mode 'map'), and walks only when Y cannot run.
-    """
-    mem.pop('castle_jump', None)
-    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': jump.get('step'),
-                               'tick': int(mem.get('tick') or 0)}
-    mem['castle_jump_y'] = {'step': jump.get('step'), 'source': jump.get('source'),
-                            'tick': int(mem.get('tick') or 0)}
-    _record(mem, 'castle_jump_y_fallback', chart_step=jump.get('step'),
-            target=jump.get('source'), screen=screen.kind,
-            observed_metric={'scrolls': jump.get('scrolls'),
-                             'stalled': jump.get('scroll_stall'),
-                             'rows': [word for _, word in rows]},
-            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
-    return [pad('b')]
 
+    Issues #5275 / #5276: that resume bypassed ``_end_castle_jump``, so the
+    menu-failure counter never advanced and open → scroll → stall → fallback
+    → reopen could repeat without bound. Count stalls per step and give the
+    step up at ``CASTLE_JUMP_ABANDON``, the same bound a menu failure uses, so
+    the planner can pick another source. A reanchor owns no step and keeps its
+    bounded list retries (there is nothing to abandon).
+    """
+    step_key = jump.get('step')
+    source = jump.get('source')
+    mem.pop('castle_jump', None)
+    mem['castle_jump_skip'] = {'mode': jump.get('mode'), 'step': step_key,
+                               'tick': int(mem.get('tick') or 0)}
+    mem['castle_jump_y'] = {'step': step_key, 'source': source,
+                            'tick': int(mem.get('tick') or 0)}
+    stalls = None
+    if step_key is not None:
+        stalls = mem.get('castle_jump_stall_failures')
+        stalls = stalls if isinstance(stalls, dict) else {}
+        n = int(stalls.get(step_key) or 0) + 1
+        stalls[step_key] = n
+        mem['castle_jump_stall_failures'] = stalls
+    else:
+        n = 0
+    metric = {'scrolls': jump.get('scrolls'),
+              'stalled': jump.get('scroll_stall'),
+              'rows': [word for _, word in rows]}
+    if stalls is not None:
+        metric['stall_failures'] = n
+    _record(mem, 'castle_jump_y_fallback', chart_step=step_key,
+            target=source, screen=screen.kind, observed_metric=metric,
+            reason='しろ一覧のページ送りが進まないため一覧を閉じ、全体マップ（Y）で出撃元へ飛ぶ')
+    if step_key is not None and n >= CASTLE_JUMP_ABANDON:
+        # Same retirement as _end_castle_jump's abandon path: without this the
+        # same stalled list is re-opened on every resume with no escape.
+        _plan_region(mem).setdefault('orders', {})[step_key] = 'failed'
+        if (_plan_region(mem).get('active') == step_key):
+            _plan_region(mem)['active'] = None
+        stalls.pop(step_key, None)
+        mem['castle_jump_stall_failures'] = stalls
+        mem.pop('castle_jump_y', None)
+        mem['castle_jump_skip'] = {'step': step_key, 'tick': int(mem.get('tick') or 0)}
+        adjust = mem.get('chart_adjust')
+        if isinstance(adjust, dict):
+            interim = adjust.get('interim_order') or {}
+            if isinstance(interim, dict) and interim.get('step') == step_key:
+                adjust.pop('interim_order', None)
+                steps = adjust.get('interim_steps')
+                if isinstance(steps, dict):
+                    for key, value in list(steps.items()):
+                        if value == step_key:
+                            steps.pop(key)
+                _record(mem, 'chart_interim_abandoned', chart_step=step_key,
+                        observed_metric={'stall_failures': n, 'why': 'scroll_stalled'},
+                        reason='暫定注文の城ジャンプがページ送り停滞で上限に達したため破棄して基本計画へ戻す')
+        _record(mem, 'castle_jump_abandoned', chart_step=step_key,
+                target=source, screen=screen.kind,
+                observed_metric={'stall_failures': n, 'why': 'scroll_stalled'},
+                reason='しろ一覧のページ送り停滞が上限に達したため、この出撃元の注文を諦めて別の城から組み直す')
+    return [pad('b')]
 
 def _jump_successor(mem, order, jump=None):
     """The live order that continues a re-planned jump, or None.
@@ -1788,6 +1915,8 @@ def castle_jump_step(screen, mem, frame):
                 return []
             return _end_castle_jump(screen, mem, 'unexpected_menu')
         if screen.kind == 'main_menu':
+            if jump.get('step') and jump.get('mode') != 'reanchor':
+                _mark_order_started(mem, jump['step'])
             jump['fade'] = 0
             if screen.hand is None:
                 # A blind frame says nothing about which row is selected: the
@@ -2075,6 +2204,11 @@ def general_jump_step(screen, mem, frame):
         # so a month/menu frame must not arm it: arming there fires
         # 'unexpected_menu' and retries every observation.
         if screen.kind != 'map' or isinstance(mem.get('boss_pursuit'), dict):
+            return None
+        if order_dispatch_starved(mem):
+            # A starved boss-phase order owns the next free map frame. The
+            # jump is useful recovery work, but arming it here repeatedly kept
+            # that order behind a multi-menu roster trip (#5155).
             return None
         if (mem.get('chapter') or 0) == 9:
             from . import boss_pursuit as _boss_pursuit
@@ -2503,11 +2637,18 @@ def map_step(screen: Screen, mem, frame):
         # Chapter 9's march does not reopen a source list to settle an
         # unconfirmed launch (owner 2026-11-11: それ以外の操作はdisable); the
         # march deadline settles it.
-        order = None if corridor.mechanical(mem) else next(
-                     (_order_for_step(mem, step) for step, sortie in _sorties(mem).items()
-                      if sortie.get('status') == 'launched_unconfirmed'
-                      and not sortie.get('verification_unavailable')
-                      and sortie.get('source') in _owned(mem)), None)
+        if corridor.mechanical(mem):
+            order = None
+        else:
+            candidates = [step for step, sortie in _sorties(mem).items()
+                          if sortie.get('status') == 'launched_unconfirmed'
+                          and not sortie.get('verification_unavailable')
+                          and sortie.get('source') in _owned(mem)]
+            # docich#5020: a battle-interrupted sortie whose same-month picker
+            # re-open is still armed verifies before an ordinary unconfirmed
+            # one, so the re-drive is not starved by other settlements.
+            candidates.sort(key=lambda step: not _sortie_resume_due(mem, step))
+            order = next((_order_for_step(mem, step) for step in candidates), None)
         order = order or next_order(mem)
         if (order is None or (isinstance(order, dict)
                               and (str(order.get('step', '')).startswith(chart_adjust.INTERIM_PREFIX)
@@ -2577,10 +2718,27 @@ def map_step(screen: Screen, mem, frame):
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
         _forget_failed_jump(mem, order['step'])
+        # A restarted attempt gets a fresh destination placement. A receipt
+        # left by the previous attempt would confirm the new picker's marker
+        # on the old cell without a jump (the rearm path after an interrupted
+        # sortie does not pass through the resumed-picker cleanup).
+        for key in ('y_jumped', 'y_jumped_res'):
+            bucket = mem.get(key)
+            if isinstance(bucket, dict):
+                bucket.pop(order['step'], None)
+        if (mem.get('near_goal') or {}).get('step') == order['step']:
+            mem.pop('near_goal', None)
         mem.pop('castle_verified', None)
         if order.get('source_probe') is True:
             mem.setdefault('arrival_probe_tick', {})[_source(order, mem)] = int(mem.get('tick') or 0)
         mem.pop('order_dispatch_since', None)   # docich#5077: the wait ends at dispatch
+        # docich#5702: the priority window starts at dispatch, not only after
+        # the later departure commit. Housekeeping otherwise keeps preempting
+        # the long source/cards/target walk before sortie_departure_requested.
+        arm_sortie_launch_priority(mem, order)
+        # owner 2026-11-28: 月内に一度でも出撃が始まったかを月単位で記録する
+        # （月一メニューの処理が月を食い尽くすのを防ぐ判断に使う）。
+        mem['sortie_started_month'] = mem.get('month')
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
@@ -2596,6 +2754,7 @@ def map_step(screen: Screen, mem, frame):
             mem.pop('near_goal', None)
             mem['cursor'], mem['uncertain'] = list(goal), False
             mem['expect_menu'] = True
+            _mark_order_started(mem, order['step'])
             return _deploy_input(screen, mem, order, [pad('a')], '全体マップで選んだ出撃元の屋根に合わせて城を選択')
         if aligned:
             return _deploy_input(screen, mem, order, aligned, '全体マップで選んだ出撃元の屋根へカーソルを合わせる')
@@ -2685,6 +2844,7 @@ def map_step(screen: Screen, mem, frame):
         mem.pop('off_castle', None)
         # If no castle menu follows, the cell was wrong: re-localize.
         mem['expect_menu'] = True
+        _mark_order_started(mem, order['step'])
         return _deploy_input(screen, mem, order, [pad('a')], '出撃元の城を選択')
     if result is None:
         if _cursor(screen):
@@ -2693,6 +2853,24 @@ def map_step(screen: Screen, mem, frame):
                     reason='マップ位置を屋根アンカーで再特定できないため入力を保留')
         return []
     return _deploy_input(screen, mem, order, result, '出撃元の城へカーソルを移動')
+
+
+def _target_confirm_actions(mem, order):
+    """Confirm the sortie target; chapter 9's オシロガ steps up once first.
+
+    Owner 2026-11-24: the オシロガ sortie still caught the cliff even after
+    the aim was shifted; pressing UP once immediately before the confirming A
+    lands the march on the passable cell above it.
+    """
+    if ((mem.get('chapter') or 0) == 9 and order.get('target') == 'オシロガ'):
+        seen = _flow(mem).setdefault('ch9_oshiroga_confirm', {})
+        if not seen.get(order['step']):
+            seen[order['step']] = True
+            _record(mem, 'ch9_oshiroga_confirm_up', chart_step=order['step'],
+                    target=order['target'],
+                    reason='オシロガの出撃確定直前に↑を1回押して崖を避ける')
+            return [pad('up'), pad('a')]
+    return [pad('a')]
 
 
 def target_step(screen: Screen, mem, frame):
@@ -2704,15 +2882,36 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    attempt = _flow(mem).get('sortie_attempt')
+    if (isinstance(attempt, dict) and attempt.get('step') == order['step']
+            and attempt.get('battle_interrupt')):
+        # The battle that cut the target selection left its marker where the
+        # game restored it. A confirmation receipt from before that fight is
+        # not evidence about this screen: unless a fresh target jump placed the
+        # marker after the interruption, drop the old placement so the jump
+        # below runs again. The jump lands on the measured cell and the marker
+        # is read from that fresh placement.
+        interrupt_tick = attempt.get('battle_interrupt_tick')
+        placed_tick = (mem.get('y_jump_target_confirmed') or {}).get('tick')
+        freshly_placed = (type(interrupt_tick) is int and type(placed_tick) is int
+                          and placed_tick >= interrupt_tick)
+        attempt.pop('battle_interrupt', None)
+        attempt.pop('battle_interrupt_tick', None)
+        if not freshly_placed:
+            forget_target_placement(mem, order['step'])
+            _record(mem, 'sortie_target_rejump', chart_step=order['step'],
+                    target=order['target'], screen=screen.kind,
+                    reason='戦闘割り込みで出撃先マーカーが復元されたため、割り込み前の到達記録を捨ててYジャンプをやり直す')
     locked = _hold_locked_boss(mem, order)
     if locked is not None:
         return locked
     if (_is_boss_order(order, mem) and _sortie_general(order, mem) == NAME
             and (_plan_region(mem).get('orders') or {}).get(order['step']) not in {'launched', 'launched_unconfirmed'}):
         _flow(mem).pop('sortie_attempt', None)
-        return _hold_guarded_sortie(mem, order, 'boss_companion_required',
-            '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
-            {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
+        if not _boss_companion_wait_expired(mem, order):
+            return _hold_guarded_sortie(mem, order, 'boss_companion_required',
+                '未送信の主人公のボス目標を取り消し、十分な戦力の代役を待つ',
+                {'general': NAME, 'screen': screen.kind, 'hero_forbidden': True})
     if _broken_hero_order(order, mem):
         return _cancel_broken_hero_sortie(mem, order)
     if _is_boss_order(order, mem):
@@ -2762,7 +2961,10 @@ def target_step(screen: Screen, mem, frame):
                     screen=screen.kind, reason='全体マップで選んだ出撃先の近くに屋根が無いため全体マップを開き直す')
     if (result is None and screen.marker and not y_jump_unreachable(mem, order['target'])
             and _want_y_jump(mem, order, order['target'], 'target')):
-        return _start_y_jump(mem, order, order['target'], 'target')
+        # Carry the same measured cell the walking path uses (route offsets
+        # included) into the Y view. A fresh jump after a battle must not
+        # silently fall back to the bare castle cell.
+        return _start_y_jump(mem, order, order['target'], 'target', goal_cell=goal)
     if result is None:
         if (chart.is_boss_castle(order['target'])
                 and (mem.get('y_jumped') or {}).get(order['step']) == order['target']):
@@ -2827,7 +3029,7 @@ def target_step(screen: Screen, mem, frame):
                 **context, target=order['target'],
                 resulting_event='planned_not_yet_sent',
                 reason=f"{context['general']}を{order['target']}へ出撃するAを要求。送信・受理・出発は未確認のまま在城事実を消さない")
-        return [pad('a')]
+        return _target_confirm_actions(mem, order)
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
 
@@ -2839,6 +3041,12 @@ def _commit_departure(mem, order, context, snapshot):
     creates are identical to what the pre-#3193 code committed eagerly.
     """
     (mem.get('target_miss') or {}).pop(order['step'], None)
+    # A committed departure proves earlier releases premature: a later retry
+    # of this order must not inherit the old request-miss budget.
+    for key in ('departure_miss', 'departure_sent_miss'):
+        misses = flow(mem).get(key)
+        if isinstance(misses, dict):
+            misses.pop(order['step'], None)
     _finish_order(mem, 'launched', **context, target=order['target'],
                   cursor=mem.get('cursor'), anchor=mem.get('anchor'),
                   reason=f"{context['general']}を{order['target']}へ出撃")
@@ -2859,6 +3067,7 @@ def _commit_departure(mem, order, context, snapshot):
     previous = _sorties(mem).get(order['step'])
     if previous:
         _retire_unentered_sortie(mem, order['step'], previous)
+    (_flow(mem).get('launch_probe') or {}).pop(order['step'], None)
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     _world(mem).setdefault('sorties', {})[order['step']] = {
@@ -2883,7 +3092,12 @@ def _commit_departure(mem, order, context, snapshot):
             'general': general, 'source': snapshot['source'],
             'target': order['target'], 'reads': 0,
             'baseline': deepcopy(mem.get('_world_units_prev') or []),
-            'tick': int(mem.get('tick') or 0), 'roster_read': False}
+            'tick': int(mem.get('tick') or 0), 'roster_read': False,
+            **({'confirmation_tick': snapshot['departure_binding']['confirm_tick']}
+               if 'departure_binding' in snapshot else {})}
+        # owner 2026-11-27 (#5696/#5702): 出撃を開始したが発射を確認できていない
+        # 間は、築城一覧・家来確認などの割り込みより発射確認を優先する。
+        arm_sortie_launch_priority(mem, order)
         mem['world_map_due'] = True
 
 
@@ -2893,6 +3107,7 @@ TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
 DEPARTURE_SENT_HOLD_LIMIT = 4     # sent picker readings before treating the A as unaccepted
 DEPARTURE_RESEND_LIMIT = 2        # journal-proven unsent resends inside one request
 DEPARTURE_REQUEST_LIMIT = 2       # released request cycles per order before failing it
+DEPARTURE_SENT_MISS_LIMIT = 4     # released sent-request cycles before failure evidence suffices
 DEPARTURE_UNKNOWN_HOLD_LIMIT = 3  # unverifiable receipt readings; never a blind resend
 # g1163 2026-11-09 19:00-19:40: 12 of 15 unverified launches were marker misses that
 # fell through to a source-roster trip (a castle jump plus a general list, ~20-30 s
@@ -2965,8 +3180,9 @@ def _probe_launch_markers(mem, markers):
     now = int(mem.get('tick') or 0)
     for step, probe in list(probes.items()):
         sortie = _sorties(mem).get(step)
-        if not sortie or sortie.get('status') not in ('en_route', 'launched_unconfirmed'):
+        if not _launch_probe_matches_live_sortie(probe, sortie):
             probes.pop(step, None)
+            clear_sortie_launch_priority(mem, step)
             continue
         if probe.get('blind'):
             if probe.get('kept'):
@@ -3097,6 +3313,11 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
         return
     roster = list(generals)
     for step, probe in list(probes.items()):
+        sortie = _sorties(mem).get(step)
+        if not _launch_probe_matches_live_sortie(probe, sortie):
+            probes.pop(step, None)
+            clear_sortie_launch_priority(mem, step)
+            continue
         if probe.get('source') != castle:
             continue
         general = probe.get('general')
@@ -3110,7 +3331,6 @@ def settle_launch_probes_from_roster(mem, castle, generals, *, complete=True):
             # find the unit, a name that merely scrolled off proves nothing.
             continue
         probes.pop(step, None)
-        sortie = _sorties(mem).get(step)
         if isinstance(sortie, dict):
             sortie['launch_confirmed'] = True
             sortie.pop('launch_kept', None)
@@ -3146,6 +3366,7 @@ def _rollback_unverified_launch(mem, step, probe, markers, reason=None):
     _plan_region(mem).setdefault('sortie_general', {}).pop(step, None)
     (_world(mem).get('launched_orders') or {}).pop(step, None)
     _sorties(mem).pop(step, None)
+    clear_sortie_launch_priority(mem, step)
     for target, entry in list((_world(mem).get('launched') or {}).items()):
         if entry.get('step') == step:
             _world(mem)['launched'].pop(target, None)
@@ -3187,6 +3408,40 @@ def _departure_receipt_sent(mem, request):
                 and int(receipt.get('a_inputs') or 0) >= 1)
 
 
+def _sortie_is_current_for_departure_request(mem, step, request):
+    """Whether a sortie record belongs to this exact confirmed departure.
+
+    Transit continuation and overdue relaunches reuse an order step, so an
+    old arrived/overdue record may remain under that step while a new departure
+    request is being retried. Only a receipt-backed execution with the same
+    confirmation tick, actor and source can protect the new request. Untagged
+    active marches remain fail-closed because their provenance is unknown.
+    """
+    sortie = _sorties(mem).get(step)
+    if not isinstance(sortie, dict):
+        return False
+    status = sortie.get('status')
+    if status not in ('en_route', 'arrived', 'launched_unconfirmed', 'overdue'):
+        return False
+
+    snapshot = request.get('snapshot')
+    binding = snapshot.get('departure_binding') if isinstance(snapshot, dict) else None
+    if isinstance(binding, dict):
+        request_tick = binding.get('confirm_tick')
+        sortie_tick = sortie.get('confirmation_tick')
+        if type(request_tick) is int and type(sortie_tick) is int:
+            return (request_tick == sortie_tick
+                    and sortie.get('general') == request.get('general') == binding.get('general')
+                    and sortie.get('source') == request.get('source') == binding.get('source'))
+
+    # Arrived/overdue records are not live marches; without a matching
+    # confirmation binding they may belong to an earlier request.
+    if status in ('arrived', 'overdue'):
+        return False
+    # An untagged active march cannot be attributed safely; preserve the guard.
+    return True
+
+
 def _release_departure_request(mem, order, request, reason):
     """Release the reservation without touching observed facts.
 
@@ -3203,14 +3458,64 @@ def _release_departure_request(mem, order, request, reason):
         'released',
         _sortie_state_sig(mem, request.get('source'), request.get('general')))
     misses = flow(mem).setdefault('departure_miss', {})
-    misses[step] = int(misses.get(step) or 0) + 1
+    orders = _plan_region(mem).get('orders') or {}
+    used = int(misses.get(step) or 0)
+    # A stale release must not consume the retry budget of a different or
+    # already-settled order. Only the request that still owns the active step
+    # is allowed to count as a miss.
+    if (request.get('step') != step or _plan_region(mem).get('active') != step
+            or orders.get(step) in ('launched', 'launched_unconfirmed')):
+        _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                **(request.get('context') or {}),
+                observed_metric={'request_misses': used,
+                                 'request_step': request.get('step'),
+                                 'active': _plan_region(mem).get('active'),
+                                 'order_state': orders.get(step)},
+                resulting_event='request_released_not_owned',
+                reason='出撃要求が現在の指示・手順の所有に結び付かないため失敗とは記録せず解放する')
+        return FlowResult('departure_request', 'release', [], reason,
+                          retry={'used': used, 'limit': DEPARTURE_REQUEST_LIMIT},
+                          permitted_recovery='reconfirm')
+    misses[step] = used + 1
     if misses[step] >= DEPARTURE_REQUEST_LIMIT:
+        # An untagged live march, or a receipt-backed march for this exact
+        # confirmation, is still evidence that the departure may have landed.
+        if _sortie_is_current_for_departure_request(mem, step, request):
+            misses[step] = DEPARTURE_REQUEST_LIMIT - 1
+            _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                    **(request.get('context') or {}),
+                    observed_metric={'request_misses': misses[step],
+                                     'request_step': request.get('step'),
+                                     'active': _plan_region(mem).get('active'),
+                                     'order_state': orders.get(step)},
+                    resulting_event='request_released_not_owned',
+                    reason='今回の出撃に結び付く行軍記録が残るため失敗を留保して解放する')
+            return FlowResult('departure_request', 'release', [], reason,
+                              retry={'used': misses[step], 'limit': DEPARTURE_REQUEST_LIMIT},
+                              permitted_recovery='reconfirm')
+        if request.get('status') == 'sent':
+            # A journaled A can be accepted a beat after the last picker read.
+            # Require several released sent cycles before declaring it ignored.
+            sent_misses = flow(mem).setdefault('departure_sent_miss', {})
+            sent_misses[step] = int(sent_misses.get(step) or 0) + 1
+            if sent_misses[step] < DEPARTURE_SENT_MISS_LIMIT:
+                misses[step] = DEPARTURE_REQUEST_LIMIT - 1
+                _record(mem, 'sortie_departure_not_accepted', chart_step=step,
+                        **(request.get('context') or {}),
+                        observed_metric={'request_misses': misses[step],
+                                         'sent_misses': sent_misses[step]},
+                        resulting_event='sent_release_held',
+                        reason='送信記録済みの要求がまだ受理の余地を残すため失敗を留保して解放する')
+                return FlowResult('departure_request', 'release', [], reason,
+                                  retry={'used': sent_misses[step], 'limit': DEPARTURE_SENT_MISS_LIMIT},
+                                  permitted_recovery='reconfirm')
         used = misses.pop(step)
+        sent_used = (flow(mem).get('departure_sent_miss') or {}).pop(step, None)
         context = {k: v for k, v in (request.get('context') or {}).items()
                    if k != 'deviation_reason'}
         _finish_order(mem, 'failed', **context, target=order['target'],
                       deviation_reason='出撃要求が送信・受理されない',
-                      observed_metric={'request_misses': DEPARTURE_REQUEST_LIMIT},
+                      observed_metric={'request_misses': used, 'sent_misses': sent_used},
                       reason='出撃Aが送信・受理されないまま要求の上限に達したため指示を失敗にする')
         return FlowResult('departure_request', 'release', [pad('b')], reason,
                           retry={'used': used, 'limit': DEPARTURE_REQUEST_LIMIT},
@@ -3439,6 +3744,26 @@ def _unverified_target(screen, mem, order, frame=None):
                       if not k.startswith(f'{step}:')}
     _forget_failed_jump(mem, step)
     (mem.get('y_jumped') or {}).pop(step, None)
+    resume_failure = _sortie_resume_target_unverified(mem, step)
+    if resume_failure is not None:
+        # A resumed picker has already been reached after the source was
+        # verified. Its target miss belongs to the separate resume budget,
+        # not the ordinary per-target cancellation counter or arrival probe.
+        _flow(mem).pop('sortie_attempt', None)
+        observed = {'marker': list(_cursor(screen) or ()),
+                    'misses': misses.get(step), 'resume': resume_failure}
+        if resume_failure['outcome'] == 'retry':
+            _finish_order(mem, 'pending', target=order['target'],
+                          deviation_reason='resumed_picker_target_unverified',
+                          observed_metric=observed,
+                          reason='再開した出撃先を確認できないため、通常の目標取消回数を消費せず同月の残り再開枠で再試行する')
+            _plan_region(mem)['active'] = step
+        else:
+            _finish_order(mem, 'launched_unconfirmed', target=order['target'],
+                          deviation_reason='resumed_picker_target_unverified_exhausted',
+                          observed_metric=observed,
+                          reason='再開した出撃先を確認できない状態が上限に達したため、元の出撃未確定状態を保持して追加再駆動を止める')
+        return [pad('b')]
     cancels = mem.setdefault('target_cancel', {})
     boss = chart.is_boss_castle(order['target'])
     if boss:

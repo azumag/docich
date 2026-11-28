@@ -129,10 +129,12 @@ def test_ignored_navigation_is_retried_after_a_short_hold_not_150_s():
     limit, hold = policy.MENU_NAV_PRESS_LIMIT, policy.MENU_NAV_RETRY_HOLD
     assert moves[:limit] == [policy.pad('down')] * limit
     assert moves[limit] == [policy.pad('b')]
-    # Once cancelled, the blind rescue fires its bounded tries before the
-    # guarded hold/retry cycle resumes.
+    # Once cancelled, the blind rescue only positions the cursor. A is sent
+    # on a later observation after the target row is actually visible.
     blind = moves[limit + 1]
-    assert blind[-2] == policy.pad('a') and blind[-1] == {'type': 'wait', 'ms': policy.MONTH_BLIND_NAV_WAIT_MS}
+    assert [a['buttons'][0] for a in blind if a.get('type') == 'pad'] == ['up'] * 4 + ['left', 'down']
+    assert policy.pad('a') not in blind
+    assert blind[-1] == {'type': 'wait', 'ms': policy.MONTH_BLIND_NAV_WAIT_MS}
     tail = moves[limit + 1 + policy.MONTH_BLIND_NAV_LIMIT:]
     hold_idx = next(i for i, m in enumerate(tail) if m == policy.pad('down'))
     assert all(m == [] for m in tail[:hold_idx])

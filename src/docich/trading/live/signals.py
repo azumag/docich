@@ -17,7 +17,7 @@ from ..market_data import MarketFrame
 from ..models import Opportunity, SkipDecision
 from ..strategies import select_diversified_opportunities
 from ..strategy_lab import scan_experiment_entries, scan_experiment_exits
-from .policy import LivePolicySet
+from .policy import LivePolicy, LivePolicySet
 from .views import CostBasis
 
 TIMEFRAME = "5m"
@@ -39,7 +39,14 @@ def scan_live(
     policy_set: LivePolicySet,
     *,
     now: float,
+    exit_policies: Mapping[str, LivePolicy] | None = None,
 ) -> LiveSignals:
+    """Scan exits then entries.
+
+    ``exit_policies`` maps a held symbol to the policy its position was ENTERED under when
+    that differs from the active one (after a promotion, Issue #3623 §2.6-5).  The exit
+    rules of the entry policy decide that sell; the active policy only decides new buys.
+    """
     skipped: list[SkipDecision] = []
     exits: list[Opportunity] = []
     contexts: dict[str, dict[str, object]] = {}
@@ -51,7 +58,7 @@ def scan_live(
         basis = positions[symbol]
         if basis.net_base <= 0 or basis.opened_at is None:
             continue
-        policy = policy_set.policies.get(symbol)
+        policy = (exit_policies or {}).get(symbol) or policy_set.policies.get(symbol)
         if policy is None:
             skipped.append(
                 SkipDecision(f"live-no-policy:{symbol}", symbol, "no_policy", side="sell")

@@ -43,7 +43,11 @@ def arm(monkeypatch):
 
 def test_a_wave_past_the_stale_bound_is_not_pursued_and_is_recorded_once(monkeypatch):
     arm(monkeypatch)
+    # owner 2026-11-27 (#5731): 古いウェーブでもボスセルが新しければ追撃を再開する。
+    # ここは「ウェーブもボスセルも古い」場合の契約として、セルも stale にする。
     mem = memory(launched=10000 - bp.PURSUIT_STALE_TICKS)
+    mem['boss_cell'] = dict(mem['boss_cell'],
+                            tick=10000 - bp.PURSUIT_CELL_FRESH_TICKS - 10)
     assert bp.step(map_screen(), mem, None) is None
     assert mem['boss_wave_stale_noted'] == 10000
     stale = [r for r in mem.get('_records', []) if r['decision'] == 'boss_wave_stale']

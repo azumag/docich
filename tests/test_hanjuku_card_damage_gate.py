@@ -19,6 +19,11 @@ def refused_card(monkeypatch):
     # in test_hanjuku_card_wear_down.py.
     monkeypatch.setattr('docich.hanjuku.judgment.battle._boss_card_wears_down_enemy',
                         lambda estimate, cur: False)
+    # owner 2026-11-25: 総合スコア劣勢・敵卵ありの押し込みは
+    # tests/test_hanjuku_score_pressure.py / test_hanjuku_egg_race_cards.py が持つ。
+    # ここでは通常のカードゲート判定だけを固定する。
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._score_pressure', lambda *a: False)
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._egg_race_pressure', lambda *a: False)
 
 
 def memory(card='ゼンマイン', *, enemy='クミン', enemy_hp=27, ally='ココット',
@@ -44,6 +49,36 @@ def panel(mem, *, soldiers=(0, 6)):
 
 def cards(names, selected=0):
     return menu(tuple(names), selected=selected, kind='text')
+
+
+def test_a_critical_battle_may_open_the_next_card_after_one_was_used():
+    # owner 2026-11-24: 1戦闘で2枚目以降の札も開く（退却は一律禁止）。
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    cur['egg_battle'] = True
+    cur['cards_used'] = ['ミックミー']
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
+
+
+def test_a_critical_summon_battle_may_open_its_first_card():
+    # 退却禁止の下では「札を閉じる」= 何も使わずに死ぬため、危険＋召喚獣戦では
+    # 1枚目も非致死リスクで拒否しない（live #5246: 卵4個を残して敗北）。
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='ニンフ', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    cur['egg_battle'] = True
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is True and gate['role'] == 'critical_card_spend'
+
+
+def test_an_ordinary_battle_keeps_the_existing_refusal():
+    from docich.hanjuku.judgment import battle as rules
+    mem = memory('ゼンマイン', enemy='クミン', enemy_hp=60, ally_hp=6)
+    cur = mem['battle']
+    gate = rules._card_damage_gate(mem, cur, 'ゼンマイン', listed_cards=['ゼンマイン'])
+    assert gate['allowed'] is False
 
 
 def assert_not_spent(mem):
@@ -343,17 +378,6 @@ def test_refusal_has_finite_defense_fallback_and_does_not_reopen_same_tactic(mon
     assert results[-1] == p._power_mash(mem, cur)
     assert len([r for r in mem['_records'] if r['decision'] == 'battle_card']) == 1
     assert_not_spent(mem)
-
-
-def test_refused_chart_does_not_retreat_while_healthy_but_does_at_probe_budget():
-    mem = memory()
-    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(('きりふだ',)), mem) == [p.pad('b')]
-    for _ in range(p.MELEE_HOLD_LIMIT):
-        assert p.battle_step(panel(mem), mem) == [p.pad('a', 3), {'type': 'wait', 'ms': 50}]
-    assert p.battle_step(panel(mem), mem) == [p.pad('b')]
-    assert p.battle_menu_step(menu(selected=2), mem) == [p.pad('a')]
-    assert mem['battle']['hero_retreat']['selected'] == 1
 
 
 @pytest.mark.parametrize('survival', [False, True])

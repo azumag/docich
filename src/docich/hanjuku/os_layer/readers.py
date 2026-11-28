@@ -176,30 +176,73 @@ def world_flags(frame, chapter, cursor=None):
 # as plain terrain while the owner reported them cleared, and 南東 kept the
 # skull as the remaining king. An orange pennant seen earlier at three sites
 # was a marching army standing on them, not a cleared marker, so the cleared
-# test is "no skull and nothing but terrain": any unit portrait, army marker
-# or cloud leaves the site unreadable instead of guessing.
+# test is "no skull and nothing but terrain".
+#
+# g1342 2026-11-24 (owner confirmed): the 四季王 defeated in 北東 stopped
+# drawing its skull after the 21:11-21:15 fight while the bot's own camp
+# stayed on the site; the owner's only in-game evidence for a defeat is that
+# disappearance. A live king keeps the full skull even when a general of ours
+# stands on the site (北西 light 25 with ブカティーニ launched; 南東 light 8 is
+# a *partial* skull behind アポロン and is not evidence either way). The pixel
+# rule therefore has these outcomes beyond terrain (shape cells, see below):
+#   blue cursor fill                 -> 'cursor' (nothing readable)
+#   >= 12 light and >= 12 dark cells -> 'skull' (live king, even overlapped)
+#   <= 2 light and <= 8 dark cells   -> 'hidden' (skull absent/covered; only a
+#                                       confirmed streak may close it)
+#   anything else                    -> 'ambiguous' (never closed, never first)
+# Anything dim/transitional reads ambiguous or hidden with very few definite
+# boxes; season_site_readings()["healthy"] says whether the frame reads normally.
 SEASON_SITE_ANCHOR = (101, 63)          # chapter 3 skull top-left on the Y view
 SEASON_SKULL_LIGHT = ((164, 165, 164), (255, 254, 255))
 # The island's own palette inside a site box (grass, water, sand, forest).
 SEASON_TERRAIN = ((24, 141, 24), (90, 214, 8), (84, 208, 9), (0, 72, 24),
                   (106, 165, 205), (57, 88, 123), (172, 157, 65), (197, 133, 49))
 SEASON_TERRAIN_RATIO = 0.95
+SEASON_SKULL_ABSENT = 2         # skull-light cells of the shape (measured 0 in 北東)
+SEASON_CAMP_FLAG = (255, 181, 0)   # our army's orange pennant (a camp/march marker)
+SEASON_CAMP_MIN = 6                # flag pixels that make a skull-less box 'with camp'
+SEASON_SITE_HEALTHY_READS = 2   # other sites that must still read definitively
+# g1342 2026-11-25 00:24: the Y view's own cursor (blue square, white G, orange
+# corner brackets) sat on 北西 and its dark outline/white pixels counted as skull
+# light. A skull is therefore matched by *shape*: the chapter 3 boss skull,
+# 8 rows from the box origin (S = light, D = (32,32,32) outline), measured on a
+# clean site (g1075 and g1342 21:20 北西/南西, 23:50 南東). A cursor box scores
+# S 5 / D 0; an overlapped live king (00:24 南西, a general's face on it) S 15 /
+# D 19; a partial 南東 skull at 21:20 S 8 / D 20; a defeated king's box with our
+# flag only S 0 / D 4.
+SEASON_SKULL_SHAPE = ('.DDDDD..',
+                      'DSSSSSD.',
+                      'SSSSSSSD',
+                      'SDDSDDSD',
+                      'SDDSDDSD',
+                      'DSSSSSD.',
+                      '.DSDSD..',
+                      '..D.D...')
+SEASON_SKULL_DARK = (32, 32, 32)
+SEASON_SKULL_MIN_LIGHT = 12     # of 25 skull-light cells
+SEASON_SKULL_MIN_DARK = 12      # of 25 outline cells
+SEASON_SKULL_MAX_EXTRA = 4      # light pixels outside the skull's light cells
+SEASON_HIDDEN_MAX_DARK = 8      # an absent skull leaves (almost) no outline
+SEASON_CURSOR_BLUE = (0, 64, 189)
+SEASON_CURSOR_MIN = 20          # cursor-fill pixels that make the box 'cursor'
 
 
-def season_sites(frame, chapter, cursor=None):
-    """{site: 'closed'|'open'} from the Y view's four corner markers.
+def season_site_readings(frame, chapter, cursor=None):
+    """Per-site Y-view marker classes plus whether the frame is trustworthy.
 
-    Skull light is a live king. A box that is nothing but island terrain has
-    no marker: the site is cleared. Anything else (a general's portrait, an
-    army marker, a cloud, the cursor's gold) is unreadable and left out so the
-    caller keeps its previous state.
+    ``readings`` keeps the sites the view made readable; a site under the
+    cursor and a too-small box stay out. ``healthy`` is True when at least two
+    sites read definitively (skull or clean terrain) and at least one of them
+    shows a full skull: a dimmed/transitional frame turns every box ambiguous
+    or hidden, while one site's camp/portrait leaves the rest definite.
     """
+    empty = {'readings': {}, 'healthy': False}
     if chapter != 4 or frame is None or not hasattr(frame, 'pixel'):
-        return {}
+        return empty
     anchor = chart.CASTLES[3].get(chart.boss_castle(3))
     if anchor is None:
-        return {}
-    out = {}
+        return empty
+    readings = {}
     for name in chart.boss_sites(4):
         cell = chart.castles(4).get(name)
         if cell is None:
@@ -217,9 +260,63 @@ def season_sites(frame, chapter, cursor=None):
                     if any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT))
         terrain = sum(1 for px in pixels
                       if any(_near_colour(px, colour) for colour in SEASON_TERRAIN))
-        if light >= 6:
-            out[name] = 'open'
+        blue = sum(1 for px in pixels if _near_colour(px, SEASON_CURSOR_BLUE))
+        shape_light = shape_dark = 0
+        for dy, row in enumerate(SEASON_SKULL_SHAPE):
+            for dx, cell in enumerate(row):
+                if cell == '.' or not (0 <= x + dx < frame.width and 0 <= y + dy < frame.height):
+                    continue
+                px = frame.pixel(x + dx, y + dy)
+                if cell == 'S':
+                    shape_light += any(_near_colour(px, colour) for colour in SEASON_SKULL_LIGHT)
+                else:
+                    shape_dark += px == SEASON_SKULL_DARK
+        extra = light - shape_light
+        if blue >= SEASON_CURSOR_MIN:
+            kind = 'cursor'
+        elif (shape_light >= SEASON_SKULL_MIN_LIGHT and shape_dark >= SEASON_SKULL_MIN_DARK
+                and extra <= SEASON_SKULL_MAX_EXTRA):
+            kind = 'skull'
         elif terrain >= len(pixels) * SEASON_TERRAIN_RATIO:
+            kind = 'closed'
+        elif shape_light <= SEASON_SKULL_ABSENT and shape_dark <= SEASON_HIDDEN_MAX_DARK:
+            kind = 'hidden'
+        else:
+            kind = 'ambiguous'
+        camp = sum(1 for px in pixels if _near_colour(px, SEASON_CAMP_FLAG))
+        readings[name] = {'kind': kind, 'light': light, 'terrain': terrain, 'camp': camp,
+                          'pixels': len(pixels), 'shape': [shape_light, shape_dark],
+                          'extra_light': extra, 'blue': blue}
+    definite = sum(1 for row in readings.values() if row['kind'] in ('skull', 'closed'))
+    skulls = sum(1 for row in readings.values() if row['kind'] == 'skull')
+    # At least one live skull must read in this very frame: that proves the
+    # skull palette is being drawn normally, so another site's missing skull
+    # is a measurement and not a dimmed/transitional frame.
+    return {'readings': readings,
+            'healthy': definite >= SEASON_SITE_HEALTHY_READS and skulls >= 1}
+
+
+def season_sites(frame, chapter, cursor=None, detailed=False):
+    """{site: 'closed'|'open'} from the Y view's four corner markers.
+
+    ``detailed=True`` returns the ``season_site_readings`` payload instead
+    (the world survey needs the hidden/partial classes and the frame health).
+
+    Skull light is a live king. A box that is nothing but island terrain has
+    no marker: the site is cleared. A partial skull, a general's portrait or
+    an army marker is *not* a state: it is left out so the caller keeps its
+    previous state and the richer reading (``season_site_readings``) can
+    deprioritise it without ever closing the site.
+    """
+    payload = season_site_readings(frame, chapter, cursor)
+    if detailed:
+        return payload
+    readings = payload['readings']
+    out = {}
+    for name, row in readings.items():
+        if row['kind'] == 'skull':
+            out[name] = 'open'
+        elif row['kind'] == 'closed':
             out[name] = 'closed'
     return out
 
@@ -898,13 +995,21 @@ def _empty_sortie_inventory(screen, *, occluded=0):
     return not any(card in word for _, _, word in _options(screen) for card in ALL_CARD_NAMES)
 
 
-def _sortie_inventory(screen):
+def _sortie_inventory(screen, *, occluded=0):
     """Read complete card names from the fixed sortie panel slots.
 
     The one-card placement is live-measured. Additional names are classified
     only when each occupies a complete known slot and the whole panel matches;
     this recognizes text, not quantities or partial names. The receipt uses
     the canonical game catalogue, independently of the planning allowlist.
+
+    ``occluded`` gives the fixed cells the same allowance
+    ``_empty_sortie_inventory`` takes: a source castle's sprite drawn over the
+    right panel reads those tiles as unknown on every frame (docich#5146:
+    ながはま's sorties cancelled every unreadable confirmation). Card names
+    are content, not fixed cells — a name split by an unknown glyph still
+    fails its span check and keeps the panel unreadable instead of guessing
+    the carried kit.
     """
     # g1133 decision-003: the same confirm cursor measured x0=139 (the
     # left-edge orange column jitters 138/139, see _measured_card_select).
@@ -917,15 +1022,26 @@ def _sortie_inventory(screen):
                      for x, ch in line.cells if left <= x < 256)
     def text_cells(x, text):
         return tuple((x + 8*i, ch) for i, ch in enumerate(text))
+    lost = 0
+    def matches(observed, expected):
+        nonlocal lost
+        if observed == expected:
+            return True
+        if not occluded:
+            return False
+        want = dict(expected)
+        seen = {x: ch for x, ch in observed if ch != UNKNOWN}
+        if any(want.get(x) != ch for x, ch in seen.items()):
+            return False
+        lost += sum(1 for x in want if x not in seen)
+        return lost <= occluded
     first = cells(47)
     heading = text_cells(136, 'きりふだ')
     first_spans = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
     if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in ALL_CARD_NAMES:
         return None
     cards = [first_spans[0][1]]
-    if first != heading + text_cells(176, cards[0]):
-        return None
-    expected = {47: first, 63: (), 79: (),
+    expected = {47: heading + text_cells(176, cards[0]), 63: (), 79: (),
                 95: text_cells(136, 'ーしゅつげき') + text_cells(192, 'しますか?ー'),
                 111: text_cells(160, 'うむッ!'), 127: text_cells(160, 'いかんッ!')}
     empty_tail = False
@@ -939,12 +1055,10 @@ def _sortie_inventory(screen):
         spans = TextLine(y, tuple((x, ch) for x, ch in row if x >= 176)).spans()
         if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in ALL_CARD_NAMES:
             return None
-        if row != text_cells(176, spans[0][1]):
-            return None
         cards.append(spans[0][1])
-        expected[y] = row
+        expected[y] = text_cells(176, spans[0][1])
     for y, wanted in expected.items():
-        if cells(y, 160 if y in (111, 127) else 136) != wanted:
+        if not matches(cells(y, 160 if y in (111, 127) else 136), wanted):
             return None
     # Background and dakuten/cursor UNKNOWNs are not body text. Additional
     # known text anywhere else inside this right panel is uncalibrated.
@@ -952,7 +1066,13 @@ def _sortie_inventory(screen):
            and (line.y not in expected or (line.y in (111, 127) and x < 160))
            for line in screen.lines if 32 <= line.y < 135 for x, ch in line.cells):
         return None
-    if [word for _, _, word in _options(screen) if word in ALL_CARD_NAMES] != cards:
+    option_cards = [word for _, _, word in _options(screen) if word in ALL_CARD_NAMES]
+    if occluded:
+        # An occluded option span drops a carried name entirely; a readable
+        # name that is not one of the slot cards is still uncalibrated text.
+        if any(word not in cards for word in option_cards):
+            return None
+    elif option_cards != cards:
         return None
     return cards
 
