@@ -85,3 +85,14 @@
 - P1：LIVE の maker（post-only）発注と未約定時の扱い。
 - P2：公開ローソク足＋スプレッド込み費用のバックテスト、流動性の高い銘柄・長い時間足への移行、入れ替え基準の長期化。
 - P3：診断への成績の収載（今は corners の出力が上限超過で省略されている）。
+
+## 7. 設計レビューへの対応（2026-11-28）
+
+- 板は最良気配1段しか返らない → d423710 で 20 段の深さを銘柄ごとに取得（解決済み）。
+- 数量の切り下げ：上限は割当の `reference_notional`。数量を減らすと買いの VWAP は下がるので 1 回の再計算で上限内に収まる。amount / quote_notional / reference_notional を比例して更新。約定できないときは `PaperFillSkipped`（`reason_code`）で、worker が skipped に記録する。
+- 自由戦略ミラー：ゲートは板の取得後、早期 return はゲートの前なので、ゲートで全部落ちてもスキップは記録される（問題なし）。
+- `liquidity` の入力：`DepthBook`（`.price` / `.amount`）、`TopOfBook`（`.bid` / `.ask`）、LIVE `OrderBook`（`(price, amount)`）。空・非正値・ask < bid は None（`book_unavailable`）。足が 24 本未満ならある本数で判定し、0 本は 0（`illiquid`）。
+- 売りの `cost_context` が無い・壊れている → v3 ではない。`promotion_shadow` の `first_block_day` キーは削除（参照箇所なし）。
+- 出口判定の推定は従来どおり終値＋`paper_execution_price`（slippage 5bps）、約定だけが板の VWAP＋手数料（slippage なし）。
+- R5（dust で昇格対象外が固定される）と R6（活動度ゲートを割当の前へ）をこの追補で修正。
+- 実測（2026-11-28 06:29 UTC の板 1 回）：bitbank JPY 47 ペア中、スプレッド 40bps 以下は 26 ペア（BTC, ETH, XRP, SOL, DOGE, ADA, BNB, SUI など。LIVE の 11 銘柄では CYBER のみ）。

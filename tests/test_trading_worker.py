@@ -341,6 +341,65 @@ class TestPaperWorkerFills(unittest.TestCase):
             self.assertEqual(sorted(symbol for symbol, _ in gateway.depth_calls),
                              ["BTC/JPY", "ETH/JPY"])
 
+    def test_illiquid_buy_is_dropped_before_allocation_so_a_liquid_one_can_buy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp), capital=10000)
+            trading_dir = g.state_dir / "trading"
+            trading_dir.mkdir(parents=True, exist_ok=True)
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                seeded = AllocationDecision(
+                    opportunity_id="seed-hold", strategy_id="momentum-v1",
+                    symbol="HOLD/JPY", side="buy", quote="JPY", amount=D("98.9"),
+                    price=D("100"), quote_notional=D("9890"),
+                    reference_notional=D("9890"), reason_code="momentum_breakout",
+                )
+                PaperBroker(
+                    ledger,
+                    books={"HOLD/JPY": TopOfBook(
+                        "HOLD/JPY", D("100"), D("100"), NOW - 300,
+                        bid_amount=D("98.9"), ask_amount=D("98.9"))},
+                    taker_fee_rate="0",
+                ).fill(seeded, timestamp=NOW - 300)
+            finally:
+                ledger.close()
+
+            # Only 110 JPY of the 10,000 capital is still deployable.  The
+            # illiquid candidate scores/sorts above LIQ/JPY and would consume it.
+            books = {
+                symbol: DepthBook(
+                    symbol,
+                    (_level("103.8", 1000),),
+                    (_level("104", 1000),),
+                    NOW,
+                )
+                for symbol in ("HOLD/JPY", "ILLIQ/JPY", "LIQ/JPY")
+            }
+            gateway = DepthGateway(
+                books,
+                {
+                    "HOLD/JPY": _frame("HOLD/JPY"),
+                    "ILLIQ/JPY": _frame("ILLIQ/JPY", momentum=True, volume="0"),
+                    "LIQ/JPY": _frame("LIQ/JPY", momentum=True),
+                },
+            )
+            result = run_worker_cycle(
+                g, gateway=gateway, cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
+            self.assertEqual(result.new_fill_count, 1)
+            self.assertIn("illiquid", self._skip_codes(g))
+            ledger = PaperLedger(trading_dir / "paper.sqlite3")
+            try:
+                fills = [fill for fill in ledger.recent_fills(limit=10)
+                         if fill.filled_at >= NOW]
+                self.assertEqual([(fill.side, fill.symbol) for fill in fills],
+                                 [("buy", "LIQ/JPY")])
+            finally:
+                ledger.close()
+            self.assertNotIn("ILLIQ/JPY", [symbol for symbol, _ in gateway.depth_calls])
+            self.assertIn("LIQ/JPY", [symbol for symbol, _ in gateway.depth_calls])
+
     def test_missing_book_skips_the_buy_instead_of_falling_back_to_the_close(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp))

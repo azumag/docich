@@ -75,12 +75,16 @@ fee-corrected).
 
 ``return_blocks_v3`` is the same shape but only counts sells that (a) were
 themselves recorded with a cost model >= 3 (``paper-cost-v3`` or later) and
-(b) consumed inventory that came only from model >= 3 buys.  The per-symbol
-pool keeps a ``v3_only`` flag: any buy with a lower/unknown model clears it,
-and it is reset to True when the pool becomes flat after a sell.  Dust is
-excluded exactly as in ``return_blocks``.  This is the evidence rule v4 uses:
-v2 and older PAPER fills were priced at the 5m close and never paid the
-bid/ask spread.
+(b) consumed inventory with no material pre-v3 remainder.  The per-symbol pool
+tracks ``non_v3_qty``: a buy with a lower/unknown model adds its amount, every
+sell scales it by ``remaining / held`` (the same proportional consumption as
+``origins``), and a flat pool resets it to 0.  A sell is eligible when
+``non_v3_qty * average_cost`` is at or below the existing 1 JPY dust threshold,
+evaluated just before the sell.  This tolerates old dust while still excluding
+pools that contain real v2 inventory.  Dust sells themselves are excluded
+exactly as in ``return_blocks``.  This is the evidence rule v4 uses: v2 and
+older PAPER fills were priced at the 5m close and never paid the bid/ask
+spread.
 
 Failure policy (as ``strategy_metrics``)
 ----------------------------------------
@@ -207,15 +211,16 @@ def _fallback_rate(symbol: str, context: dict) -> Decimal:
 class _Pool:
     """Average-cost pool of one symbol (recorded and fee-corrected bases)."""
 
-    __slots__ = ("held", "cost", "corrected_cost", "origins", "v3_only")
+    __slots__ = ("held", "cost", "corrected_cost", "origins", "non_v3_qty")
 
     def __init__(self) -> None:
         self.held = ZERO
         self.cost = ZERO
         self.corrected_cost = ZERO
         self.origins: dict[str | None, Decimal] = {}
-        # True while every unit currently held was bought under model >= 3.
-        self.v3_only = True
+        # Base quantity bought under a model < 3 / unknown model.  Kept as a
+        # quantity so old dust can still be tolerated by the 1 JPY test.
+        self.non_v3_qty = ZERO
 
 
 class _Cell:
@@ -330,7 +335,7 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
                     buys["corrected"] += 1
                 model_version = _model_version(context)
                 if model_version is None or model_version < 3:
-                    pool.v3_only = False
+                    pool.non_v3_qty += amount
                 pool.held += amount
                 pool.cost += amount * price
                 pool.corrected_cost += amount * price * (ONE if rate is None else ONE + rate)
@@ -351,7 +356,11 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
             total_pnl += pnl
             sell_model = _model_version(context)
             sell_is_v3 = sell_model is not None and sell_model >= 3
-            inventory_is_v3 = pool.v3_only
+            # Tolerate legacy dust: only material pre-v3 inventory disqualifies
+            # the sell.  The pool state here is exactly the state before this sell.
+            inventory_is_v3 = (
+                pool.non_v3_qty * average <= DUST_COST_THRESHOLD_JPY
+            )
 
             experiment = experiment_id_from_strategy_id(strategy_id, CELL_EXIT_PREFIX)
             if experiment is not None:
@@ -385,11 +394,10 @@ def aggregate_cell_metrics_from_rows(rows: Iterable[tuple]) -> dict[str, object]
             if remaining > 0:
                 for key in list(pool.origins):
                     pool.origins[key] = pool.origins[key] * remaining / held
+                pool.non_v3_qty = pool.non_v3_qty * remaining / held
             else:
                 pool.origins.clear()
-                # The next inventory starts clean; only later v3 buys can make it
-                # eligible for return_blocks_v3 again.
-                pool.v3_only = True
+                pool.non_v3_qty = ZERO
             pool.held = remaining
             pool.cost = max(ZERO, pool.cost - average * sold)
             pool.corrected_cost = max(ZERO, pool.corrected_cost - corrected_average * sold)
