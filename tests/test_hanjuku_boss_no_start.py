@@ -6,7 +6,14 @@ reached. Two bounded recovery properties are pinned here:
 * a live non-boss plan order may not keep deterministic boss candidate
   generation switched off for the whole boss-only month;
 * when no legal boss wave exists, the same recovery must not fabricate one.
+
+This is a mechanical-path fix (the production default): conftest turns the
+legacy speedrun chart on for the rest of the suite, so this module runs with
+it off, exactly as production does. With the chart on, the static boss order
+6-B1 would start instead and the forced replan would never fire.
 """
+import pytest
+
 from docich import hanjuku_chart as chart
 from docich import hanjuku_chart_adjust as chart_adjust
 from docich.hanjuku.flows import map as map_flow
@@ -14,6 +21,11 @@ from docich.hanjuku.strategy import replan
 from docich.hanjuku.state.regions import plan as _plan_region
 from docich.hanjuku_screen import Screen
 from test_hanjuku_off_chart import FRAME
+
+@pytest.fixture(autouse=True)
+def mechanical(monkeypatch):
+    monkeypatch.delenv(chart.SPEEDRUN_CHART_ENV, raising=False)
+
 
 CH = 6
 CASTLES = chart.castles(CH)
