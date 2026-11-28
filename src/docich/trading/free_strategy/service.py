@@ -13,7 +13,7 @@ import time
 
 from ..market_data import MarketFrame
 from .broker import settle_observation
-from .contract import StrategyError, decimal_text, encode
+from .contract import MAX_INPUT, StrategyError, decimal_text, encode
 from .evaluation import evaluate
 from .sandbox import DockerSandbox, SandboxError
 from .store import LabStore
@@ -189,6 +189,11 @@ def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=tim
                         completed += 1
                         continue
                     context, prices = build_context(store, exp, frames, now=observed_at)
+                    # Pre-check the exact gVisor stdin envelope before any guest launch.
+                    # More symbols are allowed, so the context (not a symbol cap) is the
+                    # bound; an oversized cycle fails with a fixed code and no container.
+                    if len(encode({"source": artifact.payload["source"], "context": context})) > MAX_INPUT:
+                        raise StrategyError("context_input_limit")
                     if identity in mirror_ids:
                         write_live_weights(directory, exp, artifact, prices, now=observed_at)
                     if exp["last_bar"] is None or context["data_cutoff"] > exp["last_bar"]:

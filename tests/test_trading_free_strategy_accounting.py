@@ -328,3 +328,101 @@ def test_generation_daily_budget_allows_only_one_provider_request(tmp_path):
     assert first["status"] == "registered"
     assert second == {"status": "skipped", "reason": "generation_daily_budget"}
     assert len(calls) == 1
+
+
+def test_cycle_accepts_twelve_symbols_without_a_symbol_cap(tmp_path):
+    symbols = [f"S{index:02d}/JPY" for index in range(12)]
+    trading_dir = tmp_path / "trading"
+    store = LabStore(trading_dir / "free-strategies" / "lab.sqlite3")
+    candidate = Artifact.create(
+        source="def decide(context): return {'schema_version': 1, 'target_positions': [], 'state': {}, 'reason': 'wait'}",
+        image=IMAGE, name="twelve", family="no-cap", thesis="twelve pairs", symbols=symbols,
+    )
+    try:
+        store.register(candidate)
+        store.create(candidate.digest, now=1_000.0, capital="10000", days=1)
+    finally:
+        store.close()
+
+    def market(symbol):
+        return MarketInfo(symbol=symbol, base=symbol.split("/")[0], quote="JPY", spot=True,
+                          active=True, amount_step=D("0.0001"), min_amount=D("0.0001"),
+                          min_cost=D("1"), taker_fee_rate_base=D("0"), taker_fee_rate_quote=D("0"))
+
+    class Gateway:
+        def discover_markets(self):
+            return {symbol: market(symbol) for symbol in symbols}
+
+        def fetch_market_frames(self, requested, *, timeframe, limit, now):
+            assert list(requested) == symbols
+            assert timeframe == "5m" and limit == 144 and now == 2_000.0
+            return {symbol: MarketFrame(
+                symbol=symbol, timeframe_seconds=300, timestamps=(1_200.0, 1_500.0),
+                closes=(D("100"), D("101")), volumes=(D("1"), D("1")),
+            ) for symbol in symbols}
+
+        def fetch_circuit_break_statuses(self, requested, *, fetched_at=None):
+            return {}
+
+        def fetch_depth_books(self, requested, *, now, limit=20):
+            return {}
+
+    class Runner:
+        def __init__(self):
+            self.preflights = 0
+            self.contexts = []
+
+        def preflight(self):
+            self.preflights += 1
+
+        def run(self, artifact, context):
+            self.contexts.append(context)
+            return {"schema_version": 1, "target_positions": [], "state": {}, "reason": "wait"}
+
+    runner = Runner()
+    result = run_cycle(trading_dir, image=IMAGE, gateway=Gateway(), runner=runner,
+                       now_fn=lambda: 2_000.0)
+    assert result == {"mode": "PAPER", "status": "idle", "completed": 1, "error_codes": []}
+    assert runner.preflights == 1 and len(runner.contexts) == 1
+    assert runner.contexts[0]["allowed_symbols"] == symbols
+
+
+def test_oversized_context_fails_before_any_guest_launch(tmp_path):
+    trading_dir = tmp_path / "trading"
+    store = LabStore(trading_dir / "free-strategies" / "lab.sqlite3")
+    candidate = _artifact()
+    try:
+        store.register(candidate)
+        store.create(candidate.digest, now=1_000.0, capital="10000", days=1)
+    finally:
+        store.close()
+
+    huge = D("1" + "0" * 600_000)       # two bars put the rendered context above MAX_INPUT
+
+    class Gateway:
+        def discover_markets(self):
+            return {"BTC/JPY": _market()[0]}
+
+        def fetch_market_frames(self, requested, *, timeframe, limit, now):
+            return {"BTC/JPY": MarketFrame(
+                symbol="BTC/JPY", timeframe_seconds=300,
+                timestamps=(1_200.0, 1_500.0), closes=(huge, huge), volumes=(D("1"), D("1")),
+            )}
+
+        def fetch_circuit_break_statuses(self, requested, *, fetched_at=None):
+            return {}
+
+        def fetch_depth_books(self, requested, *, now, limit=20):
+            return {}
+
+    class ForbiddenRunner:
+        def preflight(self):
+            raise AssertionError("guest must not launch for an oversized context")
+
+        def run(self, artifact, context):
+            raise AssertionError("guest must not launch for an oversized context")
+
+    result = run_cycle(trading_dir, image=IMAGE, gateway=Gateway(), runner=ForbiddenRunner(),
+                       now_fn=lambda: 2_000.0)
+    assert result == {"mode": "PAPER", "status": "degraded", "completed": 0,
+                      "error_codes": ["context_input_limit"]}

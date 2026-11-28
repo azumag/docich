@@ -1,0 +1,28 @@
+# 初期は無効。有効化はオーナーが明示的に行う（systemctl enable と DOCICH_FREE_STRATEGY_DSH_ENABLED=1）。
+# 有効化するときは docich-free-strategy-improve.timer の代わりに dsh timer をenableし、
+# 両方を同時に動かさない（1日1回の生成予算を共有するため）。
+# DSH には定期呼び出し（オートメーション）機能もある。docich の timer を使わず
+# DSH 側で同じプロンプトファイルを定期実行し、生成物を `docich free-strategy register`
+# で登録する運用も選べる（その場合 docich 側のフックは無効のまま）。
+# DSH 側オートメーション設定は本タスクでは未検証。
+[Unit]
+Description=docich free-strategy PAPER improvement via DSH (disabled by default; daily)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/home/ubuntu/.config/docich/free-strategy-dsh.env
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PATH=__DOCICH_ROOT__/.venv-trading/bin:/usr/local/bin:/usr/bin:/bin
+# PAPER inputs from the worker env; DSH_ENABLED and the provider key from the
+# owner-managed DSH env (0600, never committed). The HTTPS provider token is not used.
+EnvironmentFile=/home/ubuntu/.config/docich/free-strategy-worker.env
+EnvironmentFile=/home/ubuntu/.config/docich/free-strategy-dsh.env
+Environment=DOCICH_FREE_STRATEGY_GENERATOR=dsh
+ExecStart=__DOCICH_ROOT__/bin/docich free-strategy improve --trading-dir ${DOCICH_FREE_STRATEGY_TRADING_DIR} --image ${DOCICH_FREE_STRATEGY_IMAGE} --symbols ${DOCICH_FREE_STRATEGY_SYMBOLS}
+NoNewPrivileges=yes
+UMask=0077
+# The DSH transport alone allows 900 s; keep headroom for discovery/promotion.
+TimeoutStartSec=1500

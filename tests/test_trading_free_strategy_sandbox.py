@@ -317,3 +317,15 @@ def test_transport_errors_do_not_expose_docker_stderr(tmp_path, monkeypatch):
         DockerSandbox(IMAGE, state_dir=tmp_path).preflight()
     assert str(error.value) == "sandbox_control_failed"
     assert "private" not in str(error.value)
+
+
+def test_artifact_accepts_more_than_eight_unique_jpy_symbols_but_keeps_guards():
+    symbols = [f"S{index:02d}/JPY" for index in range(12)]
+    candidate = artifact(symbols=symbols)
+    assert candidate.payload["symbols"] == symbols
+    with pytest.raises(StrategyError, match="invalid_symbols"):
+        artifact(symbols=symbols + ["S00/JPY"])
+    with pytest.raises(StrategyError, match="invalid_symbols"):
+        artifact(symbols=[])
+    with pytest.raises(StrategyError, match="invalid_symbols"):
+        artifact(symbols=["BTC/USD"])

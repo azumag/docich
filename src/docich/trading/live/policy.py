@@ -158,8 +158,10 @@ def build_free_policy(*, artifact: str, experiment: str, symbols, promoted_at: s
     if not isinstance(promoted_at, str) or not promoted_at or len(promoted_at) > 40:
         raise LivePolicyError("free promoted_at is invalid")
     names = tuple(sorted(validate_symbol(symbol) for symbol in symbols))
-    if not names or len(set(names)) != len(names) or len(names) > 8:
-        raise LivePolicyError("free symbols must be 1..8 unique pairs")
+    # No fixed symbol-count cap; LIVE still only follows non-empty, unique JPY pairs and
+    # keeps FREE_MAX_FRACTION plus the liquidity entry_block per order.
+    if not names or len(set(names)) != len(names):
+        raise LivePolicyError("free symbols must be a non-empty list of unique pairs")
     if any(not name.endswith("/JPY") for name in names):
         raise LivePolicyError("LIVE policies are JPY pairs only")
     fraction = FREE_MAX_FRACTION
