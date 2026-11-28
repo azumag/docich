@@ -20,8 +20,8 @@ from . import routes
 from . import unreadable_card_block
 from .orders import (RETIRED_ORDER_STATES, BOSS_SOLE_CONSOLIDATION_LIMIT,
                                _arrival_castle, _boss_companion_source, _boss_consolidation_book,
-                               _boss_egg_depleted, boss_sole_consolidation_used,
-                               note_boss_sole_starved,
+                               _boss_egg_depleted, boss_only_phase, boss_sole_consolidation_used,
+                               note_boss_sole_starved, order_start_blocker,
                                _whitehouse_open,
                                drop_retired_step_context,
                                _distance, _hero_egg_broken, _holds_egg,
@@ -1438,7 +1438,8 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             owned = [c for c in owned if c == gate['hub'] or c in gate['back']]
         boss_xy = next((xy for name, xy in cells.items() if chart.is_boss_castle(name)), None)
         garrison = _world(mem).get('garrison') or {}
-        unavailable = set(busy) | set(_world(mem).get('general_location_unknown') or ()) | {NAME}
+        unknown = set(_world(mem).get('general_location_unknown') or ())
+        unavailable = set(busy) | unknown | {NAME}
         if _hero_egg_broken(mem):
             unavailable |= {NAME}
         sole = len(owned) == 1
@@ -1472,7 +1473,12 @@ def interim_candidates(mem, allow_sole=False) -> dict:
                 pass
         choices = []
         for c in owned:
-            free = [g for g in _known_residents(mem, garrison, c) or () if g not in busy]
+            # ``next_order`` subtracts location-unknown generals before the
+            # two-defender pre-flight check. Use the same measured defenders
+            # here; otherwise the planner mints a boss wave that is vetoed on
+            # every map frame and the identical mechanical rebuild repeats it.
+            free = [g for g in _known_residents(mem, garrison, c) or ()
+                    if g not in busy and g not in unknown]
             if len(set(free)) < need:
                 continue
             spare = _spares(free, {NAME} if _hero_egg_broken(mem) else (), sole)
@@ -1509,6 +1515,19 @@ def interim_candidates(mem, allow_sole=False) -> dict:
             choices.sort()
             _, _, _, _, _, _, _, source, general = choices[0]
             return source, general
+        # A roster can look large enough only because some entries are
+        # location-unknown. The ordinary interim picker opens that source as
+        # a bounded recheck; the boss wave needs the same recovery probe or it
+        # either invents an unstartable wave (old behavior) or stops with no
+        # evidence-gathering order at all.
+        if allow_probe:
+            boss = chart.boss_castle(chapter)
+            rechecks = sorted(
+                (c for c in owned if c not in prefer_not
+                 and _source_location_recheck_due(mem, c)),
+                key=lambda c: (c == home, _distance(chapter, c, boss), c))
+            if rechecks:
+                return rechecks[0], MOVE_ANY_GENERAL
         # #4869: when transfers have reached a front castle whose recorded
         # garrison is still stale (e.g., 1 known defender at イデ！ while a
         # whole wave arrived from イソ), choices stays empty (need=2) and the
@@ -3029,11 +3048,76 @@ def _mechanical_boss_plan(mem, rid):
     return True
 
 
-def _mechanical_chart(mem, state, rid, digest):
+def _note_boss_candidate_gap(mem, candidates):
+    """Classify a boss-only candidate list that contains no concrete wave.
+
+    The safe stop (every measured candidate is eggless, or no source can
+    keep a defender) must remain distinguishable from a planner/filter bug.
+    This record is a bounded classification of the deterministic generator's
+    input; it never changes the candidate list itself.
+    """
+    if not boss_only_phase(mem):
+        return
+    boss = chart.boss_castle(mem.get('chapter') or 0)
+    orders = [o for o in (candidates or {}).values() if isinstance(o, dict)]
+    boss_orders = [o for o in orders if o.get('target') == boss]
+    concrete = [o for o in boss_orders if o.get('source_probe') is not True]
+    key = 'boss_candidate_gap_seen'
+    if concrete:
+        mem.pop(key, None)
+        return
+    probes = [o.get('source') for o in boss_orders if o.get('source_probe') is True]
+    owned = sorted(_owned(mem) & set(chart.castles(mem.get('chapter') or 0)))
+    busy = _en_route(mem)[0]
+    unknown = set(_world(mem).get('general_location_unknown') or ())
+    garrison = _world(mem).get('garrison') or {}
+    pair_sources, eggless_sources, rechecks = [], [], []
+    for castle in owned:
+        free = [g for g in _known_residents(mem, garrison, castle) or ()
+                if g not in busy and g not in unknown]
+        spares = _spares(free, {NAME} if _hero_egg_broken(mem) else (),
+                         len(owned) == 1)
+        if len(set(free)) >= 2 and spares:
+            pair_sources.append(castle)
+            if all(_boss_eggless(mem, g) for g in spares):
+                eggless_sources.append(castle)
+        if _source_location_recheck_due(mem, castle):
+            rechecks.append(castle)
+    if probes:
+        kind = 'probe_prioritized'
+        reason = 'ボス出撃の合法候補を作る前に、所在地・名簿を測るprobeを優先する'
+    elif pair_sources and len(eggless_sources) == len(pair_sources):
+        kind = 'no_legal_candidate_measured_eggless'
+        reason = '送出可能な候補は全て measured eggless のため、被害だけのボス出撃を強行せず安全側に停止する'
+    elif pair_sources:
+        kind = 'boss_candidate_filtered'
+        reason = '2名以上の確認済み守備があるのにボス波候補が残らないため、候補生成または最終filterの失敗として記録する'
+    elif rechecks:
+        kind = 'location_recheck_not_generated'
+        reason = '所在地不明の将軍を確かめるprobeが必要なのに候補へ出ていないため、候補生成失敗として記録する'
+    else:
+        kind = 'no_sendable_source'
+        reason = 'ボスへ送っても守備を残せる城が測定上ないため、移動・集約・月次回復を待ち出撃は強行しない'
+    observed = {'kind': kind, 'probe_sources': probes[:8],
+                'pair_sources': pair_sources[:8],
+                'eggless_sources': eggless_sources[:8],
+                'location_rechecks': rechecks[:8]}
+    signature = repr(observed)
+    now = int(mem.get('tick') or 0)
+    seen = mem.get(key) if isinstance(mem.get(key), dict) else {}
+    if (seen.get('signature') == signature and type(seen.get('tick')) is int
+            and 0 <= now - int(seen['tick']) < BOSS_NO_START_REPLAN_TICKS):
+        return
+    mem[key] = {'signature': signature, 'tick': now}
+    _record(mem, 'boss_candidate_gap', chart_step=None,
+            observed_metric=observed, reason=reason)
+
+
+def _mechanical_chart(mem, state, rid, digest, *, force_boss_replan=False):
     """Construct and adopt a full chart mechanically (no LLM answer)."""
     if _grant_stored_hero_permission(mem, _plan_region(mem).get('chart_plan') or {}):
         _note_hero_hub_move(mem)    # the month's hero move already lives in the stored plan
-    if _plan_pending(mem):
+    if _plan_pending(mem) and not force_boss_replan:
         return
     allow_sole = False   # no castle is ever emptied (owner 2026-11-06)
     stored = _plan_region(mem).get('chart_plan') or {}
@@ -3056,9 +3140,13 @@ def _mechanical_chart(mem, state, rid, digest):
                 reason='計画のrequest_idが現在の状態と一致しないため破棄して組み直す')
         _plan_region(mem)['chart_plan'] = None
         stored = {}
+    preserved = (stored if force_boss_replan and stored.get('source') == 'mechanical'
+                 and stored.get('request_id') == rid else None)
     if stored.get('request_id') == rid and stored.get('source') == 'mechanical':
         # Even within the same month, rebuild an exhausted mechanical chart
         # against the current garrison and in-flight sorties (keep defenders).
+        # A forced boss-only rebuild may still be holding useful non-boss
+        # housekeeping; restore it below when no valid boss replacement exists.
         _plan_region(mem)['chart_plan'] = None
     # A previously adopted LLM chart with no startable orders must also be
     # replaced by a new full mechanical plan, not just one interim sortie.
@@ -3075,9 +3163,12 @@ def _mechanical_chart(mem, state, rid, digest):
     if _boss_sole_recovery_due(mem) and _mechanical_boss_plan(mem, rid):
         return   # boss progress outranks rear-castle shuffles once the exception is due
     candidates = interim_candidates(mem, allow_sole=allow_sole)
+    _note_boss_candidate_gap(mem, candidates)
     if not candidates:
         if _mechanical_boss_plan(mem, rid):
             return
+        if preserved is not None:
+            _plan_region(mem)['chart_plan'] = preserved
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
     chapter = mem.get('chapter') or 0
@@ -3135,6 +3226,8 @@ def _mechanical_chart(mem, state, rid, digest):
     try:
         validated = chart_adjust.validate(doc)
     except ValueError:
+        if preserved is not None:
+            _plan_region(mem)['chart_plan'] = preserved
         _mechanical_interim(mem, state, rid, digest, allow_sole=allow_sole)
         return
     # Validation deliberately drops internal-only permissions. Restore the
@@ -3490,7 +3583,63 @@ def _drop_stale_plan(mem):
     _tally(mem, 'plan_stale_rebuild')
 
 
-def _off_chart_mechanical(mem, state, rid, gate):
+BOSS_NO_START_REPLAN_TICKS = 60   # bounded re-check while a boss-only month is held
+
+
+def _boss_order_covered(mem):
+    """A boss order is either startable now or already measurably in flight."""
+    status = _plan_region(mem).get('orders') or {}
+    owned = _owned(mem)
+    sorties = _world(mem).get('sorties') or {}
+    now = int(mem.get('tick') or 0)
+    active = _plan_region(mem).get('active')
+    for order in _orders(mem):
+        if not isinstance(order, dict) or not chart.is_boss_castle(order.get('target')):
+            continue
+        step = order.get('step')
+        if step == active or status.get(step) in ('launched', 'launched_unconfirmed'):
+            return True
+        sortie = sorties.get(step) if isinstance(step, str) else None
+        if (isinstance(sortie, dict)
+                and sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                and type(sortie.get('tick')) is int
+                and 0 <= now - int(sortie['tick']) < SORTIE_BUSY_TICKS):
+            return True
+        if order_start_blocker(order, mem, status=status, owned=owned) is None:
+            return True
+    return False
+
+
+def _boss_no_start_replan_due(mem):
+    """Whether a boss-only plan without boss progress may be rebuilt now.
+
+    ``_plan_pending`` is deliberately broader than ``next_order``: it treats
+    non-boss moves and orders waiting on captures as live. In a boss-only
+    month that let housekeeping keep a plan alive while every boss candidate
+    was absent or blocked before dispatch. This bounded exception does not
+    force a sortie; it only lets deterministic candidate generation run. If
+    generation still finds no legal wave, the safe stop remains.
+    """
+    key = 'boss_no_start_replan'
+    if not boss_only_phase(mem):
+        mem.pop(key, None)
+        return False
+    if _boss_order_covered(mem):
+        mem.pop(key, None)
+        return False
+    now = int(mem.get('tick') or 0)
+    row = mem.get(key) if isinstance(mem.get(key), dict) else {}
+    if (row.get('chapter') == mem.get('chapter') and type(row.get('tick')) is int
+            and 0 <= now - int(row['tick']) < BOSS_NO_START_REPLAN_TICKS):
+        return False
+    mem[key] = {'chapter': mem.get('chapter'), 'tick': now}
+    _record(mem, 'boss_no_start_replan', chart_step=None,
+            observed_metric={'boss_only': True},
+            reason='ボスフェーズで開始可能または行军中のボス注文がないため、非ボス注文の保留を置いて候補生成をやり直す')
+    return True
+
+
+def _off_chart_mechanical(mem, state, rid, gate, *, force_boss_replan=False):
     """Speedrun chart abolished: take castles mechanically, ask no model.
 
     The same stand-in the adjusted-chart path uses while an answer is pending,
@@ -3510,12 +3659,12 @@ def _off_chart_mechanical(mem, state, rid, gate):
         state['request_digest'] = digest
         if (_plan_region(mem).get('chart_plan') or {}).get('source') == 'mechanical':
             _plan_region(mem)['chart_plan'] = None     # built for an older situation
-    if _plan_pending(mem):
+    if _plan_pending(mem) and not force_boss_replan:
         return
     if gate == 'break':
         _mechanical_interim(mem, state, rid, digest, allow_sole=False)
     else:
-        _mechanical_chart(mem, state, rid, digest)
+        _mechanical_chart(mem, state, rid, digest, force_boss_replan=force_boss_replan)
 
 
 def _off_chart(mem):
@@ -3550,13 +3699,15 @@ def _off_chart(mem):
                     reason='第1話ボス出撃前に主人公の卵が消耗しているため、通常の月次回復を待つ')
         return
     mem.pop('boss_egg_wait', None)
+    force_boss_replan = _boss_no_start_replan_due(mem)
     gate = _defense_gate(mem)
     if gate == 'hold' and not _plan_pending(mem):
         return  # wait for a second general: no model request, no per-tick churn
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
     if not chart.speedrun_enabled(mem.get('chapter') or 0):
-        return _off_chart_mechanical(mem, state, rid, gate)
+        return _off_chart_mechanical(mem, state, rid, gate,
+                                     force_boss_replan=force_boss_replan)
     plan = _plan_region(mem).get('chart_plan') or {}
     # A mechanical chart is only a stand-in while waiting for an adjusted chart,
     # so its orders must not replace the base chart when computing blocked/reason
@@ -3611,7 +3762,7 @@ def _off_chart(mem):
     # request id (g514: retake Nakyume waited for Nakyume to be captured).
     # Adoption identity prevents replay above; only a live plan may block
     # the interim candidates from being evaluated again.
-    if _plan_pending(mem):
+    if _plan_pending(mem) and not force_boss_replan:
         return
     # Never overwrite an adopted (non-mechanical) chart with a mechanical one:
     # the mechanical chart is only a stand-in while the LLM answer is pending.
@@ -3622,4 +3773,5 @@ def _off_chart(mem):
     if gate == 'break':
         _mechanical_interim(mem, state, rid, digest, allow_sole=False)
     else:
-        _mechanical_chart(mem, state, rid, digest)
+        _mechanical_chart(mem, state, rid, digest,
+                          force_boss_replan=force_boss_replan)

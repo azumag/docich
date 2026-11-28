@@ -118,6 +118,9 @@ KEY_OWNERSHIP = {
     'boss_pursuit': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス追撃probe手順状態
     'boss_pursuit_start_tick': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃開始の間隔制御 (v1251)
     'boss_wave_stale_noted': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # ボス波の停滞記録 (v1257)
+    'boss_order_no_start_seen': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # boss注文がstartへ進まない理由記録の重複抑止 (v1594)
+    'boss_no_start_replan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # boss-onlyで候補生成をやり直す有界契機 (v1594)
+    'boss_candidate_gap_seen': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # boss候補なし理由記録の重複抑止 (v1594)
     'boss_pursuit_fail_streak': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃名簿失敗の連続数 (v1265)
     'boss_pursuit_suspended': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 追撃を一時休止する期限 (v1265)
     'pursuit_lead': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 移動ボスへの先行オフセット (v1268)

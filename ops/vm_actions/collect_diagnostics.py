@@ -8286,6 +8286,8 @@ def _project_corner_state(data):
             "hanjuku-chart-v1591-clear-sortie-launch-latch",
             "hanjuku-chart-v1592-unreadable-card-loop",
             "hanjuku-chart-v1593-unreadable-card-source",
+            "hanjuku-chart-v1594-boss-no-start",
+            "hanjuku-chart-v1595-boss-order-recovery",
             "hanjuku-chart-v1594-chikujou-hold-receipt",
             "hanjuku-chart-v1592-boss-source-consolidation",
             "hanjuku-chart-v1586-announce-interrupt-settle",

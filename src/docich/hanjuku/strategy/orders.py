@@ -2424,6 +2424,90 @@ def _boss_sole_consolidation_permitted(order, mem):
     return len(source_free) == 1 and len(target_free) < 2
 
 
+def order_start_blocker(order, mem, *, status=None, owned=None):
+    """The first gate keeping ``order`` from ``next_order``, or ``None``.
+
+    This is the same predicate chain as ``next_order`` in one place. The
+    boss-only recovery path uses it to distinguish a plan that has no boss
+    order at all from a boss order that exists but is held by a concrete
+    startability gate; diagnostics can therefore name the gate instead of
+    only reporting that no order came back.
+    """
+    if not isinstance(order, dict):
+        return 'invalid_order'
+    step = order.get('step')
+    if not isinstance(step, str) or not step:
+        return 'missing_step'
+    if status is None:
+        status = _plan_region(mem).get('orders') or {}
+    if owned is None:
+        owned = _owned(mem)
+    if not (status.get(step) in (None, 'pending') or _boss_retry_due(order, mem)):
+        return 'not_pending'
+    purpose, target = order.get('purpose'), order.get('target')
+    if (purpose != 'move' and not chart.is_boss_castle(target)
+            and target in owned and order.get('roster_probe') is not True):
+        return 'target_already_owned'
+    if not _ready(order, mem):
+        return 'not_ready'
+    source = _source(order, mem)
+    if source not in owned:
+        return 'source_not_owned'
+    if not _source_list_open(order, mem):
+        return 'source_list_closed'
+    if _last_castle_held(mem, order):
+        return 'last_castle_held'
+    if _retake_reserved(order, mem):
+        return 'retake_reserved'
+    if _source_spare_missing(order, mem, allow_probe=True):
+        return 'source_spare_missing'
+    general = _plan_region(mem).get('general_override', {}).get(step, order.get('general'))
+    if (general in _en_route(mem)[0]
+            and not _hero_source_alternative(order, mem)):
+        return 'general_en_route'
+    return None
+
+
+def _record_boss_order_no_start(mem, blocked):
+    """Record why a boss-only map frame produced no startable boss order.
+
+    ``blocked`` is empty when the executable sequence contains no boss order:
+    that is a candidate/plan generation failure. Non-empty entries instead
+    name the first startability gate for each pending boss order. The record
+    is bounded by content signature and time so a held month is diagnosable
+    without filling the decision log.
+    """
+    if not boss_only_phase(mem):
+        return
+    now = int(mem.get('tick') or 0)
+    status = _plan_region(mem).get('orders') or {}
+    active = _plan_region(mem).get('active')
+    for order in _orders(mem):
+        if (isinstance(order, dict) and chart.is_boss_castle(order.get('target'))
+                and (order.get('step') == active
+                     or status.get(order.get('step')) in ('launched', 'launched_unconfirmed'))):
+            return    # a boss attempt is already in flight; no false generation failure
+    rows = []
+    for step, blocker in sorted(blocked.items()):
+        rows.append({'step': step, 'blocker': blocker,
+                     'status': status.get(step) or 'pending'})
+    signature = repr(rows) if rows else 'no_boss_order'
+    key = 'boss_order_no_start_seen'
+    seen = mem.get(key) if isinstance(mem.get(key), dict) else {}
+    if (seen.get('signature') == signature and type(seen.get('tick')) is int
+            and 0 <= now - int(seen.get('tick') or 0) < ORDER_DISPATCH_STARVE_TICKS):
+        return
+    mem[key] = {'signature': signature, 'tick': now}
+    if rows:
+        observed = {'blocked': rows[:8], 'blocked_count': len(rows)}
+        reason = 'ボスフェーズでボス注文は残っているが startability ゲートを通らないため、最初の阻止条件を記録する'
+    else:
+        observed = {'blocked': [], 'blocked_count': 0}
+        reason = 'ボスフェーズなのに実行列へボス注文が残っていないため、候補生成失敗として記録する'
+    _record(mem, 'boss_order_no_start', chart_step=None,
+            observed_metric=observed, reason=reason)
+
+
 def _dispatch_pending(mem):
     """Pending or boss-retry order steps the dispatch block could start."""
     status = _plan_region(mem).get('orders') or {}
@@ -2578,28 +2662,21 @@ def next_order(mem):
             *(order for order in order_sequence if order.get('step') in resume_steps),
             *(order for order in order_sequence if order.get('step') not in resume_steps),
         )
+    boss_blocked = {}
     for order in order_sequence:
+        may_run = (status.get(order['step']) in (None, 'pending')
+                   or _boss_retry_due(order, mem))
         if ((order['step'] in chart_steps or _is_boss_order(order, mem))
-                and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
-                and _ready(order, mem)):
+                and may_run and _ready(order, mem)):
             _follow_general(mem, order, garrison, owned)
-        if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
-                and (order.get('purpose') == 'move'
-                     or chart.is_boss_castle(order.get('target'))
-                     or order.get('target') not in owned
-                     or order.get('roster_probe') is True)
-                and _ready(order, mem)
-                and _source(order, mem) in owned
-                # A source last read empty would open an empty list and fail
-                # the order (g407: the plan's どうし/ヴィーナス from an empty home),
-                # unless a transfer into it is due to be read (probe).
-                and _source_list_open(order, mem)
-                and not _last_castle_held(mem, order)      # its castle must keep its last general
-                and not _retake_reserved(order, mem)
-                and not _source_spare_missing(order, mem, allow_probe=True)
-                and (_plan_region(mem).get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]
-                     or _hero_source_alternative(order, mem))):
+        if not may_run:
+            continue
+        blocker = order_start_blocker(order, mem, status=status, owned=owned)
+        if blocker is None:
             return order
+        if chart.is_boss_castle(order.get('target')) and isinstance(order.get('step'), str):
+            boss_blocked[order['step']] = blocker
+    _record_boss_order_no_start(mem, boss_blocked)
     return None
 
 
@@ -2991,7 +3068,8 @@ def _source_spare_missing(order, mem, *, allow_probe=False):
     # A genuine arrival or newly joined general may have changed the list
     # since it was measured. Preserve those evidence-gathering reads; a
     # recorded singleton elsewhere must not launch a doomed sortie.
-    if _reserve_source_guard(order, mem) and _source_location_recheck(mem, source) is not None:
+    if ((_reserve_source_guard(order, mem) or order.get('source_probe') is True)
+            and _source_location_recheck(mem, source) is not None):
         return not (allow_probe and _source_location_recheck_due(mem, source))
     if (allow_probe and order.get('source_probe') is True
             and (present is None or routes.probe_due(mem, source))):
