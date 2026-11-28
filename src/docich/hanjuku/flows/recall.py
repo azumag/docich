@@ -6,7 +6,9 @@ from ..os_layer.screen import Screen, camp_body_target, castle_roofs, own_camps
 from ... import hanjuku_chart as chart
 from ..decision_log import _record
 from ..os_layer.commands import fort_list_batch, menu_to, pad
-from ..os_layer.navigation import _drop_stale_y_jump, _start_y_jump
+from ..os_layer.navigation import (Y_JUMP_LIMIT, Y_JUMP_TOTAL_LIMIT,
+                                   _drop_stale_y_jump, _ensure_recall_y_goal_failure,
+                                   _start_y_jump, y_jump_unreachable)
 from ..os_layer.readers import (_canonical_general, _current, _cursor, _options,
                                 fort_list_open, is_camp_menu, is_fort_menu)
 from ..os_layer.world import NAME, _owned
@@ -1161,6 +1163,42 @@ def _camp_inside_roof(camp, roofs):
 
 
 Y_ROUTE_RETRIES = 6
+Y_ROUTE_GOAL_SWITCH_LIMIT = 8   # owned-castle substitutions examined inside one y_route
+
+
+def _switch_y_route_goal(mem, state, goal):
+    """Bind the next untried recall castle after a measured failure."""
+    from .map import _goal_after_failures
+
+    replacement = _goal_after_failures(mem, None, state, goal)
+    if replacement == goal:
+        return goal
+    state.update(goal=replacement, picker_goal=replacement, destination_selected=True)
+    _record(mem, 'camp_recall_y_goal_changed',
+            observed_metric={'camp': list(state.get('target') or ()),
+                             'from': goal, 'goal': replacement},
+            reason='全体マップYジャンプ失敗を記録した城への再試行をやめ、まだ失敗していない自軍城へ切替える')
+    return replacement
+
+
+def _release_y_route(mem, state, screen, decision, reason, metric):
+    """Leave a bounded failed Y route without reviving the forbidden きかん path."""
+    _record(mem, decision, observed_metric=metric, reason=reason)
+    _flow(mem).pop('recall', None)
+    mem['uncertain'] = True
+    if not state.get('hero'):
+        _arm_recall_skip(mem, state)
+    if (is_camp_menu(screen) or is_fort_menu(screen)
+            or screen.kind in ('map_target', 'world_map')):
+        return [pad('b')]
+    return []
+
+
+def _y_route_budget_exhausted(mem):
+    key = 'RECALL:target'
+    return ((mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT
+            or int((mem.get('y_jumps_total') or {}).get(key) or 0) >= Y_JUMP_TOTAL_LIMIT
+            or int((mem.get('tally') or {}).get(f'yjump:{key}') or 0) >= Y_JUMP_TOTAL_LIMIT)
 
 
 def _y_route_step(screen, mem, state):
@@ -1182,9 +1220,39 @@ def _y_route_step(screen, mem, state):
             return []
         return _finish_hero_recall(mem, state, goal)
     state['steps'] = int(state.get('steps') or 0) + 1
+    if not mem.get('y_jump'):
+        # A pre-dispatch residual failure is now in the same (camp, castle) failure
+        # ledger as post-dispatch failures. Consult it before reopening Y, and
+        # also consult the repeated-residual unreachable memory the ordinary
+        # sortie target jump already uses. The substitution walk is bounded by
+        # the number of castles examined here; it never re-enters きかん.
+        switches = 0
+        while switches < Y_ROUTE_GOAL_SWITCH_LIMIT:
+            if y_jump_unreachable(mem, goal):
+                _ensure_recall_y_goal_failure(mem, goal, 'unreachable')
+            replacement = _switch_y_route_goal(mem, state, goal)
+            if replacement == goal:
+                break
+            goal = replacement
+            switches += 1
+        if y_jump_unreachable(mem, goal):
+            return _release_y_route(
+                mem, state, screen, 'camp_recall_y_unreachable',
+                '同じ残余で閉じた城へのY経路を休止し、代替の帰還先もないためこの帰還手順をいったん終える',
+                {'camp': list(state.get('target') or ()), 'goal': goal,
+                 'switches': switches})
+        if _y_route_budget_exhausted(mem):
+            return _release_y_route(
+                mem, state, screen, 'camp_recall_y_budget_exhausted',
+                '帰還Yジャンプの回数上限に達したため、きかんへ戻さずこの帰還手順をいったん終える',
+                {'camp': list(state.get('target') or ()), 'goal': goal,
+                 'attempts': int((mem.get('y_jumps') or {}).get('RECALL:target') or 0),
+                 'total_attempts': int((mem.get('y_jumps_total') or {}).get('RECALL:target') or 0),
+                 'tally_attempts': int((mem.get('tally') or {}).get('yjump:RECALL:target') or 0),
+                 'limit': Y_JUMP_LIMIT, 'total_limit': Y_JUMP_TOTAL_LIMIT})
     if not mem.get('y_jump') and state['steps'] > Y_ROUTE_RETRIES:
         # Owner 2026-11-23: camp recall must never fall back to きかん.
-        # Re-arm the Y view instead and keep trying.
+        # Re-arm the Y view while its bounded jump budget remains.
         _record(mem, 'camp_recall_y_retry', observed_metric={'goal': goal,
                                                             'steps': state['steps']},
                 reason='全体マップ（Y）の受領が得られないため、きかんへ戻さずYジャンプを再試行する')

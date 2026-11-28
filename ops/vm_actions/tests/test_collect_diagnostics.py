@@ -2000,6 +2000,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1605-boss-egg-unread",
                  "hanjuku-chart-v1606-ch4-boss-source-reach",
                  "hanjuku-chart-v1607-chikujou-noncontiguous",
+                 "hanjuku-chart-v1608-recall-y-recovery",
                  "hanjuku-chart-v1605-retreat-card-flow",
                  "hanjuku-chart-v1607-chikujou-scan-inner",
                  "hanjuku-chart-v1601-comment-strategy",
