@@ -22,7 +22,8 @@ from ..decision_log import _record, _tally
 from ..judgment.battle import (EGG_WALL_DAMAGE, DEFENDER_SUMMON_OPEN_LIMIT, CARD_MENU_OPEN_RETRIES, CARD_LIST_OPEN_WAITS, DEFENDER_EGG_OPEN_LIMIT, DUEL_EVENT_TOKENS,
                                _conserved_army_recheck,
                                ENTRY_RETURN_KINDS, GENERAL_CRITICAL_RETREAT_HP, HERO_RECALL_MIN_HP,
-                               RETREAT_CARD_GRACE_LIMIT, _retreat_cards_to_spend, _retreat_immediate_loss,
+                               RETREAT_CARD_GRACE_LIMIT, CARD_OPEN_ATTEMPTS, CARD_SPEND_ATTEMPT_LIMIT,
+                               _retreat_cards_to_spend, _retreat_immediate_loss,
                                HERO_RECALL_RATIO_TENTHS, MELEE_HOLD_LIMIT, MELEE_HP_HOLD_DIVISOR,
                                MELEE_HP_HOLD_FLOOR, _battle_context, _battle_labels, _begin_card_flow, _bind_battle_strategy,
                                _bind_event_duel, _bind_substitute_defender, _boss_tactics_allowed,
@@ -1465,6 +1466,41 @@ def note_duel_event(screen, mem):
         mem['duel_event'] = {'tick': int(mem.get('tick') or 0), 'text': flat[-40:]}
 
 
+def _retreat_waits_for_card_path(cur):
+    """Let an already bounded card path finish before opening the retreat row.
+
+    The card flow itself has the menu/list/announce bounds, a failed opening
+    retry uses CARD_OPEN_ATTEMPTS, and a damage-gate recheck uses the survival
+    menu's existing opens/cards_checked bounds.  The immediate-loss floor is
+    the only exception: waiting there reproduces g460.
+    """
+    if _retreat_immediate_loss(cur):
+        return False
+    card_flow = cur.get('card_flow') or {}
+    if card_flow:
+        card = card_flow.get('card')
+        selected = bool(card_flow.get('selection_planned')) or (
+            isinstance(card, str) and card in (cur.get('cards_selected') or []))
+        if not selected:
+            return True
+    retry = cur.get('card_open_retry_pending')
+    if isinstance(retry, dict):
+        waits = int(retry.get('waits') or 0)
+        if waits < CARD_OPEN_ATTEMPTS:
+            retry['waits'] = waits + 1
+            return True
+        cur.pop('card_open_retry_pending', None)
+    if (cur.get('card_damage_rescue_needed') is not True
+            or not isinstance(cur.get('card_damage_list_blocked'), dict)):
+        return False
+    rescue = cur.get('survival') or {}
+    if rescue.get('exhausted') or rescue.get('cards_exhausted'):
+        return False
+    return (int(rescue.get('opens') or 0) < 12
+            and int(rescue.get('pending_opens') or 0) < 3
+            and int(rescue.get('cards_checked') or 0) < CARD_SPEND_ATTEMPT_LIMIT)
+
+
 def _hero_retreat_open(mem, cur):
     if cur.get('event_duel'):
         return None
@@ -1503,6 +1539,8 @@ def _hero_retreat_open(mem, cur):
     if _critical_safe_card(mem, cur, cur.get('survival') or {}, for_retreat=True):
         return None
     if _egg_before_retreat(mem, cur):
+        return None
+    if _retreat_waits_for_card_path(cur):
         return None
     flow = cur.get('hero_retreat') or {}
     if flow.get('unavailable') or flow.get('exhausted') or flow.get('opens', 0) >= 3:
