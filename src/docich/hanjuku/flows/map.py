@@ -378,9 +378,10 @@ def _recall_exhausted(mem, recall):
 def _goal_after_failures(mem, flags, recall, goal):
     """A destination that never accepted this camp's recall is replaced.
 
-    ``camp_recall_goal_failed`` counts (camp, castle) pairs whose A was sent and
-    never arrived. Keep the nearest castle that has not failed yet, so a silent
-    failure stops repeating every month (g1190 2026-11-17: リーキ -> アルマムーン
+    ``camp_recall_goal_failed`` counts (camp, castle) pairs whose dispatch
+    never arrived, plus the measured pre-dispatch residual closes of docich#5788.
+    Keep the nearest castle that has not failed yet, so a silent failure stops
+    repeating every month (g1190 2026-11-17: リーキ -> アルマムーン
     three times, the general still camped).
     """
     if not isinstance(goal, str):
