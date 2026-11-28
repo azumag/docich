@@ -95,8 +95,66 @@ def test_route_block_covers_wave_siblings_but_not_other_routes():
     assert not unreadable_card_block.order_blocked(mem, other)
     assert not order_strategy._ready(first, mem)
     assert not order_strategy._ready(sibling, mem)
+    # 2026-11-28: the block covers the failure month only; a new month is a new
+    # attempt window, and a repeated failure re-marks the source there.
     mem['month'] = '7-12'
-    assert unreadable_card_block.order_blocked(mem, first)  # 月境界だけでは新しい証拠にならない
+    assert not unreadable_card_block.order_blocked(mem, first)
+    assert order_strategy._ready(first, mem)
+    unreadable_card_block.mark(mem, first, source=first['source'], cards=first['cards'],
+                               step=first['step'])
+    assert unreadable_card_block.order_blocked(mem, first)
+    assert not unreadable_card_block.order_blocked(mem, other)
+
+
+def test_month_boundary_releases_a_blocked_source_and_a_new_failure_reblocks():
+    mem = {'chapter': 5, 'month': '10-2', 'tick': 100, '_records': []}
+    order = {'step': 'A:rid12345:Mblocked', 'general': 'タルタル', 'source': 'アルマムーン',
+             'target': 'オトラント', 'purpose': 'attack', 'cards': ['イッテツーン'], 'after': None}
+    unreadable_card_block.mark(mem, order, source=order['source'], cards=order['cards'],
+                               step=order['step'])
+    assert unreadable_card_block.order_blocked(mem, order)
+
+    mem['month'] = '10-3'
+    assert not unreadable_card_block.order_blocked(mem, order)
+    released = unreadable_card_block.expire(mem)
+    assert [row['source'] for row in released] == ['アルマムーン']
+    assert not mem.get('unreadable_card_block')
+
+    # The retry failed on the unreadable list again: the new month is blocked.
+    unreadable_card_block.mark(mem, order, source=order['source'], cards=order['cards'],
+                               step=order['step'])
+    row = unreadable_card_block.entry(mem, order['purpose'], order['source'], order['target'])
+    assert row is not None and row['month'] == '10-3'
+    assert unreadable_card_block.order_blocked(mem, order)
+
+
+def test_tick_window_releases_the_block_without_a_month_change():
+    mem = {'chapter': 5, 'month': '10-3', 'tick': 1000, '_records': []}
+    order = {'step': 'A:rid12345:Mblocked', 'general': 'タルタル', 'source': 'アルマムーン',
+             'target': 'オトラント', 'purpose': 'attack', 'cards': ['イッテツーン'], 'after': None}
+    unreadable_card_block.mark(mem, order, source=order['source'], cards=order['cards'],
+                               step=order['step'])
+
+    mem['tick'] = 1000 + unreadable_card_block.BLOCK_TICKS - 1
+    assert unreadable_card_block.order_blocked(mem, order)
+    assert unreadable_card_block.expire(mem) == []
+
+    mem['tick'] = 1000 + unreadable_card_block.BLOCK_TICKS
+    assert not unreadable_card_block.order_blocked(mem, order)
+    assert len(unreadable_card_block.expire(mem)) == 1
+
+
+def test_chapter_transition_prunes_the_book_without_reporting_a_release():
+    mem = {'chapter': 5, 'month': '10-3', 'tick': 1000, '_records': []}
+    order = {'step': 'A:rid12345:Mblocked', 'general': 'タルタル', 'source': 'アルマムーン',
+             'target': 'オトラント', 'purpose': 'attack', 'cards': ['イッテツーン'], 'after': None}
+    unreadable_card_block.mark(mem, order, source=order['source'], cards=order['cards'],
+                               step=order['step'])
+
+    mem['chapter'] = 6
+    assert not unreadable_card_block.order_blocked(mem, order)
+    assert unreadable_card_block.expire(mem) == []
+    assert not mem.get('unreadable_card_block')
 
 
 def test_blocked_route_is_not_replanned_with_nonempty_interim_cards():
@@ -188,3 +246,37 @@ def test_safe_autocarry_makes_raw_cardless_order_part_of_the_blocked_loop():
     assert unreadable_card_block.order_blocked(mem, raw_cardless)
     mem['card_stock'][safe] = 0
     assert not unreadable_card_block.order_blocked(mem, raw_cardless)
+
+
+def test_off_chart_records_the_month_expiry_once(monkeypatch):
+    monkeypatch.delenv('DOCICH_HANJUKU_SPEEDRUN_CHART', raising=False)
+    mem = failed_route_memory()
+    _world(mem)['garrison']['イーピヨル'] = ['ココット', 'ピオーネ', 'ゼウス']
+    order = {'step': 'A:rid12345:Mblocked', 'general': 'ココット', 'source': 'イーピヨル',
+             'target': 'ドンダム', 'purpose': 'retake', 'cards': ['イッテツーン'], 'after': None}
+    unreadable_card_block.mark(mem, order, source=order['source'], cards=order['cards'],
+                               step=order['step'])
+    mem['month'] = '7-12'
+
+    replan._off_chart(mem)
+    replan._off_chart(mem)
+    records = [record for record in mem['_records']
+               if record['decision'] == 'unreadable_card_block_expired']
+    assert len(records) == 1
+    assert records[0]['observed_metric']['routes'][0][1] == 'イーピヨル'
+    assert not mem.get('unreadable_card_block')
+
+
+def test_clear_after_the_window_still_uses_the_read_as_evidence():
+    mem = {'chapter': 5, 'month': '10-3', 'tick': 1000, '_records': []}
+    order = {'step': 'A:rid12345:Mblocked', 'general': 'タルタル', 'source': 'アルマムーン',
+             'target': 'オトラント', 'purpose': 'attack', 'cards': ['イッテツーン'], 'after': None}
+    unreadable_card_block.mark(mem, order, source=order['source'], cards=order['cards'],
+                               step=order['step'])
+    mem['tick'] = 1000 + unreadable_card_block.BLOCK_TICKS
+    assert not unreadable_card_block.order_blocked(mem, order)
+
+    rows = unreadable_card_block.clear(mem, source=order['source'])
+    assert [row['source'] for row in rows] == ['アルマムーン']
+    assert unreadable_card_block.expire(mem) == []
+    assert not mem.get('unreadable_card_block')

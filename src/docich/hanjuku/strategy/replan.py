@@ -3685,6 +3685,19 @@ def _off_chart(mem):
     with no plan waiting, the first deterministic interim candidate runs. No
     model answer is required for progress.
     """
+    # A new month (or the bounded tick window) re-opens sources blocked by an
+    # unreadable card list, so one cancelled sortie cannot starve a chapter
+    # whose only source is that castle. Record the release once: the retry
+    # itself is visible as order_start / the next empty-kit cancellation.
+    released_blocks = unreadable_card_block.expire(mem)
+    if released_blocks:
+        _record(mem, 'unreadable_card_block_expired',
+                observed_metric={'month': mem.get('month'),
+                                 'routes': [[row.get('purpose'), row.get('source'),
+                                             row.get('target')]
+                                            for row in released_blocks[:8]]},
+                reason='出撃元の切り札一覧を読めないまま月替わりまたは上限tickを経過したため、'
+                       'この出撃元のブロックを解除して札携行の出撃を再試行する')
     # Before any path below can drop the stored plan, keep its failed retake
     # steps: a castle whose retake keeps failing stops gating the boss wave.
     _failed_retakes(mem, record=True)
