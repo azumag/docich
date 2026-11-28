@@ -1752,6 +1752,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
     module = load_collector()
     versions = (BOT_VERSION, "hanjuku-script-v1", "hanjuku-chart-v2",
                 "hanjuku-chart-v129-battle-card-progress",
+                "hanjuku-chart-v1570-launch-priority-start",
                 "hanjuku-chart-v130-summer-cursor-evidence",
                 "hanjuku-chart-v131-defense-month-economy",
                 "hanjuku-chart-v132-card-damage-gate",
@@ -1962,6 +1963,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1569-chikujou-scan",
                  "hanjuku-chart-v1552-chapter-end-save-accept",
                  "hanjuku-chart-v1552-ch9-sortie-speed",
+                 "hanjuku-chart-v1557-ch9-front-reinforce",
                  "hanjuku-chart-v1557-order-start-proof",
                  "hanjuku-chart-v1559-selected-card-interruption",
                  "hanjuku-chart-v1558-game-over-issue",

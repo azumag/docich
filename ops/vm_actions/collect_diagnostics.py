@@ -8253,6 +8253,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1567-sortie-launch-priority",
             "hanjuku-chart-v1552-chapter-end-save-accept",
             "hanjuku-chart-v1552-ch9-sortie-speed",
+            "hanjuku-chart-v1557-ch9-front-reinforce",
             "hanjuku-chart-v1559-selected-card-interruption",
             "hanjuku-chart-v1567-sortie-panel-occluded",
             "hanjuku-chart-v1568-launch-priority-house",

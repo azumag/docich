@@ -248,7 +248,7 @@ def _attackers_marching(mem, target) -> int:
     return count
 
 
-def _wave(mem, target, front):
+def _wave(mem, target, front, lost=()):
     """The current capture's wave; a new target (a capture) opens a new one."""
     now = int(mem.get('tick') or 0)
     wave = mem.get(WAVE)
@@ -263,14 +263,31 @@ def _wave(mem, target, front):
     # castle (g1163 2026-11-12 20:2x took ドンドン and lost it again). Only a
     # measured list counts, and the list has to be thin after this wave's
     # movers left.
-    thin = _front_thin(mem, front) if front else False
-    if (front and (thin or (drained.get('kind') in ('empty', 'hero')
-                            and type(drained.get('tick')) is int
-                            and drained['tick'] >= wave['tick']))
+    thin = _front_thin(mem, front, target=target, lost=lost) if front else False
+    front_drained = (drained.get('kind') in ('empty', 'hero')
+                     and type(drained.get('tick')) is int
+                     and drained['tick'] >= wave['tick'])
+    if (front and (thin or front_drained)
             and _moved(mem, wave, front) >= SQUAD
-            and not _attackers_marching(mem, target)):
+            and not _movers_in_flight(mem, wave, front)
+            and (not _attackers_marching(mem, target) or thin)):
         wave = mem[WAVE] = {'target': target, 'tick': now, 'refill': int(wave.get('refill') or 0) + 1}
     return wave
+
+
+def _movers_in_flight(mem, wave, hop) -> int:
+    """Non-hero movers sent into ``hop`` in this wave that are still on the road."""
+    from .orders import _arrival_limit
+    now = int(mem.get('tick') or 0)
+    return sum(
+        1 for _, sortie, _, dst in _march(mem)
+        if dst == hop
+        and sortie['tick'] >= wave['tick']
+        and sortie.get('purpose') == 'move'
+        and sortie.get('general') != NAME
+        and sortie.get('status') in MARCHING
+        and 0 <= now - sortie['tick'] < max(SORTIE_BUSY_TICKS, _arrival_limit(mem, sortie))
+    )
 
 
 def _moved(mem, wave, hop, source=None):
@@ -319,7 +336,7 @@ def orders(mem) -> list[dict]:
     lost = set(mem.get('lost') or ())
     routes_by = {source: routes.path(mem, source, target, owned) for source in sorted(owned)}
     front = next((s for s, r in routes_by.items() if r and len(r) == 2), None)
-    wave = _wave(mem, target, front)
+    wave = _wave(mem, target, front, lost=lost)
     hero_at = _hero_castle(mem) or _believed_hero(mem)
     attacks, moves, hero = [], [], []
     for source, route in routes_by.items():
@@ -541,7 +558,12 @@ def orders(mem) -> list[dict]:
         # step the executor sees and spends one visit per observation.
         out.insert(0, minted)
         return out
-    due = _due_probe(mem, routes_by, target, lost)
+    front_refill_ready = bool(
+        front and _front_thin(mem, front, target=target, lost=lost)
+        and any(route_len == 3 for route_len, _ in moves)
+    )
+    due = _due_probe(mem, routes_by, target, lost,
+                     max_route_len=3 if front_refill_ready else None)
     if due is not None:
         # An arrival receipt is not the monthly tour: the destination list is
         # the only evidence that a transfer landed (g1163 2026-11-13 12:3x:
@@ -813,7 +835,7 @@ def _unaccounted(mem):
     return count['count'] - len(known)
 
 
-def _due_probe(mem, routes_by, target, lost, *, roster_only=False):
+def _due_probe(mem, routes_by, target, lost, *, roster_only=False, max_route_len=None):
     """A castle a transfer/recall was sent into: its list is the receipt.
 
     g1163 2026-11-13 12:3x sent ten generals from オシロガ into ドンドン, the
@@ -838,10 +860,15 @@ def _due_probe(mem, routes_by, target, lost, *, roster_only=False):
     asked = routes.roster_read_due(mem)
     due = {source for source, route in routes_by.items()
            if route and len(route) >= 2
-           and ((not roster_only and routes.probe_due(mem, source)) or source in asked)}
+           and ((not roster_only
+                 and (max_route_len is None or len(route) <= max_route_len)
+                 and routes.probe_due(mem, source))
+                or source in asked)}
     if not due:
         return None
-    source = min(due, key=lambda c: (mem.get('route_probe_read_tick') or {}).get(c, 0))
+    source = min(due, key=lambda c: (len(routes_by[c]),
+                                     (mem.get('route_probe_read_tick') or {}).get(c, 0),
+                                     c))
     if source in asked:
         raw.pop(source, None)              # one probe per recall request
     route = routes_by[source]
@@ -878,7 +905,9 @@ def _roster_probe(mem, routes_by, target, lost):
              or now - entry['tick'] >= REPROBE_MIN_TICKS}
     if not stale:
         return None
-    source = min(stale, key=lambda c: (stale[c] or {}).get('tick') or 0)
+    source = min(stale, key=lambda c: (len(routes_by[c]),
+                                       (stale[c] or {}).get('tick') or 0,
+                                       c))
     route = routes_by[source]
     purpose = ('retake' if target in lost else 'attack') if len(route) == 2 else 'move'
     return _order(mem, source, route[1], target, purpose)
@@ -1108,19 +1137,22 @@ def _front_roster_stale(mem, castle) -> bool:
     return int(mem.get('tick') or 0) - read > FRONT_ROSTER_STALE_TICKS
 
 
-def _front_thin(mem, castle) -> bool:
-    """The castle the wave leaves from holds fewer than two measured residents."""
-    world = _world(mem)
-    garrison = world.get('garrison') or {}
-    names = garrison.get(castle) if isinstance(garrison, dict) else None
-    if not isinstance(names, list):
-        partial = world.get('garrison_partial') or {}
-        names = partial.get(castle) if isinstance(partial, dict) else None
+def _front_thin(mem, castle, *, target=None, lost=()) -> bool:
+    """True when ``castle`` holds fewer residents than needed to attack."""
+    names = _front_names(mem, castle)
     if not isinstance(names, list):
         return False                       # unread is not thin
+    need = FRONT_REFILL_MIN
+    if target is not None:
+        purpose = 'retake' if target in lost else 'attack'
+        keep = 2 if ((_flip_prone(mem, target) or _defended_recently(mem, castle))
+                     and purpose != 'retake') else 1
+        need = max(FRONT_REFILL_MIN, keep + 1)
+        if _repelled_alone(mem, target) and not _defender_nearly_dead(mem, target):
+            need = max(need, keep + 2)
     if NAME in names:
-        return len([g for g in names if g != NAME]) < FRONT_REFILL_MIN
-    return len(names) < FRONT_REFILL_MIN
+        return len([g for g in names if g != NAME]) < need
+    return len(names) < need
 
 
 WOUNDED_ATTACK_HP = 20          # a general this spent is not worth a sortie

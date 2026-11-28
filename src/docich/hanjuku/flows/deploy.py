@@ -1801,6 +1801,9 @@ def _observe_garrison(screen, mem, order, *, complete=True):
         # carried 13-15 launch misses. A page still proves presence (rollback),
         # and, once the marker survey is blind, its absence confirms.
         from .map import settle_launch_probes_from_roster
+        if order.get('corridor') is True and present:
+            from ..strategy import routes
+            routes.observed_roster(mem, castle, present)
         settle_launch_probes_from_roster(mem, castle, present, complete=False)
         return
     # Display-only evidence: decisions never consult this wall-clock field.
