@@ -81,7 +81,10 @@ jobs:
     # depend on uuid4()/time at import time makes the workers disagree and
     # pytest-xdist aborts the entire run.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # owner 2026-11-28: 3シャードでも 17〜20分かかる回があり、20分上限で
+    # 正常な実行が cancel された（#5828 / #5836）。上限は「異常の見張り」なので
+    # 正常時の余裕を残して 35 分にする。
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
