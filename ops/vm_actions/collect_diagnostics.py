@@ -8297,6 +8297,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1607-chikujou-scan-inner",
             "hanjuku-chart-v1606-ch4-boss-source-reach",
             "hanjuku-chart-v1607-chikujou-noncontiguous",
+            "hanjuku-chart-v1610-general-list-recovery",
             "hanjuku-chart-v1601-comment-strategy",
             "hanjuku-chart-v1602-sortie-identity",
             "hanjuku-chart-v1605-boss-egg-unread",

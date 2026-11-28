@@ -107,8 +107,9 @@ def _cursor(screen: Screen):
     return screen.marker or screen.cursor
 
 
-def _general_visible(screen, general):
-    """Exact name with no adjacent unknown glyph; ignore hand/border pixels."""
+def _general_strict_spans(screen, general):
+    """Visible rows whose exact name has no adjacent unknown glyph."""
+    rows = []
     for line in screen.lines:
         for x, word in line.spans():
             if x <= 100 or _canonical_general(word) != general:
@@ -117,8 +118,13 @@ def _general_visible(screen, general):
             if not any(ch == UNKNOWN and cx in neighbors
                        and not (screen.hand and screen.hand[0] <= cx <= screen.hand[2])
                        for cx, ch in line.cells):
-                return True
-    return False
+                rows.append((x, line.y))
+    return rows
+
+
+def _general_visible(screen, general):
+    """Exact name with no adjacent unknown glyph; ignore hand/border pixels."""
+    return bool(_general_strict_spans(screen, general))
 
 
 # Y shows the whole island at 1/8 scale; each castle's flag sits at the
