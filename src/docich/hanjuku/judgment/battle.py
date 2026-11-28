@@ -816,6 +816,29 @@ def _card_control_chain_pending(cur):
     return any(card in CARD_CONTROL_SETUP for card in pending)
 
 
+def _ordinary_general_losing_battle(cur):
+    """通常将軍戦で、敗北へ向かう局面として救済判定が開く状態か。"""
+    if not isinstance(cur, dict):
+        return False
+    enemy = cur.get('enemy')
+    if (not isinstance(enemy, str) or not enemy
+            or enemy in reference.BOSS_GENERALS or enemy in chart.BOSSES.values()
+            or cur.get('event_duel') or cur.get('egg_battle')
+            or cur.get('card_summon_observed') or cur.get('enemy_summon_observed')
+            or cur.get('enemy_transform_observed')
+            or cur.get('card_hp_unread') or cur.get('card_context_unclassified')):
+        return False
+    hp, enemy_hp, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
+    if any(type(n) is not int or n <= 0 for n in (hp, enemy_hp)):
+        return False
+    if (hp <= GENERAL_CRITICAL_RETREAT_HP
+            or hp * 10 <= enemy_hp * BEHIND_EGG_RATIO_TENTHS):
+        return True
+    if type(start) is int and start > 0 and hp < enemy_hp and hp * 5 <= start * 2:
+        return True
+    return _combat_behind(cur)
+
+
 def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     """A selection gate, separate from use, hit, kill and egg-loss receipts.
 
@@ -930,11 +953,11 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
     elif estimate['lethal'] is None:
         result['role'] = 'damage_or_egg_risk_unclassified'
     # owner 2026-11-24: 1戦闘で2枚目以降の切り札も開く（退却は一律禁止）。
-    # 既に1枚使った戦闘が危険なままなら、卵落とし等の非致死リスクで拒否せず
-    # 次の札を開かせる。1枚目や通常戦闘の判定は従来どおり（安全弁は維持）。
+    # 危険なままの戦闘では非致死リスクで拒否せず次の札を開かせる。
+    # docich#5802: 敗北へ向かう通常将軍戦も同じ安全弁を使う。
     if (not result['allowed'] and not finished
             and _critical_survival_needed(cur)
-            and (summoned or boss)
+            and (summoned or boss or _ordinary_general_losing_battle(cur))
             and result['role'] in {'nonlethal_egg_risk', 'control_has_no_observed_followup',
                                    'damage_or_egg_risk_unclassified'}):
         result.update(allowed=True, role='critical_card_spend')
@@ -972,7 +995,9 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
 # 一撃で倒せる保証がないことを理由にした拒否は廃止する。
 # docich#5776 残件: 実拒否 role は本番ログだけでは確定できないため、低HP帯では
 # 非致死リスク・追撃未観測・ダメージ/卵リスク未分類の3種を同じ撤回対象にする。
-# ボス専用札の持ち越し誤用や実一覧未確認など、札種/在庫の整合性を守る拒否は残す。
+# docich#5802: 通常将軍戦でも敗北へ向かう局面では、survival経路に限り同じ3種を
+# 撤回する。ボス専用札の持ち越し誤用や実一覧未確認など、札種/在庫の整合性を守る
+# 拒否は残す。
 CARD_REFUSAL_RETIRED_ROLES = frozenset({
     'nonlethal_egg_risk',
     'control_has_no_observed_followup',
@@ -980,10 +1005,12 @@ CARD_REFUSAL_RETIRED_ROLES = frozenset({
 })
 
 
-def _card_refusal_retired(role=None, cur=None):
+def _card_refusal_retired(role=None, cur=None, *, survival=False):
     if role not in CARD_REFUSAL_RETIRED_ROLES:
         return False
     if not isinstance(cur, dict):
+        return True
+    if survival and _ordinary_general_losing_battle(cur):
         return True
     # 死ぬ実例は「負けるボス戦」だった。HPに余裕がある間は従来の評価を保つ。
     ally_hp = cur.get('ally_hp')
@@ -1100,7 +1127,7 @@ def _card_damage_recheck_resources(mem, cur):
             finishing = (gate['allowed'] and (
                 gate['role'] in ('single_card_lethal', 'control_then_melee_not_a_kill')
                 or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))))
-            if finishing or _card_refusal_retired(gate.get('role'), cur):
+            if finishing or _card_refusal_retired(gate.get('role'), cur, survival=True):
                 selectable = True
                 break
         if not selectable:
@@ -2634,7 +2661,7 @@ def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
                 or card in cur.get('cards_selected', [])):
             continue
         gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-        if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur):
+        if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur, survival=True):
             continue
         # A proven finisher (or a needed heal) defers retreat at any HP:
         # the observed kill lands on this turn, before the enemy's next

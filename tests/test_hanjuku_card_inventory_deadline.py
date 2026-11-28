@@ -50,7 +50,10 @@ def test_expired_missing_or_wrong_cursor_does_not_get_more_navigation(cursor):
 
 
 @pytest.mark.parametrize('enemy_hp,soldiers', [(33, (0, 0)), (32, (0, None))])
-def test_current_cursor_cannot_override_damage_or_unread_soldier_gates(enemy_hp, soldiers):
+def test_current_cursor_cannot_override_damage_or_unread_soldier_gates(enemy_hp, soldiers, monkeypatch):
+    # This cursor-deadline test is independent of the #5802 losing-battle rescue override.
+    monkeypatch.setattr('docich.hanjuku.judgment.battle._ordinary_general_losing_battle',
+                        lambda cur: False)
     mem = rescue(enemy_hp, soldiers)
     mem['battle']['card_flow']['list_ticks'] = p.CARD_LIST_CURSOR_LIMIT
     assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('b')]
