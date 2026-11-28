@@ -118,9 +118,51 @@ def test_monster_skill_menu_settles_the_interrupted_selected_flow():
     assert _unclassified(mem)['observed_metric']['selected_interrupted'] is True
 
 
-def test_retreat_supersede_books_retry_reset_flow_and_audit_downgrades(tmp_path, monkeypatch):
+def test_retreat_waits_for_retry_reset_flow_above_critical_hp(monkeypatch):
+    # docich#5799: HP13では、announce retryでlistへ戻った選択済み・消費未確認
+    # flowを退却openでsupersedeせず、同じ札の有界な再選択へ進める。
     mem = _interrupted_memory()
     cur = mem['battle']
+    cur.update(ally_hp=13, start_ally_hp=24)
+    cur['survival'] = {'opens': 12, 'pending_opens': 3, 'menu_ticks': 0}
+    monkeypatch.setattr(battle_flow, '_hero_retreat_needed', lambda cur: True)
+    monkeypatch.setattr(battle_flow, '_critical_safe_card', lambda *a, **kw: None)
+    monkeypatch.setattr(battle_flow, '_egg_before_retreat', lambda *a: False)
+
+    assert battle_flow._hero_retreat_open(mem, cur) is None
+
+    assert cur['card_flow']['stage'] == 'list'
+    assert cur['card_flow']['card'] == 'ゼンマイン'
+    assert cur['cards_unclassified'] == []
+    assert 'hero_retreat' not in cur
+    assert not any(r['decision'] == 'battle_retreat_preempted_card' for r in mem.get('_records', []))
+    assert not any(r['decision'] == 'battle_card_unclassified' for r in mem.get('_records', []))
+
+    assert p.card_list_step(cards(['ゼンマイン']), mem) == [p.pad('a')]
+    assert cur['card_flow']['stage'] == 'announce'
+    assert cur['card_flow']['selection_planned'] is True
+
+
+def test_retreat_preempts_retry_reset_flow_at_immediate_loss_hp(monkeypatch):
+    mem = _interrupted_memory()
+    cur = mem['battle']
+    cur['ally_hp'] = 4
+    cur['survival'] = {'opens': 12, 'pending_opens': 3, 'menu_ticks': 0}
+    monkeypatch.setattr(battle_flow, '_hero_retreat_needed', lambda cur: True)
+    monkeypatch.setattr(battle_flow, '_critical_safe_card', lambda *a, **kw: None)
+    monkeypatch.setattr(battle_flow, '_egg_before_retreat', lambda *a: False)
+
+    assert battle_flow._hero_retreat_open(mem, cur) is not None
+
+    assert cur['card_flow'] is None
+    assert cur['cards_unclassified'] == ['ゼンマイン']
+    assert any(r['decision'] == 'battle_retreat_preempted_card' for r in mem['_records'])
+
+
+def test_retreat_supersede_books_retry_reset_flow_at_critical_hp_and_audit_downgrades(tmp_path, monkeypatch):
+    mem = _interrupted_memory()
+    cur = mem['battle']
+    cur['ally_hp'] = 5
     cur['cards_selected'].append('ゼンマイン')
     cur['cards_unclassified'].append('ゼンマイン')
     cur['survival'] = {'opens': 12, 'pending_opens': 3, 'menu_ticks': 0}
@@ -128,6 +170,9 @@ def test_retreat_supersede_books_retry_reset_flow_and_audit_downgrades(tmp_path,
     monkeypatch.setattr(battle_flow, '_critical_safe_card', lambda *a, **kw: None)
     monkeypatch.setattr(battle_flow, '_egg_before_retreat', lambda *a: False)
 
+    for _ in range(battle_flow.RETREAT_CARD_GRACE_LIMIT):
+        assert battle_flow._hero_retreat_open(mem, cur) is None
+    assert cur['card_flow'] is not None
     assert battle_flow._hero_retreat_open(mem, cur) is not None
 
     assert cur['card_flow'] is None

@@ -1466,6 +1466,12 @@ def note_duel_event(screen, mem):
         mem['duel_event'] = {'tick': int(mem.get('tick') or 0), 'text': flat[-40:]}
 
 
+def _card_flow_has_selection(cur, card_flow):
+    card = card_flow.get('card')
+    return bool(card_flow.get('selection_planned')) or (
+        isinstance(card, str) and card in (cur.get('cards_selected') or []))
+
+
 def _retreat_waits_for_card_path(cur):
     """Let an already bounded card path finish before opening the retreat row.
 
@@ -1478,10 +1484,16 @@ def _retreat_waits_for_card_path(cur):
         return False
     card_flow = cur.get('card_flow') or {}
     if card_flow:
-        card = card_flow.get('card')
-        selected = bool(card_flow.get('selection_planned')) or (
-            isinstance(card, str) and card in (cur.get('cards_selected') or []))
+        selected = _card_flow_has_selection(cur, card_flow)
         if not selected:
+            return True
+        # docich#5799: an announce retry resets selection_planned and returns
+        # the flow to list/menu/down, but the card is still a bounded
+        # selection whose consumption receipt is unresolved.  Above the
+        # critical retreat HP (or while HP is unread) let that existing,
+        # bounded card path finish instead of superseding it with retreat.
+        hp = cur.get('ally_hp')
+        if type(hp) is not int or hp > GENERAL_CRITICAL_RETREAT_HP:
             return True
     retry = cur.get('card_open_retry_pending')
     if isinstance(retry, dict):
@@ -1586,6 +1598,23 @@ def _hero_retreat_open(mem, cur):
                                  'cards_unclassified': cur.get('cards_unclassified', [])},
                 resulting_event='retreat_preempted_card_use',
                 reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
+    elif (_card_flow_has_selection(cur, card_flow)
+            and not _retreat_immediate_loss(cur)
+            and int(cur.get('retreat_card_grace') or 0) < RETREAT_CARD_GRACE_LIMIT):
+        # docich#5799: an announce retry resets the stage/selection flag, but
+        # it is still the same bounded selection.  Give that non-announce
+        # flow the same critical-HP grace instead of preempting it at once.
+        cur['retreat_card_grace'] = int(cur.get('retreat_card_grace') or 0) + 1
+        if cur['retreat_card_grace'] == 1:
+            _record(mem, 'battle_retreat_card_wait', **_battle_labels(cur),
+                    general=cur.get('ally'), enemy=cur.get('enemy'),
+                    card=card_flow.get('card'),
+                    observed_metric={'ally_hp': cur.get('ally_hp'),
+                                     'enemy_hp': cur.get('enemy_hp'),
+                                     'grace_limit': RETREAT_CARD_GRACE_LIMIT,
+                                     'stage': card_flow.get('stage')},
+                    reason='選択済み切り札の有界な再試行・使用確認を待ってから退却する (#5799)')
+        return None
     elif (not _retreat_immediate_loss(cur) and _retreat_cards_to_spend(cur)):
         # docich#4999: selected-but-unconfirmed cards get one bounded spend
         # retry through the survival menu before the retreat menu opens.

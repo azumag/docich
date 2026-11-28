@@ -1997,7 +1997,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1600-ch4-boss-not-direct",
                  "hanjuku-chart-v1601-sortie-identity",
                  "hanjuku-chart-v1602-sortie-fail-identity",
-                 "hanjuku-chart-v1603-ch4-bridge-targets",
+                 "hanjuku-chart-v1605-retreat-card-flow",
                  "hanjuku-chart-v1601-comment-strategy",
                  "hanjuku-chart-v1602-sortie-identity",
                  "hanjuku-chart-v1597-chikujou-defer-reason",
