@@ -8286,13 +8286,10 @@ def _project_corner_state(data):
             "hanjuku-chart-v1591-clear-sortie-launch-latch",
             "hanjuku-chart-v1592-unreadable-card-loop",
             "hanjuku-chart-v1593-unreadable-card-source",
-<<<<<<< HEAD
-            "hanjuku-chart-v1596-boss-card-retreat-residual",
-=======
             "hanjuku-chart-v1594-boss-no-start",
             "hanjuku-chart-v1595-boss-order-recovery",
             "hanjuku-chart-v1594-chikujou-hold-receipt",
->>>>>>> origin/main
+            "hanjuku-chart-v1596-boss-card-retreat-residual",
             "hanjuku-chart-v1592-boss-source-consolidation",
             "hanjuku-chart-v1586-announce-interrupt-settle",
             "hanjuku-chart-v1590-boss-sole-starved-break",
