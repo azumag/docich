@@ -3,12 +3,14 @@
 Owner decision 2026-11-27: a PAPER slot strategy replaces (or adds) the LIVE policy of
 its symbol automatically when ALL of the following hold, judged from recorded facts only:
 
-1. Rule v3 (``promotion_shadow``): the cell (slot experiment x symbol) reached
-   ``E >= THRESHOLD`` with at least ``MIN_BLOCKS`` JST day blocks.
+1. Rule v4 (``promotion_shadow``): the cell (slot experiment x symbol) reached
+   ``E >= THRESHOLD`` with at least ``MIN_BLOCKS`` JST day blocks built only from
+   ``paper-cost-v3`` fills (book VWAP plus taker fee).  No promotion can happen
+   until five days of v3 evidence exist; older close-priced v2 blocks never count.
 2. It beats LIVE on the same days: over the cell's own day blocks, the mean of
    ``candidate block - LIVE block`` is positive, where the LIVE block is the mean net
    return per realized LIVE sell of that symbol on that day (0 on a day LIVE sold
-   nothing).  A symbol LIVE does not trade yet is judged on rule v3 alone and added.
+   nothing).  A symbol LIVE does not trade yet is judged on rule v4 alone and added.
 3. Not too often: a symbol whose LIVE policy changed less than ``MIN_HOLD_S`` (7 days)
    ago is not touched (this also limits each symbol to one promotion per 7 days).
 4. The owner's stop switch ``<live root>/owner/promotion.disabled`` is absent, and no

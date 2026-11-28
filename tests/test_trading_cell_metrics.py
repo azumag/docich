@@ -318,6 +318,50 @@ def test_return_blocks_carry_corrected_mean(ledger):
     assert D(block["mean_return_corrected"]) == D("988") / D("10012")
 
 
+# --- v3-only return blocks (rule v4 evidence) ---------------------------------
+
+def test_v3_sell_of_v3_inventory_counts(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 1, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+    assert D(a["return_blocks_v3"][0]["mean_return"]) == D("0.1")
+    # v3 buys already carry the fee in the recorded price, so no correction is
+    # added on top (corrected_mean == recorded_mean).
+    assert D(a["return_blocks_v3"][0]["mean_return_corrected"]) == D("0.1")
+
+
+def test_v3_block_excludes_a_pool_that_contains_a_v2_buy(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=V2_FEE)
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 1, cost=V3_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 2, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    # The normal block still counts the sell, but v4 evidence must not.
+    assert sum(b["count"] for b in a["return_blocks"]) == 1
+    assert a["return_blocks_v3"] == []
+
+
+def test_v3_blocks_resume_after_the_pool_becomes_flat(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=V2_FEE)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 1, cost=V3_FEE)   # v2 inventory
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0 + 2, cost=V3_FEE)        # pool is flat again
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 3, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 2
+    assert len(a["return_blocks_v3"]) == 1
+    assert a["return_blocks_v3"][0]["count"] == 1
+    assert D(a["return_blocks_v3"][0]["mean_return"]) == D("0.1")
+
+
+def test_a_buy_without_cost_context_breaks_v3_eligibility(ledger):
+    ledger.fill("lab:A:e1", "buy", 10, 1000, T0, cost=None)
+    ledger.fill("lab-exit:A:x", "sell", 10, 1100, T0 + 1, cost=V3_FEE)
+    a = cell(ledger.result(), "A")
+    assert sum(b["count"] for b in a["return_blocks"]) == 1
+    assert a["return_blocks_v3"] == []
+
+
 # --- failure policy -----------------------------------------------------------
 
 def test_missing_ledger_is_unavailable_not_empty_success(tmp_path):
