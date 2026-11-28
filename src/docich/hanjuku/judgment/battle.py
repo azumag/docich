@@ -3448,7 +3448,10 @@ def _dying_with_egg(mem, battle):
         return True
     # owner 2026-11-28: 卵の残数が未読でも、実メニューで「たまごをつかう」の白行を
     # 観測していれば卵は撃てる。負けているボス戦で攻撃を続けて卵を使わずに落ちる
-    # 事例（第4話 7 vs 82 など）があるため、実測の白行を卵の根拠として認める。
+    # 事例（第4話 7 vs 82 など）があるため、ボス戦に限って実測の白行を根拠に認める。
+    if not (battle.get('enemy') in chart.BOSSES.values()
+            or chart.is_boss_castle(battle.get('enemy'))):
+        return False
     return bool(battle.get('own_egg_positive_observed') or battle.get('egg_white_seen')
                 or battle.get('egg_available_unused'))
 
