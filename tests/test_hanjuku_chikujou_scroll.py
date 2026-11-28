@@ -70,7 +70,7 @@ def test_all_holdings_receive_distinct_receipts_through_a_four_row_window(chapte
     assert any(r['decision'] == 'chikujou_scroll' for r in mem['_records'])
 
 
-def test_a_catalog_end_requires_the_extreme_catalog_row_and_cursor():
+def test_a_catalog_end_requires_the_extreme_buildable_row_and_cursor():
     labels = policy._chikujou_name_labels(1)
     values = list(labels.values())
     rows = [(16, 39 + i * 16, values[i]) for i in range(4)]
@@ -78,9 +78,42 @@ def test_a_catalog_end_requires_the_extreme_catalog_row_and_cursor():
     assert not policy._chikujou_catalog_end(labels, rows, rows[0], 'down')
     interior = [(16, 39 + i * 16, values[i + 1]) for i in range(4)]
     assert not policy._chikujou_catalog_end(labels, interior, interior[-1], 'down')
-    bottom = [(16, 39 + i * 16, values[-4 + i]) for i in range(4)]
+    bottom = [(16, 39 + i * 16, values[-5 + i]) for i in range(4)]
+    assert bottom[-1][2] == values[-2]  # the final catalog row is the boss site, not a build row
     assert policy._chikujou_catalog_end(labels, bottom, bottom[-1], 'down')
     assert not policy._chikujou_catalog_end(labels, bottom, bottom[0], 'down')
+    boss_bottom = [(16, 39 + i * 16, values[-4 + i]) for i in range(4)]
+    assert boss_bottom[-1][2] == values[-1]
+    assert not policy._chikujou_catalog_end(labels, boss_bottom, boss_bottom[-1], 'down')
+
+
+def test_an_interior_candidate_in_a_noncontiguous_window_gets_a_direction():
+    labels = policy._chikujou_name_labels(12)
+    rows = [(16, 39 + i * 16, name) for i, name in enumerate(
+        ('ワフェルダ', 'ブラックランド', 'ユーフォニア', 'アトランテ'))]
+    assert policy._chikujou_scan_direction(labels, rows, ('バラタリア',), None) == 'up'
+    assert policy._chikujou_scan_direction(labels, rows, ('ラグナグ',), None) == 'down'
+    assert policy._chikujou_scan_direction(labels, rows, ('バラタリア', 'ラグナグ'), None) == 'down'
+    assert policy._chikujou_scan_direction(labels, rows, ('バラタリア', 'ラグナグ'), 'up') == 'up'
+
+
+def test_a_noncontiguous_window_does_not_reverse_away_from_an_interior_candidate():
+    names = policy.chart.CASTLE_NAMES[12][:-2]  # through ファンゴル; ディランダ was not a holding here
+    mem = holdings(names=names)
+    mem['chapter'] = 12
+    sub = open_build(mem)
+    sub['rows_tried'] = ['アトランテ', 'アファニア', 'アルマムーン', 'ファンゴル',
+                         'ブラックランド', 'ヘリオポリス', 'ユーフォニア', 'ワフェルダ']
+    first = castles(on='アトランテ', names=('ワフェルダ', 'ブラックランド', 'ユーフォニア', 'アトランテ'))
+    assert policy.month_sub_step(first, mem) == [policy.pad('down')]
+    # The next observed window makes both hidden candidates catalog-above.
+    # Once a press committed the scan, that catalog reclassification must not
+    # reverse the direction before a physical end probe (docich#5803).
+    second = castles(on='ヘリオポリス', names=('ユーフォニア', 'アトランテ', 'アファニア', 'ヘリオポリス'))
+    assert policy.month_sub_step(second, mem) == [policy.pad('down')]
+    third = castles(on='ラグナグ', names=('アトランテ', 'アファニア', 'ヘリオポリス', 'ラグナグ'))
+    assert policy.month_sub_step(third, mem) == [policy.pad('a')]
+    assert sub['chosen'] == 'ラグナグ'
 
 
 def test_the_scan_moves_up_toward_untried_rows_above_the_window():
