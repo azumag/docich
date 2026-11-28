@@ -1,0 +1,15 @@
+# 初期は無効。有効化はオーナーが明示的に行う。
+# docich-free-strategy-improve.timer の代わりにこの timer を enable する
+# （両方を同時に動かさない。1日1回の生成予算は共有）。
+[Unit]
+Description=Run the free-strategy PAPER improvement once daily with DSH
+
+[Timer]
+# 06:40 JST: same slot as the regular PAPER improvement, which this replaces.
+OnCalendar=*-*-* 06:40:00 Asia/Tokyo
+Persistent=true
+AccuracySec=1min
+Unit=docich-free-strategy-dsh.service
+
+[Install]
+WantedBy=timers.target

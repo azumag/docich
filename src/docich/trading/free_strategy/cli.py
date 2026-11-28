@@ -16,7 +16,7 @@ from typing import Callable
 from ..exchanges.bitbank_ccxt import BitbankPublicGateway
 from .contract import Artifact, StrategyError, decode, read_source
 from .evaluation import evaluate, public_summary
-from .generation import generate, request_text
+from .generation import generate
 from .improve import DEFAULT_BRIEF, DEFAULT_DAYS, run_improve
 from .service import run_cycle
 from .store import LabStore
@@ -94,7 +94,7 @@ def run_args(
     args,
     *,
     now_fn: Callable[[], float] = time.time,
-    text_fn=request_text,
+    text_fn=None,
     gateway_factory=lambda: BitbankPublicGateway(timeout_ms=10_000),
     cycle_fn=run_cycle,
 ) -> dict:
@@ -179,7 +179,7 @@ def main(
     argv: list[str] | None = None,
     *,
     now_fn: Callable[[], float] = time.time,
-    text_fn=request_text,
+    text_fn=None,
     gateway_factory=lambda: BitbankPublicGateway(timeout_ms=10_000),
     cycle_fn=run_cycle,
 ) -> int:

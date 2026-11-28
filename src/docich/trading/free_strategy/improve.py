@@ -42,7 +42,7 @@ from typing import Callable, Mapping
 
 from .. import promotion_shadow as shadow
 from .contract import StrategyError, decode
-from .generation import generate, request_text
+from .generation import generate
 from .store import MAX_OBSERVED_EXPERIMENTS, LabStore
 
 RULE_ID = "free-v1"
@@ -205,7 +205,7 @@ def read_report(trading_dir) -> dict | None:
 
 def run_improve(trading_dir, *, image: str, symbols: list[str], brief: str = DEFAULT_BRIEF,
                 capital: str = "10000", days: int = DEFAULT_DAYS,
-                now_fn: Callable[[], float] = time.time, text_fn=request_text,
+                now_fn: Callable[[], float] = time.time, text_fn=None,
                 live_returns: Mapping[str, float] | None = None,
                 live_artifact: str | None = None) -> dict:
     directory = Path(trading_dir) / "free-strategies"
