@@ -41,7 +41,9 @@ def test_the_strongest_companion_of_every_read_list_goes():
     mem = memory(アルカ=['ヴィーナス', 'ブカティーニ'])
     assert orders._boss_companion_source(site_order(), mem) == 'アルカ'
     _world(mem)['garrison'][HOME] = [chart.HERO, 'アポロン', 'ゼウス', 'ココット', 'アテナ']
-    assert orders._boss_companion_source(site_order(), mem) == HOME
+    # owner 2026-11-28: 第4話でアルマムーンからボスへは直接行けないため、送れる
+    # 経由城があるうちは home を出撃元にしない（旧設計は home を選んでいた）。
+    assert orders._boss_companion_source(site_order(), mem) == 'アルカ'
     assert orders._order_hero_alternatives(site_order(), mem, _world(mem)['garrison'][HOME])[:2] == ['ゼウス', 'アポロン']
 
 
@@ -84,9 +86,9 @@ def test_a_read_heros_castle_may_send_a_spare_leaving_the_hero_alone():
     mem = memory(ミヒラギアン=['アルテミス', 'ブカティーニ'])
     _world(mem)['garrison'][HOME] = [chart.HERO, 'ゼウス', 'ココット']
     # Owner 2026-11-17: the hero alone satisfies the guard, so ゼウス goes.
-    # 北西 is used here because アルマムーン is the nearest eligible source
-    # for it; 南西 has a nearer ミヒラギアン under the 2026-11-05 rule.
-    assert orders._boss_companion_source(site_order('四季王城(北西)'), mem) == HOME
+    # owner 2026-11-28: 第4話でアルマムーンからボスへは直接行けないため、
+    # 送れる経由城（ミヒラギアン）が選ばれる。home は候補から外れる。
+    assert orders._boss_companion_source(site_order('四季王城(北西)'), mem) == 'ミヒラギアン'
 
 
 def test_a_lone_general_never_leaves_its_castle_for_a_site():
