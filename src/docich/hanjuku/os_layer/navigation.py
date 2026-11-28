@@ -530,6 +530,50 @@ Y_JUMP_UNREACHABLE_TICKS = 1800   # a goal the view cannot align is skipped this
 Y_JUMP_UNREACHABLE_PX = 6         # landings within this per-axis distance are the same spot
 
 
+def _note_recall_y_goal_failure(mem, goal, why):
+    """Count an ordinary camp recall's pre-dispatch Y failure by (camp, castle).
+
+    The destination-switch ledger otherwise sees only failures after the recall
+    A was dispatched. A residual close happens before that A, but it is still
+    measured evidence that this camp could not be sent to this castle by Y.
+    """
+    recall = _flow(mem).get('recall')
+    if not isinstance(recall, dict):
+        return None
+    if (recall.get('hero') or recall.get('fort') or recall.get('boss')
+            or recall.get('boss_move') or recall.get('gather') or recall.get('relay')
+            or recall.get('move_visible')):
+        return None
+    camp = recall.get('target')
+    if not (isinstance(camp, (list, tuple)) and len(camp) == 2):
+        return None
+    if not isinstance(goal, str) or not goal or chart.is_boss_castle(goal):
+        return None
+    failures = _flow(mem).setdefault('recall_goal_failures', {})
+    key = f'{int(camp[0])},{int(camp[1])}'
+    pair = failures.get(key) if isinstance(failures.get(key), dict) else {}
+    pair[goal] = int(pair.get(goal) or 0) + 1
+    failures[key] = pair
+    _record(mem, 'camp_recall_goal_failed',
+            observed_metric={'camp': list(camp), 'goal': goal, 'count': pair[goal],
+                             'y_jump_failure': why},
+            resulting_event='pre_dispatch_y_jump_failed',
+            reason='帰還A送信前の全体マップYジャンプ失敗のため、同じ野営から同じ城への失敗として次回は別の城を試す')
+    return pair[goal]
+
+
+def _ensure_recall_y_goal_failure(mem, goal, why):
+    """Add one ledger entry for failure evidence produced outside this run."""
+    recall = _flow(mem).get('recall')
+    camp = recall.get('target') if isinstance(recall, dict) else None
+    if isinstance(camp, (list, tuple)) and len(camp) == 2 and isinstance(goal, str):
+        pair = ((_flow(mem).get('recall_goal_failures') or {})
+                .get(f'{int(camp[0])},{int(camp[1])}') or {})
+        if int(pair.get(goal) or 0):
+            return int(pair.get(goal) or 0)
+    return _note_recall_y_goal_failure(mem, goal, why)
+
+
 def _note_unreachable_goal(mem, goal, residual, step=None):
     """Remember a goal the Y view cannot put the cursor on.
 
@@ -817,6 +861,8 @@ def _y_jump_step(mem, frame):
                                  'moves': jump['moves']},
                 resulting_event='residual',
                 reason='全体マップのカーソルが目的の城に合わないため決定せず閉じる')
+        if jump.get('step') == 'RECALL' and jump.get('mode') == 'target':
+            _note_recall_y_goal_failure(mem, jump.get('goal'), 'residual')
         _note_unreachable_goal(mem, jump['goal'], (dx, dy), step=jump.get('step'))
         return _close_target_jump(mem, jump)
     if all(axis_done) or jump['moves'] >= limit:
