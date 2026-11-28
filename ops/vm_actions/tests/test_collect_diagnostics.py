@@ -1646,6 +1646,26 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1438-chikujou-castle-width-fold'
     state['bot_version']='hanjuku-chart-v1443-boss-companion-stage-timeout'
     assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1443-boss-companion-stage-timeout'
+    state['bot_version']='hanjuku-chart-v1448-auto-carry-safe-card'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1448-auto-carry-safe-card'
+    state['bot_version']='hanjuku-chart-v1449-chikujou-hold-note'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-chikujou-hold-note'
+    state['bot_version']='hanjuku-chart-v1450-attack-route-revalidation'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1450-attack-route-revalidation'
+    state['bot_version']='hanjuku-chart-v1451-dome-camp-terminal-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1451-dome-camp-terminal-evidence'
+    state['bot_version']='hanjuku-chart-v1450-password-dispatch'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1450-password-dispatch'
+    state['bot_version']='hanjuku-chart-v1451-defense-wait-probe'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1451-defense-wait-probe'
+    state['bot_version']='hanjuku-chart-v1452-battle-card-row-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1452-battle-card-row-evidence'
+    state['bot_version']='hanjuku-chart-v1449-dome-camp-terminal-evidence'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1449-dome-camp-terminal-evidence'
+    state['bot_version']='hanjuku-chart-v1447-password-measured-order'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1447-password-measured-order'
+    state['bot_version']='hanjuku-chart-v1440-chikujou-event-text-advance'
+    assert module._project_corner_state(state)['bot_version'] == 'hanjuku-chart-v1440-chikujou-event-text-advance'
     for marker in (
         'hanjuku-chart-v1460-password-entered-field',
         'hanjuku-chart-v1461-melee-only-ugokazaru',
@@ -1973,6 +1993,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1594-chikujou-hold-receipt",
                  "hanjuku-chart-v1595-boss-order-recovery",
                  "hanjuku-chart-v1597-chikujou-defer-reason",
+                 "hanjuku-chart-v1598-egg-row-scroll",
                  "hanjuku-chart-v1596-chikujou-deferral-skip",
 )
     for version in versions:

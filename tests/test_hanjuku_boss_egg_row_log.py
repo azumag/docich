@@ -13,13 +13,15 @@ from docich.hanjuku.os_layer.screen import Screen
 BOSS = chart.boss_castle(6)
 
 
-def screen(text='たまごをつかうきりふだたいきゃく', kind='egg_battle_menu'):
+def screen(text='たまごをつかうきりふだたいきゃく', kind='egg_battle_menu', egg_rows=None):
     value = Screen([], None, text, kind=kind)
+    if egg_rows is not None:
+        value.egg_rows = list(egg_rows)
     return value
 
 
-def memory(castle=BOSS, general='ヘーゼル', uses=None):
-    mem = {'chapter': 6, 'tick': 100, '_records': [],
+def memory(castle=BOSS, general='ヘーゼル', uses=None, chapter=6):
+    mem = {'chapter': chapter, 'tick': 100, '_records': [],
            'attack': {'general': general, 'castle': castle, 'side': 'attack', 'step': 'A:x:M1'},
            'battle': {'ally': general, 'enemy': 'ハードロボ', 'step': 'A:x:M1',
                       'castle': castle, 'side': 'attack'},
@@ -450,3 +452,45 @@ def test_boss_only_card_remains_eligible_after_measured_boss_entry(monkeypatch):
     rows = [r for r in mem['_records'] if r['decision'] == 'battle_boss_card_missed']
     assert len(rows) == 1
     assert rows[0]['card'] == 'バルムンク'
+
+
+def test_a_carried_card_scrolls_when_the_grey_egg_row_is_omitted():
+    # #5259 / #5331: the grey egg row can disappear from OCR while the
+    # lower carried-card row remains in the command box.
+    mem = memory()
+    mem['battle']['enemy'] = 'ゾンビ'
+    mem['battle']['planned_cards'] = ['イッテツーン']
+    rows = [
+        SimpleNamespace(name='ヘーゼル', hp=30, side='ally', y=176),
+        SimpleNamespace(name='ゾンビ', hp=30, side='enemy', y=192),
+    ]
+
+    actions = B.egg_battle_step(
+        screen(text='こうげきたいきゃく', egg_rows=rows), mem)
+
+    assert actions == [B.pad('down')]
+    assert mem['battle']['summon_card_scroll'] == 1
+    scroll = [r for r in mem['_records']
+              if r['decision'] == 'battle_summon_card_scroll'][-1]
+    assert scroll['observed_metric']['egg_row_visible'] is False
+    assert scroll['observed_metric']['own_attack_menu'] is True
+    assert scroll['observed_metric']['cards_left'] == ['イッテツーン']
+
+
+def test_issue_5331_uses_the_confirmed_carried_kit_when_battle_plan_is_empty(monkeypatch):
+    mem = memory()
+    mem['battle']['enemy'] = 'ゾンビ'
+    monkeypatch.setattr(B, '_confirmed_carried_kit', lambda *_: ['イッテツーン'])
+    rows = [
+        SimpleNamespace(name='ヘーゼル', hp=30, side='ally', y=176),
+        SimpleNamespace(name='ゾンビ', hp=30, side='enemy', y=192),
+    ]
+
+    actions = B.egg_battle_step(
+        screen(text='こうげきたいきゃく', egg_rows=rows), mem)
+
+    assert actions == [B.pad('down')]
+    scroll = [r for r in mem['_records']
+              if r['decision'] == 'battle_summon_card_scroll'][-1]
+    assert scroll['observed_metric']['cards_left'] == ['イッテツーン']
+    assert scroll['observed_metric']['own_attack_menu'] is True
