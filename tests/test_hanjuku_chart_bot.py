@@ -275,6 +275,23 @@ def test_attack_loss_requeues_the_chart_order_with_bounded_retries():
     assert held and held[-1]['chart_step'] == '1-C1'
 
 
+def test_attack_retry_terminal_record_carries_launched_order_identity():
+    step = 'A:3d1e5d29:Mc7fc03'
+    mem = {'chapter': 11, 'retries': {step: 2}, 'orders': {step: 'launched'},
+           'battle': {'enemy': '敵将', 'ally': 'フェデリーニ', 'enemy_hp': 45, 'ally_hp': 0,
+                      'castle': 'クラボニア', 'side': 'attack', 'step': step, 'cards_used': []}}
+    _world(mem)['launched_orders'] = {step: {
+        'general': 'フェデリーニ', 'source': 'タタール', 'target': 'クラボニア',
+        'purpose': 'attack', 'cards': []}}
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    held = [r for r in mem['_records'] if r.get('strategy_variant') == 'attack_retry_exhausted']
+    assert held and held[-1]['chart_step'] == step
+    assert held[-1]['general'] == 'フェデリーニ'
+    assert held[-1]['source'] == 'タタール'
+    assert held[-1]['target'] == 'クラボニア'
+    assert held[-1]['purpose'] == 'attack'
+
+
 def test_month_plan_step_names_the_current_chapter():
     from docich.hanjuku.strategy.economy import month_chart_step
     assert month_chart_step({'chapter': 2}) == '2-month'

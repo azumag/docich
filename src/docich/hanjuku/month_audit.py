@@ -1341,7 +1341,9 @@ def _context_order(after, step):
     for order in orders:
         if isinstance(order, dict) and order.get('step') == step:
             return order
-    return {}
+    launched = (((context or {}).get('world') or {}).get('launched_orders') or {})
+    order = launched.get(step) if isinstance(launched, dict) else None
+    return order if isinstance(order, dict) else {}
 
 
 
