@@ -832,6 +832,26 @@ def month_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _chikujou_sortie_deferral(mem, month):
+    """Return same-month evidence that a launch deferral ended the castle scan."""
+    for row in reversed(mem.get('_records') or ()):
+        if not isinstance(row, dict) or row.get('decision') != 'chikujou_deferred_sortie':
+            continue
+        if row.get('month') not in (None, month):
+            continue
+        metric = row.get('observed_metric') if isinstance(row.get('observed_metric'), dict) else {}
+        return {'step': metric.get('step'), 'scrolls': metric.get('scrolls'),
+                'deferrals': metric.get('deferrals')}
+    state = mem.get('chikujou_defer')
+    if (isinstance(state, dict) and int(state.get('count') or 0) > 0
+            and list(state.get('key') or []) == [mem.get('chapter'), month]):
+        return {'step': mem.get('sortie_launch_pending'), 'deferrals': state.get('count')}
+    step = mem.get('sortie_launch_pending')
+    if step and mem.get('month') in (None, month):
+        return {'step': step}
+    return None
+
+
 def _note_chikujou_skip_unexplained(mem, shop):
     """Name a month that closed 築城 as skipped without any recorded cause.
 
@@ -876,6 +896,19 @@ def _note_chikujou_skip_unexplained(mem, shop):
     if seen == month:
         return
     shop['chikujou_skip_logged'] = month
+    deferred = _chikujou_sortie_deferral(mem, month)
+    if deferred:
+        metric = {'gold': (shop.get('gold_start')),
+                  'chikujou': shop.get('chikujou'),
+                  'tried': list(tried)[:8],
+                  'candidates': sorted(_chikujou_candidates(mem))[:8]}
+        for key in ('step', 'scrolls', 'deferrals'):
+            if deferred.get(key) is not None:
+                metric['deferral_' + key] = deferred[key]
+        _record(mem, 'chikujou_skip_after_deferred_sortie', month=month,
+                observed_metric=metric,
+                reason='出撃デファーで築城探索を打ち切った後に skipped のまま月を終えた')
+        return
     if held_reason:
         _record(mem, 'chikujou_skip_after_hold', month=month,
                 observed_metric={'gold': (shop.get('gold_start')),
@@ -1464,7 +1497,7 @@ def _chikujou_scroll(screen, mem, sub, names=None):
         mem['chikujou_defer'] = defer_state
         sub['declined'] = True
         sub['aborted'] = True
-        _record(mem, 'chikujou_deferred_sortie',
+        _record(mem, 'chikujou_deferred_sortie', month=sub.get('key'),
                 observed_metric={'visible': [r[2] for r in rows],
                                  'scrolls': int(state.get('presses') or 0),
                                  'step': launch_step,
