@@ -1640,11 +1640,11 @@ def test_waiting_carry_row_can_cross_the_month_boundary():
     assert receipts._carry_eligible(row, ('location',)) is False
 
 
-def _wait_recall_state(mem, name='ヴィーナス'):
+def _wait_recall_state(mem, name='ヴィーナス', kind='recall'):
     post.arm(mem)
     state = mem['post_month_status']
     state.update(stage='wait_recall', started_tick=100,
-                 job={'kind': 'recall', 'name': name}, tasks=[])
+                 job={'kind': kind, 'name': name}, tasks=[])
     return state
 
 
@@ -1696,6 +1696,66 @@ def test_recall_task_retry_is_bounded():
     state = _wait_recall_state(mem)
     state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
     _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
+
+
+def test_boss_move_task_is_requeued_within_the_bounded_budget():
+    # docich#5789: a ch10 White House camper is intentionally not sent home;
+    # boss_move is the only monthly resolution path, so losing its recall flow
+    # must requeue the same boss_move job instead of ending the month.
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['job']['goal'] = 'ボス'
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [
+        {'kind': 'boss_move', 'name': 'ヴィーナス', 'goal': 'ボス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': 1}
+    assert state['stage'] == 'process'
+
+
+def test_boss_move_task_retry_is_bounded():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == []
+    assert state['stage'] == 'process'
+
+
+def test_interrupted_boss_move_retry_does_not_spend_the_bounded_budget():
+    # A battle/scene interruption is not the boss_move flow's own failed
+    # attempt: even at the ordinary retry cap it receives the same free retry
+    # as an interrupted home recall, bounded by RECALL_INTERRUPT_GRACE.
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['job']['goal'] = 'ボス'
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    _flow(mem).pop('recall', None)
+    _flow(mem)['recall_interrupted'] = mem['tick']
+    assert post.step(Screen([], None, '', kind='map'), mem, None) == []
+    assert state['tasks'] == [
+        {'kind': 'boss_move', 'name': 'ヴィーナス', 'goal': 'ボス'}]
+    assert state['recall_task_retries'] == {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    record = [r for r in mem['_records']
+              if r['decision'] == 'post_month_recall_requeued'][-1]
+    assert record['observed_metric']['battle_interrupt'] is True
+
+
+def test_expired_boss_move_interruption_does_not_bypass_the_retry_budget():
+    from docich.hanjuku.state.regions import flow as _flow
+    mem = memory(month='2-12')
+    state = _wait_recall_state(mem, kind='boss_move')
+    state['recall_task_retries'] = {'ヴィーナス': post.RECALL_TASK_RETRIES}
+    mem['tick'] = 100 + post.RECALL_INTERRUPT_GRACE + 1
+    _flow(mem).pop('recall', None)
+    _flow(mem)['recall_interrupted'] = 100
     assert post.step(Screen([], None, '', kind='map'), mem, None) == []
     assert state['tasks'] == []
     assert state['stage'] == 'process'
