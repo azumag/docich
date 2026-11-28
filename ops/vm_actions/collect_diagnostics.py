@@ -8294,6 +8294,7 @@ def _project_corner_state(data):
             "hanjuku-chart-v1601-sortie-identity",
             "hanjuku-chart-v1602-sortie-fail-identity",
             "hanjuku-chart-v1601-comment-strategy",
+            "hanjuku-chart-v1602-sortie-identity",
             "hanjuku-chart-v1597-chikujou-defer-reason",
             "hanjuku-chart-v1598-egg-row-scroll",
             "hanjuku-chart-v1596-chikujou-deferral-skip",
