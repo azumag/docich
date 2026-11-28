@@ -1,0 +1,50 @@
+name: post-merge-ci-monitor
+
+# A merged PR can bypass required checks only through the intentionally kept
+# owner bypass. This monitor records the ci-required state on the PR a few
+# minutes after merge, before short Actions retention can erase the evidence.
+# Push and pull_request triggers give the first sample; the schedule is the
+# fallback because GitHub can delay or drop either event.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: post-merge-ci-monitor-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Wait for checks to attach
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: sleep 180
+      - name: Record post-merge ci-required state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+          PUSH_SHA: ${{ github.event_name == 'push' && github.sha || '' }}
+        run: python3 .github/scripts/merged_pr_ci_audit.py monitor --min-age-seconds 180
