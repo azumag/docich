@@ -391,6 +391,7 @@ KEY_OWNERSHIP = {
     'flow': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 領域dict自体の防御的pop
     'general_list_hold': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 将軍リスト画面ホールド
     'general_list_scan': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 将軍リスト走査手順状態
+    'general_list_scan_recovery': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 将軍リスト走査証拠による確認回復の記録状態
     'held_phase': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 保留フェーズ記録の自己消去型
     'status_panel_holds': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 城メニューのステータスパネル連続保留数
     'hero_broken_sortie_cancel': {'region': FLOW, 'lifetime': 'chapter', 'migrated': False},  # 主人公破損出撃キャンセル手順状態
