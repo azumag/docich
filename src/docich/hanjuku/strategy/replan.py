@@ -1320,6 +1320,14 @@ def interim_candidates(mem, allow_sole=False) -> dict:
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and not chart.is_boss_castle(c)]
     targets = list(dict.fromkeys(targets))
+    if chapter == 4:
+        # owner 2026-11-28: 第4話は最初からボス城が出現しているので、敵城を攻める
+        # 必要はない。アルマムーンからボスへ行くための経由城（アルカ/ネクスドリア/
+        # フヌイヌム/ミヒラギアン）を確保すればよく、それ以外の敵城は攻めない。
+        # 失った城の奪還は残す（経由城を落とされた場合に必要）。
+        bridges = set(chart.boss_bridge_sources(4))
+        lost_set = set(lost)
+        targets = [c for c in targets if c in bridges or c in lost_set]
     if mechanical:
         # Owner 2026-11-02 (スピードランチャート廃止): lost castles first (home,
         # then the rest), then the others nearest an owned castle first.

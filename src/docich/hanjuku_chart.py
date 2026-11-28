@@ -1461,6 +1461,18 @@ def is_boss_castle(name) -> bool:
     return name in BOSS_CASTLES.values() or name in boss_sites(4)
 
 
+def boss_bridge_sources(chapter: int) -> tuple[str, ...]:
+    """Castles that can march straight to a boss (measured boss legs' sources).
+
+    owner 2026-11-28: 第4話は最初からボス城が出現しており、アルマムーンからは
+    直接行けない。ボスへ行くための経由城（アルカ/ネクスドリア/フヌイヌム/
+    ミヒラギアン）を確保すればよく、他の敵城を攻める必要はない。
+    """
+    return tuple(dict.fromkeys(
+        order['source'] for order in measured_orders(chapter)
+        if is_boss_castle(order.get('target'))))
+
+
 def all_orders(chapter: int):
     """Encoded orders without the measurement gate (tests, docs, review)."""
     return _ORDERS.get(chapter, ())
