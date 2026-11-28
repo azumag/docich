@@ -175,6 +175,9 @@ def _begin_card_flow(mem, cur, flow, *, source):
         _release_interrupted_card_flow(
             mem, cur, '選択済み・消費未確認のまま後続の切り札/救済フローへ置き換わったため中断')
     flow = dict(flow)
+    retry = cur.get('card_open_retry_pending')
+    if isinstance(retry, dict) and retry.get('tactic_id') == flow.get('tactic_id'):
+        cur.pop('card_open_retry_pending', None)
     flow.setdefault('ally_hp_at_open', cur.get('ally_hp'))
     flow.setdefault('enemy_hp_at_open', cur.get('enemy_hp'))
     flow.setdefault('enemy_soldiers_at_open', cur.get('enemy_soldiers'))
@@ -440,10 +443,16 @@ def _card_use_unclassified(mem, cur, reason, *, selected_interrupted=False):
                 tid = matches[0]  # a flow opened by the previous bot version
         failures = cur.setdefault('card_open_failures', {})
         count = int(failures.get(tid, 0)) + 1 if tid else CARD_OPEN_ATTEMPTS
+        retry_pending = False
         if tid:
             failures[tid] = count
             if count < CARD_OPEN_ATTEMPTS and tid in done:
                 done.remove(tid)
+                retry_pending = True
+        if retry_pending:
+            cur['card_open_retry_pending'] = {'tactic_id': tid, 'waits': 0}
+        else:
+            cur.pop('card_open_retry_pending', None)
         _record(mem, 'battle_card_open_unclassified', **_battle_labels(cur), card=card,
                 expected_metric='実メニューと札一覧の選択',
                 observed_metric={'selection_planned': False, 'attempts': count,
@@ -961,8 +970,14 @@ def _card_damage_gate(mem, cur, card, *, listed_cards=None):
 # 札を選ぶ順序の材料として残すが、拒否して一覧を閉じることはしない。
 # 退却も完全に廃止済みのため、札を持ったまま負ける方が悪い。
 # 一撃で倒せる保証がないことを理由にした拒否は廃止する。
-# 画面の読めない・HP0パネルなど、データの整合性を守る拒否は残す。
-CARD_REFUSAL_RETIRED_ROLES = frozenset({'nonlethal_egg_risk'})
+# docich#5776 残件: 実拒否 role は本番ログだけでは確定できないため、低HP帯では
+# 非致死リスク・追撃未観測・ダメージ/卵リスク未分類の3種を同じ撤回対象にする。
+# ボス専用札の持ち越し誤用や実一覧未確認など、札種/在庫の整合性を守る拒否は残す。
+CARD_REFUSAL_RETIRED_ROLES = frozenset({
+    'nonlethal_egg_risk',
+    'control_has_no_observed_followup',
+    'damage_or_egg_risk_unclassified',
+})
 
 
 def _card_refusal_retired(role=None, cur=None):
@@ -973,7 +988,8 @@ def _card_refusal_retired(role=None, cur=None):
     # 死ぬ実例は「負けるボス戦」だった。HPに余裕がある間は従来の評価を保つ。
     ally_hp = cur.get('ally_hp')
     start_hp = cur.get('start_ally_hp')
-    if type(ally_hp) is not int or type(start_hp) is not int or start_hp <= 0:
+    if (type(ally_hp) is not int or type(start_hp) is not int
+            or ally_hp <= 0 or start_hp <= 0):
         return False
     return ally_hp * 3 <= start_hp
 
@@ -1008,7 +1024,7 @@ def _card_gate_alternatives(mem, cur, names, *, omit=None):
         if (candidate in names and candidate != omit
                 and candidate not in (cur.get('cards_selected') or [])):
             gate = _card_damage_gate(mem, cur, candidate, listed_cards=names)
-            if gate['allowed']:
+            if gate['allowed'] or _card_refusal_retired(gate.get('role'), cur):
                 allowed.append(candidate)
     return allowed
 
@@ -1072,19 +1088,22 @@ def _card_damage_recheck_resources(mem, cur):
     if exhausted:
         # The count/HP budget stops further probing.  At that boundary a
         # newly *observed* zero soldier count may already make a known real
-        # card lethal: permit one final inventory check, not another probe
-        # budget and not an A from the old list.
+        # card lethal, or the low-HP residual rule may retire the old refusal:
+        # permit one final inventory check, not another probe budget and not
+        # an A from the old list.
         if cur.get('card_damage_final_recheck'):
             return
         names = blocked.get('cards') or []
-        finishing = False
+        selectable = False
         for card in names:
             gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-            if (gate['allowed'] and (gate['role'] in ('single_card_lethal', 'control_then_melee_not_a_kill')
-                    or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur)))):
-                finishing = True
+            finishing = (gate['allowed'] and (
+                gate['role'] in ('single_card_lethal', 'control_then_melee_not_a_kill')
+                or (gate['role'] == 'healing_not_a_kill' and _card_healing_needed(cur))))
+            if finishing or _card_refusal_retired(gate.get('role'), cur):
+                selectable = True
                 break
-        if not finishing:
+        if not selectable:
             return
         cur['card_damage_final_recheck'] = True
     else:
@@ -2615,7 +2634,7 @@ def _critical_safe_card(mem, cur, rescue, *, for_retreat=False):
                 or card in cur.get('cards_selected', [])):
             continue
         gate = _card_damage_gate(mem, cur, card, listed_cards=names)
-        if not gate['allowed']:
+        if not gate['allowed'] and not _card_refusal_retired(gate.get('role'), cur):
             continue
         # A proven finisher (or a needed heal) defers retreat at any HP:
         # the observed kill lands on this turn, before the enemy's next

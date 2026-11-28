@@ -1968,6 +1968,7 @@ def test_hanjuku_hotload_versions_are_fixed_values_not_an_arbitrary_prefix():
                  "hanjuku-chart-v1592-unreadable-card-loop",
                  "hanjuku-chart-v1593-unreadable-card-source",
                  "hanjuku-chart-v1594-boss-no-start",
+                 "hanjuku-chart-v1596-boss-card-retreat-residual",
                  "hanjuku-chart-v1590-boss-sole-starved-break",
                  "hanjuku-chart-v1594-chikujou-hold-receipt",
                  "hanjuku-chart-v1595-boss-order-recovery",

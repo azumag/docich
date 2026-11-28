@@ -953,7 +953,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
     eligible = []
     for candidate in candidates:
         gate = _card_damage_gate(mem, cur, candidate, listed_cards=names)
-        if gate['allowed']:
+        if gate['allowed'] or _card_refusal_retired(gate.get('role'), cur):
             eligible.append(candidate)
         else:
             _card_gate_refused(mem, cur, candidate, gate, listed_cards=names)
