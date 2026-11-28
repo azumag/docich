@@ -32,6 +32,13 @@ CHAPTER1_BLOCKED_LEGS = frozenset({
 # ボスへ一直線に行けない城（間にジョンリギ/スペンソニアがある）。
 CHAPTER1_BOSS_BLOCKED_SOURCES = frozenset({'アルマムーン', 'ジョンリギ'})
 
+# owner 2026-11-28: 第4話もアルマムーンから各ボス（四季王城 x4）へは直接つながらず、
+# 必ず他の城を経由する。
+BOSS_BLOCKED_SOURCES = {
+    1: CHAPTER1_BOSS_BLOCKED_SOURCES,
+    4: frozenset({'アルマムーン'}),
+}
+
 
 def legs(chapter):
     if chapter == 9:
@@ -62,6 +69,11 @@ def allowed(mem, source, target):
             return False
         if chart.is_boss_castle(target):
             return source not in CHAPTER1_BOSS_BLOCKED_SOURCES
+        return True
+    if chapter == 4:
+        # owner 2026-11-28: 第4話のボス（四季王城 x4）はアルマムーンから直接行けない。
+        if chart.is_boss_castle(target):
+            return source not in BOSS_BLOCKED_SOURCES[4]
         return True
     return (chapter != 3 or chart.is_boss_castle(target)
             or (source, target) in legs(3)
