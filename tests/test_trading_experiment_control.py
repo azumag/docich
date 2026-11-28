@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import config  # noqa: E402
 from docich.trading.ai_text import AiTextError  # noqa: E402
 from docich.trading.arbitrage import TopOfBook  # noqa: E402
+from docich.trading.depth import DepthBook, DepthLevel  # noqa: E402
 from docich.trading.experiment_control import (  # noqa: E402
     CONTROL_FILENAME,
     assess_experiment,
@@ -157,6 +158,18 @@ class HistoryGateway:
             books[symbol] = TopOfBook(
                 symbol, price * D("0.999"), price * D("1.001"), now,
                 bid_amount=D("100000000"), ask_amount=D("100000000"),
+            )
+        return books
+
+    def fetch_depth_books(self, symbols, *, now, limit=20):
+        books = {}
+        for symbol in symbols:
+            price = D(str(self.prices[symbol][-1]))
+            books[symbol] = DepthBook(
+                symbol,
+                (DepthLevel(price * D("0.999"), D("100000000")),),
+                (DepthLevel(price * D("1.001"), D("100000000")),),
+                now,
             )
         return books
 

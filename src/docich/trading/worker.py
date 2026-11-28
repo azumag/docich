@@ -403,6 +403,44 @@ def _cap_reduced_buy(
     ), None
 
 
+def _fetch_cycle_books(
+    gateway: Any,
+    symbols: list[str],
+    *,
+    now: float,
+    limit: int = BOOK_LIMIT,
+) -> dict[str, object]:
+    """Fetch one executable book per symbol, isolating each symbol's failure.
+
+    ``fetch_depth_books`` is preferred so the fill can walk the visible 20
+    levels instead of only the best bid/ask.  The real gateway raises for the
+    whole batch when one symbol's book is malformed, so call it one symbol at a
+    time: a bad book must not erase the other symbols' books.  Gateways without
+    depth support fall back to the top-of-book method with the same per-symbol
+    isolation.
+    """
+    fetch = getattr(gateway, "fetch_depth_books", None)
+    if not callable(fetch):
+        fetch = getattr(gateway, "fetch_top_books", None)
+    if not callable(fetch):
+        return {}
+    books: dict[str, object] = {}
+    for symbol in sorted(set(symbols)):
+        try:
+            batch = fetch([symbol], now=now, limit=limit)
+        except Exception:
+            continue
+        if not isinstance(batch, dict):
+            continue
+        book = batch.get(symbol)
+        if book is None:
+            continue
+        if getattr(book, "symbol", symbol) != symbol:
+            continue
+        books[symbol] = book
+    return books
+
+
 def run_worker_cycle(
     g: GlobalConfig,
     *,
@@ -652,22 +690,11 @@ def run_worker_cycle(
             )
 
             broker = PaperBroker(ledger, markets=markets)
-            books: dict[str, object] = {}
-            fetch_top_books = getattr(gateway, "fetch_top_books", None)
-            if callable(fetch_top_books):
-                try:
-                    top_books = fetch_top_books(
-                        [item.symbol for item in allocation.decisions],
-                        now=decision_now,
-                        limit=20,
-                    )
-                    if isinstance(top_books, dict):
-                        books = dict(top_books)
-                except Exception:
-                    # Public depth is best-effort in the fetch itself; a
-                    # missing book means the decision is skipped this cycle
-                    # (there is no close-price fallback).
-                    books = {}
+            books = _fetch_cycle_books(
+                gateway,
+                [item.symbol for item in allocation.decisions],
+                now=decision_now,
+            )
             new_fill_count = 0
             fill_skip_codes: list[SkipReason] = []
             checked_entry_gate = False
