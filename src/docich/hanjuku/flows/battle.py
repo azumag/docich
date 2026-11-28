@@ -2076,7 +2076,17 @@ def battle_end(mem, next_kind, *, defense_continues=False, actor_continues=False
             # the off-chart planner kept waiting on a sortie that had ended.
             _plan_region(mem).setdefault('orders', {})[step] = 'failed'
             drop_retired_step_context(mem)
+            order = boss_order if isinstance(boss_order, dict) else {}
+            identity = {
+                'general': order.get('general') or cur.get('ally'),
+                'source': order.get('source'),
+                'target': order.get('target') or castle,
+                'purpose': order.get('purpose'),
+            }
+            identity = {key: value for key, value in identity.items()
+                        if isinstance(value, str) and value}
             _record(mem, 'situation_held', chart_step=step, strategy_variant='attack_retry_exhausted',
+                    **identity,
                     observed_metric={'retries': retries[step], 'outcome': outcome,
                                      'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
                     reason='攻撃の再試行上限に到達したため、この手順を打ち切って計画外の判断へ渡す')
